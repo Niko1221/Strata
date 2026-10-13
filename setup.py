@@ -1839,9 +1839,26 @@ ROCM_VERSION_OVERRIDE = os.environ.get("STRATA_ROCM_VERSION") or None
 ROCM_VERSION = ROCM_VERSION_OVERRIDE or ROCM_VERSION_DEFAULT   # kept for callers that read one version
 ROCM_SYSTEM_MIN = (7, 0)       # an older system ROCm is passed over for the wheels (gfx1201 needs ROCm 6.4 or newer)
 # STRATA_EXPERIMENTAL_GFX1103=1 (opt-in, unsupported): the Radeon 780M / 760M / 740M iGPU (Ryzen 7040 / 8040, gfx1103) is taken
-# as a unified-memory AMD card like Strix Halo, with the portable kernels (no WMMA) (measured on one machine: Ryzen 7 255).  Unset: unchanged.
+# as a unified-memory AMD card like Strix Halo, with the native dot4 and gfx11 WMMA kernels, the gfx1103 exact speed switches
+# and a hipBLASLt table when one matches (measured on one machine: Ryzen 7 8745HS).  Unset: unchanged.
 GFX1103_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1103") == "1"
 AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151") + (("gfx1103",) if GFX1103_OPT_IN else ())
+# The exact (bit-identical) speed switches the engine turns on by default on gfx1151 (src/core/arch_defaults.cpp), less
+# STRATA_HCD_EXACT: that one copies the gfx1151 hipBLASLt table's solutions 1176 / 1177, and the gfx1103 table
+# (tools/hip/gfx1103-hipblaslt-100401.txt) picks others, so it would only report that it cannot run.  A gfx1103 install
+# takes them from here (setup writes them into the config's "env"), the same way the table is written: one 780M measured
+# the same greedy answers with all 17 on and with all 17 off, +13% to +15% prompt and decode +3.2% (the decode half
+# alone).  The engine keeps gfx1103 out of its own arch defaults (src/core/arch_defaults_test.cpp asserts it stays
+# empty), so this keeps the default path byte-identical.
+GFX1103_SWITCHES = {
+    # prompt
+    "STRATA_GDN_HEAD": "1", "STRATA_GDN_PP": "2", "STRATA_GDN_CONVL2": "1", "STRATA_GDN_NOY": "1",
+    "STRATA_CVEC_FUSE": "1", "STRATA_PF_PAD": "1",
+    # decode
+    "STRATA_Q8_PACKED": "1", "STRATA_Q6_PACKED": "1", "STRATA_MMVF_ROWS": "1", "STRATA_ATTN_LANECELL": "1",
+    "STRATA_EXPERT_V2": "1", "STRATA_TSUM": "1", "STRATA_LFUSE": "1", "STRATA_GDN_SPLIT": "1",
+    "STRATA_QFUSE": "1", "STRATA_PLE_BATCH": "1", "STRATA_SH_STREAM": "1",
+}
 AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs has no product name
              "gfx1101": "AMD Radeon RX 7800 XT / 7700 XT (gfx1101)",
              "gfx1102": "AMD Radeon RX 7600 / 7600 XT (gfx1102)",
@@ -2010,8 +2027,9 @@ def gfx1103_notes(gpu, ram) -> list[str]:
              f"seen by the OS + a {gpu.get('dedicated_gb', 0.0):.1f} GB BIOS carve-out), so the model's experts live in "
              "that pool and the expert cache is sized from the memory the OS can give back."]
     notes.append("  " + ("The engine is compiled here for gfx1103" if not WIN else "This GPU has no ready-made Windows engine")
+                 + " with the native dot4 and WMMA kernels and the 780M's exact speed switches"
                  + " (experimental opt-in, STRATA_EXPERIMENTAL_GFX1103=1; measured on one machine, not validated on a real "
-                 "card): see docs/AMD_HIP.md. This is not a Strix Halo.")
+                 "card): see docs/AMD_HIP.md and docs/RADEON_780M.md. This is not a Strix Halo.")
     if not WIN and gpu.get("shared_gb", 0) < 0.75 * ram - 1:
         notes.append(f"!the GPU can reach {gpu.get('shared_gb', 0):.0f} GB of shared memory (the GTT pool; the kernel's "
                      "default is about half of the RAM). The kernel option ttm.pages_limit raises it; setup changes no "
@@ -3876,7 +3894,9 @@ def write_config(path: Path, cfg: dict):
 # "sampling" or "mcp_servers" block, "allowed_hosts", "cors_origins", "open_browser" - and is kept when setup runs again
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
                         "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision"})
-SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP"})   # the "env" entries setup writes
+# the "env" entries setup writes: a re-run refreshes these instead of carrying a stale value over (the gfx1103 switches
+# are setup's too, so they do not linger after the opt-in is turned off)
+SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP"}) | frozenset(GFX1103_SWITCHES)
 SETUP_VISION = frozenset({"exe", "mmproj", "model", "gpu", "max_tokens", "threads"})
 
 
@@ -5746,6 +5766,10 @@ def main() -> int:
         if GFX1103_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1103") and not WIN:
             # the 780M's KFD queues are evicted (a GPU reset) while transparent huge pages move the pinned expert arena
             cfg.setdefault("env", {})["STRATA_NO_ARENA_THP"] = "1"
+            # the exact gfx1151 speed switches measured on this chip (GFX1103_SWITCHES): the engine has no arch defaults
+            # for gfx1103, so setup writes them into the config.  They are setup's own (SETUP_ENV), so a re-run refreshes
+            # them and turning the opt-in off takes them out again.
+            cfg.setdefault("env", {}).update(GFX1103_SWITCHES)
         if resident:   # ROCm: large page-locked host allocations can fail or be slow for the CPU; keep the copy pageable
             cfg.setdefault("env", {})["STRATA_RESIDENT_PIN"] = "0"
     if gpu["count"] > 1 or a.gpu is not None:

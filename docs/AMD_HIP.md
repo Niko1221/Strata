@@ -66,7 +66,7 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   Adrenalin Edition](https://www.amd.com/en/support/download/drivers.html)). Nothing else: no ROCm or HIP SDK
   install, no compiler, no admin rights.
 - **Detection:** setup reads the display adapters Windows lists (their PCI ids; the VRAM size from the display
-  driver's registry entry). An integrated Radeon is listed as not supported, except the Ryzen AI Max "Strix Halo" (Radeon 8060S / 8050S / 8040S, gfx1151: [STRIX_HALO.md](STRIX_HALO.md)); a Strix Point (890M / 880M, gfx1150), Krackan (860M / 840M, gfx1152) or Phoenix / Hawk Point (780M / 760M, gfx1103) Radeon is named as what it is and not supported.
+  driver's registry entry). An integrated Radeon is listed as not supported, except the Ryzen AI Max "Strix Halo" (Radeon 8060S / 8050S / 8040S, gfx1151: [STRIX_HALO.md](STRIX_HALO.md)); a Strix Point (890M / 880M, gfx1150), Krackan (860M / 840M, gfx1152) or Phoenix / Hawk Point (780M / 760M, gfx1103) Radeon is named as what it is and not supported (on Linux the 780M / 760M has an opt-in build: [RADEON_780M.md](RADEON_780M.md)).
 - **Engine:** the ready-made `strata-windows-x64-hip.zip` from the release (built by `tools\hip\build_windows.bat`
   for gfx1100, gfx1101, gfx1102, gfx1200, gfx1201, gfx1030 and, from 0.1.40, gfx1151 (Strix Halo, unvalidated on Windows)) goes into `engine\`. It carries the ROCm libraries the
   engine loads (`engine\rocm\bin`: the HIP runtime, hipBLAS / rocBLAS / hipBLASLt with their kernels for these cards,
