@@ -9230,23 +9230,23 @@ int main(int argc, char** argv) {
                 // above only balanced the cache's own budget, so a full cache leaves this one short even
                 // though every parked conversation could give its RAM back - and refusing here throws
                 // away the whole prompt read that produced this snapshot (measured: 270k tokens, 96 s).
-                // Evict the least recently active parked conversations until it fits, or until none are
-                // left.  Each ConversationBuffer is a list of 16 MiB segments, each segment its own
-                // allocation, so an evicted entry is back with the kernel before the next check reads
-                // /proc/meminfo; no waiting is needed.  slots() bounds the loop, and the two lines
-                // below say what it did either way.  The reading is the guard's (MemAvailable, the cgroup
+                // Parked conversations leave, least recently active first, each followed by a release of what
+                // the allocator still holds and a new reading, until the snapshot fits.  The release matters:
+                // a ConversationBuffer is a list of 16 MiB segments, and once glibc's mmap threshold has
+                // risen (to 32 MiB) freeing one only moves the bytes onto the allocator's free list - measured
+                // here, dropping a 64 MiB snapshot in the middle of the heap moved RSS by -0.3 MB, and
+                // malloc_trim(0) then returned 127.7 MB.  Nothing leaves when what may leave holds less than
+                // is missing, so a full cache is not emptied for a snapshot that would be refused anyway.
+                // See ConversationCache::admit_ram.  The reading is the guard's (MemAvailable, the cgroup
                 // limits above the engine, --memory-limit-mib); `mem` keeps the last one for the refusal line.
                 size_t evicted = 0;
                 std::optional<strata::core::HostMemoryReading> mem;
-                auto admit = [&] {
+                auto available = [&] {
                     mem = strata::core::sample_host_memory();
-                    return strata::core::conversation_memory_admit(
-                        mem ? std::optional<uint64_t>(mem->available) : std::nullopt, additional, floor);
+                    return mem ? std::optional<uint64_t>(mem->available) : std::nullopt;
                 };
-                while (!admit() && conversations.size() > 0 && evicted < conversations.slots() &&
-                       conversations.evict_oldest())
-                    ++evicted;
-                if (!admit()) {
+                if (!conversations.admit_ram(available, strata::core::conversation_release_freed_memory,
+                                             additional, floor, evicted)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked)\n",
                                  additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
                                  evicted, conversations.size());
