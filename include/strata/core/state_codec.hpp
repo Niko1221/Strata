@@ -42,6 +42,15 @@ size_t state_codec_fp32_bytes(size_t coded_bytes, StateCodec codec);
 bool state_encode(const float* src, size_t floats, StateCodec codec, uint8_t* dst, std::string& error);
 bool state_decode(const uint8_t* src, size_t floats, StateCodec codec, float* dst, std::string& error);
 
+// The same `floats` values, held under `from` in `src` and written under `to` in `dst`, without going through fp32
+// in between. `dst` holds state_codec_size(floats * 4, to) bytes and must not overlap `src`; a `from` that is already
+// `to` copies the bytes that array occupies. This is the host-to-host conversion a park and a mount do on stored
+// state: state_encode/state_decode move values to or from fp32 arrays, which for these two codecs means one extra
+// full-size pass over the data (a memcpy into scratch on the way in, a memcpy out on the way back). The rounding,
+// NaN, signed-zero, subnormal and overflow behaviour is the same code both paths use.
+bool state_transcode_bytes(const uint8_t* src, size_t floats, StateCodec from, StateCodec to, uint8_t* dst,
+                           std::string& error);
+
 // The largest array one call converts at a time when a coded array crosses the device boundary: the copy is chunked
 // so that a coded save or restore needs this much host memory and no more.
 constexpr size_t kStateCodecChunkFloats = 1u << 20;   // 4 MiB of fp32 values

@@ -34,8 +34,12 @@ uint16_t bf16_of(float f) {
     return (uint16_t) ((b + 0x7FFFu + ((b >> 16) & 1u)) >> 16);
 }
 
+// bf16 is the top half of a float32, so widening is a shift: no rounding, no table, and every bit pattern - including
+// the infinities and the NaNs bf16_of produced - means the value it means as an fp32.
+uint32_t bf16_bits_of(uint16_t h) { return ((uint32_t) h) << 16; }
+
 float f32_of_bf16(uint16_t h) {
-    uint32_t b = ((uint32_t) h) << 16;
+    const uint32_t b = bf16_bits_of(h);
     float f = 0;
     std::memcpy(&f, &b, 4);
     return f;
@@ -117,6 +121,38 @@ bool state_decode(const uint8_t* src, size_t floats, StateCodec codec, float* ds
             }
             return true;
         }
+    return fail(error, "unknown codec");
+}
+
+bool state_transcode_bytes(const uint8_t* src, size_t floats, StateCodec from, StateCodec to, uint8_t* dst,
+                           std::string& error) {
+    if (!floats) return true;
+    if (!src || !dst) return fail(error, "missing array");
+    if (state_codec_name(from) == nullptr || state_codec_name(to) == nullptr) return fail(error, "unknown codec");
+    if (from == to) { std::memcpy(dst, src, state_codec_size(floats * 4, from)); return true; }
+    // Values are loaded and stored through fixed-size memcpy: these are byte buffers whose alignment is the
+    // allocator's, not float or uint16_t arrays, and a reinterpret_cast would promise more than that. The compiler
+    // turns the loop into vector loads either way.
+    if (from == StateCodec::Fp32 && to == StateCodec::Bf16) {
+        for (size_t i = 0; i < floats; ++i) {
+            float f = 0;
+            std::memcpy(&f, src + i * 4, 4);   // the file and the host buffers are little-endian by contract
+            const uint16_t h = bf16_of(f);
+            std::memcpy(dst + i * 2, &h, 2);
+        }
+        return true;
+    }
+    if (from == StateCodec::Bf16 && to == StateCodec::Fp32) {
+        for (size_t i = 0; i < floats; ++i) {
+            uint16_t h = 0;
+            std::memcpy(&h, src + i * 2, 2);
+            const uint32_t b = bf16_bits_of(h);   // the bits f32_of_bf16's value is, written straight out
+            std::memcpy(dst + i * 4, &b, 4);
+        }
+        return true;
+    }
+    // A codec added to the enum without a pair of paths here lands on the refusal rather than being treated as one
+    // of the two conversions below.
     return fail(error, "unknown codec");
 }
 

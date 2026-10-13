@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <limits>
 #include <vector>
 
@@ -108,6 +109,89 @@ void specials() {
     check(std::isinf(back[3]) && back[3] > 0 && std::isinf(back[4]) && back[4] < 0,
           "float max rounds to the infinity, which is what round-to-nearest-even means there");
 }
+// The byte-buffer conversion against the two-step it replaces: decode into an fp32 scratch, encode the scratch. Both
+// paths get the same input bytes, and their output must be identical byte for byte - the point of the direct path is
+// that it does less work, not that it does different work.
+bool two_step(const std::vector<uint8_t>& src, size_t floats, StateCodec from, StateCodec to,
+              std::vector<uint8_t>& dst, std::string& error) {
+    std::vector<float> scratch(floats, 0.f);
+    if (!state_decode(src.data(), floats, from, scratch.data(), error)) return false;
+    dst.assign(state_codec_size(floats * 4, to), 0);
+    return state_encode(scratch.data(), floats, to, dst.data(), error);
+}
+
+void transcode() {
+    std::string error;
+    std::vector<uint32_t> words;
+    // ties in both directions of the even/odd rule, signed zeros, subnormals at both ends of their range, the
+    // infinities, float max (which rounds past the ceiling), and NaNs whose payload truncates away to nothing
+    for (const uint32_t b : {0x00000000u, 0x80000000u, 0x3F800001u, 0x3F807FFFu, 0x3F808000u, 0x3F808001u,
+                             0x3F80FFFFu, 0x3F818000u, 0x3F7FFFFFu, 0x00000001u, 0x80000001u, 0x007FFFFFu,
+                             0x00800000u, 0x00400000u, 0x7F7FFFFFu, 0xFF7FFFFFu, 0x7F800000u, 0xFF800000u,
+                             0x7FC00000u, 0x7F800001u, 0xFF800001u, 0xFFC00001u, 0x7F807FFEu})
+        words.push_back(b);
+    uint32_t seed = 20251013u;
+    for (int i = 0; i < 20000; ++i) {   // ordinary magnitudes and raw bit patterns alike, NaNs included
+        seed = seed * 1664525u + 1013904223u;
+        words.push_back(seed ^ (seed >> 11) * 2246822519u);
+    }
+    std::vector<uint8_t> fp32(words.size() * 4, 0);
+    for (size_t i = 0; i < words.size(); ++i) std::memcpy(fp32.data() + i * 4, &words[i], 4);
+
+    std::vector<uint8_t> direct(fp32.size() / 2), coded_ref, back(fp32.size()), widened_ref;
+    check(state_transcode_bytes(fp32.data(), words.size(), StateCodec::Fp32, StateCodec::Bf16, direct.data(), error),
+          "fp32 bytes to bf16 bytes in one pass");
+    check(two_step(fp32, words.size(), StateCodec::Fp32, StateCodec::Bf16, coded_ref, error), "the scratch path too");
+    check(direct == coded_ref, "and both write the same bf16 bytes");
+
+    check(state_transcode_bytes(direct.data(), words.size(), StateCodec::Bf16, StateCodec::Fp32, back.data(), error),
+          "bf16 bytes back to fp32 bytes in one pass");
+    check(two_step(direct, words.size(), StateCodec::Bf16, StateCodec::Fp32, widened_ref, error), "and the scratch path");
+    check(back == widened_ref, "both give the same fp32 bytes back");
+    bool shift_only = true;
+    for (size_t i = 0; i < words.size(); ++i) {
+        uint16_t h = 0;
+        uint32_t w = 0;
+        std::memcpy(&h, direct.data() + i * 2, 2);
+        std::memcpy(&w, back.data() + i * 4, 4);
+        if (w != (((uint32_t) h) << 16)) shift_only = false;
+    }
+    check(shift_only, "widening is exactly the shift: every fp32 word is the bf16 code with sixteen zero bits under it");
+
+    // a codec that is already the one asked for copies the bytes that array occupies, in both codecs
+    std::vector<uint8_t> same(fp32.size());
+    check(state_transcode_bytes(fp32.data(), words.size(), StateCodec::Fp32, StateCodec::Fp32, same.data(), error) &&
+          same == fp32, "fp32 to fp32 is the bytes it started with");
+    std::vector<uint8_t> same_coded(direct.size());
+    check(state_transcode_bytes(direct.data(), words.size(), StateCodec::Bf16, StateCodec::Bf16, same_coded.data(), error) &&
+          same_coded == direct, "bf16 to bf16 is the bytes it started with");
+
+    // small counts, odd counts, and nothing to convert
+    for (const size_t n : {size_t(0), size_t(1), size_t(2), size_t(3), size_t(5), size_t(17), size_t(1023)}) {
+        std::vector<uint8_t> d(n ? n * 2 : 1, 0xAA), r;
+        check(state_transcode_bytes(fp32.data(), n, StateCodec::Fp32, StateCodec::Bf16, d.data(), error) &&
+              two_step(fp32, n, StateCodec::Fp32, StateCodec::Bf16, r, error), "a small or odd count converts");
+        check(std::equal(r.begin(), r.end(), d.begin()), "and matches the scratch path at that count");
+        if (n == 0) check(d[0] == 0xAA, "nothing to convert writes nothing");
+        std::vector<uint8_t> d2(n ? n * 4 : 1, 0xBB), r2;
+        check(state_transcode_bytes(direct.data(), n, StateCodec::Bf16, StateCodec::Fp32, d2.data(), error) &&
+              two_step(direct, n, StateCodec::Bf16, StateCodec::Fp32, r2, error) &&
+              std::equal(r2.begin(), r2.end(), d2.begin()), "the same both ways round");
+        if (n == 0) check(d2[0] == 0xBB, "and writes nothing when there is nothing to convert");
+    }
+
+    // refusals, the same shape as the other two entry points
+    check(state_transcode_bytes(nullptr, 0, StateCodec::Fp32, StateCodec::Bf16, nullptr, error),
+          "a null pair with nothing to convert is not a failure");
+    check(!state_transcode_bytes(nullptr, 4, StateCodec::Fp32, StateCodec::Bf16, nullptr, error) && !error.empty(),
+          "a null array with values to convert fails and says why");
+    error.clear();
+    const auto unknown = (StateCodec) 2;
+    check(!state_transcode_bytes(fp32.data(), 4, unknown, StateCodec::Bf16, direct.data(), error) && !error.empty(),
+          "a codec this build does not have is refused as the source");
+    check(!state_transcode_bytes(fp32.data(), 4, StateCodec::Fp32, unknown, direct.data(), error) && !error.empty(),
+          "and as the destination, not silently copied");
+}
 } // namespace
 
 int main() {
@@ -157,6 +241,7 @@ int main() {
     accuracy();
     underflow();
     specials();
+    transcode();
 
     std::printf("state_codec_test: %d checks passed\n", checks);
 }

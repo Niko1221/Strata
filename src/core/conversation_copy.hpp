@@ -92,14 +92,15 @@ inline bool convert_state(const std::vector<uint8_t>& src, StateCodec from, std:
     const size_t fp32 = state_codec_fp32_bytes(src.size(), from);
     if (!fp32 && !src.empty()) { error = "state codec: an array that is not a whole number of values"; return false; }
     const size_t floats = fp32 / 4;
-    // built beside the source and swapped in: widening an array inside its own buffer would free it while reading it
+    // built beside the source and swapped in: widening an array inside its own buffer would free it while reading it,
+    // and this is called with one vector on both sides when a mount widens a checkpoint in place
     std::vector<uint8_t> out(state_codec_size(fp32, to), 0);
-    std::vector<float> scratch;
+    // one pass, source bytes to destination bytes: an fp32 scratch in between would be a full-size copy in and a
+    // full-size copy out of a conversion that is a round to eight significant bits one way and a shift the other
     for (size_t at = 0; at < floats; ) {
         const size_t n = std::min(kStateCodecChunkFloats, floats - at);
-        scratch.resize(n);
-        if (!state_decode(src.data() + state_codec_size(at * 4, from), n, from, scratch.data(), error)) return false;
-        if (!state_encode(scratch.data(), n, to, out.data() + state_codec_size(at * 4, to), error)) return false;
+        if (!state_transcode_bytes(src.data() + state_codec_size(at * 4, from), n, from, to,
+                                   out.data() + state_codec_size(at * 4, to), error)) return false;
         at += n;
         if (const long us = test_slow_copy_us(); us > 0) std::this_thread::sleep_for(std::chrono::microseconds(us));
         core::progress_beat();

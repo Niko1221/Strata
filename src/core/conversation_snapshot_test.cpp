@@ -306,6 +306,20 @@ void full_session(int fmt, int mode, int experts) {
         wide=a.checkpoints;
         check(conversation_checkpoints_widen(wide,err) && wide[0].gdn==a.checkpoints[0].gdn,
               "widening a chain that is already fp32 leaves every byte alone");
+        // a mount widens in place: the array it reads is the array it writes. The bytes must be the ones the same
+        // chain gives when it is held in a separate buffer, and they must be the same on a second pass.
+        {
+            std::vector<ConversationCheckpoint> inplace=c.checkpoints, stored;
+            check(conversation_checkpoints_store(c.checkpoints,StateCodec::Bf16,stored,err) &&
+                  conversation_checkpoints_widen(stored,err),
+                  "the same chain widened from a buffer of its own");
+            check(conversation_checkpoints_widen(inplace,err),
+                  "and the same chain widened in place, source and destination one vector");
+            check(stored[0].gdn==inplace[0].gdn && stored[0].ple==inplace[0].ple &&
+                  stored[0].tails==inplace[0].tails && stored[0].dead==inplace[0].dead &&
+                  stored[0].block_pos==inplace[0].block_pos && stored[0].state_codec==inplace[0].state_codec,
+              "both give the same fp32 bytes, over every slice of an array far larger than the chunk size");
+        }
         // a coded session file: version 2, and the streamed and captured paths still agree
         {
             SavedConversation meta; std::vector<SessionKvSource> sources;
