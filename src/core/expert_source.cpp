@@ -4668,43 +4668,49 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
               (why.empty() ? std::string{} : ": " + why);
         return false;
     }
-    // #285: unbuffered when the drive is read anyway and the file cache could not keep the experts for the next
-    // start either (a 64 GB PC); otherwise the buffered readers, which a warm restart serves from the cache
-    std::vector<std::string> files;
-    if (from_gguf) {
-        for (int64_t l = 0; l < n_layers; ++l)
-            for (int r = 0; r < 3; ++r) {
-                const std::string f = expert_gguf_file(gguf_, lay, l, r);
-                if (std::find(files.begin(), files.end(), f) == files.end()) files.push_back(f);
-            }
-    } else {
-        files.push_back(path);
-    }
-    std::string why;
-    const bool unbuffered = experts_unbuffered(files, want + (uint64_t) blob, why);
-    const int readers = unbuffered ? std::max(threads, 16) : threads;   // 16 keep a PCIe 5 drive's queue full
     LoadStats st;
-    std::atomic<int> ready{0};
-    std::thread reg;
-    if (deferred) {
-        int dev = 0;
-        cudaGetDevice(&dev);
-        reg = std::thread([a, &ready, dev] {
-            cudaSetDevice(dev);
-            a->register_slices(ready);
-        });
-    }
-    const std::atomic<int>* rp = deferred ? &ready : nullptr;
-    if (from_gguf) {
-        st = load_experts_gguf(gguf_, a->data(), lay, readers, unbuffered, rp, padded_ ? &pad_ : nullptr);
+    attached_ = a->shared_loaded;   // --shared-expert-arena: another engine loaded the file, nothing to read
+    if (attached_) {
+        st.bytes = want;
+        st.layers = (uint64_t) n_layers;
     } else {
-        if (unbuffered && !padded_) st = load_experts_direct(path, a->data(), loff, lbytes, readers, /*chunk=*/8u << 20, rp);
-        if (!unbuffered || padded_ || (!st.ok && st.error.empty()))   // unaligned ranges / the padded layout: the buffered reader
-            st = load_experts_ranges(path, a->data(), loff, lbytes, threads, /*chunk=*/8u << 20, rp, padded_ ? &pad_ : nullptr);
+        // #285: unbuffered when the drive is read anyway and the file cache could not keep the experts for the next
+        // start either (a 64 GB PC); otherwise the buffered readers, which a warm restart serves from the cache
+        std::vector<std::string> files;
+        if (from_gguf) {
+            for (int64_t l = 0; l < n_layers; ++l)
+                for (int r = 0; r < 3; ++r) {
+                    const std::string f = expert_gguf_file(gguf_, lay, l, r);
+                    if (std::find(files.begin(), files.end(), f) == files.end()) files.push_back(f);
+                }
+        } else {
+            files.push_back(path);
+        }
+        std::string why;
+        const bool unbuffered = experts_unbuffered(files, want + (uint64_t) blob, why);
+        const int readers = unbuffered ? std::max(threads, 16) : threads;   // 16 keep a PCIe 5 drive's queue full
+        std::atomic<int> ready{0};
+        std::thread reg;
+        if (deferred) {
+            int dev = 0;
+            cudaGetDevice(&dev);
+            reg = std::thread([a, &ready, dev] {
+                cudaSetDevice(dev);
+                a->register_slices(ready);
+            });
+        }
+        const std::atomic<int>* rp = deferred ? &ready : nullptr;
+        if (from_gguf) {
+            st = load_experts_gguf(gguf_, a->data(), lay, readers, unbuffered, rp, padded_ ? &pad_ : nullptr);
+        } else {
+            if (unbuffered && !padded_) st = load_experts_direct(path, a->data(), loff, lbytes, readers, /*chunk=*/8u << 20, rp);
+            if (!unbuffered || padded_ || (!st.ok && st.error.empty()))   // unaligned ranges / the padded layout: the buffered reader
+                st = load_experts_ranges(path, a->data(), loff, lbytes, threads, /*chunk=*/8u << 20, rp, padded_ ? &pad_ : nullptr);
+        }
+        if (reg.joinable()) reg.join();
+        std::fprintf(stderr, "strata generate: expert arena read %s (%s)\n", unbuffered ? "unbuffered" : "through the file cache",
+                     why.c_str());
     }
-    if (reg.joinable()) reg.join();
-    std::fprintf(stderr, "strata generate: expert arena read %s (%s)\n", unbuffered ? "unbuffered" : "through the file cache",
-                 why.c_str());
     if (!st.ok) {
         delete a;
         err = "ArenaExpertSource: the expert load was refused: " + (st.error.empty() ? std::string("unknown") : st.error);
@@ -4713,6 +4719,11 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     if (st.bytes != want) {
         delete a;
         err = "ArenaExpertSource: the load read " + std::to_string(st.bytes) + " B of " + std::to_string(want);
+        return false;
+    }
+    if (!a->shared_publish(err)) {   // --shared-expert-arena: loaded and checked - the waiting engines may attach
+        delete a;
+        err = "ArenaExpertSource: " + err;
         return false;
     }
     if (std::getenv("STRATA_VERIFY_ARENA") != nullptr) {   // tests: the loaded arena's checksum, any loader
@@ -4814,6 +4825,7 @@ void ArenaExpertSource::close() {
     base_ = nullptr;
     blobs_ = 0;
     n_expert_ = 0;
+    attached_ = false;
 }
 
 void ArenaExpertSource::prefetch(int64_t layer, int64_t expert) {

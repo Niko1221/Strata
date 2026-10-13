@@ -47,10 +47,13 @@ struct PinnedArena {
     /// Plan v0.3 P6: slices of different sizes (one per layer of a native pack), given as their start offsets
     /// followed by the end of the last one.  `slice_starts` holds the registered ones.
     /// `max_pinned_bytes`: optional cap on CUDA registration. 0 preserves the normal unrestricted path.
-    /// `shared_file`: on Linux, use a file-backed MAP_SHARED mapping instead of anonymous memory.
-    /// `shared_pack_hash` identifies the pack that is allowed to populate that backing.  The file carries a
-    /// small header and is refused when its stored hash does not match.  Empty `shared_file` preserves the
-    /// existing allocation path.  Population/coordination and backing-file lifetime remain the caller's job.
+    /// `shared_file`: on Linux, use a file-backed MAP_SHARED mapping instead of anonymous memory, shared by every
+    /// engine that names the same file.  `shared_pack_hash` identifies the pack the file holds (its header).  One
+    /// engine loads the file: `shared_loaded` is false for it, and it calls shared_publish() once the load
+    /// succeeded; until then the others wait in this constructor and then attach with `shared_loaded` true (nothing
+    /// to read).  An engine that dies while loading leaves the file to the next one, which loads it again.  A file
+    /// left for another pack or size is replaced when no engine maps it and refused while one does.  Empty
+    /// `shared_file` preserves the existing allocation path.
     PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, uint64_t max_pinned_bytes = 0,
                 const std::string& shared_file = {}, uint64_t shared_pack_hash = 0);
     /// Pin by need (STRATA_PIN_BY_NEED=1): register only the given byte ranges (offset, length), in the given order
@@ -66,6 +69,10 @@ struct PinnedArena {
     bool by_need = false;
     std::vector<std::pair<uint64_t, uint64_t>> pin_ranges;    ///< registered (offset, length), sorted by offset, page-rounded
     std::vector<std::pair<uint64_t, uint64_t>> locked_ranges; ///< the holes locked resident (offset, length)
+    /// --shared-expert-arena: marks the file loaded, so the engines waiting for it attach.  No-op otherwise.
+    bool shared_publish(std::string& err);
+    bool shared_loaded = false;      ///< the shared file already held the pack: the caller must not load it again
+    int shared_fd = -1;              ///< the shared file, kept open for its locks (closed by the destructor)
     /// #285: reserve only; the caller registers the slices with register_slices(), on a thread, while its readers
     /// fill the ones already registered (one registration of the whole arena cost ~2.5 s at 33 GiB of 4 KB pages).
     struct Deferred {};
