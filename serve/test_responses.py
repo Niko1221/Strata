@@ -533,6 +533,36 @@ class ToolRoundTrip(Server):
         self.assertEqual((call["namespace"], call["name"], json.loads(call["arguments"])),
                          ("mcp__websearch", "web_search", {"query": "strata"}))
 
+        # Two canonical names share this alias. It must not invoke the first namespace.
+        self.engine.scripts = [self.tok.encode(
+            "</think>\n\n<tool_call>\n<function=a__b__c>\n</function>\n</tool_call><|im_end|>",
+            parse_special=True)]
+        self.engine.script = self.engine.scripts[0]
+        tools = [{"type": "namespace", "name": "a", "tools": [{"type": "function", "name": "b__c"}]},
+                 {"type": "namespace", "name": "a__b", "tools": [{"type": "function", "name": "c"}]}]
+        for stream in (False, True):
+            code, r = self.post({"model": "m", "input": "go", "tools": tools, "stream": stream})
+            self.assertEqual(code, 200, r)
+            output = r[-1]["response"]["output"] if stream else r["output"]
+            call, = output
+            self.assertNotIn("namespace", call)
+            self.assertEqual(call["name"], "a__b__c")
+
+        # A declared exact name wins over alias spellings and keeps its string schema.
+        tools.append({"type": "function", "name": "a__b__c", "parameters": {
+            "type": "object", "properties": {"path": {"type": "string"}}}})
+        self.engine.scripts = [self.tok.encode(
+            "</think>\n\n<tool_call>\n<function=a__b__c>\n<parameter=path>\n123\n</parameter>\n"
+            "</function>\n</tool_call><|im_end|>", parse_special=True)]
+        self.engine.script = self.engine.scripts[0]
+        for stream in (False, True):
+            code, r = self.post({"model": "m", "input": "go", "tools": tools, "stream": stream})
+            self.assertEqual(code, 200, r)
+            output = r[-1]["response"]["output"] if stream else r["output"]
+            call, = output
+            self.assertNotIn("namespace", call)
+            self.assertEqual((call["name"], json.loads(call["arguments"])), ("a__b__c", {"path": "123"}))
+
     def test_namespace_and_custom_calls_come_back_under_their_own_names(self):
         self.engine.scripts = [self.tok.encode(
             "</think>\n\n<tool_call>\n<function=multi_agent_v1.spawn_agent>\n<parameter=message>\nhi\n</parameter>\n"
