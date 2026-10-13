@@ -98,6 +98,104 @@ class MaxTokens(unittest.TestCase):
         self.assertEqual(s2, 200)
         self.assertEqual(b["input_tokens"], n_in)
 
+    def test_legacy_completions_raw_prompt_nonstream_echo_and_stream(self):
+        prompt = "raw <|im_start|>user"
+        status, body = self.post("/v1/completions", {"model": "m", "prompt": prompt,
+                                                       "max_tokens": 16, "temperature": 0,
+                                                       "enable_thinking": False})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["object"], "text_completion")
+        self.assertTrue(body["choices"][0]["text"])
+        tail_len = len(self.svc.tok.encode(self.svc.template.gen_prompt_tail(False), parse_special=True))
+        self.assertEqual(body["usage"]["prompt_tokens"],                                                 # asked off: the tail
+                         len(self.svc.tok.encode(prompt, parse_special=True)) + tail_len)               # a chat render adds
+        status, echoed = self.post("/v1/completions", {"model": "m", "prompt": prompt, "max_tokens": 8,
+                                                        "temperature": 0, "enable_thinking": False,
+                                                        "echo": True})
+        self.assertEqual(status, 200)
+        self.assertTrue(echoed["choices"][0]["text"].startswith(prompt))
+        req = urllib.request.Request(self.base + "/v1/completions", data=json.dumps({
+            "model": "m", "prompt": "stream me", "max_tokens": 8, "temperature": 0,
+            "enable_thinking": False, "stream": True}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            stream = response.read().decode()
+        self.assertIn('"object": "text_completion"', stream)
+        self.assertIn('"usage"', stream)
+        self.assertIn("data: [DONE]", stream)
+
+    def test_legacy_completions_rejects_unsupported_shapes(self):
+        for body in ({"model": "m", "prompt": ["a"]}, {"model": "m", "prompt": "a", "n": 2},
+                     {"model": "m", "prompt": "a", "suffix": "b"}):
+            with self.subTest(body=body):
+                status, _ = self.post("/v1/completions", body)
+                self.assertEqual(status, 400)
+
+    def test_legacy_completions_honors_disabled_thinking(self):
+        cases = ({"reasoning_effort": "none"}, {"chat_template_kwargs": {"enable_thinking": False}},
+                 {"enable_thinking": False}, {"thinking": {"type": "disabled"}})
+        for options in cases:
+            seen = []
+            original = self.svc.run
+
+            def capture(ids, thinking, tools, max_new, sampling, cancel, force=None):
+                seen.append(thinking)
+                yield from original(ids, thinking, tools, max_new, sampling, cancel, force=force)
+
+            with self.subTest(options=options), mock.patch.object(self.svc, "run", side_effect=capture):
+                status, _ = self.post("/v1/completions", {"model": "m", "prompt": "raw", "max_tokens": 8,
+                                                           "temperature": 0, **options})
+                self.assertEqual(status, 200)
+                self.assertEqual(seen, [False])
+
+    def test_legacy_completions_stream_options_accepted_when_asked(self):
+        # include_usage is the only field OpenAI defines for it; the stream's usage chunk is there anyway
+        req = urllib.request.Request(self.base + "/v1/completions", data=json.dumps({
+            "model": "m", "prompt": "hi", "max_tokens": 8, "temperature": 0, "stream": True,
+            "stream_options": {"include_usage": True}}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            stream = response.read().decode()
+        self.assertIn('"usage"', stream)
+        self.assertIn("data: [DONE]", stream)
+        # it belongs to the stream: a non-stream request carrying it, or one carrying a field the
+        # API does not define, stays a 400
+        status, _ = self.post("/v1/completions", {"model": "m", "prompt": "hi", "max_tokens": 8,
+                                                  "temperature": 0, "stream_options": {"include_usage": False}})
+        self.assertEqual(status, 400)
+        status, _ = self.post("/v1/completions", {"model": "m", "prompt": "hi", "max_tokens": 8,
+                                                  "temperature": 0, "stream": True,
+                                                  "stream_options": {"include_thinking": True}})
+        self.assertEqual(status, 400)
+
+    def test_legacy_completions_thinking_off_appends_the_no_think_tail(self):
+        # the raw prompt passes through untouched; asked off, it gets the tail a chat render would add
+        # (and asked off when it already ends with either tail - thinking on or off - nothing is added)
+        tail_off_text = self.svc.template.gen_prompt_tail(False)
+        tail_on_text = self.svc.template.gen_prompt_tail(True)
+        encode = lambda text: list(self.svc.tok.encode(text, parse_special=True))  # noqa: E731
+        tail_off, tail_on = encode(tail_off_text), encode(tail_on_text)
+
+        def run_ids(body):
+            seen = []
+            original = self.svc.run
+
+            def capture(ids, thinking, tools, max_new, sampling, cancel, force=None):
+                seen.append(list(ids))
+                yield from original(ids, thinking, tools, max_new, sampling, cancel, force=force)
+
+            with mock.patch.object(self.svc, "run", side_effect=capture):
+                status, _ = self.post("/v1/completions", {"model": "m", "max_tokens": 8,
+                                                          "temperature": 0, **body})
+            self.assertEqual(status, 200)
+            return seen[0]
+
+        self.assertEqual(run_ids({"prompt": "hi", "enable_thinking": False}), encode("hi") + tail_off)
+        self.assertEqual(run_ids({"prompt": "hi"}), encode("hi"))        # not asked: untouched
+        self.assertEqual(run_ids({"prompt": "hi", "reasoning_effort": "none"}), encode("hi") + tail_off)
+        for tail in (tail_off_text, tail_on_text):                       # already ends with a tail: no second one
+            self.assertEqual(run_ids({"prompt": "hi" + tail, "enable_thinking": False}), encode("hi") + encode(tail))
+
     def test_request_line_parses_the_engine_summary(self):
         line = ("strata serve: prompt 1200 tokens = 1000 reused + 200 read in 50 ms (4000.0 tok/s), 30 generated in "
                 "300 ms (100.0 tok/s), drafts accepted 20 of 28, 2 checkpoints")
