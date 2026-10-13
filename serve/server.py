@@ -4205,7 +4205,7 @@ class Service:
             # one request at a time (more wait their turn), or "parallel": N batch slots (#465)
             "concurrency": {"serving": max(1, int(getattr(self.engine, "batch", 0) or 0)),
                             "requested": getattr(self, "requested_slots", max(1, int(getattr(self.engine, "batch", 0) or 0)))},
-            "dialects": ["/v1/chat/completions", "/v1/messages", "/v1/responses"],
+            "dialects": ["/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses"],
             "vision": {"enabled": images, "available": images, "error": None},
             "image_generation": self.images.status() if self.images is not None else {"enabled": False},
             "activity": {"requests": totals["requests"] + running,
@@ -6251,7 +6251,7 @@ def make_handler(svc: Service):
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
-                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
+                if path in ("/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)
                 if path == "/v1/responses":
                     self._responses(req)
@@ -6266,6 +6266,8 @@ def make_handler(svc: Service):
                     self._json(code, body)
                 elif path == "/v1/chat/completions":
                     self._openai(req)
+                elif path == "/v1/completions":
+                    self._completions(req)
                 elif path == "/v1/messages":
                     self._anthropic(req)
                 elif path == "/v1/messages/count_tokens":
@@ -6280,7 +6282,7 @@ def make_handler(svc: Service):
                            else {"error": {"type": "server_error", "message": str(e)}})
             except ValueError as e:
                 print(f"[strata] 400 invalid request: {e}", flush=True)
-                if path == "/v1/responses":
+                if path in ("/v1/responses", "/v1/completions"):
                     self._json(400, responses_error_body(str(e)))
                 else:
                     self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
@@ -6311,9 +6313,19 @@ def make_handler(svc: Service):
                                   "message": f"the request is malformed ({type(e).__name__}: {e})"}}
                 self._json(400, responses_error_body(body["error"]["message"]) if path == "/v1/responses" else body)
             except EngineDied as e:                          # before the answer started (not streamed)
-                self._json(503, {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}})
+                body = {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}}
+                if getattr(self, "answer_started", False):
+                    self._note(error=body["error"])
+                    self.wfile.write(b"data: " + json.dumps(body).encode() + b"\n\ndata: [DONE]\n\n")
+                else:
+                    self._json(503, body)
             except EngineStuck as e:                         # an unload or restart that could not end the engine
-                self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                body = {"error": {"type": "server_error", "message": str(e)}}
+                if getattr(self, "answer_started", False):
+                    self._note(error=body["error"])
+                    self.wfile.write(b"data: " + json.dumps(body).encode() + b"\n\ndata: [DONE]\n\n")
+                else:
+                    self._json(503, body)
 
             except ClientGone:                               # #1999: the client left while the request was prepared
                 self._note(outcome="disconnected")
@@ -6617,22 +6629,169 @@ def make_handler(svc: Service):
                 self._note(outcome="disconnected")
                 svc.note_client_disconnect(cancel)           # client went away: stop the engine
                 chunks.close()
-            except EngineDied as e:                          # mid-stream: say so, then end the stream properly
+            except (EngineDied, EngineStuck) as e:
                 err = {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}}
                 self._note(error=err["error"])
-                self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
+
+                try:
+                    self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
+                except OSError:
+                    self._note(outcome="disconnected")
             except QueueWaitExpired as e:
                 err = {"error": {"type": "rate_limit_error", "code": "queue_wait_timeout", "message": str(e)}}
                 self._note(error=err["error"])
-                self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
+                try:
+                    self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
+                except OSError:
+                    self._note(outcome="disconnected")
+            except ValueError as e:
+                err = {"error": {"type": "server_error", "message": str(e)}}
+                self._note(error=err["error"])
+                try:
+                    self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
+                except OSError:
+                    self._note(outcome="disconnected")
+
+        def _completions(self, req):
+            """OpenAI legacy text completions over a caller-tokenized prompt (no chat template)."""
+            req = svc.with_shared(req, "openai")
+            prompt = req.get("prompt")
+            if not isinstance(prompt, str):
+                raise ValueError("prompt must be a string")
+            for key in ("n", "best_of"):
+                value = req.get(key, 1)
+                if value != 1:
+                    raise ValueError(f"{key} must be 1 (the server generates one sequence at a time)")
+            if req.get("suffix") not in (None, ""):
+                raise ValueError("suffix is not supported")
+            if req.get("logprobs") is not None:
+                raise ValueError("logprobs are not supported")
+            stream_options = req.get("stream_options")
+            if stream_options is not None:
+                if not isinstance(stream_options, dict) or set(stream_options) - {"include_usage"}:
+                    raise ValueError("stream_options supports only include_usage")
+                if not req.get("stream"):
+                    raise ValueError("stream_options are only supported with stream: true")
+            _, _, template_kwargs = openai_to_messages({**req, "messages": []})
+            thinking = template_kwargs.get("enable_thinking", True) is not False
+            if req.get("enable_thinking") is False or req.get("thinking") is False:
+                thinking = False
+            thinking_cfg = req.get("thinking")
+            if isinstance(thinking_cfg, dict) and thinking_cfg.get("type") == "disabled":
+                thinking = False
+            bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
+            ids = svc.tok.encode(prompt, parse_special=True)
+            if thinking is False:                        # passthrough stays untouched when thinking is on; asked off,
+                tail = svc.tok.encode(svc.template.gen_prompt_tail(False), parse_special=True)   # the prompt gets the tail
+                tail_on = svc.tok.encode(svc.template.gen_prompt_tail(True), parse_special=True)  # a chat render adds
+                if tail and ids[-len(tail):] != tail and ids[-len(tail_on):] != tail_on:
+                    ids = ids + tail
+            try:
+                max_new = int(req.get("max_tokens") or 0)
+            except (TypeError, ValueError):
+                raise ValueError("max_tokens must be a whole number")
+            bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
+            svc.reasoning_budget(req)
+            stop_strings(req)
+            check_request_sampling(req)
+            cancel = threading.Event()
+            self._watch_client(cancel)
+            svc.load()
+            model = svc.model_for(req)
+            cid, created = "cmpl-" + uuid.uuid4().hex[:24], int(time.time())
+            max_new = max_new if max_new > 0 else None
+            ctx = svc.engine.max_context
+            if ctx <= 0:
+                ctx = getattr(svc.engine, "known_ctx", 0)
+            if ctx <= 0:
+                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
+            room = ctx - CTX_SLACK - len(ids)
+            if room < 1:
+                raise ValueError("request exceeds the context window: prompt leaves no room to answer")
+            if max_new is None:
+                max_new = room
+            elif max_new > room:
+                if not svc.fit_max_tokens:
+                    raise ValueError(f"request exceeds the context window: prompt + max_tokens exceeds context "
+                                     f"(at most {room} tokens here)")
+                max_new = room
+
+            def chunks():
+                completion_tokens = 0
+                content = []
+                try:
+                    for kind, value in svc.run(ids, thinking, None, max_new, req, cancel):
+                        if kind == "ping":
+                            yield None
+                        elif kind == "event":
+                            if value.kind in ("content", "reasoning") and value.text:
+                                content.append(value.text)
+                                yield {"id": cid, "object": "text_completion", "created": created, "model": model,
+                                       "choices": [{"text": value.text, "index": 0, "logprobs": None,
+                                                    "finish_reason": None}]}
+                        elif kind == "done":
+                            completion_tokens = value["completion_tokens"]
+                            text = "".join(content)
+                            yield {"id": cid, "object": "text_completion", "created": created, "model": model,
+                                   "choices": [{"text": (prompt if req.get("echo") else "") + text, "index": 0,
+                                                "finish_reason": {"cancel": "stop"}.get(value["finish"], value["finish"])}],
+                                   "usage": {"prompt_tokens": len(ids), "completion_tokens": completion_tokens,
+                                             "total_tokens": len(ids) + completion_tokens}}
+                finally:
+                    cancel.set() if self.watch_done is None else None
+
+            stream = bool(req.get("stream"))
+            if not stream:
+                text = []
+                last = None
+                for item in chunks():
+                    if item is not None:
+                        if "usage" in item:
+                            last = item
+                        else:
+                            text.append(item["choices"][0]["text"])
+                result = last or {"id": cid, "object": "text_completion", "created": created, "model": model,
+                                  "choices": [{"index": 0, "text": "", "logprobs": None, "finish_reason": "length"}],
+                                  "usage": {"prompt_tokens": len(ids), "completion_tokens": 0, "total_tokens": len(ids)}}
+                result["choices"][0]["text"] = (prompt if req.get("echo") else "") + "".join(text)
+                self._json(200, result)
+                return
+            self._sse()
+            stream_chunks = chunks()
+            try:
+                for item in stream_chunks:
+                    if item is None:
+                        self.wfile.write(b": keep-alive\n\n")
+                    else:
+                        self.wfile.write(b"data: " + json.dumps(item, ensure_ascii=False).encode() + b"\n\n")
+                    self.wfile.flush()
+                self.wfile.write(b"data: [DONE]\n\n")
+            except OSError:
+                self._note(outcome="disconnected")
+                cancel.set()
+                stream_chunks.close()
+            except (EngineDied, EngineStuck) as e:           # mid-stream: say so, then end the stream properly
+                err = {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}}
+                self._note(error=err["error"])
+                try:
+                    self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
+                except OSError:
+                    self._note(outcome="disconnected")
+
             except StructuredOutputError as e:
                 err = {"error": {"type": "structured_output_failed", "code": "structured_output_failed", "message": str(e)}}
                 self._note(error=err["error"])
-                self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
+                try:
+                    self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
+                except OSError:
+                    self._note(outcome="disconnected")
             except ValueError as e:                          # the engine's ERR after the stream started: the
                 err = {"error": {"type": "server_error", "message": str(e)}}   # headers are sent, so no 400 now
                 self._note(error=err["error"])
-                self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
+                try:
+                    self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
+                except OSError:
+                    self._note(outcome="disconnected")
 
         def _responses_ready(self, req, events):
             """Send a finished Responses result that did not run on the engine."""

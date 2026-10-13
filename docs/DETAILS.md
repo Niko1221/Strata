@@ -809,6 +809,7 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | API | Endpoint |
 | --- | --- |
 | OpenAI Chat Completions (stream and non-stream, tools) | `POST /v1/chat/completions` |
+| OpenAI text completions (stream and non-stream, raw prompt) | `POST /v1/completions` |
 | Anthropic Messages (stream and non-stream, tools) | `POST /v1/messages` |
 | OpenAI Responses (stream and non-stream, tools; stateless, [below](#the-responses-api-and-codex-cli)) | `POST /v1/responses` |
 | Model list / health | `GET /v1/models`, `GET /models`, `GET /health` |
