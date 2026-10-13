@@ -649,6 +649,9 @@ struct Options {
     /// --serve: a prompt read from token 0 is also checkpointed at its first turn boundary - the end of the system
     /// prompt, which every chat of the same client shares - when that is at least N tokens (0 = never)
     int64_t prompt_cache_root = 2048;
+    /// --serve (opt-in): keep the last N system-prompt roots apart from the conversations, so a new chat mounts
+    /// through one whichever conversation made it (0 = off: a root lives only in the chain it was made in)
+    int64_t prompt_cache_roots = 0;
     /// --serve: the token that opens a chat turn (<|im_start|>).  The last one in a prompt is where the chat's
     /// history ends and the new assistant turn begins, which is the checkpoint the next request can reuse.
     int64_t turn_token = 248045;
@@ -812,6 +815,9 @@ void usage() {
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
                  "  --prompt-cache-tail  --serve, single GPU: one extra checkpoint near the prompt's end, at an existing\n"
                  "                       chunk boundary (default off; requires --prompt-cache and --prompt-cache-every > 0)\n"
+                 "  --prompt-cache-roots N  --serve (opt-in): keep the last N system-prompt checkpoints apart from the\n"
+                 "                       conversations, so with --batch a new chat still starts after the system prompt\n"
+                 "                       (default 0 = off; ~118 MB of RAM each)\n"
                  "  --turn-token ID      --serve: the token that opens a chat turn (default 248045, <|im_start|>)\n"
                  "  --tail-role-token ID --serve: a turn of this role right before the last turn is left out of\n"
                  "                       the conversation checkpoint (a trailing effort turn; default -1 = off)\n"
@@ -2126,6 +2132,7 @@ int main(int argc, char** argv) {
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
+        else if (a == "--prompt-cache-roots") o.prompt_cache_roots = std::max(0LL, std::atoll(next("--prompt-cache-roots")));
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
         else if (a == "--tail-role-token") o.tail_role_token = std::atoll(next("--tail-role-token"));
         else if (a == "--short-read") o.short_read = std::max(0LL, std::atoll(next("--short-read")));
@@ -8131,6 +8138,9 @@ int main(int argc, char** argv) {
         bool nan_flush = false;
         std::vector<ConvCheckpoint> checks;
         uint64_t check_clock = 0;   // the checkpoints' LRU clock; creation and every use advance it
+        // --prompt-cache-roots: copies of the last system-prompt roots, whichever chain made them (conv_cache.hpp)
+        strata::program::conv_cache::SharedRoots<ConvCheckpoint> shared_roots(
+            o.prompt_cache > 0 ? (size_t) o.prompt_cache_roots : 0);
         int64_t tail_ckpt_len = -1;   // --prompt-cache-tail: the length of the one tail checkpoint alive (-1 = none)
         bool cvec_cached = true;   // the control vector's state the live session and the checkpoints were read with
         // without --mtp the conversation cache stays on: a parked image carries the draft layer's K/V only when there is one
@@ -10899,6 +10909,7 @@ int main(int argc, char** argv) {
                 checks.clear();
                 tail_ckpt_len = -1;
                 const size_t n_parked = conversations.clear();
+                shared_roots.clear();
                 size_t n_slots = 0, n_running = 0;
                 for (BSlot& sl : bs)
                     if (sl.active) {   // a running slot finishes its reply, but is not kept as a cache after it
@@ -10916,6 +10927,36 @@ int main(int argc, char** argv) {
                              n_checks == 1 ? "" : "s", n_parked, n_parked == 1 ? "" : "s", n_slots,
                              n_slots == 1 ? "" : "s", n_running, n_running == 1 ? "" : "s");
             }
+            // --prompt-cache-roots: a kept root goes back into the main chain (at its front, where retention pins it) when
+            // the main session's cells hold its tokens - they hold `live` when `cells`, and every checkpoint's own -
+            // and this prompt starts with them.  It is the same state the chain's own root was, which a slot took
+            // with it (conv_cache.hpp).
+            auto seed_root = [&](bool cells) {
+                if (!shared_roots.enabled() || want_cvec != cvec_cached) return;
+                const ConvCheckpoint* r = shared_roots.find(want_cvec, [&](const ConvCheckpoint& k) {
+                    const size_t L = k.ids.size();
+                    if (!starts_with(k.ids, k.imgs)) return false;
+                    for (const ConvCheckpoint& c : checks)
+                        if (c.ids.size() == L && c.ids == k.ids) return false;   // the chain has it
+                    if (cells && L <= live.size() && std::equal(k.ids.begin(), k.ids.end(), live.begin()) &&
+                        imgs_below(live_imgs, (int64_t) L) == k.imgs)
+                        return true;
+                    for (const ConvCheckpoint& c : checks)
+                        if (c.ids.size() > L && std::equal(k.ids.begin(), k.ids.end(), c.ids.begin()) &&
+                            imgs_below(c.imgs, (int64_t) L) == k.imgs)
+                            return true;
+                    return false;
+                });
+                if (r == nullptr) return;
+                auto at = checks.begin();   // the chain stays in length order: in practice it is the shortest, index 0
+                while (at != checks.end() && at->ids.size() < r->ids.size()) ++at;
+                at = checks.insert(at, *r);
+                at->used = ++check_clock;
+                std::fprintf(stderr, "strata serve: shared root: %zu tokens back in the conversation chain\n",
+                             r->ids.size());
+            };
+            try { seed_root(live_ok); }
+            catch (const std::bad_alloc&) { std::fprintf(stderr, "strata serve: shared root: allocation failed; skipped\n"); }
             int64_t resume = 0;
             bool from_live = false;
             if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
@@ -10932,6 +10973,22 @@ int main(int argc, char** argv) {
             int64_t slot_tokens = 0;
             bool resumed_from0 = false;   // a prompt read parked in a slot (BYIELD) that had started at token 0
             const ConvCheckpoint* slot_ck = nullptr;   // the slot's checkpoint the prompt continues from (else its end)
+            // --prompt-cache-roots: a kept root whose tokens an idle slot holds is a source too - the slot's K/V up to
+            // it is copied back and the root's state restored, as for one of the slot's own checkpoints
+            auto slot_holds = [&](const BSlot& sl, const ConvCheckpoint& r) {
+                return !sl.active && sl.cached && !sl.img && sl.cvec == want_cvec && sl.ids.size() > r.ids.size() &&
+                       std::equal(r.ids.begin(), r.ids.end(), sl.ids.begin());
+            };
+            const ConvCheckpoint* slot_root = nullptr;
+            if (o.prompt_cache > 0 && req_imgs.empty() && shared_roots.enabled())
+                slot_root = shared_roots.find(want_cvec, [&](const ConvCheckpoint& r) {
+                    if ((int64_t) r.ids.size() <= resume || !r.imgs.empty() || !starts_with(r.ids, {}) ||
+                        r.stage_parts.size() != stages.size())
+                        return false;
+                    for (const BSlot& sl : bs)
+                        if (slot_holds(sl, r)) return true;
+                    return false;
+                });
             if (o.prompt_cache > 0 && req_imgs.empty())
                 for (int b = 0; b < (int) bs.size(); ++b) {
                     const BSlot& sl = bs[(size_t) b];
@@ -10940,6 +10997,12 @@ int main(int argc, char** argv) {
                         slot_source = b;
                         slot_tokens = (int64_t) sl.ids.size();
                         slot_ck = nullptr;
+                    }
+                    if (slot_root != nullptr && (int64_t) slot_root->ids.size() > std::max(resume, slot_tokens) &&
+                        slot_holds(sl, *slot_root)) {
+                        slot_source = b;
+                        slot_tokens = (int64_t) slot_root->ids.size();
+                        slot_ck = slot_root;
                     }
                     for (const ConvCheckpoint& c : sl.checks)
                         if ((int64_t) c.ids.size() > std::max(resume, slot_tokens) && starts_with(c.ids, c.imgs)) {
@@ -11024,6 +11087,7 @@ int main(int argc, char** argv) {
                 std::printf("ERR %s\n", err.c_str());
                 return 1;
             }
+            bool restored = false;   // a slot or a parked conversation was restored: the cells hold `live`
             if (slot_source >= 0) {
                 const auto t0 = Clock::now();
                 if (!copy_from_slot(slot_source, slot_ck, err)) {
@@ -11055,9 +11119,11 @@ int main(int argc, char** argv) {
                     live_imgs.clear();
                     resume = slot_tokens;
                     from_live = true;
+                    restored = true;
                     std::fprintf(stderr, "strata batch: slot %d gave back %lld tokens of this conversation (%s) in "
                                  "%.1f ms\n", slot_source, (long long) slot_tokens,
-                                 slot_ck != nullptr ? "its turn checkpoint" : "all it holds",
+                                 slot_ck == nullptr ? "all it holds" : slot_ck == slot_root ? "a shared root"
+                                                                                    : "its turn checkpoint",
                                  std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
                 }
             }
@@ -11112,6 +11178,7 @@ int main(int argc, char** argv) {
                     if (!strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear();
                 }
                 cvec_cached = incoming->cvec;
+                restored = true;
                 resume = parked.tokens;
                 from_live = parked.live;
                 if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
@@ -11125,6 +11192,10 @@ int main(int argc, char** argv) {
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes());
             }
+            // the restored chain keeps the shared root too, for the next new chat (the main session's cells now hold
+            // `live` when a slot or a parked conversation was restored)
+            try { seed_root(live_ok || restored); }
+            catch (const std::bad_alloc&) { std::fprintf(stderr, "strata serve: shared root: allocation failed; skipped\n"); }
             if (want_cvec != cvec_cached) {
                 live_ok = false;
                 checks.clear();
@@ -11814,6 +11885,18 @@ int main(int argc, char** argv) {
                     std::printf("ERR saving a conversation checkpoint failed%s\n", ckpt_why.c_str());
                     return 1;
                 }
+                if (to == root_at && shared_roots.enabled())
+                    for (const ConvCheckpoint& c : checks)
+                        if ((int64_t) c.ids.size() == root_at) {
+                            try {
+                                if (shared_roots.keep(c, cvec_cached))
+                                    std::fprintf(stderr, "strata serve: shared root: kept %lld tokens (%zu kept)\n",
+                                                 (long long) root_at, shared_roots.size());
+                            } catch (const std::bad_alloc&) {
+                                std::fprintf(stderr, "strata serve: shared root: allocation failed; not kept\n");
+                            }
+                            break;
+                        }
                 if (to == pin_at && !pin_checkpoint(pin_at))
                     std::fprintf(stderr, "strata serve: pin=%lld: its checkpoint was not kept\n", (long long) pin_at);
                 if (trace && to == message_at)

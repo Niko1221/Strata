@@ -138,6 +138,14 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
   engine copies its state back (50-60 ms for a short conversation) instead of reading the history again - also for
   a client that drops the reply's thinking from the history (the checkpoint matches up to the new turn). A new
   conversation takes an empty slot, else the one used longest ago.
+- **A new chat and the system-prompt checkpoint** (`--prompt-cache-roots N`, opt-in). A slot keeps only its turn
+  checkpoint, and a request that continues from a slot takes over that checkpoint alone, so after a few turns of
+  any chat the engine no longer holds the checkpoint at the end of the system prompt, and the next new chat of the same
+  client reads its whole system prompt again. With the option the engine keeps a copy of the last N such checkpoints
+  apart from the conversations (one per distinct system prompt, ~118 MB of RAM each), and a new chat starts after its
+  system prompt from the main session or from any idle slot that holds those tokens. The log says
+  `shared root: kept` when one is copied and `shared root: ... back in the conversation chain` or `a shared root`
+  when one is used.
 - Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 
