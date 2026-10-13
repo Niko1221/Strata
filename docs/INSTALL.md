@@ -57,6 +57,12 @@ the build tools), and the same start: `http://127.0.0.1:8080`. Later runs of `./
 start the model directly; `./setup.sh --setup` installs another model or changes the settings. Other distributions,
 WSL and compiling: [details](DETAILS.md#linux).
 
+On Nix/NixOS, you can use the flake:
+
+```bash
+nix develop -c ./setup.sh
+```
+
 ## AMD cards
 
 The steps are the same as with NVIDIA: `START-HERE.bat` on Windows, `./setup.sh` on Linux. Setup finds the Radeon
