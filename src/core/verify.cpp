@@ -178,6 +178,9 @@ const bool g_coherent = env_on("STRATA_VERIFY_COHERENT");
 const bool g_doorbell_store = env_on("STRATA_DOORBELL_STORE");
 #endif
 const bool g_trace = env_on("STRATA_VERIFY_TRACE");
+// dev STRATA_NO_PCIE_GROUP=1 (with --pcie-frac 0): the window graph has no PCIe-share stage (flag B wait, staging copy,
+// grouped launch): with no share they only ever see zero groups
+const bool g_no_pcie_group = env_on("STRATA_NO_PCIE_GROUP");
 const bool g_no_multi_gr = env_on("STRATA_NO_MULTI_GR");   // #783 PR-g: per-token GR reads/writes and generic-T kernels again
 const bool g_no_batch_kv = env_on("STRATA_NO_BATCH_KV_STEP");   // #783 PR-d: per-token K/V and indexer appends again
 
@@ -1606,6 +1609,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             stamp(l, 19, grp);
             grouped(p_ptr, p_start, p_counts, 0, hit_out);
             stamp(l, 20, grp);
+            if (!g_no_pcie_group) {
             if (device_plan_) wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
             else wait_flag_ge(m_flagB_, ring, cs);                 // the PCIe share is in staging (DMA) or mapped
             if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
@@ -1618,6 +1622,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             // the PCIe share is pcie_frac of the misses: a few groups when the cache is cold, usually none (always none at
             // pcie_frac 0), so its launch is kPcieGroupRows block rows striding over the groups, not cap of them
             grouped(p_ptr2, p_start2, p_counts + 2, kPcieGroupRows, hit_out);
+            }
             stamp(l, 22, grp);
             if (device_plan_) {   // no CPU share when the device planned the group: its rows are zeros
                 wait_flag_ge_or(m_flag_, ring, skip_ + grp, cs);
@@ -2244,6 +2249,13 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,
                  h_ymiss_ + (size_t) tb * ss.k * g.n_embd, l);
         if (remote_opt_) remote_opt_->end();
+        if (g_no_pcie_group && *(volatile uint32_t*) h_flagA_ == want && sink_.counts != nullptr && sink_.counts[2] > 0) {
+            std::fprintf(stderr, "strata verify: STRATA_NO_PCIE_GROUP=1 needs --pcie-frac 0 (layer %lld planned %d PCIe experts)\n",
+                         (long long) l, (int) sink_.counts[2]);
+            std::fflush(stderr);
+            release_gpu_waits(5000);
+            std::abort();
+        }
         VDBG("layer %lld served\n", (long long) l);
         if (g_trace) trace_ev(*(volatile uint32_t*) h_flagA_ == want ? "SERVED" : "SERVED-NO-PLAN-YET", k, l,
                               (int64_t) ms_since(b));   // aux: ms the CPU experts took
