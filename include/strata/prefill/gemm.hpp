@@ -91,7 +91,8 @@ private:
 
 /// HIP on gfx103x (RDNA2), for the current device: rocBLAS's tuned GEMMs there are FP16 in -> FP16 out only (FP16 or
 /// BF16 in -> FP32 out runs ~6x slower), so the prompt path's 16-bit GEMMs run in FP16 (Gemm::set_f16_io,
-/// set_act_f16).  Cached per device (a layer split can mix cards).  STRATA_HIP_PROMPT_F16=0/1 overrides.
+/// set_act_f16). Cached per device (a layer split can mix cards). `STRATA_HIP_PROMPT_F16=1` enables gfx103x only;
+/// `=0` disables it and `=all` is an explicit all-device override.
 bool prompt_f16();
 
 

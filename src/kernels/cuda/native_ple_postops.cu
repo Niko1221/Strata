@@ -217,9 +217,35 @@ void validate(Span span) {
     if (!p || p % span.alignment || p > std::numeric_limits<uintptr_t>::max() - span.bytes)
         throw std::invalid_argument("native PLE postops require nonnull aligned bounded spans");
 }
-void launch_check() {
+#if defined(STRATA_USE_HIP)
+std::string launch_context(void* stream) {
+    int device = -1;
+    (void) cudaGetDevice(&device);
+    std::string context = " on device " + std::to_string(device);
+    if (device >= 0) {
+        cudaDeviceProp prop{};
+        if (cudaGetDeviceProperties(&prop, device) == cudaSuccess)
+            context += " (" + std::string(prop.gcnArchName) + ")";
+    }
+    int stream_device = -1;
+    const hipError_t stream_error = hipStreamGetDevice(static_cast<hipStream_t>(stream), &stream_device);
+    context += stream_error == hipSuccess ? ", stream device " + std::to_string(stream_device)
+                                          : ", stream device unavailable (" + std::string(hipGetErrorString(stream_error)) + ")";
+    return context;
+}
+#endif
+void launch_check(const char* kernel = "launch", void* stream = nullptr) {
     const auto error = cudaGetLastError();
-    if (error != cudaSuccess) throw std::runtime_error(std::string("native PLE postops launch: ") + cudaGetErrorString(error));
+    if (error != cudaSuccess) {
+#if defined(STRATA_USE_HIP)
+        throw std::runtime_error(std::string("native PLE postops ") + kernel + " launch" + launch_context(stream) +
+                                 ": HIP error " + std::to_string((int) error) + " (" + cudaGetErrorString(error) + ")");
+#else
+        (void) kernel;
+        (void) stream;
+        throw std::runtime_error(std::string("native PLE postops launch: ") + cudaGetErrorString(error));
+#endif
+    }
 }
 } // namespace
 
@@ -246,11 +272,14 @@ void native_ple_postops(const float* projected_key, const float* hidden,
     native_gr_rms_norm_weighted(hidden,w.norm_query,b.query,N,H,NG_RMS_EPS,stream);
     auto st = static_cast<cudaStream_t>(stream);
     gate_kernel<<<H,512,0,st>>>(b.key,b.query,b.gate,1.0f / std::sqrt(float(N)));
+#if defined(STRATA_USE_HIP)
+    launch_check("gate", stream);
+#endif
     broadcast_kernel<<<D/256,256,0,st>>>(value,b.gate,b.gated);
-    launch_check();
+    launch_check("broadcast", stream);
     native_gr_rms_norm_weighted(b.gated,w.norm_conv,b.normalized,N,H,NG_RMS_EPS,stream);
     conv_residual_kernel<<<D/256,256,0,st>>>(history,b.normalized,w.conv1d_f16,hidden,b.gated,b.conv,b.result);
-    launch_check();
+    launch_check("conv_residual", stream);
 }
 
 void native_ple_postops_batch(float* key, float* hidden, const float* value, float* history, const PleWeights& w,
@@ -261,13 +290,31 @@ void native_ple_postops_batch(float* key, float* hidden, const float* value, flo
     const unsigned rows = unsigned(T) * H;
     const unsigned blocks = unsigned((size_t(T) * D + 255) / 256);
     rms_rep_kernel<<<rows, 1024, 0, st>>>(key, w.norm_key, key);
+#if defined(STRATA_USE_HIP)
+    launch_check("batch key norm", stream);
+#endif
     rms_rep_kernel<<<rows, 1024, 0, st>>>(hidden, w.norm_query, query_norm);
+#if defined(STRATA_USE_HIP)
+    launch_check("batch query norm", stream);
+#endif
     gate_kernel<<<rows, 512, 0, st>>>(key, query_norm, gate, 1.0f / std::sqrt(float(N)));
+#if defined(STRATA_USE_HIP)
+    launch_check("batch gate", stream);
+#endif
     broadcast_batch_kernel<<<blocks, 256, 0, st>>>(value, gate, gated, T);
+#if defined(STRATA_USE_HIP)
+    launch_check("batch broadcast", stream);
+#endif
     rms_rep_kernel<<<rows, 1024, 0, st>>>(gated, w.norm_conv, query_norm);
+#if defined(STRATA_USE_HIP)
+    launch_check("batch gated norm", stream);
+#endif
     conv_residual_batch_kernel<<<blocks, 256, 0, st>>>(history, query_norm, w.conv1d_f16, hidden, gated, T);
+#if defined(STRATA_USE_HIP)
+    launch_check("batch conv_residual", stream);
+#endif
     history_batch_kernel<<<D / 256, 256, 0, st>>>(history, query_norm, T);
-    launch_check();
+    launch_check("batch history", stream);
 }
 
 void native_ple_postops_batch_snap(float* key, float* hidden, const float* value, float* history, const PleWeights& w,
@@ -278,12 +325,30 @@ void native_ple_postops_batch_snap(float* key, float* hidden, const float* value
     const unsigned rows = unsigned(T) * H;
     const unsigned blocks = unsigned((size_t(T) * D + 255) / 256);
     rms_rep_rt_kernel<<<rows, 1024, 0, st>>>(key, w.norm_key, key, N, NG_RMS_EPS);
+#if defined(STRATA_USE_HIP)
+    launch_check("batch snap key norm", stream);
+#endif
     rms_rep_rt_kernel<<<rows, 1024, 0, st>>>(hidden, w.norm_query, query_norm, N, NG_RMS_EPS);
+#if defined(STRATA_USE_HIP)
+    launch_check("batch snap query norm", stream);
+#endif
     gate_kernel<<<rows, 512, 0, st>>>(key, query_norm, gate, 1.0f / std::sqrt(float(N)));
+#if defined(STRATA_USE_HIP)
+    launch_check("batch snap gate", stream);
+#endif
     broadcast_batch_kernel<<<blocks, 256, 0, st>>>(value, gate, gated, T);
+#if defined(STRATA_USE_HIP)
+    launch_check("batch snap broadcast", stream);
+#endif
     rms_rep_rt_kernel<<<rows, 1024, 0, st>>>(gated, w.norm_conv, query_norm, N, NG_RMS_EPS);
+#if defined(STRATA_USE_HIP)
+    launch_check("batch snap gated norm", stream);
+#endif
     conv_residual_batch_kernel<<<blocks, 256, 0, st>>>(history, query_norm, w.conv1d_f16, hidden, gated, T);
+#if defined(STRATA_USE_HIP)
+    launch_check("batch snap conv_residual", stream);
+#endif
     history_batch_snap_kernel<<<D / 256, 256, 0, st>>>(history, query_norm, T, snap);
-    launch_check();
+    launch_check("batch snap history", stream);
 }
 } // namespace strata::kernels

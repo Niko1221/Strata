@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 namespace strata::prefill {
 namespace {
@@ -68,9 +69,38 @@ __device__ float block_sum(float v, float* sh) {
     __syncthreads();
     return sh[0];
 }
-void check(const char* what) {
+#if defined(__HIPCC__)
+std::string hip_context(void* stream) {
+    int device = -1, stream_device = -1;
+    (void) hipGetDevice(&device);
+    std::string context = "HIP device " + std::to_string(device);
+    if (device >= 0) {
+        hipDeviceProp_t prop{};
+        if (hipGetDeviceProperties(&prop, device) == hipSuccess)
+            context += " " + std::string(prop.gcnArchName);
+    }
+    const hipError_t se = hipStreamGetDevice(static_cast<hipStream_t>(stream), &stream_device);
+    context += se == hipSuccess ? ", stream device " + std::to_string(stream_device)
+                                : ", stream device unavailable (" + std::string(hipGetErrorString(se)) + ")";
+    return context;
+}
+#endif
+void check(const char* what, void* stream = nullptr) {
     const cudaError_t e = cudaGetLastError();
-    if (e != cudaSuccess) { std::fprintf(stderr, "prefill %s: %s\n", what, cudaGetErrorString(e)); std::exit(1); }
+    if (e != cudaSuccess) {
+#if defined(__HIPCC__)
+        if (stream) {
+            std::fprintf(stderr, "prefill %s: HIP error %d (%s), %s\n", what, (int) e, cudaGetErrorString(e),
+                         hip_context(stream).c_str());
+        } else {
+            std::fprintf(stderr, "prefill %s: %s\n", what, cudaGetErrorString(e));
+        }
+#else
+        (void) stream;
+        std::fprintf(stderr, "prefill %s: %s\n", what, cudaGetErrorString(e));
+#endif
+        std::exit(1);
+    }
 }
 unsigned blocks_for(int64_t n, int t = 256) { return (unsigned) ((n + t - 1) / t); }
 
@@ -1884,8 +1914,17 @@ void gr_write_cvec_norm_rs(float* R, const float* bo, const float* inj, int64_t 
     check("gr_write_cvec_norm_rs");
 }
 void gr_silu(const float* lo, uint16_t* lo16, int64_t T, void* stream, uint16_t* lo16_lo) {
+#if defined(__HIPCC__)
+    // Surface a deferred hipBLAS failure before queueing this kernel, rather than blaming gr_silu for it.
+    const cudaError_t prior = cudaGetLastError();
+    if (prior != cudaSuccess) {
+        std::fprintf(stderr, "prefill gr_silu: pending HIP error before kernel launch: %d (%s), %s\n", (int) prior,
+                     cudaGetErrorString(prior), hip_context(stream).c_str());
+        std::exit(1);
+    }
+#endif
     gr_silu_kernel<<<blocks_for(T * LR), 256, 0, (cudaStream_t) stream>>>(lo, lo16, lo16_lo, T * LR);
-    check("gr_silu");
+    check("gr_silu", stream);
 }
 void gr_mix(const float* xn, const float* gated, float* mixed, uint16_t* mixed16, int64_t T, void* stream,
             uint16_t* mixed_h, uint16_t* mixed16_lo) {

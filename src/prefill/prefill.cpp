@@ -2138,7 +2138,22 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
 
     for (int64_t c0 = 0; c0 < n; c0 += m.T) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
-        if (std::getenv("STRATA_TRACE")) { std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld\n", (long long) c0, (long long) n); std::fflush(stderr); }
+        if (std::getenv("STRATA_TRACE")) {
+#if defined(STRATA_USE_HIP)
+            int device = -1;
+            (void) cudaGetDevice(&device);
+            int stream_device = -1;
+            const cudaError_t se = hipStreamGetDevice(m.cs, &stream_device);
+            cudaDeviceProp prop{};
+            if (device >= 0) (void) cudaGetDeviceProperties(&prop, device);
+            std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld, HIP device %d %s, stream device %s%d\n",
+                         (long long) c0, (long long) n, device, device >= 0 ? prop.gcnArchName : "unknown",
+                         se == hipSuccess ? "" : "unknown/", se == hipSuccess ? stream_device : -1);
+#else
+            std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld\n", (long long) c0, (long long) n);
+#endif
+            std::fflush(stderr);
+        }
         const int64_t T = std::min(m.T, n - c0), p0 = pos0 + c0;
         core::progress_at("reading the prompt (batched): preparing the chunk from token", p0);   // #251
         ++stats_.chunks;

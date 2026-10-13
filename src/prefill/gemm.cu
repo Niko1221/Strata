@@ -33,6 +33,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <string>
 
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
 #include "hipblaslt_tuning.hpp"
@@ -78,12 +79,44 @@ __global__ void bf16_to_f16_rows(const uint16_t* __restrict__ s, __half* __restr
 }
 #endif
 
-void ck(cublasStatus_t s, const char* what) {
-    if (s != CUBLAS_STATUS_SUCCESS) {
-        std::fprintf(stderr, "prefill gemm: %s: cuBLAS status %d\n", what, (int) s);
-        std::exit(1);
+#if defined(__HIPCC__)
+std::string hip_context(void* stream) {
+    int device = -1, stream_device = -1;
+    (void) hipGetDevice(&device);
+    std::string context = "HIP device " + std::to_string(device);
+    if (device >= 0) {
+        hipDeviceProp_t prop{};
+        if (hipGetDeviceProperties(&prop, device) == hipSuccess)
+            context += " " + std::string(prop.gcnArchName);
     }
+    const hipError_t se = hipStreamGetDevice(static_cast<hipStream_t>(stream), &stream_device);
+    context += se == hipSuccess ? ", stream device " + std::to_string(stream_device)
+                                : ", stream device unavailable (" + std::string(hipGetErrorString(se)) + ")";
+    return context;
 }
+#endif
+
+void ck(cublasStatus_t s, const char* what, void* stream) {
+    if (s == CUBLAS_STATUS_SUCCESS) return;
+#if defined(__HIPCC__)
+    const hipError_t pending = hipPeekAtLastError();
+    std::fprintf(stderr, "prefill gemm: %s: hipBLAS status %d; pending HIP error %d (%s), %s\n", what, (int) s,
+                 (int) pending, hipGetErrorString(pending), hip_context(stream).c_str());
+#else
+    (void) stream;
+    std::fprintf(stderr, "prefill gemm: %s: cuBLAS status %d\n", what, (int) s);
+#endif
+    std::exit(1);
+}
+#if defined(__HIPCC__)
+void check_hip_launch(const char* what, void* stream) {
+    const hipError_t e = hipGetLastError();
+    if (e == hipSuccess) return;
+    std::fprintf(stderr, "prefill gemm: %s left HIP error %d (%s), %s\n", what, (int) e,
+                 hipGetErrorString(e), hip_context(stream).c_str());
+    std::exit(1);
+}
+#endif
 
 // #247/#325: on Windows (seen on gfx1201), hipBLAS can return success with the correct BF16/FP16 product for some
 // shapes (hc up once T >= 96, the router) and still leave hipErrorInvalidValue set, which the next kernel's error
@@ -354,16 +387,23 @@ bool prompt_f16() {
     int dev = 0;
     if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= kMaxDev) { (void) hipGetLastError(); return false; }
     if (const int8_t c = cached[dev].load(std::memory_order_relaxed)) return c == 2;
-    // Opt-in (#835): only STRATA_HIP_PROMPT_F16=1 turns it on.  It changes the prompt path's numbers (an FP16 rounding of
-    // each 16-bit GEMM's output), so no card gets it unasked.  On gfx103x it is ~2x faster, so we say so once.
+    // Opt-in (#835): `1` enables FP16 prompt GEMMs only on gfx103x, where rocBLAS is tuned for them. On ROCm 7.2,
+    // same-mode GEMMs reproduced hipErrorNoBinaryForGpu when a mixed-gfx split returned to gfx1201 after gfx103x.
+    // Keep gfx120x on BF16; `all` is an explicit override. FP16 changes each GEMM's rounding.
     const char* e = std::getenv("STRATA_HIP_PROMPT_F16");
-    const bool on = e != nullptr && e[0] == '1';
     hipDeviceProp_t p{};
     if (hipGetDeviceProperties(&p, dev) != hipSuccess) { (void) hipGetLastError(); p.gcnArchName[0] = 0; }
-    if (on) std::fprintf(stderr, "strata prefill: HIP device %d%s%s - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out "
+    const bool gfx103x = std::strncmp(p.gcnArchName, "gfx103", 6) == 0;
+    const bool all = e != nullptr && std::strcmp(e, "all") == 0;
+    const bool requested = e != nullptr && e[0] == '1';
+    const bool on = all || (requested && gfx103x);
+    if (on) std::fprintf(stderr, "strata prefill: HIP device %d%s%s - STRATA_HIP_PROMPT_F16=%s: the prompt's 16-bit GEMMs run FP16 in and out "
                                  "(rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)%s",
-                         dev, p.gcnArchName[0] ? " " : "", p.gcnArchName, "\n");
-    else if (e == nullptr && std::strncmp(p.gcnArchName, "gfx103", 6) == 0)
+                         dev, p.gcnArchName[0] ? " " : "", p.gcnArchName, all ? "all" : "1", "\n");
+    else if (requested && !gfx103x)
+        std::fprintf(stderr, "strata prefill: HIP device %d%s%s - STRATA_HIP_PROMPT_F16=1 ignored; enabled only on gfx103x (use all to override)\n",
+                     dev, p.gcnArchName[0] ? " " : "", p.gcnArchName);
+    else if (e == nullptr && gfx103x)
         std::fprintf(stderr, "strata prefill: HIP device %d %s - tip: STRATA_HIP_PROMPT_F16=1 reads long prompts about 2x faster here "
                              "(FP16 prompt GEMMs, rocBLAS is tuned only for FP16 on gfx103x; the numbers differ slightly, see docs/AMD_HIP.md)%s",
                      dev, p.gcnArchName, "\n");
@@ -592,6 +632,9 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
         for (int64_t r0 = 0; r0 < N; r0 += rows) {
             const int64_t n = std::min(rows, N - r0);
             bf16_to_f16_rows<<<1024, 256, 0, (cudaStream_t) stream_>>>(W + r0 * K, (__half*) scratch_, n * K);
+#if defined(__HIPCC__)
+            check_hip_launch("bf16_to_f16_rows", stream_);
+#endif
             f16_inplace(X, scratch_, Y + r0, T, n, K, ldy);
         }
         return;
@@ -602,6 +645,9 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::bf16, X, W, Y, T, N, K, ldy,
                       beta, stream_, ldx)) {
         STRATA_ABSORB_HIPBLAS_STICKY("hipBLASLt bf16");
+#if defined(__HIPCC__)
+        check_hip_launch("hipBLASLt bf16", stream_);
+#endif
         return;
     }
 #endif
@@ -648,7 +694,7 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
                         bf16_to_f32(X + t0 * K, xf, n * K, (cudaStream_t) stream_);
                         ck(cublasSgemm((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) nn, (int) n, (int) K, &alpha,
                                        wf, (int) K, xf, (int) K, &beta, Y + t0 * ldy + n0, (int) ldy),
-                           "cublasSgemm (bf16 on Pascal)");
+                           "cublasSgemm (bf16 on Pascal)", stream_);
                     }
 #endif
                 } else {
@@ -668,8 +714,11 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     ck(cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &alpha, W,
                     CUDA_R_16BF, (int) K, X, CUDA_R_16BF, (int) (ldx ? ldx : K), &beta, Y, CUDA_R_32F, (int) ldy,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
-       "cublasGemmEx");
+       "cublasGemmEx", stream_);
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx");
+#if defined(__HIPCC__)
+    check_hip_launch("cublasGemmEx bf16", stream_);
+#endif
 }
 
 void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
@@ -695,6 +744,9 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
     if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::f16, X, W, Y, T, N, K, ldy,
                       beta, stream_)) {
         STRATA_ABSORB_HIPBLAS_STICKY("hipBLASLt f16");
+#if defined(__HIPCC__)
+        check_hip_launch("hipBLASLt f16", stream_);
+#endif
         return;
     }
 #endif
@@ -717,14 +769,17 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
         if (f16_algo_n_ < kF16AlgoSlots) f16_algo_shape_[f16_algo_n_++] = shape;
         st = f16_gemm(CUBLAS_GEMM_ALGO2);
     }
-    ck(st, "cublasGemmEx f16");
+    ck(st, "cublasGemmEx f16", stream_);
 #else
     ck(cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &alpha, W,
                     CUDA_R_16F, (int) K, X, CUDA_R_16F, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
-       "cublasGemmEx f16");
+       "cublasGemmEx f16", stream_);
 #endif
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16");
+#if defined(__HIPCC__)
+    check_hip_launch("cublasGemmEx f16", stream_);
+#endif
 }
 
 #if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
@@ -799,9 +854,12 @@ void Gemm::f16_inplace(const uint16_t* X, const uint16_t* W, float* Y, int64_t T
     ck(cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &one, W, CUDA_R_16F,
                     (int) K, X, CUDA_R_16F, (int) K, &zero, Y, CUDA_R_16F, (int) (2 * ldy), CUBLAS_COMPUTE_32F,
                     CUBLAS_GEMM_DEFAULT),
-       "cublasGemmEx f16 out");
+       "cublasGemmEx f16 out", stream_);
+    STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16 out");
+    check_hip_launch("cublasGemmEx f16 out", stream_);
     static const bool dbg_nan = std::getenv("STRATA_DBG_NAN") != nullptr;
     widen_rows_f16<<<(unsigned) T, 256, 0, (cudaStream_t) stream_>>>(Y, N, ldy, dbg_nan ? 1 : 0);
+    check_hip_launch("widen_rows_f16", stream_);
     if (dbg_nan) {   // debug only: a sync per GEMM
         unsigned long long bad = 0, zero_count = 0;
         (void) hipStreamSynchronize((hipStream_t) stream_);
