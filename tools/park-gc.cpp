@@ -21,7 +21,10 @@
 //   disk_park_spool.cpp:25 → disk_park_store.cpp:433 的淘汰）。所以流式层的硬上限只能在这里做。
 //   顺序说明：闸门在 ③ 之前跑，用的是【压缩前】的 blob 大小 —— 偏保守（可能多删一点），
 //   好处是被删目录的记录马上会被 ③ 丢掉，不必等下一轮。
-//   ★ 计量口径：闸门按【实际分配的块】st_blocks×512 算，不是 file_size()。
+//   ★ 保护下限 --keep-newer-hours H（默认 6）：比 H 小时还新的目录【绝不删】，宁可超上限。
+//     没有下限时，上限只要低于一天的写入量，闸门会一路啃到只剩当天、每天啃一遍新数据；
+//     有下限 ⇒ 上限不够变成看得见的数字（"还超 X"），而不是一路删到没有。
+//   ★ 计量口径：闸门按【实际分配的块】st_blocks×512 算，不是 file_size()（目录与 blob 同一个口径）。
 //     停放层的 kv.bin 是稀疏文件（表观 2566 GiB / 实际 83 GB，约 3%），
 //     用 file_size() 会把 64 GiB 的上限判成"要删 89% 的目录"（实测踩过）。
 //
@@ -30,6 +33,7 @@
 //   park-gc --root ~/Strata-data/park-stream --apply                     # 真删真压
 //   park-gc --root ~/Strata-data/park-stream --days 1 --apply            # 窗口收紧到 1 天
 //   park-gc --root ... --days 1 --max-gib 64 --apply                     # 再加 64 GiB 硬上限
+//   park-gc --root ... --days 1 --max-gib 64 --keep-newer-hours 12 --apply   # 闸门不碰 12 h 内的
 //   park-gc --root ... --apply --no-blob                                 # 只删目录，不碰 blob
 //   park-gc --root ... --tag AA00AEC7 --apply                            # 指定 profile 标签
 //
@@ -67,6 +71,16 @@ namespace fs = std::filesystem;
 /// （实测：4225 个目录表观合计 2566 GiB，实际只占 83 GB，约 3%）。
 /// 用 file_size() 当预算会放大 30 倍：实测 64 GiB 的上限会把 2932 个存活目录
 /// 判成"2251 GiB、要删 2605 个"，而真实占用只有 89 GB、只需删掉约 25 GB。
+/// 一个文件的【实际分配】字节：st_blocks×512；stat 失败才退回 file_size()。
+/// 目录和 blob 都走这里 —— 口径不一致会让闸门多删（按 file_size 判稀疏文件会放大 30 倍）。
+static std::uintmax_t file_alloc_bytes(const std::string& path) {
+    struct stat st {};
+    if (::stat(path.c_str(), &st) == 0) return (std::uintmax_t) st.st_blocks * 512;
+    std::error_code ec;
+    const std::uintmax_t n = (std::uintmax_t) fs::file_size(path, ec);
+    return ec ? 0 : n;
+}
+
 static std::uintmax_t dir_bytes(const std::string& d) {
     std::uintmax_t n = 0;
     std::error_code ec;
@@ -75,9 +89,7 @@ static std::uintmax_t dir_bytes(const std::string& d) {
         if (ec) break;
         std::error_code e2;
         if (!it->is_regular_file(e2)) continue;
-        struct stat st {};
-        if (::stat(it->path().c_str(), &st) == 0) n += (std::uintmax_t) st.st_blocks * 512;
-        else                                     n += it->file_size(e2);   // 退路
+        n += file_alloc_bytes(it->path().string());
     }
     return n;
 }
@@ -119,10 +131,11 @@ struct Entry {
     std::uintmax_t apparent = 0;    // 表观（稀疏容量），仅显示
     fs::file_time_type mtime{};
     double         age_h = 0.0;
+    bool           stale_mtime = false;   // ★ mtime 读不到：不当删除首选
 };
 
 int main(int argc, char** argv) {
-    std::string root, blob, days_s = "7", max_gib_s = "0", warn_newer_s = "6";
+    std::string root, blob, days_s = "7", max_gib_s = "0", warn_newer_s = "6", keep_newer_s = "6";
     bool apply = false, do_blob = true;
     std::uint32_t tag_opt = 0;                        // --tag：不给就从 blob 文件头自己认
     for (int i = 1; i < argc; ++i) {
@@ -133,18 +146,21 @@ int main(int argc, char** argv) {
         else if (a == "--days")   days_s = val();
         else if (a == "--max-gib") max_gib_s = val();
         else if (a == "--warn-newer-hours") warn_newer_s = val();
+        else if (a == "--keep-newer-hours") keep_newer_s = val();
         else if (a == "--apply")  apply = true;
         else if (a == "--dry-run") apply = false;
         else if (a == "--no-blob") do_blob = false;
         else if (a == "--tag") { const std::string v = val(); tag_opt = (std::uint32_t) std::strtoul(v.c_str(), nullptr, 16); }
         else if (a == "-h" || a == "--help") {
             std::printf("用法: park-gc --root <park-stream> [--blob <checkpoints.bin>]"
-                        " [--days N] [--max-gib N] [--warn-newer-hours H] [--apply] [--no-blob] [--tag XXXXXXXX]\n"
+                        " [--days N] [--max-gib N] [--keep-newer-hours H] [--warn-newer-hours H]"
+                        " [--apply] [--no-blob] [--tag XXXXXXXX]\n"
                         "      （blob 现在带 profile 标签：不给 --tag 就从文件头认，"
                         "并且只压那一个标签的会话目录）\n"
                         "  --days N              删 mtime 早于 N 天的会话目录（<=0 = 永不过期，默认 7）\n"
                         "  --max-gib N           会话目录 + blob 合计封顶 N GiB，超了从最旧开始删（0 = 关，默认）\n"
-                        "  --warn-newer-hours H  闸门删到比 H 小时还新的目录时打 WARNING（默认 6）\n");
+                        "  --keep-newer-hours H  闸门【绝不删】比 H 小时还新的目录，宁可超上限（默认 6；0 = 关）\n"
+                        "  --warn-newer-hours H  下限关掉后，删到比 H 小时还新的目录时打 WARNING（默认 6）\n");
             return 0;
         } else {
             std::fprintf(stderr, "未知参数: %s（--help 看用法）\n", a.c_str());
@@ -155,6 +171,7 @@ int main(int argc, char** argv) {
     const int days = std::atoi(days_s.c_str());
     const long long max_gib = std::atoll(max_gib_s.c_str());
     const double warn_newer_h = std::atof(warn_newer_s.c_str());
+    const double keep_newer_h = std::atof(keep_newer_s.c_str());
     if (blob.empty()) blob = root + "/checkpoints.bin";
 
     std::printf("停放层 GC（%s）\n", apply ? "APPLY —— 会真删真压" : "dry-run —— 只统计");
@@ -163,6 +180,9 @@ int main(int argc, char** argv) {
     std::printf("  days : %d%s\n", days, days <= 0 ? "（<=0 = 永不过期）" : " 天");
     std::printf("  上限 : %s\n", max_gib > 0 ? (human((std::uintmax_t) max_gib << 30) + "（会话目录 + blob）").c_str()
                                             : "关（只按 --days）");
+    std::printf("  下限 : %s\n", keep_newer_h > 0
+                    ? (std::string("比 ") + std::to_string((long long) keep_newer_h) + " h 还新的目录不删").c_str()
+                    : "关（闸门可以一直删到最新的那个）");
 
     // ---- ① 过期会话目录 ----
     const std::vector<std::string> dirs = strata::core::p13_session_dirs(root);
@@ -180,8 +200,9 @@ int main(int argc, char** argv) {
             e.path = d;
             e.bytes = dir_bytes(d);
             e.apparent = dir_apparent_bytes(d);
-            e.mtime = mec ? fs::file_time_type{} : mt;
+            e.mtime = mt;
             e.age_h = mec ? -1.0 : age_hours(mt);
+            e.stale_mtime = (bool) mec;
             survivors.push_back(std::move(e));
             continue;
         }
@@ -205,8 +226,7 @@ int main(int argc, char** argv) {
     // ---- ② 大小闸门（在 ③ 之前，用压缩前的 blob 大小，偏保守）----
     if (max_gib > 0) {
         const std::uintmax_t cap = (std::uintmax_t) max_gib << 30;
-        std::uintmax_t blob_now = 0;
-        { std::error_code ec; blob_now = fs::file_size(blob, ec); if (ec) blob_now = 0; }
+        const std::uintmax_t blob_now = file_alloc_bytes(blob);   // ★ 与目录同一个口径
         std::uintmax_t total = blob_now;
         std::uintmax_t apparent_total = blob_now;
         for (const Entry& e : survivors) { total += e.bytes; apparent_total += e.apparent; }
@@ -221,12 +241,17 @@ int main(int argc, char** argv) {
             std::printf("             未超上限，闸门不动\n");
         } else {
             std::sort(survivors.begin(), survivors.end(),
-                      [](const Entry& a, const Entry& b) { return a.mtime < b.mtime; });   // 最旧优先
-            std::size_t g_n = 0;
-            std::uintmax_t g_bytes = 0;
+                      [](const Entry& a, const Entry& b) {
+                          if (a.stale_mtime != b.stale_mtime) return a.stale_mtime < b.stale_mtime;  // 读不到 mtime 的排最后
+                          return a.mtime < b.mtime;                                                 // 最旧优先
+                      });
+            std::size_t g_n = 0, keep_n = 0, unknown_n = 0;
+            std::uintmax_t g_bytes = 0, keep_bytes = 0, unknown_bytes = 0;
             double oldest_h = -1.0, newest_h = -1.0;
             for (const Entry& e : survivors) {
                 if (total <= cap) break;
+                if (e.stale_mtime) { ++unknown_n; unknown_bytes += e.bytes; continue; }   // ★ 不拿 stat 失败当删除首选
+                if (keep_newer_h > 0 && e.age_h < keep_newer_h) { ++keep_n; keep_bytes += e.bytes; continue; }
                 total -= e.bytes;
                 ++g_n;
                 g_bytes += e.bytes;
@@ -243,10 +268,18 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            std::printf("  闸门结果 : %s %zu 个，%s；最高龄 %.1f h，最新 %.1f h\n",
-                        apply ? "已删" : "将删", g_n, human(g_bytes).c_str(), oldest_h, newest_h);
+            std::printf("  闸门结果 : %s %zu 个，%s；最高龄 %s h，最新 %s h\n", apply ? "已删" : "将删",
+                        g_n, human(g_bytes).c_str(),
+                        oldest_h >= 0 ? std::to_string((long long) oldest_h).c_str() : "-",
+                        newest_h >= 0 ? std::to_string((long long) newest_h).c_str() : "-");
             std::printf("             删除后合计 %s（上限 %s）\n", human(total).c_str(), human(cap).c_str());
-            if (newest_h >= 0 && warn_newer_h > 0 && newest_h < warn_newer_h)
+            if (keep_n || unknown_n)
+                std::printf("             没动的：%zu 个比 --keep-newer-hours 还新（%s）· %zu 个 mtime 读不到（%s）\n",
+                            keep_n, human(keep_bytes).c_str(), unknown_n, human(unknown_bytes).c_str());
+            if (total > cap)
+                std::printf("  ⚠ 上限还差 %s —— 剩下的都在保护范围里。调大 --max-gib、调小 --keep-newer-hours，"
+                            "或关掉停放层；闸门不会为了凑数字去啃刚停放的会话。\n", human(total - cap).c_str());
+            else if (newest_h >= 0 && warn_newer_h > 0 && newest_h < warn_newer_h)
                 std::printf("  ⚠ WARNING: 闸门不得不删 %.1f 小时前刚写的目录 —— "
                             "上限低于一天的写入量，会变成\"刚停放就被删\"的抖动。\n"
                             "             调大 --max-gib、关掉停放层，或降低写入量。\n", newest_h);
