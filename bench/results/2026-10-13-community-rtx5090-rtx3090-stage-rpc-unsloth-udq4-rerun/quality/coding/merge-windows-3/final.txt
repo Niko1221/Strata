@@ -1,0 +1,12 @@
+Done — the fix passed on the first run, no repair rounds needed.
+
+**Result:** `node --test acceptance.test.ts` → 1 test file, **pass 1 / fail 0**. Running the file directly shows the individual breakdown: **25 tests, 25 pass, 0 fail** (node's runner aggregates the file into one TAP entry, so I counted subtests separately for the real number).
+
+**Changed file:** only [windows.ts](<ARTIFACTS>/quality/coding/merge-windows-3/project/windows.ts) (within the allowed scope; tests and config untouched).
+
+What the repair does:
+
+- Validates `gap` first (finite and ≥ 0) and every window (finite `start`/`end`, `start <= end`), throwing `RangeError` otherwise — including for empty input with a bad gap.
+- Sorts a copy by start then end instead of mutating the input array, and builds brand-new result objects, so frozen inputs work and the original array/objects are never changed.
+- Merges when `w.start <= last.end + gap`, covering overlaps, touching endpoints, and gaps up to `gap` exactly.
+- Uses `Math.max(last.end, w.end)` so contained windows don't shrink the merged span (the old code overwrote `end` with the later window's `end`).

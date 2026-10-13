@@ -1,0 +1,751 @@
+{
+  "started": 1791921032.215477,
+  "finished": 1791922256.080101,
+  "completed_utc": "2026-10-13T20:10:56.080104+00:00",
+  "needle_exit_code": 0,
+  "needle_cases": 6,
+  "needle_complete": true,
+  "needle_found": 6,
+  "needle_errors": 0,
+  "needle_passed": true,
+  "coding_attempts": [
+    {
+      "fixture": "merge-windows",
+      "attempt": 1,
+      "started": 1791921401.069102,
+      "finished": 1791921490.4170973,
+      "wall_s": 89.34799528121948,
+      "exit_code": 0,
+      "timed_out": false,
+      "passed": true,
+      "changed_files": [
+        "windows.ts"
+      ],
+      "policy_violations": [],
+      "original_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "28be01bbab97f325fbf3642dd049a65f50ee65613938c214390a220d5fd5a1c3",
+        "acceptance.test.ts": "8e1ae260de9d390ac3c6edf0b94bde2d923acbc7b854b347e2ac9fc3c2fabcef",
+        "windows.ts": "f75076f653579fcf2ecd48e1050f572619f01c535d26321ee2044515a697d7f6"
+      },
+      "solution_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "28be01bbab97f325fbf3642dd049a65f50ee65613938c214390a220d5fd5a1c3",
+        "acceptance.test.ts": "8e1ae260de9d390ac3c6edf0b94bde2d923acbc7b854b347e2ac9fc3c2fabcef",
+        "windows.ts": "77e9deb06aaa76f21e9640fb2a7f6eccfbe451b394bec60887c91df9c4842b38"
+      },
+      "verification": {
+        "tests": 25,
+        "pass": 25,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "exit_code": 0,
+        "duration_s": 0.11740803718566895,
+        "command": [
+          "node",
+          "--test",
+          "acceptance.test.ts"
+        ],
+        "isolation": "read-only Bubblewrap mounts; fresh network namespace; cleared environment; 60 s timeout"
+      },
+      "codex": {
+        "events": 18,
+        "invalid_jsonl_lines": 0,
+        "turn_completed": 1,
+        "turn_failed": 0,
+        "errors": [],
+        "usage": [
+          {
+            "input_tokens": 280564,
+            "cached_input_tokens": 202693,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 1993,
+            "reasoning_output_tokens": 1035
+          }
+        ],
+        "tool_calls": 6,
+        "command_calls": 5,
+        "command_errors": 0,
+        "file_change_calls": 1,
+        "test_command_calls": 2
+      },
+      "native_counter_deltas": {
+        "requests": 7,
+        "prompt_tokens": 280564,
+        "reused": 202693,
+        "output_tokens": 1993,
+        "prompt_ms": 59590.60000000009,
+        "decode_ms": 26963.0,
+        "drafts_offered": 1763,
+        "drafts_accepted": 1235
+      }
+    },
+    {
+      "fixture": "merge-windows",
+      "attempt": 2,
+      "started": 1791921490.5438263,
+      "finished": 1791921572.4171648,
+      "wall_s": 81.87333846092224,
+      "exit_code": 0,
+      "timed_out": false,
+      "passed": true,
+      "changed_files": [
+        "windows.ts"
+      ],
+      "policy_violations": [],
+      "original_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "28be01bbab97f325fbf3642dd049a65f50ee65613938c214390a220d5fd5a1c3",
+        "acceptance.test.ts": "8e1ae260de9d390ac3c6edf0b94bde2d923acbc7b854b347e2ac9fc3c2fabcef",
+        "windows.ts": "f75076f653579fcf2ecd48e1050f572619f01c535d26321ee2044515a697d7f6"
+      },
+      "solution_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "28be01bbab97f325fbf3642dd049a65f50ee65613938c214390a220d5fd5a1c3",
+        "acceptance.test.ts": "8e1ae260de9d390ac3c6edf0b94bde2d923acbc7b854b347e2ac9fc3c2fabcef",
+        "windows.ts": "07adc2fe11cf0f3acfc62e3185638389eef591610739076abd2fb0cdef2869f8"
+      },
+      "verification": {
+        "tests": 25,
+        "pass": 25,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "exit_code": 0,
+        "duration_s": 0.12549638748168945,
+        "command": [
+          "node",
+          "--test",
+          "acceptance.test.ts"
+        ],
+        "isolation": "read-only Bubblewrap mounts; fresh network namespace; cleared environment; 60 s timeout"
+      },
+      "codex": {
+        "events": 14,
+        "invalid_jsonl_lines": 0,
+        "turn_completed": 1,
+        "turn_failed": 0,
+        "errors": [],
+        "usage": [
+          {
+            "input_tokens": 239101,
+            "cached_input_tokens": 161078,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 1803,
+            "reasoning_output_tokens": 631
+          }
+        ],
+        "tool_calls": 5,
+        "command_calls": 5,
+        "command_errors": 0,
+        "file_change_calls": 0,
+        "test_command_calls": 3
+      },
+      "native_counter_deltas": {
+        "requests": 6,
+        "prompt_tokens": 239101,
+        "reused": 161078,
+        "output_tokens": 1803,
+        "prompt_ms": 57525.59999999998,
+        "decode_ms": 22106.600000000006,
+        "drafts_offered": 1592,
+        "drafts_accepted": 1170
+      }
+    },
+    {
+      "fixture": "merge-windows",
+      "attempt": 3,
+      "started": 1791921572.552445,
+      "finished": 1791921654.8337276,
+      "wall_s": 82.28128266334534,
+      "exit_code": 0,
+      "timed_out": false,
+      "passed": true,
+      "changed_files": [
+        "windows.ts"
+      ],
+      "policy_violations": [],
+      "original_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "28be01bbab97f325fbf3642dd049a65f50ee65613938c214390a220d5fd5a1c3",
+        "acceptance.test.ts": "8e1ae260de9d390ac3c6edf0b94bde2d923acbc7b854b347e2ac9fc3c2fabcef",
+        "windows.ts": "f75076f653579fcf2ecd48e1050f572619f01c535d26321ee2044515a697d7f6"
+      },
+      "solution_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "28be01bbab97f325fbf3642dd049a65f50ee65613938c214390a220d5fd5a1c3",
+        "acceptance.test.ts": "8e1ae260de9d390ac3c6edf0b94bde2d923acbc7b854b347e2ac9fc3c2fabcef",
+        "windows.ts": "a2abdead1a521e08f4960d9cfdecd316f3d439adf89d4dd03cc9e43f1dca6ee5"
+      },
+      "verification": {
+        "tests": 25,
+        "pass": 25,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "exit_code": 0,
+        "duration_s": 0.11979937553405762,
+        "command": [
+          "node",
+          "--test",
+          "acceptance.test.ts"
+        ],
+        "isolation": "read-only Bubblewrap mounts; fresh network namespace; cleared environment; 60 s timeout"
+      },
+      "codex": {
+        "events": 18,
+        "invalid_jsonl_lines": 0,
+        "turn_completed": 1,
+        "turn_failed": 0,
+        "errors": [],
+        "usage": [
+          {
+            "input_tokens": 319425,
+            "cached_input_tokens": 241706,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 1581,
+            "reasoning_output_tokens": 491
+          }
+        ],
+        "tool_calls": 7,
+        "command_calls": 6,
+        "command_errors": 0,
+        "file_change_calls": 1,
+        "test_command_calls": 3
+      },
+      "native_counter_deltas": {
+        "requests": 8,
+        "prompt_tokens": 319425,
+        "reused": 241706,
+        "output_tokens": 1581,
+        "prompt_ms": 58276.00000000012,
+        "decode_ms": 20859.79999999999,
+        "drafts_offered": 1417,
+        "drafts_accepted": 992
+      }
+    },
+    {
+      "fixture": "refactor-orders",
+      "attempt": 1,
+      "started": 1791921654.9642804,
+      "finished": 1791921759.1041985,
+      "wall_s": 104.13991808891296,
+      "exit_code": 0,
+      "timed_out": false,
+      "passed": true,
+      "changed_files": [
+        "aggregation.ts",
+        "orders.ts",
+        "validation.ts"
+      ],
+      "policy_violations": [],
+      "original_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "8e4d40563c1834d82cd640eff4212c5d2f2ff2c7797eb1737d1e8a03eeb177f0",
+        "acceptance.test.ts": "d09b3c3217069d714f982fe6bd3910f153a24172dbbd2b2d08fc145a75838e07",
+        "orders.ts": "d3e7dd2b1bbe8e2d09f42eae12a7f3324e027cdf4fc84d79cde1ce280d993379"
+      },
+      "solution_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "8e4d40563c1834d82cd640eff4212c5d2f2ff2c7797eb1737d1e8a03eeb177f0",
+        "acceptance.test.ts": "d09b3c3217069d714f982fe6bd3910f153a24172dbbd2b2d08fc145a75838e07",
+        "aggregation.ts": "d546d607cb8f7da91d71d952f18335c59a09e0801e5c3c4c420e78ac07e1548a",
+        "orders.ts": "ff9cb8766375ffe68682b07a5451c2b1f81b35ed84d6f7d2e0a1e97b79baff2a",
+        "validation.ts": "44ab0f3a9aa19425f3833dcea5bd3b2718ba4c4ff6c039f65f8f272e77467cd4"
+      },
+      "verification": {
+        "tests": 24,
+        "pass": 24,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "exit_code": 0,
+        "duration_s": 0.1281270980834961,
+        "command": [
+          "node",
+          "--test",
+          "acceptance.test.ts"
+        ],
+        "isolation": "read-only Bubblewrap mounts; fresh network namespace; cleared environment; 60 s timeout"
+      },
+      "codex": {
+        "events": 31,
+        "invalid_jsonl_lines": 0,
+        "turn_completed": 1,
+        "turn_failed": 0,
+        "errors": [],
+        "usage": [
+          {
+            "input_tokens": 452889,
+            "cached_input_tokens": 374330,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 3092,
+            "reasoning_output_tokens": 1263
+          }
+        ],
+        "tool_calls": 11,
+        "command_calls": 8,
+        "command_errors": 0,
+        "file_change_calls": 3,
+        "test_command_calls": 3
+      },
+      "native_counter_deltas": {
+        "requests": 11,
+        "prompt_tokens": 452889,
+        "reused": 374330,
+        "output_tokens": 3092,
+        "prompt_ms": 60750.89999999991,
+        "decode_ms": 40281.09999999998,
+        "drafts_offered": 2634,
+        "drafts_accepted": 1954
+      }
+    },
+    {
+      "fixture": "refactor-orders",
+      "attempt": 2,
+      "started": 1791921759.242318,
+      "finished": 1791921862.820735,
+      "wall_s": 103.5784170627594,
+      "exit_code": 0,
+      "timed_out": false,
+      "passed": true,
+      "changed_files": [
+        "aggregation.ts",
+        "orders.ts",
+        "validation.ts"
+      ],
+      "policy_violations": [],
+      "original_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "8e4d40563c1834d82cd640eff4212c5d2f2ff2c7797eb1737d1e8a03eeb177f0",
+        "acceptance.test.ts": "d09b3c3217069d714f982fe6bd3910f153a24172dbbd2b2d08fc145a75838e07",
+        "orders.ts": "d3e7dd2b1bbe8e2d09f42eae12a7f3324e027cdf4fc84d79cde1ce280d993379"
+      },
+      "solution_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "8e4d40563c1834d82cd640eff4212c5d2f2ff2c7797eb1737d1e8a03eeb177f0",
+        "acceptance.test.ts": "d09b3c3217069d714f982fe6bd3910f153a24172dbbd2b2d08fc145a75838e07",
+        "aggregation.ts": "2a5e64f84f3ce47dc215b5e4c2ac388f308c4908b7e219a0187eca349ff776f5",
+        "orders.ts": "ff9cb8766375ffe68682b07a5451c2b1f81b35ed84d6f7d2e0a1e97b79baff2a",
+        "validation.ts": "44ab0f3a9aa19425f3833dcea5bd3b2718ba4c4ff6c039f65f8f272e77467cd4"
+      },
+      "verification": {
+        "tests": 24,
+        "pass": 24,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "exit_code": 0,
+        "duration_s": 0.12570810317993164,
+        "command": [
+          "node",
+          "--test",
+          "acceptance.test.ts"
+        ],
+        "isolation": "read-only Bubblewrap mounts; fresh network namespace; cleared environment; 60 s timeout"
+      },
+      "codex": {
+        "events": 27,
+        "invalid_jsonl_lines": 0,
+        "turn_completed": 1,
+        "turn_failed": 0,
+        "errors": [],
+        "usage": [
+          {
+            "input_tokens": 368241,
+            "cached_input_tokens": 289623,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 3193,
+            "reasoning_output_tokens": 1141
+          }
+        ],
+        "tool_calls": 9,
+        "command_calls": 6,
+        "command_errors": 0,
+        "file_change_calls": 3,
+        "test_command_calls": 2
+      },
+      "native_counter_deltas": {
+        "requests": 9,
+        "prompt_tokens": 368241,
+        "reused": 289623,
+        "output_tokens": 3193,
+        "prompt_ms": 59853.30000000016,
+        "decode_ms": 41077.80000000002,
+        "drafts_offered": 2792,
+        "drafts_accepted": 2042
+      }
+    },
+    {
+      "fixture": "refactor-orders",
+      "attempt": 3,
+      "started": 1791921862.9575915,
+      "finished": 1791921954.2556942,
+      "wall_s": 91.2981026172638,
+      "exit_code": 0,
+      "timed_out": false,
+      "passed": true,
+      "changed_files": [
+        "aggregation.ts",
+        "orders.ts",
+        "validation.ts"
+      ],
+      "policy_violations": [],
+      "original_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "8e4d40563c1834d82cd640eff4212c5d2f2ff2c7797eb1737d1e8a03eeb177f0",
+        "acceptance.test.ts": "d09b3c3217069d714f982fe6bd3910f153a24172dbbd2b2d08fc145a75838e07",
+        "orders.ts": "d3e7dd2b1bbe8e2d09f42eae12a7f3324e027cdf4fc84d79cde1ce280d993379"
+      },
+      "solution_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "8e4d40563c1834d82cd640eff4212c5d2f2ff2c7797eb1737d1e8a03eeb177f0",
+        "acceptance.test.ts": "d09b3c3217069d714f982fe6bd3910f153a24172dbbd2b2d08fc145a75838e07",
+        "aggregation.ts": "d546d607cb8f7da91d71d952f18335c59a09e0801e5c3c4c420e78ac07e1548a",
+        "orders.ts": "ff9cb8766375ffe68682b07a5451c2b1f81b35ed84d6f7d2e0a1e97b79baff2a",
+        "validation.ts": "44ab0f3a9aa19425f3833dcea5bd3b2718ba4c4ff6c039f65f8f272e77467cd4"
+      },
+      "verification": {
+        "tests": 24,
+        "pass": 24,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "exit_code": 0,
+        "duration_s": 0.12794780731201172,
+        "command": [
+          "node",
+          "--test",
+          "acceptance.test.ts"
+        ],
+        "isolation": "read-only Bubblewrap mounts; fresh network namespace; cleared environment; 60 s timeout"
+      },
+      "codex": {
+        "events": 23,
+        "invalid_jsonl_lines": 0,
+        "turn_completed": 1,
+        "turn_failed": 0,
+        "errors": [],
+        "usage": [
+          {
+            "input_tokens": 323732,
+            "cached_input_tokens": 245722,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 2357,
+            "reasoning_output_tokens": 597
+          }
+        ],
+        "tool_calls": 8,
+        "command_calls": 5,
+        "command_errors": 0,
+        "file_change_calls": 3,
+        "test_command_calls": 3
+      },
+      "native_counter_deltas": {
+        "requests": 8,
+        "prompt_tokens": 323732,
+        "reused": 245722,
+        "output_tokens": 2357,
+        "prompt_ms": 58769.09999999986,
+        "decode_ms": 29935.49999999994,
+        "drafts_offered": 1980,
+        "drafts_accepted": 1590
+      }
+    },
+    {
+      "fixture": "reservation-workflow",
+      "attempt": 1,
+      "started": 1791921954.3935819,
+      "finished": 1791922057.023041,
+      "wall_s": 102.62945914268494,
+      "exit_code": 0,
+      "timed_out": false,
+      "passed": true,
+      "changed_files": [
+        "allocate.ts",
+        "requests.ts",
+        "stock.ts"
+      ],
+      "policy_violations": [],
+      "original_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "61de9b6157a877bd02ea4550c93cd4ca9ac91c1b6d7d2c1b8ac7067f18bdc1ef",
+        "acceptance.test.ts": "c614137762b363c873dd4b74447a1e10b68f1cbfd480c2187bd9294cc99df598",
+        "allocate.ts": "58e47304e459b99183d5b6ae48ee4855bf1d79ad8096f43405c65c57ff6ab567",
+        "requests.ts": "91b65480911f10ee4dca1dcccbdced97931360d3052ec1f9d41687fc04aa2829",
+        "stock.ts": "1c484ba860b55f8aa7e86db94317e60b47cc97900d38ea3fe7914e4d5522a8c3"
+      },
+      "solution_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "61de9b6157a877bd02ea4550c93cd4ca9ac91c1b6d7d2c1b8ac7067f18bdc1ef",
+        "acceptance.test.ts": "c614137762b363c873dd4b74447a1e10b68f1cbfd480c2187bd9294cc99df598",
+        "allocate.ts": "8d136ce24f6a098ba8c4c0076aeaa64be63ee04cf3c37f94f1a7a8e78f6b7a76",
+        "requests.ts": "7d7ceed0b3c6b209eb6d38a0a301ff8713cd848b770479dd12a05cacd23dfe29",
+        "stock.ts": "27dacaee73d1d026e164e86f72ab1eb77d4474611fffeeeca877a0e3c9dd1e33"
+      },
+      "verification": {
+        "tests": 32,
+        "pass": 32,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "exit_code": 0,
+        "duration_s": 0.12879633903503418,
+        "command": [
+          "node",
+          "--test",
+          "acceptance.test.ts"
+        ],
+        "isolation": "read-only Bubblewrap mounts; fresh network namespace; cleared environment; 60 s timeout"
+      },
+      "codex": {
+        "events": 20,
+        "invalid_jsonl_lines": 0,
+        "turn_completed": 1,
+        "turn_failed": 0,
+        "errors": [],
+        "usage": [
+          {
+            "input_tokens": 286284,
+            "cached_input_tokens": 208203,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 3074,
+            "reasoning_output_tokens": 1446
+          }
+        ],
+        "tool_calls": 7,
+        "command_calls": 4,
+        "command_errors": 0,
+        "file_change_calls": 3,
+        "test_command_calls": 1
+      },
+      "native_counter_deltas": {
+        "requests": 7,
+        "prompt_tokens": 286284,
+        "reused": 208203,
+        "output_tokens": 3074,
+        "prompt_ms": 58439.09999999998,
+        "decode_ms": 41863.399999999994,
+        "drafts_offered": 2696,
+        "drafts_accepted": 1963
+      }
+    },
+    {
+      "fixture": "reservation-workflow",
+      "attempt": 2,
+      "started": 1791922057.1627252,
+      "finished": 1791922164.2500048,
+      "wall_s": 107.08727955818176,
+      "exit_code": 0,
+      "timed_out": false,
+      "passed": true,
+      "changed_files": [
+        "allocate.ts",
+        "requests.ts",
+        "stock.ts"
+      ],
+      "policy_violations": [],
+      "original_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "61de9b6157a877bd02ea4550c93cd4ca9ac91c1b6d7d2c1b8ac7067f18bdc1ef",
+        "acceptance.test.ts": "c614137762b363c873dd4b74447a1e10b68f1cbfd480c2187bd9294cc99df598",
+        "allocate.ts": "58e47304e459b99183d5b6ae48ee4855bf1d79ad8096f43405c65c57ff6ab567",
+        "requests.ts": "91b65480911f10ee4dca1dcccbdced97931360d3052ec1f9d41687fc04aa2829",
+        "stock.ts": "1c484ba860b55f8aa7e86db94317e60b47cc97900d38ea3fe7914e4d5522a8c3"
+      },
+      "solution_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "61de9b6157a877bd02ea4550c93cd4ca9ac91c1b6d7d2c1b8ac7067f18bdc1ef",
+        "acceptance.test.ts": "c614137762b363c873dd4b74447a1e10b68f1cbfd480c2187bd9294cc99df598",
+        "allocate.ts": "d73a554cf0badc0dc4328b9c4939864566e720fabbc7b4a2fd5d86da21749beb",
+        "requests.ts": "08c385e66df68f85ea4cc3ee04f17905e8c485540ec08575fa19138e4deb442f",
+        "stock.ts": "671f9f0e50c8169f6935a0fcb73939f068fe03977783e96121ed3470a18a5fbf"
+      },
+      "verification": {
+        "tests": 32,
+        "pass": 32,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "exit_code": 0,
+        "duration_s": 0.1379392147064209,
+        "command": [
+          "node",
+          "--test",
+          "acceptance.test.ts"
+        ],
+        "isolation": "read-only Bubblewrap mounts; fresh network namespace; cleared environment; 60 s timeout"
+      },
+      "codex": {
+        "events": 20,
+        "invalid_jsonl_lines": 0,
+        "turn_completed": 1,
+        "turn_failed": 0,
+        "errors": [],
+        "usage": [
+          {
+            "input_tokens": 288518,
+            "cached_input_tokens": 210090,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 3411,
+            "reasoning_output_tokens": 1934
+          }
+        ],
+        "tool_calls": 6,
+        "command_calls": 5,
+        "command_errors": 0,
+        "file_change_calls": 1,
+        "test_command_calls": 2
+      },
+      "native_counter_deltas": {
+        "requests": 7,
+        "prompt_tokens": 288518,
+        "reused": 210090,
+        "output_tokens": 3411,
+        "prompt_ms": 58860.5,
+        "decode_ms": 45657.100000000006,
+        "drafts_offered": 2983,
+        "drafts_accepted": 2107
+      }
+    },
+    {
+      "fixture": "reservation-workflow",
+      "attempt": 3,
+      "started": 1791922164.3987904,
+      "finished": 1791922253.3513267,
+      "wall_s": 88.9525363445282,
+      "exit_code": 0,
+      "timed_out": false,
+      "passed": true,
+      "changed_files": [
+        "allocate.ts",
+        "requests.ts",
+        "stock.ts"
+      ],
+      "policy_violations": [],
+      "original_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "61de9b6157a877bd02ea4550c93cd4ca9ac91c1b6d7d2c1b8ac7067f18bdc1ef",
+        "acceptance.test.ts": "c614137762b363c873dd4b74447a1e10b68f1cbfd480c2187bd9294cc99df598",
+        "allocate.ts": "58e47304e459b99183d5b6ae48ee4855bf1d79ad8096f43405c65c57ff6ab567",
+        "requests.ts": "91b65480911f10ee4dca1dcccbdced97931360d3052ec1f9d41687fc04aa2829",
+        "stock.ts": "1c484ba860b55f8aa7e86db94317e60b47cc97900d38ea3fe7914e4d5522a8c3"
+      },
+      "solution_manifest": {
+        "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+        "README.md": "61de9b6157a877bd02ea4550c93cd4ca9ac91c1b6d7d2c1b8ac7067f18bdc1ef",
+        "acceptance.test.ts": "c614137762b363c873dd4b74447a1e10b68f1cbfd480c2187bd9294cc99df598",
+        "allocate.ts": "d73a554cf0badc0dc4328b9c4939864566e720fabbc7b4a2fd5d86da21749beb",
+        "requests.ts": "e41dc77d28e592939dc0d683397ad18cc846111eb37eaaf07931c91275e526be",
+        "stock.ts": "2eacca2d1e54177e4a27883d1429c48835ddbc9c1a203612ef604c541c6b9c8a"
+      },
+      "verification": {
+        "tests": 32,
+        "pass": 32,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "exit_code": 0,
+        "duration_s": 0.12583708763122559,
+        "command": [
+          "node",
+          "--test",
+          "acceptance.test.ts"
+        ],
+        "isolation": "read-only Bubblewrap mounts; fresh network namespace; cleared environment; 60 s timeout"
+      },
+      "codex": {
+        "events": 18,
+        "invalid_jsonl_lines": 0,
+        "turn_completed": 1,
+        "turn_failed": 0,
+        "errors": [],
+        "usage": [
+          {
+            "input_tokens": 283662,
+            "cached_input_tokens": 204810,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 2118,
+            "reasoning_output_tokens": 614
+          }
+        ],
+        "tool_calls": 6,
+        "command_calls": 5,
+        "command_errors": 1,
+        "file_change_calls": 1,
+        "test_command_calls": 3
+      },
+      "native_counter_deltas": {
+        "requests": 7,
+        "prompt_tokens": 283662,
+        "reused": 204810,
+        "output_tokens": 2118,
+        "prompt_ms": 59156.50000000012,
+        "decode_ms": 27220.00000000006,
+        "drafts_offered": 1871,
+        "drafts_accepted": 1351
+      }
+    }
+  ],
+  "coding_passed": 9,
+  "coding_expected": 9,
+  "samples": 601,
+  "telemetry_errors": [],
+  "worker_vram_guard_error": null,
+  "failure": null,
+  "unchanged": {
+    "local_config_sha256": true,
+    "local_binary_sha256": true,
+    "local_source": true,
+    "local_source_diff_sha256": true,
+    "local_MainPID": true,
+    "local_InvocationID": true,
+    "local_ActiveState": true,
+    "remote_config_sha256": true,
+    "remote_binary_sha256": true,
+    "remote_source": true,
+    "remote_source_diff_sha256": true,
+    "remote_MainPID": true,
+    "remote_InvocationID": true,
+    "remote_ActiveState": true
+  },
+  "observed_peaks": {
+    "coordinator": {
+      "gpu_mem_used": 33507508224,
+      "gpu_util": 100,
+      "gpu_power": 198.94,
+      "ram_used": 24367718400,
+      "net_rx_mib_s": 91.64152821091868,
+      "net_tx_mib_s": 0.2090779535795304
+    },
+    "worker": {
+      "gpu_mem_used": 22273196032,
+      "gpu_util": 100,
+      "gpu_power": 320.054,
+      "ram_used": 49051336704,
+      "net_rx_mib_s": 0.23060852469971127,
+      "net_tx_mib_s": 91.30835268870757
+    }
+  },
+  "native_counter_deltas": {
+    "requests": 76,
+    "prompt_tokens": 3315714,
+    "reused": 2138255,
+    "output_tokens": 22678,
+    "prompt_ms": 896210.8000000002,
+    "decode_ms": 296886.6,
+    "drafts_offered": 19778,
+    "drafts_accepted": 14443
+  },
+  "native_requests_collected": 76
+}

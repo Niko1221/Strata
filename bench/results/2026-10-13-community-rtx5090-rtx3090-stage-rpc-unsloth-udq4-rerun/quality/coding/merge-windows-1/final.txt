@@ -1,0 +1,11 @@
+Done — all tests pass on the first run, no repair rounds needed.
+
+**Result:** 25/25 acceptance tests pass, 0 failures. `node --test acceptance.test.ts` reports the file as a single top-level pass (node 22 wraps the type-stripped file); running the file directly confirms all 25 individual tests pass, including the gap validation, invalid-window, frozen-input, and no-mutation cases.
+
+**Changed file:** [windows.ts](<ARTIFACTS>/quality/coding/merge-windows-1/project/windows.ts) only. The rewritten `mergeWindows`:
+
+- Validates `gap` (must be finite and ≥ 0, checked before anything else so even empty input throws) and each window (`start`/`end` finite, `start <= end`), throwing `RangeError` otherwise.
+- Copies windows into new objects before sorting by start then end, so the input array and its objects are never mutated (works even with frozen input).
+- Merges when `next.start - current.end <= gap`, which covers overlaps, touching endpoints, and gap-separated windows, and keeps `Math.max` of the ends so contained windows don't shrink a merged range.
+
+The exported `Window` type and function signature are preserved, and no tests, config, or other files were touched.

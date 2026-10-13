@@ -1,0 +1,16 @@
+Done — all acceptance tests pass on the first run, so no repair rounds were needed.
+
+Results (first and only run):
+
+- `node --test acceptance.test.ts` → exit 0, **1 pass / 0 fail** (the runner counts the file as one passing test file)
+- `node --test-reporter=spec acceptance.test.ts` (same file, individual test names) → **25 pass / 0 fail**
+
+Changed files: only [windows.ts](<ARTIFACTS>/quality/coding/merge-windows-2/project/windows.ts:1), which is the only file README allows. Tests, AGENTS.md, and config were untouched.
+
+What the fix does. The old version sorted the input array in place (mutating the caller's array), pushed the caller's own objects into the result and then mutated them, ignored `gap` entirely, merged only on strict `w.start < last.end` (so touching endpoints like `(1,3)`/`(3,5)` stayed split), and overwrote `last.end` with `w.end` even when a contained window ended earlier. The rewrite:
+
+- validates `gap` first (finite and nonnegative, default `0`, so even `mergeWindows([], -1)` throws `RangeError`), then validates every window up front — finite numeric `start`/`end` with `start <= end`, otherwise `RangeError`
+- works on a copied/normalized array, so the input array and its objects are never read-and-reordered or written to, and every returned window is a fresh object
+- sorts by `start` then `end`, and merges when `window.start <= last.end + gap`, extending the run only via `Math`-free `if (window.end > last.end)`, so the maximum end of a merged group wins even when later windows are contained
+
+The one subtlety worth flagging: merge uses `window.start <= last.end + gap`, which is exact for the fractional test case (`1.25 + 0.25 === 1.5`) but, like any float arithmetic, can differ from `window.start - last.end <= gap` on inputs with heavy rounding error. No test exercises that, and the README doesn't specify a preference.

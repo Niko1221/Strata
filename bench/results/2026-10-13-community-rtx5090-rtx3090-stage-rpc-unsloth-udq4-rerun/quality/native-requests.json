@@ -1,0 +1,3194 @@
+[
+  {
+    "projection": null,
+    "time": 1791921034.509496,
+    "duration_s": 33.8,
+    "finish": "stop",
+    "prompt_tokens": 32804,
+    "reused": 0,
+    "output_tokens": 9,
+    "prompt_total": 32804,
+    "prompt_read": 32804,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 9,
+    "prompt_ms": 33624.0,
+    "decode_ms": 164.9,
+    "decode_tok_s": 54.6,
+    "hit_rate": 0.915,
+    "pcie_share": 0.009,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 2471,
+          "lookups": 2700,
+          "hit_rate": 0.9151851851851852
+        },
+        "worker": {
+          "hits": 1375,
+          "lookups": 2013,
+          "hit_rate": 0.6830601092896175
+        }
+      },
+      "complete": true,
+      "hits": 3846,
+      "lookups": 4713,
+      "hit_rate": 0.8160407383831955
+    },
+    "ram_blobs": 285,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 8,
+    "drafts_accepted": 8
+  },
+  {
+    "projection": null,
+    "time": 1791921068.316322,
+    "duration_s": 23.2,
+    "finish": "stop",
+    "prompt_tokens": 32804,
+    "reused": 0,
+    "output_tokens": 9,
+    "prompt_total": 32804,
+    "prompt_read": 32804,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 9,
+    "prompt_ms": 23074.5,
+    "decode_ms": 160.4,
+    "decode_tok_s": 56.1,
+    "hit_rate": 0.947,
+    "pcie_share": 0.004,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 2614,
+          "lookups": 2761,
+          "hit_rate": 0.9467584208620066
+        },
+        "worker": {
+          "hits": 1458,
+          "lookups": 2051,
+          "hit_rate": 0.7108727450024378
+        }
+      },
+      "complete": true,
+      "hits": 4072,
+      "lookups": 4812,
+      "hit_rate": 0.8462177888611804
+    },
+    "ram_blobs": 188,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 8,
+    "drafts_accepted": 8
+  },
+  {
+    "projection": null,
+    "time": 1791921091.5762608,
+    "duration_s": 23.3,
+    "finish": "stop",
+    "prompt_tokens": 32805,
+    "reused": 0,
+    "output_tokens": 10,
+    "prompt_total": 32805,
+    "prompt_read": 32805,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 10,
+    "prompt_ms": 23173.3,
+    "decode_ms": 134.2,
+    "decode_tok_s": 74.5,
+    "hit_rate": 0.961,
+    "pcie_share": 0.002,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 2458,
+          "lookups": 2558,
+          "hit_rate": 0.9609069585613761
+        },
+        "worker": {
+          "hits": 1412,
+          "lookups": 1919,
+          "hit_rate": 0.7357998957790516
+        }
+      },
+      "complete": true,
+      "hits": 3870,
+      "lookups": 4477,
+      "hit_rate": 0.8644181371454098
+    },
+    "ram_blobs": 141,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 7,
+    "drafts_accepted": 6
+  },
+  {
+    "projection": null,
+    "time": 1791921114.9529777,
+    "duration_s": 106.8,
+    "finish": "stop",
+    "prompt_tokens": 124963,
+    "reused": 0,
+    "output_tokens": 10,
+    "prompt_total": 124963,
+    "prompt_read": 124963,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 10,
+    "prompt_ms": 106654.8,
+    "decode_ms": 137.3,
+    "decode_tok_s": 72.8,
+    "hit_rate": 0.974,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 2741,
+          "lookups": 2814,
+          "hit_rate": 0.9740582800284293
+        },
+        "worker": {
+          "hits": 1618,
+          "lookups": 2183,
+          "hit_rate": 0.7411818598259277
+        }
+      },
+      "complete": true,
+      "hits": 4359,
+      "lookups": 4997,
+      "hit_rate": 0.8723233940364219
+    },
+    "ram_blobs": 111,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 8,
+    "drafts_accepted": 6
+  },
+  {
+    "projection": null,
+    "time": 1791921221.8066022,
+    "duration_s": 90.7,
+    "finish": "stop",
+    "prompt_tokens": 124961,
+    "reused": 0,
+    "output_tokens": 9,
+    "prompt_total": 124961,
+    "prompt_read": 124961,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 9,
+    "prompt_ms": 90484.4,
+    "decode_ms": 175.6,
+    "decode_tok_s": 51.3,
+    "hit_rate": 0.984,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 3714,
+          "lookups": 3774,
+          "hit_rate": 0.9841017488076311
+        },
+        "worker": {
+          "hits": 2191,
+          "lookups": 2866,
+          "hit_rate": 0.764480111653873
+        }
+      },
+      "complete": true,
+      "hits": 5905,
+      "lookups": 6640,
+      "hit_rate": 0.8893072289156626
+    },
+    "ram_blobs": 82,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 11,
+    "drafts_accepted": 4
+  },
+  {
+    "projection": null,
+    "time": 1791921312.5269692,
+    "duration_s": 88.1,
+    "finish": "stop",
+    "prompt_tokens": 124961,
+    "reused": 0,
+    "output_tokens": 9,
+    "prompt_total": 124961,
+    "prompt_read": 124961,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 9,
+    "prompt_ms": 87978.2,
+    "decode_ms": 149.9,
+    "decode_tok_s": 60.0,
+    "hit_rate": 0.988,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 3010,
+          "lookups": 3046,
+          "hit_rate": 0.9881812212738017
+        },
+        "worker": {
+          "hits": 1644,
+          "lookups": 2274,
+          "hit_rate": 0.7229551451187335
+        }
+      },
+      "complete": true,
+      "hits": 4654,
+      "lookups": 5320,
+      "hit_rate": 0.8748120300751879
+    },
+    "ram_blobs": 56,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 8,
+    "drafts_accepted": 7
+  },
+  {
+    "projection": null,
+    "time": 1791921402.0496407,
+    "duration_s": 29.2,
+    "finish": "stop",
+    "prompt_tokens": 37662,
+    "reused": 0,
+    "output_tokens": 43,
+    "prompt_total": 37662,
+    "prompt_read": 37662,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 43,
+    "prompt_ms": 28606.3,
+    "decode_ms": 543.5,
+    "decode_tok_s": 79.1,
+    "hit_rate": 0.91,
+    "pcie_share": 0.011,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 9713,
+          "lookups": 10678,
+          "hit_rate": 0.9096272710245364
+        },
+        "worker": {
+          "hits": 5945,
+          "lookups": 8308,
+          "hit_rate": 0.7155753490611458
+        }
+      },
+      "complete": true,
+      "hits": 15658,
+      "lookups": 18986,
+      "hit_rate": 0.8247129463815442
+    },
+    "ram_blobs": 1029,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 34,
+    "drafts_accepted": 30
+  },
+  {
+    "projection": null,
+    "time": 1791921431.3724794,
+    "duration_s": 29.1,
+    "finish": "stop",
+    "prompt_tokens": 38610,
+    "reused": 0,
+    "output_tokens": 77,
+    "prompt_total": 38610,
+    "prompt_read": 38610,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 77,
+    "prompt_ms": 28031.0,
+    "decode_ms": 1027.5,
+    "decode_tok_s": 74.9,
+    "hit_rate": 0.968,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 23063,
+          "lookups": 23822,
+          "hit_rate": 0.9681386953236504
+        },
+        "worker": {
+          "hits": 14823,
+          "lookups": 19240,
+          "hit_rate": 0.7704261954261954
+        }
+      },
+      "complete": true,
+      "hits": 37886,
+      "lookups": 43062,
+      "hit_rate": 0.879801216850123
+    },
+    "ram_blobs": 833,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 72,
+    "drafts_accepted": 52
+  },
+  {
+    "projection": null,
+    "time": 1791921460.508397,
+    "duration_s": 14.2,
+    "finish": "stop",
+    "prompt_tokens": 39676,
+    "reused": 38691,
+    "output_tokens": 917,
+    "prompt_total": 39676,
+    "prompt_read": 985,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 917,
+    "prompt_ms": 1079.9,
+    "decode_ms": 13142.3,
+    "decode_tok_s": 69.8,
+    "hit_rate": 0.966,
+    "pcie_share": 0.002,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 247810,
+          "lookups": 256559,
+          "hit_rate": 0.9658986821744706
+        },
+        "worker": {
+          "hits": 105107,
+          "lookups": 175328,
+          "hit_rate": 0.5994878171199124
+        }
+      },
+      "complete": true,
+      "hits": 352917,
+      "lookups": 431887,
+      "hit_rate": 0.8171512455804412
+    },
+    "ram_blobs": 9297,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 797,
+    "drafts_accepted": 616
+  },
+  {
+    "projection": null,
+    "time": 1791921474.8172934,
+    "duration_s": 1.8,
+    "finish": "stop",
+    "prompt_tokens": 40635,
+    "reused": 40594,
+    "output_tokens": 103,
+    "prompt_total": 40635,
+    "prompt_read": 41,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 103,
+    "prompt_ms": 386.9,
+    "decode_ms": 1442.6,
+    "decode_tok_s": 71.4,
+    "hit_rate": 0.953,
+    "pcie_share": 0.003,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 27286,
+          "lookups": 28617,
+          "hit_rate": 0.9534891847503232
+        },
+        "worker": {
+          "hits": 17677,
+          "lookups": 23135,
+          "hit_rate": 0.7640803976658742
+        }
+      },
+      "complete": true,
+      "hits": 44963,
+      "lookups": 51752,
+      "hit_rate": 0.8688166640902767
+    },
+    "ram_blobs": 1664,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 76,
+    "drafts_accepted": 57
+  },
+  {
+    "projection": null,
+    "time": 1791921476.8594131,
+    "duration_s": 4.2,
+    "finish": "stop",
+    "prompt_tokens": 40898,
+    "reused": 40738,
+    "output_tokens": 278,
+    "prompt_total": 40898,
+    "prompt_read": 160,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 278,
+    "prompt_ms": 457.1,
+    "decode_ms": 3737.8,
+    "decode_tok_s": 74.4,
+    "hit_rate": 0.987,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 91016,
+          "lookups": 92232,
+          "hit_rate": 0.9868158556683146
+        },
+        "worker": {
+          "hits": 59471,
+          "lookups": 74842,
+          "hit_rate": 0.7946206675396168
+        }
+      },
+      "complete": true,
+      "hits": 150487,
+      "lookups": 167074,
+      "hit_rate": 0.9007206387588733
+    },
+    "ram_blobs": 1391,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 250,
+    "drafts_accepted": 140
+  },
+  {
+    "projection": null,
+    "time": 1791921481.2553256,
+    "duration_s": 2.9,
+    "finish": "stop",
+    "prompt_tokens": 41303,
+    "reused": 41176,
+    "output_tokens": 191,
+    "prompt_total": 41303,
+    "prompt_read": 127,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 191,
+    "prompt_ms": 427.5,
+    "decode_ms": 2509.2,
+    "decode_tok_s": 76.1,
+    "hit_rate": 0.994,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 63757,
+          "lookups": 64145,
+          "hit_rate": 0.9939512043027515
+        },
+        "worker": {
+          "hits": 40406,
+          "lookups": 51340,
+          "hit_rate": 0.7870276587456174
+        }
+      },
+      "complete": true,
+      "hits": 104163,
+      "lookups": 115485,
+      "hit_rate": 0.9019612936745032
+    },
+    "ram_blobs": 447,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 175,
+    "drafts_accepted": 98
+  },
+  {
+    "projection": null,
+    "time": 1791921484.3837798,
+    "duration_s": 5.2,
+    "finish": "stop",
+    "prompt_tokens": 41780,
+    "reused": 41494,
+    "output_tokens": 384,
+    "prompt_total": 41780,
+    "prompt_read": 286,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 384,
+    "prompt_ms": 601.9,
+    "decode_ms": 4560.1,
+    "decode_tok_s": 84.2,
+    "hit_rate": 0.987,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 117686,
+          "lookups": 119281,
+          "hit_rate": 0.986628214049178
+        },
+        "worker": {
+          "hits": 76151,
+          "lookups": 95552,
+          "hit_rate": 0.7969587240455459
+        }
+      },
+      "complete": true,
+      "hits": 193837,
+      "lookups": 214833,
+      "hit_rate": 0.9022682734961575
+    },
+    "ram_blobs": 1826,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 359,
+    "drafts_accepted": 242
+  },
+  {
+    "projection": null,
+    "time": 1791921491.5119655,
+    "duration_s": 27.5,
+    "finish": "stop",
+    "prompt_tokens": 37662,
+    "reused": 0,
+    "output_tokens": 52,
+    "prompt_total": 37662,
+    "prompt_read": 37662,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 52,
+    "prompt_ms": 26979.1,
+    "decode_ms": 539.4,
+    "decode_tok_s": 96.4,
+    "hit_rate": 0.976,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 13080,
+          "lookups": 13404,
+          "hit_rate": 0.9758281110116384
+        },
+        "worker": {
+          "hits": 7997,
+          "lookups": 10494,
+          "hit_rate": 0.7620545073375262
+        }
+      },
+      "complete": true,
+      "hits": 21077,
+      "lookups": 23898,
+      "hit_rate": 0.8819566490919742
+    },
+    "ram_blobs": 369,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 42,
+    "drafts_accepted": 39
+  },
+  {
+    "projection": null,
+    "time": 1791921519.151753,
+    "duration_s": 28.9,
+    "finish": "stop",
+    "prompt_tokens": 38618,
+    "reused": 0,
+    "output_tokens": 82,
+    "prompt_total": 38618,
+    "prompt_read": 38618,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 82,
+    "prompt_ms": 28002.3,
+    "decode_ms": 904.9,
+    "decode_tok_s": 90.6,
+    "hit_rate": 0.989,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 22514,
+          "lookups": 22762,
+          "hit_rate": 0.9891046480977067
+        },
+        "worker": {
+          "hits": 13413,
+          "lookups": 17852,
+          "hit_rate": 0.7513443871835088
+        }
+      },
+      "complete": true,
+      "hits": 35927,
+      "lookups": 40614,
+      "hit_rate": 0.884596444575762
+    },
+    "ram_blobs": 277,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 66,
+    "drafts_accepted": 55
+  },
+  {
+    "projection": null,
+    "time": 1791921548.1469345,
+    "duration_s": 12.0,
+    "finish": "stop",
+    "prompt_tokens": 39690,
+    "reused": 38702,
+    "output_tokens": 853,
+    "prompt_total": 39690,
+    "prompt_read": 988,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 853,
+    "prompt_ms": 1018.9,
+    "decode_ms": 10991.2,
+    "decode_tok_s": 77.6,
+    "hit_rate": 0.983,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 234754,
+          "lookups": 238847,
+          "hit_rate": 0.9828635067637441
+        },
+        "worker": {
+          "hits": 110242,
+          "lookups": 170875,
+          "hit_rate": 0.6451616678858815
+        }
+      },
+      "complete": true,
+      "hits": 344996,
+      "lookups": 409722,
+      "hit_rate": 0.8420245922845246
+    },
+    "ram_blobs": 4871,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 718,
+    "drafts_accepted": 560
+  },
+  {
+    "projection": null,
+    "time": 1791921560.3340511,
+    "duration_s": 1.4,
+    "finish": "stop",
+    "prompt_tokens": 40701,
+    "reused": 40545,
+    "output_tokens": 76,
+    "prompt_total": 40701,
+    "prompt_read": 156,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 76,
+    "prompt_ms": 421.1,
+    "decode_ms": 941.1,
+    "decode_tok_s": 80.8,
+    "hit_rate": 0.979,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 21198,
+          "lookups": 21656,
+          "hit_rate": 0.9788511267085335
+        },
+        "worker": {
+          "hits": 11557,
+          "lookups": 16262,
+          "hit_rate": 0.7106751937031115
+        }
+      },
+      "complete": true,
+      "hits": 32755,
+      "lookups": 37918,
+      "hit_rate": 0.8638377551558627
+    },
+    "ram_blobs": 566,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 67,
+    "drafts_accepted": 53
+  },
+  {
+    "projection": null,
+    "time": 1791921561.8938704,
+    "duration_s": 2.4,
+    "finish": "stop",
+    "prompt_tokens": 40889,
+    "reused": 40778,
+    "output_tokens": 162,
+    "prompt_total": 40889,
+    "prompt_read": 111,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 162,
+    "prompt_ms": 397.0,
+    "decode_ms": 2000.7,
+    "decode_tok_s": 81.0,
+    "hit_rate": 0.991,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 53414,
+          "lookups": 53899,
+          "hit_rate": 0.9910016883430119
+        },
+        "worker": {
+          "hits": 35527,
+          "lookups": 43887,
+          "hit_rate": 0.8095107890719347
+        }
+      },
+      "complete": true,
+      "hits": 88941,
+      "lookups": 97786,
+      "hit_rate": 0.9095473789704047
+    },
+    "ram_blobs": 606,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 157,
+    "drafts_accepted": 95
+  },
+  {
+    "projection": null,
+    "time": 1791921564.4397266,
+    "duration_s": 7.4,
+    "finish": "stop",
+    "prompt_tokens": 41541,
+    "reused": 41053,
+    "output_tokens": 578,
+    "prompt_total": 41541,
+    "prompt_read": 488,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 578,
+    "prompt_ms": 707.2,
+    "decode_ms": 6729.3,
+    "decode_tok_s": 85.9,
+    "hit_rate": 0.988,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 176917,
+          "lookups": 179137,
+          "hit_rate": 0.9876072503167966
+        },
+        "worker": {
+          "hits": 115234,
+          "lookups": 144074,
+          "hit_rate": 0.799825089884365
+        }
+      },
+      "complete": true,
+      "hits": 292151,
+      "lookups": 323211,
+      "hit_rate": 0.9039017855209136
+    },
+    "ram_blobs": 2526,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 542,
+    "drafts_accepted": 368
+  },
+  {
+    "projection": null,
+    "time": 1791921573.5038624,
+    "duration_s": 27.6,
+    "finish": "stop",
+    "prompt_tokens": 37662,
+    "reused": 0,
+    "output_tokens": 43,
+    "prompt_total": 37662,
+    "prompt_read": 37662,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 43,
+    "prompt_ms": 27034.3,
+    "decode_ms": 569.9,
+    "decode_tok_s": 75.5,
+    "hit_rate": 0.964,
+    "pcie_share": 0.003,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 11910,
+          "lookups": 12358,
+          "hit_rate": 0.9637481793170416
+        },
+        "worker": {
+          "hits": 6610,
+          "lookups": 9363,
+          "hit_rate": 0.7059703086617537
+        }
+      },
+      "complete": true,
+      "hits": 18520,
+      "lookups": 21721,
+      "hit_rate": 0.8526310943326735
+    },
+    "ram_blobs": 520,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 38,
+    "drafts_accepted": 28
+  },
+  {
+    "projection": null,
+    "time": 1791921601.2309124,
+    "duration_s": 29.0,
+    "finish": "stop",
+    "prompt_tokens": 38609,
+    "reused": 0,
+    "output_tokens": 79,
+    "prompt_total": 38609,
+    "prompt_read": 38609,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 79,
+    "prompt_ms": 28031.4,
+    "decode_ms": 921.0,
+    "decode_tok_s": 85.8,
+    "hit_rate": 0.989,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 25030,
+          "lookups": 25321,
+          "hit_rate": 0.9885075628924608
+        },
+        "worker": {
+          "hits": 17173,
+          "lookups": 21053,
+          "hit_rate": 0.8157032251935591
+        }
+      },
+      "complete": true,
+      "hits": 42203,
+      "lookups": 46374,
+      "hit_rate": 0.9100573597274335
+    },
+    "ram_blobs": 334,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 76,
+    "drafts_accepted": 49
+  },
+  {
+    "projection": null,
+    "time": 1791921630.2885714,
+    "duration_s": 7.5,
+    "finish": "stop",
+    "prompt_tokens": 39668,
+    "reused": 38688,
+    "output_tokens": 469,
+    "prompt_total": 39668,
+    "prompt_read": 980,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 469,
+    "prompt_ms": 999.9,
+    "decode_ms": 6521.8,
+    "decode_tok_s": 71.9,
+    "hit_rate": 0.978,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 124410,
+          "lookups": 127146,
+          "hit_rate": 0.9784814307960927
+        },
+        "worker": {
+          "hits": 42899,
+          "lookups": 82093,
+          "hit_rate": 0.5225658704152607
+        }
+      },
+      "complete": true,
+      "hits": 167309,
+      "lookups": 209239,
+      "hit_rate": 0.7996071478070532
+    },
+    "ram_blobs": 3293,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 400,
+    "drafts_accepted": 329
+  },
+  {
+    "projection": null,
+    "time": 1791921637.8603485,
+    "duration_s": 1.8,
+    "finish": "stop",
+    "prompt_tokens": 40181,
+    "reused": 40139,
+    "output_tokens": 96,
+    "prompt_total": 40181,
+    "prompt_read": 42,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 96,
+    "prompt_ms": 405.9,
+    "decode_ms": 1398.4,
+    "decode_tok_s": 68.6,
+    "hit_rate": 0.978,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 27832,
+          "lookups": 28461,
+          "hit_rate": 0.9778995818839816
+        },
+        "worker": {
+          "hits": 14877,
+          "lookups": 21227,
+          "hit_rate": 0.7008526876148302
+        }
+      },
+      "complete": true,
+      "hits": 42709,
+      "lookups": 49688,
+      "hit_rate": 0.8595435517630011
+    },
+    "ram_blobs": 850,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 80,
+    "drafts_accepted": 55
+  },
+  {
+    "projection": null,
+    "time": 1791921639.8681037,
+    "duration_s": 3.2,
+    "finish": "stop",
+    "prompt_tokens": 40434,
+    "reused": 40276,
+    "output_tokens": 192,
+    "prompt_total": 40434,
+    "prompt_read": 158,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 192,
+    "prompt_ms": 440.8,
+    "decode_ms": 2725.5,
+    "decode_tok_s": 70.4,
+    "hit_rate": 0.986,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 62330,
+          "lookups": 63239,
+          "hit_rate": 0.985625958664748
+        },
+        "worker": {
+          "hits": 34225,
+          "lookups": 47936,
+          "hit_rate": 0.7139727970627503
+        }
+      },
+      "complete": true,
+      "hits": 96555,
+      "lookups": 111175,
+      "hit_rate": 0.8684956150213627
+    },
+    "ram_blobs": 1026,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 179,
+    "drafts_accepted": 107
+  },
+  {
+    "projection": null,
+    "time": 1791921643.322348,
+    "duration_s": 2.1,
+    "finish": "stop",
+    "prompt_tokens": 40720,
+    "reused": 40628,
+    "output_tokens": 136,
+    "prompt_total": 40720,
+    "prompt_read": 92,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 136,
+    "prompt_ms": 359.5,
+    "decode_ms": 1724.9,
+    "decode_tok_s": 78.8,
+    "hit_rate": 0.991,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 38343,
+          "lookups": 38681,
+          "hit_rate": 0.9912618598278224
+        },
+        "worker": {
+          "hits": 18301,
+          "lookups": 27856,
+          "hit_rate": 0.6569859276278002
+        }
+      },
+      "complete": true,
+      "hits": 56644,
+      "lookups": 66537,
+      "hit_rate": 0.8513158092489893
+    },
+    "ram_blobs": 385,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 109,
+    "drafts_accepted": 84
+  },
+  {
+    "projection": null,
+    "time": 1791921645.6954668,
+    "duration_s": 3.3,
+    "finish": "stop",
+    "prompt_tokens": 40923,
+    "reused": 40857,
+    "output_tokens": 194,
+    "prompt_total": 40923,
+    "prompt_read": 66,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 194,
+    "prompt_ms": 616.2,
+    "decode_ms": 2639.1,
+    "decode_tok_s": 73.5,
+    "hit_rate": 0.994,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 62718,
+          "lookups": 63088,
+          "hit_rate": 0.9941351762617296
+        },
+        "worker": {
+          "hits": 35668,
+          "lookups": 48336,
+          "hit_rate": 0.7379179079774909
+        }
+      },
+      "complete": true,
+      "hits": 98386,
+      "lookups": 111424,
+      "hit_rate": 0.8829875071797817
+    },
+    "ram_blobs": 531,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 173,
+    "drafts_accepted": 104
+  },
+  {
+    "projection": null,
+    "time": 1791921649.253823,
+    "duration_s": 4.8,
+    "finish": "stop",
+    "prompt_tokens": 41228,
+    "reused": 41118,
+    "output_tokens": 372,
+    "prompt_total": 41228,
+    "prompt_read": 110,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 372,
+    "prompt_ms": 388.0,
+    "decode_ms": 4359.2,
+    "decode_tok_s": 85.3,
+    "hit_rate": 0.989,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 117219,
+          "lookups": 118576,
+          "hit_rate": 0.9885558629064903
+        },
+        "worker": {
+          "hits": 76429,
+          "lookups": 95539,
+          "hit_rate": 0.7999769727545819
+        }
+      },
+      "complete": true,
+      "hits": 193648,
+      "lookups": 214115,
+      "hit_rate": 0.9044111809074563
+    },
+    "ram_blobs": 1594,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 362,
+    "drafts_accepted": 236
+  },
+  {
+    "projection": null,
+    "time": 1791921655.77657,
+    "duration_s": 27.8,
+    "finish": "stop",
+    "prompt_tokens": 37662,
+    "reused": 0,
+    "output_tokens": 63,
+    "prompt_total": 37662,
+    "prompt_read": 37662,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 63,
+    "prompt_ms": 27087.2,
+    "decode_ms": 662.9,
+    "decode_tok_s": 95.0,
+    "hit_rate": 0.979,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 16538,
+          "lookups": 16885,
+          "hit_rate": 0.9794492152798342
+        },
+        "worker": {
+          "hits": 10509,
+          "lookups": 13420,
+          "hit_rate": 0.7830849478390463
+        }
+      },
+      "complete": true,
+      "hits": 27047,
+      "lookups": 30305,
+      "hit_rate": 0.8924929879557829
+    },
+    "ram_blobs": 422,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 53,
+    "drafts_accepted": 44
+  },
+  {
+    "projection": null,
+    "time": 1791921683.6474564,
+    "duration_s": 31.3,
+    "finish": "stop",
+    "prompt_tokens": 38672,
+    "reused": 0,
+    "output_tokens": 232,
+    "prompt_total": 38672,
+    "prompt_read": 38672,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 232,
+    "prompt_ms": 28080.5,
+    "decode_ms": 3252.8,
+    "decode_tok_s": 71.3,
+    "hit_rate": 0.977,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 65597,
+          "lookups": 67131,
+          "hit_rate": 0.9771491561275715
+        },
+        "worker": {
+          "hits": 38107,
+          "lookups": 51713,
+          "hit_rate": 0.7368940111770734
+        }
+      },
+      "complete": true,
+      "hits": 103704,
+      "lookups": 118844,
+      "hit_rate": 0.8726061054828178
+    },
+    "ram_blobs": 1718,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 174,
+    "drafts_accepted": 123
+  },
+  {
+    "projection": null,
+    "time": 1791921715.0874438,
+    "duration_s": 2.6,
+    "finish": "stop",
+    "prompt_tokens": 40102,
+    "reused": 38905,
+    "output_tokens": 65,
+    "prompt_total": 40102,
+    "prompt_read": 1197,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 65,
+    "prompt_ms": 1886.5,
+    "decode_ms": 747.0,
+    "decode_tok_s": 87.0,
+    "hit_rate": 0.99,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 19020,
+          "lookups": 19204,
+          "hit_rate": 0.9904186627785878
+        },
+        "worker": {
+          "hits": 11639,
+          "lookups": 15041,
+          "hit_rate": 0.7738182301708663
+        }
+      },
+      "complete": true,
+      "hits": 30659,
+      "lookups": 34245,
+      "hit_rate": 0.8952839830632209
+    },
+    "ram_blobs": 222,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 57,
+    "drafts_accepted": 41
+  },
+  {
+    "projection": null,
+    "time": 1791921717.8249636,
+    "duration_s": 12.0,
+    "finish": "stop",
+    "prompt_tokens": 40229,
+    "reused": 40166,
+    "output_tokens": 842,
+    "prompt_total": 40229,
+    "prompt_read": 63,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 842,
+    "prompt_ms": 587.6,
+    "decode_ms": 11431.0,
+    "decode_tok_s": 73.7,
+    "hit_rate": 0.979,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 235034,
+          "lookups": 240158,
+          "hit_rate": 0.978664046169605
+        },
+        "worker": {
+          "hits": 113614,
+          "lookups": 172067,
+          "hit_rate": 0.6602893059099072
+        }
+      },
+      "complete": true,
+      "hits": 348648,
+      "lookups": 412225,
+      "hit_rate": 0.8457711201406999
+    },
+    "ram_blobs": 6346,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 723,
+    "drafts_accepted": 544
+  },
+  {
+    "projection": null,
+    "time": 1791921729.9198668,
+    "duration_s": 7.2,
+    "finish": "stop",
+    "prompt_tokens": 41147,
+    "reused": 41072,
+    "output_tokens": 491,
+    "prompt_total": 41147,
+    "prompt_read": 75,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 491,
+    "prompt_ms": 342.1,
+    "decode_ms": 6850.7,
+    "decode_tok_s": 71.7,
+    "hit_rate": 0.974,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 123423,
+          "lookups": 126773,
+          "hit_rate": 0.9735748148265009
+        },
+        "worker": {
+          "hits": 44363,
+          "lookups": 80596,
+          "hit_rate": 0.5504367462405082
+        }
+      },
+      "complete": true,
+      "hits": 167786,
+      "lookups": 207369,
+      "hit_rate": 0.8091180456095174
+    },
+    "ram_blobs": 4083,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 406,
+    "drafts_accepted": 356
+  },
+  {
+    "projection": null,
+    "time": 1791921737.1942353,
+    "duration_s": 2.1,
+    "finish": "stop",
+    "prompt_tokens": 41680,
+    "reused": 41639,
+    "output_tokens": 134,
+    "prompt_total": 41680,
+    "prompt_read": 41,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 134,
+    "prompt_ms": 409.3,
+    "decode_ms": 1710.2,
+    "decode_tok_s": 78.4,
+    "hit_rate": 0.963,
+    "pcie_share": 0.003,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 37373,
+          "lookups": 38812,
+          "hit_rate": 0.9629238379882511
+        },
+        "worker": {
+          "hits": 24308,
+          "lookups": 31377,
+          "hit_rate": 0.7747075883609013
+        }
+      },
+      "complete": true,
+      "hits": 61681,
+      "lookups": 70189,
+      "hit_rate": 0.8787844249098862
+    },
+    "ram_blobs": 1846,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 117,
+    "drafts_accepted": 86
+  },
+  {
+    "projection": null,
+    "time": 1791921739.503805,
+    "duration_s": 2.5,
+    "finish": "stop",
+    "prompt_tokens": 41973,
+    "reused": 41814,
+    "output_tokens": 152,
+    "prompt_total": 41973,
+    "prompt_read": 159,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 152,
+    "prompt_ms": 464.7,
+    "decode_ms": 2003.7,
+    "decode_tok_s": 75.9,
+    "hit_rate": 0.978,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 43565,
+          "lookups": 44563,
+          "hit_rate": 0.9776047393577632
+        },
+        "worker": {
+          "hits": 27402,
+          "lookups": 35455,
+          "hit_rate": 0.7728670145254548
+        }
+      },
+      "complete": true,
+      "hits": 70967,
+      "lookups": 80018,
+      "hit_rate": 0.8868879502112025
+    },
+    "ram_blobs": 1176,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 119,
+    "drafts_accepted": 84
+  },
+  {
+    "projection": null,
+    "time": 1791921742.1745098,
+    "duration_s": 3.0,
+    "finish": "stop",
+    "prompt_tokens": 42253,
+    "reused": 42126,
+    "output_tokens": 191,
+    "prompt_total": 42253,
+    "prompt_read": 127,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 191,
+    "prompt_ms": 420.1,
+    "decode_ms": 2611.1,
+    "decode_tok_s": 73.1,
+    "hit_rate": 0.992,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 64443,
+          "lookups": 64982,
+          "hit_rate": 0.991705395340248
+        },
+        "worker": {
+          "hits": 40101,
+          "lookups": 51830,
+          "hit_rate": 0.773702488906039
+        }
+      },
+      "complete": true,
+      "hits": 104544,
+      "lookups": 116812,
+      "hit_rate": 0.8949765435058042
+    },
+    "ram_blobs": 616,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 179,
+    "drafts_accepted": 97
+  },
+  {
+    "projection": null,
+    "time": 1791921745.412574,
+    "duration_s": 3.7,
+    "finish": "stop",
+    "prompt_tokens": 42602,
+    "reused": 42443,
+    "output_tokens": 253,
+    "prompt_total": 42602,
+    "prompt_read": 159,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 253,
+    "prompt_ms": 478.8,
+    "decode_ms": 3233.0,
+    "decode_tok_s": 78.3,
+    "hit_rate": 0.992,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 78613,
+          "lookups": 79251,
+          "hit_rate": 0.9919496283958562
+        },
+        "worker": {
+          "hits": 46584,
+          "lookups": 61906,
+          "hit_rate": 0.7524957193163829
+        }
+      },
+      "complete": true,
+      "hits": 125197,
+      "lookups": 141157,
+      "hit_rate": 0.8869344063702119
+    },
+    "ram_blobs": 695,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 216,
+    "drafts_accepted": 137
+  },
+  {
+    "projection": null,
+    "time": 1791921749.3742826,
+    "duration_s": 2.1,
+    "finish": "stop",
+    "prompt_tokens": 43186,
+    "reused": 42855,
+    "output_tokens": 122,
+    "prompt_total": 43186,
+    "prompt_read": 331,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 122,
+    "prompt_ms": 649.0,
+    "decode_ms": 1407.9,
+    "decode_tok_s": 86.7,
+    "hit_rate": 0.991,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 35240,
+          "lookups": 35576,
+          "hit_rate": 0.9905554306273893
+        },
+        "worker": {
+          "hits": 21676,
+          "lookups": 28064,
+          "hit_rate": 0.7723774230330672
+        }
+      },
+      "complete": true,
+      "hits": 56916,
+      "lookups": 63640,
+      "hit_rate": 0.8943431803896921
+    },
+    "ram_blobs": 383,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 104,
+    "drafts_accepted": 79
+  },
+  {
+    "projection": null,
+    "time": 1791921751.5155299,
+    "duration_s": 6.7,
+    "finish": "stop",
+    "prompt_tokens": 43383,
+    "reused": 43310,
+    "output_tokens": 547,
+    "prompt_total": 43383,
+    "prompt_read": 73,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 547,
+    "prompt_ms": 345.1,
+    "decode_ms": 6370.8,
+    "decode_tok_s": 85.9,
+    "hit_rate": 0.984,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 156241,
+          "lookups": 158710,
+          "hit_rate": 0.9844433243021864
+        },
+        "worker": {
+          "hits": 91545,
+          "lookups": 121993,
+          "hit_rate": 0.7504119088800177
+        }
+      },
+      "complete": true,
+      "hits": 247786,
+      "lookups": 280703,
+      "hit_rate": 0.8827337078691714
+    },
+    "ram_blobs": 2902,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 486,
+    "drafts_accepted": 363
+  },
+  {
+    "projection": null,
+    "time": 1791921760.0840995,
+    "duration_s": 28.5,
+    "finish": "stop",
+    "prompt_tokens": 37662,
+    "reused": 0,
+    "output_tokens": 117,
+    "prompt_total": 37662,
+    "prompt_read": 37662,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 117,
+    "prompt_ms": 27036.6,
+    "decode_ms": 1480.6,
+    "decode_tok_s": 79.0,
+    "hit_rate": 0.961,
+    "pcie_share": 0.003,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 30060,
+          "lookups": 31284,
+          "hit_rate": 0.9608745684695051
+        },
+        "worker": {
+          "hits": 16620,
+          "lookups": 23435,
+          "hit_rate": 0.7091956475357372
+        }
+      },
+      "complete": true,
+      "hits": 46680,
+      "lookups": 54719,
+      "hit_rate": 0.85308576545624
+    },
+    "ram_blobs": 1569,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 99,
+    "drafts_accepted": 81
+  },
+  {
+    "projection": null,
+    "time": 1791921788.7235687,
+    "duration_s": 30.2,
+    "finish": "stop",
+    "prompt_tokens": 38725,
+    "reused": 0,
+    "output_tokens": 171,
+    "prompt_total": 38725,
+    "prompt_read": 38725,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 171,
+    "prompt_ms": 28045.6,
+    "decode_ms": 2109.8,
+    "decode_tok_s": 81.1,
+    "hit_rate": 0.958,
+    "pcie_share": 0.003,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 42824,
+          "lookups": 44694,
+          "hit_rate": 0.9581599319819215
+        },
+        "worker": {
+          "hits": 22411,
+          "lookups": 32740,
+          "hit_rate": 0.6845143555284057
+        }
+      },
+      "complete": true,
+      "hits": 65235,
+      "lookups": 77434,
+      "hit_rate": 0.8424593847663817
+    },
+    "ram_blobs": 1943,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 143,
+    "drafts_accepted": 124
+  },
+  {
+    "projection": null,
+    "time": 1791921818.9882095,
+    "duration_s": 5.5,
+    "finish": "stop",
+    "prompt_tokens": 40215,
+    "reused": 38897,
+    "output_tokens": 291,
+    "prompt_total": 40215,
+    "prompt_read": 1318,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 291,
+    "prompt_ms": 1881.3,
+    "decode_ms": 3574.0,
+    "decode_tok_s": 81.4,
+    "hit_rate": 0.987,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 96237,
+          "lookups": 97536,
+          "hit_rate": 0.9866818405511811
+        },
+        "worker": {
+          "hits": 65122,
+          "lookups": 80114,
+          "hit_rate": 0.8128666650023716
+        }
+      },
+      "complete": true,
+      "hits": 161359,
+      "lookups": 177650,
+      "hit_rate": 0.908297213622291
+    },
+    "ram_blobs": 1419,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 288,
+    "drafts_accepted": 168
+  },
+  {
+    "projection": null,
+    "time": 1791921824.5541334,
+    "duration_s": 7.6,
+    "finish": "stop",
+    "prompt_tokens": 40565,
+    "reused": 40505,
+    "output_tokens": 527,
+    "prompt_total": 40565,
+    "prompt_read": 60,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 527,
+    "prompt_ms": 560.8,
+    "decode_ms": 7045.9,
+    "decode_tok_s": 74.8,
+    "hit_rate": 0.97,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 127316,
+          "lookups": 131232,
+          "hit_rate": 0.9701597171421604
+        },
+        "worker": {
+          "hits": 45613,
+          "lookups": 85048,
+          "hit_rate": 0.5363206659768601
+        }
+      },
+      "complete": true,
+      "hits": 172929,
+      "lookups": 216280,
+      "hit_rate": 0.7995607545773996
+    },
+    "ram_blobs": 4811,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 413,
+    "drafts_accepted": 378
+  },
+  {
+    "projection": null,
+    "time": 1791921832.2376294,
+    "duration_s": 7.9,
+    "finish": "stop",
+    "prompt_tokens": 41168,
+    "reused": 41093,
+    "output_tokens": 546,
+    "prompt_total": 41168,
+    "prompt_read": 75,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 546,
+    "prompt_ms": 325.2,
+    "decode_ms": 7603.2,
+    "decode_tok_s": 71.8,
+    "hit_rate": 0.976,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 143259,
+          "lookups": 146780,
+          "hit_rate": 0.9760117182177408
+        },
+        "worker": {
+          "hits": 58955,
+          "lookups": 97608,
+          "hit_rate": 0.6039976231456438
+        }
+      },
+      "complete": true,
+      "hits": 202214,
+      "lookups": 244388,
+      "hit_rate": 0.8274301520532923
+    },
+    "ram_blobs": 4278,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 454,
+    "drafts_accepted": 375
+  },
+  {
+    "projection": null,
+    "time": 1791921840.2412186,
+    "duration_s": 3.1,
+    "finish": "stop",
+    "prompt_tokens": 41756,
+    "reused": 41715,
+    "output_tokens": 195,
+    "prompt_total": 41756,
+    "prompt_read": 41,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 195,
+    "prompt_ms": 406.8,
+    "decode_ms": 2660.7,
+    "decode_tok_s": 73.3,
+    "hit_rate": 0.966,
+    "pcie_share": 0.003,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 56451,
+          "lookups": 58433,
+          "hit_rate": 0.9660808105009155
+        },
+        "worker": {
+          "hits": 33214,
+          "lookups": 45238,
+          "hit_rate": 0.7342057562226447
+        }
+      },
+      "complete": true,
+      "hits": 89665,
+      "lookups": 103671,
+      "hit_rate": 0.8648995379614357
+    },
+    "ram_blobs": 2519,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 177,
+    "drafts_accepted": 122
+  },
+  {
+    "projection": null,
+    "time": 1791921843.5120351,
+    "duration_s": 5.2,
+    "finish": "stop",
+    "prompt_tokens": 42107,
+    "reused": 41950,
+    "output_tokens": 351,
+    "prompt_total": 42107,
+    "prompt_read": 157,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 351,
+    "prompt_ms": 446.8,
+    "decode_ms": 4718.7,
+    "decode_tok_s": 74.4,
+    "hit_rate": 0.986,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 114665,
+          "lookups": 116253,
+          "hit_rate": 0.9863401374588183
+        },
+        "worker": {
+          "hits": 71686,
+          "lookups": 92278,
+          "hit_rate": 0.7768482195106092
+        }
+      },
+      "complete": true,
+      "hits": 186351,
+      "lookups": 208531,
+      "hit_rate": 0.8936369172928725
+    },
+    "ram_blobs": 1840,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 329,
+    "drafts_accepted": 189
+  },
+  {
+    "projection": null,
+    "time": 1791921848.872122,
+    "duration_s": 6.0,
+    "finish": "stop",
+    "prompt_tokens": 42585,
+    "reused": 42457,
+    "output_tokens": 422,
+    "prompt_total": 42585,
+    "prompt_read": 128,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 422,
+    "prompt_ms": 418.4,
+    "decode_ms": 5608.5,
+    "decode_tok_s": 75.2,
+    "hit_rate": 0.993,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 141985,
+          "lookups": 143051,
+          "hit_rate": 0.9925481122117287
+        },
+        "worker": {
+          "hits": 87944,
+          "lookups": 113545,
+          "hit_rate": 0.7745299220573341
+        }
+      },
+      "complete": true,
+      "hits": 229929,
+      "lookups": 256596,
+      "hit_rate": 0.896073984005986
+    },
+    "ram_blobs": 1263,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 397,
+    "drafts_accepted": 218
+  },
+  {
+    "projection": null,
+    "time": 1791921855.088733,
+    "duration_s": 7.0,
+    "finish": "stop",
+    "prompt_tokens": 43458,
+    "reused": 43006,
+    "output_tokens": 573,
+    "prompt_total": 43458,
+    "prompt_read": 452,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 573,
+    "prompt_ms": 731.8,
+    "decode_ms": 6276.4,
+    "decode_tok_s": 91.3,
+    "hit_rate": 0.987,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 158796,
+          "lookups": 160851,
+          "hit_rate": 0.987224201279445
+        },
+        "worker": {
+          "hits": 92585,
+          "lookups": 123838,
+          "hit_rate": 0.7476299681842407
+        }
+      },
+      "complete": true,
+      "hits": 251381,
+      "lookups": 284689,
+      "hit_rate": 0.8830021532268546
+    },
+    "ram_blobs": 2426,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 492,
+    "drafts_accepted": 387
+  },
+  {
+    "projection": null,
+    "time": 1791921863.787749,
+    "duration_s": 27.7,
+    "finish": "stop",
+    "prompt_tokens": 37662,
+    "reused": 0,
+    "output_tokens": 60,
+    "prompt_total": 37662,
+    "prompt_read": 37662,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 60,
+    "prompt_ms": 27000.1,
+    "decode_ms": 679.3,
+    "decode_tok_s": 88.3,
+    "hit_rate": 0.979,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 17022,
+          "lookups": 17384,
+          "hit_rate": 0.9791762540266912
+        },
+        "worker": {
+          "hits": 10713,
+          "lookups": 13913,
+          "hit_rate": 0.7699992812477539
+        }
+      },
+      "complete": true,
+      "hits": 27735,
+      "lookups": 31297,
+      "hit_rate": 0.8861871744895677
+    },
+    "ram_blobs": 427,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 54,
+    "drafts_accepted": 40
+  },
+  {
+    "projection": null,
+    "time": 1791921891.5889132,
+    "duration_s": 28.8,
+    "finish": "stop",
+    "prompt_tokens": 38669,
+    "reused": 0,
+    "output_tokens": 68,
+    "prompt_total": 38669,
+    "prompt_read": 38669,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 68,
+    "prompt_ms": 28039.8,
+    "decode_ms": 792.3,
+    "decode_tok_s": 85.8,
+    "hit_rate": 0.981,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 18453,
+          "lookups": 18818,
+          "hit_rate": 0.9806036773302158
+        },
+        "worker": {
+          "hits": 10201,
+          "lookups": 14269,
+          "hit_rate": 0.7149064405354264
+        }
+      },
+      "complete": true,
+      "hits": 28654,
+      "lookups": 33087,
+      "hit_rate": 0.8660198869646689
+    },
+    "ram_blobs": 450,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 59,
+    "drafts_accepted": 47
+  },
+  {
+    "projection": null,
+    "time": 1791921920.5295615,
+    "duration_s": 11.1,
+    "finish": "stop",
+    "prompt_tokens": 39954,
+    "reused": 38736,
+    "output_tokens": 694,
+    "prompt_total": 39954,
+    "prompt_read": 1218,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 694,
+    "prompt_ms": 1785.6,
+    "decode_ms": 9303.3,
+    "decode_tok_s": 74.6,
+    "hit_rate": 0.977,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 184461,
+          "lookups": 188868,
+          "hit_rate": 0.9766662430904124
+        },
+        "worker": {
+          "hits": 82546,
+          "lookups": 131293,
+          "hit_rate": 0.6287159254491862
+        }
+      },
+      "complete": true,
+      "hits": 267007,
+      "lookups": 320161,
+      "hit_rate": 0.833977280180909
+    },
+    "ram_blobs": 5284,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 576,
+    "drafts_accepted": 465
+  },
+  {
+    "projection": null,
+    "time": 1791921931.6977308,
+    "duration_s": 7.5,
+    "finish": "stop",
+    "prompt_tokens": 40724,
+    "reused": 40648,
+    "output_tokens": 518,
+    "prompt_total": 40724,
+    "prompt_read": 76,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 518,
+    "prompt_ms": 328.1,
+    "decode_ms": 7202.3,
+    "decode_tok_s": 71.9,
+    "hit_rate": 0.976,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 131724,
+          "lookups": 134911,
+          "hit_rate": 0.9763770189235866
+        },
+        "worker": {
+          "hits": 48946,
+          "lookups": 86642,
+          "hit_rate": 0.5649223240460747
+        }
+      },
+      "complete": true,
+      "hits": 180670,
+      "lookups": 221553,
+      "hit_rate": 0.8154707902849431
+    },
+    "ram_blobs": 3871,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 420,
+    "drafts_accepted": 364
+  },
+  {
+    "projection": null,
+    "time": 1791921939.310521,
+    "duration_s": 1.6,
+    "finish": "stop",
+    "prompt_tokens": 41284,
+    "reused": 41243,
+    "output_tokens": 98,
+    "prompt_total": 41284,
+    "prompt_read": 41,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 98,
+    "prompt_ms": 417.1,
+    "decode_ms": 1184.9,
+    "decode_tok_s": 82.7,
+    "hit_rate": 0.954,
+    "pcie_share": 0.005,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 24635,
+          "lookups": 25833,
+          "hit_rate": 0.9536252080672009
+        },
+        "worker": {
+          "hits": 15049,
+          "lookups": 20461,
+          "hit_rate": 0.735496798787938
+        }
+      },
+      "complete": true,
+      "hits": 39684,
+      "lookups": 46294,
+      "hit_rate": 0.8572169179591308
+    },
+    "ram_blobs": 1465,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 81,
+    "drafts_accepted": 71
+  },
+  {
+    "projection": null,
+    "time": 1791921941.0929394,
+    "duration_s": 3.3,
+    "finish": "stop",
+    "prompt_tokens": 41540,
+    "reused": 41384,
+    "output_tokens": 223,
+    "prompt_total": 41540,
+    "prompt_read": 156,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 223,
+    "prompt_ms": 440.1,
+    "decode_ms": 2883.8,
+    "decode_tok_s": 77.3,
+    "hit_rate": 0.974,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 66937,
+          "lookups": 68706,
+          "hit_rate": 0.9742526125811428
+        },
+        "worker": {
+          "hits": 43470,
+          "lookups": 55461,
+          "hit_rate": 0.7837940174176449
+        }
+      },
+      "complete": true,
+      "hits": 110407,
+      "lookups": 124167,
+      "hit_rate": 0.8891815055530052
+    },
+    "ram_blobs": 1852,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 192,
+    "drafts_accepted": 126
+  },
+  {
+    "projection": null,
+    "time": 1791921944.613103,
+    "duration_s": 1.7,
+    "finish": "stop",
+    "prompt_tokens": 41840,
+    "reused": 41764,
+    "output_tokens": 107,
+    "prompt_total": 41840,
+    "prompt_read": 76,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 107,
+    "prompt_ms": 357.6,
+    "decode_ms": 1375.1,
+    "decode_tok_s": 77.8,
+    "hit_rate": 0.98,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 28811,
+          "lookups": 29410,
+          "hit_rate": 0.979632777966678
+        },
+        "worker": {
+          "hits": 12632,
+          "lookups": 20762,
+          "hit_rate": 0.6084192274347365
+        }
+      },
+      "complete": true,
+      "hits": 41443,
+      "lookups": 50172,
+      "hit_rate": 0.8260184963724787
+    },
+    "ram_blobs": 695,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 90,
+    "drafts_accepted": 73
+  },
+  {
+    "projection": null,
+    "time": 1791921946.5785153,
+    "duration_s": 6.9,
+    "finish": "stop",
+    "prompt_tokens": 42059,
+    "reused": 41947,
+    "output_tokens": 589,
+    "prompt_total": 42059,
+    "prompt_read": 112,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 589,
+    "prompt_ms": 400.7,
+    "decode_ms": 6514.5,
+    "decode_tok_s": 90.4,
+    "hit_rate": 0.984,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 161568,
+          "lookups": 164269,
+          "hit_rate": 0.9835574575848152
+        },
+        "worker": {
+          "hits": 95562,
+          "lookups": 126899,
+          "hit_rate": 0.7530555796341972
+        }
+      },
+      "complete": true,
+      "hits": 257130,
+      "lookups": 291168,
+      "hit_rate": 0.8830984174085065
+    },
+    "ram_blobs": 3167,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 508,
+    "drafts_accepted": 404
+  },
+  {
+    "projection": null,
+    "time": 1791921955.2769897,
+    "duration_s": 27.6,
+    "finish": "stop",
+    "prompt_tokens": 37671,
+    "reused": 0,
+    "output_tokens": 47,
+    "prompt_total": 37671,
+    "prompt_read": 37671,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 47,
+    "prompt_ms": 26979.6,
+    "decode_ms": 572.9,
+    "decode_tok_s": 82.0,
+    "hit_rate": 0.969,
+    "pcie_share": 0.002,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 12898,
+          "lookups": 13313,
+          "hit_rate": 0.9688274618793661
+        },
+        "worker": {
+          "hits": 7777,
+          "lookups": 10444,
+          "hit_rate": 0.7446380697050938
+        }
+      },
+      "complete": true,
+      "hits": 20675,
+      "lookups": 23757,
+      "hit_rate": 0.8702698152123585
+    },
+    "ram_blobs": 493,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 41,
+    "drafts_accepted": 33
+  },
+  {
+    "projection": null,
+    "time": 1791921982.9532766,
+    "duration_s": 29.9,
+    "finish": "stop",
+    "prompt_tokens": 38778,
+    "reused": 0,
+    "output_tokens": 142,
+    "prompt_total": 38778,
+    "prompt_read": 38778,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 142,
+    "prompt_ms": 28091.0,
+    "decode_ms": 1842.0,
+    "decode_tok_s": 77.1,
+    "hit_rate": 0.99,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 47417,
+          "lookups": 47897,
+          "hit_rate": 0.9899784955216402
+        },
+        "worker": {
+          "hits": 30953,
+          "lookups": 38649,
+          "hit_rate": 0.8008745375042045
+        }
+      },
+      "complete": true,
+      "hits": 78370,
+      "lookups": 86546,
+      "hit_rate": 0.9055300071638204
+    },
+    "ram_blobs": 590,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 140,
+    "drafts_accepted": 83
+  },
+  {
+    "projection": null,
+    "time": 1791922012.9711518,
+    "duration_s": 20.5,
+    "finish": "stop",
+    "prompt_tokens": 40203,
+    "reused": 38922,
+    "output_tokens": 1314,
+    "prompt_total": 40203,
+    "prompt_read": 1281,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 1314,
+    "prompt_ms": 1811.7,
+    "decode_ms": 18692.0,
+    "decode_tok_s": 70.3,
+    "hit_rate": 0.988,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 397773,
+          "lookups": 402675,
+          "hit_rate": 0.9878264108772583
+        },
+        "worker": {
+          "hits": 188797,
+          "lookups": 286555,
+          "hit_rate": 0.6588508314285215
+        }
+      },
+      "complete": true,
+      "hits": 586570,
+      "lookups": 689230,
+      "hit_rate": 0.8510511730481842
+    },
+    "ram_blobs": 5779,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 1172,
+    "drafts_accepted": 784
+  },
+  {
+    "projection": null,
+    "time": 1791922033.5234492,
+    "duration_s": 11.3,
+    "finish": "stop",
+    "prompt_tokens": 41561,
+    "reused": 41516,
+    "output_tokens": 766,
+    "prompt_total": 41561,
+    "prompt_read": 45,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 766,
+    "prompt_ms": 429.9,
+    "decode_ms": 10896.9,
+    "decode_tok_s": 70.3,
+    "hit_rate": 0.978,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 192608,
+          "lookups": 196915,
+          "hit_rate": 0.9781276185156031
+        },
+        "worker": {
+          "hits": 60373,
+          "lookups": 119879,
+          "hit_rate": 0.5036161462808332
+        }
+      },
+      "complete": true,
+      "hits": 252981,
+      "lookups": 316794,
+      "hit_rate": 0.798566260724635
+    },
+    "ram_blobs": 5258,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 623,
+    "drafts_accepted": 548
+  },
+  {
+    "projection": null,
+    "time": 1791922044.9298286,
+    "duration_s": 2.3,
+    "finish": "stop",
+    "prompt_tokens": 42403,
+    "reused": 42327,
+    "output_tokens": 144,
+    "prompt_total": 42403,
+    "prompt_read": 76,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 144,
+    "prompt_ms": 333.8,
+    "decode_ms": 1957.4,
+    "decode_tok_s": 73.6,
+    "hit_rate": 0.959,
+    "pcie_share": 0.003,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 40830,
+          "lookups": 42577,
+          "hit_rate": 0.9589684571482255
+        },
+        "worker": {
+          "hits": 26760,
+          "lookups": 34295,
+          "hit_rate": 0.7802886718180493
+        }
+      },
+      "complete": true,
+      "hits": 67590,
+      "lookups": 76872,
+      "hit_rate": 0.8792538245394942
+    },
+    "ram_blobs": 2100,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 119,
+    "drafts_accepted": 81
+  },
+  {
+    "projection": null,
+    "time": 1791922047.4229865,
+    "duration_s": 2.9,
+    "finish": "stop",
+    "prompt_tokens": 42706,
+    "reused": 42546,
+    "output_tokens": 185,
+    "prompt_total": 42706,
+    "prompt_read": 160,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 185,
+    "prompt_ms": 464.0,
+    "decode_ms": 2428.0,
+    "decode_tok_s": 76.2,
+    "hit_rate": 0.984,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 59341,
+          "lookups": 60319,
+          "hit_rate": 0.9837862033521776
+        },
+        "worker": {
+          "hits": 37391,
+          "lookups": 48238,
+          "hit_rate": 0.7751357850657158
+        }
+      },
+      "complete": true,
+      "hits": 96732,
+      "lookups": 108557,
+      "hit_rate": 0.8910710502316755
+    },
+    "ram_blobs": 1207,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 175,
+    "drafts_accepted": 107
+  },
+  {
+    "projection": null,
+    "time": 1791922050.4835126,
+    "duration_s": 5.8,
+    "finish": "stop",
+    "prompt_tokens": 42962,
+    "reused": 42892,
+    "output_tokens": 476,
+    "prompt_total": 42962,
+    "prompt_read": 70,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 476,
+    "prompt_ms": 329.1,
+    "decode_ms": 5474.2,
+    "decode_tok_s": 87.0,
+    "hit_rate": 0.984,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 134328,
+          "lookups": 136464,
+          "hit_rate": 0.9843475202251143
+        },
+        "worker": {
+          "hits": 77013,
+          "lookups": 103931,
+          "hit_rate": 0.7410012412081092
+        }
+      },
+      "complete": true,
+      "hits": 211341,
+      "lookups": 240395,
+      "hit_rate": 0.8791405811268953
+    },
+    "ram_blobs": 2510,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 426,
+    "drafts_accepted": 327
+  },
+  {
+    "projection": null,
+    "time": 1791922057.9949808,
+    "duration_s": 27.8,
+    "finish": "stop",
+    "prompt_tokens": 37671,
+    "reused": 0,
+    "output_tokens": 62,
+    "prompt_total": 37671,
+    "prompt_read": 37671,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 62,
+    "prompt_ms": 27021.5,
+    "decode_ms": 729.9,
+    "decode_tok_s": 84.9,
+    "hit_rate": 0.977,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 17913,
+          "lookups": 18335,
+          "hit_rate": 0.976983910553586
+        },
+        "worker": {
+          "hits": 11615,
+          "lookups": 14698,
+          "hit_rate": 0.7902435705538169
+        }
+      },
+      "complete": true,
+      "hits": 29528,
+      "lookups": 33033,
+      "hit_rate": 0.8938939848030757
+    },
+    "ram_blobs": 472,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 57,
+    "drafts_accepted": 43
+  },
+  {
+    "projection": null,
+    "time": 1791922085.8693023,
+    "duration_s": 29.1,
+    "finish": "stop",
+    "prompt_tokens": 38792,
+    "reused": 0,
+    "output_tokens": 75,
+    "prompt_total": 38792,
+    "prompt_read": 38792,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 75,
+    "prompt_ms": 28040.5,
+    "decode_ms": 1016.2,
+    "decode_tok_s": 73.8,
+    "hit_rate": 0.978,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 24168,
+          "lookups": 24703,
+          "hit_rate": 0.9783427114115695
+        },
+        "worker": {
+          "hits": 14358,
+          "lookups": 19342,
+          "hit_rate": 0.7423224071967739
+        }
+      },
+      "complete": true,
+      "hits": 38526,
+      "lookups": 44045,
+      "hit_rate": 0.8746963332954932
+    },
+    "ram_blobs": 611,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 76,
+    "drafts_accepted": 47
+  },
+  {
+    "projection": null,
+    "time": 1791922115.035576,
+    "duration_s": 31.2,
+    "finish": "stop",
+    "prompt_tokens": 40251,
+    "reused": 38867,
+    "output_tokens": 2107,
+    "prompt_total": 40251,
+    "prompt_read": 1384,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 2107,
+    "prompt_ms": 1894.0,
+    "decode_ms": 29302.0,
+    "decode_tok_s": 71.9,
+    "hit_rate": 0.985,
+    "pcie_share": 0.001,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 607113,
+          "lookups": 616304,
+          "hit_rate": 0.9850869051636855
+        },
+        "worker": {
+          "hits": 278092,
+          "lookups": 431093,
+          "hit_rate": 0.6450858631432197
+        }
+      },
+      "complete": true,
+      "hits": 885205,
+      "lookups": 1047397,
+      "hit_rate": 0.845147541954006
+    },
+    "ram_blobs": 10795,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 1827,
+    "drafts_accepted": 1323
+  },
+  {
+    "projection": null,
+    "time": 1791922146.395343,
+    "duration_s": 2.7,
+    "finish": "stop",
+    "prompt_tokens": 42410,
+    "reused": 42358,
+    "output_tokens": 156,
+    "prompt_total": 42410,
+    "prompt_read": 52,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 156,
+    "prompt_ms": 475.1,
+    "decode_ms": 2203.5,
+    "decode_tok_s": 70.8,
+    "hit_rate": 0.967,
+    "pcie_share": 0.002,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 45126,
+          "lookups": 46643,
+          "hit_rate": 0.9674763630126707
+        },
+        "worker": {
+          "hits": 30221,
+          "lookups": 38151,
+          "hit_rate": 0.7921417525097638
+        }
+      },
+      "complete": true,
+      "hits": 75347,
+      "lookups": 84794,
+      "hit_rate": 0.8885888152463618
+    },
+    "ram_blobs": 2028,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 124,
+    "drafts_accepted": 84
+  },
+  {
+    "projection": null,
+    "time": 1791922149.2428615,
+    "duration_s": 3.8,
+    "finish": "stop",
+    "prompt_tokens": 42723,
+    "reused": 42568,
+    "output_tokens": 255,
+    "prompt_total": 42723,
+    "prompt_read": 155,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 255,
+    "prompt_ms": 448.2,
+    "decode_ms": 3329.5,
+    "decode_tok_s": 76.6,
+    "hit_rate": 0.986,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 81067,
+          "lookups": 82235,
+          "hit_rate": 0.9857968018483614
+        },
+        "worker": {
+          "hits": 53083,
+          "lookups": 66802,
+          "hit_rate": 0.7946318972485854
+        }
+      },
+      "complete": true,
+      "hits": 134150,
+      "lookups": 149037,
+      "hit_rate": 0.9001120527117428
+    },
+    "ram_blobs": 1372,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 226,
+    "drafts_accepted": 135
+  },
+  {
+    "projection": null,
+    "time": 1791922153.222537,
+    "duration_s": 2.9,
+    "finish": "stop",
+    "prompt_tokens": 43106,
+    "reused": 42978,
+    "output_tokens": 211,
+    "prompt_total": 43106,
+    "prompt_read": 128,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 211,
+    "prompt_ms": 418.8,
+    "decode_ms": 2448.2,
+    "decode_tok_s": 86.2,
+    "hit_rate": 0.994,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 63427,
+          "lookups": 63808,
+          "hit_rate": 0.9940289618856569
+        },
+        "worker": {
+          "hits": 40803,
+          "lookups": 51371,
+          "hit_rate": 0.7942808199178525
+        }
+      },
+      "complete": true,
+      "hits": 104230,
+      "lookups": 115179,
+      "hit_rate": 0.9049392684430322
+    },
+    "ram_blobs": 426,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 176,
+    "drafts_accepted": 122
+  },
+  {
+    "projection": null,
+    "time": 1791922156.2530928,
+    "duration_s": 7.2,
+    "finish": "stop",
+    "prompt_tokens": 43565,
+    "reused": 43319,
+    "output_tokens": 545,
+    "prompt_total": 43565,
+    "prompt_read": 246,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 545,
+    "prompt_ms": 562.4,
+    "decode_ms": 6627.8,
+    "decode_tok_s": 82.2,
+    "hit_rate": 0.986,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 160703,
+          "lookups": 162935,
+          "hit_rate": 0.9863012857888115
+        },
+        "worker": {
+          "hits": 93066,
+          "lookups": 124472,
+          "hit_rate": 0.7476862266212482
+        }
+      },
+      "complete": true,
+      "hits": 253769,
+      "lookups": 287407,
+      "hit_rate": 0.8829604011036614
+    },
+    "ram_blobs": 2740,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 497,
+    "drafts_accepted": 353
+  },
+  {
+    "projection": null,
+    "time": 1791922165.1257336,
+    "duration_s": 27.8,
+    "finish": "stop",
+    "prompt_tokens": 37671,
+    "reused": 0,
+    "output_tokens": 62,
+    "prompt_total": 37671,
+    "prompt_read": 37671,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 62,
+    "prompt_ms": 27035.0,
+    "decode_ms": 780.5,
+    "decode_tok_s": 79.4,
+    "hit_rate": 0.972,
+    "pcie_share": 0.002,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 18707,
+          "lookups": 19251,
+          "hit_rate": 0.971741727702457
+        },
+        "worker": {
+          "hits": 11910,
+          "lookups": 15365,
+          "hit_rate": 0.7751383013342011
+        }
+      },
+      "complete": true,
+      "hits": 30617,
+      "lookups": 34616,
+      "hit_rate": 0.8844753871042292
+    },
+    "ram_blobs": 608,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 60,
+    "drafts_accepted": 43
+  },
+  {
+    "projection": null,
+    "time": 1791922193.044013,
+    "duration_s": 29.1,
+    "finish": "stop",
+    "prompt_tokens": 38793,
+    "reused": 0,
+    "output_tokens": 90,
+    "prompt_total": 38793,
+    "prompt_read": 38793,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 90,
+    "prompt_ms": 28053.6,
+    "decode_ms": 1087.9,
+    "decode_tok_s": 82.7,
+    "hit_rate": 0.986,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 25168,
+          "lookups": 25526,
+          "hit_rate": 0.9859750842278461
+        },
+        "worker": {
+          "hits": 15941,
+          "lookups": 20357,
+          "hit_rate": 0.7830721619099081
+        }
+      },
+      "complete": true,
+      "hits": 41109,
+      "lookups": 45883,
+      "hit_rate": 0.8959527493843036
+    },
+    "ram_blobs": 455,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 71,
+    "drafts_accepted": 53
+  },
+  {
+    "projection": null,
+    "time": 1791922222.298552,
+    "duration_s": 14.6,
+    "finish": "stop",
+    "prompt_tokens": 40176,
+    "reused": 38882,
+    "output_tokens": 950,
+    "prompt_total": 40176,
+    "prompt_read": 1294,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 950,
+    "prompt_ms": 1794.2,
+    "decode_ms": 12833.8,
+    "decode_tok_s": 74.0,
+    "hit_rate": 0.985,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 260497,
+          "lookups": 264486,
+          "hit_rate": 0.984917916260218
+        },
+        "worker": {
+          "hits": 104331,
+          "lookups": 177371,
+          "hit_rate": 0.5882077678989237
+        }
+      },
+      "complete": true,
+      "hits": 364828,
+      "lookups": 441857,
+      "hit_rate": 0.8256698434108772
+    },
+    "ram_blobs": 4846,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 815,
+    "drafts_accepted": 642
+  },
+  {
+    "projection": null,
+    "time": 1791922237.0918093,
+    "duration_s": 2.3,
+    "finish": "stop",
+    "prompt_tokens": 41178,
+    "reused": 41125,
+    "output_tokens": 135,
+    "prompt_total": 41178,
+    "prompt_read": 53,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 135,
+    "prompt_ms": 482.8,
+    "decode_ms": 1780.9,
+    "decode_tok_s": 75.8,
+    "hit_rate": 0.975,
+    "pcie_share": 0.002,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 40622,
+          "lookups": 41655,
+          "hit_rate": 0.9752010562957628
+        },
+        "worker": {
+          "hits": 26498,
+          "lookups": 33510,
+          "hit_rate": 0.7907490301402567
+        }
+      },
+      "complete": true,
+      "hits": 67120,
+      "lookups": 75165,
+      "hit_rate": 0.8929688019690015
+    },
+    "ram_blobs": 1399,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 124,
+    "drafts_accepted": 83
+  },
+  {
+    "projection": null,
+    "time": 1791922239.5558476,
+    "duration_s": 2.0,
+    "finish": "stop",
+    "prompt_tokens": 41471,
+    "reused": 41313,
+    "output_tokens": 118,
+    "prompt_total": 41471,
+    "prompt_read": 158,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 118,
+    "prompt_ms": 436.8,
+    "decode_ms": 1558.2,
+    "decode_tok_s": 75.7,
+    "hit_rate": 0.983,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 36509,
+          "lookups": 37153,
+          "hit_rate": 0.9826662719026727
+        },
+        "worker": {
+          "hits": 21821,
+          "lookups": 29016,
+          "hit_rate": 0.7520333609043286
+        }
+      },
+      "complete": true,
+      "hits": 58330,
+      "lookups": 66169,
+      "hit_rate": 0.8815306261240158
+    },
+    "ram_blobs": 734,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 107,
+    "drafts_accepted": 69
+  },
+  {
+    "projection": null,
+    "time": 1791922241.7550914,
+    "duration_s": 2.7,
+    "finish": "stop",
+    "prompt_tokens": 41719,
+    "reused": 41589,
+    "output_tokens": 183,
+    "prompt_total": 41719,
+    "prompt_read": 130,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 183,
+    "prompt_ms": 436.8,
+    "decode_ms": 2266.9,
+    "decode_tok_s": 80.7,
+    "hit_rate": 0.993,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 56267,
+          "lookups": 56652,
+          "hit_rate": 0.9932041234201794
+        },
+        "worker": {
+          "hits": 37179,
+          "lookups": 45938,
+          "hit_rate": 0.8093299664765553
+        }
+      },
+      "complete": true,
+      "hits": 93446,
+      "lookups": 102590,
+      "hit_rate": 0.9108685057023101
+    },
+    "ram_blobs": 438,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 151,
+    "drafts_accepted": 96
+  },
+  {
+    "projection": null,
+    "time": 1791922244.637436,
+    "duration_s": 7.8,
+    "finish": "stop",
+    "prompt_tokens": 42654,
+    "reused": 41901,
+    "output_tokens": 580,
+    "prompt_total": 42654,
+    "prompt_read": 753,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 580,
+    "prompt_ms": 917.3,
+    "decode_ms": 6911.8,
+    "decode_tok_s": 83.9,
+    "hit_rate": 0.989,
+    "pcie_share": 0.0,
+    "decode_cache": {
+      "nodes": {
+        "coordinator": {
+          "hits": 177846,
+          "lookups": 179742,
+          "hit_rate": 0.9894515472176787
+        },
+        "worker": {
+          "hits": 108134,
+          "lookups": 140381,
+          "hit_rate": 0.7702894266318091
+        }
+      },
+      "complete": true,
+      "hits": 285980,
+      "lookups": 320123,
+      "hit_rate": 0.8933441208535469
+    },
+    "ram_blobs": 2322,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 543,
+    "drafts_accepted": 365
+  }
+]

@@ -1,0 +1,9 @@
+All tests pass on the first run — no repair rounds were needed.
+
+Result of `node --test acceptance.test.ts`: exit 0, file passes. Run with the spec reporter for per-test detail, the file contains 32 tests: 32 pass, 0 fail. (`node --test acceptance.test.ts` reports `# tests 1 / # pass 1` because Node counts the explicitly named TypeScript file as a single top-level test.)
+
+Changed files (only the three allowed sources):
+
+- [stock.ts](<ARTIFACTS>/quality/coding/reservation-workflow-3/project/stock.ts) — `buildStock` now validates each record (SKU must be a string that is nonempty after trimming, units a nonnegative integer) and throws `RangeError` otherwise, then merges duplicate SKUs by summing units into a trimmed-key map.
+- [requests.ts](<ARTIFACTS>/quality/coding/reservation-workflow-3/project/requests.ts) — `uniqueRequests` validates every record first, including later duplicates (so an invalid duplicate still raises `RangeError`), then dedupes on the trimmed ID with first-occurrence-wins, returning trimmed new objects in original order.
+- [allocate.ts](<ARTIFACTS>/quality/coding/reservation-workflow-3/project/allocate.ts) — `reserve` validates before allocating, distinguishes `unknown-sku` (SKU absent from stock) from `insufficient-stock`, deducts only on acceptance so rejections consume nothing, preserves request order in `accepted`/`rejected`, and emits `remaining` with keys in code-point order. Since it works on the copies built by the other two functions, the frozen/mutated-input tests pass without touching the arguments.

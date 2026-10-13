@@ -1,0 +1,40 @@
+{
+  "benchmark_exit_code": 0,
+  "samples": 100,
+  "telemetry_errors": [],
+  "worker_vram_guard_error": null,
+  "observed_peaks": {
+    "coordinator": {
+      "gpu_mem_used": 33503313920,
+      "gpu_util": 100,
+      "gpu_power": 227.775,
+      "ram_used": 24178913280,
+      "net_rx_mib_s": 107.58739780464572,
+      "net_tx_mib_s": 0.150840938493591
+    },
+    "worker": {
+      "gpu_mem_used": 22246785024,
+      "gpu_util": 100,
+      "gpu_power": 295.683,
+      "ram_used": 49041514496,
+      "net_rx_mib_s": 0.15093395580789126,
+      "net_tx_mib_s": 107.3507660820887
+    }
+  },
+  "unchanged": {
+    "local_config": true,
+    "local_MainPID": true,
+    "local_InvocationID": true,
+    "local_ActiveState": true,
+    "remote_config": true,
+    "remote_MainPID": true,
+    "remote_InvocationID": true,
+    "remote_ActiveState": true
+  },
+  "report_copy": {
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "completed_utc": "2026-10-13T19:50:23.380950+00:00"
+}

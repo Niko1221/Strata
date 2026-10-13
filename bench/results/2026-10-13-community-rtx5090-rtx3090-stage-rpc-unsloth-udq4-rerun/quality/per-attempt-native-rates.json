@@ -1,0 +1,281 @@
+[
+  {
+    "fixture": "merge-windows",
+    "attempt": 1,
+    "requests": 7,
+    "prompt_tokens": 280564,
+    "reused": 202693,
+    "fresh_tokens": 77871,
+    "output_tokens": 1993,
+    "prompt_ms": 59590.6,
+    "decode_ms": 26963.0,
+    "drafts_offered": 1763,
+    "drafts_accepted": 1235,
+    "decode_expert_cache": {
+      "coordinator": {
+        "hits": 580331,
+        "lookups": 595334,
+        "records": 7,
+        "hit_rate": 0.9747990203818361
+      },
+      "worker": {
+        "hits": 319580,
+        "lookups": 447745,
+        "records": 7,
+        "hit_rate": 0.7137544807870552
+      }
+    },
+    "expert_file_mb": 0,
+    "fresh_prompt_tps": 1306.766503441818,
+    "decode_tps": 73.91610725809443,
+    "mtp_acceptance_pct": 70.05104934770277
+  },
+  {
+    "fixture": "merge-windows",
+    "attempt": 2,
+    "requests": 6,
+    "prompt_tokens": 239101,
+    "reused": 161078,
+    "fresh_tokens": 78023,
+    "output_tokens": 1803,
+    "prompt_ms": 57525.6,
+    "decode_ms": 22106.600000000002,
+    "drafts_offered": 1592,
+    "drafts_accepted": 1170,
+    "decode_expert_cache": {
+      "coordinator": {
+        "hits": 521877,
+        "lookups": 529705,
+        "records": 6,
+        "hit_rate": 0.9852219631681786
+      },
+      "worker": {
+        "hits": 293970,
+        "lookups": 403444,
+        "records": 6,
+        "hit_rate": 0.7286513122019412
+      }
+    },
+    "expert_file_mb": 0,
+    "fresh_prompt_tps": 1356.3178828208659,
+    "decode_tps": 81.55935331529949,
+    "mtp_acceptance_pct": 73.49246231155779
+  },
+  {
+    "fixture": "merge-windows",
+    "attempt": 3,
+    "requests": 8,
+    "prompt_tokens": 319425,
+    "reused": 241706,
+    "fresh_tokens": 77719,
+    "output_tokens": 1581,
+    "prompt_ms": 58276.0,
+    "decode_ms": 20859.8,
+    "drafts_offered": 1417,
+    "drafts_accepted": 992,
+    "decode_expert_cache": {
+      "coordinator": {
+        "hits": 469792,
+        "lookups": 476870,
+        "records": 8,
+        "hit_rate": 0.9851573804181433
+      },
+      "worker": {
+        "hits": 246182,
+        "lookups": 353403,
+        "records": 8,
+        "hit_rate": 0.6966041601231455
+      }
+    },
+    "expert_file_mb": 0,
+    "fresh_prompt_tps": 1333.6364884343468,
+    "decode_tps": 75.79171420627236,
+    "mtp_acceptance_pct": 70.00705716302046
+  },
+  {
+    "fixture": "refactor-orders",
+    "attempt": 1,
+    "requests": 11,
+    "prompt_tokens": 452889,
+    "reused": 374330,
+    "fresh_tokens": 78559,
+    "output_tokens": 3092,
+    "prompt_ms": 60750.9,
+    "decode_ms": 40281.1,
+    "drafts_offered": 2634,
+    "drafts_accepted": 1954,
+    "decode_expert_cache": {
+      "coordinator": {
+        "hits": 875087,
+        "lookups": 892045,
+        "records": 11,
+        "hit_rate": 0.9809897482750309
+      },
+      "worker": {
+        "hits": 469848,
+        "lookups": 663462,
+        "records": 11,
+        "hit_rate": 0.7081762030078588
+      }
+    },
+    "expert_file_mb": 0,
+    "fresh_prompt_tps": 1293.1331058469916,
+    "decode_tps": 76.76056512855905,
+    "mtp_acceptance_pct": 74.1837509491268
+  },
+  {
+    "fixture": "refactor-orders",
+    "attempt": 2,
+    "requests": 9,
+    "prompt_tokens": 368241,
+    "reused": 289623,
+    "fresh_tokens": 78618,
+    "output_tokens": 3193,
+    "prompt_ms": 59853.299999999996,
+    "decode_ms": 41077.799999999996,
+    "drafts_offered": 2792,
+    "drafts_accepted": 2042,
+    "decode_expert_cache": {
+      "coordinator": {
+        "hits": 911593,
+        "lookups": 930114,
+        "records": 9,
+        "hit_rate": 0.9800873871374907
+      },
+      "worker": {
+        "hits": 494150,
+        "lookups": 693844,
+        "records": 9,
+        "hit_rate": 0.712191789508881
+      }
+    },
+    "expert_file_mb": 0,
+    "fresh_prompt_tps": 1313.5115357047982,
+    "decode_tps": 77.7305503215849,
+    "mtp_acceptance_pct": 73.13753581661891
+  },
+  {
+    "fixture": "refactor-orders",
+    "attempt": 3,
+    "requests": 8,
+    "prompt_tokens": 323732,
+    "reused": 245722,
+    "fresh_tokens": 78010,
+    "output_tokens": 2357,
+    "prompt_ms": 58769.1,
+    "decode_ms": 29935.5,
+    "drafts_offered": 1980,
+    "drafts_accepted": 1590,
+    "decode_expert_cache": {
+      "coordinator": {
+        "hits": 633611,
+        "lookups": 648199,
+        "records": 8,
+        "hit_rate": 0.9774945657120729
+      },
+      "worker": {
+        "hits": 319119,
+        "lookups": 469700,
+        "records": 8,
+        "hit_rate": 0.6794102618692782
+      }
+    },
+    "expert_file_mb": 0,
+    "fresh_prompt_tps": 1327.398241592946,
+    "decode_tps": 78.73594895692405,
+    "mtp_acceptance_pct": 80.3030303030303
+  },
+  {
+    "fixture": "reservation-workflow",
+    "attempt": 1,
+    "requests": 7,
+    "prompt_tokens": 286284,
+    "reused": 208203,
+    "fresh_tokens": 78081,
+    "output_tokens": 3074,
+    "prompt_ms": 58439.1,
+    "decode_ms": 41863.4,
+    "drafts_offered": 2696,
+    "drafts_accepted": 1963,
+    "decode_expert_cache": {
+      "coordinator": {
+        "hits": 885195,
+        "lookups": 900160,
+        "records": 7,
+        "hit_rate": 0.9833751777461784
+      },
+      "worker": {
+        "hits": 429064,
+        "lookups": 641991,
+        "records": 7,
+        "hit_rate": 0.6683333566981469
+      }
+    },
+    "expert_file_mb": 0,
+    "fresh_prompt_tps": 1336.1088723132286,
+    "decode_tps": 73.42929623489731,
+    "mtp_acceptance_pct": 72.81157270029674
+  },
+  {
+    "fixture": "reservation-workflow",
+    "attempt": 2,
+    "requests": 7,
+    "prompt_tokens": 288518,
+    "reused": 210090,
+    "fresh_tokens": 78428,
+    "output_tokens": 3411,
+    "prompt_ms": 58860.5,
+    "decode_ms": 45657.1,
+    "drafts_offered": 2983,
+    "drafts_accepted": 2107,
+    "decode_expert_cache": {
+      "coordinator": {
+        "hits": 999517,
+        "lookups": 1014963,
+        "records": 7,
+        "hit_rate": 0.984781711254499
+      },
+      "worker": {
+        "hits": 521238,
+        "lookups": 745929,
+        "records": 7,
+        "hit_rate": 0.698776961346187
+      }
+    },
+    "expert_file_mb": 0,
+    "fresh_prompt_tps": 1332.4385623635544,
+    "decode_tps": 74.70908139150319,
+    "mtp_acceptance_pct": 70.63359034528997
+  },
+  {
+    "fixture": "reservation-workflow",
+    "attempt": 3,
+    "requests": 7,
+    "prompt_tokens": 283662,
+    "reused": 204810,
+    "fresh_tokens": 78852,
+    "output_tokens": 2118,
+    "prompt_ms": 59156.5,
+    "decode_ms": 27220.0,
+    "drafts_offered": 1871,
+    "drafts_accepted": 1351,
+    "decode_expert_cache": {
+      "coordinator": {
+        "hits": 615616,
+        "lookups": 624465,
+        "records": 7,
+        "hit_rate": 0.9858294700263426
+      },
+      "worker": {
+        "hits": 325814,
+        "lookups": 461938,
+        "records": 7,
+        "hit_rate": 0.7053197615264386
+      }
+    },
+    "expert_file_mb": 0,
+    "fresh_prompt_tps": 1332.9388993601717,
+    "decode_tps": 77.8104335047759,
+    "mtp_acceptance_pct": 72.20737573490112
+  }
+]

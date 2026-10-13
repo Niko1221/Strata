@@ -1,0 +1,77 @@
+{
+  "fixture": "refactor-orders",
+  "attempt": 3,
+  "started": 1791921862.9575915,
+  "finished": 1791921954.2556942,
+  "wall_s": 91.2981026172638,
+  "exit_code": 0,
+  "timed_out": false,
+  "passed": true,
+  "changed_files": [
+    "aggregation.ts",
+    "orders.ts",
+    "validation.ts"
+  ],
+  "policy_violations": [],
+  "original_manifest": {
+    "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+    "README.md": "8e4d40563c1834d82cd640eff4212c5d2f2ff2c7797eb1737d1e8a03eeb177f0",
+    "acceptance.test.ts": "d09b3c3217069d714f982fe6bd3910f153a24172dbbd2b2d08fc145a75838e07",
+    "orders.ts": "d3e7dd2b1bbe8e2d09f42eae12a7f3324e027cdf4fc84d79cde1ce280d993379"
+  },
+  "solution_manifest": {
+    "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+    "README.md": "8e4d40563c1834d82cd640eff4212c5d2f2ff2c7797eb1737d1e8a03eeb177f0",
+    "acceptance.test.ts": "d09b3c3217069d714f982fe6bd3910f153a24172dbbd2b2d08fc145a75838e07",
+    "aggregation.ts": "d546d607cb8f7da91d71d952f18335c59a09e0801e5c3c4c420e78ac07e1548a",
+    "orders.ts": "ff9cb8766375ffe68682b07a5451c2b1f81b35ed84d6f7d2e0a1e97b79baff2a",
+    "validation.ts": "44ab0f3a9aa19425f3833dcea5bd3b2718ba4c4ff6c039f65f8f272e77467cd4"
+  },
+  "verification": {
+    "tests": 24,
+    "pass": 24,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0,
+    "exit_code": 0,
+    "duration_s": 0.12794780731201172,
+    "command": [
+      "node",
+      "--test",
+      "acceptance.test.ts"
+    ],
+    "isolation": "read-only Bubblewrap mounts; fresh network namespace; cleared environment; 60 s timeout"
+  },
+  "codex": {
+    "events": 23,
+    "invalid_jsonl_lines": 0,
+    "turn_completed": 1,
+    "turn_failed": 0,
+    "errors": [],
+    "usage": [
+      {
+        "input_tokens": 323732,
+        "cached_input_tokens": 245722,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2357,
+        "reasoning_output_tokens": 597
+      }
+    ],
+    "tool_calls": 8,
+    "command_calls": 5,
+    "command_errors": 0,
+    "file_change_calls": 3,
+    "test_command_calls": 3
+  },
+  "native_counter_deltas": {
+    "requests": 8,
+    "prompt_tokens": 323732,
+    "reused": 245722,
+    "output_tokens": 2357,
+    "prompt_ms": 58769.09999999986,
+    "decode_ms": 29935.49999999994,
+    "drafts_offered": 1980,
+    "drafts_accepted": 1590
+  }
+}

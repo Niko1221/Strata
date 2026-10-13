@@ -1,0 +1,7 @@
+All tests pass on the first run — **32 passed, 0 failed** (`node --test acceptance.test.ts` reports the file as 1 top-level test; running the file directly shows the real 32 individual tests). No repair rounds were needed.
+
+Changed files (only the three allowed sources; tests, AGENTS.md, and config untouched):
+
+- [stock.ts](<ARTIFACTS>/quality/coding/reservation-workflow-1/project/stock.ts) — `buildStock` now validates each record (SKU is a nonempty string after trimming, units is a nonnegative integer, `RangeError` otherwise, including for duplicate records) and merges duplicate trimmed SKUs by summing units.
+- [requests.ts](<ARTIFACTS>/quality/coding/reservation-workflow-1/project/requests.ts) — `uniqueRequests` validates every record first (nonempty trimmed ID/SKU, positive-integer quantity) so an invalid later duplicate still throws, then dedupes by trimmed ID keeping the first occurrence, and returns trimmed copies instead of the caller's objects.
+- [allocate.ts](<ARTIFACTS>/quality/coding/reservation-workflow-1/project/allocate.ts) — `reserve` validates all stock and requests before allocating, accepts only when the full quantity is available (rejected requests consume nothing), distinguishes `unknown-sku` from `insufficient-stock`, preserves request order in `accepted`/`rejected`, and emits `remaining` with all stock SKUs (including untouched and zero ones) under code-point-sorted keys. Inputs are never mutated.

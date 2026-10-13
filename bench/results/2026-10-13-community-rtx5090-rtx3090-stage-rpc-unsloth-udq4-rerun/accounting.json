@@ -1,0 +1,104 @@
+{
+  "speed": {
+    "deltas": {
+      "requests": 40,
+      "prompt_tokens": 291924,
+      "reused": 90165,
+      "output_tokens": 2033,
+      "prompt_ms": 168556.9,
+      "decode_ms": 28521.299999999996,
+      "drafts_offered": 1949,
+      "drafts_accepted": 1233
+    },
+    "checks": {
+      "requests": true,
+      "prompt_tokens": true,
+      "reused": true,
+      "output_tokens": true,
+      "prompt_ms": true,
+      "decode_ms": true,
+      "drafts_offered": true,
+      "drafts_accepted": true
+    },
+    "weighted_rates": {
+      "requests": 40,
+      "prompt_tokens": 291924,
+      "reused": 90165,
+      "fresh_tokens": 201759,
+      "output_tokens": 2033,
+      "prompt_ms": 168556.9,
+      "decode_ms": 28521.3,
+      "drafts_offered": 1949,
+      "drafts_accepted": 1233,
+      "decode_expert_cache": {
+        "coordinator": {
+          "hits": 649208,
+          "lookups": 660062,
+          "records": 40,
+          "hit_rate": 0.9835560901854674
+        },
+        "worker": {
+          "hits": 344204,
+          "lookups": 484592,
+          "records": 40,
+          "hit_rate": 0.7102964968468319
+        }
+      },
+      "expert_file_mb": 0,
+      "fresh_prompt_tps": 1196.9785870527994,
+      "decode_tps": 71.28006086679079,
+      "mtp_acceptance_pct": 63.263211903540274
+    }
+  },
+  "quality": {
+    "deltas": {
+      "requests": 76,
+      "prompt_tokens": 3315714,
+      "reused": 2138255,
+      "output_tokens": 22678,
+      "prompt_ms": 896210.8000000002,
+      "decode_ms": 296886.6,
+      "drafts_offered": 19778,
+      "drafts_accepted": 14443
+    },
+    "checks": {
+      "requests": true,
+      "prompt_tokens": true,
+      "reused": true,
+      "output_tokens": true,
+      "prompt_ms": true,
+      "decode_ms": true,
+      "drafts_offered": true,
+      "drafts_accepted": true
+    },
+    "weighted_rates": {
+      "requests": 76,
+      "prompt_tokens": 3315714,
+      "reused": 2138255,
+      "fresh_tokens": 1177459,
+      "output_tokens": 22678,
+      "prompt_ms": 896210.7999999999,
+      "decode_ms": 296886.6,
+      "drafts_offered": 19778,
+      "drafts_accepted": 14443,
+      "decode_expert_cache": {
+        "coordinator": {
+          "hits": 6509627,
+          "lookups": 6629508,
+          "records": 76,
+          "hit_rate": 0.981917059305155
+        },
+        "worker": {
+          "hits": 3428663,
+          "lookups": 4894762,
+          "records": 76,
+          "hit_rate": 0.7004759373387307
+        }
+      },
+      "expert_file_mb": 0,
+      "fresh_prompt_tps": 1313.8192487749534,
+      "decode_tps": 76.38606794648193,
+      "mtp_acceptance_pct": 73.02558398220245
+    }
+  }
+}

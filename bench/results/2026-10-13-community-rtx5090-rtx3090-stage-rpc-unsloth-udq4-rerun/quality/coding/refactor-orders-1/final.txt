@@ -1,0 +1,9 @@
+Done — the refactor passed on the first run, no repair rounds needed.
+
+**Results:** `node --test acceptance.test.ts` → 1 file-level test, **1 pass / 0 fail**. Running the test file directly shows the individual breakdown: **24 pass / 0 fail** (Node 22's `--test` aggregates `.ts` files into a single file-level result).
+
+**Changes** (within the allowed scope — tests, AGENTS.md, and config untouched):
+
+- [validation.ts](<ARTIFACTS>/quality/coding/refactor-orders-1/project/validation.ts) (new): exports `validateOrders`, which rejects non-arrays with `RangeError('orders')`, validates each record (non-blank trimmed customer, non-negative integer `priceCents`, positive integer `quantity`, `cancelled` undefined or boolean) throwing `RangeError('order')`, and returns new records with trimmed names without touching the input.
+- [aggregation.ts](<ARTIFACTS>/quality/coding/refactor-orders-1/project/aggregation.ts) (new): exports `aggregateOrders`, which skips cancelled records, groups by customer, sums `priceCents * quantity` and units into fresh summary objects, and sorts by customer in code-point order.
+- [orders.ts](<ARTIFACTS>/quality/coding/refactor-orders-1/project/orders.ts) (modified): keeps the exported `Order`/`Summary` types and `summarizeOrders` signature; the body is now just `aggregateOrders(validateOrders(orders))`. The helper imports are runtime imports; the back-references from the helpers to `orders.ts` are `import type` only, so they erase at runtime and there's no import cycle.

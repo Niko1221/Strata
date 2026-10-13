@@ -1,0 +1,12 @@
+Done — all tests pass on the first run; no repair rounds were needed.
+
+**Results**
+
+- `node --test acceptance.test.ts`: 1 pass / 0 fail (the runner reports the file as a single top-level task on this Node version).
+- Running the test file directly to enumerate cases: **32 pass / 0 fail** out of 32 individual tests.
+
+**Changes** (only the three allowed source files):
+
+- [stock.ts](<ARTIFACTS>/quality/coding/reservation-workflow-2/project/stock.ts) — `buildStock` now trims each SKU, throws `RangeError` on empty-after-trim SKU or non-integer/negative units, and merges duplicate SKUs by summing units.
+- [requests.ts](<ARTIFACTS>/quality/coding/reservation-workflow-2/project/requests.ts) — `uniqueRequests` validates every record first (empty id/sku after trim or non-positive/non-integer quantity throws `RangeError`, including invalid later duplicates), then dedupes by trimmed ID with first occurrence winning, returning trimmed copies so inputs are never mutated.
+- [allocate.ts](<ARTIFACTS>/quality/coding/reservation-workflow-2/project/allocate.ts) — `reserve` validates stock and requests before any allocation, only decrements stock when the full quantity is available, reports `unknown-sku` vs `insufficient-stock`, preserves request order in `accepted`/`rejected`, and emits `remaining` with all stock SKUs (including zeros) in code-point-sorted key order.
