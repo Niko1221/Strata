@@ -563,6 +563,28 @@ int main() {
               "T17.12: shorter strict-prefix checkpoint still reports its full length (2)");
     }
 
+    // ============================================================
+    // T18: REPLAY-GATED GAP READ (dt-steady5 measured finding)
+    // ============================================================
+    // Reading [P, n) on state@checkpoint loses the gap [ckpt, P) from the
+    // GDN/PLE recurrence: attention sees the gap rows through valid arena K/V,
+    // the running state never ingested them (C under-counted; gap 826 tokens).
+    // partial_gap_read_from fail-closes to the checkpoint until FW-2 replay.
+    {
+        using strata::program::suffix_reuse::partial_gap_read_from;
+        const std::vector<int64_t> chain = { 1574, 2598 };
+        check(partial_gap_read_from(false, 3424, chain) == 2598,
+              "T18.1: replay off -> read from the deepest checkpoint <= P (2598)");
+        check(partial_gap_read_from(true, 3424, chain) == 3424,
+              "T18.2: STRATA_SFX_REPLAY=1 -> the gap-read [P, n) (3424)");
+        check(partial_gap_read_from(false, 3424, {}) == 0,
+              "T18.3: no checkpoint <= P -> fresh read from 0 (fail-closed, never fabricate)");
+        check(partial_gap_read_from(false, 2000, chain) == 1574,
+              "T18.4: P between anchors -> the deeper-below-P anchor (1574)");
+        check(partial_gap_read_from(true, 3424, {}) == 3424,
+              "T18.5: replay on with an empty chain still reads [P, n) (the runtime restores 0)");
+    }
+
     std::printf("suffix_reuse_partial_prefix_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
