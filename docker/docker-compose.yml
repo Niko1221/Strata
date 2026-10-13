@@ -1,0 +1,106 @@
+# ============================================================================
+# Strata local LLM inference stack
+#
+#   nginx   : the only externally reachable port (TLS + auth + forwarding)
+#   manager : management console (metrics / API keys / users / container control)
+#   strata  : inference engine (holds the GPU, not exposed)
+#
+#   First run: cp .env.example .env, then docker compose up -d
+# ============================================================================
+name: strata
+
+services:
+  # --------------------------------------------------------------- inference
+  strata:
+    image: strata-engine:local
+    build:
+      # The engine Dockerfile contains `COPY . .`, so the build needs the full
+      # source tree. By default this points at the clean context produced by
+      # scripts/prepare-build.sh (no credentials inside).
+      context: ${STRATA_BUILD_CTX:-./.build-context}
+      dockerfile: Dockerfile
+      args:
+        CUDA_ARCHITECTURES: ${CUDA_ARCHITECTURES:-89}
+    container_name: strata
+    restart: unless-stopped
+    environment:
+      MODEL: ${MODEL:-IQ3_S}
+      CONTEXT: ${CONTEXT:-262144}
+      VISION: ${VISION:-yes}
+      KV: ${KV:-q4_0}
+      LOW_RAM: ${LOW_RAM:-auto}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      # Let sibling containers reach the server by host name (it ships with
+      # DNS-rebinding protection)
+      STRATA_ALLOWED_HOSTS: "strata,strata-manager,localhost,127.0.0.1"
+      # GPU: ${GPU:-}
+      # GPUS: ${GPUS:-}
+    volumes:
+      - ${STRATA_DATA_DIR:-strata-data}:/data
+    ulimits:
+      memlock: -1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # The first start downloads the model (tens of GB) and prepares the expert
+    # pack, hence the generous start period.
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 900s
+      retries: 5
+
+  # --------------------------------------------------------------- console
+  manager:
+    image: strata-manager:local
+    build:
+      context: ./manager
+      dockerfile: Dockerfile
+      args:
+        PIP_INDEX: ${PIP_INDEX:-https://pypi.org/simple}
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.12-slim}
+    container_name: strata-manager
+    restart: unless-stopped
+    environment:
+      STRATA_CONTAINER: strata
+      STRATA_URL: http://strata:8080
+      SAMPLE_INTERVAL: ${SAMPLE_INTERVAL:-10}
+      KEEP_DAYS: ${KEEP_DAYS:-7}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      # needed for container control, log following and nvidia-smi exec
+      - /var/run/docker.sock:/var/run/docker.sock
+      # API key store / user accounts / metrics
+      - manager-data:/data
+    depends_on:
+      - strata
+
+  # --------------------------------------------------------------- gateway
+  nginx:
+    image: strata-gateway:local
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    container_name: strata-nginx
+    restart: unless-stopped
+    ports:
+      - "${STRATA_HTTPS_PORT:-38888}:38888"
+    volumes:
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - manager
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://127.0.0.1:38888/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  strata-data:
+  manager-data:
