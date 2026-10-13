@@ -30,6 +30,16 @@ struct QsaAttnPools {
     const uint8_t* k_q4 = nullptr;      ///< q4_0 block_q4_0 [page][kv_head][page_size][head_dim / 32 * 18]
     const uint8_t* v_q4 = nullptr;
     const int32_t* page_table = nullptr;
+    /// FP16 sliding window + attention sinks (kv_window.hpp): the `win_sinks` cells at the head of the sequence and
+    /// the `win_cells` most recent ones are read from this FP16 overlay instead of the quantized pool.  Zero when
+    /// the overlay is off, and then every read below takes exactly the path it took before it existed.
+    const uint16_t* k_win = nullptr;
+    const uint16_t* v_win = nullptr;
+    int32_t win_cells = 0;
+    int32_t win_sinks = 0;
+    /// Row numbering: rows below this are pool rows ((page * n_head_kv + kvh) * page_size + slot); at or above it
+    /// they are overlay rows (this + slot * n_head_kv + kvh).  Zero when the overlay is off.
+    long long bulk_rows = 0;
 };
 
 /// Scratch floats for `cap` selected cells: partial accumulators, maxima and sums.

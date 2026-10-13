@@ -1,6 +1,7 @@
 // src/kernels/cuda/qsa_decode_attn.cu - see include/strata/kernels/qsa_decode_attn.hpp.
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/core/geometry.hpp"
+#include "strata/kernels/kv_window.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #if defined(STRATA_HIP_GFX906)
@@ -76,6 +77,12 @@ __device__ __forceinline__ void load8_q4(const QsaAttnPools& p, bool value, long
 }
 template <int KV_MODE>
 __device__ __forceinline__ void load8(const QsaAttnPools& p, bool value, long long row, int d0, float* out) {
+    if (p.win_cells > 0 && row >= p.bulk_rows) {   // FP16 overlay row (kv_window.hpp)
+        const uint16_t* pool = (value ? p.v_win : p.k_win) + (row - p.bulk_rows) * HD + d0;
+#pragma unroll
+        for (int k = 0; k < 8; ++k) out[k] = __half2float(__ushort_as_half(__ldg(pool + k)));
+        return;
+    }
     if constexpr (KV_MODE == 0) load8_f16(p, value, row, d0, out);
     else if constexpr (KV_MODE == 1) load8_q8(p, value, row, d0, out);
     else if constexpr (KV_MODE == 3) {
@@ -160,6 +167,11 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
             // a block the KV streaming could not make resident keeps page -1 (ctl[3]); its cells are masked
             // (score -FLT_MAX, weight 0) instead of being read from before the pool.
             if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+            // the FP16 overlay (kv_window.hpp) wins over the pool for a sink and for a cell inside the window:
+            // those cells are resident by construction, so a page the streaming did not bring in cannot mask them.
+            if (p.win_cells > 0)
+                r = kv_window_row(cell, (int64_t) __ldg(step + kStepNKv), p.win_cells, p.win_sinks, n_kv_heads, kvh,
+                                  r, p.bulk_rows);
         }
         srow[t] = r;
     }
@@ -258,7 +270,9 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
     for (int c = 0; c < n_here; ++c) {
         if (srow[c] < 0) continue;   // masked above, weight 0
         float v;
-        if constexpr (KV_MODE == 0) {
+        if (p.win_cells > 0 && srow[c] >= p.bulk_rows) {   // FP16 overlay row (kv_window.hpp)
+            v = __half2float(__ushort_as_half(__ldg(p.v_win + (srow[c] - p.bulk_rows) * HD + t)));
+        } else if constexpr (KV_MODE == 0) {
             v = __half2float(__ushort_as_half(p.v_pool[srow[c] * HD + t]));
         } else if constexpr (KV_MODE == 1) {
             const float sc = __half2float(__ushort_as_half(p.v_scale[srow[c] * (HD / KV_Q8_GROUP) + t / KV_Q8_GROUP]));
@@ -348,6 +362,8 @@ __device__ __forceinline__ int head_of_lane(int lane) {
 // One V element of pool row `row`, dimension `d` (the value loop's own thread index), per KV format.
 template <int KV_MODE>
 __device__ __forceinline__ float load_v1(const QsaAttnPools& p, long long row, int d) {
+    if (p.win_cells > 0 && row >= p.bulk_rows)   // FP16 overlay row (kv_window.hpp)
+        return __half2float(__ushort_as_half(__ldg(p.v_win + (row - p.bulk_rows) * HD + d)));
     if constexpr (KV_MODE == 0) {
         return __half2float(__ushort_as_half(p.v_pool[row * HD + d]));
     } else if constexpr (KV_MODE == 1) {
@@ -407,6 +423,11 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
             // a block the KV streaming could not make resident keeps page -1 (ctl[3]); its cells are masked
             // (score -FLT_MAX, weight 0) instead of being read from before the pool.
             if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+            // the FP16 overlay (kv_window.hpp) wins over the pool for a sink and for a cell inside the window:
+            // those cells are resident by construction, so a page the streaming did not bring in cannot mask them.
+            if (p.win_cells > 0)
+                r = kv_window_row(cell, (int64_t) __ldg(step + kStepNKv), p.win_cells, p.win_sinks, n_kv_heads, kvh,
+                                  r, p.bulk_rows);
         }
         srow[t] = r;
     }

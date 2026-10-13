@@ -10,6 +10,7 @@
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/kv_q8.hpp"
+#include "strata/kernels/kv_window.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/rope.hpp"
 #include "strata/kernels/router_top10.hpp"
@@ -176,12 +177,54 @@ if (!w.wants_q8k()) {        s_gemv_q8_0_split(x80, p.codes, p.scales, p.offset,
 // namespace
 void layer_set_native_bf16(bool enabled) { native_bf16_projections = enabled; }
 void layer_set_native_flash_attn_short(bool enabled) { native_flash_attn_short = enabled; }
-namespace { bool g_kv_int8 = false, g_kv_q4 = false, g_kv_hybrid = false, g_kv_int8_rot = false; }
+namespace {
+bool g_kv_int8 = false, g_kv_q4 = false, g_kv_hybrid = false, g_kv_int8_rot = false;
+/// The FP16 sliding window + attention sinks of kv_window.hpp: the last `g_kv_window` cells and the first
+/// `g_kv_sinks` ones are also kept in FP16. 0: off (the default).
+int64_t g_kv_window = 0, g_kv_sinks = 8;
+/// A caller (--kv-window) asked for the overlay: the environment is the fallback, not an override.
+bool g_kv_window_asked = false;
+/// STRATA_KV_WINDOW / STRATA_KV_SINK fill the two in when no caller set them - the A/B path, which needs no CLI
+/// flag and no config edit.  Read once, so bytes() and init() can never disagree about the arena's size.
+void kv_window_env() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    if (!g_kv_window_asked) {
+        if (const char* w = std::getenv("STRATA_KV_WINDOW"); w && *w) {
+            const long long v = std::atoll(w);
+            if (v > 0) g_kv_window = (int64_t) v;
+        }
+        if (const char* k = std::getenv("STRATA_KV_SINK"); k && *k) {
+            const long long v = std::atoll(k);
+            if (v >= 0) g_kv_sinks = (int64_t) v;
+        }
+    }
+    if (g_kv_window > 0 && g_kv_sinks > g_kv_window) g_kv_sinks = g_kv_window;
+}
+/// Is the overlay in play for the state about to be sized/created?  Only the quantized formats gain from it (an
+/// FP16 state is already exact) and the MTP drafter's ring keeps its plain format, the hybrid setting's reason:
+/// the block movers never see an arena the rest of the engine does not know about.
+bool kv_window_wanted(int64_t ring_cells) {
+    kv_window_env();
+    return g_kv_window > 0 && ring_cells <= 0 && (g_kv_q4 || (g_kv_int8 && !g_kv_q4));
+}
+strata::kernels::KvWindowShape kv_window_shape() {
+    return strata::kernels::KvWindowShape{(int32_t) g_kv_window, (int32_t) g_kv_sinks};
+}
+}  // namespace
 void qsa_set_kv_int8(bool enabled) { g_kv_int8 = enabled; }
 void qsa_set_kv_int8_rotate(bool enabled) { g_kv_int8_rot = enabled; }
 bool qsa_kv_int8() { return g_kv_int8; }
 void qsa_set_kv_q4(bool enabled) { g_kv_q4 = enabled; }
 bool qsa_kv_q4() { return g_kv_q4; }
+void qsa_set_kv_window(int64_t window, int64_t sinks) {
+    g_kv_window_asked = true;
+    g_kv_window = window > 0 ? window : 0;
+    g_kv_sinks = sinks > 0 ? sinks : 0;
+}
+int64_t qsa_kv_window() { return g_kv_window; }
+int64_t qsa_kv_window_sinks() { return g_kv_sinks; }
 void qsa_set_kv_hybrid(bool enabled) { g_kv_hybrid = enabled; }
 bool qsa_kv_hybrid() { return g_kv_hybrid; }
 uint64_t gdn_buffers_bytes(const ModelGeometry& g) {    const int64_t C = g.ssm_conv_channels;    const int64_t V = g.ssm_value_dim;    const uint64_t parts[] = {        q8k_bytes(g.n_embd),
@@ -682,6 +725,8 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
     if (with_rope) n += (uint64_t) max_cells * (s.n_rot / 2) * 4 * 2;          // cos + sin tables
     n += strata::kernels::qsa_step_bytes() + 16;                               // counts and aligned attention status
     n += (uint64_t) s.n_head * 4;                                              // pos_dev
+    // the FP16 sliding window + attention sinks (kv_window.hpp); fixed, not proportional to max_cells
+    if (kv_window_wanted(ring_cells)) n += strata::kernels::kv_window_bytes(s, kv_window_shape()) + 16;
     return align_up16(n) + 256;
 }
 
@@ -756,6 +801,23 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     } else {
         st.k_pool = c.take<uint16_t>(rows * s.head_dim);
         st.v_pool = c.take<uint16_t>(rows * s.head_dim);
+    }
+    // FP16 sliding window + attention sinks (kv_window.hpp): (sinks + window) slots per KV head, carved from the
+    // arena like every other pool so the addresses stay fixed for the graph. The row numbering a reader compares
+    // against starts above the slots' rows (QsaAttnPools::bulk_rows).
+    st.kv_window = 0;
+    st.kv_sinks = 0;
+    st.k_win = nullptr;
+    st.v_win = nullptr;
+    st.win_bulk_rows = 0;
+    if (kv_window_wanted(ring_cells)) {
+        const strata::kernels::KvWindowShape ws = kv_window_shape();
+        const uint64_t win_rows = (uint64_t) strata::kernels::kv_window_slots(ws) * s.n_head_kv * s.head_dim;
+        st.k_win = c.take<uint16_t>(win_rows);
+        st.v_win = c.take<uint16_t>(win_rows);
+        st.kv_window = ws.window;
+        st.kv_sinks = ws.sinks;
+        st.win_bulk_rows = (long long) p.slots * (long long) s.n_head_kv * (long long) s.page_size;
     }
     st.page_table = c.take<int32_t>((uint64_t) pages);
     st.n_pages = pages;
@@ -881,6 +943,13 @@ void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
         cudaMemsetAsync(st.k_pool, 0, rows * s.head_dim * 2, cs);
         cudaMemsetAsync(st.v_pool, 0, rows * s.head_dim * 2, cs);
     }
+    // The FP16 overlay (kv_window.hpp) is reset with everything else: a cell a reader has not been given yet must
+    // read as zero rather than as the previous conversation's K/V.
+    if (st.k_win != nullptr) {
+        const size_t win_rows = (size_t) (st.kv_sinks + st.kv_window) * s.n_head_kv * s.head_dim;
+        cudaMemsetAsync(st.k_win, 0, win_rows * 2, cs);
+        cudaMemsetAsync(st.v_win, 0, win_rows * 2, cs);
+    }
     // A streamed state starts over with nothing resident. Its host copy is not cleared (GBs over PCIe per new
     // conversation): no reader names a cell before this sequence has written it, and a block copied in whole
     // carries the unwritten cells past the end, which nothing reads.
@@ -897,6 +966,14 @@ strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {
     else if (st.kv_q4) { pools.k_q4 = st.k_q4; pools.v_q4 = st.v_q4; }
     else if (st.kv_int8) { pools.k_q = st.k_q; pools.v_q = st.v_q; pools.k_scale = st.k_scale; pools.v_scale = st.v_scale; }
     else { pools.k_pool = st.k_pool; pools.v_pool = st.v_pool; }
+    // the FP16 sliding window + attention sinks (kv_window.hpp): the readers read a sink or a window cell from here
+    if (st.k_win != nullptr && st.kv_window > 0) {
+        pools.k_win = st.k_win;
+        pools.v_win = st.v_win;
+        pools.win_cells = (int32_t) st.kv_window;
+        pools.win_sinks = (int32_t) st.kv_sinks;
+        pools.bulk_rows = st.win_bulk_rows;
+    }
     return pools;
 }
 
@@ -1097,7 +1174,16 @@ if (st.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with STRATA_KV
 }
 if (st.kv_q4) {
     strata::kernels::kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);
-} else if (st.kv_int8) kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    else kv_append_step(st.k_pool, st.v_pool, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host); } /* not K8V4 */    {        const uint64_t nvk = (uint64_t) g.n_head_kv * g.head_dim;        const uint64_t base = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim + 2 * nvk + 8;        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.k_pool, base, nvk / 2, stream);        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.v_pool, base + nvk / 2, nvk / 2, stream);        dump_slot(dump, g, layer, b.vcur, base + nvk, nvk, stream);        dump_slot(dump, g, layer, b.kcur, base + 2 * nvk, nvk, stream);    }    {        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};        if (native_qsa_indexer_enabled()) {
+} else if (st.kv_int8) kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    else kv_append_step(st.k_pool, st.v_pool, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host); } /* not K8V4 */
+    // the FP16 sliding window + attention sinks (kv_window.hpp): mirror the cell the append just stored, from the
+    // same (already rotated) K/V it quantized, so a reader of a sink or of one of the last `kv_window` cells gets
+    // the exact value instead of the 4-bit one. A no-op while the overlay is off (st.k_win is null).
+    if (st.k_win != nullptr)
+        strata::kernels::kv_window_write_step({st.k_win, st.v_win},
+                                              strata::kernels::KvWindowShape{(int32_t) st.kv_window,
+                                                                             (int32_t) st.kv_sinks},
+                                              st.step, b.kcur, b.vcur, s, stream);
+    {        const uint64_t nvk = (uint64_t) g.n_head_kv * g.head_dim;        const uint64_t base = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim + 2 * nvk + 8;        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.k_pool, base, nvk / 2, stream);        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.v_pool, base + nvk / 2, nvk / 2, stream);        dump_slot(dump, g, layer, b.vcur, base + nvk, nvk, stream);        dump_slot(dump, g, layer, b.kcur, base + 2 * nvk, nvk, stream);    }    {        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};        if (native_qsa_indexer_enabled()) {
     try {
         native_qsa_indexer_append(b.idx_raw, st.step + kStepPos, pos_base,
             (const float*) w_ikn->data, RMS_EPS, ib, s, st.max_cells, rope_scaling(), stream);

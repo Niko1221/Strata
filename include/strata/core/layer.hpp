@@ -229,6 +229,16 @@ struct QsaState {
     int32_t* page_table = nullptr;   ///< (n_pages,) logical page -> physical page (-1: not resident, streamed)
     int64_t n_pages = 0;
     int64_t max_cells = 0;
+    /// FP16 sliding window + attention sinks (kv_window.hpp): the `kv_window` most recent cells and the `kv_sinks`
+    /// leading ones are mirrored in FP16 in k_win/v_win and read from there, while the quantized pools above stay
+    /// COMPLETE for every cell - snapshots, streaming residency and the ring modes keep reading them untouched.
+    /// `kv_window` 0 (the default) leaves the overlay off: every reader then takes the path it took before it
+    /// existed, bit for bit.
+    int64_t kv_window = 0;
+    int64_t kv_sinks = 0;
+    uint16_t* k_win = nullptr;
+    uint16_t* v_win = nullptr;
+    long long win_bulk_rows = 0;   ///< the row number the overlay's rows start at (QsaAttnPools::bulk_rows)
 
     /// KV STREAMING (docs/kv-streaming-design.md, `kv_stream.hpp`). `kv_mode` 0: every page in VRAM, identity
     /// table (n_slots == n_pages, no host copy). 1: streamed - the authoritative K/V in `host`, `n_slots` pages
@@ -315,6 +325,13 @@ bool qsa_kv_int8();
 /// PR #21: store K/V as Q4_0 after a Hadamard rotation (`--kv q4_0`): 576 B per cell, vs 1,056 in INT8.
 void qsa_set_kv_q4(bool enabled);
 bool qsa_kv_q4();
+/// FP16 sliding window + attention sinks (kv_window.hpp): the `window` most recent cells and the `sinks` leading
+/// ones are also kept in FP16 and read from there. Leave `window` 0 (the default, or STRATA_KV_WINDOW unset) to
+/// keep the overlay off. Only the quantized formats gain from it, so a fully resident FP16 state ignores it, and
+/// the MTP drafter's ring state keeps its own format (the hybrid setting's reason: the block movers never see it).
+void qsa_set_kv_window(int64_t window, int64_t sinks);
+int64_t qsa_kv_window();
+int64_t qsa_kv_window_sinks();
 /// Hybrid K8V4 (`--kv k8v4`): K in INT8, V in rotated Q4_0 - 816 B per cell; streams with --kv-resident too.
 void qsa_set_kv_hybrid(bool enabled);
 bool qsa_kv_hybrid();

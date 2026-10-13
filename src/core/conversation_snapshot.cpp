@@ -1,5 +1,6 @@
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_window.hpp"
 #include "conversation_checked.hpp"
 #include "conversation_copy.hpp"
 #include <cuda_runtime.h>
@@ -210,6 +211,37 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
         if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
                 return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
             })) return false;
+    // The FP16 sliding window + attention sinks (kv_window.hpp) are not part of the image: the restored quantized
+    // bulk is COMPLETE, so the overlay is rebuilt from it.  A restored window comes back at bulk precision instead
+    // of exact, which is correct - leaving it would have the new conversation reading the previous one's K/V.
+    if (st.k_win != nullptr && upto > 0) {
+        const auto src2 = pools(st);
+        strata::kernels::QsaAttnPools bulk;
+        bulk.page_table = st.page_table;
+        if (st.kv_hybrid) {
+            bulk.k_q = (const int8_t*) src2[0];
+            bulk.v_q4 = (const uint8_t*) src2[1];
+            bulk.k_scale = (const uint16_t*) src2[2];
+        } else if (st.kv_q4) {
+            bulk.k_q4 = (const uint8_t*) src2[0];
+            bulk.v_q4 = (const uint8_t*) src2[1];
+        } else if (st.kv_int8) {
+            bulk.k_q = (const int8_t*) src2[0];
+            bulk.v_q = (const int8_t*) src2[1];
+            bulk.k_scale = (const uint16_t*) src2[2];
+            bulk.v_scale = (const uint16_t*) src2[3];
+        } else {
+            bulk.k_pool = (const uint16_t*) src2[0];
+            bulk.v_pool = (const uint16_t*) src2[1];
+        }
+        auto shapes = strata::kernels::qsa_real_shapes();
+        shapes.n_head_kv = g.n_head_kv;
+        shapes.head_dim = g.head_dim;
+        strata::kernels::kv_window_restore(
+            {const_cast<uint16_t*>(st.k_win), const_cast<uint16_t*>(st.v_win)},
+            strata::kernels::KvWindowShape{(int32_t) st.kv_window, (int32_t) st.kv_sinks}, bulk,
+            st.kv_q4 ? 2 : (st.kv_hybrid ? 3 : (st.kv_int8 ? 1 : 0)), upto, shapes, nullptr);
+    }
     // VRAM slots still contain the outgoing conversation. Resolve must refill
     // them from the restored authoritative pools before any attention reads.
     if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, nullptr);

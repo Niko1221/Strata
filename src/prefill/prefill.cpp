@@ -27,6 +27,7 @@
 #include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_window.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/core/native_head.hpp"
@@ -1537,6 +1538,12 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
         }
         if (st.kv_q4) {
             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, c0, nb, Kc, Vc, s, m.cs, &st.host);
+            // the FP16 sliding window + attention sinks (kv_window.hpp); the drafter's ring state has none
+            if (st.k_win != nullptr)
+                strata::kernels::kv_window_write_batch(
+                    {st.k_win, st.v_win},
+                    strata::kernels::KvWindowShape{(int32_t) st.kv_window, (int32_t) st.kv_sinks}, c0, nb, Kc, Vc, s,
+                    m.cs);
         } else {
             kv_append(Kc, Vc, nb, c0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs, &st.host);
@@ -2776,6 +2783,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             kv_append(m.Kc, m.Vc, T, p0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
                                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs,
                                       host_w, staged ? &m.stage : nullptr);
+                        // the FP16 sliding window + attention sinks (kv_window.hpp): the prompt's own cells in
+                        // FP16, so the decode steps that follow read the last `kv_window` prompt cells exactly.
+                        // Each chunk writes with its own cache length (pos0 + T); a ring slot a later cell owns
+                        // is simply overwritten by that cell, which is what leaves the window current.
+                        if (st.k_win != nullptr)
+                            strata::kernels::kv_window_write_batch(
+                                {st.k_win, st.v_win},
+                                strata::kernels::KvWindowShape{(int32_t) st.kv_window, (int32_t) st.kv_sinks}, p0, T,
+                                m.Kc, m.Vc, s, m.cs);
                         if (host_by_dma)
                             strata::kernels::kv_unstage_to_host(pools_of(m.stage, m.ident_table), st.host,
                                                                 core::qsa_kv_format(st), p0 / s.page_size,

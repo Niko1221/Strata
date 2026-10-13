@@ -404,6 +404,11 @@ struct Options {
     bool ple_sync_submit = false;      ///< A/B arm: submit reads on the token thread, no I/O worker
     std::string kv = "fp16";           ///< plan v0.3 P7: KV storage, fp16 (default) or int8 (half the VRAM)
     int64_t kv_resident = 0;           ///< KV streaming: resident cells per QSA layer (0: all in VRAM)
+    /// FP16 sliding window + attention sinks (kv_window.hpp): the most recent `kv_window` cells and the first
+    /// `kv_sink` ones are also kept in FP16 (0: off, or STRATA_KV_WINDOW / STRATA_KV_SINK). Only the
+    /// quantized --kv formats gain from it.
+    int64_t kv_window = 0;
+    int64_t kv_sink = 8;
     bool kv_grow = false;              ///< the elastic K/V (--kv-grow, STRATA_KV_GROW=1; kvg_ensure)
     std::string dump_residual;
     /// The head input, `bb.mixed`.  It exists so the head can be SPLIT: steps 1-4 (the per-stream norm, the two
@@ -1949,6 +1954,8 @@ int main(int argc, char** argv) {
         else if (a == "--ple-sync-submit") o.ple_sync_submit = true;
         else if (a == "--kv") o.kv = next("--kv");
         else if (a == "--kv-resident") o.kv_resident = std::atoll(next("--kv-resident"));
+        else if (a == "--kv-window") o.kv_window = std::atoll(next("--kv-window"));
+        else if (a == "--kv-sink") o.kv_sink = std::atoll(next("--kv-sink"));
         else if (a == "--kv-grow") o.kv_grow = true;
         else if (a == "--no-kv-grow") o.kv_grow = false;
         else if (a == "--stream-token") o.stream_token = true;
@@ -2549,6 +2556,10 @@ int main(int argc, char** argv) {
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
     strata::core::qsa_set_kv_q4(o.kv == "q4_0");   // PR #21: 4-bit codes after a Hadamard rotation (kv_q4.hpp)
+    // FP16 sliding window + attention sinks (kv_window.hpp): the last o.kv_window cells and the first o.kv_sink
+    // ones are also kept in FP16 and read from there. Only when asked: --kv-window wins over STRATA_KV_WINDOW,
+    // and with neither the overlay is off (bit for bit what this build did before it existed).
+    if (o.kv_window > 0) strata::core::qsa_set_kv_window(o.kv_window, o.kv_sink);
     // STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation --kv q4_0 already uses. Opt-in: first-token KL to
     // fp16 K/V improved on an NVFP4 pack (0.0066 -> 0.0051) but not on IQ2_XS (0.0022 -> 0.0054)
     const char* kv_rot = std::getenv("STRATA_KV_ROT");

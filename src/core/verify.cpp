@@ -32,6 +32,7 @@
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/kv_q8.hpp"
+#include "strata/kernels/kv_window.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_gr_postops.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
@@ -1321,6 +1322,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         for (int t = tb; t < te; ++t)
                             kv_append_step(st.k_pool, st.v_pool, st.page_table, step_ + t * kStepCount,
                                            kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st.host);
+                    // the FP16 sliding window + attention sinks (kv_window.hpp): the same cells the appends above
+                    // stored, in FP16. The decode attention that follows reads the window's cells from here, so
+                    // this is not optional when the overlay is on.
+                    if (st.k_win != nullptr)
+                        strata::kernels::kv_window_write_steps(
+                            {st.k_win, st.v_win},
+                            strata::kernels::KvWindowShape{(int32_t) st.kv_window, (int32_t) st.kv_sinks}, step_b,
+                            kStepCount, n, kc_b, vc_b, s, cs);
                 } else
                 for (int t = tb; t < te; ++t) {
                     const QsaState& st = slot_ss(t).qsa_states[qi];   // the row's own K/V (ss's outside a batch)
@@ -1341,6 +1350,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     else
                         kv_append_step(st.k_pool, st.v_pool, st.page_table, step_t, kcur_ + t * NKV * HD,
                                        vcur_ + t * NKV * HD, s, cs, &st.host);
+                    // the FP16 sliding window + attention sinks (kv_window.hpp), per row's own state
+                    if (st.k_win != nullptr)
+                        strata::kernels::kv_window_write_step(
+                            {st.k_win, st.v_win},
+                            strata::kernels::KvWindowShape{(int32_t) st.kv_window, (int32_t) st.kv_sinks}, step_t,
+                            kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs);
                 }
                 if (dec_batch && !g_no_batch_kv && !batch_rec_) {
                     const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
