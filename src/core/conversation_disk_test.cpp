@@ -82,13 +82,6 @@ SavedConversation split_image(size_t tokens, uint8_t seed, int32_t first = 1000)
     return s;
 }
 
-// what the tier keeps of an image: the live state and the deepest checkpoint, in every stage
-SavedConversation trimmed(SavedConversation s) {
-    s.checkpoints.resize(1);
-    for (auto& st : s.stage_images) st.checkpoints.resize(1);
-    return s;
-}
-
 bool same_checkpoint(const ConversationCheckpoint& a, const ConversationCheckpoint& b) {
     return a.ids == b.ids && a.imgs == b.imgs && a.gdn == b.gdn && a.ple == b.ple && a.tails == b.tails &&
            a.dead == b.dead && a.block_pos == b.block_pos && a.used == b.used;
@@ -175,10 +168,10 @@ int main() {
         fs::remove(dir / "keep.bin");
     }
 
-    {   // background write, match, read back exactly (a layer split: two files; the deepest checkpoint only)
+    {   // background write, match, read back exactly (a layer split: two files; every checkpoint)
         ConversationDiskTier tier(opts(dir, GiB, 1800));
         check(tier.open(e), "open 2");
-        const SavedConversation expect = trimmed(split_image(600, 1));
+        const SavedConversation expect = split_image(600, 1);
         check(tier.put(split_image(600, 1)), "put a split image");
         tier.wait_idle();
         check(tier.size() == 1 && tier_files(dir) == 2 && !tier.pending(), "written: one file per stage");
@@ -187,15 +180,15 @@ int main() {
         check(live.tokens == 600 && live.live && live.id != 0, "best: the live state as a prefix");
         const auto ck = tier.best([] { auto p = prompt_of(300); p.push_back(7); return p; }(), {}, false);
         check(ck.tokens == 300 && !ck.live, "best: the deepest checkpoint as a prefix");
-        check(tier.best([] { auto p = prompt_of(150); p.push_back(7); return p; }(), {}, false).tokens == 0,
-              "best: the earlier checkpoints are not kept");
+        check(tier.best([] { auto p = prompt_of(150); p.push_back(7); return p; }(), {}, false).tokens == 150,
+              "best: an earlier checkpoint is kept too");
         const auto whole = tier.best(prompt_of(600), {}, false);
         check(whole.tokens == 300 && !whole.live, "best: the whole prompt held is no prefix (its last token is read)");
         check(tier.best(prompt_of(700), {}, true).tokens == 0, "best: another control-vector state does not match");
         check(tier.best(prompt_of(700, 5), {}, false).tokens == 0, "best: other tokens do not match");
         SavedConversation back;
         check(tier.take(live.id, live.tokens, back, e), "take");
-        check(same(back, expect), "read back exactly: both stages, the live state and the deepest checkpoint");
+        check(same(back, expect), "read back exactly: both stages, the live state and every checkpoint");
         check(tier.size() == 0 && tier.bytes() == 0 && tier_files(dir) == 0, "take removes the entry and its files");
         const auto st = tier.stats();
         check(st.queued == 1 && st.written == 1 && st.disk_hits == 1 && st.ram_hits == 0 && st.tokens_back == 600 &&
@@ -216,7 +209,7 @@ int main() {
         const auto b = tier.best(prompt_of(450, 5000), {}, false);
         check(b.tokens == 400, "b matches in the queue");
         SavedConversation back;
-        check(tier.take(b.id, b.tokens, back, e) && same(back, trimmed(image(400, 3, 5000))), "b back from RAM");
+        check(tier.take(b.id, b.tokens, back, e) && same(back, image(400, 3, 5000)), "b back from RAM");
         check(tier.stats().ram_hits == 1 && logged("RAM hit: 400 tokens"), "a RAM hit, logged");
         release.set_value();
         tier.wait_idle();
@@ -323,7 +316,7 @@ int main() {
             const bool read = tier.take(m.id, m.tokens, back, e);
             if (!read) std::fprintf(stderr, "take: %s\n", e.c_str());
             check(read, "persist: read back after a restart");
-            check(same(back, trimmed(split_image(500, 20))), "persist: the image is exactly the one written");
+            check(same(back, split_image(500, 20)), "persist: the image is exactly the one written");
             check(tier_files(dir) == 2, "persist: its images and index are gone");
         }
         {

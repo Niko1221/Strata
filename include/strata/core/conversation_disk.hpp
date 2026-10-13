@@ -61,8 +61,9 @@ public:
     /// stays off) when the folder cannot be used.
     bool open(std::string& error);
 
-    /// Queues `image` for the writer; its RAM is freed when its write ends, stored or not.  Only the live state and
-    /// the deepest checkpoint are written (the session files' rule).  False when the tier is off or over budget.
+    /// Queues `image` for the writer; its RAM is freed when its write ends, stored or not.  Every checkpoint is written
+    /// with it (they hold no K/V), so a prompt that leaves the conversation early still resumes from one.  False when
+    /// the tier is off or over budget.
     bool put(SavedConversation&& image);
 
     struct Match {

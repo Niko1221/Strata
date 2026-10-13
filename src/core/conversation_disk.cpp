@@ -50,26 +50,6 @@ bool holds(const SavedConversation& s, const ConversationCheckpoint& live,
     return true;
 }
 
-// Only the live state and the deepest checkpoint go to the disk (the session files' rule).  With a layer split each
-// later stage keeps the same checkpoint (the split keeps the order); a stage whose list does not line up drops them all.
-void keep_deepest_checkpoint(SavedConversation& img) {
-    if (img.checkpoints.empty()) return;
-    size_t d = 0;
-    for (size_t i = 1; i < img.checkpoints.size(); ++i)
-        if (img.checkpoints[i].ids.size() > img.checkpoints[d].ids.size()) d = i;
-    bool aligned = true;
-    for (const auto& s : img.stage_images)
-        aligned = aligned && s.checkpoints.size() == img.checkpoints.size() && s.checkpoints[d].ids == img.checkpoints[d].ids;
-    auto keep = [&](std::vector<ConversationCheckpoint>& v) {
-        if (!aligned) { v.clear(); return; }
-        ConversationCheckpoint c = std::move(v[d]);
-        v.clear();
-        v.push_back(std::move(c));
-    };
-    keep(img.checkpoints);
-    for (auto& s : img.stage_images) keep(s.checkpoints);
-}
-
 // a file of this tier (also a temporary one session_file_write left behind: ".<name>.<hex>.tmp")
 bool tier_file(const std::string& name) {
     const std::string prefix = ConversationDiskTier::file_prefix();
@@ -351,7 +331,6 @@ bool ConversationDiskTier::put(SavedConversation&& image) {
     if (!open_) return false;
     Job job;
     job.image = std::move(image);
-    keep_deepest_checkpoint(job.image);
     job.entry.live = key_of(job.image.live);
     for (const auto& c : job.image.checkpoints) job.entry.checkpoints.push_back(key_of(c));
     job.entry.cvec = job.image.cvec;

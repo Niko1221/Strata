@@ -1049,7 +1049,9 @@ when the disk holds a longer prefix than the session, a `--batch` slot or the RA
 
 - every image of it (one per stage with `--layer-split`) is one session file (above: the same writer and reader, so
   the same size, header and hash checks and the free-space preflight `--session-min-free-mib`), with the live state
-  and the deepest checkpoint only (the session files' rule); the files' identity is a random number of this run, so
+  and every checkpoint, as in RAM (a checkpoint holds the recurrent state, not the K/V: a 333K-token conversation with
+  its 8 checkpoints is 6.2 GB; with the deepest one only, a prompt that left a 329K conversation at 220K read all
+  220K again); the files' identity is a random number of this run, so
   only this engine reads them back, and its files (`strata-conv-*`) are removed at start and when it ends;
 - a background thread (CPU nice 10 on Linux) writes them, so a switch never waits for the disk; a conversation asked
   for again before its write started comes back from RAM, one being written is waited for, then read. A queued image
@@ -1064,8 +1066,8 @@ Measured on 2x CMP 50HX (layer split), 2x Xeon E5-2670 v2, 64 GB RAM, NVMe ext4,
 that a third conversation pushes one to the disk, greedy (plain chat requests, 48 tokens): the follow-up answer
 of a conversation restored from the disk was the same text as the answer the live conversation gave (two
 conversations of 42K tokens, and the same through the RAM cache). A 165,557-token conversation: cold read 77.8 s; back
-from the disk 6.4 s for the whole request - the read 3.6 s (2,639 MiB in two files, 761 MB/s; 3,364 MB in RAM before
-the deepest-checkpoint trim) and the GPU restore 0.87 s. The background writes ran at 80-370 MB/s while the next
+from the disk 6.4 s for the whole request - the read 3.6 s (2,639 MiB in two files, 761 MB/s; measured when only the
+deepest checkpoint was kept) and the GPU restore 0.87 s. The background writes ran at 80-370 MB/s while the next
 prompt was being read (they share the CPU with it at a lower priority); a request waited for one once (0.9 s), when it
 asked for a conversation still being written. After the engine ended no file was left. Unit test:
 `conversation_disk_test` (CPU only, `-DSTRATA_BUILD_CONVERSATION_TESTS=ON`; also clean under ThreadSanitizer). Not run
