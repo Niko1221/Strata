@@ -82,7 +82,6 @@ ConversationCheckpoint ckpt(std::initializer_list<int32_t> ids) {
 
 int main() {
     std::printf("suffix_reuse_partial_prefix_test (T12 partial-prefix mount, T13 off-flag parity, T14 best-of-N, T15 image mismatch)\n");
-
     // ============================================================
     // T12: PARTIAL-PREFIX MATCH
     // ============================================================
@@ -251,14 +250,23 @@ int main() {
         ConversationCache cache(1 << 20, 4);
         cache.put(std::move(s));
 
+        // T14 under the FW-1 splice-engagement contract (2026-10-13): the OLD
+        // pin was "strict > partial always".  The dominance rule replaces it:
+        // partial is chosen when its anchor covers strictly more (L > s) and it
+        // never reads shallower (p >= s).  Here ck C {A B} is strict at s=2;
+        // ck A {A B C D} has LCP p=2 == s and L=4 > s -> partial WINS, reading
+        // from the same point 2 the strict match would, with a deeper anchor
+        // (the splice branch decides downstream whether the tail is recoverable;
+        // this prompt's tail {C D} vs {X Y} has no common suffix, so it degrades
+        // to the same gap-read the strict match would do - never worse).
         const std::vector<int32_t> prompt = {1, 2, 90, 91};   // [A B X Y]
         const auto m = cache.best_with_partial(64, prompt, {}, true);
-        check(!m.partial,
-              "T14.1: strict > partial always (ck C {A B} is a strict prefix of {A B X Y})");
+        check(m.partial,
+              "T14.1: deeper partial (L=4) beats equal-depth strict (s=2, p=2) - splice engagement");
         check(m.tokens == 2,
-              "T14.2: strict match at 2 wins over partial matches at LCP=2");
-        check(m.checkpoint_length == 2,
-              "T14.3: strict match's checkpoint_length == tokens == 2");
+              "T14.2: reads from the LCP (2) - same point as the strict match, never shallower");
+        check(m.checkpoint_length == 4,
+              "T14.3: the deeper checkpoint (4) is the anchor, not the strict (2)");
 
         // Now drop ck C and re-test: partial mode, longest LCP wins, deeper anchor wins ties.
         // Use a prompt long enough for both checkpoints to be partial (L <= n).
@@ -403,6 +411,66 @@ int main() {
         // [P] is the next guard).  When P==L (which the L>=P guard catches above), it's strict.
         // For P < L but token[P] == cur[P], the LCP would be > P, not == P - the divergence
         // check catches it: the helper returns fired=false.
+    }
+
+    // ============================================================
+    // T16: SPLICE ENGAGEMENT - a deeper partial beats a shallower strict
+    // ============================================================
+    // The M1 steady-state finding (2026-10-13): best_with_partial returns at the
+    // FIRST strict match and never evaluates partial, so when the checkpoints hold
+    // both a strict anchor s (s <= D, the divergence point) and a DEEPER checkpoint
+    // L > D that would splice, the strict one wins and the splice never engages
+    // ([SFX-DBG] partial-branch enter=0 in every steady trace).
+    //
+    // Dominance rule (safe because one conversation's checkpoints are nested
+    // prefixes of ONE history: the history diverges from the request at a single
+    // point D, so every strict anchor s <= D = the partial LCP p - a partial mount
+    // never reads from a shallower point, and its splice may recover up to L):
+    // prefer the partial match when its checkpoint covers strictly more than the
+    // strict anchor (L > s); otherwise keep strict (no splice cost when it cannot
+    // recover more).
+    {
+        // One conversation: checkpoints {A B} (2, the future strict anchor) and
+        // {A B C D E} (5, crosses the edit).  Request {A B C X E ...}: history
+        // diverges at D=3 (C vs X at index 3).  Strict anchor {A B} mounts 2;
+        // partial on {A B C D E}: LCP=3, L=5 -> splice recovers [P=3, L=5) tail E.
+        auto s = image({1, 2, 3, 4, 5});
+        s.checkpoints = { ckpt({1, 2}), ckpt({1, 2, 3, 4, 5}) };
+        ConversationCache cache(1 << 20, 4);
+        cache.put(std::move(s));
+
+        const std::vector<int32_t> prompt = {1, 2, 3, 90, 5};   // edits token 3 (X=90)
+        const auto strict = cache.best(prompt, {}, true);
+        check(strict.tokens == 2 && !strict.partial,
+              "T16.1: strict best() mounts the {A B} anchor (2)");
+
+        const auto m = cache.best_with_partial(64, prompt, {}, true);
+        check(m.partial,
+              "T16.2: partial preferred over shallower strict (splice engagement)");
+        check(m.tokens == 3,
+              "T16.3: partial LCP == 3 (== the strict anchor's 2... history diverges at 3)");
+        check(m.checkpoint_length == 5,
+              "T16.4: the deeper checkpoint (5) is the splice anchor");
+
+        // The neutral case: strict anchor AT the divergence depth (s == p == 3).
+        // The dominance rule still prefers the deeper checkpoint (L=5 covers the
+        // common tail {E}), and the mount reads from p=3 == s: NEVER shallower
+        // than the strict anchor, so the swap is safe even when the tail turns
+        // out recoverable or not (old_suffix_len=0 handles itself downstream).
+        auto s2 = image({1, 2, 3, 4, 5});
+        s2.checkpoints = { ckpt({1, 2, 3}), ckpt({1, 2, 3, 4, 5}) };
+        ConversationCache cache2(1 << 20, 4);
+        cache2.put(std::move(s2));
+        const auto m2 = cache2.best_with_partial(64, prompt, {}, true);
+        check(m2.tokens >= strict.tokens,
+              "T16.5: partial never reads shallower than the strict anchor (p >= s)");
+        check(!m2.partial || m2.checkpoint_length > strict.tokens,
+              "T16.5b: partial only chosen when its anchor covers strictly more (L > s)");
+
+        // Off-flag: byte-identical strict (the early-return never changes behavior).
+        const auto m0 = cache.best_with_partial(0, prompt, {}, true);
+        check(!m0.partial && m0.tokens == 2,
+              "T16.6: flag=0 stays byte-identical strict (2)");
     }
 
     std::printf("suffix_reuse_partial_prefix_test: %d passed, %d failed\n", g_pass, g_fail);
