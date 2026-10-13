@@ -389,7 +389,13 @@ public:
         if (dbg_partial) std::fprintf(stderr, " -> pm{tokens=%lld L=%lld} strict=%lld\n",
                                       (long long) pm.tokens, (long long) pm.checkpoint_length,
                                       (long long) strict_tokens);
-        if (pm.tokens > 0 && pm.checkpoint_length > strict_tokens) return pm;
+        // Cross-conversation safety (review r1 finding 1, 2026-10-13): the nesting
+        // argument above is SAME-conversation only.  A DIFFERENT conversation's
+        // partial can have a deeper anchor (L > s) with a shallower LCP (p < s);
+        // mounting it would read from a shallower point than the strict match.
+        // Require p >= s as well as L > s.  (Single-conversation behavior is
+        // unchanged: there p >= s always holds, so the added term never binds.)
+        if (pm.tokens > 0 && pm.tokens >= strict_tokens && pm.checkpoint_length > strict_tokens) return pm;
         return m;                                            // strict match wins; partial ignored
     }
 

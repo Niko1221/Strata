@@ -477,6 +477,29 @@ int main() {
         const auto m0 = cache.best_with_partial(0, prompt, {}, true);
         check(!m0.partial && m0.tokens == 2,
               "T16.6: flag=0 stays byte-identical strict (2)");
+
+        // Cross-conversation (review r1 finding 1): the nesting property only holds
+        // WITHIN one conversation.  Conversation A offers a strict anchor {A B C}
+        // (s=3); conversation B offers a partial candidate {A B 80 81 82} whose
+        // anchor is deeper (L=5 > s=3) but whose LCP is shallower (p=2 < s=3).
+        // The dominance swap must NOT take B's partial: it would mount at 2 and
+        // lose a token of resume vs A's strict 3.  Requires p >= s ACROSS
+        // conversations, not just L > s.
+        {
+            auto convA = image({1, 2, 3});
+            convA.checkpoints = { ckpt({1, 2, 3}) };
+            auto convB = image({1, 2, 80, 81, 82});
+            convB.checkpoints = { ckpt({1, 2, 80, 81, 82}) };
+            ConversationCache cache3(1 << 20, 4);
+            cache3.put(std::move(convA));
+            cache3.put(std::move(convB));
+
+            const auto m3 = cache3.best_with_partial(64, prompt, {}, true);
+            check(!m3.partial && m3.tokens >= 3,
+                  "T16.7: cross-conversation partial with LCP < strict never mounts (p >= s across conversations)");
+            check(m3.tokens == 3 && !m3.partial,
+                  "T16.7b: strict anchor (3) stands over B's deeper-but-shallower-LCP partial");
+        }
     }
 
     // ============================================================
