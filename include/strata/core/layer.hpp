@@ -228,6 +228,17 @@ struct QsaState {
     /// Uses k_q/k_scale + v_q4. Mode 0 only (no KV streaming, no ring); under this setting the MTP drafter's
     /// ring state stays plain INT8, so the block movers never see the hybrid layout.
     bool kv_hybrid = false;
+    /// MIXED WIDTH `--kv q2k`: K in 2-bit PER-CHANNEL (the q2 path, kv_q2.hpp) + V in rotated Q4_0 (kv_q4.hpp).
+    /// Uses k_q2 + v_q4 - the two pools the two formats already have, one per side - and 224 B per cell and KV
+    /// head, 448 per cell for 2 KV heads (q2: 320, q4_0: 576). Both sides are rotated, so `kv_rot` is true and
+    /// the readers are q2's for K and q4's for V, which is why the fused attention reads K and V by two modes
+    /// rather than one (qsa_decode_attn.cu). Streams and rings like q2: the K side's per-channel scale spans a
+    /// 32-cell group, so the residency unit is the group (kv_stream.hpp).
+    ///
+    /// It is NOT a q2 state and NOT a q4 state, and it says so: `kv_q2` and `kv_q4` are both false, and
+    /// `qsa_kv_format()` answers kKvQ2K. A reader told "q2" would read V's 18-byte q4_0 blocks as 10-byte
+    /// per-channel slots; one told "q4" would read K's slots as blocks. Both are silent.
+    bool kv_q2k = false;
     /// K and V go through kv_q4.hpp's Walsh-Hadamard rotation before they are stored, the queries too, the output
     /// back: always for Q4_0, for INT8 by qsa_set_kv_int8_rotate (spreads outlier channels over the scale groups)
     bool kv_rot = false;
@@ -344,9 +355,18 @@ int64_t qsa_kv_window_sinks();
 /// Hybrid K8V4 (`--kv k8v4`): K in INT8, V in rotated Q4_0 - 816 B per cell; streams with --kv-resident too.
 void qsa_set_kv_hybrid(bool enabled);
 bool qsa_kv_hybrid();
-/// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvHybrid).
+/// Mixed width `--kv q2k`: K in 2-bit per-channel (the q2 path) + V in rotated Q4_0 (the q4 path) - 448 B per
+/// cell for 2 KV heads, against q2's 320 and q4_0's 576. Set before sizing and initializing the session.
+void qsa_set_kv_q2k(bool enabled);
+bool qsa_kv_q2k();
+/// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvHybrid /
+/// kKvQ2 / kKvQ2K). THE MIXED FORMATS ARE NAMED AS MIXED: kKvHybrid is "int8 K + q4_0 V" and kKvQ2K is
+/// "q2-per-channel K + q4_0 V", each with its own runs in kv_stream.cu. Answering one of the two single-format
+/// numbers for a mixed state would tell a mover that V's q4_0 bytes are 2-bit slots (or that K's per-channel
+/// slots are q4_0 blocks), and it would move them without complaining.
 inline int qsa_kv_format(const QsaState& st) {
     if (st.kv_hybrid) return strata::kernels::kKvHybrid;   // K8V4: its own three runs (kv_stream.cu)
+    if (st.kv_q2k) return strata::kernels::kKvQ2K;         // q2k: K's group run + V's q4_0 run (kv_stream.cu)
     if (st.kv_q2) return strata::kernels::kKvQ2;
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }

@@ -1260,7 +1260,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     return e != nullptr && std::atoi(e) != 0;
                 }();
                 const bool qb = dec_batch && n > 1 && native_qsa_enabled() && native_rope_enabled() &&
-                                ((!st.kv_q4 && !st.kv_q2) || qb_q4);
+                                ((!st.kv_q4 && !st.kv_q2 && !st.kv_q2k) || qb_q4);
                 if (!q8_attn) native_quantize_q8_1(xm, xq_, (int) N, n, cs);
                 // STRATA_DF_BRANCH: the query side (q and its norm/RoPE/rotation on side 0, the indexer query on side 1)
                 // beside the K/V side; the indexer query joins before the block scores, the query before attention
@@ -1316,6 +1316,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                            kc_b, kc_b, (int) (NKV * HD), n, s, cs, mirror ? &hk : nullptr);
                         kv_append_q4_steps(st.v_q4, st.v_q4, st.page_table, step_b, kStepCount, n, vc_b, vc_b, s, cs,
                                            mirror ? &hv : nullptr);
+                    } else if (st.kv_q2k) {   // q2k: K through the q2 group kernel (whole groups plain, the batch's
+                        // tail through the word-masked atomics), V through the q4 batch kernel. One plane each, by
+                        // the hybrid fold (the same pool and the same tensor twice) - layer.cpp's decode arm.
+                        const KvHostPools hk = kv_q2k_k_half(st.host), hv = kv_q2k_v_half(st.host);
+                        const bool mirror = st.host.present();
+                        strata::kernels::kv_append_q2_steps(st.k_q2, st.k_q2, st.page_table, step_b, kStepCount, n,
+                                                            kc_b, kc_b, s, cs, mirror ? &hk : nullptr,
+                                                            /*v3level*/ false);
+                        kv_append_q4_steps(st.v_q4, st.v_q4, st.page_table, step_b, kStepCount, n, vc_b, vc_b, s, cs,
+                                           mirror ? &hv : nullptr);
                     } else if (st.kv_q4)
                         kv_append_q4_steps(st.k_q4, st.v_q4, st.page_table, step_b, kStepCount, n, kc_b, vc_b, s, cs,
                                            &st.host);
@@ -1346,6 +1356,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         const bool mirror = st.host.present();   // streamed: the host copy too
                         kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, step_t,
                                           kcur_ + t * NKV * HD, kcur_ + t * NKV * HD, s, cs, mirror ? &hk : nullptr);
+                        kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vcur_ + t * NKV * HD,
+                                          vcur_ + t * NKV * HD, s, cs, mirror ? &hv : nullptr);
+                    } else if (st.kv_q2k) {   // q2k, one cell: the q2 partial-group atomic path for K, the q4
+                        // append for V (layer.cpp's decode append, the same pair of folded one-plane calls)
+                        const KvHostPools hk = kv_q2k_k_half(st.host), hv = kv_q2k_v_half(st.host);
+                        const bool mirror = st.host.present();
+                        strata::kernels::kv_append_q2_step(st.k_q2, st.k_q2, st.page_table, step_t,
+                                                           kcur_ + t * NKV * HD, kcur_ + t * NKV * HD, s, cs,
+                                                           mirror ? &hk : nullptr, /*v3level*/ false);
                         kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vcur_ + t * NKV * HD,
                                           vcur_ + t * NKV * HD, s, cs, mirror ? &hv : nullptr);
                     } else if (st.kv_q4)

@@ -400,3 +400,70 @@ Two findings:
    is where the quantized cache is read. A format that looks like the noise floor in prefill is not at
    the noise floor in decode, which is why the recall probe - not prefill perplexity - is the bar that
    tracks what users see.
+
+## `--kv q2k`: the asymmetric point, implemented (K 2-bit per-channel + V 4-bit)
+
+The table above ended with "the shape of the next format candidate: asymmetric bits, not a symmetric
+2-bit block". `--kv q2k` is that shape, wired to the two formats that already exist: K goes through the
+q2 per-channel path (kv_q2.hpp - the 10-byte slot per (32-cell group, KV head, dimension), 4-level
+Lloyd-Max) and V through the q4_0 path (kv_q4.hpp - the rotated 18-byte block per 32 values). No new
+quantizer, no new kernel: a mixed-width dispatch, the same shape `--kv k8v4` is (INT8 K + rotated Q4_0 V).
+
+**Bytes.** 80 (K) + 144 (V) = 224 B per cell and KV head, **448 B per cell for 2 KV heads** - against
+q2's 320 and q4_0's 576. 40% more than q2, 22% less than q4_0.
+
+**Attention output** (the gate's probe, relative RMS vs the FP16 cache): **1.911% on the real dump,
+5.710% on the synthetic cache**, against the shipping q2's 3.508% / 7.150% and q4_0's 0.888% / 2.052%.
+Spending the bits on V is the win because the K side is the sensitive one on a real cache (K4+V2c
+measured 3.171%, worse than K2c+V4's 1.911%).
+
+**What the format is, stated as a mixed format.** `QsaState::kv_q2k` is its own flag - not `kv_q2`, not
+`kv_q4` - and `qsa_kv_format()` answers `kKvQ2K` (5). The block movers, the snapshot marker and the
+attention readers all take that answer. Naming it "q2" would tell a mover V's 18-byte q4_0 blocks are
+10-byte per-channel slots; naming it "q4" would tell it K's slots are q4_0 blocks. Both are silent.
+The snapshot marker is 13 (5 + the +8 per-channel-layout marker the q2 format carries), so a q2k image
+never restores into a q2, q4_0 or K8V4 state, nor the reverse.
+
+**The attention reads K and V by two modes.** The fused decode kernel took one `KV_MODE` for the whole
+cache; a mixed cache needs one per side, so the template is now `<K_MODE, V_MODE>` and the pairs are the
+dispatch key: (0,0) fp16, (1,1) int8, (2,2) q4_0, (4,4) q2, (1,2) K8V4, (4,2) q2k. A pair with both
+halves equal compiles to exactly the kernel it ran before; K8V4, which used to be the single mode 3, is
+now the pair it always was. A pair the engine does not build (K q4 + V q2, say) is refused by name
+rather than dispatched to the nearest one.
+
+**Streaming and rings.** The residency unit is the q2 group (32/page_size = 8 pages), because the K
+side's per-channel scale is shared by the whole group and the group is resident together or not at all.
+The V side's q4_0 blocks are self-contained and get a coarser residency than they need, which is
+harmless - the unit is set by the most granular half. The drafter's ring keeps q2k (unlike k8v4, whose
+drafter falls back to plain INT8), so its ring table is the group-aligned one.
+
+**The gate's device arm.** `kv_q2_parity` fills K through the q2 group kernels and V through the q4
+kernels, reads each half back with its own gather kernel, and measures the attention output off those
+device pools - the engine's own calls, not a host composition. It pins three things: the arm lands on
+the host K2c + V4 row (within 2%), q2k's K is bit for bit the q2 cache's K, and q2k's V is bit for bit
+the q4_0 cache's V. A mixed dispatch that re-derived either side fails there and only there.
+
+**Measured end to end** (built with CUDA 13.0, served on the RTX 5080, six parity suites green, gate
+green on the synthetic cache and on real layers 3/11/23/47 - 31 checks each):
+
+The device arm lands on the host row exactly: **1.910% on the real dump against the host's 1.911%**,
+5.710% on synthetic, and both halves are bit-for-bit the formats they claim (K = the q2 cache's K,
+V = the q4_0 cache's V).
+
+Logit level, 512 tokens, teacher-forced, reference `--kv fp16` (top-1 / mean KL / nats per token):
+
+| text | q4_0 | q2 | **q2k** | q2k + window |
+|---|---|---|---|---|
+| code agent | 88.7% / 0.0522 / +0.011 | 72.7% / 0.3111 / -0.024 | **79.3% / 0.2378 / -0.055** | 79.9% / 0.2316 |
+| document | 94.1% / 0.0276 / -0.017 | 79.3% / 0.1963 / +0.054 | **84.0% / 0.1346 / +0.033** | 83.6% / 0.1335 |
+| chat | 94.7% / 0.0268 / +0.009 | 82.0% / 0.1759 / +0.111 | **85.5% / 0.1290 / +0.073** | 84.2% / 0.1283 |
+
+q2k is **1.35x closer to fp16 than q2 on mean KL** on all three texts and gains 4 to 6.5 points of top-1
+agreement, for 40% more bytes than q2. It is still 2.5-5x q4_0's KL: **the 2-bit K side is the reason,
+and no arrangement of the bits removes that** - the logit bar is 7x stricter than the softmax probe that
+ranks the formats.
+
+5K buried-fact recall probe: mid-document 4/4, window tail 4/4, **short answers 3/3 with no window**
+(plain q2 gets 2/3), 0 loops, prompt 2362 t/s, decode **137.4 t/s** (q2: 135.4, q4_0: 157.6). So q2k
+buys back the behavioral loss the 2-bit cache had, at 448 B per cell against q4_0's 576 and at 87% of
+q4_0's decode speed.

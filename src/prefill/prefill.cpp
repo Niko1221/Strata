@@ -938,6 +938,11 @@ void take_stage(Alloc& o_borrowed, const core::SessionState& ss, const strata::k
         st.k_q = o.take<int8_t>(rows * s.head_dim, ok);
         st.k_scale = o.take<uint16_t>(rows * (s.head_dim / 64), ok);
         st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
+    } else if (q0.kv_q2k) {   // q2k: the staging pool is the identity layout, so the same two runs the state
+                              // carves - K at the q2 width, V at the q4_0 one. pools_of() then reads (K mode 4,
+                              // V mode 2), the pair the fused attention uses for this format.
+        st.k_q2 = o.take<uint8_t>(rows * strata::kernels::kv_q2_bytes_per_head((int) s.head_dim), ok);
+        st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
     } else if (q0.kv_q4) {
         st.k_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
         st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
@@ -1582,13 +1587,26 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
             strata::kernels::fwht256_inplace_cuda(Kc, nb * g.n_head_kv, m.cs);
             strata::kernels::fwht256_inplace_cuda(Vc, nb * g.n_head_kv, m.cs);
         }
-        if (st.kv_q4) {
+        if (st.kv_q2k) {   // q2k (the drafter's ring in --kv q2k): K through the q2 group kernel - whole groups
+            // plain, the chunk's first and last group through the atomics - and V through the q4 prompt kernel,
+            // each called with its pool and tensor twice (the hybrid fold: the q4 prompt kernel launches both of
+            // its planes, so a null second pool is not an option here, and the duplicate write is what the
+            // hybrid appends already do).
+            const strata::kernels::KvHostPools hk = strata::kernels::kv_q2k_k_half(st.host),
+                                               hv = strata::kernels::kv_q2k_v_half(st.host);
+            const bool mirror = st.host.present();
+            strata::kernels::kv_append_q2(st.k_q2, st.k_q2, st.page_table, c0, nb, Kc, Kc, s, m.cs,
+                                          mirror ? &hk : nullptr, nullptr, /*v3level*/ false);
+            strata::kernels::kv_append_q4(st.v_q4, st.v_q4, st.page_table, c0, nb, Vc, Vc, s, m.cs,
+                                          mirror ? &hv : nullptr, nullptr);
+        }
+        else if (st.kv_q4) {
             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, c0, nb, Kc, Vc, s, m.cs, &st.host);
         } else if (st.kv_q2) {
             strata::kernels::kv_append_q2(st.k_q2, st.v_q2, st.page_table, c0, nb, Kc, Vc, s, m.cs, &st.host,
                                           nullptr, /*v3level*/ false);
         }
-        if (st.kv_q4 || st.kv_q2) {
+        if (st.kv_q4 || st.kv_q2 || st.kv_q2k) {
             // the FP16 sliding window + attention sinks (kv_window.hpp); the drafter's ring state has none
             if (st.k_win != nullptr)
                 strata::kernels::kv_window_write_batch(
@@ -2892,7 +2910,23 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, m.cs);
                             strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
                         }
-                        if (st.kv_q4)
+                        if (st.kv_q2k) {   // q2k: K on the q2 group path (whole groups plain, the chunk's first
+                            // and last group on the atomics), V on the q4_0 prompt path. Each half writes its own
+                            // pool, its own part of the host copy and its own part of the staging pool - the
+                            // halves kv_q2k_*_half are the shape of, and the same fold the hybrid arm above uses.
+                            const strata::kernels::KvHostPools hk = strata::kernels::kv_q2k_k_half(st.host),
+                                                               hv = strata::kernels::kv_q2k_v_half(st.host),
+                                                               sk = strata::kernels::kv_q2k_k_half(m.stage),
+                                                               sv = strata::kernels::kv_q2k_v_half(m.stage);
+                            const bool mirror = st.host.present();
+                            strata::kernels::kv_append_q2(st.k_q2, st.k_q2, st.page_table, p0, T, m.Kc, m.Kc, s, m.cs,
+                                                          mirror && !host_by_dma ? &hk : nullptr,
+                                                          staged ? &sk : nullptr, /*v3level*/ false);
+                            strata::kernels::kv_append_q4(st.v_q4, st.v_q4, st.page_table, p0, T, m.Vc, m.Vc, s, m.cs,
+                                                          mirror && !host_by_dma ? &hv : nullptr,
+                                                          staged ? &sv : nullptr);
+                        }
+                        else if (st.kv_q4)
                             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
                                                           host_w, staged ? &m.stage : nullptr);
                         else if (st.kv_q2)   // 2-bit, 4-level Lloyd-Max for K and V (kv_q2.hpp, the parity gate's choice)

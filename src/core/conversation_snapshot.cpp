@@ -37,13 +37,17 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     const auto s = strata::kernels::qsa_real_shapes();
     const bool int8_keys = st.kv_int8 || st.kv_hybrid;
     if (g.n_head_kv <= 0 || g.head_dim <= 0 || g.head_dim > INT32_MAX || g.idx_key_dim <= 0 ||
-        ((st.kv_q4 || st.kv_q2) && g.head_dim % 32) || (int8_keys && !st.kv_q4 && !st.kv_q2 && g.head_dim % 64)) {
+        ((st.kv_q4 || st.kv_q2 || st.kv_q2k) && g.head_dim % 32) ||
+        (int8_keys && !st.kv_q4 && !st.kv_q2 && g.head_dim % 64)) {
         error = "conversation snapshot: invalid K/V geometry";
         return false;
     }
     const int64_t cells = ((upto + s.page_size - 1) / s.page_size) * s.page_size;
+    // `per` is the K side's bytes per (cell, head); the V side is stated separately below (l.value_data).
+    // q2k is where that split earns its keep: K is the q2 width and V the q4_0 one, in the same image.
     const size_t per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
                               : st.kv_q2 ? (size_t) strata::kernels::kv_q2_bytes_per_head((int) g.head_dim)
+                              : st.kv_q2k ? (size_t) strata::kernels::kv_q2_bytes_per_head((int) g.head_dim)
                               : (size_t) g.head_dim * (int8_keys ? 1 : 2);
     // Include the moving spare row, not only completed blocks. The checkpoint
     // restore reconstructs that row when rewinding to an earlier prefix.
@@ -59,8 +63,13 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     // values of one cell. Same 80 B per cell and head, same codebook, and not one byte of the payload means the
     // same thing. A snapshot taken with the per-token layout (format 4) must never restore into per-channel
     // pools (format 12), and the reverse; `conversation_kv_validate` compares this number and refuses.
-    const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_q2 && !st.kv_hybrid ? 16 : 0;
-    const int q2_layout = st.kv_q2 ? 8 : 0;
+    const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_q2 && !st.kv_q2k && !st.kv_hybrid ? 16 : 0;
+    // q2k carries the +8 too: its K side IS the per-channel q2 layout, so a snapshot whose K bytes are
+    // per-token-layout slots must not restore into it either. Its format number is 5 (kKvQ2K), so the marker
+    // is 13 - not 4 or 12 (q2), not 2 (q4_0), not 3 (K8V4). `conversation_kv_validate` compares this number
+    // and refuses a mismatch, which is the point: a q2k image restoring into a q4 state would write 80-byte
+    // K rows into 144-byte K blocks and call it a day.
+    const int q2_layout = (st.kv_q2 || st.kv_q2k) ? 8 : 0;
     l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated + q2_layout, cells, pooled, s.page_size, 0, 0, 0, 0, 0};
     using conversation_detail::product;
     if (!product(l.data, {(uint64_t) cells, (uint64_t) g.n_head_kv, per}) ||
@@ -72,10 +81,10 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     }
     l.value_data = l.data;
     l.value_scales = l.scales;
-    if (st.kv_hybrid) {
+    if (st.kv_hybrid || st.kv_q2k) {   // both put V in rotated q4_0, so V's row width is q4's, not `per`'s
         if (!product(l.value_data, {(uint64_t) cells, (uint64_t) g.n_head_kv,
                                    (uint64_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)})) {
-            error = "conversation snapshot: hybrid V byte count overflow";
+            error = "conversation snapshot: mixed-width (K8V4/q2k) V byte count overflow";
             return false;
         }
         l.value_scales = 0;
@@ -90,6 +99,8 @@ std::array<void*, 5> pools(const QsaState& st, bool resident = false) {
                 nullptr, st.idx_pooled};
     if (st.kv_q4)
         return {host ? st.host.k_q4 : st.k_q4, host ? st.host.v_q4 : st.v_q4, nullptr, nullptr, st.idx_pooled};
+    if (st.kv_q2k)   // K's per-channel pool and V's q4_0 pool - the two halves, in the image's K, V slots
+        return {host ? st.host.k_q2 : st.k_q2, host ? st.host.v_q4 : st.v_q4, nullptr, nullptr, st.idx_pooled};
     if (st.kv_q2)
         return {host ? st.host.k_q2 : st.k_q2, host ? st.host.v_q2 : st.v_q2, nullptr, nullptr, st.idx_pooled};
     if (st.kv_int8)
@@ -116,6 +127,7 @@ bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error
     }
     if (st.kv_mode == 2 && (!st.page_table ||
         (st.kv_q4 ? !st.k_q4 || !st.v_q4
+                  : st.kv_q2k ? !st.k_q2 || !st.v_q4
                   : st.kv_q2 ? !st.k_q2 || !st.v_q2
                   : st.kv_int8 ? !st.k_q || !st.v_q || !st.k_scale || !st.v_scale
                                : !st.k_pool || !st.v_pool))) {
@@ -239,6 +251,9 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
         } else if (st.kv_q4) {
             bulk.k_q4 = (const uint8_t*) src2[0];
             bulk.v_q4 = (const uint8_t*) src2[1];
+        } else if (st.kv_q2k) {   // K through bulk_q2, V through the q4_0 arm (kv_window.cu, mode 5)
+            bulk.k_q2 = (const uint8_t*) src2[0];
+            bulk.v_q4 = (const uint8_t*) src2[1];
         } else if (st.kv_q2) {
             bulk.k_q2 = (const uint8_t*) src2[0];
             bulk.v_q2 = (const uint8_t*) src2[1];
@@ -257,7 +272,8 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
         strata::kernels::kv_window_restore(
             {const_cast<uint16_t*>(st.k_win), const_cast<uint16_t*>(st.v_win)},
             strata::kernels::KvWindowShape{(int32_t) st.kv_window, (int32_t) st.kv_sinks}, bulk,
-            st.kv_q4 ? 2 : (st.kv_hybrid ? 3 : (st.kv_q2 ? 4 : (st.kv_int8 ? 1 : 0))), upto, shapes, nullptr);
+            st.kv_q4 ? 2 : (st.kv_hybrid ? 3 : (st.kv_q2k ? 5 : (st.kv_q2 ? 4 : (st.kv_int8 ? 1 : 0)))),
+            upto, shapes, nullptr);
     }
     // VRAM slots still contain the outgoing conversation. Resolve must refill
     // them from the restored authoritative pools before any attention reads.

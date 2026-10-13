@@ -50,7 +50,14 @@ struct KvHostPools {
 /// and its residency is granted a group at a time; see kv_stream.cu).
 /// (A bool `int8` argument still reads as kKvF16 / kKvInt8.)  kKvHybrid is 3, the number conversation snapshots
 /// already give K8V4.
-enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3, kKvQ2 = 4 };
+///
+/// kKvQ2K is 5: `--kv q2k`, K in q2 per-channel (kv_q2.hpp) and V in rotated q4_0 (kv_q4.hpp) - 224 B per cell
+/// and KV head, 448 per cell for 2 KV heads. It is a MIXED format, and it is named as one: the K run is a q2
+/// group run (unit 32/page_size blocks, the group's scale is shared) and the V run is a q4_0 run, so the two
+/// halves of one unit move as two runs of different lengths. A q2k state is NOT kKvQ2 and NOT kKvQ4: a mover,
+/// a snapshot marker or a reader told "q2" would read V's q4_0 bytes as 2-bit slots, and one told "q4" would
+/// read K's 10-byte per-channel slots as 18-byte blocks. Both are silent, both are wrong.
+enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3, kKvQ2 = 4, kKvQ2K = 5 };
 
 /// K8V4's halves as the single-format append kernels see them, so a hybrid layer's host copy (and the prompt path's
 /// staging pool) is written by the same calls that write its VRAM pools: K is "int8 whose V is K", V is "q4_0 whose
@@ -62,6 +69,21 @@ inline KvHostPools kv_hybrid_k_half(const KvHostPools& h) {
     return r;
 }
 inline KvHostPools kv_hybrid_v_half(const KvHostPools& h) {
+    KvHostPools r;
+    r.k_q4 = h.v_q4; r.v_q4 = h.v_q4;
+    return r;
+}
+
+/// `--kv q2k`'s halves in the same shape: K is "q2 whose V is K" (the q2 group kernels' K plane, the V plane
+/// folded onto the same pool), V is "q4_0 whose K is V" (the q4 kernels' K plane). Same folded-duplicate
+/// convention as kv_hybrid_*_half above, for the same reason: the append kernels pick K or V per lane and test
+/// the K-side pointer for presence, so a mixed-width layer needs no kernel variants - only the two halves.
+inline KvHostPools kv_q2k_k_half(const KvHostPools& h) {
+    KvHostPools r;
+    r.k_q2 = h.k_q2; r.v_q2 = h.k_q2;
+    return r;
+}
+inline KvHostPools kv_q2k_v_half(const KvHostPools& h) {
     KvHostPools r;
     r.k_q4 = h.v_q4; r.v_q4 = h.v_q4;
     return r;
@@ -89,7 +111,15 @@ inline uint64_t kv_stream_map_bytes(int64_t n_slots) { return (uint64_t) n_slots
 /// 32/page_size pages, and the 8 pages of a group share one scale, so they must be resident together in slots
 /// that are consecutive and group-aligned. For q2 the unit is the group - which is also what keeps the mover a
 /// memcpy: a group's slots are one contiguous run of (32/page_size) * kv_head * head_dim * 10 bytes.
-inline int kv_stream_unit_blocks(const QsaShapes& s, int fmt) { return fmt == kKvQ2 ? (int) (32 / s.page_size) : 1; }
+///
+/// q2k (kKvQ2K) takes the SAME unit, for the same reason and from the same half: its K is q2 per-channel, so the
+/// K bytes of 8 consecutive pages share one scale and cannot be made resident apart. A format's unit is set by
+/// its most granular half - the V side's q4_0 blocks are self-contained and would want 1, and it gets 8, which
+/// is harmless: a V run is just 8 blocks of 144 B per head, contiguous, and the residency it buys is coarser
+/// than V needs, never less than K needs.
+inline int kv_stream_unit_blocks(const QsaShapes& s, int fmt) {
+    return (fmt == kKvQ2 || fmt == kKvQ2K) ? (int) (32 / s.page_size) : 1;
+}
 
 /// Every block evicted: page table all -1, slots free, counters zero.
 void kv_stream_reset(const KvStreamMap& m, void* stream);

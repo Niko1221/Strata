@@ -50,9 +50,10 @@ ARMS = [] if os.environ.get("KV_SPEED_ONLY") else [
     ("release q4_0", RELEASE, "q4_0", {}),
     ("dev q4_0", DEV, "q4_0", {}),
     ("dev q2", DEV, "q2", {}),
+    ("dev q2k", DEV, "q2k", {}),   # K 2-bit per-channel + V 4-bit: 448 B/cell, between q2's 320 and q4_0's 576
     ("dev q2+window", DEV, "q2", {"STRATA_KV_WINDOW": "128", "STRATA_KV_SINK": "8"}),
 ]
-SPEED_ONLY = [("dev q4_0", DEV, "q4_0", {}), ("dev q2", DEV, "q2", {})]
+SPEED_ONLY = [("dev q4_0", DEV, "q4_0", {}), ("dev q2", DEV, "q2", {}), ("dev q2k", DEV, "q2k", {})]
 
 
 def document() -> str:

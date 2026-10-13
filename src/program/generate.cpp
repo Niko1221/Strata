@@ -772,6 +772,12 @@ void usage() {
                  "                       below q4_0. Lloyd-Max codebook scaled by block RMS; NOT near-lossless yet\n"
                  "                       (33% per-element RMS vs q4_0's 8.6%) - pair it with --kv-window, which\n"
                  "                       keeps the recent and sink cells exact. See docs/kv-q2.md\n"
+                 "  --kv q2k             K 2-bit per-channel + V 4-bit, 448 B/cell for 2 KV heads (q2: 320, q4_0:\n"
+                 "                       576). The K side keeps q2's per-channel 2-bit path, the V side takes\n"
+                 "                       q4_0's rotated 4-bit blocks: on a real cache dump the K side is the\n"
+                 "                       sensitive one, so the bits go on V - 1.911% attention-output RMS against\n"
+                 "                       q2's 3.508% for 40% more bytes, at 2.2x q4_0's 0.888% for 22% less memory\n"
+                 "                       (kv_q2_parity, K2c + V4). Streams and rings like q2; --kv-window applies\n"
                  "  --kv-resident N      KV streaming: keep N cells of each QSA layer in VRAM (min 20480) and the\n"
                  "                       whole K/V in pinned RAM; the freed VRAM goes to expert slots. 0 (default):\n"
                  "                       all of it in VRAM. A context of N cells or fewer is not streamed\n"
@@ -1890,7 +1896,7 @@ bool dump_kv_cache(const std::string& path, const strata::core::ModelGeometry& g
         const int64_t ord = l / I;
         if (ord < ss.qsa_ord0 || ord >= ss.qsa_ord0 + ss.qsa_alloc) continue;   // a range carve: not this session's
         const strata::core::QsaState& st = ss.qsa_states[ord];
-        if (st.kv_int8 || st.kv_q4 || st.kv_q2 || st.kv_hybrid) {
+        if (st.kv_int8 || st.kv_q4 || st.kv_q2 || st.kv_q2k || st.kv_hybrid) {
             err = "--dump-kv: layer " + std::to_string(l) + "'s cache is not fp16, so the gather would hand back "
                   "dequantized codes, not a reference cache (run --dump-kv with --kv fp16)";
             return false;
@@ -2787,8 +2793,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (o.kv == "q4") o.kv = "q4_0";
-    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "k8v4" && o.kv != "q2") {
-        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0, k8v4 or q2\n");
+    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "k8v4" && o.kv != "q2" && o.kv != "q2k") {
+        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0, k8v4, q2 or q2k\n");
         return 2;
     }
     // **`--dump-kv` IS A REFERENCE-CACHE DUMP, SO IT ONLY MEANS SOMETHING ON THE FP16 CACHE.**  The gather
@@ -2798,7 +2804,7 @@ int main(int argc, char** argv) {
     if (!o.dump_kv.empty() && o.kv != "fp16") {
         std::fprintf(stderr, "strata generate: --dump-kv requires --kv fp16: the dump is the REFERENCE cache, "
                              "and the gather kernels dequantize, so a --dump-kv taken with --kv %s would "
-                             "silently be a measurement of q4_0/int8/q2, not of fp16\n", o.kv.c_str());
+                             "silently be a measurement of q4_0/int8/q2/q2k, not of fp16\n", o.kv.c_str());
         return 2;
     }
     // `--serve` ends the program inside its request loop (the `save_profile("exit")` return), so it never
@@ -2822,6 +2828,10 @@ int main(int argc, char** argv) {
     if (kv_rot != nullptr && kv_rot[0] == '1' && o.kv == "int8")
         std::fprintf(stderr, "strata generate: STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation (opt-in)\n");
     strata::core::qsa_set_kv_hybrid(o.kv == "k8v4");   // K8V4: INT8 K + rotated Q4_0 V, 816 B/cell
+    // q2k: the mixed-width pair, K on the q2 per-channel path and V on the q4_0 one - 224 B per cell and KV
+    // head, 448 per cell for 2 KV heads, against q2's 320 and q4_0's 576. Measured on a real cache dump: the
+    // K side is the sensitive one, so the bits go on V (kv_q2_parity's K2c + V4 arm).
+    strata::core::qsa_set_kv_q2k(o.kv == "q2k");
     if (o.kv_resident < 0) {
         std::fprintf(stderr, "strata generate: --kv-resident must be >= 0\n");
         return 2;
@@ -4264,6 +4274,7 @@ int main(int argc, char** argv) {
             }
             const bool q4 = strata::core::qsa_kv_q4();
             const bool hyb = strata::core::qsa_kv_hybrid();
+            const bool q2k = strata::core::qsa_kv_q2k();
             const bool i8 = strata::core::qsa_kv_int8() && !q4;
             std::vector<strata::core::QsaState> qs((size_t) g.n_qsa_layers());
             for (int64_t j = 0; j < g.n_qsa_layers(); ++j) {
@@ -4273,6 +4284,9 @@ int main(int argc, char** argv) {
                 qs[(size_t) j].kv_int8 = i8;
                 qs[(size_t) j].kv_q4 = q4;
                 qs[(size_t) j].kv_hybrid = hyb;
+                // q2k is its own flag: the staging pool take_stage() carves for a streamed prompt path is
+                // K-at-the-q2-width + V-at-the-q4-width, which no combination of the other three describes.
+                qs[(size_t) j].kv_q2k = q2k;
             }
             strata::core::SessionState ss{};
             ss.max_cells = o.max_context;
@@ -4696,6 +4710,20 @@ int main(int argc, char** argv) {
                                  "%.2f GiB of pinned RAM\n",
                          (long long) (ss.qsa_states[ss.qsa_primary()].n_slots * 4),
                          (long long) o.max_context, (double) strata::core::qsa_kv_host_bytes() / 1073741824.0);
+        // q2k says what it costs, computed from the geometry it is being applied to (224 B per cell and KV head
+        // at head_dim 256, so 448 per cell for 2 KV heads - q2's 320, q4_0's 576). Printed from the state's own
+        // format, so it cannot disagree with the pools the state carved.
+        if (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_q2k) {
+            const uint64_t q2h = strata::kernels::kv_q2_bytes_per_head((int) g.head_dim);
+            const uint64_t q4h = strata::kernels::kv_q4_bytes_per_head((int) g.head_dim);
+            const uint64_t nk = (uint64_t) g.n_head_kv;
+            std::fprintf(stderr, "strata generate: --kv q2k: K 2-bit per-channel + V 4-bit q4_0 = %llu B per cell "
+                                 "and KV head, %llu B per cell for %lld KV heads (q2: %llu, q4_0: %llu, fp16: %llu)\n",
+                         (unsigned long long) (q2h + q4h),
+                         (unsigned long long) ((q2h + q4h) * nk), (long long) g.n_head_kv,
+                         (unsigned long long) (q2h * nk * 2), (unsigned long long) (q4h * nk * 2),
+                         (unsigned long long) ((uint64_t) g.head_dim * nk * 2 * 2));
+        }
         // the PLE block above built everything but the history, which session_init has just carved
         ss.ple.hist = ss.ple_hist;
         // (#167) generate mode starts from an empty sequence, and nothing else zeroes this state before the prompt
@@ -13193,6 +13221,10 @@ int main(int argc, char** argv) {
                     if (st.kv_q4) {
                         const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
                         a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
+                    } else if (st.kv_q2k) {   // two widths, one per side: K's q2 row, V's q4_0 row
+                        const int64_t q2b = (int64_t) strata::kernels::kv_q2_bytes_per_head((int) qs.head_dim);
+                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
+                        a = {{h ? st.host.k_q2 : st.k_q2, q2b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
                     } else if (st.kv_q2) {
                         const int64_t q2b = (int64_t) strata::kernels::kv_q2_bytes_per_head((int) qs.head_dim);
                         a = {{h ? st.host.k_q2 : st.k_q2, q2b}, {h ? st.host.v_q2 : st.v_q2, q2b}};

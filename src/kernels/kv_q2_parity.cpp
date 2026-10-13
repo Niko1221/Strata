@@ -13,6 +13,7 @@
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/kv_q2.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_stream.hpp"   // kKvQ2K, kv_stream_unit_blocks, kv_block_bytes (the q2k byte math)
 #include "strata/kernels/qsa.hpp"
 
 #include <cuda_runtime.h>
@@ -441,6 +442,7 @@ int main() {
     std::normal_distribution<float> nd(0.f, 1.f);
     std::vector<float> K, V;
     bool real_cache = false;
+    int probe_layer = -1;                                 // the layer the real cache came from (-1 = synthetic)
     if (const char* e = std::getenv("STRATA_KV_PROBE_CACHE")) {
         int want = 0, layer_out = 0;
         if (const char* l = std::getenv("STRATA_KV_PROBE_LAYER")) want = std::atoi(l);
@@ -450,6 +452,7 @@ int main() {
             return 2;
         }
         real_cache = true;
+        probe_layer = layer_out;
         std::printf("REAL CACHE (stored, rotated): %s layer %d - %d cells x %d kv heads x %d dims\n",
                     e, layer_out, N, H, D);
         channel_stats(K, N, H, D, "K");
@@ -561,6 +564,39 @@ int main() {
     for (size_t i = 0; i < w_k4.size(); ++i) h_k4[i] = k::f32_from_f16(w_k4[i]);
     for (size_t i = 0; i < w_v4.size(); ++i) h_vq4[i] = k::f32_from_f16(w_v4[i]);
 
+    // ---- THE q2k DEVICE ARM (`--kv q2k`): K filled by the q2 group kernels, V by the q4 kernels, each half
+    // read back by its own gather kernel. These are the engine's own calls, in the shape the engine makes them:
+    // the q2 append called with its pool and tensor twice (its K plane only - the fold layer.cpp/verify.cpp use),
+    // the q4 append called the same way for V. Nothing here is composed on the host: the bytes are the pools a
+    // q2k state carves (K at 80 B per cell and head, V at 144) and the numbers are what its readers return.
+    uint8_t* kq2_dev = dalloc<uint8_t>(q2_bytes);
+    uint8_t* vq4_dev = dalloc<uint8_t>(q4_bytes);
+    uint16_t* k_scr_2k = dalloc<uint16_t>((size_t) rows * D);
+    uint16_t* v_scr_2k = dalloc<uint16_t>((size_t) rows * D);
+    k::kv_append_q2(kq2_dev, kq2_dev, d_table, 0, N, dK, dK, s, nullptr, nullptr, nullptr, /*v3level*/ false);
+    k::kv_append_q4(vq4_dev, vq4_dev, d_table, 0, N, dV, dV, s, nullptr, nullptr);
+    ck(cudaDeviceSynchronize(), "q2k append");
+    k::kv_gather_q2_step(kq2_dev, kq2_dev, d_table, d_ids, d_step, N, s, k_scr_2k, k_scr_2k, nullptr,
+                         /*v3level*/ false);
+    k::kv_gather_q4_step(vq4_dev, vq4_dev, d_table, d_ids, d_step, N, s, v_scr_2k, v_scr_2k, nullptr);
+    ck(cudaDeviceSynchronize(), "q2k gather");
+    std::vector<uint16_t> w_k2k(rows * D), w_v2k(rows * D);
+    ck(cudaMemcpy(w_k2k.data(), k_scr_2k, w_k2k.size() * 2, cudaMemcpyDeviceToHost), "k q2k");
+    ck(cudaMemcpy(w_v2k.data(), v_scr_2k, w_v2k.size() * 2, cudaMemcpyDeviceToHost), "v q2k");
+    std::vector<float> h_k2k(rows * D), h_v2k(rows * D);
+    for (size_t i = 0; i < w_k2k.size(); ++i) h_k2k[i] = k::f32_from_f16(w_k2k[i]);
+    for (size_t i = 0; i < w_v2k.size(); ++i) h_v2k[i] = k::f32_from_f16(w_v2k[i]);
+    // The mixed format must not move either half's bytes: K is bit for bit what the q2 cache holds, V bit for
+    // bit what the q4_0 cache holds. A mixed dispatch that re-derived either side would fail here, and only here.
+    bool k2k_is_q2 = true, v2k_is_q4 = true;
+    for (size_t i = 0; i < w_k2k.size(); ++i) {
+        if (w_k2k[i] != h_k[i]) k2k_is_q2 = false;
+        if (w_v2k[i] != w_v4[i]) v2k_is_q4 = false;
+    }
+    check(k2k_is_q2, "q2k's K is bit for bit the q2 cache's K (the mixed dispatch re-quantizes nothing)");
+    check(v2k_is_q4, "q2k's V is bit for bit the q4_0 cache's V (the mixed dispatch re-quantizes nothing)");
+    const double r_k2k = rel_rms(h_k2k, Kref), r_v2k = rel_rms(h_v2k, Vref);
+
     const double r_k2 = rel_rms(h_k2, Kref), r_v2_3 = rel_rms(h_v2_3, Vref);
     const double r_v2_4 = rel_rms(h_v2_4, Vref), r_k4 = rel_rms(h_k4, Kref), r_v4 = rel_rms(h_vq4, Vref);
 
@@ -663,7 +699,7 @@ int main() {
     std::vector<int> cells(N);
     for (int i = 0; i < N; ++i) cells[i] = i;
     std::vector<float> out_ref, out_lm3, out_lm4, out_q4, out_uni4, out_uni3, out_lm16, out_kivi, out_lmt,
-                       out_k2v4, out_k4v2, out_k2v1c, out_k2v1t, out_k2c2t, out_k2t2c, out_k1v1,
+                       out_k2v4, out_k2v4_dev, out_k4v2, out_k2v1c, out_k2v1t, out_k2c2t, out_k2t2c, out_k1v1,
                        out_ac, out_acat, out_acatc, out_jj, out_jat;
     attention(q, Kref, Vref, D, cells, out_ref);
     attention(q, h_k2, h_v2_3, D, cells, out_lm3);       // device pools (per-channel), Lloyd-Max 3-level V
@@ -675,7 +711,8 @@ int main() {
     attention(q, h_k_kivi, h_v_kivi, D, cells, out_kivi);   // the host per-channel arm: out_lm4's own number
     attention(q, h_k_lmt, h_v_lmt4, D, cells, out_lmt);     // the per-token layout, host-only
     // The asymmetric arms: same attention probe, K and V quantized at different widths / scale placements.
-    attention(q, h_k_kivi, h_vq4, D, cells, out_k2v4);      // K 2-bit per-channel, V 4-bit
+    attention(q, h_k_kivi, h_vq4, D, cells, out_k2v4);      // K 2-bit per-channel, V 4-bit (host K reference)
+    attention(q, h_k2k, h_v2k, D, cells, out_k2v4_dev);     // the SAME arm off the DEVICE pools: `--kv q2k`
     attention(q, h_k4, h_v_kivi, D, cells, out_k4v2);       // K 4-bit, V 2-bit per-channel
     attention(q, h_k_kivi, h_v_1c, D, cells, out_k2v1c);    // K 2-bit, V 1-bit per-channel
     attention(q, h_k_kivi, h_v_1t, D, cells, out_k2v1t);    // K 2-bit, V 1-bit per-token (KIVI's split)
@@ -691,6 +728,7 @@ int main() {
     const double e_acatc = out_err(out_acatc, out_ref, Vref), e_jj = out_err(out_jj, out_ref, Vref);
     const double e_jat = out_err(out_jat, out_ref, Vref);
     const double e_k2v4 = out_err(out_k2v4, out_ref, Vref), e_k4v2 = out_err(out_k4v2, out_ref, Vref);
+    const double e_k2v4_dev = out_err(out_k2v4_dev, out_ref, Vref);   // the device arm: `--kv q2k` as it runs
     const double e_k2v1c = out_err(out_k2v1c, out_ref, Vref), e_k2v1t = out_err(out_k2v1t, out_ref, Vref);
     const double e_k2c2t = out_err(out_k2c2t, out_ref, Vref), e_k2t2c = out_err(out_k2t2c, out_ref, Vref);
     const double e_k1v1 = out_err(out_k1v1, out_ref, Vref);
@@ -718,6 +756,8 @@ int main() {
     const int B1c = D / 8 + 2 * D / 32, B1t = D / 8 + 2;
     std::printf("\n  asymmetric K/V arms (attention output; bytes per cell and KV head):\n");
     std::printf("  %-34s %7.3f%%  %4d B   K 2b per-channel, V 4-bit\n", "K2c + V4", 100 * e_k2v4, B2 + B4);
+    std::printf("  %-34s %7.3f%%  %4d B   the SAME arm off the device pools: --kv q2k (q2 append for K, q4 for V)\n",
+                "K2c + V4 (device)", 100 * e_k2v4_dev, B2 + B4);
     std::printf("  %-34s %7.3f%%  %4d B   K 4-bit, V 2b per-channel\n", "K4 + V2c", 100 * e_k4v2, B4 + B2);
     std::printf("  %-34s %7.3f%%  %4d B   K 2b per-channel, V 1b per-channel\n", "K2c + V1c", 100 * e_k2v1c, B2 + B1c);
     std::printf("  %-34s %7.3f%%  %4d B   K 2b per-channel, V 1b per-token (KIVI's split)\n", "K2c + V1t", 100 * e_k2v1t, B2 + B1t);
@@ -741,25 +781,57 @@ int main() {
     // Same 2 bits, same per-channel group; a min/max scale with an offset instead of a symmetric RMS scale
     // moves the attention output 7.150% -> 3.777% for 12% more bytes (96 B against 80 B per cell and head).
     check(e_ac < e_lm4, "the asymmetric zero-point quantizer beats the symmetric RMS block on the attention output");
-    check_data(real_cache, e_acatc < e_acat, e_acatc >= e_acat,
-               "SYNTHETIC: clipping the group extremes helps (SKVQ's clipping)",
-               "REAL CACHE: clipping the group extremes does not help (min/max already IS the outlier scale there)");
+    // Clipping is LAYER-dependent on real data: it helps on layers 11 and 47, not on 3 and 23. Pinned as a
+    // synthetic-only check; printed with the layer named so the reversal is visible instead of fatal.
+    if (!real_cache)
+        check(e_acatc < e_acat, "SYNTHETIC: clipping the group extremes helps (SKVQ's clipping)");
+    std::printf("  clipping (layer %d): clipped %.3f%% vs unclipped %.3f%% -> %s\n", probe_layer,
+                100 * e_acatc, 100 * e_acat, e_acatc < e_acat ? "clipping helps" : "clipping does not help");
     // Joint scales: on i.i.d. Gaussian noise a channel factor is estimator noise from 32 samples, multiplied
-    // into every code, so it loses. On a real cache the channel factor carries structure and it does not.
-    check_data(real_cache, e_jj > e_lm4, e_jj <= e_lm4,
-               "SYNTHETIC: joint scales lose - with no channel structure the channel factor is estimator noise",
-               "REAL CACHE: joint scales do not lose - the channel factor carries real structure to carry");
+    // into every code, so it loses. On a real cache it depends on the layer: it ties the best arm on layer 3
+    // and loses on layer 47. Same treatment - synthetic-only check, measured print everywhere.
+    if (!real_cache)
+        check(e_jj > e_lm4, "SYNTHETIC: joint scales lose - with no channel structure the channel factor is estimator noise");
+    std::printf("  joint scales (layer %d): joint %.3f%% vs per-channel %.3f%% -> %s\n", probe_layer,
+                100 * e_jj, 100 * e_lm4, e_jj <= e_lm4 ? "joint does not lose" : "joint loses");
     std::printf("  zero-point lever: %.3f%% against the shipping symmetric block's %.3f%% (%.2fx, 96 B vs 80 B); "
                 "clipping %.3f%%; joint scales %.3f%%\n",
                 100 * e_ac, 100 * e_lm4, e_lm4 / e_ac, 100 * e_acatc, 100 * e_jj);
     check(e_k2v4 > 0.0 && e_k1v1 > 0.0, "the asymmetric arms are live (the probe responds to K and V separately)");
+    // The device arm IS the host arm's format, run through the engine's own writer and reader. The two differ
+    // only in which path quantized K - the host reference against the q2 group kernel - and check 1 says those
+    // two agree bit for bit, so the rows have to land on top of each other. A gap here means the q2k dispatch
+    // is not the pair of formats it claims to be (a V read out of the q2 pool, a K read out of the q4 one).
+    check(e_k2v4_dev > 0.0, "the q2k device arm is live (the engine's appends filled both halves)");
+    check(e_k2v4_dev < 1.02 * e_k2v4 && e_k2v4_dev > 0.98 * e_k2v4,
+          "the q2k device arm lands on the host K2c + V4 row (within 2% - same bytes, same readers)");
+    check(e_k2v4_dev < e_lm4, "q2k beats the shipping symmetric 2-bit cache on the attention output (its reason to exist)");
+    check(e_k2v4_dev > e_q4, "q2k is lossier than q4_0 (it is the cheaper format, not the better one)");
+    // The device-pool twin of the host-side claim above, and it is data-scoped for the same reason: on the
+    // synthetic cache the K side is the cheap one to coarsen, on a real cache the V side is.
+    check_data(real_cache, e_k4v2 < e_k2v4_dev, e_k2v4_dev < e_k4v2,
+               "SYNTHETIC: spending the bits on K beats spending them on V, on the device pools too",
+               "REAL CACHE: spending the bits on V beats spending them on K, on the device pools too");
+    std::printf("  q2k (device): %.3f%% against q2's %.3f%% (%.2fx better) and q4_0's %.3f%% (%.2fx worse), at %d B "
+                "per cell and head; per element K %.3f%% (q2's %.3f%%), V %.3f%% (q4_0's %.3f%%)\n",
+                100 * e_k2v4_dev, 100 * e_lm4, e_lm4 / e_k2v4_dev, 100 * e_q4, e_k2v4_dev / e_q4, B2 + B4,
+                100 * r_k2k, 100 * r_k2, 100 * r_v2k, 100 * r_v4);
     // Measured, and the two data sources disagree on three of these four - which is the finding. KIVI's
     // placement claims (arXiv 2402.02750) rest on channel outliers; the synthetic cache has none, the real
     // rotated cache has them (K max/median channel RMS 5.8x, V 13.6x), and the V-side claims flip.
     check_data(real_cache, e_k2c2t < e_lm4, e_k2c2t >= e_lm4,
                "SYNTHETIC: KIVI's split (K per-channel, V per-token) beats symmetric per-channel",
                "REAL CACHE: KIVI's split loses - rotation left V's channel structure in place, so V wants a per-channel scale too");
-    check(e_k2t2c > e_lm4, "a per-TOKEN K scale is the lossy side - K is the tensor that needs per-channel scaling");
+    // K's scale axis, measured with V held per-channel in BOTH arms (the earlier phrasing compared
+    // K2t+V2c against K2c+V2t, which moves both tensors' scale axes at once and measures V's channel
+    // structure, not K's). Per-channel K wins on the synthetic cache and on real layers 3/11/23; on layer
+    // 47, where K's channel RMS spans 74.9x, per-token K ties it - K's error is largely common-mode under
+    // the softmax, so a per-channel scale buys less as the channel spread grows.
+    if (!real_cache)
+        check(e_k2t2c > e_lm4, "SYNTHETIC: a per-TOKEN K scale is the lossy side - K is the tensor that needs per-channel scaling");
+    std::printf("  K scale axis (V per-channel in both arms, layer %d): per-token K %.3f%% vs per-channel K %.3f%% -> %s\n",
+                probe_layer, 100 * e_k2t2c, 100 * e_lm4,
+                e_k2t2c > e_lm4 ? "per-channel K wins" : "per-token K ties or wins");
     check_data(real_cache, e_k2v1t < e_k2v1c, e_k2v1t >= e_k2v1c,
                "SYNTHETIC: 1-bit V wants a per-token scale (KIVI's V finding)",
                "REAL CACHE: 1-bit V wants the per-channel scale (V's channel outliers survive the rotation)");
@@ -806,6 +878,20 @@ int main() {
                 (unsigned long long) k::kv_q4_bytes_per_head(D), (unsigned long long) k::kv_q2_bytes_per_head(D), D);
     check(k::kv_q2_bytes_per_head(D) == 80, "q2 is 80 B per cell and head (8 blocks x 10 B)");
     check(k::kv_q2_bytes_per_cell(s) == 2 * 2 * 80, "q2 is 320 B per cell for 2 KV heads (vs 576 for q4_0)");
+    // q2k's byte math, pinned from the two widths the format is made of: 80 (K, q2 per-channel) + 144 (V, q4_0)
+    // = 224 per cell and KV head, 448 per cell for 2 KV heads - 40% over q2's 320, 22% under q4_0's 576.
+    const int B2K = B2 + B4;
+    std::printf("Bytes per cell and KV head: q2k %d (q2 K %d + q4_0 V %d); per cell for %d KV heads: q2k %d, "
+                "q2 %d, q4_0 %d\n",
+                B2K, B2, B4, (int) s.n_head_kv, B2K * (int) s.n_head_kv, (int) k::kv_q2_bytes_per_cell(s),
+                (int) k::kv_q4_bytes_per_cell(s));
+    check(B2K == 224, "q2k is 224 B per cell and KV head (80 q2 + 144 q4_0)");
+    check(B2K * (int) s.n_head_kv == 448, "q2k is 448 B per cell for 2 KV heads (q2: 320, q4_0: 576)");
+    check(k::kv_stream_unit_blocks(s, k::kKvQ2K) == (int) (32 / s.page_size),
+          "q2k's residency unit is the q2 group (32/page_size blocks): its K scale spans the group");
+    check(k::kv_block_bytes(s, k::kKvQ2K) ==
+              (uint64_t) (s.n_head_kv * s.page_size) * (k::kv_q2_bytes_per_head(D) + k::kv_q4_bytes_per_head(D)),
+          "the q2k block mover moves K's q2 run and V's q4_0 run (224 B per cell and head)");
 
     std::printf("\n%s\n", g_fail == 0 ? "kv_q2_parity: all checks passed" : "kv_q2_parity: FAILURES");
     return g_fail == 0 ? 0 : 1;
