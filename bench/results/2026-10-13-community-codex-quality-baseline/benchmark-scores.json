@@ -1,0 +1,1255 @@
+{
+  "schema": "codex-battery-quality-v1",
+  "created_utc": "2026-10-13T15:18:11.216509+00:00",
+  "complete": true,
+  "model": "gpt-6.1-sol",
+  "reasoning_effort": "ultra",
+  "protocol": "Adapted pinned public harnesses using Codex CLI account transport",
+  "study_source": {
+    "url": "https://github.com/Zauberio/Strata/blob/study/quant-battery-rtx5070ti/bench/results/2026-10-10-community-quant-study-rtx5070ti/README.md",
+    "strata_revision": "98f9d9288a02e694f1b4005b8d6d0393d76c8ab2"
+  },
+  "cli_version": "0.162.1",
+  "tool_parallelism": 4,
+  "study_tool_parallelism": 1,
+  "pins": {
+    "benchkit": "9636e3cd2f382ef1727984201f29baead56cfed8",
+    "evalplus": "0.3.1",
+    "tool_eval_bench": "f7c34a1303c6fe9bcb52bdfc348de19082912f48",
+    "five_bugs": "503d58367672841e0511c8e3180f40538c8c53a1"
+  },
+  "measurement_limits": [
+    "Fresh benchmark sessions use the configured model and effort, not the existing chat context",
+    "Tool calls use a JSON output schema bridge rather than native function-call transport",
+    "Requested temperature,seed,and token budgets are not enforced by Codex CLI",
+    "Only raw quality scores; no GPU performance, model-speed, replay-latency or normalized OVERALL score",
+    "Original tracked BenchKit changes and local FiveBugs runner were unavailable",
+    "Knowledge seed42 is inferred because original sampling configuration was not retained",
+    "Tool trials used concurrency4; the reference study used concurrency1"
+  ],
+  "audit_model_calls": 0,
+  "suites": {
+    "human_eval_plus": {
+      "status": "completed",
+      "tasks": 164,
+      "first_passed": 156,
+      "first_pct": 95.121951,
+      "final_passed": 160,
+      "final_pct": 97.560976,
+      "repairs_attempted": 8,
+      "repairs_succeeded": 4,
+      "base_first_passed": 163,
+      "base_final_passed": 163,
+      "final_failure_ids": [
+        "HumanEval/32",
+        "HumanEval/91",
+        "HumanEval/99",
+        "HumanEval/141"
+      ],
+      "infra_excluded": 0,
+      "linux_verification": {
+        "attempts": 172,
+        "pass_fail_agreement": 172,
+        "exact_status_agreement": 171,
+        "model_calls": 0
+      },
+      "grader": "Stock EvalPlus0.3.1",
+      "dataset_version": "HumanEvalPlus-v0.1.10",
+      "dataset_sha256": "b6ed6a3a7e560bad75038eb9e72029ace2d26592e04b3f0596b4b75a55529465",
+      "provenance": [
+        {
+          "artifact": "human-eval-plus",
+          "sha256": "a8700e094a1a9446d4f223db2c8e7ed700d0429700262a73f5949ffa7e84c053"
+        },
+        {
+          "artifact": "official-linux-grading",
+          "sha256": "5d5ae4f559d62b4ebb563b56311f73705972b52698fe43c9078fa179d93c0b86"
+        }
+      ]
+    },
+    "gsm8k": {
+      "status": "completed",
+      "items": 100,
+      "infra_excluded": 0,
+      "provenance": [
+        {
+          "artifact": "gsm8k",
+          "sha256": "4486892c41d640f077bd55ce35911c5870fac0fd842227166e7ce714b8092d37"
+        }
+      ],
+      "correct": 98,
+      "accuracy_pct": 98.0,
+      "few_shot": 8,
+      "shuffled": true,
+      "selection": "100 sampled GSM8K test questions",
+      "seed_requested": 42,
+      "seed_original_study_retained": false
+    },
+    "mmlu_abstract_algebra": {
+      "status": "completed",
+      "items": 100,
+      "infra_excluded": 0,
+      "provenance": [
+        {
+          "artifact": "mmlu",
+          "sha256": "915720a3f065ba81c94e8cff8a9d080236fb13cc975d04350b9f365d8beaa49c"
+        }
+      ],
+      "correct": 96,
+      "accuracy_pct": 96.0,
+      "subjects": [
+        "abstract_algebra"
+      ],
+      "few_shot": 5,
+      "full_mmlu": false,
+      "selection": "First100"
+    },
+    "ifeval": {
+      "status": "completed",
+      "items": 50,
+      "infra_excluded": 0,
+      "provenance": [
+        {
+          "artifact": "ifeval",
+          "sha256": "19f00f20e064a378e259bfcb793805b3ba0412ebb91c0ec56f959f60657d97f4"
+        }
+      ],
+      "prompt_passed": 45,
+      "prompt_pct": 90.0,
+      "instruction_passed": 70,
+      "instructions": 76,
+      "instruction_pct": 92.105263
+    },
+    "five_bugs": {
+      "status": "completed",
+      "sessions": 25,
+      "visible_passed": 25,
+      "visible_pct": 100.0,
+      "hidden_passed": 20,
+      "hidden_pct": 80.0,
+      "infra_excluded": 0,
+      "provenance": [
+        {
+          "artifact": "five-bugs",
+          "sha256": "c67f0198e1c0559e3fd5c0421a29a7875e3e62d2a68db7c2eacd0f16453dc9e7"
+        }
+      ]
+    },
+    "needle": {
+      "status": "completed",
+      "cells": 25,
+      "retrieved": 25,
+      "accuracy_pct": 100.0,
+      "effective_context_target_tokens": 260096,
+      "grid": [
+        {
+          "index": 0,
+          "context_target_tokens": 1024,
+          "depth_percent": 0,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 1,
+          "context_target_tokens": 1024,
+          "depth_percent": 0.25,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 2,
+          "context_target_tokens": 1024,
+          "depth_percent": 0.5,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 3,
+          "context_target_tokens": 1024,
+          "depth_percent": 0.75,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 4,
+          "context_target_tokens": 1024,
+          "depth_percent": 1,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 5,
+          "context_target_tokens": 65792,
+          "depth_percent": 0,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 6,
+          "context_target_tokens": 65792,
+          "depth_percent": 0.25,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 7,
+          "context_target_tokens": 65792,
+          "depth_percent": 0.5,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 8,
+          "context_target_tokens": 65792,
+          "depth_percent": 0.75,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 9,
+          "context_target_tokens": 65792,
+          "depth_percent": 1,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 10,
+          "context_target_tokens": 130560,
+          "depth_percent": 0,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 11,
+          "context_target_tokens": 130560,
+          "depth_percent": 0.25,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 12,
+          "context_target_tokens": 130560,
+          "depth_percent": 0.5,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 13,
+          "context_target_tokens": 130560,
+          "depth_percent": 0.75,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 14,
+          "context_target_tokens": 130560,
+          "depth_percent": 1,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 15,
+          "context_target_tokens": 195328,
+          "depth_percent": 0,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 16,
+          "context_target_tokens": 195328,
+          "depth_percent": 0.25,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 17,
+          "context_target_tokens": 195328,
+          "depth_percent": 0.5,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 18,
+          "context_target_tokens": 195328,
+          "depth_percent": 0.75,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 19,
+          "context_target_tokens": 195328,
+          "depth_percent": 1,
+          "found": true,
+          "valid": true,
+          "transport": "CLI-chat-completion bridge"
+        },
+        {
+          "index": 20,
+          "context_target_tokens": 260096,
+          "depth_percent": 0,
+          "found": true,
+          "valid": true,
+          "transport": "Same-role history injection; one inference",
+          "actual_input_tokens": 221680
+        },
+        {
+          "index": 21,
+          "context_target_tokens": 260096,
+          "depth_percent": 0.25,
+          "found": true,
+          "valid": true,
+          "transport": "Same-role history injection; one inference",
+          "actual_input_tokens": 221877
+        },
+        {
+          "index": 22,
+          "context_target_tokens": 260096,
+          "depth_percent": 0.5,
+          "found": true,
+          "valid": true,
+          "transport": "Same-role history injection; one inference",
+          "actual_input_tokens": 221595
+        },
+        {
+          "index": 23,
+          "context_target_tokens": 260096,
+          "depth_percent": 0.75,
+          "found": true,
+          "valid": true,
+          "transport": "Same-role history injection; one inference",
+          "actual_input_tokens": 221816
+        },
+        {
+          "index": 24,
+          "context_target_tokens": 260096,
+          "depth_percent": 1,
+          "found": true,
+          "valid": true,
+          "transport": "Same-role history injection; one inference",
+          "actual_input_tokens": 221731
+        }
+      ],
+      "provenance": [
+        {
+          "artifact": "merged-needle-grid",
+          "sha256": "2ef68f59122873b408ba1069c183317820743a6299bc5cecce39ce554f8c78af"
+        },
+        {
+          "artifact": "needle-cell-20-retry",
+          "sha256": "35bbcffd18c57f8d5aaa6e50f55f2ab0ed3ba1687bc4087780eae48ccfa183d5"
+        },
+        {
+          "artifact": "needle-cell-21-retry",
+          "sha256": "25ae410b7d85f758e2818c0ca2604f72364ed0c28da7d307a1b51ceaab399829"
+        },
+        {
+          "artifact": "needle-cell-22-retry",
+          "sha256": "9140ea02f36e8d855c46cf0df94df83f2c70692c71ca1790b451f972514f7046"
+        },
+        {
+          "artifact": "needle-cell-23-retry",
+          "sha256": "a557bec63149dadbdcbe0075d6008e2689b51aa0e1922e1d4fa0a2a94a63c1c0"
+        },
+        {
+          "artifact": "needle-cell-24-retry",
+          "sha256": "95e9cc154be1029eed101802301b0b825e3696db97fb28b33f0272c44c8b228a"
+        }
+      ],
+      "context_note": "Targets use upstream estimates; measured model input tokens may differ",
+      "large_prompt_transport_note": "Last five preserve exact logical prompt with one inference; transport differs"
+    },
+    "tools": {
+      "scenarios": 92,
+      "trials": 5,
+      "scored_cells": 460,
+      "trial_points": [
+        165,
+        168,
+        165,
+        165,
+        166
+      ],
+      "trial_max_points": 184,
+      "trial_scores": [
+        90,
+        91,
+        90,
+        90,
+        90
+      ],
+      "mean_pct": 90.2,
+      "sample_sd_pct": 0.4,
+      "ci95_pct": [
+        90,
+        90.6
+      ],
+      "pass_at5_count": 81,
+      "pass_at5_pct": 88.0,
+      "pass_all5_count": 77,
+      "pass_all5_pct": 83.7,
+      "hard_mode_trial_points": [
+        38,
+        41,
+        38,
+        39,
+        40
+      ],
+      "hard_mode_max_points": 46,
+      "hard_mode_trial_scores": [
+        83,
+        89,
+        83,
+        85,
+        87
+      ],
+      "hard_mode_mean_pct": 85.4,
+      "hard_mode_sample_sd_pct": 2.6,
+      "primary_trial": 5,
+      "primary_score": 90,
+      "grades_by_scenario": {
+        "TC-01": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-02": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-03": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-04": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-05": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-06": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-07": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-08": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-09": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-10": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-11": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-12": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-13": [
+          2,
+          2,
+          2,
+          0,
+          2
+        ],
+        "TC-14": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-15": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-16": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-17": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-18": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "TC-19": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-20": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-21": [
+          1,
+          1,
+          0,
+          1,
+          1
+        ],
+        "TC-22": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-23": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-24": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-25": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-26": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-27": [
+          2,
+          2,
+          2,
+          2,
+          1
+        ],
+        "TC-28": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-29": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-30": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-31": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-32": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-33": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-34": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-35": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-36": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-37": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-38": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-39": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-40": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-41": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-42": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-43": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-44": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-45": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-46": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-47": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-48": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-49": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-50": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "TC-51": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "TC-52": [
+          0,
+          0,
+          1,
+          1,
+          0
+        ],
+        "TC-53": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "TC-54": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "TC-55": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "TC-56": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-57": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-58": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-59": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-60": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-61": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-62": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-63": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-64": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-65": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-66": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-67": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-68": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-69": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-70": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-71": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-72": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-73": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-74": [
+          0,
+          2,
+          0,
+          0,
+          2
+        ],
+        "TC-75": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-76": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-77": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-78": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-79": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "TC-80": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "TC-81": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-82": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-83": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-84": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-85": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-86": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-87": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-88": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-89": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "TC-90": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "TC-91": [
+          1,
+          2,
+          1,
+          2,
+          1
+        ],
+        "TC-92": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ]
+      },
+      "primary_rating": "★★★★★ Excellent",
+      "primary_safety_capped": false,
+      "primary_warning_count": 0,
+      "primary_critical_pct": 100,
+      "status": "completed",
+      "provenance": [
+        {
+          "artifact": "five-trial-tools",
+          "sha256": "912aeb4ab7ccae18f0594efd4723bfb3d70919856eed75fa6c80e86cc95a024b"
+        }
+      ],
+      "formulas": {
+        "mean_sd": "Five rounded trial scores; arithmetic mean and sample SD",
+        "ci95": "Percentile bootstrap, seed42,1000 resamples",
+        "pass_at5": "Any grade2 across five attempts per scenario",
+        "pass_all5": "Every grade2 across all five attempts per scenario",
+        "primary": "Fifth trial rating and warnings; no warning union"
+      },
+      "infrastructure_recoveries": [
+        {
+          "trial": 2,
+          "scenario_id": "TC-56",
+          "original_failure_kind": "timeout",
+          "original_points": 0,
+          "recovered_points": 2,
+          "validated": true,
+          "preserved_prefix_turns": 2,
+          "fresh_inference_calls": 1,
+          "original_max_turns": 8,
+          "original_result_sha256": "fede6ea2301912da3b9819595173ce9fc1982d3dfafc0c9d68c1528bf4dbd0ce",
+          "protocol_sha256": "cedca38c4fb636d2e91ff3a6ae90d88d6dc042f8b5ad1c67ccb78d87ba5645ea",
+          "protocol_descriptor": "Original battery tool-suite protocol metadata",
+          "bridge_protocol_sha256": "a863df130c5dbe7b3274b73e3037554bb4e8e7095ae03ce04780df2ee407c8ed",
+          "bridge_protocol_descriptor": "Codex CLI benchmark developer-instruction scaffold",
+          "supplement_sha256": "e7c1d0a77a8b43acdf965b6aad2de6bf2445370cbd01319f666d77ff1c554e46",
+          "timeout_qualification": {
+            "original_case_elapsed_seconds": 331.09,
+            "deadline_controls_seconds": {
+              "original_transport_timeout_seconds": 300.0,
+              "recovery_transport_timeout_seconds": 600
+            },
+            "note": "Original infrastructure failure recovered after primary trials; valid original prefix reused"
+          }
+        }
+      ],
+      "original_trial_scores": [
+        {
+          "trial": 1,
+          "stored_score": 90,
+          "scored_points": 165,
+          "max_points": 184,
+          "infra_excluded": 0
+        },
+        {
+          "trial": 2,
+          "stored_score": 91,
+          "scored_points": 166,
+          "max_points": 182,
+          "infra_excluded": 1
+        },
+        {
+          "trial": 3,
+          "stored_score": 90,
+          "scored_points": 165,
+          "max_points": 184,
+          "infra_excluded": 0
+        },
+        {
+          "trial": 4,
+          "stored_score": 90,
+          "scored_points": 165,
+          "max_points": 184,
+          "infra_excluded": 0
+        },
+        {
+          "trial": 5,
+          "stored_score": 90,
+          "scored_points": 166,
+          "max_points": 184,
+          "infra_excluded": 0
+        }
+      ],
+      "original_upstream_reconstruction": {
+        "scenarios": 92,
+        "trials": 5,
+        "scored_cells": 460,
+        "trial_points": [
+          165,
+          166,
+          165,
+          165,
+          166
+        ],
+        "trial_max_points": 184,
+        "trial_scores": [
+          90,
+          90,
+          90,
+          90,
+          90
+        ],
+        "mean_pct": 90,
+        "sample_sd_pct": 0.0,
+        "ci95_pct": [
+          90,
+          90
+        ],
+        "pass_at5_count": 81,
+        "pass_at5_pct": 88.0,
+        "pass_all5_count": 76,
+        "pass_all5_pct": 82.6,
+        "hard_mode_trial_points": [
+          38,
+          41,
+          38,
+          39,
+          40
+        ],
+        "hard_mode_max_points": 46,
+        "hard_mode_trial_scores": [
+          83,
+          89,
+          83,
+          85,
+          87
+        ],
+        "hard_mode_mean_pct": 85.4,
+        "hard_mode_sample_sd_pct": 2.6,
+        "primary_trial": 5,
+        "primary_score": 90
+      },
+      "quality_basis": "Explicit validated infrastructure recoveries; original artifact and scores preserved"
+    }
+  },
+  "study_coding_comparison": {
+    "coverage": "Only complete164-task study arms; partial163/162 arms excluded",
+    "complete_arms": 17,
+    "denominator": 164,
+    "best_first_passed": 153,
+    "best_first_pct": 93.292683,
+    "best_final_passed": 158,
+    "best_final_pct": 96.341463,
+    "first_leaders": [
+      {
+        "label": "Qwen3.8-Flash-Next IQ3_S (ISTA-DASLab)",
+        "effort": "xhigh",
+        "first_passed": 153,
+        "final_passed": 158
+      },
+      {
+        "label": "Gyro-M TQ2_0 (AgentionAI)",
+        "effort": "low",
+        "first_passed": 153,
+        "final_passed": 156
+      }
+    ],
+    "final_leaders": [
+      {
+        "label": "Qwen3.8-Flash-Next IQ3_S (ISTA-DASLab)",
+        "effort": "xhigh",
+        "first_passed": 153,
+        "final_passed": 158
+      },
+      {
+        "label": "Gyro-S TQ1_0 (AgentionAI)",
+        "effort": "low",
+        "first_passed": 151,
+        "final_passed": 158
+      }
+    ],
+    "codex_first_additional_tasks": 3,
+    "codex_final_additional_tasks": 2,
+    "codex_first_delta_pp": 1.829268,
+    "codex_final_delta_pp": 1.219512,
+    "qualification": "Different inference and tool transports; descriptive comparison, not a controlled model-only experiment",
+    "source": "https://github.com/Zauberio/Strata/blob/study/quant-battery-rtx5070ti/bench/results/2026-10-10-community-quant-study-rtx5070ti/README.md",
+    "provenance": {
+      "artifact": "canonical-study-all-metrics",
+      "sha256": "b0c73ffc81132bcf477168713b6b6ebd09d8ff0606a5ee83a50d3cc5e1771719"
+    }
+  }
+}
