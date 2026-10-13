@@ -10,7 +10,7 @@
       system = "x86_64-linux";
       pkgs = import nixpkgs {
         inherit system;
-        # Claude Code plus NVIDIA's CUDA toolkit (nvcc, cudart, cuBLAS, ...).
+        # Allow NVIDIA's CUDA toolkit (nvcc, cudart, cuBLAS, ...).
         config.allowUnfree = true;
         config.cudaSupport = true;
       };
@@ -28,8 +28,6 @@
         # Full development environment.
         default = (pkgs.mkShell.override { inherit stdenv; }) {
           packages = with pkgs; [
-            claude-code
-
             # ./setup.sh: makes .venv and runs setup.py
             python3
             git
