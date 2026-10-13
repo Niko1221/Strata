@@ -121,6 +121,51 @@ int main() {
               "DTT7: dense_tail with every>0 and supported kv passes");
     }
 
+    // --- DTT8: dynamic chunk sizing - off is today's uniform sizing ---
+    {
+        using suffix::dense_tail_chunk_size;
+        // dense_tail=0: uniform min(big, n-c0), the live loop's m.T behavior
+        check(dense_tail_chunk_size(0, 5670, 2048, 1024, 0) == 2048,
+              "DTT8: dense_tail=0 -> uniform big chunk from 0");
+        check(dense_tail_chunk_size(4096, 5670, 2048, 1024, 0) == 1574,
+              "DTT8: dense_tail=0 -> last chunk is the remainder");
+        // every=0 (periodic off): sizing must also stay uniform (flag pair required)
+        check(dense_tail_chunk_size(0, 5670, 2048, 0, 2048) == 2048,
+              "DTT8: every=0 -> uniform sizing (no anchor chunks without periodic checkpoints)");
+    }
+
+    // --- DTT9: dynamic chunk sizing - head lands exactly at the zone start ---
+    {
+        using suffix::dense_tail_chunk_size;
+        // n=5670, dense_tail=4096 -> zone_start=1574.  big=8192 (auto-like): the head
+        // chunk is CLAMPED to end exactly at 1574 so the first anchor is the zone start.
+        check(dense_tail_chunk_size(0, 5670, 8192, 1024, 4096) == 1574,
+              "DTT9: head chunk ends exactly at zone_start (first anchor)");
+        // a big smaller than the head distance stays big
+        check(dense_tail_chunk_size(0, 20000, 8192, 1024, 2048) == 8192,
+              "DTT9: big chunk when the zone is far away");
+        // second-to-zone case: big=8192, zone at 17952: chunk at 8192 spans to 16384 < zone
+        check(dense_tail_chunk_size(8192, 20000, 8192, 1024, 2048) == 8192,
+              "DTT9: mid-head chunk stays big");
+        // the chunk that WOULD cross the zone clamps to it
+        check(dense_tail_chunk_size(16384, 20000, 8192, 1024, 2048) == 17952 - 16384,
+              "DTT9: crossing chunk clamps to end at zone_start");
+    }
+
+    // --- DTT10: inside the zone, chunks are anchor-sized ---
+    {
+        using suffix::dense_tail_chunk_size;
+        // zone [1574, 5670): chunks of `every`=1024 from the zone start
+        check(dense_tail_chunk_size(1574, 5670, 8192, 1024, 4096) == 1024,
+              "DTT10: zone chunk = every");
+        // the final partial chunk is the remainder
+        check(dense_tail_chunk_size(5670 - 500, 5670, 8192, 1024, 4096) == 500,
+              "DTT10: last zone chunk is the remainder");
+        // tiny prompt (n <= dense_tail): everything is the zone -> anchor-sized from 0
+        check(dense_tail_chunk_size(0, 1000, 8192, 1024, 4096) == 1000,
+              "DTT10: tiny prompt (all zone) -> one chunk (min(every, n))");
+    }
+
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }
