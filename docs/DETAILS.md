@@ -193,8 +193,10 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
   tokens; decode level alone, +2-3 % with `--adapt-async 1` and `--pcie-frac 0.6`
   ([report](../bench/results/2026-10-11-community-rtx3090-5600x-arena-pin-by-need/README.md)).
 - `STRATA_EXCHANGE_ROTATE=1` (opt-in): an adaptive swap hands buffer ownership over instead of copying the evicted
-  blob into the RAM copy (equal-size blobs, fully page-locked copy). Same tokens, fewer host copies; it works with
-  `--adapt-async 1` too. Details and the measurement: [EXCHANGE_ROTATION.md](EXCHANGE_ROTATION.md).
+  blob into the RAM copy (fully page-locked copy; layers of different blob sizes keep spare buffers per size). Same
+  tokens, fewer host copies; it works with `--adapt-async 1` too. Swift 1.5 IQ3_S on an RTX 5090 with 64 GB RAM
+  (Windows, about 30 swaps per verify window): 164 -> 188 tok/s on one forced 1,500-token text, 155 -> 178 over 23
+  coding-agent turns. Details and the measurements: [EXCHANGE_ROTATION.md](EXCHANGE_ROTATION.md).
 - The answers are the plain mapped mode's for the same expert placement: the bytes are the file's. With a page-locked
   copy the GPU also takes its usual share of the misses over PCIe (`--pcie-frac`), as with enough RAM; `--pcie-frac 0`
   (or `STRATA_RESIDENT_PIN=0`) gives the mapped mode's exact tokens.
