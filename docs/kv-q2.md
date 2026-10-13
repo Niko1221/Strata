@@ -81,7 +81,8 @@ Same harness that measured q4_0 and the window, so the numbers are comparable:
    `fp16` (upper bound). The claim to earn is `q2 + window` matching `fp16` on all of it.
 3. Speed, same runs: prefill and decode t/s. 2-bit is 1.8x smaller than q4_0, so a regression here is a bug.
 
-Build with CUDA 13.0 (`build-cu130.bat`) — a 13.2 build is numerically broken for this model and cannot be used
+Build with CUDA 13.0 (the `build-cu130` recipe in bench/results/2026-10-11-kv-window/README.md) — a 13.2 build is
+numerically broken for this model and cannot be used
 for any of these measurements.
 
 ## State of the implementation

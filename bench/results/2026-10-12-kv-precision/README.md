@@ -88,9 +88,10 @@ the 2-bit cache changes the model's next token on that text.
 ## Reproduce
 
 ```
-cmd.exe /C build-cu130.bat
-set KV_ENGINE=C:\Users\blsor\Strata\build-cu130\strata.exe
-set KV_LIB_DIRS=C:\Users\blsor\cuda130\nvidia\cu13\bin;C:\Users\blsor\cuda130\nvidia\cu13\bin\x64
+REM build-cu130: the CUDA 13.0 build (bench/results/2026-10-11-kv-window/README.md, "Reproduce", step 1)
+set KV_ENGINE=build-cu130\strata.exe
+REM KV_CUDA130: the CUDA 13.0 toolkit root, whose bin\ and bin\x64 the engine loads (or set KV_LIB_DIRS directly)
+set KV_CUDA130=<CUDA 13.0 toolkit root>
 .venv\Scripts\python.exe tools\kv_precision_compare.py --max-tokens 512 --keep-logits
 ```
 

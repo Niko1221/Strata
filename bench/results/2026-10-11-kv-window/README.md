@@ -8,8 +8,8 @@ it took before the change, bit for bit. Design and scope: `docs/kv-window.md`.
 
 ## Toolchain (read this first)
 
-Every number below comes from a build with **CUDA 13.0**, the toolkit the release binaries use, obtained through
-pip's `cuda-toolkit` components (`C:\Users\blsor\cuda130\nvidia\cu13`, `build-cu130.bat`).
+Every number below comes from a build with **CUDA 13.0**, the toolkit the release binaries use (here obtained through
+pip's `cuda-toolkit` components; any CUDA 13.0 install works - see Reproduce).
 
 A build with the locally installed **CUDA 13.2 is numerically broken for this model on this box** and must not be
 used for quality work: the same source, same flags and same model score **0/8** on a ~5K-token recall probe where
@@ -74,18 +74,21 @@ end-to-end table is the "no regression" half.
 ## Reproduce
 
 ```
-# 1. the toolchain (once): CUDA 13.0 components via pip, then the build
-python -m pip install --target C:/Users/blsor/cuda130 "cuda-toolkit[all]==13.0.3.0"
-cmd /C build-cu130.bat                 # writes build-cu130/strata.exe (arch 120, CUDA 13.0)
-cmd /C build-cu130-tests.bat           # builds the KV parity executables in the same build dir
+# 1. the toolchain (once): a CUDA 13.0 toolkit - e.g. pip's components, whose root is <dir>/nvidia/cu13 - then the
+#    build (CU13 = that toolkit root; arch 120 = RTX 50-series, set yours)
+python -m pip install --target <dir> "cuda-toolkit[all]==13.0.3.0"
+cmake -G Ninja -S . -B build-cu130 -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=ON \
+      -DCMAKE_CUDA_ARCHITECTURES=120 -DCMAKE_CUDA_COMPILER=$CU13/bin/nvcc -DCUDAToolkit_ROOT=$CU13
+cmake --build build-cu130 --target strata kv_window_parity kv_q4_parity kv_q8_parity kv_stream_parity kv_hybrid_parity
 
 # 2. the deterministic metrics
-cd build-cu130 && ./kv_window_parity.exe      # 6 bitwise checks + the error table + the kernel timing
-./kv_q4_parity.exe ./kv_q8_parity.exe ./kv_stream_parity.exe ./kv_hybrid_parity.exe
+cd build-cu130 && ./kv_window_parity      # the bitwise checks + the error table + the kernel timing
+./kv_q4_parity && ./kv_q8_parity && ./kv_stream_parity && ./kv_hybrid_parity
 
-# 3. end to end (stops the serving task, runs the arms, restarts it)
-KV_ENGINE="C:\\Users\\blsor\\Strata\\build-cu130\\strata.exe" bash run-gpu-bench.sh kv_pr_report.py
-KV_ENGINE=... KV_LENGTHS="64K:1600,131K:3200" bash run-gpu-bench.sh kv_pr_report.py
+# 3. end to end: stop whatever serves on this GPU first (the arms each start their own serve), then
+#    (python = the repo's environment; paths and the API key: see tools/kv_bench_env.py)
+KV_ENGINE=build-cu130/strata python tools/kv_pr_report.py
+KV_ENGINE=build-cu130/strata KV_LENGTHS="64K:1600,131K:3200" python tools/kv_pr_report.py
 ```
 
 ## Notes and known gaps
