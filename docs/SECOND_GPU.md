@@ -147,6 +147,15 @@ alternative to the CUDA1-3 caches above, not a third tier beside them.
   the peer computes; -1 is half of chunk x top-k, 0 keeps prompt rows on the
   primary.
 
+On Windows/WDDM, most of a large resident expert arena is deliberately locked
+but not CUDA-registered.  Peer-prefill streaming stages those unregistered
+expert blobs through a bounded pinned-host ring before uploading them to the
+peer, so every stable arena layer can use the second PCIe link without mapping
+tens of GiB into both CUDA contexts.  `STRATA_PF_PEER_HOST_RING=N` changes the
+ring depth (default 16, 2..256) and `STRATA_PF_PEER_STAGE_THREADS=N` changes its
+host-copy workers (default 2..4 from the CPU count, 1..16).  Registered arena
+blobs retain the direct asynchronous-copy path.
+
 Through the server, list both cards in the config's `"gpu"` (e.g. `[0, 1]`, numbered as nvidia-smi numbers them)
 and add `--peer-device 1` to its `"args"`; the number is the card's position in that list (with `"gpu": [2, 0]`,
 `--peer-device 1` is nvidia-smi's card 0). Several GPUs in `"gpu"` are otherwise a layer split: the server adds

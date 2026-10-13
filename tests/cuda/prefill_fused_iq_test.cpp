@@ -13,7 +13,7 @@
 // different expert ranges.  Part 2 (timing): one layer at the engine's chunks (2048, 3584, 8192 tokens; 512 experts,
 // top 10) on both paths and on MMQ's products alone (no gathers), for the IQ2_XS, IQ3_XXS and IQ3_S packs' most
 // common layers, with the grouping checked and a sample of rows against the reference.  --no-ref, --no-timing,
-// --only=NAME, --chunks=A,B.  Exit 77 without a CUDA device of sm_80 or newer.
+// --only=NAME, --chunks=A,B.  Exit 77 without a supported CUDA/HIP device (sm_75 is explicitly enabled below).
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 
@@ -636,8 +636,10 @@ int main(int argc, char** argv) {
     try {
 #ifdef _WIN32
         _putenv_s("STRATA_PF_FUSED", "1");
+        _putenv_s("STRATA_PF_FUSED_NATIVE_SM75", "1");
 #else
         setenv("STRATA_PF_FUSED", "1", 1);
+        setenv("STRATA_PF_FUSED_NATIVE_SM75", "1", 1);
         setenv("STRATA_PF_FUSED_KQ", "1", 1);   // (the HIP build's Q4_K / Q5_K / Q5_1 / Q8_0 pairs)
 #endif
         int n = 0;

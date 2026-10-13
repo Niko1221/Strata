@@ -89,6 +89,7 @@ void quantize_act(const float*, int64_t, int64_t, void*, void*) {}
 void group(const int32_t*, int64_t, int, int, void*, int32_t*, int32_t*, void*) {}
 void experts(const Batch&, int, int64_t, const void*, const void*, const int32_t*, void*, float*, void*) {}
 bool native_supported(int, int) { return false; }
+bool native_enabled() { return false; }
 void quantize_act_native(const float*, int64_t, int64_t, void*, void*) {}
 void experts_native(const Batch&, const NativeGeom&, int, int64_t, const void*, const void*, const int32_t*, void*,
                     float*, void*) {}
@@ -225,9 +226,10 @@ int64_t g_ring_small_max = 0;
 inline bool fused_ring() {
     if (core::peer_portable()) return false;   // multi-GPU: --peer-device keeps the MMQ path and its buffer sizes
     const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
-    // the Q2_0 pack: fused::enabled().  A native pack: native_supported() alone - it implies enabled() wherever the Q2_0
-    // kernels exist, and on gfx12 (the native kernels only) enabled() is false while the native layers do run fused.
+    // The SM75 native opt-in applies only to raw-GGUF native packs. In particular it must not make a Strata Q2_0
+    // pack select the compact fused layout: the generic Q2_0 fused kernels still require sm_80+.
     if (!lay.native) return fused::enabled();
+    if (!fused::native_enabled()) return false;
     // EVERY layer: fused_layout() shrinks the MoE buffers to the fused path's needs, so a layer the native kernels do
     // not cover (Unsloth UD-IQ4_XS's Q8_0 down projections) would run MMQ in them at the full chunk and overflow them
     // (garbage, an illegal memory access or a hung prompt on gfx1151).  A pack with such a layer keeps MMQ's buffers;
@@ -432,8 +434,8 @@ struct Stager {
     std::vector<std::thread> threads;
     int device = 0;
 
-    bool init(size_t blob_bytes, int nthreads) {
-        if (const char* v = std::getenv("STRATA_STAGER_RING")) kRing = std::clamp(std::atoi(v), 2, 256);
+    bool init(size_t blob_bytes, int nthreads, const char* ring_env = "STRATA_STAGER_RING") {
+        if (const char* v = std::getenv(ring_env)) kRing = std::clamp(std::atoi(v), 2, 256);
         buf.assign((size_t) kRing, nullptr);
         pinned.assign((size_t) kRing, 0);
         dma_done.assign((size_t) kRing, nullptr);
@@ -611,12 +613,17 @@ struct PeerPrefill {
     std::vector<cudaEvent_t> pcopied, pused;
     std::vector<char> plive;
     cudaStream_t s_cp = nullptr;
-    struct PsEntry { int32_t l, e; const uint8_t* blob; };
+    // Unregistered arena pages cannot be a reliable cudaMemcpyAsync source.  A private Stager copies those blobs
+    // into a bounded pinned-host ring first; registered blobs keep the direct path.  Its job index is monotonic in
+    // pseq order, so Stager's ring-reuse protocol remains the same even when direct and staged entries interleave.
+    std::unique_ptr<Stager> pstager;
+    struct PsEntry { int32_t l, e; const uint8_t* blob; int job = -1; };
     std::vector<PsEntry> pseq;            // this chunk's peer-streamed experts, layer by layer in id order
     std::vector<size_t> pseq_start;
     std::vector<char> ps_flag;            // [layer * NE + e]: streamed by the peer in this chunk
     size_t p_issued = 0, pk = 0;
-    int64_t ps_experts = 0;
+    int64_t ps_experts = 0, ps_staged = 0;
+    uint64_t ps_staged_bytes = 0;
     float *mixed = nullptr, *GU = nullptr, *H = nullptr, *Dm = nullptr;
     void *Xq = nullptr, *Hq = nullptr;
     int32_t *src = nullptr, *bounds = nullptr, *ident = nullptr;
@@ -667,14 +674,15 @@ struct PeerPrefill {
         cudaGetDevice(&prev);
         cudaSetDevice(dev);
         if (s) cudaStreamSynchronize(s);
+        if (s_out) cudaStreamSynchronize(s_out);
+        if (s_cp) cudaStreamSynchronize(s_cp);
+        pstager.reset();
         ctx.reset();
         up_ring.release();
         for (void* p : owned) cudaFree(p);
         if (ev_done) cudaEventDestroy(ev_done);
-        if (s_out) cudaStreamSynchronize(s_out);
         for (cudaEvent_t e : ev_grp) if (e) cudaEventDestroy(e);
         for (cudaEvent_t e : ev_dm) if (e) cudaEventDestroy(e);
-        if (s_cp) cudaStreamSynchronize(s_cp);
         for (cudaEvent_t e : pcopied) if (e) cudaEventDestroy(e);
         for (cudaEvent_t e : pused) if (e) cudaEventDestroy(e);
         if (s_cp) cudaStreamDestroy(s_cp);
@@ -1723,6 +1731,14 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
                 ok = ok && cudaEventCreateWithFlags(&pp->pcopied[(size_t) i], cudaEventDisableTiming) == cudaSuccess &&
                      cudaEventCreateWithFlags(&pp->pused[(size_t) i], cudaEventDisableTiming) == cudaSuccess;
             }
+            if (ok) {
+                pp->pstager = std::make_unique<Stager>();
+                const int hw = (int) std::thread::hardware_concurrency();
+                const char* sv = std::getenv("STRATA_PF_PEER_STAGE_THREADS");
+                const int threads = sv ? std::clamp(std::atoi(sv), 1, 16)
+                                       : std::max(2, std::min(4, hw / 4));
+                ok = pp->pstager->init((size_t) MAXBLOB(), threads, "STRATA_PF_PEER_HOST_RING");
+            }
         } else {
             pp->ps_frac = 0.0;
         }
@@ -1801,14 +1817,27 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
     cudaMemGetInfo(&fb, &tb);
     cudaSetDevice(prev);
     if (!ok) { err = "prefill peer: the peer's buffers do not fit (raise --peer-reserve-mib or lower --peer-prefill-rows)"; return false; }
+    std::string peer_mode;
+    if (!pp->p2p)
+        peer_mode = pp->sums ? (pp->f16 ? ", no P2P: through mapped host memory in FP16, one weighted sum per token back"
+                                      : ", no P2P: through mapped host memory, one weighted sum per token back")
+                             : ", no P2P: through mapped host memory";
+    if (pp->compact) {
+        peer_mode += ", compact group buffers";
+        if (pp->ps_frac > 0.0) {
+            peer_mode += ", streams " + std::to_string((int) (pp->ps_frac * 100 + 0.5)) +
+                         "% of the primary's streamed experts through a " + std::to_string(pp->RP) + "-slot ring";
+            if (pp->pstager) {
+                const int np = (int) std::count(pp->pstager->pinned.begin(), pp->pstager->pinned.end(), (char) 1);
+                peer_mode += "; unregistered arena blobs stage through " + std::to_string(pp->pstager->kRing) +
+                             " host buffers (" + std::to_string(np) + " pinned, " +
+                             std::to_string(((uint64_t) pp->pstager->kRing * MAXBLOB()) >> 20) + " MiB)";
+            }
+        }
+    }
     std::fprintf(stderr, "strata prefill: peer GPU %d computes its experts' rows of each prompt chunk (up to %lld rows per "
-                         "layer%s%s); %zu MiB left free on it\n", pp->dev, (long long) pp->cap_rows,
-                 pp->p2p ? "" : (pp->sums ? (pp->f16 ? ", no P2P: through mapped host memory in FP16, one weighted sum per token back"
-                                                     : ", no P2P: through mapped host memory, one weighted sum per token back")
-                                          : ", no P2P: through mapped host memory"),
-                 pp->compact ? (pp->ps_frac > 0.0 ? (", compact group buffers, streams " + std::to_string((int) (pp->ps_frac * 100 + 0.5)) +
-                                                    "% of the primary's streamed experts through a " + std::to_string(pp->RP) + "-slot ring").c_str()
-                                                 : ", compact group buffers") : "", fb >> 20);
+                         "layer%s); %zu MiB left free on it\n", pp->dev, (long long) pp->cap_rows,
+                 peer_mode.c_str(), fb >> 20);
     m.pp = std::move(pp);
     return true;
 }
@@ -2101,6 +2130,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     PfTimer pt;
     PeTimer pe;
     if (m.pp) pe.dev = m.pp->dev; else pe.on = false;
+    const int64_t ps_experts0 = m.pp ? m.pp->ps_experts : 0;
+    const int64_t ps_staged0 = m.pp ? m.pp->ps_staged : 0;
+    const uint64_t ps_staged_bytes0 = m.pp ? m.pp->ps_staged_bytes : 0;
     const cudaStream_t cs = (cudaStream_t) m.cs;
     // the MMQ row table lives in the borrowed cache slots, which the refill after a prompt overwrites with experts:
     // write it again for every prompt (a layout is reused as long as the chunk and the slots are the same)
@@ -2320,8 +2352,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 const PeerPrefill::PsEntry& en = P.pseq[P.p_issued];
                 const size_t sl = P.p_issued % (size_t) P.RP;
                 if (P.plive[sl]) cudaStreamWaitEvent(P.s_cp, P.pused[sl], 0);
-                cudaMemcpyAsync(P.pstage[sl], en.blob, (size_t) strata::kernels::cpu::expert_layout().blob_bytes(en.l),
-                                cudaMemcpyHostToDevice, P.s_cp);
+                const size_t bytes = (size_t) strata::kernels::cpu::expert_layout().blob_bytes(en.l);
+                if (en.job < 0) {
+                    cudaMemcpyAsync(P.pstage[sl], en.blob, bytes, cudaMemcpyHostToDevice, P.s_cp);
+                } else {
+                    const uint8_t* hb = P.pstager->wait(en.job);
+                    cudaMemcpyAsync(P.pstage[sl], hb, bytes, cudaMemcpyHostToDevice, P.s_cp);
+                    P.pstager->issued_one(en.job, P.s_cp);
+                    ++P.ps_staged;
+                    P.ps_staged_bytes += bytes;
+                }
                 cudaEventRecord(P.pcopied[sl], P.s_cp);
                 P.plive[sl] = 1;
                 ++P.p_issued;
@@ -2342,6 +2382,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         if (stream_all) {
             seq_start.assign((size_t) g.n_layers + 1, 0);
             std::vector<Stager::Job> js;
+            std::vector<Stager::Job> pjs;
             if (ps_on) {
                 m.pp->pseq.clear();
                 m.pp->pseq_start.assign((size_t) g.n_layers + 1, 0);
@@ -2363,16 +2404,24 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     } else {
                         b = m.src->blob_stable(l, e);
                         if (!b) { err = "prefill: expert source has no blob"; return false; }
-                        if (ps_on && m.src->pinned(l, e)) {   // multi-GPU: every ps_frac-th one goes to the peer's ring
+                        const bool pinned = m.src->pinned(l, e);
+                        // The peer's private host stager makes stable, unregistered arena blobs eligible too.  The
+                        // source remains immutable for the chunk; transient sources still use the primary stager.
+                        if (ps_on && (pinned || m.pp->pstager)) {   // every ps_frac-th one goes to the peer's ring
                             ps_acc += m.pp->ps_frac;
                             if (ps_acc >= 1.0) {
                                 ps_acc -= 1.0;
-                                m.pp->pseq.push_back({(int32_t) l, e, b});
+                                int pjob = -1;
+                                if (!pinned) {
+                                    pjob = (int) pjs.size();
+                                    pjs.push_back({b, (size_t) lay0.blob_bytes(l)});
+                                }
+                                m.pp->pseq.push_back({(int32_t) l, e, b, pjob});
                                 m.pp->ps_flag[(size_t) l * m.g->n_expert + e] = 1;
                                 continue;
                             }
                         }
-                        if (!m.src->pinned(l, e)) {
+                        if (!pinned) {
                             job = (int) js.size();
                             js.push_back({b, (size_t) lay0.blob_bytes(l)});
                         }
@@ -2385,11 +2434,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 if (ps_on) m.pp->pseq_start[(size_t) l] = m.pp->pseq.size();
             }
             m.stager->start(std::move(js));
+            if (ps_on && m.pp->pstager) m.pp->pstager->start(std::move(pjs));
         }
         struct StagerDone {
             Stager* st;
             ~StagerDone() { if (st) st->finish(); }
         } chunk_stager_done{stream_all ? m.stager.get() : nullptr};
+        StagerDone peer_chunk_stager_done{ps_on && m.pp ? m.pp->pstager.get() : nullptr};
         auto issue_until = [&](size_t limit) {
             limit = std::min(limit, seq.size());
             while (issued < limit) {
@@ -4185,9 +4236,18 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                          m.pp->layers ? (double) m.pp->rows / m.pp->layers : 0.0, (long long) m.pp->cap_rows,
                          m.pp->layers ? (double) m.pp->experts / m.pp->layers : 0.0, (long long) m.pp->over_cap);
             if (m.pp->ps_frac > 0.0)
-                std::fprintf(stderr, "strata prefill timing: peer-streamed experts %lld (%.0f per MoE layer)\n",
-                             (long long) m.pp->ps_experts, m.pp->layers ? (double) m.pp->ps_experts / m.pp->layers : 0.0);
+                std::fprintf(stderr, "strata prefill timing: peer-streamed experts %lld (%.0f per MoE layer); "
+                                     "pageable-arena staging copied %lld blobs / %.1f GiB through the bounded pinned-host ring\n",
+                             (long long) m.pp->ps_experts, m.pp->layers ? (double) m.pp->ps_experts / m.pp->layers : 0.0,
+                             (long long) m.pp->ps_staged, (double) m.pp->ps_staged_bytes / 1073741824.0);
         }
+    }
+    if (m.pp && m.pp->ps_staged > ps_staged0) {
+        std::fprintf(stderr, "strata prefill: peer streamed %lld experts this prompt; the bounded host ring staged "
+                             "%lld unregistered blobs / %.2f GiB to CUDA%d\n",
+                     (long long) (m.pp->ps_experts - ps_experts0),
+                     (long long) (m.pp->ps_staged - ps_staged0),
+                     (double) (m.pp->ps_staged_bytes - ps_staged_bytes0) / 1073741824.0, m.pp->dev);
     }
     if (std::getenv("STRATA_STATE_HASH_GDN") != nullptr) {   // debug: the GDN states as the prompt path leaves them
         cudaStreamSynchronize(m.cs);
