@@ -158,7 +158,18 @@ Extended to seeds 43/44 (same protocol), the reward margin does **not** reproduc
 | dt + state-every 256 | 0.792 ± 0.042 | **15.5% ± 10.6** |
 | dt (control) | 0.792 ± 0.072 | 7.2% ± 7.6 |
 
-Every run of both arms sits inside the multi-seed needle band; the feature is reward-neutral across seeds while roughly **doubling mean reuse** (2.1×) and halving reward variance. Read FW-2b as a reuse/latency optimization with a safety profile: the 0.500 failure mode of §5.8's single-seed dt run never appears (arm minimum 0.750), and the seed-42 draw where reuse visibly rescued reward (0.750 → 0.833) illustrates the upside when a trajectory's rewrites land where only the state ladder has anchors. Steady-state chain (dt-steady10/10b): answers 160/161/162, C-turn reuse 81.0% @ 10.8 s, cold and append turns identical to pre-FW-2b — the side pool taxes nothing (captures ~105 ms each, host-RAM pool capped at 2 GiB ≈ 10 anchors at needle scale).
+Every run of both arms sits inside the multi-seed needle band; the feature is reward-neutral across seeds while roughly **doubling mean reuse** (2.1×) and halving reward variance.
+
+Re-certifying the other three families on the full FW-2b stack (dt + state-every 256, seed 42) gives the campaign's strongest table:
+
+| family | base .40.3 | dt (P0e) | **dt + state-256 (FW-2b)** |
+|---|---|---|---|
+| needle | 1.000 / 16.1% | 0.500 / 17.0% | 0.792 ± 0.042 / 15.5% (3 seeds) |
+| sudoku | 1.000 / 57.6% | 0.867 / 73.5% | **1.000 / 68.9%** |
+| kv-store | 1.000 / 43.1% | 1.000 / 72.3% | **1.000 / 71.8%** |
+| log-triage | 0.583 / 21.5% | 0.625 / 77.2% | **0.625 / 69.9%** |
+
+Every family at or above its base score, reuse 1.2–4.3× base, and sudoku's single-seed dip is gone. Read FW-2b as a reuse/latency optimization with a safety profile: the 0.500 failure mode of §5.8's single-seed dt run never appears (arm minimum 0.750), and the seed-42 draw where reuse visibly rescued reward (0.750 → 0.833) illustrates the upside when a trajectory's rewrites land where only the state ladder has anchors. Steady-state chain (dt-steady10/10b): answers 160/161/162, C-turn reuse 81.0% @ 10.8 s, cold and append turns identical to pre-FW-2b — the side pool taxes nothing (captures ~105 ms each, host-RAM pool capped at 2 GiB ≈ 10 anchors at needle scale).
 
 ## 6. Purpose in context management (CLM) terms
 
