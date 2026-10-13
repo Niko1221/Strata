@@ -657,7 +657,9 @@ int main(int argc, char** argv) {
             {GGML_TYPE_Q5_K, GGML_TYPE_Q5_1, "Q5_K / Q5_1"},         {GGML_TYPE_Q5_K, GGML_TYPE_Q8_0, "Q5_K / Q8_0"},
             // the Coder IQ1_M pack's other pairs (appended: the default timing set takes pairs 0, 1, 4, 3 by index)
             {GGML_TYPE_IQ2_S, GGML_TYPE_IQ4_NL, "IQ2_S / IQ4_NL"},   {GGML_TYPE_IQ3_XXS, GGML_TYPE_Q2_0, "IQ3_XXS / Q2_0"},
-            {GGML_TYPE_IQ3_S, GGML_TYPE_Q2_0, "IQ3_S / Q2_0"},       {GGML_TYPE_IQ4_XS, GGML_TYPE_IQ4_NL, "IQ4_XS / IQ4_NL"}};
+            {GGML_TYPE_IQ3_S, GGML_TYPE_Q2_0, "IQ3_S / Q2_0"},       {GGML_TYPE_IQ4_XS, GGML_TYPE_IQ4_NL, "IQ4_XS / IQ4_NL"},
+            // the canonical Q2_0 pack (gate/up and down Q2_0; CUDA)
+            {GGML_TYPE_Q2_0, GGML_TYPE_Q2_0, "Q2_0 / Q2_0"}};
         const char* only = nullptr;   // --only=NAME: the pairs whose name contains NAME
         for (int i = 1; i < argc; ++i)
             if (std::strncmp(argv[i], "--only=", 7) == 0) only = argv[i] + 7;
@@ -679,14 +681,20 @@ int main(int argc, char** argv) {
         ck(cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking), "stream");
         for (const Pair& p : pairs) {
             if (only ? std::string(p.name).find(only) == std::string::npos : p.gu == GGML_TYPE_Q4_K || p.gu == GGML_TYPE_Q5_K) continue;
-            if (!fused::native_supported((int) p.gu, (int) p.d))
+            if (!fused::native_supported((int) p.gu, (int) p.d)) {
+                // Turing (STRATA_PF_FUSED_SM75=1) sets up the canonical Q2_0 pack's pair only
+                int major = 0;
+                cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);
+                if (major < 8 && !only) { std::printf("%s: not set up on this device (skipped)\n", p.name); continue; }
                 throw std::runtime_error(std::string(p.name) + ": not covered by the native kernels");
+            }
             if (ref) reference_part(p, s);
         }
         if (timing) {
             // the IQ2_XS pack's layers (34 of 48 IQ2_S / Q2_0, 11 IQ2_XXS / Q2_0), the IQ3_S pack's most common, IQ3_XXS's
             for (const Pair& p : only ? pairs : std::vector<Pair>{pairs[0], pairs[1], pairs[4], pairs[3]}) {
                 if (only && std::string(p.name).find(only) == std::string::npos) continue;
+                if (!fused::native_supported((int) p.gu, (int) p.d)) continue;   // (Turing: the Q2_0 pair only)
                 for (int T : chunks) timing_part(p, T, s);
             }
         }
