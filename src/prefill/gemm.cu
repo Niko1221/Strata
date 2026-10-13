@@ -387,24 +387,26 @@ bool prompt_f16() {
     int dev = 0;
     if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= kMaxDev) { (void) hipGetLastError(); return false; }
     if (const int8_t c = cached[dev].load(std::memory_order_relaxed)) return c == 2;
-    // Opt-in (#835): `1` enables FP16 prompt GEMMs only on gfx103x, where rocBLAS is tuned for them. On ROCm 7.2,
-    // same-mode GEMMs reproduced hipErrorNoBinaryForGpu when a mixed-gfx split returned to gfx1201 after gfx103x.
-    // Keep gfx120x on BF16; `all` is an explicit override. FP16 changes each GEMM's rounding.
+    // Opt-in (#835): preserve `1` as FP16-in/FP16-out on every HIP device. `gfx103x` is the
+    // architecture-filtered option for mixed layer splits: gfx103x uses FP16 while other devices retain BF16.
+    // On ROCm 7.2, the mixed gfx1201/gfx1031 run reproduced hipErrorNoBinaryForGpu after switching devices;
+    // `gfx103x` is the validated workaround on that pair, not proof of a universal root cause or fix.
+    // `all` remains an alias for the historical `1` setting. FP16 changes each GEMM's rounding.
     const char* e = std::getenv("STRATA_HIP_PROMPT_F16");
     hipDeviceProp_t p{};
     if (hipGetDeviceProperties(&p, dev) != hipSuccess) { (void) hipGetLastError(); p.gcnArchName[0] = 0; }
     const bool gfx103x = std::strncmp(p.gcnArchName, "gfx103", 6) == 0;
-    const bool all = e != nullptr && std::strcmp(e, "all") == 0;
-    const bool requested = e != nullptr && e[0] == '1';
-    const bool on = all || (requested && gfx103x);
+    const bool all = e != nullptr && (std::strcmp(e, "1") == 0 || std::strcmp(e, "all") == 0);
+    const bool gfx103x_only = e != nullptr && std::strcmp(e, "gfx103x") == 0;
+    const bool on = all || (gfx103x_only && gfx103x);
     if (on) std::fprintf(stderr, "strata prefill: HIP device %d%s%s - STRATA_HIP_PROMPT_F16=%s: the prompt's 16-bit GEMMs run FP16 in and out "
                                  "(rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)%s",
-                         dev, p.gcnArchName[0] ? " " : "", p.gcnArchName, all ? "all" : "1", "\n");
-    else if (requested && !gfx103x)
-        std::fprintf(stderr, "strata prefill: HIP device %d%s%s - STRATA_HIP_PROMPT_F16=1 ignored; enabled only on gfx103x (use all to override)\n",
+                         dev, p.gcnArchName[0] ? " " : "", p.gcnArchName, e, "\n");
+    else if (gfx103x_only)
+        std::fprintf(stderr, "strata prefill: HIP device %d%s%s - STRATA_HIP_PROMPT_F16=gfx103x ignored; this device keeps BF16\n",
                      dev, p.gcnArchName[0] ? " " : "", p.gcnArchName);
     else if (e == nullptr && gfx103x)
-        std::fprintf(stderr, "strata prefill: HIP device %d %s - tip: STRATA_HIP_PROMPT_F16=1 reads long prompts about 2x faster here "
+        std::fprintf(stderr, "strata prefill: HIP device %d %s - tip: STRATA_HIP_PROMPT_F16=gfx103x reads long prompts about 2x faster here "
                              "(FP16 prompt GEMMs, rocBLAS is tuned only for FP16 on gfx103x; the numbers differ slightly, see docs/AMD_HIP.md)%s",
                      dev, p.gcnArchName, "\n");
     cached[dev].store(on ? 2 : 1, std::memory_order_relaxed);

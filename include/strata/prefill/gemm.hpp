@@ -89,10 +89,11 @@ private:
     void f16_inplace(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy);
 };
 
-/// HIP on gfx103x (RDNA2), for the current device: rocBLAS's tuned GEMMs there are FP16 in -> FP16 out only (FP16 or
-/// BF16 in -> FP32 out runs ~6x slower), so the prompt path's 16-bit GEMMs run in FP16 (Gemm::set_f16_io,
-/// set_act_f16). Cached per device (a layer split can mix cards). `STRATA_HIP_PROMPT_F16=1` enables gfx103x only;
-/// `=0` disables it and `=all` is an explicit all-device override.
+/// HIP prompt GEMM precision for the current device, cached per device (a layer split can mix cards).
+/// `STRATA_HIP_PROMPT_F16=1` preserves the historical all-device FP16 mode; `=gfx103x` selects FP16 only on gfx103x
+/// and leaves other architectures on BF16; `=0` disables FP16. On gfx103x, rocBLAS is tuned for FP16-in/FP16-out
+/// GEMMs (BF16/FP32-out is much slower), while the architecture-filtered setting avoids forcing that mode onto a
+/// different device in a mixed split.
 bool prompt_f16();
 
 

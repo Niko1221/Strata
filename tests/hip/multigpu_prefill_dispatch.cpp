@@ -34,27 +34,44 @@ bool compiled_for(const char* arch) {
 struct DeviceBuffers {
     int ordinal = -1;
     std::string arch;
+    bool f16_io = false;
     cudaStream_t stream = nullptr;
     float* input = nullptr;
     uint16_t* output = nullptr;
 };
 
-bool setup(DeviceBuffers& d, int ordinal) {
+bool finite_16(uint16_t bits, bool f16) {
+    const uint16_t exponent = f16 ? 0x7c00u : 0x7f80u;
+    return (bits & exponent) != exponent;
+}
+
+bool finite_encoding_tests() {
+    return finite_16(0x3c00u, true) && finite_16(0x7bffu, true) && !finite_16(0x7c00u, true) &&
+           !finite_16(0xfc00u, true) && !finite_16(0x7e00u, true) && finite_16(0x3f80u, false) &&
+           finite_16(0x7c00u, false) && finite_16(0x7f7fu, false) && !finite_16(0x7f80u, false) &&
+           !finite_16(0xff80u, false) && !finite_16(0x7fc1u, false);
+}
+
+bool expected_f16(const std::string& mode, const std::string& arch) {
+    return mode == "1" || (mode == "gfx103x" && arch.compare(0, 6, "gfx103") == 0);
+}
+
+bool setup(DeviceBuffers& d, int ordinal, const std::string& mode) {
     cudaDeviceProp prop{};
     if (cudaSetDevice(ordinal) != cudaSuccess || cudaGetDeviceProperties(&prop, ordinal) != cudaSuccess) return false;
     if (!compiled_for(prop.gcnArchName)) return true; // this executable intentionally skips unrelated visible devices
     d.ordinal = ordinal;
     d.arch = prop.gcnArchName;
-    const bool f16_io = strata::prefill::prompt_f16();
-    const bool expected_f16 = d.arch.compare(0, 6, "gfx103") == 0;
-    if (f16_io != expected_f16) {
-        std::fprintf(stderr, "HIP device %d (%s): expected prompt mode %s, got %s\n", ordinal, d.arch.c_str(),
-                     expected_f16 ? "FP16" : "BF16", f16_io ? "FP16" : "BF16");
+    d.f16_io = strata::prefill::prompt_f16();
+    const bool expect_f16 = expected_f16(mode, d.arch);
+    if (d.f16_io != expect_f16) {
+        std::fprintf(stderr, "HIP device %d (%s), STRATA_HIP_PROMPT_F16=%s: expected %s, got %s\n", ordinal,
+                     d.arch.c_str(), mode.c_str(), expect_f16 ? "FP16" : "BF16", d.f16_io ? "FP16" : "BF16");
         return false;
     }
-    strata::prefill::set_act_f16(f16_io);
+    strata::prefill::set_act_f16(d.f16_io);
     std::printf("HIP device %d (%s): effective prompt GEMM mode %s\n", ordinal, d.arch.c_str(),
-                f16_io ? "FP16-in/FP16-out" : "BF16-in/FP32-out");
+                d.f16_io ? "FP16-in/FP16-out" : "BF16-in/FP32-out");
     if (cudaStreamCreateWithFlags(&d.stream, cudaStreamNonBlocking) != cudaSuccess ||
         cudaMalloc(&d.input, (size_t) kTokens * kLr * sizeof(float)) != cudaSuccess ||
         cudaMalloc(&d.output, (size_t) kTokens * kLr * sizeof(uint16_t)) != cudaSuccess)
@@ -79,7 +96,7 @@ bool run(DeviceBuffers& d, const char* phase) {
     if (cudaMemcpy(output.data(), d.output, output.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost) != cudaSuccess)
         return false;
     for (uint16_t v : output)
-        if ((v & 0x7f80u) == 0x7f80u) { // finite inputs must not produce NaNs or infinities
+        if (!finite_16(v, d.f16_io)) { // test the exponent layout used by this device's FP16/BF16 activation image
             std::fprintf(stderr, "HIP device %d (%s), %s: non-finite output\n", d.ordinal, d.arch.c_str(), phase);
             return false;
         }
@@ -97,14 +114,23 @@ void release(DeviceBuffers& d) {
 }
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    const std::string mode = argc > 1 ? argv[1] : "gfx103x";
+    if (mode != "0" && mode != "1" && mode != "gfx103x") {
+        std::fprintf(stderr, "usage: %s [0|1|gfx103x]\n", argv[0]);
+        return 2;
+    }
 #if defined(_WIN32)
-    const bool env_ok = _putenv_s("STRATA_HIP_PROMPT_F16", "1") == 0;
+    const bool env_ok = _putenv_s("STRATA_HIP_PROMPT_F16", mode.c_str()) == 0;
 #else
-    const bool env_ok = setenv("STRATA_HIP_PROMPT_F16", "1", 1) == 0;
+    const bool env_ok = setenv("STRATA_HIP_PROMPT_F16", mode.c_str(), 1) == 0;
 #endif
     if (!env_ok) {
-        std::puts("could not set STRATA_HIP_PROMPT_F16=1 for the per-device regression");
+        std::fprintf(stderr, "could not set STRATA_HIP_PROMPT_F16=%s for the per-device regression\n", mode.c_str());
+        return 1;
+    }
+    if (!finite_encoding_tests()) {
+        std::puts("FP16/BF16 finite-value exponent checks failed");
         return 1;
     }
     int count = 0;
@@ -115,7 +141,7 @@ int main() {
     std::vector<DeviceBuffers> devices;
     for (int i = 0; i < count; ++i) {
         DeviceBuffers d;
-        if (!setup(d, i)) {
+        if (!setup(d, i, mode)) {
             std::fprintf(stderr, "could not initialize HIP device %d\n", i);
             for (auto& x : devices) release(x);
             return 1;

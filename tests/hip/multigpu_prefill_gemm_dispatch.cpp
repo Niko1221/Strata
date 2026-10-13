@@ -3,7 +3,10 @@
 #include "strata/prefill/kernels.hpp"
 
 #include <cuda_runtime.h>
+#include <hip/hip_bfloat16.h>
+#include <hip/hip_fp16.h>
 
+#include <algorithm>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
@@ -13,6 +16,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 constexpr int kTokens = 8192;
@@ -67,21 +71,86 @@ bool init_buffers(DeviceState& d, int ordinal) {
     return true;
 }
 
-bool enable_prompt_f16_opt_in() {
-#if defined(_WIN32)
-    return _putenv_s("STRATA_HIP_PROMPT_F16", "1") == 0;
-#else
-    return setenv("STRATA_HIP_PROMPT_F16", "1", 1) == 0;
-#endif
+uint16_t to_bf16(float value) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    bits += 0x7fffu + ((bits >> 16) & 1u);
+    return static_cast<uint16_t>(bits >> 16);
 }
 
-bool init_gemm(DeviceState& d) {
+float from_bf16(uint16_t value) {
+    const uint32_t bits = static_cast<uint32_t>(value) << 16;
+    float result = 0.0f;
+    std::memcpy(&result, &bits, sizeof(result));
+    return result;
+}
+
+uint16_t to_f16(float value) {
+    const __half half = __float2half_rn(value);
+    uint16_t bits = 0;
+    std::memcpy(&bits, &half, sizeof(bits));
+    return bits;
+}
+
+float from_f16(uint16_t value) {
+    __half half;
+    std::memcpy(&half, &value, sizeof(value));
+    return __half2float(half);
+}
+
+bool check_cpu_reference(DeviceState& d, bool f16_io) {
+    constexpr int t = 5, n = 19, k = 128;
+    std::vector<uint16_t> x((size_t) t * k), w((size_t) n * k);
+    std::vector<float> xf(x.size()), wf(w.size());
+    for (size_t i = 0; i < x.size(); ++i) {
+        const float source = (static_cast<int>((i * 17 + 3) % 101) - 50) / 200.0f;
+        x[i] = f16_io ? to_f16(source) : to_bf16(source);
+        xf[i] = f16_io ? from_f16(x[i]) : from_bf16(x[i]);
+    }
+    for (size_t i = 0; i < w.size(); ++i) {
+        const float source = (static_cast<int>((i * 29 + 7) % 97) - 48) / 250.0f;
+        w[i] = to_bf16(source);
+        wf[i] = from_bf16(w[i]);
+    }
+    if (cudaMemcpyAsync(d.x, x.data(), x.size() * sizeof(uint16_t), cudaMemcpyHostToDevice, d.stream) != cudaSuccess ||
+        cudaMemcpyAsync(d.w, w.data(), w.size() * sizeof(uint16_t), cudaMemcpyHostToDevice, d.stream) != cudaSuccess)
+        return false;
+    d.gemm->bf16(d.x, d.w, d.y, t, n, k, n);
+    if (cudaStreamSynchronize(d.stream) != cudaSuccess) return false;
+    std::vector<float> got((size_t) t * n);
+    if (cudaMemcpy(got.data(), d.y, got.size() * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+
+    double diff2 = 0.0, ref2 = 0.0, maximum = 0.0;
+    bool finite = true;
+    for (int row = 0; row < t; ++row)
+        for (int col = 0; col < n; ++col) {
+            double ref = 0.0;
+            for (int i = 0; i < k; ++i)
+                ref += (double) xf[(size_t) row * k + i] * wf[(size_t) col * k + i];
+            const double delta = (double) got[(size_t) row * n + col] - ref;
+            finite = finite && std::isfinite(got[(size_t) row * n + col]);
+            diff2 += delta * delta;
+            ref2 += ref * ref;
+            maximum = std::max(maximum, std::abs(delta));
+        }
+    const double rel = std::sqrt(diff2 / std::max(ref2, 1e-300));
+    const double rel_limit = f16_io ? 2e-3 : 1e-4;
+    const bool ok = finite && ref2 > 0.0 && rel < rel_limit && maximum < 5e-3;
+    std::printf("device %d (%s): nontrivial %s GEMM vs CPU %s rel_l2=%.3g max_abs=%.3g\n", d.ordinal,
+                d.arch.c_str(), f16_io ? "FP16-out" : "BF16-in/FP32-out", ok ? "PASS" : "FAIL", rel, maximum);
+    const bool cleared = cudaMemsetAsync(d.x, 0, x.size() * sizeof(uint16_t), d.stream) == cudaSuccess &&
+                         cudaMemsetAsync(d.w, 0, w.size() * sizeof(uint16_t), d.stream) == cudaSuccess &&
+                         cudaStreamSynchronize(d.stream) == cudaSuccess;
+    return ok && cleared;
+}
+
+bool init_gemm(DeviceState& d, const std::string& mode) {
     if (cudaSetDevice(d.ordinal) != cudaSuccess) return false;
     const bool f16_io = strata::prefill::prompt_f16();
-    const bool expected_f16 = d.arch.compare(0, 6, "gfx103") == 0;
-    if (f16_io != expected_f16) {
-        std::fprintf(stderr, "device %d (%s): STRATA_HIP_PROMPT_F16=1 selected %s; expected %s\n", d.ordinal,
-                     d.arch.c_str(), f16_io ? "FP16" : "BF16", expected_f16 ? "FP16" : "BF16");
+    const bool expected = mode == "1" || (mode == "gfx103x" && d.arch.compare(0, 6, "gfx103") == 0);
+    if (f16_io != expected) {
+        std::fprintf(stderr, "device %d (%s): STRATA_HIP_PROMPT_F16=%s selected %s; expected %s\n", d.ordinal,
+                     d.arch.c_str(), mode.c_str(), f16_io ? "FP16" : "BF16", expected ? "FP16" : "BF16");
         return false;
     }
     strata::prefill::set_act_f16(f16_io);
@@ -94,7 +163,7 @@ bool init_gemm(DeviceState& d) {
         return false;
     }
     d.gemm->set_f16_io(f16_io);
-    return true;
+    return check_cpu_reference(d, f16_io);
 }
 
 bool step(DeviceState& d, int count, const char* phase) {
@@ -156,9 +225,20 @@ void release(DeviceState& d) {
 }
 } // namespace
 
-int main() {
-    if (!enable_prompt_f16_opt_in()) {
-        std::puts("could not set STRATA_HIP_PROMPT_F16=1 for the per-device regression");
+int main(int argc, char** argv) {
+    const std::string mode = argc > 1 ? argv[1] : "gfx103x";
+    const bool reference_only = argc > 2 && std::strcmp(argv[2], "--reference-only") == 0;
+    if ((mode != "0" && mode != "1" && mode != "gfx103x") || argc > (reference_only ? 3 : 2)) {
+        std::fprintf(stderr, "usage: %s [0|1|gfx103x] [--reference-only]\n", argv[0]);
+        return 2;
+    }
+#if defined(_WIN32)
+    const bool env_ok = _putenv_s("STRATA_HIP_PROMPT_F16", mode.c_str()) == 0;
+#else
+    const bool env_ok = setenv("STRATA_HIP_PROMPT_F16", mode.c_str(), 1) == 0;
+#endif
+    if (!env_ok) {
+        std::fprintf(stderr, "could not set STRATA_HIP_PROMPT_F16=%s for the per-device regression\n", mode.c_str());
         return 1;
     }
     int count = 0;
@@ -196,13 +276,22 @@ int main() {
         release(first);
         return 1;
     }
+    if (reference_only) {
+        const bool first_ok = init_gemm(first, mode);
+        first.gemm.reset();
+        const bool second_ok = init_gemm(second, mode);
+        second.gemm.reset();
+        release(second);
+        release(first);
+        return first_ok && second_ok ? 0 : 1;
+    }
 
     std::mutex mutex;
     std::condition_variable cv;
     bool first_done = false, second_done = false;
     bool first_ok = false, second_ok = false, return_ok = false;
     std::thread first_thread([&] {
-        first_ok = init_gemm(first) && step(first, 43, "first stage");
+        first_ok = init_gemm(first, mode) && step(first, 43, "first stage");
         std::unique_lock<std::mutex> lock(mutex);
         first_done = true;
         cv.notify_all();
@@ -216,7 +305,7 @@ int main() {
             std::unique_lock<std::mutex> lock(mutex);
             cv.wait(lock, [&] { return first_done; });
         }
-        second_ok = init_gemm(second) && step(second, 5, "second stage");
+        second_ok = init_gemm(second, mode) && step(second, 5, "second stage");
         std::lock_guard<std::mutex> lock(mutex);
         second_done = true;
         cv.notify_all();

@@ -1,6 +1,5 @@
 // BF16/F16 prefill through the actual engine GEMM path against a CPU reference.
 #include <hip/hip_runtime.h>
-#include <hip/hip_bfloat16.h>
 #include <hip/hip_fp16.h>
 #include "strata/prefill/gemm.hpp"
 #include <algorithm>
@@ -29,10 +28,14 @@ bool run(strata::prefill::Gemm& gemm, hipStream_t stream, bool bf16,
     auto fill = [&](auto& bits, auto& values) {
         for (size_t i = 0; i < bits.size(); ++i) {
             if (bf16) {
-                const hip_bfloat16 v(dist(rng));
-                bits[i] = v.data;
-                const uint32_t wide = static_cast<uint32_t>(v.data) << 16;
-                std::memcpy(&values[i], &wide, 4);
+                // Construct BF16 bits on the host: HIP's host-side hip_bfloat16(float) varies across ROCm versions.
+                const float source = dist(rng);
+                uint32_t raw = 0;
+                std::memcpy(&raw, &source, sizeof(raw));
+                raw += 0x7fffu + ((raw >> 16) & 1u);  // round to nearest, ties to even
+                bits[i] = static_cast<uint16_t>(raw >> 16);
+                const uint32_t wide = static_cast<uint32_t>(bits[i]) << 16;
+                std::memcpy(&values[i], &wide, sizeof(wide));
             } else {
                 const __half v = __float2half_rn(dist(rng));
                 std::memcpy(&bits[i], &v, 2);
@@ -68,7 +71,8 @@ bool run(strata::prefill::Gemm& gemm, hipStream_t stream, bool bf16,
     }
     for (size_t j=0;j<got.size();++j) if (!active[j]) ok=ok && got[j]==initial[j];
     const double rel=std::sqrt(diff2/std::max(ref2,1e-300));
-    ok=ok && rel<1e-4 && maximum<5e-3;
+    // Nontrivial quantized inputs are checked against a CPU double-precision dot product of the stored values.
+    ok=ok && ref2>0.0 && rel<1e-4 && maximum<5e-3;
     std::printf("%s %s T=%d N=%d K=%d ldy=%d beta=%.1f rel_l2=%.3g max_abs=%.3g\n",
                 ok?"PASS":"FAIL",bf16?"BF16":"F16",t,n,k,ldy,beta,rel,maximum);
     return ok;

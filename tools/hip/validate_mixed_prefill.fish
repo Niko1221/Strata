@@ -2,7 +2,7 @@
 # Build the HIP engine/regression tests, then run long prompts plus same-chat follow-ups.
 
 if test (count $argv) -lt 1
-    echo "Usage: tools/hip/validate_mixed_prefill.fish <local-server-config.json> [build-dir] [--image <local-image>] [--ple-batch 0|1]" >&2
+    echo "Usage: tools/hip/validate_mixed_prefill.fish <local-server-config.json> [build-dir] [--image <local-image>] [--ple-batch 0|1] [--prompt-f16 0|1|gfx103x]" >&2
     exit 2
 end
 
@@ -37,7 +37,7 @@ if test $status -ne 0
     exit $status
 end
 
-ctest --test-dir "$build_dir" --output-on-failure -R '^hip_multigpu_prefill_(dispatch|gemm_dispatch)$'
+ctest --test-dir "$build_dir" --output-on-failure -R '^hip_(multigpu_prefill_(dispatch_(0|1|gfx103x)|gemm_(reference_(0|1|gfx103x)|dispatch_gfx103x))|validate_mixed_prefill_python)$'
 if test $status -ne 0
     exit $status
 end

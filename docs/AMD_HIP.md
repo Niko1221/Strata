@@ -437,46 +437,70 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
 - **hipBLASLt:** ROCm's hipBLASLt ships no gfx1030 kernels, so there is no table and the plain hipBLAS path runs.
 - **Prompt GEMMs in FP16 (#835):** rocBLAS on gfx1030 has tuned kernels for FP16-in / FP16-out GEMMs only; the prompt
   path's FP16-in / FP32-out and BF16 products ran generic kernels about 6.6x slower (5.6 and ~5.3 TFLOPS against 37.7 at
-  N = 10240, T = 7313, K = 2560). `STRATA_HIP_PROMPT_F16=1` (opt-in, off by default; the engine prints a tip on gfx103x) runs the 16-bit prompt GEMMs FP16 in and out on gfx103x only;
-  other architectures keep the BF16 path. `=all` explicitly overrides that device filter. `STRATA_DBG_NAN=1` also counts the non-finite FP16 outputs (a sum past 65504). The output is not bit-identical to it (an FP16 rounding of each GEMM's output replaces the BF16 rounding of
-  the BF16 GEMMs' activations); what the distribution check showed and did not show is in
-  [bench/results/2026-10-04-rdna2-fp16-prompt](../bench/results/2026-10-04-rdna2-fp16-prompt/README.md). Measured on a
-  second community machine - 2x RX 6900 XT 16 GB (one card for these numbers), Ryzen 5 5600X (6 cores, AVX2), 128 GB,
-  Ubuntu 26.04, ROCm 10.0.0, engine 0.1.39 built by hand with `-DSTRATA_PREFILL_MMQ=ON` as setup does, GSQ-RCO IQ3_S:
-  a 9.4K / 34.7K / 105.8K-token prompt reads at 744 / 915 / 926 tok/s instead of 439 / 466 / 461; decode is unchanged.
-  On that machine the HIP ctest passes 60 of 65 with and without this change: 2 skipped (`hip_prompt_attn_wmma`, no
-  matrix cores; `hip_prefill_hipblaslt_gemm`, no hipBLASLt table) and 3 that fail for reasons outside the engine
-  (`ple_parity` needs a Q2_0 PLE file that is not on that machine, `expert_multi_test` refuses the CPU without AVX-512,
-  `platform_memory_test` cannot `mlock` at the shell's default `ulimit -l`).
-- **Mixed-architecture layer splits (#690/#703):** On our RX 9070 XT (`gfx1201`) + RX 6750 XT (`gfx1031`), ROCm
-  HIP 7.2.53211 reproduced `hipErrorNoBinaryForGpu` in a hipBLAS GEMM after the layer split switched devices. With
-  `STRATA_HIP_PROMPT_F16=1`, the prompt now selects FP16-in/FP16-out on gfx103x only; gfx120x stays on BF16-in/FP32-out.
-  `=all` remains an explicit override and is not suitable for this mixed pair. HIP BLAS failures now report their
-  status, pending runtime error, active device/architecture and stream device; GR SiLU and native PLE checks identify
-  pending errors before blaming the next kernel. The extra per-kernel PLE launch checks are HIP-only; CUDA retains its
-  previous check points and error text.
+  N = 10240, T = 7313, K = 2560). `STRATA_HIP_PROMPT_F16=1` retains its historical meaning: use FP16-in / FP16-out
+  prompt GEMMs on every HIP device. `=0` disables that mode; `=gfx103x` selects it only on gfx103x and leaves other
+  architectures on BF16; `=all` remains an alias for the all-device `=1` behavior. All settings are opt-in except the
+  existing startup tip on gfx103x. `STRATA_DBG_NAN=1` counts non-finite values after the FP16-output GEMM path. The
+  mixed-device dispatch regression classifies activation bits with the right exponent mask for each format (FP16
+  `0x7c00`, BF16 `0x7f80`) and includes NaN and both infinities in its checks. FP16 and BF16 are not bit-identical:
+  FP16 rounds GEMM outputs before widening them, and its activation image has 11 significant bits and maximum finite
+  65,504, versus BF16's 8 significant bits and maximum finite about 3.4e38. The existing distribution check showed
+  and did not show is in [bench/results/2026-10-04-rdna2-fp16-prompt](../bench/results/2026-10-04-rdna2-fp16-prompt/README.md).
+  Measured on a second community machine - 2x RX 6900 XT 16 GB (one card for these numbers), Ryzen 5 5600X (6 cores,
+  AVX2), 128 GB, Ubuntu 26.04, ROCm 10.0.0, engine 0.1.39 built by hand with `-DSTRATA_PREFILL_MMQ=ON` as setup
+  does, GSQ-RCO IQ3_S: a 9.4K / 34.7K / 105.8K-token prompt reads at 744 / 915 / 926 tok/s instead of 439 / 466 /
+  461; decode is unchanged. On that machine the HIP ctest passes 60 of 65 with and without this change: 2 skipped
+  (`hip_prompt_attn_wmma`, no matrix cores; `hip_prefill_hipblaslt_gemm`, no hipBLASLt table) and 3 that fail for
+  reasons outside the engine (`ple_parity` needs a Q2_0 PLE file that is not on that machine, `expert_multi_test`
+  refuses the CPU without AVX-512, `platform_memory_test` cannot `mlock` at the shell's default `ulimit -l`).
+- **Mixed-architecture layer splits (#690/#703):** the observed failure is `hipErrorNoBinaryForGpu` during a hipBLAS
+  GEMM after a layer split switches devices. The workaround validated so far is `STRATA_HIP_PROMPT_F16=gfx103x`:
+  FP16-in / FP16-out on gfx103x, BF16-in / FP32-out on other architectures. `=1` is deliberately not this workaround:
+  it preserves the previous all-device FP16 behavior, which is also tested; `=0` leaves all devices on BF16. Do not
+  describe the issue as universally resolved. On the tested RX 9070 XT (`gfx1201`) + RX 6750 XT (`gfx1031`) pair,
+  with ROCm HIP 7.2.53211, the filtered setting completed the mixed-device regressions and long-prompt validation.
+  HIP BLAS failures report their status, pending runtime error, active device/architecture and stream device; GR SiLU
+  and native PLE checks identify pending errors at their launch boundaries. The extra per-kernel PLE launch checks are
+  HIP-only; CUDA retains its previous check points and error text.
 
-  Validation on this pair used a HIP build for `gfx1201;gfx1031`, an IQ3_S model, 131,072 context, auto layer split,
-  PLE and MTP enabled, `STRATA_PLE_BATCH=0`, and a generated 128x128 RGB image. Both new regressions and three
-  adjacent HIP prefill tests passed (5/5). The runner then completed the 16K text, 49K image+text, and 80K text prompts
-  with same-conversation follow-ups.
-  API prompt usage was 16,448 / 16,493; 49,234 / 49,278; and 80,064 / 80,109 tokens (initial / follow-up).
+  **What is established:** on that pair and ROCm version, the dispatch and per-device GEMM-reference CTests exercise
+  `STRATA_HIP_PROMPT_F16=0`, `=1`, and `=gfx103x`, with separate processes for each cached mode. For all three modes,
+  each card's nonzero GEMM output is compared with a CPU double-precision reference. The cross-device GEMM/GR return
+  sequence is tested only with `=gfx103x`; the `=0` and `=1` checks do not claim those settings are workarounds for the
+  reported mixed-device failure. The BF16-in / FP32-out check requires relative L2 error below `1e-4` and maximum
+  absolute error below `5e-3`; the FP16-output check allows relative L2 error below `2e-3` and uses the same absolute
+  bound. Those are test tolerances for small generated matrices, not proof of model-output equivalence. An earlier
+  image run used this filtered per-device policy under its then-current `=1` spelling (the current spelling is
+  `=gfx103x`), on IQ3_S at 131,072 context with auto layer split, PLE and MTP enabled, `STRATA_PLE_BATCH=0`, and a
+  generated 128x128 RGB image. It completed 16K text, 49K image+text, and 80K text prompts with same-conversation
+  follow-ups. API prompt usage was 16,448 / 16,493; 49,234 / 49,278; and 80,064 / 80,109 tokens (initial / follow-up).
   Every request had nonzero MTP drafts (24-49) and accepts (14-27); PLE and the vision encoder loaded. Five responses
   ended with `finish_reason=stop`; the 49K follow-up reached the requested 64-token output cap. The engine log showed
-  matching device/stream IDs for both architectures, gfx1031 on FP16 and gfx1201 on BF16, and no kernel-image or
-  hipBLAS/runtime error. These are local results on this pair and stack, not a speed or quality comparison.
+  matching device/stream IDs, gfx1031 on FP16 and gfx1201 on BF16, with no kernel-image or hipBLAS/runtime error. A
+  fresh text-only run with explicit `=gfx103x` completed all six 16K/49K/80K initial and follow-up requests (API prompt
+  usage 16,448 / 16,497; 49,216 / 49,261; 80,064 / 80,109); every call had nonzero MTP drafts and accepts, PLE stayed
+  on, and no HIP BLAS or kernel-image error was logged. These results are local to the tested pair and stack, not a
+  speed or quality comparison.
   Run `fish tools/hip/validate_mixed_prefill.fish <local-server-config.json> [build-dir] --image <local-image>` to
-  repeat; `--ple-batch 0` matches the configuration above. The runner uses a temporary server config, binds only to
-  `127.0.0.1`, and retains logs and JSON results under `/tmp`; it does not alter the supplied config, GGUFs or install.
-  A synthetic image validates multimodal routing, not the original image or exact 49,044-token request from the issue.
+  repeat; `--ple-batch 0` matches this configuration. Add `--prompt-f16 0|1|gfx103x` to choose the mode for the
+  long-run check (default `gfx103x`). The runner uses a temporary server config, binds only to `127.0.0.1`, and keeps
+  logs/results under `/tmp`; it does not change the supplied config, GGUFs or install. Without `--image`, it removes
+  `--vision` and its optional value from the temporary engine args. A synthetic image validates multimodal routing,
+  not the original image or exact 49,044-token request from the issue.
 
-  FP16 is not bit-identical to BF16: both modes accumulate in FP32, but FP16 mode rounds GEMM outputs to FP16 before
-  widening them, and uses FP16 activation images (11 significant bits, maximum finite 65,504) instead of BF16 images
-  (8 significant bits, maximum finite about 3.4e38). In a separate gfx1030 / ROCm 10.0 IQ3_S distribution test, no
-  values exceeded the FP16 range in 110K tokens; against a BF16X2 reference, FP16 had lower median KL and higher
-  argmax agreement in all three prompt lengths, but lower mean KL in only two of three. That test used a different
-  GPU, ROCm and engine version; it does not establish quality parity for the mixed pair. See
-  [the full precision measurements](../bench/results/2026-10-04-rdna2-fp16-prompt/README.md).
+  **What remains a hypothesis:** the failure may involve rocBLAS's selected kernel/code object or runtime state when
+  execution alternates between different GPU architectures. The error was observed at the GEMM boundary, but the
+  underlying library/runtime cause has not been isolated; this workaround does not prove the hypothesis or fix every
+  mixed-GPU configuration. In particular, RX 7900 XT (`gfx1100`) + RX 6800 (`gfx1030`) still needs validation, as do
+  other ROCm releases and mixed pairs.
+
+  **Numerical limitation:** FP16 and BF16 products can differ because their inputs and GEMM outputs round differently.
+  Passing the bounded CPU matrix tests demonstrates that these test matrices are computed within the stated tolerances;
+  it does not demonstrate bitwise identity, equal model quality, or interchangeable generated answers. In a separate
+  gfx1030 / ROCm 10.0 IQ3_S distribution test, no values exceeded the FP16 range in 110K tokens; against a BF16X2
+  reference, FP16 had lower median KL and higher argmax agreement in all three prompt lengths, but lower mean KL in
+  only two of three. That test used a different GPU, ROCm and engine version and cannot establish precision parity for
+  this mixed pair. See [the full precision measurements](../bench/results/2026-10-04-rdna2-fp16-prompt/README.md).
 - **gfx1031** (RX 6700 XT, #524): setup knows it (the `gfx103X-all` wheels, unvalidated); its reporter runs it daily
   on one card. More reports: an RX 6700 XT 12 GB run as gfx1030 on ROCm 7.2.4 (#1027: IQ2_XS, decode 30-32 tok/s, prompt about 300 tok/s, 6 of 6
   needles), and an RX 6800M 12 GB on Windows with a self-built engine (#915, #1078: Q2_0, decode 9-27 tok/s, prompt 50-114 tok/s; the

@@ -62,6 +62,25 @@ def tail(path: pathlib.Path, lines: int = 35) -> str:
         return "(log not available)"
 
 
+def without_vision_args(args: list[str]) -> list[str]:
+    """Remove --vision and its optional value when running the text-only regression."""
+    result: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--vision":
+            i += 1
+            if i < len(args) and not args[i].startswith("--"):
+                i += 1
+            continue
+        if arg.startswith("--vision="):
+            i += 1
+            continue
+        result.append(arg)
+        i += 1
+    return result
+
+
 def validate_config(cfg: dict) -> None:
     args = cfg.get("args", [])
     if cfg.get("backend", "hip") != "hip":
@@ -86,6 +105,8 @@ def main() -> int:
     parser.add_argument("--engine", required=True, type=pathlib.Path, help="new HIP engine binary")
     parser.add_argument("--startup-timeout", type=int, default=600)
     parser.add_argument("--request-timeout", type=int, default=1800)
+    parser.add_argument("--prompt-f16", choices=("0", "1", "gfx103x"), default="gfx103x",
+                        help="HIP prompt precision policy to validate (default: gfx103x, filtered mixed-GPU mode)")
     parser.add_argument("--image", type=pathlib.Path,
                         help="optional local image: run a 49K multimodal prompt and same-chat follow-up")
     parser.add_argument("--ple-batch", choices=("0", "1"), default="1",
@@ -113,16 +134,18 @@ def main() -> int:
         image_path = opts.image.expanduser().resolve()
         if not image_path.is_file():
             raise RuntimeError(f"local test image not found: {image_path}")
-        if not cfg.get("vision") or "--vision" not in cfg.get("args", []):
+        vision_args = cfg.get("args", [])
+        if not cfg.get("vision") or not any(arg == "--vision" or arg.startswith("--vision=") for arg in vision_args):
             raise RuntimeError("--image requires the config's vision settings and --vision engine option")
         mime = mimetypes.guess_type(image_path.name)[0] or "application/octet-stream"
         image_url = f"data:{mime};base64,{base64.b64encode(image_path.read_bytes()).decode('ascii')}"
     else:
         # The default regression is text-only; do not start the optional image encoder unnecessarily.
         cfg.pop("vision", None)
-        cfg["args"] = [arg for arg in cfg.get("args", []) if arg != "--vision"]
+        cfg["args"] = without_vision_args(cfg.get("args", []))
     env = cfg.setdefault("env", {})
-    env.update({"STRATA_TRACE": "1", "STRATA_HIP_PROMPT_F16": "1", "STRATA_PLE_BATCH": opts.ple_batch})
+    env.update({"STRATA_TRACE": "1", "STRATA_HIP_PROMPT_F16": opts.prompt_f16,
+                "STRATA_PLE_BATCH": opts.ple_batch})
     temp_config = work / "server-config.json"
     temp_config.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
@@ -214,14 +237,25 @@ def main() -> int:
         if not re.search(r"HIP device (\d+) gfx12\S*, stream device \1", engine_log) or not re.search(
                 r"HIP device (\d+) gfx103\S*, stream device \1", engine_log):
             raise RuntimeError("the prompt did not use matching HIP devices/streams on gfx12 and gfx103x; see engine.log")
-        if not re.search(r"HIP device \d+ gfx12\S* - STRATA_HIP_PROMPT_F16=1 ignored", engine_log):
-            raise RuntimeError("STRATA_HIP_PROMPT_F16=1 was not ignored on the gfx12 device; see engine.log")
-        if not re.search(r"HIP device \d+ gfx103\S* - STRATA_HIP_PROMPT_F16=1:", engine_log):
-            raise RuntimeError("STRATA_HIP_PROMPT_F16=1 did not enable FP16 on the gfx103x device; see engine.log")
+        f16_log = "the prompt's 16-bit GEMMs run FP16 in and out"
+        gfx12_enabled = re.search(r"HIP device \d+ gfx12\S* - STRATA_HIP_PROMPT_F16=1:", engine_log)
+        gfx103_enabled = re.search(
+            rf"HIP device \d+ gfx103\S* - STRATA_HIP_PROMPT_F16={re.escape(opts.prompt_f16)}:", engine_log)
+        if opts.prompt_f16 == "0":
+            if f16_log in engine_log:
+                raise RuntimeError("STRATA_HIP_PROMPT_F16=0 unexpectedly enabled FP16; see engine.log")
+        elif opts.prompt_f16 == "1":
+            if not gfx12_enabled or not re.search(r"HIP device \d+ gfx103\S* - STRATA_HIP_PROMPT_F16=1:", engine_log):
+                raise RuntimeError("STRATA_HIP_PROMPT_F16=1 did not enable FP16 on both device families; see engine.log")
+        else:
+            if not gfx103_enabled or not re.search(
+                    r"HIP device \d+ gfx12\S* - STRATA_HIP_PROMPT_F16=gfx103x ignored", engine_log):
+                raise RuntimeError("STRATA_HIP_PROMPT_F16=gfx103x did not select only gfx103x; see engine.log")
         output = work / "results.json"
         output.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
         modes = "16K/49K/80K text" + (" + 49K multimodal" if image_url is not None else "")
-        print(f"PASS: {modes}, same-conversation follow-ups, decode, PLE and MTP. Evidence: {output}")
+        print(f"PASS: {modes}, STRATA_HIP_PROMPT_F16={opts.prompt_f16}, same-chat follow-ups, decode, PLE and MTP. "
+              f"Evidence: {output}")
         return 0
     finally:
         proc.terminate()
