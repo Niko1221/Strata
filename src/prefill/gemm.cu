@@ -621,8 +621,19 @@ bool Gemm::bf16_hcd_exact(const uint16_t* X, int64_t ldx, const uint16_t* W, flo
 #endif
 }
 
+bool Gemm::bf16_converts_x() const {
+#if defined(__HIPCC__) || defined(STRATA_EXPERIMENTAL_SM60)
+    return false;
+#else
+    return bf16_path() == 1;
+#endif
+}
+__global__ void f16_to_bf16_kernel(const __half* __restrict__ in, uint16_t* __restrict__ out, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = (uint16_t) (__float_as_uint(__half2float(in[i])) >> 16);   // exact: the value was a BF16
+}
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
-                float beta, int64_t ldx) {
+                float beta, int64_t ldx, bool x_f16) {
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
     if (ldx <= K) ldx = 0;
@@ -708,13 +719,33 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
                     bf16_to_f16(W + n0 * K, tc_w_, nn * K, (cudaStream_t) stream_);
                     for (int64_t t0 = 0; t0 < T; t0 += x_rows) {
                         const int64_t n = std::min<int64_t>(x_rows, T - t0);
-                        bf16_to_f16(X + t0 * K, tc_x_, n * K, (cudaStream_t) stream_);
-                        f16(tc_x_, tc_w_, Y + t0 * ldy + n0, n, nn, K, ldy, beta);
+                        if (x_f16) {   // already the converted values (the same slices: the same GEMMs)
+                            f16(X + t0 * K, tc_w_, Y + t0 * ldy + n0, n, nn, K, ldy, beta);
+                        } else {
+                            bf16_to_f16(X + t0 * K, tc_x_, n * K, (cudaStream_t) stream_);
+                            f16(tc_x_, tc_w_, Y + t0 * ldy + n0, n, nn, K, ldy, beta);
+                        }
                     }
                 }
             }
             return;
         }
+    }
+#endif
+#if !defined(__HIPCC__)
+    if (x_f16) {   // not the tensor-core path after all (one output row, or no room): X back to BF16, a slice at a time
+        const int64_t x_rows = std::max<int64_t>(1, std::min<int64_t>(T, kXSliceElems / K));
+        if (!grow(tc_x_, tc_x_elems_, x_rows * K)) {
+            std::fprintf(stderr, "prefill gemm: no GPU memory for converting an FP16 image back to BF16\n");
+            std::exit(1);
+        }
+        for (int64_t t0 = 0; t0 < T; t0 += x_rows) {
+            const int64_t n = std::min<int64_t>(x_rows, T - t0);
+            f16_to_bf16_kernel<<<(unsigned) ((n * K + 255) / 256), 256, 0, (cudaStream_t) stream_>>>(
+                reinterpret_cast<const __half*>(X + t0 * K), tc_x_, n * K);
+            bf16(tc_x_, W, Y + t0 * ldy, n, N, K, ldy, beta, 0, false);
+        }
+        return;
     }
 #endif
     // Column-major view: Y^T[N, T] = W[N, K] (stored K x N col-major, transposed) . X^T[K, T].

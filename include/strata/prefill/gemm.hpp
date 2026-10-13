@@ -28,8 +28,12 @@ public:
     /// Y[T, N] (fp32, row stride ldy) = X[T, K] (bf16, row-major) . W[N, K]^T (bf16, row-major).  `beta` = 1 adds.
     /// Below sm_80 (no BF16 tensor cores): Volta converts both to FP16 and runs the FP16 tensor-core GEMM (Turing with
     /// STRATA_BF16_TC=1), Pascal widens both to fp32 (cublasSgemm); see gemm.cu.
+    /// `x_f16`: X holds, instead of BF16, the FP16 values the Turing tensor-core path would convert it to
+    /// (prefill's xn16 with its f16img writers): that path skips the conversion; any other converts back.
     void bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy = 0,
-              float beta = 0.0f, int64_t ldx = 0);
+              float beta = 0.0f, int64_t ldx = 0, bool x_f16 = false);
+    /// true when bf16() runs its products through FP16 tensor cores here (Turing, STRATA_BF16_TC): where X may be FP16
+    bool bf16_converts_x() const;
 
     /// S (STRATA_HCD_EXACT): the HC down projection (N 320, K 10240) by the WMMA kernel that reproduces hipBLASLt's
     /// solution 1176 / 1177 bit for bit; false (nothing launched) unless hipBLASLt would take one of those for this
