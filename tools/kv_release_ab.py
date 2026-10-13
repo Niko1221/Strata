@@ -43,7 +43,7 @@ TASKS = [
     ("countdown", "Count backwards from 50 to 1 in steps of 7, one number per line. Reply with only the numbers.",
      lambda t: "1" in t and "50" in t),
     ("no-e", "Write one paragraph about memory bandwidth without using the letter e anywhere. Reply with the paragraph.",
-     lambda t: len(t.strip()) > 40 and " e" not in t.lower()),
+     lambda t: len(t.strip()) > 40 and "e" not in t.lower()),
     ("summarise", FILLER + "\nSummarise the text above in exactly three bullet points.",
      lambda t: t.count("\n") >= 2),
     ("restate", "Explain the difference between latency and throughput, give two examples, then repeat your first "

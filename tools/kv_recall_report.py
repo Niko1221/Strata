@@ -39,12 +39,22 @@ SHORT = [
     ("What is the capital of Australia? Reply with just the city name.", ["canberra"]),
     ("How many days are in a leap year? Reply with just the number.", ["366"]),
 ]
-# Buried facts, asked by vault number and answered by code. Two groups, because the FP16 window only covers the
-# recent cells: MID facts sit in the body of the document (bulk precision decides them), TAIL facts sit in the last
-# ~30 tokens before the question, inside the window (the overlay decides those).
+# Buried facts, asked by vault number and answered by code. Two groups: MID facts sit in the body of the document,
+# LATE facts in its last few paragraphs. NOTE: the late facts are NOT inside a 128-cell FP16 window - after them
+# come 2-5 filler paragraphs, the instructions and all eight questions (~180-350 tokens before generation), so they
+# sit inside a 512/1024-cell window but outside a 128-cell one. Two codes are deliberately shared between the
+# groups (90277, 18746), so recall is scored by the instructed vault/code PAIR (vault_hits), never by the code alone.
 VAULTS_MID = [(3, "71624"), (14, "90277"), (31, "55913"), (40, "18746")]
 VAULTS_TAIL = [(55, "64538"), (61, "18746"), (67, "38150"), (73, "90277")]
 VAULTS = VAULTS_MID + VAULTS_TAIL
+
+
+def vault_hits(text: str, vaults: list) -> int:
+    """How many (vault, code) pairs the reply states - 'vault 61: 18746', 'vault 61 is 18746', ... A bare code is
+    not a hit: 18746 is vault 40's AND vault 61's code, so finding it says nothing about which vault was recalled.
+    \\D{0,40}? spans the separator (': ', ' is ', a quoted sentence's words) but never crosses another number."""
+    pairs = set(re.findall(r"vault\s*#?\s*(\d+)\D{0,40}?(\d{5})", text.lower()))
+    return sum(1 for vault, code in vaults if (str(vault), code) in pairs)
 
 ARMS = [] if os.environ.get("KV_SPEED_ONLY") else [
     ("release q4_0", RELEASE, "q4_0", {}),
@@ -166,12 +176,12 @@ def main() -> int:
         proc = start(cfg, env)
         try:
             if not wait_ready():
-                rows.append([name, "no engine", "-", "-", "-", "-"]); continue
+                rows.append([name, "no engine", "-", "-", "-", "-", "-"]); continue
             doc = document()
             reply = ask(doc, budget=0, max_tokens=260)
-            got = text_of(reply).lower()
-            rec_mid = sum(1 for _, code in VAULTS_MID if code in got)
-            rec_tail = sum(1 for _, code in VAULTS_TAIL if code in got)
+            got = text_of(reply)
+            rec_mid = vault_hits(got, VAULTS_MID)     # the instructed pair, not the bare code (codes repeat)
+            rec_tail = vault_hits(got, VAULTS_TAIL)
             t = reply.get("timings") or {}
             dec = t.get("predicted_per_second")
             pre = t.get("prompt_per_second")
@@ -190,7 +200,8 @@ def main() -> int:
         finally:
             stop(proc)
 
-    print("\n==== KV recall / speed  (mid = body of a ~5K document, tail = inside the FP16 window) ====")
+    print("\n==== KV recall / speed  (mid = body of a ~5K document, tail = its last paragraphs: outside a 128-cell "
+          "window, inside 512+) ====")
     print(f"{'arm':16s} {'recall mid':>10s} {'recall tail':>11s} {'answers':>8s} {'loops':>6s} "
           f"{'prompt t/s':>11s} {'decode t/s':>11s}")
     for r in rows:

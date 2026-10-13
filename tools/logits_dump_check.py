@@ -29,6 +29,11 @@ def check(path: str, expect_rows: int, tokens: list[int] | None = None) -> bool:
             return False
         n_vocab, n_rows = struct.unpack("<ii", hdr)
         body = f.read()                      # body starts AFTER the header; row r is at r * n_vocab * 4
+    if n_vocab <= 0 or n_rows < 0:
+        # a malformed header must fail the check, not divide by zero below
+        print(f"{path}: size={size} header={{n_vocab={n_vocab}, n_rows={n_rows}}}")
+        print(f"  DEFECT: invalid header dimensions (n_vocab must be > 0, n_rows >= 0)")
+        return False
     ok = True
     row_bytes = n_vocab * 4
     print(f"{path}: size={size} header={{n_vocab={n_vocab}, n_rows={n_rows}}} "

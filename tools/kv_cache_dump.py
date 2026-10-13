@@ -156,6 +156,9 @@ def main():
     if not d.body_ok:
         print("  DEFECT: body is " + str(len(d.body)) + " bytes, the header implies " +
               str(d.n_layers * 2 * d.plane * 2))
+        # A truncated body cannot be read layer by layer (np.frombuffer would raise on the missing planes):
+        # report the malformed file and stop, which is this tool's job, instead of crashing in d.layer().
+        return 1
 
     picked = list(range(d.n_layers))
     if a.layer is not None:
