@@ -246,6 +246,31 @@ inline int64_t dense_tail_next_check(int64_t done, int64_t pp_total, int64_t eve
     return next > zone_start ? zone_start : next;     // never skip the dense zone
 }
 
+/// FW-1 (dynamic sizing): the chunk size the prompt pass should use for the chunk
+/// starting at c0, so that CHUNK BOUNDARIES (the only places checkpoints can fire)
+/// land at dense-tail cadence inside the zone while the head reads in big chunks.
+///
+///   dense_tail <= 0            -> min(big, n - c0)            (today's uniform sizing)
+///   c0 before the dense zone   -> min(big, zone_start - c0)   (a big chunk that ends
+///                                 EXACTLY at the zone start: the first anchor)
+///   c0 inside the dense zone   -> min(every, n - c0)          (anchor-sized chunks)
+///
+/// Pure; pinned by suffix_reuse_dense_tail_test DTT8-10.  `big` is the --prefill chunk
+/// size (auto = the whole prompt).  The dense_tail_next_check cadence aligns with these
+/// boundaries by construction (zone start + every-steps), so generate.cpp's checkpoint
+/// gate needs no change.
+inline int64_t dense_tail_chunk_size(int64_t c0, int64_t n, int64_t big, int64_t every,
+                                     int64_t dense_tail) {
+    if (n - c0 <= 0) return 0;
+    if (dense_tail <= 0 || every <= 0) return std::min(big, n - c0);
+    const int64_t zone_start = n > dense_tail ? n - dense_tail : 0;
+    if (c0 < zone_start) {
+        const int64_t head = std::min(big, zone_start - c0);   // land exactly at zone start
+        return std::max<int64_t>(head, 1);
+    }
+    return std::max<int64_t>(std::min(every, n - c0), 1);      // anchor-sized zone chunks
+}
+
 /// FINDING 1: the parity predicate (the runtime hook's fire decision).  Centralised here so
 /// `generate.cpp` and the off-parity test call THE SAME function.  At flag==0 (or "flag absent",
 /// which is 0 by default) the predicate returns false and the hook is a no-op - today's reuse
