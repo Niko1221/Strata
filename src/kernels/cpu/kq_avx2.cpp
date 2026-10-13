@@ -145,10 +145,11 @@ void q4k_dot(const block_q4_K* x, int nb, const void* const* act, int nt, float*
 }
 
 // ---- Q5_1 x Q8_1 (ggml_vec_dot_q5_1_q8_1, __AVX2__)
-void q5_1_dot(const block_q5_1* x, int nb, const void* const* act, int nt, float* res) {
-    __m256 acc[MAXT];
-    float summs[MAXT];
-    for (int t = 0; t < nt; ++t) { acc[t] = _mm256_setzero_ps(); summs[t] = 0.0f; }
+template <int NT>
+void q5_1_dot(const block_q5_1* x, int nb, const void* const* act, float* res) {
+    __m256 acc[NT];
+    float summs[NT];
+    for (int t = 0; t < NT; ++t) { acc[t] = _mm256_setzero_ps(); summs[t] = 0.0f; }
     for (int ib = 0; ib < nb; ++ib) {
         const __m256 dx = _mm256_set1_ps(half_at(&x[ib], 0));
         const float xm = half_at(&x[ib], 1);
@@ -156,7 +157,7 @@ void q5_1_dot(const block_q5_1* x, int nb, const void* const* act, int nt, float
         __m256i bxhi = bytes_from_bits_32(x[ib].qh);
         bxhi = _mm256_and_si256(bxhi, _mm256_set1_epi8(0x10));
         qx = _mm256_or_si256(qx, bxhi);
-        for (int t = 0; t < nt; ++t) {
+        for (int t = 0; t < NT; ++t) {
             const block_q8_1* y = (const block_q8_1*) act[t] + ib;
             summs[t] += xm * half_at(y, 1);
             const __m256 dy = _mm256_set1_ps(half_at(y, 0));
@@ -165,18 +166,19 @@ void q5_1_dot(const block_q5_1* x, int nb, const void* const* act, int nt, float
             acc[t] = _mm256_fmadd_ps(q, _mm256_mul_ps(dx, dy), acc[t]);
         }
     }
-    for (int t = 0; t < nt; ++t) res[t] = hsum_float_8(acc[t]) + summs[t];
+    for (int t = 0; t < NT; ++t) res[t] = hsum_float_8(acc[t]) + summs[t];
 }
 
 // ---- Q8_0 x Q8_0 (ggml_vec_dot_q8_0_q8_0, __AVX2__; mul_sum_i8_pairs_float without AVX-VNNI-INT8)
-void q8_0_dot(const block_q8_0* x, int nb, const void* const* act, int nt, float* res) {
-    __m256 acc[MAXT];
-    for (int t = 0; t < nt; ++t) acc[t] = _mm256_setzero_ps();
+template <int NT>
+void q8_0_dot(const block_q8_0* x, int nb, const void* const* act, float* res) {
+    __m256 acc[NT];
+    for (int t = 0; t < NT; ++t) acc[t] = _mm256_setzero_ps();
     for (int ib = 0; ib < nb; ++ib) {
         const float xd = h2f(x[ib].d);
         const __m256i qx = _mm256_loadu_si256((const __m256i*) x[ib].qs);
         const __m256i ax = _mm256_sign_epi8(qx, qx);
-        for (int t = 0; t < nt; ++t) {
+        for (int t = 0; t < NT; ++t) {
             const block_q8_0* y = (const block_q8_0*) act[t] + ib;
             const __m256 d = _mm256_set1_ps(xd * h2f(y->d));
             const __m256i qy = _mm256_loadu_si256((const __m256i*) y->qs);
@@ -185,14 +187,38 @@ void q8_0_dot(const block_q8_0* x, int nb, const void* const* act, int nt, float
             acc[t] = _mm256_fmadd_ps(d, q, acc[t]);
         }
     }
-    for (int t = 0; t < nt; ++t) res[t] = hsum_float_8(acc[t]);
+    for (int t = 0; t < NT; ++t) res[t] = hsum_float_8(acc[t]);
+}
+
+void q5_1_dot_nt(const block_q5_1* x, int nb, const void* const* act, int nt, float* res) {
+    for (int t0 = 0; t0 < nt; t0 += 4) {
+        const int k = nt - t0 < 4 ? nt - t0 : 4;
+        switch (k) {
+            case 1: q5_1_dot<1>(x, nb, act + t0, res + t0); break;
+            case 2: q5_1_dot<2>(x, nb, act + t0, res + t0); break;
+            case 3: q5_1_dot<3>(x, nb, act + t0, res + t0); break;
+            default: q5_1_dot<4>(x, nb, act + t0, res + t0); break;
+        }
+    }
+}
+
+void q8_0_dot_nt(const block_q8_0* x, int nb, const void* const* act, int nt, float* res) {
+    for (int t0 = 0; t0 < nt; t0 += 4) {
+        const int k = nt - t0 < 4 ? nt - t0 : 4;
+        switch (k) {
+            case 1: q8_0_dot<1>(x, nb, act + t0, res + t0); break;
+            case 2: q8_0_dot<2>(x, nb, act + t0, res + t0); break;
+            case 3: q8_0_dot<3>(x, nb, act + t0, res + t0); break;
+            default: q8_0_dot<4>(x, nb, act + t0, res + t0); break;
+        }
+    }
 }
 
 void dot_rows(int type, const uint8_t* row, int n, const void* const* act, int nt, float* res) {
     switch (type) {
         case 12: q4k_dot((const block_q4_K*) row, n / QK_K, act, nt, res); break;
-        case 7: q5_1_dot((const block_q5_1*) row, n / QK5_1, act, nt, res); break;
-        case 8: q8_0_dot((const block_q8_0*) row, n / QK8_0, act, nt, res); break;
+        case 7: q5_1_dot_nt((const block_q5_1*) row, n / QK5_1, act, nt, res); break;
+        case 8: q8_0_dot_nt((const block_q8_0*) row, n / QK8_0, act, nt, res); break;
         default: break;
     }
 }
