@@ -129,6 +129,13 @@ def _text_of(content) -> str:
 
 IMAGE_PARTS = ("image_url", "input_image", "image")
 
+# A video part (OpenAI's wire formats): {"type": "video_url", "video_url": {"url": ...}} (or "video_url": "...",
+# vLLM's spelling) and {"type": "input_video", "input_video": {"data": <base64>}} (llama.cpp's spelling; pi's
+# compat.videoPartFormat picks one per endpoint).  As with an image it is read as one string - a data: URL, an
+# http(s) URL or a local file path - and stays one item here: server.py cuts it into frames (its pictures)
+# before the template renders, drawing each frame as a picture.
+VIDEO_PARTS = ("video_url", "input_video")
+
 # Thinking levels.  The model's template knows low, medium and xhigh (its default; "high" means xhigh), and
 # enable_thinking=false for none.  Clients spell these many ways; everything maps onto those four.
 EFFORT = {"none": None, "off": None, "minimal": None, "disabled": None, "false": None,
@@ -161,6 +168,10 @@ def _has_image(content) -> bool:
     return isinstance(content, list) and any(isinstance(p, dict) and p.get("type") in IMAGE_PARTS for p in content)
 
 
+def _has_video(content) -> bool:
+    return isinstance(content, list) and any(isinstance(p, dict) and p.get("type") in VIDEO_PARTS for p in content)
+
+
 def _image_source(part: dict) -> str:
     """An image part's source as one string: a data: URL, an http(s) URL or a local file path.
     OpenAI: {"type": "image_url", "image_url": {"url": ...}} (or "image_url": "..."), Responses-style
@@ -177,10 +188,28 @@ def _image_source(part: dict) -> str:
     return url or ""
 
 
+def _video_source(part: dict) -> str:
+    """A video part's source as one string: a data: URL, an http(s) URL or a local file path.
+    video_url passes its URL through (dict or bare string); input_video's base64 "data" is a data: URL,
+    its optional "mime_type" (video/mp4 by default) naming the bytes.  A part that names neither is an
+    empty source, as an image's."""
+    url = part.get("video_url")
+    if isinstance(url, dict):
+        return url.get("url") or ""
+    if isinstance(url, str):
+        return url
+    block = part.get("input_video")
+    block = block if isinstance(block, dict) else {}
+    data = block.get("data", "")
+    return f"data:{block.get('mime_type') or 'video/mp4'};base64,{data}" if data else ""
+
+
 def _parts_of(content):
-    """Message content for the template: a string when there is no image (unchanged behaviour), otherwise the
-    template's list form - text items and image items, in order - whose image items carry their source."""
-    if not _has_image(content):
+    """Message content for the template: a string when there is no picture or video (unchanged behaviour),
+    otherwise the template's list form - text items and image/video items, in order - whose media items
+    carry their source.  A video stays one item: the server cuts it into frames (its pictures) before
+    render, and the template then draws each frame as a picture."""
+    if not _has_image(content) and not _has_video(content):
         return _text_of(content)
     items = []
     for part in content:
@@ -188,6 +217,8 @@ def _parts_of(content):
             continue
         if part.get("type") in IMAGE_PARTS:
             items.append({"type": "image", "source": _image_source(part)})
+        elif part.get("type") in VIDEO_PARTS:
+            items.append({"type": "video", "source": _video_source(part)})
         elif part.get("type") in TEXT_PARTS and "text" in part:
             items.append({"type": "text", "text": part.get("text", "")})
     return items
@@ -225,11 +256,17 @@ def _check_parts(content, path: str, kinds):
     return out
 
 
+def media_of(messages: list[dict]) -> list[tuple[str, str]]:
+    """The (kind, source) of every media item of the rendered conversation, in prompt order: kind is
+    "image" (a picture) or "video" (a clip, one item until the server has cut it into frames)."""
+    return [(item.get("type"), item["source"]) for m in messages if isinstance(m.get("content"), list)
+            for item in m["content"] if item.get("type") in ("image", "video")]
+
+
 def images_of(messages: list[dict]) -> list[str]:
     """The image sources of the rendered conversation, in prompt order (the template renders one
     <|vision_start|><|image_pad|><|vision_end|> per image item, message by message)."""
-    return [item["source"] for m in messages if isinstance(m.get("content"), list)
-            for item in m["content"] if item.get("type") == "image"]
+    return [src for kind, src in media_of(messages) if kind == "image"]
 
 
 # #537: a literal <think> / </think> inside a message's text is plain text, not the model's reasoning markers.  The
@@ -525,11 +562,12 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
         role = m.get("role")
         if role == "developer":
             role = "system"
-        # an image is read in a user, tool or assistant message; the system prompt takes text only, as _text_of reads
-        images = role in ("user", "tool", "assistant")
+        # an image or a video is read in a user, tool or assistant message; the system prompt takes text only,
+        # as _text_of reads
+        media = role in ("user", "tool", "assistant")
         content = _check_parts(m.get("content"), f"messages[{i}].content",
-                               TEXT_PARTS + IMAGE_PARTS if images else TEXT_PARTS)
-        out = {"role": role, "content": _parts_of(content) if images else _text_of(content)}
+                               TEXT_PARTS + IMAGE_PARTS + VIDEO_PARTS if media else TEXT_PARTS)
+        out = {"role": role, "content": _parts_of(content) if media else _text_of(content)}
         if m.get("reasoning_content"):
             out["reasoning_content"] = m["reasoning_content"]
         if m.get("tool_calls"):

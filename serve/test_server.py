@@ -3036,8 +3036,12 @@ class WebApp(unittest.TestCase):
                     self.assertEqual(model["id"], svc.model)
                     self.assertEqual(model["status"]["value"], "loaded")
                     self.assertEqual(model["meta"]["n_ctx"], 262144)
-                    self.assertEqual(model["architecture"]["input_modalities"],
-                                     ["text", "image"] if vision else ["text"])
+                    expected = ["text"]
+                    if vision:
+                        expected += ["image"]
+                        if shutil.which("ffmpeg"):      # a video is cut into frames with it (a 400 that says so without it)
+                            expected += ["video"]
+                    self.assertEqual(model["architecture"]["input_modalities"], expected)
                 code, _, body = self.get("/props?model=" + svc.model + "&autoload=false")
                 self.assertEqual(code, 200)
                 props = json.loads(body)

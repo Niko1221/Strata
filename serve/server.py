@@ -14,6 +14,10 @@ Images (optional, when the config has a "vision" entry): OpenAI image_url parts 
 data, http(s) URLs or local file paths) go through `strata-vision` (the model's mmproj file) and reach the engine as
 embeddings (`GENI`).  JPEG/PNG/BMP/GIF go straight in; WebP, TIFF, AVIF, ... (agents like omp send WebP) are
 converted to PNG first with Pillow.
+Videos (the same "vision" entry): OpenAI video_url / input_video parts are cut into frames with ffmpeg - at the
+config's "video_fps" (2 by default, the model's own video rate), or a pinned count when the config has
+"video_frames" - and reach the engine as the frames' pictures.  Without ffmpeg on the PATH a video request is a
+400 that names the missing program - never a silent drop.
 Requests whose prompt plus max tokens exceed the engine's context are REJECTED with 400, never truncated.
 An unset (or 0, or -1) max tokens means "unlimited": whatever the prompt leaves of the context.
 
@@ -58,8 +62,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
 from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
-                            forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
-                            tool_choice_of, unmark_think_literals)
+                            forced_call, images_of, literal_tags, mark_think_literals, media_of,
+                            openai_to_messages, tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
@@ -265,6 +269,9 @@ def engine_frozen(base: tuple[float, int], now: tuple[float, int]) -> bool:
 
 VISION_READY_S = _timeout_env("STRATA_VISION_READY_S", 300.0)
 VISION_ENCODE_S = _timeout_env("STRATA_VISION_ENCODE_S", 300.0)
+VIDEO_FRAMES_S = _timeout_env("STRATA_VIDEO_FRAMES_S", 120.0)      # ffmpeg/ffprobe: cutting one video's frames
+VIDEO_MIN_FRAMES, VIDEO_MAX_FRAMES = 4, 64    # the fps cut's count: the model's own 4..768 capped at 64 - a
+                                              # frame keeps a full image's pixels, not a shrinking share
 ENGINE_READY_S = _timeout_env("STRATA_ENGINE_READY_S", 900.0)
 
 
@@ -2357,6 +2364,49 @@ class Vision:
         return data
 
     @staticmethod
+    def extract_frames(source: str | bytes, n: int | None = None, fps: float = 2.0, cancel=None) -> list[bytes]:
+        """A video's frames, evenly over its length, as PNG bytes - one per picture the request sends
+        (server.py turns them into image items, so the template draws each frame as a picture and the encoder
+        reads it as one).  ffmpeg/ffprobe on the PATH cut them (ffprobe for the length, the fps filter for the
+        even cut); without either the ValueError names the fix instead of a silent drop.  The count is the
+        model's own video rate when `n` is unset: `fps` frames a second (2 by default), an even count between
+        4 and 64.  `source`: what load() reads - a data: URL, an http(s) URL or a local file path, at most
+        IMAGE_URL_MAX of a download - or the video's bytes."""
+        ffmpeg, ffprobe = shutil.which("ffmpeg"), shutil.which("ffprobe")
+        if not (ffmpeg and ffprobe):
+            raise ValueError("this video needs ffmpeg (and ffprobe) on the PATH where the server runs: put a "
+                             "static build into a directory that PATH finds and start the server again")
+        if cancel is not None and cancel.is_set():
+            raise ClientGone()
+        data = source if isinstance(source, bytes) else Vision.load(source)
+        with tempfile.TemporaryDirectory(prefix="strata-frames-") as d:
+            path = Path(d) / "video.bin"
+            path.write_bytes(data)
+            dur = 0.0
+            try:
+                probe = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration",
+                                        "-of", "default=nw=1:nk=1", str(path)],
+                                       capture_output=True, text=True, timeout=VIDEO_FRAMES_S)
+                dur = float((probe.stdout or "").strip() or 0)
+            except (OSError, subprocess.TimeoutExpired, ValueError):
+                pass                        # no readable length
+            if n is None:                   # the model's own rate: fps a second over the clip, an even 4..64
+                n = max(VIDEO_MIN_FRAMES, min(VIDEO_MAX_FRAMES, int(dur * fps) if dur > 0 else VIDEO_MIN_FRAMES))
+                n = round(n / 2) * 2
+            rate = f"{n / dur:.6f}" if dur > 0 else "1"      # no length: the first n seconds at one a second
+            try:
+                cut = subprocess.run([ffmpeg, "-v", "error", "-y", "-i", str(path), "-vf", f"fps={rate}",
+                                      "-frames:v", str(n), str(Path(d) / "frame_%03d.png")],
+                                     capture_output=True, text=True, timeout=VIDEO_FRAMES_S)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                raise ValueError(f"the video could not be cut: {e}") from None
+            frames = [p.read_bytes() for p in sorted(Path(d).glob("frame_*.png"))]
+            if not frames:
+                why = (cut.stderr or "").strip().splitlines()
+                raise ValueError("the video has no readable frames" + (f" ({why[-1]})" if why and why[-1] else ""))
+            return frames
+
+    @staticmethod
     def _exif_rotated(data: bytes) -> bool:
         """A JPEG whose EXIF Orientation says it is stored turned (phones do this for portrait photos): the decoder
         (stb_image) ignores the tag.  False without Pillow, or when the tag is missing, 1 or unreadable (#1229)."""
@@ -2479,6 +2529,27 @@ def gpu_list(cfg: dict) -> list[int]:
         return []
     items = g if isinstance(g, (list, tuple)) else str(g).split(",")
     return [int(str(x).strip()) for x in items if str(x).strip() != ""]
+
+
+def video_frames_of(value):
+    """The config's "video_frames" (vision section): a pinned frame count for the cut - it overrides the
+    default fps=2 sampling.  A whole number from 1 to 64 - a frame takes an image's worth of context, so the
+    cap keeps a long clip inside the window."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 64:
+        raise ValueError(f'"video_frames" must be a whole number from 1 to 64, not {value!r}')
+    return value
+
+
+def video_fps_of(value):
+    """The config's "video_fps" (vision section): the frames a second a video is cut at - the model's own
+    video rate (2 by default, uniform over the clip's length, an even count between 4 and 64)."""
+    if value is None:
+        return 2.0
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < float(value) <= 64:
+        raise ValueError(f'"video_fps" must be a number greater than 0 and at most 64, not {value!r}')
+    return float(value)
 
 
 def engine_binary(exe: str, cfg: dict | None = None) -> str:
@@ -3030,6 +3101,8 @@ class Service:
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
+        self.video_frames = None                        # the config's "video_frames": a pinned count (overrides video_fps)
+        self.video_fps = 2.0                            # the config's "video_fps": the model's own video rate, frames a second
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
@@ -3845,6 +3918,31 @@ class Service:
                     content[n] = {"type": "text", "text": f"[image omitted: {why}]"}
         return fetched
 
+    def _expand_videos(self, messages, cancel=None):
+        """A video goes in as its frames - ordinary image items, in order, one media place per frame in the
+        rendered prompt (prepare's marker scan fills each with the frame's picture, in the same pass as the
+        pictures).  The frames are cut with ffmpeg at the config's "video_fps" (2 by default, the model's own
+        rate) or its pinned "video_frames" count, a data: or
+        http(s) source read first as a picture's is; a video that cannot be cut is a 400 that says why, not a
+        silent drop.  The other items are untouched; a request without a video comes back as it was."""
+        out, changed = [], False
+        for m in messages:
+            content = m.get("content")
+            if m.get("role") == "system" or not isinstance(content, list) or not any(
+                    isinstance(p, dict) and p.get("type") == "video" for p in content):
+                out.append(m)
+                continue
+            items = []
+            for p in content:
+                if not isinstance(p, dict) or p.get("type") != "video":
+                    items.append(p)
+                    continue
+                frames = self.vision.extract_frames(p.get("source") or "", self.video_frames, self.video_fps, cancel)
+                changed = True
+                items.extend({"type": "image", "source": f} for f in frames)
+            out.append({**m, "content": items})
+        return out if changed else messages
+
     def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
@@ -3852,6 +3950,11 @@ class Service:
         # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
         # between pictures and raise ClientGone
         fetched = self._note_unreadable_tool_images(messages, cancel)
+        if any(kind == "video" for kind, _ in media_of(messages)):
+            if self.vision is None:
+                raise ValueError("this server was started without the vision encoder (run setup again and choose "
+                                 "'vision'), so it cannot read images or videos")
+            messages = self._expand_videos(messages, cancel)
         ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
             ids = ids + self.tok.encode(force, parse_special=True)
@@ -3869,6 +3972,8 @@ class Service:
             def fetch(src):
                 if cancel is not None and cancel.is_set():
                     raise ClientGone()
+                if isinstance(src, bytes):            # a video's already-cut frame
+                    return src
                 return fetched[src] if src in fetched else Vision.download(src) \
                     if src.startswith(("http://", "https://")) else src
             images = [fetch(src) for src in images]
@@ -5369,9 +5474,14 @@ def make_handler(svc: Service):
             elif path in ("/v1/models", "/models"):
                 if self._authorized():
                     loaded = svc.loaded()
+                    modalities = ["text"]
+                    if svc.vision is not None:
+                        modalities += ["image"]
+                        if shutil.which("ffmpeg"):      # a video is cut into frames with it; without it the part is a 400 that says so
+                            modalities += ["video"]
                     model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
                              "meta": {"n_ctx": svc.reported_ctx()},
-                             "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
+                             "architecture": {"input_modalities": modalities,
                                               "output_modalities": ["text"]}}
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
                         model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
@@ -5731,7 +5841,7 @@ def make_handler(svc: Service):
             and http(s) images are the page's own to send; files come from Strata's own page, a trusted origin or a
             client that is no browser.  ValueError (a 400)."""
             if self._foreign_origin() and any(not src.startswith(("data:", "http://", "https://"))
-                                              for src in images_of(messages)):
+                                              for _, src in media_of(messages)):
                 raise ValueError("a web page of another origin cannot have a file on this computer read as an "
                                  "image: send it as a data: URL (or add the page's origin to the config's "
                                  "trusted_origins)")
@@ -6784,6 +6894,11 @@ def main() -> int:
                   "again", flush=True)
         print(f"[strata] image generation: {svc.images.model} {icfg.get('quant') or ''} on "
               f"{icfg.get('backend') or '?'} (POST /v1/images/generations; GPU policy {svc.images.policy})", flush=True)
+    try:
+        svc.video_frames = video_frames_of((cfg.get("vision") or {}).get("video_frames"))   # a pinned frame count
+        svc.video_fps = video_fps_of((cfg.get("vision") or {}).get("video_fps"))            # the model's own video rate
+    except ValueError as e:
+        raise SystemExit(f"[strata] config {e}")
     if cfg.get("prevent_sleep") is not None and not isinstance(cfg["prevent_sleep"], bool):
         raise SystemExit(f"[strata] config \"prevent_sleep\" must be true or false, not {cfg['prevent_sleep']!r}")
     from serve.keepawake import KeepAwake
