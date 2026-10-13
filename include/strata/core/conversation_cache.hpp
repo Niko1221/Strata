@@ -263,16 +263,38 @@ public:
 
     // Reserve before allocating a snapshot. held is an incoming image removed
     // with take() but still alive during the exchange; count it against RAM too.
-    bool make_room(size_t incoming, size_t held = 0) {
+    // ★ 磁盘停放层的接入口（P4c）：淘汰的条目不再直接丢弃，而是交给调用方。
+    //   缓存本身【不依赖】任何磁盘层类型 —— 调用方决定是写盘还是扔掉。
+    //   evicted 为空时行为与上游一致；v0.1.41 起还会跳过 pinned 条目。
+    bool make_room(size_t incoming, size_t held = 0,
+                   std::vector<SavedConversation>* evicted = nullptr) {
         if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
         if (bytes() > budget_ - held - incoming) reuse_ = {};
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
             // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
             // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
-            if (!evict_oldest()) return false;
+            // ★ 挑受害者只有 evict_oldest() 一处：物理内存闸门与这里走同一条路，
+            //   不会出现"一边写盘、另一边直接丢"。
+            if (!evict_oldest(evicted)) return false;   // ★ evicted 非空 ⇒ 交给磁盘停放层，而不是丢掉
         }
         return true;
     }
+
+    // ★ 把当前【全部】常驻条目交出来（"先腾后取"用：腾出 RAM 再读回磁盘上的另一份）。
+    //   与 make_room 不同，这不是淘汰 —— 条目的生命周期由调用方负责（通常会写盘）。
+    //   因此不计入 evictions_（那个计数用于观察"真被顶掉"的次数）。
+    void drain(std::vector<SavedConversation>& out) {
+        while (!entries_.empty()) {
+            bytes_ -= entries_.front().bytes();
+            out.push_back(std::move(entries_.front()));
+            entries_.pop_front();
+        }
+        reuse_ = {};   // 保留的 K/V 描述的是被腾走的那一份，一并交出
+    }
+
+    // 交出的条目在调用方手上时，缓存侧的字节数已经扣掉了；这里把没写盘成功、
+    // 要放回来的条目重新计入。★ 只在 put() 之外使用。
+    void account_returned(const SavedConversation& image) { bytes_ += image.bytes(); }
 
     // The parked conversation that has gone unused the longest.  This is make_room()'s loop body, so
     // the parking path can also free RAM one entry at a time on demand (see the physical-RAM admission
@@ -280,10 +302,12 @@ public:
     // own allocation, far above glibc's mmap threshold, so dropping an entry returns the whole footprint
     // to the kernel at once - the next admission check reads it back from /proc/meminfo.
     // False when none can go (empty, or only entries that hold a pinned shared prefix are left).
-    bool evict_oldest() {
+    // evicted 非空时把受害者交给调用方（磁盘停放层写盘），而不是让它随 erase 一起没了。
+    bool evict_oldest(std::vector<SavedConversation>* evicted = nullptr) {
         auto victim = std::find_if(entries_.begin(), entries_.end(), [](const SavedConversation& e) { return !e.pinned(); });
         if (victim == entries_.end()) return false;
         bytes_ -= victim->bytes();
+        if (evicted) evicted->push_back(std::move(*victim));   // ★ 交给调用方，而不是丢掉
         entries_.erase(victim);
         ++evictions_;
         return true;

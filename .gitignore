@@ -61,3 +61,16 @@ build-vision-cuda12.bat
 
 /.ccache/
 /.rocm-win/
+
+# 自研磁盘停放层期间的本地残留（备份、探针、编译产物），不是项目源码
+*.bak*
+*.broken-*
+*.arm-record
+/tools/p13-blob-compact
+/src/strata-patches/
+
+# 本地运维文档：含服务器地址与绝对路径，公开前需脱敏
+/HANDOVER.md
+/STRATA-CONFIG-FINAL.md
+/STRATA-TUNING.md
+/docs/项目文档索引.md

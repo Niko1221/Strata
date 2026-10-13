@@ -1,0 +1,43 @@
+{
+  "snapshot_layer": {
+    "tag_before": "tag-A812110E",
+    "tag_after": "tag-AA00AEC7",
+    "bytes_moved": 0,
+    "park_bytes_gib": 68,
+    "session_dirs": 3747
+  },
+  "first_requests_after_restart": {
+    "requests": 8,
+    "prompt_tokens": 735385,
+    "reused": 644027,
+    "reused_share": 0.876,
+    "prompt_read_min": 686,
+    "prompt_read_max": 1326,
+    "hit_rate_min": 0.903,
+    "hit_rate_max": 0.917,
+    "decode_tok_s_min": 118.5,
+    "decode_tok_s_max": 127.4
+  },
+  "conversation_cache": {
+    "budget_mib": 7168,
+    "slots": 8,
+    "parked": 1,
+    "restores": 0
+  },
+  "blob_layer": {
+    "old_bytes": 20424930848,
+    "old_magic": "SKB1",
+    "old_written_by": ["0.1.41 until 13:27", "0.1.43 after 13:27"],
+    "old_fate": "archived as checkpoints.bin.skb1-<stamp>",
+    "new_bytes_after_first_put": 118063200,
+    "new_record_bytes": 118063152,
+    "new_magic": "SKB2",
+    "new_tag": "AA00AEC7",
+    "growth_bytes_per_hour": 3500000000
+  },
+  "unit_tests": {
+    "checks": 467,
+    "failures": 0,
+    "by_binary": { "blob": 68, "digest": 28, "spool": 64, "logs": 98, "session": 136, "bridge": 54, "image": 19 }
+  }
+}

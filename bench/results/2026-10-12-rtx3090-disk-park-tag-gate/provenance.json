@@ -1,0 +1,36 @@
+{
+  "measured_on": "2026-10-12",
+  "reporter": "leocoic",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 3090, 24 GB",
+    "driver": "580.178.04",
+    "os": "Ubuntu 22.04.5",
+    "storage": "NVMe, park root on the reporter's home partition"
+  },
+  "engine": {
+    "version": "strata 0.1.43",
+    "branch": "f-disk-park-0143",
+    "commit": "8364dea7f1a34764f7d830f15dd8910464cd825d",
+    "binary_md5": "1d80783b96d3cb040a3ee8512ec38be5",
+    "binary_bytes": 59297640,
+    "built_with": "cmake --build build --target strata -j 6, CUDA 13 toolkit"
+  },
+  "served_with": {
+    "entry": "serve/server.py --engine strata",
+    "config": "strata-iq3_xxs.json",
+    "kv": "k8v4",
+    "max_context": 262144,
+    "pack": "IQ3_XXS",
+    "disk_park_stream_dir": "<park root under $HOME>",
+    "init_system": "systemd, KillSignal=SIGINT, Restart=on-failure"
+  },
+  "tags": {
+    "old_profile_tag": "A812110E",
+    "new_profile_tag": "AA00AEC7",
+    "old_blob_magic": "SKB1 (0x31424B53)",
+    "new_blob_magic": "SKB2 (0x32424B53)"
+  },
+  "raw_logs": "withheld on purpose: the journal and /metrics?requests=all output for these requests "
+    "carry prompt-derived content from the reporter's own conversations",
+  "published_instead": "the aggregate counters in data/summary.json, reproducible from /metrics with requests=all"
+}
