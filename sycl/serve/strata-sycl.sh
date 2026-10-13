@@ -7,6 +7,9 @@
 #   STRATA_SYCL_IMAGE  the runtime image                      (default: strata-sycl-dev)
 #   STRATA_SYCL_BIN    the engine binary, relative to the repo (default: build-sycl-aot/strata)
 #   STRATA_SYCL_NAME   the container's name                   (default: strata-sycl-serve)
+#   STRATA_SYCL_USER   run the engine as this uid:gid, e.g. 65534:65534 (default: the image's user, root); the
+#                      container then also joins the groups that own /dev/dri/* so it can still open the GPU
+#   STRATA_SYCL_RO     1 = mount the data root read-only (the engine only reads it while serving; default: read-write)
 # Passed into the container: every variable of this script's environment that starts with STRATA_ (the config's
 # "env" block arrives that way: the server puts it in the engine's environment), ONEAPI_ (level_zero:* for a
 # two-card split, #423), UR_, IGC_, SYCL_ or ZES_. The port's own defaults (below) are overridden the same way,
@@ -34,9 +37,16 @@ for k in "${!setting[@]}"; do
     # the engine tests the switches by presence: a value of 0 (or empty) means "not set", so it is not passed on
     case "${setting[$k]}" in 0|"") ;; *) envs+=(-e "$k=${setting[$k]}") ;; esac
 done
+opts=()
+if [ -n "${STRATA_SYCL_USER:-}" ]; then
+    opts+=(--user "$STRATA_SYCL_USER" -e HOME=/tmp)
+    for g in $(stat -c %g /dev/dri/* 2>/dev/null | sort -u); do opts+=(--group-add "$g"); done
+fi
+mount="$root:/work"
+[ "${STRATA_SYCL_RO:-0}" = 1 ] && mount+=":ro"
 exec docker run --rm -i --name "$name" --device /dev/dri --oom-score-adj 1000 --stop-timeout 30 --no-healthcheck \
     --ulimit memlock=-1 \
-    -v "$root:/work" \
+    "${opts[@]}" -v "$mount" \
     "${envs[@]}" \
     "${STRATA_SYCL_IMAGE:-strata-sycl-dev}" \
     "cd $repo_in && exec ${STRATA_SYCL_BIN:-build-sycl-aot/strata}$args"
