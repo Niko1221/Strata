@@ -436,6 +436,36 @@ inline NarrowedResumeTarget narrowed_resume_target(int64_t narrowed_resume,
     return t;
 }
 
+/// FW-2b (T22): the two-pool restore pick.  `checks` are the LRU-capped periodic
+/// checkpoints (deep anchors); `state_checks` are fine-cadence state-only
+/// checkpoints (checkpoint_save copies gdn/ple/tails/dead/block_pos only - no
+/// K/V - so each is ~100-150ms, T19).  The deepest checkpoint <= P across BOTH
+/// pools is restored; the chunk loop still reads [P, n) - fail-close semantics
+/// unchanged, the gap [restore, P) just shrinks.  Equal lengths are dedup-free:
+/// deepest is deepest, whichever pool it came from.
+inline NarrowedResumeTarget narrowed_resume_target_state(
+        int64_t narrowed_resume, const std::vector<int64_t>& chain_lengths,
+        const std::vector<int64_t>& state_lengths) {
+    NarrowedResumeTarget t = narrowed_resume_target(narrowed_resume, chain_lengths);
+    for (int64_t L : state_lengths) {
+        if (L <= narrowed_resume && L > t.restore_length) {
+            t.restore_length = L;
+            t.read_from      = narrowed_resume;
+        }
+    }
+    return t;
+}
+
+/// FW-2b (T22): the fine-cadence capture ladder.  Returns the next state-checkpoint
+/// capture position after `done`: done + every, clamped to n (a capture at exactly
+/// n is the live conversation, not a checkpoint; never past it).  every <= 0 = off
+/// (INT64_MAX: the gate never fires) - byte-identical to today when the flag is 0.
+inline int64_t state_cadence_next(int64_t done, int64_t n, int64_t every) {
+    if (every <= 0) return INT64_MAX;
+    const int64_t next = done + every;
+    return next >= n ? n : next;
+}
+
 /// Phase 3a T10: the runtime's `read_from` resolution at generate.cpp:9394.  When the splice
 /// hook fired AND narrowed resume (splice_narrowed == true), the chunk loop's read start is
 /// `t.read_from` (the splice-narrowed resume = the edit pos E), NOT `resume` (the restored

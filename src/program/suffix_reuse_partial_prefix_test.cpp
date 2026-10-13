@@ -608,6 +608,68 @@ int main() {
               "T18.5: replay on with an empty chain still reads [P, n) (the runtime restores 0)");
     }
 
+    // ============================================================
+    // T22 (FW-2b): state-cadence checkpoints shrink the fail-close gap.
+    // checkpoint_save copies state only (gdn/ple/tails/dead/block_pos; no K/V),
+    // so fine-cadence state checkpoints are cheap (T19: ~100-150ms each).  They
+    // live in a SIDE pool (separate from the LRU-capped `checks` list) so they
+    // never evict the deep periodic anchors.  The restore pick must take the
+    // deepest checkpoint <= P across BOTH pools; fail-close semantics unchanged
+    // (the gap read is the deepest anchor below P; replay is env-gated).
+    // Pure seams under test: `narrowed_resume_target_state` (the two-pool pick)
+    // and `state_cadence_next` (the fine-cadence ladder, never past n).
+    {
+        using strata::program::suffix_reuse::narrowed_resume_target_state;
+        using strata::program::suffix_reuse::state_cadence_next;
+        using strata::program::suffix_reuse::NarrowedResumeTarget;
+
+        // T22.1: the deep-pool checkpoint wins when it is the deepest <= P.
+        // checks = {1574, 2598} (periodic, prompt_cache LRU), state = {2816, 3072}
+        // (fine cadence).  P = 3424: deepest across both = 3072 (not 2598).
+        {
+            const std::vector<int64_t> checks = { 1574, 2598 };
+            const std::vector<int64_t> state  = { 2816, 3072 };
+            const NarrowedResumeTarget t = narrowed_resume_target_state(3424, checks, state);
+            check(t.restore_length == 3072,
+                  "T22.1: state-cadence 3072 beats periodic 2598 (deepest across both pools)");
+            check(t.read_from == 3424,
+                  "T22.1b: read still starts at P (fail-close semantics unchanged)");
+        }
+
+        // T22.2: the periodic pool wins when it is deeper (state pool empty).
+        {
+            const NarrowedResumeTarget t = narrowed_resume_target_state(3424, { 1574, 2598 }, {});
+            check(t.restore_length == 2598 && t.read_from == 3424,
+                  "T22.2: no state checkpoints -> deepest periodic (2598), same as today");
+        }
+
+        // T22.3: fail-closed degenerates.  P below every checkpoint in both pools
+        // -> fresh read from 0; nothing is fabricated.
+        {
+            const NarrowedResumeTarget t = narrowed_resume_target_state(1000, { 1574 }, { 2816 });
+            check(t.restore_length == 0 && t.read_from == 0,
+                  "T22.3: P below both pools -> fresh read from 0 (fail-closed, never fabricate)");
+        }
+
+        // T22.4: equal lengths are fine (dedup not required; deepest is deepest).
+        {
+            const NarrowedResumeTarget t = narrowed_resume_target_state(3424, { 2598, 3424 }, { 3424 });
+            check(t.restore_length == 3424 && t.read_from == 3424,
+                  "T22.4: equal lengths across pools -> the shared depth (3424)");
+        }
+
+        // T22.5: the fine-cadence ladder.  state_cadence_next(done, n, every)
+        // returns the next capture position: done + every, clamped so a capture
+        // never lands past the prompt end (a checkpoint at exactly n is the live
+        // conversation, not a checkpoint).
+        check(state_cadence_next(2598, 5736, 256) == 2854,
+              "T22.5: ladder from 2598 at 256 cadence -> 2854");
+        check(state_cadence_next(5600, 5736, 256) == 5736,
+              "T22.5b: clamped to n when done+every overshoots (never past the prompt)");
+        check(state_cadence_next(5600, 5736, 0) == INT64_MAX,
+              "T22.5c: every = 0 -> off (INT64_MAX, the gate never fires)");
+    }
+
     std::printf("suffix_reuse_partial_prefix_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
