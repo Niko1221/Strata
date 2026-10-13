@@ -323,10 +323,12 @@ gets verified windows, in the serial loop's order, so it needs no new flag. `1` 
 reads. With `--adapt-async` it stays off (not measured with a remote stage; the log says so). Both stages share this
 PC's GPU: the second verify window of each and two copies of layers 0 to K-1's
 recurrent state are kept out of the expert cache (444 MiB at K=26; the log says so in one line). With the automatic
-cache that took an RTX 3080 main process from 2153 to 1951 slots. Decode on `spec_prompts.py` (40 prompts of 200
+cache that took an RTX 3080 main process from 2153 to 1951 slots on engine 0.1.43 (the 0.1.43 speed runs below showed 2152
+to 1951, as this branch's do). Decode on `spec_prompts.py` (40 prompts of 200
 tokens), RTX 3080 main (layers 0-25) + RTX 2080 Ti worker over 10 GbE, RVN IQ3_S, `--spec 4`, this change on engine
 0.1.43 (the build before this branch's reconnect and hello changes), one binary in one session, off-on-on-off: 62.8,
-70.4, 70.7 and 62.7 tok/s (+12%). TODO(v1-gpu): this branch's decode speed, `--pipeline-windows 0` against `2`.
+70.4, 70.7 and 62.7 tok/s (+12%). This branch on the same PCs, model and prompts, one binary in one session,
+off-on-on-off: 65.0, 71.5, 70.8 and 65.4 tok/s (+9%; 2152 and 1951 slots).
 
 **Comparing answers byte for byte with the serial loop.** The cache size is part of the result: a different number
 of slots places other experts on the CPU, and that moves near-tie tokens. `--pipeline-windows 2` with the automatic
@@ -348,11 +350,28 @@ RTX 3080 main (layers 0-25) + RTX 2080 Ti worker over 10 GbE, greedy, `--spec 4 
 | `--pipeline-windows 0` vs `2`, automatic cache | 2 of 8 |
 | `--pipeline-windows 0` at `--expert-cache 1951` vs `0` at 2153 | 2 of 8 (the same answers differ) |
 | `--expert-cache 1951`, first replay on fresh servers: `0` three times, `2` four times | 8 of 8, but one `2` run 5 of 8 (at the same near-tie tokens) |
-| `--expert-cache 1951`, one server switched between `2`, `0`, `1` and `2` with a forced miss on every third guess | 8 of 8 |
+| `--expert-cache 1951`, one server switched between `2`, `0`, `1` and `2` (`STRATA_PIPELINE_DEBUG=1` and `STRATA_PIPELINE_SWITCH=<file>`: the engine reads `pw=0`, `pw=1` or `pw=2` from that file at every request) | 8 of 8 |
 
 Replays 2 to 4 on one server drifted with either setting (`0`: 5, 7 and 4 of 8; `2`: 8, 4, 4 and 6, 4, 3), so a
-later replay does not compare the loops; the cause of that drift is not known. Windows of more than one token were
-not compared on this base. TODO(v1-gpu): repeat the fixed-cache comparison on this branch.
+later replay does not compare the loops; the cause of that drift is not known.
+
+The same comparison on this branch, the same PCs, flags and conversations, at `--expert-cache 1951`, each run the
+first replay on a freshly started server, against the first `--pipeline-windows 0` server of this branch (its answers
+are the same as the first server's of the branch this one is built on):
+
+| runs | servers with all 8 answers the same |
+|---|---|
+| `--pipeline-windows 0`, the branch this one is built on | 2 of 2 |
+| `--pipeline-windows 0`, three more servers | 2 of 3 (the third: 4 of 8, from the second conversation's first answer on) |
+| `--pipeline-windows 2` | 4 of 4 |
+| `--pipeline-windows 2`, every third or every second guess made wrong on purpose (`STRATA_PIPELINE_DEBUG=1` and `STRATA_PIPELINE_FORCE_MISS=3` or `2`; these runs set the same value as `force_miss=3` or `2` in the switch file): 256 to 317 of about 545 decode windows undone per run | 2 of 3 (the third: 6 of 8) |
+
+The runs that differ took another word partway into an answer, with `0` as well as with `2`; one server switched
+between `2`, `0`, `1` and `2` on this branch gave 8, 6, 6 and 8 of 8, the later replays' drift above. Without
+`--pipeline-windows` this branch gave the same answers as the branch it is built on, two freshly started servers
+each, all four runs the same: the 8 above on the split; the 8 on one RTX 3080 alone (`--expert-cache 1500`); five
+greedy prompts (code, prose, Chinese, a sum, a summary of a 9,364-token prompt; up to 200 tokens each, 132, 117, 169,
+200 and 200 generated) on the split. Windows of more than one token were not compared, on either base.
 
 ## Picking K and the chunk
 
