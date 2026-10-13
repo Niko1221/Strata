@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Models · Strata</title>
+<link rel="icon" href="web/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="web/tokens.css">
+<link rel="stylesheet" href="web/components.css">
+<link rel="stylesheet" href="web/models.css">
+<script src="web/models.js" defer></script>
+</head>
+<body>
+<header class="st-header">
+  <span class="st-header__brand">Strata</span>
+  <span class="models-nav" aria-current="page">Models</span>
+  <span class="st-header__spacer"></span>
+  <a class="st-btn st-btn--secondary" id="open-chat" hidden target="_blank" rel="noopener">Open Chat</a>
+  <button class="st-btn st-btn--icon" id="theme" aria-label="Switch light and dark theme">
+    <svg class="st-icon" aria-hidden="true"><use href="web/sprite.svg#i-moon"/></svg>
+  </button>
+</header>
+<main>
+  <div class="page-head">
+    <h1>Choose your model</h1>
+    <p>Download, prepare and switch models using Strata’s official setup.</p>
+  </div>
+  <section class="running-strip" aria-label="Current model">
+    <div><strong id="running-title">Checking this PC…</strong><p id="running-detail">The model list comes from this installation’s setup.py.</p></div>
+    <button class="st-btn st-btn--secondary" id="stop-model" hidden>Stop model</button>
+  </section>
+  <p class="notice" id="error" role="alert" hidden></p>
+  <div class="workspace">
+    <section class="catalog" aria-labelledby="catalog-title">
+      <div class="section-head"><h2 id="catalog-title">Installer models</h2><button class="st-btn st-btn--secondary" id="refresh">Refresh</button></div>
+      <p class="muted" id="hardware">Checking GPU and RAM…</p>
+      <div class="table-wrap" tabindex="0" aria-label="Model catalog">
+        <table class="st-table">
+          <thead><tr><th scope="col">Model</th><th scope="col">RAM estimate</th><th scope="col">Full download</th><th scope="col">Action</th></tr></thead>
+          <tbody id="models"><tr><td colspan="4">Loading the official catalog…</td></tr></tbody>
+        </table>
+      </div>
+      <p class="muted footnote">RAM estimates describe the whole PC. Close other applications before loading a large model. Shared files and completed downloads are reused by setup.</p>
+      <details class="manual-guide"><summary>OrcaRouter and experimental models</summary>
+        <p>These use separate workflows and are outside this automatic installer catalog.</p>
+        <a href="https://github.com/Niko1221/Strata/blob/main/docs/ORCA.md" target="_blank" rel="noopener noreferrer">OrcaRouter’s manual compatibility setup</a><br>
+        <a href="https://github.com/Niko1221/Strata/blob/main/docs/UNSLOTH_Q4.md" target="_blank" rel="noopener noreferrer">Experimental Unsloth setup</a>
+      </details>
+    </section>
+    <aside class="setup-panel" aria-labelledby="setup-title">
+      <h2 id="setup-title">Official settings</h2>
+      <p>Setup selects the GPU, backend, context, KV format, RAM mode and expert cache. Images stay off for new installs, as in unattended setup.</p>
+      <dl class="storage"><dt>Model files</dt><dd id="data-folder">Checking…</dd><dt>Shared Qwen lookup table</dt><dd id="lookup">Checking…</dd></dl>
+      <p class="muted">Compatible Qwen sizes keep your existing lookup-table location. Each model keeps its own weights and configuration.</p>
+      <section id="plan" hidden aria-labelledby="plan-title">
+        <h3 id="plan-title">Review download</h3>
+        <dl class="storage" id="plan-facts"></dl>
+        <p id="plan-note"></p>
+        <details><summary>Setup command</summary><pre id="plan-command"></pre></details>
+        <div class="actions"><button class="st-btn st-btn--primary" id="confirm-install">Download and set up</button><button class="st-btn st-btn--secondary" id="dismiss-plan">Cancel</button></div>
+      </section>
+      <section id="job" hidden aria-labelledby="job-title">
+        <h3 id="job-title">Operation</h3>
+        <p id="job-message" role="status" aria-live="polite"></p>
+        <progress id="download-progress" max="100" aria-label="Current file download progress" hidden></progress>
+        <p class="muted" id="download-detail"></p>
+        <button class="st-btn st-btn--secondary" id="cancel-download" hidden>Stop download</button>
+        <details><summary>Setup and server output</summary><pre id="job-log"></pre></details>
+      </section>
+    </aside>
+  </div>
+</main>
+</body>
+</html>
