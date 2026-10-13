@@ -25,7 +25,6 @@
     in
     {
       devShells."${system}" = {
-        # Full development environment.
         default = (pkgs.mkShell.override { inherit stdenv; }) {
           packages = with pkgs; [
             # ./setup.sh: makes .venv and runs setup.py
