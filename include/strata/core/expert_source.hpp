@@ -456,6 +456,10 @@ struct ExpertDispatch {
     GpuPlanSink* plan = nullptr;
     int pcie_num = 0;
     int64_t pcie_experts = 0;      ///< distinct experts the GPU read over PCIe in verify windows
+    /// The bytes those reads moved across the link: one blob per staged expert, in every --pcie-mode (the copy
+    /// engine writes them into staging; kernel and direct modes read the host's blob where it lies).  The server
+    /// turns this into a PCIe rate; `offload_entries` counts routed entries, not bytes.
+    uint64_t pcie_bytes = 0;
     /// #588: routed (token, expert) entries the GPU computed from outside its cache in verify windows: read over PCIe
     /// (--pcie-frac, kind 1) or on another GPU (kind 2).  In neither cache_hits nor cache_refused.
     int64_t offload_entries = 0;
