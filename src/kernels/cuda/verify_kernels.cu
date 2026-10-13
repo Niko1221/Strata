@@ -897,6 +897,10 @@ bool argmax_rows_wanted() {
         int dev = 0, major = 0;
         if (cudaGetDevice(&dev) != cudaSuccess || cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess)
             return false;
+        if (major == 7) {   // STRATA_ARGMAX_ROWS_SM70=1: opt-in on Volta (measured on sm_70 only)
+            const char* e = std::getenv("STRATA_ARGMAX_ROWS_SM70");
+            return e != nullptr && std::atoi(e) != 0;
+        }
         return major == 8;
     }();
     return want && multi_block_head_ops();
