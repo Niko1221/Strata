@@ -1,7 +1,5 @@
 # Which model? Sizes, versions and what fits
 
-**English** · [한국어](MODELS.ko.md)
-
 Strata runs one model, [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), in several **sizes**
 (the same model, compressed more or less) and several **versions** (the original, a coding version, a fine-tune).
 The installer recommends one for your PC; this page explains the choice. Back to the [README](../README.md).

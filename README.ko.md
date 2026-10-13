@@ -45,7 +45,7 @@ Strata는 일반 PC에서 **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwe
 
 NVIDIA 측정은 Q2_0에 엔진 0.1.36, 나머지에 0.1.26을 사용했습니다(답변 4K, 프롬프트 32K). 전체 표는
 [DETAILS.md](docs/DETAILS.md#speed-measured)에 있습니다. VRAM이 큰 카드는 더 빠릅니다. RTX 3090(24 GB)은
-초당 약 100~140 토큰을 생성할 것으로 예상됩니다. 긴 대화와 다른 카드의 속도는 [모델별 속도](docs/MODELS.ko.md#크기별-속도)와
+초당 약 100~140 토큰을 생성할 것으로 예상됩니다. 긴 대화와 다른 카드의 속도는 [모델별 속도](docs/MODELS.md#how-fast-is-each-size)와
 [커뮤니티 측정 결과](docs/COMMUNITY_BENCHMARKS.md)를 참고하세요.
 
 <p align="center"><a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a><br>
@@ -67,9 +67,9 @@ NVIDIA 측정은 Q2_0에 엔진 0.1.36, 나머지에 0.1.26을 사용했습니�
 - **구형 그래픽 카드**(Tesla P40 / V100, GTX 10, Radeon VII / MI50, RX 6700 XT, RX 5500 XT): [구형 GPU](docs/OLDER_GPUS.md).
 - **Intel Arc**(Linux에서 소스 빌드): [Intel Arc](docs/INTEL_ARC.md).
 - **AMD Ryzen AI Max(Strix Halo)**(Linux에서 소스 빌드): [Strix Halo](docs/STRIX_HALO.md).
-- **AVX2를 지원하지 않는 구형 프로세서:** 작동하지만 느립니다. [구형 CPU](docs/INSTALL.ko.md#구형-cpu실험적).
+- **AVX2를 지원하지 않는 구형 프로세서:** 작동하지만 느립니다. [구형 CPU](docs/INSTALL.md#older-cpus-experimental).
 
-전체 목록은 [설치 문서](docs/INSTALL.ko.md#필요한-사양)에 있습니다.
+전체 목록은 [설치 문서](docs/INSTALL.md#what-you-need)에 있습니다.
 
 ## 설치
 
@@ -104,10 +104,7 @@ NVIDIA와 AMD 모두 설치 단계는 같습니다. 설치 프로그램이 그�
 
 **다음부터는** `START-HERE.bat`(또는 `./setup.sh`)을 다시 실행하세요. 바로 시작하며 같은 파일을 다시 다운로드하지
 않습니다. 창을 닫으면 모델이 중지됩니다. `UPDATE.bat`(`./update.sh`)은 Strata를 시작하지 않고 업데이트합니다. 업데이트,
-Docker, 여러 그래픽 카드, 파일 저장 위치와 모든 옵션은 [설치 문서](docs/INSTALL.ko.md)에 있습니다.
-
-**내 PC에서는 얼마나 빠를까요?** `BENCH.bat`(`./bench.sh`)을 실행하세요. 약 5~10분 동안 현재 설정으로 대화,
-4K/16K 프롬프트와 에이전트 방식 세션을 측정하고 공유할 수 있는 보고서를 작성합니다([방법](docs/COMMUNITY_BENCHMARKS.md#run-the-benchmark)).
+Docker, 여러 그래픽 카드, 파일 저장 위치와 모든 옵션은 [설치 문서](docs/INSTALL.md)에 있습니다.
 
 ## 어떤 모델을 선택해야 하나요?
 
@@ -121,20 +118,20 @@ Docker, 여러 그래픽 카드, 파일 저장 위치와 모든 옵션은 [설�
 | **64 GB** | **IQ2_XS**(권장), 또는 IQ3_XXS / IQ3_S | 모든 크기를 실행할 수 있습니다. IQ3_S가 가장 뛰어나지만 가장 느립니다. |
 | **96 GB 이상** | **IQ3_S**, 또는 Unsloth의 UD-IQ4_XS(약 4비트) | 다른 프로그램을 열어 둔 채로 가장 큰 크기를 실행할 여유가 있습니다. |
 
-- **[Coder](docs/MODELS.ko.md#coder):** 전문가 절반을 제거한 코딩 버전입니다. 제작자가 측정한 전체 모델 SWE-bench Verified
+- **[Coder](docs/MODELS.md#coder):** 전문가 절반을 제거한 코딩 버전입니다. 제작자가 측정한 전체 모델 SWE-bench Verified
   점수의 91%에 도달하며 RAM 32 GB에 들어갑니다. 중국어와 다른 CJK 텍스트를 포함해 코드 외 영역에서는 성능이
   떨어집니다(#438). 이 용도에는 모든 전문가를 유지하는 Q2_0, IQ2_XS 또는 IQ3_S를 선택하세요.
-- **[Swift 1.5](docs/MODELS.ko.md#swift-15):** 답하기 전 생각하는 시간을 크게 줄인 미세 조정 모델입니다. 비슷한 품질의 답변을
+- **[Swift 1.5](docs/MODELS.md#swift-15):** 답하기 전 생각하는 시간을 크게 줄인 미세 조정 모델입니다. 비슷한 품질의 답변을
   더 빨리 받을 수 있습니다.
-- **[Unsloth UD-IQ4_XS](docs/MODELS.ko.md#unsloth-ud-iq4_xs):** Unsloth의 약 4비트 버전으로 품질은 IQ3_S와
+- **[Unsloth UD-IQ4_XS](docs/MODELS.md#unsloth-ud-iq4_xs):** Unsloth의 약 4비트 버전으로 품질은 IQ3_S와
   UD-Q4_K_XL 사이입니다. 다운로드 크기는 94 GB입니다. RAM이 약 80 GB보다 적으면 답변하는 동안 SSD에서 일부를 읽으므로
   더 느립니다(NVMe SSD를 사용하면 도움이 됩니다).
-- **[Unsloth UD-Q4_K_XL](docs/MODELS.ko.md#unsloth-ud-q4_k_xl-실험적)**(실험적): 전체 모델에 가장 가깝습니다.
+- **[Unsloth UD-Q4_K_XL](docs/MODELS.md#unsloth-ud-q4_k_xl-experimental)**(실험적): 전체 모델에 가장 가깝습니다.
   하지만 답변하는 동안 SSD에서 대부분을 읽기 때문에 RAM 64 GB PC에서는 초당 7~8.5 토큰만 생성합니다.
-- **[OrcaRouter's Uncensored IQ3_XXS](docs/MODELS.ko.md#orcarouter-uncensored-iq3_xxs):** 수동으로 설정해야 하며
+- **[OrcaRouter's Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs):** 수동으로 설정해야 하며
   설치 프로그램 메뉴에는 없습니다.
 
-크기, 다운로드와 각 사양에 맞는 모델은 [모델 문서](docs/MODELS.ko.md)를 참고하세요. 나중에 다른 모델을 추가하려면
+크기, 다운로드와 각 사양에 맞는 모델은 [모델 문서](docs/MODELS.md)를 참고하세요. 나중에 다른 모델을 추가하려면
 `SETUP.bat`(Linux: `./setup.sh --setup`)을 실행하세요.
 
 ## 사용하기
@@ -160,7 +157,7 @@ Docker, 여러 그래픽 카드, 파일 저장 위치와 모든 옵션은 [설�
 - **긴 프롬프트:** Strata는 대화의 첫 메시지를 전부 읽으며, 30,000 토큰당 약 1분이 걸립니다. 후속 메시지는 몇 초 안에
   답변을 시작합니다.
 
-더 알아보기: [대화 저장 위치](docs/INSTALL.ko.md#저장-위치), [API](docs/DETAILS.md#using-it).
+더 알아보기: [대화 저장 위치](docs/INSTALL.md#where-things-are-stored), [API](docs/DETAILS.md#using-it).
 
 ## 문제가 생겼나요?
 
@@ -171,7 +168,7 @@ Docker, 여러 그래픽 카드, 파일 저장 위치와 모든 옵션은 [설�
   RAM이 부족합니다. 다른 프로그램(브라우저는 RAM을 많이 사용함)을 닫거나 더 작은 크기(Q2_0 또는 IQ2_XS)를 선택하세요.
 - **8080 포트가 이미 사용 중이라고 나옵니다.** Strata가 이미 실행 중입니다. 실행 중인 창을 찾으세요.
 
-더 많은 문제와 해결 방법은 [문제 해결 문서](docs/TROUBLESHOOTING.ko.md)에 있습니다. 그래도 해결되지 않으면
+더 많은 문제와 해결 방법은 [문제 해결 문서](docs/TROUBLESHOOTING.md)에 있습니다. 그래도 해결되지 않으면
 [이슈](https://github.com/Niko1221/Strata/issues)를 열고 Strata 폴더의 `strata-<model>.log`를 첨부하세요. 보안 문제를
 발견했다면 [SECURITY.md](SECURITY.md)에 따라 비공개로 신고하세요.
 
@@ -193,7 +190,7 @@ Strata는 **PC 전체에 작업을 나누어** 모델을 실행합니다. 부엌
   1.6~1.8배 빨리 받을 수 있습니다.
 - **긴 텍스트는 큰 덩어리로 읽습니다**(한 번에 최대 8,192 토큰). 초당 1,000 토큰 이상을 읽습니다.
 
-더 긴 설명은 [작동 원리 문서](docs/HOW_IT_WORKS.ko.md)에 있습니다. 모든 구성 요소와 수치는
+더 긴 설명은 [작동 원리 문서](docs/HOW_IT_WORKS.md)에 있습니다. 모든 구성 요소와 수치는
 [상세 문서](docs/DETAILS.md#how-it-works)와 [논문](docs/paper/Strata-Paper.pdf)을 참고하세요.
 
 ## 크레딧과 라이선스
@@ -201,8 +198,8 @@ Strata는 **PC 전체에 작업을 나누어** 모델을 실행합니다. 부엌
 모델은 Qwen 팀의 [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)입니다.
 [ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF), UkisAI(Swift 1.5), Unsloth가
 모델을 압축했습니다. Strata는 [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp)의 일부를 사용합니다. 전체 크레딧은
-[작동 원리 문서](docs/HOW_IT_WORKS.ko.md#크레딧)에 있습니다. Strata는 [MIT 라이선스](LICENSE)로 공개된 오픈 소스입니다.
-일부 구성 요소와 각 모델에는 별도 라이선스가 적용됩니다([목록](docs/HOW_IT_WORKS.ko.md#라이선스)).
+[작동 원리 문서](docs/HOW_IT_WORKS.md#credits)에 있습니다. Strata는 [MIT 라이선스](LICENSE)로 공개된 오픈 소스입니다.
+일부 구성 요소와 각 모델에는 별도 라이선스가 적용됩니다([목록](docs/HOW_IT_WORKS.md#license)).
 
 ## Strata 후원하기
 

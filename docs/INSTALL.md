@@ -1,7 +1,5 @@
 # Installing Strata
 
-**English** · [한국어](INSTALL.ko.md)
-
 Everything about installing, starting, updating and configuring Strata, on Windows and Linux, with an NVIDIA or an
 AMD graphics card. The short version is in the [README](../README.md#install); an AI coding assistant can do all of
 this for you with [AI_SETUP.md](AI_SETUP.md).
