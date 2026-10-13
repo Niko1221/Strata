@@ -24,6 +24,16 @@
 namespace strata::kernels {
 
 /// scores [nq, max_blocks]; q_idx [nq, idx_n_head, idx_dim] (normed and rotated); steps [nq, kStepCount].
+/// Batch windows: query q's own indexer keys - pooled[q], dead[q] (q < n <= 8).
+struct QsaScoreRows {
+    const float* pooled[8] = {};
+    const float* dead[8] = {};
+    int n = 0;
+};
+/// qsa_block_scores for up to 8 queries of DIFFERENT sequences in one launch (the multi kernel, per query its own
+/// keys; the same arithmetic in the same order: bit-identical scores).
+void qsa_block_scores_rows(const QsaScoreRows& rows, const float* q_idx, const int32_t* steps, int64_t nq,
+                           int64_t max_blocks, const QsaShapes& s, float* scores, void* stream);
 void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps, int64_t nq,
                       int64_t max_blocks, const QsaShapes& s, float* scores, void* stream,
                       int64_t active_blocks = -1);   ///< perf-review C-1: > 0 launches only this many blocks (the

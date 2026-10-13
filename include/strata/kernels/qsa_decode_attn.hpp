@@ -32,6 +32,13 @@ struct QsaAttnPools {
     const int32_t* page_table = nullptr;
 };
 
+/// Batch windows: every query's own K/V pools - query z reads p[z] (z < n).  n = 0: the call's one `pools`.
+inline constexpr int kAttnRowsMax = 8;
+struct QsaAttnPoolsRows {
+    QsaAttnPools p[kAttnRowsMax];
+    int n = 0;
+};
+
 /// Scratch floats for `cap` selected cells: partial accumulators, maxima and sums.
 uint64_t qsa_decode_attn_scratch_floats(int64_t cap, const QsaShapes& s);
 
@@ -42,5 +49,10 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
 /// [n_q, kStepCount], attn [n_q, n_head, 256]; scratch is `n_q` times the single-query size.
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
+
+/// qsa_decode_attn_batch for up to kAttnRowsMax queries of DIFFERENT sequences (batch slots), query z attending
+/// over rows.p[z] - one launch instead of one per query, the same per-query arithmetic (bit-identical outputs).
+void qsa_decode_attn_batch_rows(const float* q, const QsaAttnPoolsRows& rows, const int32_t* ids, const int32_t* steps,
+                                int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
 
 }  // namespace strata::kernels

@@ -262,6 +262,37 @@ tok/s, at 0.7 -> 358 tok/s.
 `--trim-stage-weights` alone raised the share of experts held in VRAM on that machine from 76-85 % to 84-100 %
 per card.
 
+### One launch for all slots (opt-in)
+
+In a batch window, QSA block scoring, top-k and decode attention ran as one launch per row, and the GDN recurrence
+(in the window and in the 1-row commit) as one launch per slot. Two switches run each of them as one launch for all
+rows, every row still reading its own slot's indexer keys, K/V pools and GDN state (passed by value as kernel
+params, so the graph captured per row layout stays valid):
+
+| Switch | What it does |
+| --- | --- |
+| `STRATA_BATCH_ATTN_ROWS=1` | block scores, top-k and decode attention of all the window's rows (up to 8) in one launch each. Not with KV streaming (a slot with `kv_mode` 1 keeps the per-row launches). |
+| `STRATA_BATCH_GDN_GROUPS=1` | the GDN recurrence in the window, and the commit of 1-row groups, for all slots in one launch. The conv commits stay per slot. |
+
+Both are off by default; off, the engine runs the same launches as before. On, the arithmetic per row is the same:
+4 concurrent prompts at temperature 0 gave the same bytes as without them, with `--batch 4` and `--batch 8`.
+
+One RTX PRO 6000 Blackwell (96 GB), IQ3_S, all 24,576 experts in VRAM, `--kv int8`, 262144 context, `--mtp`,
+`--spec 4`, through the HTTP server: C different stories sent at once, 1024 tokens each, temperature 0.7, mean of
+2 rounds, total tok/s (engine a0116b2, same day):
+
+| Concurrent | `--batch 4` | with both switches | `--batch 8` (reserve 6144 MiB) | with both switches |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 179.2 | 179.4 | 186.6 | 179.7 |
+| 2 | 204.1 | 218.7 | | |
+| 3 | 243.2 | 276.6 | | |
+| 4 | 268.4 | 311.7 | 267.7 | 311.6 |
+| 6 | | | 297.7 | 354.8 |
+| 8 | | | 308.4 | 374.8 |
+
+The window (`strata batch:` in the engine log) costs 14.3 ms for 4 rows and 24.6 ms for 8 rows without them, and
+12.2 ms and 19.9 ms with them: about 1.7-1.9 ms per added row instead of 2.4 ms.
+
 ## Together with conversation parking
 
 `--conversation-cache-mib N --conversation-cache-slots K` (DETAILS.md) works with the layer split too: a request

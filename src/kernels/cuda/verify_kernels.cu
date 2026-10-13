@@ -291,7 +291,18 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_multi_kernel(float* __re
                                                                      const float* __restrict__ gamma, float eps,
                                                                      float* __restrict__ y, int h_k, int h_v, int T,
                                                                      const int32_t* __restrict__ n_keep, int t_out_begin,
-                                                                     GdnQ81* __restrict__ xq) {
+                                                                     GdnQ81* __restrict__ xq, GdnGroups grp = {}) {
+    if (grp.n > 0) {   // group blockIdx.y - its slot's state and its rows of the window's buffers
+        const int gi = blockIdx.y, f = grp.first[gi];
+        state = grp.state[gi];
+        hbuf += (size_t) f * C;
+        gate += (size_t) f * h_v;
+        beta += (size_t) f * h_v;
+        z += (size_t) f * S * h_v;
+        y += (size_t) f * S * h_v;
+        T = grp.ntok[gi];
+        n_keep = grp.keep[gi];
+    }
     __shared__ float sk[2][S], sq[2][S];
     __shared__ float red_kv[RG][S];
     __shared__ float red_o[RG][S];
@@ -1057,6 +1068,30 @@ void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
         default: gdn_ab_multi_kernel<kVerifyMaxT, false><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
     }
     check("gdn_ab_multi");
+}
+
+void gdn_step_norm_groups(const GdnGroups& groups, const float* h, int conv_channels, const float* gate, const float* beta,
+                          const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, bool commit,
+                          void* stream) {
+    if (groups.n < 1 || groups.n > 8 || !h || !gate || !beta || !z || !gamma || !y || h_k <= 0 || h_v % h_k) {
+        std::fprintf(stderr, "gdn_step_norm_groups: invalid arguments\n");
+        std::exit(1);
+    }
+    for (int i = 0; i < groups.n; ++i)
+        if (!groups.state[i] || groups.ntok[i] < 1 || groups.ntok[i] > kVerifyMaxT || (commit && !groups.keep[i])) {
+            std::fprintf(stderr, "gdn_step_norm_groups: invalid group %d\n", i);
+            std::exit(1);
+        }
+    const dim3 g1((unsigned) h_v, (unsigned) groups.n), b1(S, RG);
+    // the kernel gdn_step_norm_multi picks for these calls: a window's rows (all outputs, no keep) or a commit of
+    // one-row groups (keep, t_out_begin 0)
+    if (commit)
+        gdn_step_norm_multi_kernel<false, false><<<g1, b1, 0, (cudaStream_t) stream>>>(
+            nullptr, h, conv_channels, gate, beta, z, gamma, eps, y, h_k, h_v, 0, nullptr, 0, nullptr, groups);
+    else
+        gdn_step_norm_multi_kernel<true, false><<<g1, b1, 0, (cudaStream_t) stream>>>(
+            nullptr, h, conv_channels, gate, beta, z, gamma, eps, y, h_k, h_v, 0, nullptr, 0, nullptr, groups);
+    check("gdn_step_norm_groups");
 }
 
 void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const float* gate, const float* beta,
