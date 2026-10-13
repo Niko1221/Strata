@@ -281,6 +281,131 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
     for (int h = 0; h < G; ++h) part_acc[((size_t) slot * G + h) * HD + t] = acc[h];
 }
 
+#if !defined(__HIPCC__)
+// Turing (INT8 pools): attn_chunk_kernel<1> bit for bit, rearranged for the SM's shared-memory pipe, which the
+// default kernel saturates (its time grew with the queries even with the SMs half empty).  Three changes, none to an
+// operand or the order of an operation:
+//   - the lane's slice of the 12 query heads (8 dimensions each) is read from shared memory once, into registers,
+//     instead of two 16-byte reads per head per cell (with a two-way bank conflict at lane * 8);
+//   - the 12 heads' lane sums are reduced with reduce12_gfx906 (16 shuffles, each sum warp_sum's pairs) instead of
+//     12 warp_sums (60 shuffles);
+//   - the probabilities are stored cell-major, so the value loop reads a cell's 12 as three 16-byte broadcasts.
+// RTX 2080 Ti, 2051 selected cells: 1 / 2 / 3 / 4 queries 51.6 / 78.5 / 110 / 146 -> 34.5 / 41.0 / 73.0 / 84.9 us
+// (with the merge); 600 cells 45.9 / 74.6 / 105 / 137 -> 28.6 / 32.8 / 33.5 / 33.3 us.  STRATA_ATTN_V3=0 keeps the
+// default kernel; =1 takes this one on any CUDA card.
+__global__ void __launch_bounds__(THREADS) attn_chunk_q8_v3_kernel(const float* __restrict__ q, QsaAttnPools p,
+                                                                   const int32_t* __restrict__ ids,
+                                                                   const int32_t* __restrict__ step, int n_kv_heads,
+                                                                   int page_size, float scale, float* __restrict__ part_acc,
+                                                                   float* __restrict__ part_m, float* __restrict__ part_l,
+                                                                   int n_chunks, int cap = 0, long long scratch_stride = 0) {
+    q += (size_t) blockIdx.z * (size_t) (n_kv_heads * G) * HD;
+    ids += (size_t) blockIdx.z * (size_t) cap;
+    step += (size_t) blockIdx.z * kStepCount;
+    part_acc += (size_t) blockIdx.z * (size_t) scratch_stride;
+    part_m += (size_t) blockIdx.z * (size_t) scratch_stride;
+    part_l += (size_t) blockIdx.z * (size_t) scratch_stride;
+    __shared__ __align__(16) float sq[G][HD];
+    __shared__ __align__(16) float spt[CHUNK][G];   // cell-major: one cell's 12 heads are 3 float4
+    __shared__ long long srow[CHUNK];
+    const int n_ids = __ldg(step + kStepWidth);
+    const int chunk = blockIdx.x, kvh = blockIdx.y;
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
+    const int c0 = chunk * CHUNK;
+    const int n_here = min(CHUNK, n_ids - c0);
+    const int slot = kvh * n_chunks + chunk;
+    if (n_here <= 0) {
+        if (t < G) { part_m[slot * G + t] = -FLT_MAX; part_l[slot * G + t] = 0.0f; }
+        return;
+    }
+    // stored with the gfx906 swizzle (the two float4 halves of lanes with bit 2 swapped): fewer conflicts on the one read
+    for (int i = t; i < G * HD; i += THREADS) {
+        const int d = i % HD;
+        sq[i / HD][d ^ ((d >> 3) & 4)] = q[(size_t) (kvh * G) * HD + i];
+    }
+    if (t < CHUNK) {
+        long long r = -1;
+        if (t < n_here) {
+            const int cell = ids[c0 + t];
+            const long long page = (long long) p.page_table[cell / page_size];
+            if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+        }
+        srow[t] = r;
+    }
+    __syncthreads();
+    float qr[G][8];
+#pragma unroll
+    for (int h = 0; h < G; ++h) {
+        const int qflip = lane & 4;
+        const float4 qa = *reinterpret_cast<const float4*>(&sq[h][lane * 8 + qflip]);
+        const float4 qb = *reinterpret_cast<const float4*>(&sq[h][lane * 8 + (qflip ^ 4)]);
+        qr[h][0] = qa.x; qr[h][1] = qa.y; qr[h][2] = qa.z; qr[h][3] = qa.w;
+        qr[h][4] = qb.x; qr[h][5] = qb.y; qr[h][6] = qb.z; qr[h][7] = qb.w;
+    }
+    for (int c = warp; c < CHUNK; c += WARPS) {
+        if (c >= n_here || srow[c] < 0) {
+            if (lane < G) spt[c][lane] = -FLT_MAX;
+            continue;
+        }
+        float k8[8];
+        load8<1>(p, false, srow[c], lane * 8, k8);
+        float part[16];
+#pragma unroll
+        for (int h = 0; h < G; ++h)
+            part[h] = k8[0] * qr[h][0] + k8[1] * qr[h][1] + k8[2] * qr[h][2] + k8[3] * qr[h][3] +
+                      k8[4] * qr[h][4] + k8[5] * qr[h][5] + k8[6] * qr[h][6] + k8[7] * qr[h][7];
+#pragma unroll
+        for (int h = G; h < 16; ++h) part[h] = 0.0f;
+        const float score = reduce12_gfx906(part, lane);
+        const int head = reduce12_head_of_lane(lane);
+        if ((lane & 1) == 0 && head < G) spt[c][head] = score * scale;
+    }
+    __syncthreads();
+    for (int h = warp; h < G; h += WARPS) {
+        const float a = spt[lane][h], b = spt[lane + 32][h];
+        const float m = warp_max(fmaxf(a, b));
+        const float ea = (lane < n_here && srow[lane] >= 0) ? __expf(a - m) : 0.0f;
+        const float eb = (lane + 32 < n_here && srow[lane + 32] >= 0) ? __expf(b - m) : 0.0f;
+        spt[lane][h] = ea;
+        spt[lane + 32][h] = eb;
+        const float l = warp_sum(ea + eb);
+        if (lane == 0) { part_m[slot * G + h] = m; part_l[slot * G + h] = l; }
+    }
+    __syncthreads();
+    float acc[G];
+#pragma unroll
+    for (int h = 0; h < G; ++h) acc[h] = 0.0f;
+    for (int c = 0; c < n_here; ++c) {
+        if (srow[c] < 0) continue;   // masked above, weight 0
+        const float sc = __half2float(__ushort_as_half(p.v_scale[srow[c] * (HD / KV_Q8_GROUP) + t / KV_Q8_GROUP]));
+        const float v = (float) p.v_q[srow[c] * HD + t] * sc;
+        const float4 p0 = *reinterpret_cast<const float4*>(&spt[c][0]);
+        const float4 p1 = *reinterpret_cast<const float4*>(&spt[c][4]);
+        const float4 p2 = *reinterpret_cast<const float4*>(&spt[c][8]);
+        const float pr[G] = {p0.x, p0.y, p0.z, p0.w, p1.x, p1.y, p1.z, p1.w, p2.x, p2.y, p2.z, p2.w};
+#pragma unroll
+        for (int h = 0; h < G; ++h) acc[h] = fmaf(pr[h], v, acc[h]);
+    }
+#pragma unroll
+    for (int h = 0; h < G; ++h) part_acc[((size_t) slot * G + h) * HD + t] = acc[h];
+}
+bool attn_v3_on() {
+    static int on[16] = {};   // by device ordinal: 0 unknown, 1 yes, -1 no
+    static const int env = [] { const char* v = std::getenv("STRATA_ATTN_V3"); return v ? (v[0] == '0' ? 0 : 1) : -1; }();
+    if (env >= 0) return env == 1;
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 16) return false;
+    if (on[dev] == 0) {
+        int maj = 0, mnr = 0;
+        const bool ok = cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                        cudaDeviceGetAttribute(&mnr, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        if (!ok) cudaGetLastError();
+        on[dev] = ok && maj == 7 && mnr == 5 ? 1 : -1;   // measured on Turing only
+    }
+    return on[dev] > 0;
+}
+#endif
+
 // PR #540 (sskver): the same attention with fewer shuffles and less shared-memory traffic, bit for bit the kernel
 // above (same operands, same order); +7% prompt speed on a V100, where this kernel reads every prompt chunk.  It
 // uses more registers (80 vs 38 on sm_70), so on CUDA it runs on cards below sm_75 only, and exists only in the
@@ -689,6 +814,12 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         }
     } else
 #endif
+#if !defined(__HIPCC__)
+    if (kv_mode == 1 && attn_v3_on())
+        attn_chunk_q8_v3_kernel<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
+                                                          scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
+    else
+#endif
     if (kv_mode == 3)
         STRATA_ATTN_CHUNK(3)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
                                                         scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
@@ -737,6 +868,12 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
     const float scale = 1.0f / sqrtf((float) HD);
     const dim3 grid((unsigned) n_chunks, (unsigned) s.n_head_kv);
     cudaStream_t st = (cudaStream_t) stream;
+#if !defined(__HIPCC__)
+    if (kv_mode == 1 && attn_v3_on())
+        attn_chunk_q8_v3_kernel<<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
+                                                          scale, part_acc, part_m, part_l, n_chunks, 0, 0);
+    else
+#endif
     if (kv_mode == 3)
         STRATA_ATTN_CHUNK(3)<<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
                                                         scale, part_acc, part_m, part_l, n_chunks, 0, 0);
