@@ -9235,17 +9235,26 @@ int main(int argc, char** argv) {
                 }
             } else {
                 Clock::time_point t0 = Clock::now();
-                auto lap = [&](double& acc) {   // (STRATA_TRACE only)
-                    if (!ckpt_trace) return;
+                auto lap = [&](double& acc) {   // (accumulates unconditionally: the FW-2a probe below reads it without STRATA_TRACE)
                     const Clock::time_point t1 = Clock::now();
                     acc += std::chrono::duration<double, std::milli>(t1 - t0).count();
                     t0 = t1;
                 };
                 double sync_ms = 0.0, save_ms = 0.0;
-                if (!gpu_sync_ok()) return false;
+                const bool sync_ok = gpu_sync_ok();
                 lap(sync_ms);
-                if (!checkpoint_save(c, ss, g)) return false;
+                const bool save_ok = sync_ok && checkpoint_save(c, ss, g);
                 lap(save_ms);
+                // FW-2a probe (T19): decompose the ~8s/boundary cost.  sync_ms = the
+                // device synchronize (pipeline drain); save_ms = the state+K/V copy.
+                // boundary_total - (sync+save) = the pipeline piece restart.  Decides the
+                // FW-2b checkpoint cadence: cheap save -> state-only ckpts at 256-tok; cheap
+                // sync -> cadence free; neither -> reuse dense-tail pieces only.
+                if (o.cache_suffix_reuse > 0)
+                    std::fprintf(stderr, "[SFX-DBG] ckpt-at: L=%lld sync_ms=%.1f save_ms=%.1f%s%s\n",
+                                 (long long) L, sync_ms, save_ms,
+                                 sync_ok ? "" : " SYNC_FAIL", save_ok ? "" : " SAVE_FAIL");
+                if (!sync_ok || !save_ok) return false;
                 for (auto& st : stages) {   // a layer split's later stages: their sessions' part
                     const strata::core::OnDevice on(st->dev);
                     ConvCheckpoint part;
