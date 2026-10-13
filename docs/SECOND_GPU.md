@@ -171,3 +171,40 @@ not yet combined with the peer's rows. Mapped host buffers gain
 context write them. The tier size is manual for now (`--peer-reserve-mib`,
 `--peer-slots`); automatic sizing on small cards wants the buffer lending of
 #216 and is a follow-up.
+
+## Helper-cache allowance
+
+`STRATA_REMOTE_RESERVE_MIB` sets the allowance used by
+`--expert-cache-device1..3`, in MiB. Unset keeps the existing 512 MiB allowance.
+It applies to both automatic cache sizing and an explicit slot count, and to
+every helper cache in the process. It is separate from the primary card's
+`--vram-reserve-mib` and a layer split's `--vram-reserve-later-mib`.
+
+The value must be a decimal integer from 0 to 8192. The allowance includes the
+helper's input/output, quantization, scratch and metadata work buffers; it must
+cover their computed size plus at least 16 MiB of driver headroom. Invalid or
+undersized values fail before the cache is filled, with the minimum in the error.
+This minimum is an allocation floor, not a guarantee that a small reserve suits
+the driver, desktop or later allocations. Windows may need much more room.
+
+A smaller allowance can admit more experts on a helper with available memory.
+Measure both prompt and decode speed and exercise the configured context before
+keeping it; more expert slots do not establish a speed gain or client concurrency.
+The setting leaves model weights, quantization and sampling unchanged. For example,
+an explicitly measured allowance can be passed through a server config's `env`:
+
+```json
+{"env": {"STRATA_REMOTE_RESERVE_MIB": "128"}}
+```
+
+128 MiB was used on one Linux RX 7900 XTX + RX 6800 XT setup; it is not a default
+recommendation for other machines. The combined tuned setup passed its full1M
+recall request, but its throughput does not isolate this allowance's effect.
+
+The CPU-only policy test needs no model or GPU:
+
+```bash
+cmake -S . -B build-policy -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_BUILD_TESTS=ON
+cmake --build build-policy --target remote_reserve_test
+ctest --test-dir build-policy -R '^remote_reserve_test$' --output-on-failure
+```

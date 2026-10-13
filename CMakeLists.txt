@@ -106,6 +106,13 @@ option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
 # native-experts section far below, so a first configure registered four tests fewer than the second)
 option(STRATA_NATIVE_EXPERTS "Native (IQ) expert support through ggml-cpu" ON)
 
+if(STRATA_BUILD_TESTS)
+  enable_testing()
+  add_executable(remote_reserve_test src/core/remote_reserve_test.cpp)
+  target_include_directories(remote_reserve_test PRIVATE include)
+  add_test(NAME remote_reserve_test COMMAND remote_reserve_test)
+endif()
+
 if(STRATA_BUILD_CONVERSATION_TESTS)
   enable_testing()
   add_executable(conversation_cache_test src/core/conversation_cache_test.cpp)
