@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <set>
+#include <vector>
 #include <system_error>
 #include <sys/stat.h>
 #include <thread>
@@ -129,6 +130,9 @@ DiskParkLogs::DiskParkLogs(Config cfg) : cfg_(std::move(cfg)) {
         const std::string tdir = cfg_.root + "/tag-" + tagbuf;
         std::error_code ec;
         std::size_t n_dirs = 0;
+        // ★★★ P25：先收集，最后【按 mtime 升序】插进 LRU（原因见下面那段注释）
+        struct ScanEnt { std::int64_t mt; DiskParkLogDigest d; std::string dn; std::uint64_t bytes; };
+        std::vector<ScanEnt> scanned;
         for (std::filesystem::directory_iterator it(tdir, ec), end;
              !ec && it != end; it.increment(ec)) {
             std::error_code ec2;
@@ -151,15 +155,26 @@ DiskParkLogs::DiskParkLogs(Config cfg) : cfg_(std::move(cfg)) {
                         bytes += (std::uint64_t) stt.st_blocks * 512ull;
                 }
             }
-            Track t;
-            t.dir_name  = dn;
-            t.watermark = 0;             // 真实水位在 state.bin 里，append 时会读
-            lru_.push_front(d);
-            t.lru = lru_.begin();
-            tracked_.emplace(d, std::move(t));
-            dir_bytes_[dn] = bytes;
-            total_bytes_ += bytes;
+            struct ::stat dstt;
+            const std::int64_t mt = (::stat(it->path().c_str(), &dstt) == 0)
+                                    ? (std::int64_t) dstt.st_mtime : 0;
+            scanned.push_back(ScanEnt{mt, d, dn, bytes});
             ++n_dirs;
+        }
+        // ★★★ P25（2026-10-13）：按 mtime【升序】重建 LRU —— 最老的先插 ⇒ 落在队尾 ⇒ 先被淘汰。
+        //   原来直接按 directory_iterator 的顺序 push_front，LRU 顺序等于随机；配上容量上限后，
+        //   重启后的第一刀（盘上 78.9 GiB vs 上限 60 GiB ⇒ 要删 ~19 GiB）会随机砍掉活跃会话。
+        std::sort(scanned.begin(), scanned.end(),
+                  [](const ScanEnt& a, const ScanEnt& b) { return a.mt < b.mt; });
+        for (const ScanEnt& e : scanned) {
+            Track t;
+            t.dir_name  = e.dn;
+            t.watermark = 0;             // 真实水位在 state.bin 里，append 时会读
+            lru_.push_front(e.d);
+            t.lru = lru_.begin();
+            tracked_.emplace(e.d, std::move(t));
+            dir_bytes_[e.dn] = e.bytes;
+            total_bytes_ += e.bytes;
         }
         if (n_dirs > 0)
             std::fprintf(stderr, "strata serve: disk park stream: [启动] 盘上已有 %zu 个会话目录，"
@@ -351,7 +366,7 @@ std::uint64_t DiskParkLogs::append_layers(const Request& req, std::size_t layers
     // ★★★ 2026-10-13：把本轮的头部指纹记进索引（供取回路径零 I/O 预筛）
     if (req.head_n > 0 && req.fp_head != 0)
         note_dir_head(dir_name, req.to_tokens, req.head_n, req.fp_head);
-    trim();                  // ★ max_tracked 的 LRU 淘汰（只淘汰"记忆"，不动盘上文件）
+    trim(dir_name);          // ★ P25：容量淘汰 + max_tracked LRU；绝不删正在写的这一份
     evict_open_dirs();       // ★ P18：逐层路径也要有界（单层那条老循环保持不变）
     return written;
 }
@@ -610,10 +625,10 @@ void DiskParkLogs::remember(const DiskParkLogDigest& d, const std::string& dir_n
         it->second.watermark = tokens;
         touch(d);
     }
-    trim();
+    trim(dir_name);
 }
 
-void DiskParkLogs::trim() {
+void DiskParkLogs::trim(const std::string& active) {
     // ★★ 淘汰按【最近用过】，不按水位。
     //    对话链是 D1→D2→D3…，被用到的是"每个请求带来的那个 prev" ——
     //    那是链上前一个节点，可能水位很小（早期轮次）。按水位淘汰会掐掉它，
@@ -636,7 +651,53 @@ void DiskParkLogs::trim() {
         }
         tracked_.erase(victim);
     }
-    // ★★★ 2026-10-13（清理）：这里原来有一段【盘上总占用上限】（--disk-park-max-gib）：
+    // ★★★ P25（2026-10-13）：盘上【总占用】上限 —— 08a62f46 删掉的那段，现在恢复。
+    //   为什么恢复：park-gc 的闸门够不着（--keep-newer-hours 6 h 是硬地板，窗外只有 0.07 GiB），
+    //   于是 18:48 摘掉引擎上限之后 tier 从 52.8 GiB 涨到 78.9 GiB。引擎侧淘汰的好处是
+    //   它知道【哪个会话正在用】，按整会话 LRU 删比按时间删准。park-gc 退成老目录清扫 + 兜底。
+    //   ① 不删 active（正在追加的那份）：把它挪到队首，本轮跳过，继续看下一个。
+    //   ② 还有别的摘要指向同一目录时不删（否则要重开一遍）。
+    //   ③ freed 用 dir_bytes_（st_blocks 口径累计），与启动扫描一致。
+    if (cfg_.max_bytes > 0) {
+        std::size_t guard = tracked_.size() + 1;      // 最多绕一圈，避免只有一个候选时死循环
+        while (total_bytes_ > cfg_.max_bytes && !lru_.empty() && guard-- > 0) {
+            const DiskParkLogDigest vkey = lru_.back();
+            const auto victim = tracked_.find(vkey);
+            if (victim == tracked_.end()) { lru_.pop_back(); continue; }
+            const std::string dir = victim->second.dir_name;
+            if (!active.empty() && dir == active) { touch(vkey); continue; }   // ★ ①
+            bool still_referenced = false;
+            for (const auto& kv : tracked_)
+                if (kv.first != victim->first && kv.second.dir_name == dir) { still_referenced = true; break; }
+            if (still_referenced) {                              // ★ ② 只淘汰记忆，不动文件
+                lru_.pop_back();
+                tracked_.erase(victim);
+                continue;
+            }
+            const auto db = dir_bytes_.find(dir);
+            const std::uint64_t freed = (db != dir_bytes_.end()) ? db->second : 0;
+            std::error_code ec;
+            const std::uint64_t removed = std::filesystem::remove_all(dir_for(dir), ec);
+            lru_.pop_back();
+            if (!ec) {
+                total_bytes_ = (freed <= total_bytes_) ? (total_bytes_ - freed) : 0;
+                if (db != dir_bytes_.end()) dir_bytes_.erase(db);
+                stats_.evicted_dirs += 1;
+                stats_.evicted_bytes += freed;
+                std::fprintf(stderr, "strata serve: disk park stream: [容量] 淘汰目录 %s（%llu 项 / %.2f GiB），"
+                                     "余 %.2f GiB / 上限 %.2f GiB\n",
+                             dir.c_str(), (unsigned long long) removed,
+                             (double) freed / 1073741824.0,
+                             (double) total_bytes_ / 1073741824.0,
+                             (double) cfg_.max_bytes / 1073741824.0);
+            }
+            const auto o = open_.find(dir);
+            if (o != open_.end()) { open_.erase(o); ++stats_.closes; }
+            tracked_.erase(victim);
+        }
+    }
+    // （历史）下面这段是 08a62f46 删掉容量上限时的理由，P25 已按其中的 ①③ 改成
+    // "引擎侧上限 + park-gc 兜底" 的分工：
     //   超了按 LRU 把最久未用的会话目录【连文件一起删】。已删除。理由：
     //   ① 位置不对：DiskParkLogs 看不见 checkpoints.bin，而 blob 常常占一半以上
     //      （实测 9.7 GB blob / 52.8 GiB 合计），只掉会话目录会掉错。

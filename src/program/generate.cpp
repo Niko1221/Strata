@@ -636,6 +636,7 @@ struct Options {
     /// ★ P9 流式停放层：把「每个请求结束后的本轮增量」追加进【每会话一个】的日志，
     ///   而不是每次淘汰整份快照重写。空 = 关闭（行为与没有它逐字节一致）。
     std::string disk_park_stream_dir;
+    int64_t disk_park_max_gib = 0;     // ★ P25：盘上总占用上限（GiB，0 = 不限）
     /// ★ 退出时把常驻（Host）层保存到这个清单文件；空 = 关闭。
     ///   对应 ninfer 的 --prefix-cache-file：本实现把常驻会话写进磁盘停放层
     ///   （复用现有的打包/恢复路径），PATH 里记下身份清单，
@@ -803,6 +804,7 @@ void usage() {
                  "                       missing page reads as a miss and the engine recomputes.\n"
                  "  --disk-park-gib N     --serve: total disk budget for that tier (default 64)\n"
                  "  --disk-park-stream-dir DIR  --serve: per-conversation APPEND log (streaming tier).\n"
+                 "  --disk-park-max-gib N       --serve: cap the streamed tier's allocated bytes (0 = no cap).\n"
                  "                        Empty = off.  Appends only this request's K/V delta instead of\n"
                  "                        rewriting the whole snapshot on every eviction.\n"
                  "  --no-disk-park-restore  --serve: write the tier only, never read it back\n"
@@ -2448,6 +2450,9 @@ int main(int argc, char** argv) {
         else if (a == "--no-disk-park-restore") o.disk_park_restore = false;
         else if (a == "--disk-park-daily-gib") o.disk_park_daily_gib = std::max<int64_t>(0, std::atoll(next("--disk-park-daily-gib")));
         else if (a == "--disk-park-stream-dir") o.disk_park_stream_dir = next("--disk-park-stream-dir");
+        // ★★ P25（2026-10-13）：盘上【总占用】上限（0/不给 = 不限）。与"每天写多少"无关，
+        //   限的是"盘上留多少"——限容量才是对的刹车。超了 trim() 按 LRU 删整个会话目录。
+        else if (a == "--disk-park-max-gib") o.disk_park_max_gib = std::max<int64_t>(0, std::atoll(next("--disk-park-max-gib")));
         else if (a == "--prefix-cache-file") o.prefix_cache_file = next("--prefix-cache-file");
         else if (a == "--value-aware-demote") {
             o.value_aware_demote = true;
@@ -8227,6 +8232,9 @@ int main(int argc, char** argv) {
                 } else {
                     strata::core::DiskParkLogs::Config c;
                     c.root           = o.disk_park_stream_dir;
+                    c.max_bytes      = o.disk_park_max_gib > 0     // ★ P25
+                                       ? (std::uint64_t) o.disk_park_max_gib * 1024ull * 1024ull * 1024ull
+                                       : 0;
                     c.tag            = disk_park.profile().tag();
                     c.kv_format      = strata::core::qsa_kv_format(st0);
                     c.heads          = g.n_head_kv;

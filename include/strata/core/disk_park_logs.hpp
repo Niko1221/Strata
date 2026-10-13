@@ -102,6 +102,11 @@ public:
         // pooled 的 row_bytes 由 row_cells = idx_block 与它在这里的字节数反推。
         std::uint64_t part_bytes_at_cap[5] = {0, 0, 0, 0, 0};
         std::size_t max_open = 16;         // 同时打开几个会话文件
+        // ★★ P25（2026-10-13）：盘上【总占用】上限（字节，0 = 不限）。超了按 LRU 把最久未用的
+        //   会话目录【连文件一起删】。这是 08a62f46 删掉的那段，现在按方案 C 恢复：
+        //   引擎知道哪个会话正在用，按整会话淘汰比 park-gc 按时间删更准；park-gc 退成
+        //   老目录清扫 + 高位兜底。口径必须是 st_blocks×512（见 .cpp 启动扫描处的注释）。
+        std::uint64_t max_bytes = 0;
         std::size_t max_tracked = 4096;    // 跟踪多少个「摘要 → 会话」
     };
 
@@ -112,6 +117,8 @@ public:
         std::uint64_t fresh = 0;           // 开了新会话的次数
         std::uint64_t opens = 0, closes = 0;
         std::uint64_t failures = 0;
+        std::uint64_t evicted_dirs = 0;    // ★ P25：按容量淘汰掉的会话目录数
+        std::uint64_t evicted_bytes = 0;
     };
 
     // 一次追加的输入
@@ -264,7 +271,7 @@ private:
                                        std::uint64_t resume, bool* opened_now, bool layered);
     void remember(const DiskParkLogDigest& d, const std::string& dir_name, std::uint64_t watermark);
     void touch(const DiskParkLogDigest& d);
-    void trim();
+    void trim(const std::string& active = std::string());   // ★ P25：active = 正在追加的那份，绝不删
     // ★★ 2026-10-13：头部指纹索引的加载/落盘/对账（见 dir_heads 的说明）。
     void load_dir_heads();
     void save_dir_heads() const;
