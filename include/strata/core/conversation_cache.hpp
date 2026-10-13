@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>   // [SFX-DBG] probe: fprintf in best_with_partial's candidate scan
 #include <deque>
 #include <utility>
 #include <vector>
@@ -344,13 +345,27 @@ public:
         // partial pass: longest LCP > 0 and < c.ids.size(); tie-break by deeper anchor
         // (longer checkpoint) then by most recently parked (the loop iterates newest-first).
         Match pm;   // the best partial candidate (tokens = LCP, checkpoint_length = L)
+        // [SFX-DBG] probe: per-candidate partial scan visibility.  The steady-state chain showed
+        // parked-search reporting match{tokens=2598 partial=0} where the source says a partial
+        // candidate (LCP 3424, anchor 5702) should dominate strict 2598 - log every candidate's
+        // L/idx/LCP so the steady-state trace can attribute the miss to the candidate set, the
+        // LCP guard, or the size guard.  Gated `flag > 0` (probe on the sfx path only).
+        const bool dbg_partial = flag > 0;
+        if (dbg_partial)
+            std::fprintf(stderr, "[SFX-DBG] parked-scan: entries=%zu prompt_len=%zu strict_tokens=%lld:",
+                         entries_.size(), prompt.size(), (long long) strict_tokens);
         for (size_t i = entries_.size(); i-- > 0;) {
             const auto& e = entries_[i];
-            if (e.cvec != cvec) continue;
+            if (e.cvec != cvec) { if (dbg_partial) std::fprintf(stderr, " e%zu:cvec", i); continue; }
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
                 const int64_t L = (int64_t) c.ids.size();
-                if (L < 1 || L > (int64_t) prompt.size()) return;   // must be <= prompt.size() (L == n is valid partial: same length, mid-file edit)
+                if (L < 1 || L > (int64_t) prompt.size()) {
+                    if (dbg_partial) std::fprintf(stderr, " e%zu.%s:L=%lld:skip", i, live ? "live" : "ck", (long long) L);
+                    return;   // must be <= prompt.size() (L == n is valid partial: same length, mid-file edit)
+                }
                 const int64_t p = conversation_lcp(c, prompt, images);
+                if (dbg_partial)
+                    std::fprintf(stderr, " e%zu.%s:L=%lld:lcp=%lld", i, live ? "live" : "ck", (long long) L, (long long) p);
                 if (p <= 0 || p >= L) return;                         // 0 LCP or strict (already tried)
                 if (p > pm.tokens || (p == pm.tokens && L > pm.checkpoint_length))
                     pm = {i, p, live, true, L};
@@ -358,6 +373,9 @@ public:
             consider(e.live, true);
             for (const auto& c : e.checkpoints) consider(c, false);
         }
+        if (dbg_partial) std::fprintf(stderr, " -> pm{tokens=%lld L=%lld} strict=%lld\n",
+                                      (long long) pm.tokens, (long long) pm.checkpoint_length,
+                                      (long long) strict_tokens);
         if (pm.tokens > 0 && pm.checkpoint_length > strict_tokens) return pm;
         return m;                                            // strict match wins; partial ignored
     }
