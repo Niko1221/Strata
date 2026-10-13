@@ -605,5 +605,46 @@ class TdrPointer(unittest.TestCase):
             self.assertIn(env, (Path(setup.__file__).resolve().parent / "src/prefill/prefill.cpp").read_text(encoding="utf-8"))
 
 
+class Gfx1010OptIn(unittest.TestCase):
+    """RX 5700 XT (gfx1010): refused unless STRATA_EXPERIMENTAL_GFX1010=1, same shape as gfx1103."""
+
+    def test_refused_without_opt_in(self):
+        without = tuple(a for a in setup.AMD_ARCHS if a != "gfx1010")
+        with mock.patch.object(setup, "GFX1010_OPT_IN", False), mock.patch.object(setup, "AMD_ARCHS", without):
+            self.assertNotIn("gfx1010", setup.AMD_ARCHS)
+            self.assertIn("gfx1010", setup.amd_problem({"arch": "gfx1010"}))
+
+    def test_index_exists_anyway(self):
+        self.assertTrue(setup.ROCM_INDEXES["gfx1010"].endswith("/gfx101X-dgpu/"))
+        self.assertEqual(setup.AMD_NAMES["gfx1010"], "AMD Radeon RX 5700 XT / 5700 / 5600 (gfx1010)")
+
+    def test_opt_in_makes_the_card_usable(self):
+        archs = setup.AMD_ARCHS + (("gfx1010",) if "gfx1010" not in setup.AMD_ARCHS else ())
+        with mock.patch.object(setup, "GFX1010_OPT_IN", True), mock.patch.object(setup, "AMD_ARCHS", archs):
+            self.assertIsNone(setup.amd_problem({"arch": "gfx1010"}))
+            self.assertIn("gfx1010", setup.AMD_ARCHS)
+
+    def test_rocr_visible_is_the_chosen_index_only_with_an_igpu(self):
+        card = {"index": 1, "arch": "gfx1010"}
+        igpu = {"index": 0, "arch": "gfx90c"}
+        other = {"index": 0, "arch": "gfx1201"}
+        archs = setup.AMD_ARCHS + (("gfx1010",) if "gfx1010" not in setup.AMD_ARCHS else ())
+        with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "GFX1010_OPT_IN", True), \
+                mock.patch.object(setup, "AMD_ARCHS", archs):
+            self.assertEqual(setup.gfx1010_rocr_visible(card, [igpu, card]), "1")
+            self.assertEqual(setup.gfx1010_rocr_visible({"index": 0, "arch": "gfx1010"},
+                                                       [{"index": 0, "arch": "gfx1010"},
+                                                        {"index": 1, "arch": "gfx90c"}]), "0")
+            self.assertIsNone(setup.gfx1010_rocr_visible(card, [card]))
+            self.assertIsNone(setup.gfx1010_rocr_visible(card, [other, card]))
+            self.assertIn("ROCR_VISIBLE_DEVICES", setup.SETUP_ENV)
+
+    def test_rocr_visible_off_without_opt_in(self):
+        card = {"index": 0, "arch": "gfx1010"}
+        igpu = {"index": 1, "arch": "gfx90c"}
+        with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "GFX1010_OPT_IN", False):
+            self.assertIsNone(setup.gfx1010_rocr_visible(card, [card, igpu]))
+
+
 if __name__ == "__main__":
     unittest.main()
