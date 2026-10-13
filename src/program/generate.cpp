@@ -9372,12 +9372,18 @@ int main(int argc, char** argv) {
             // With it OFF (0) the gate below is byte-identical to the original
             // `done >= pp_next_check` / `pp_next_check = done + every` pair: pp_next_check
             // starts at 0 so the FIRST chunk always checkpoints, exactly as before.
-            const bool periodic_checkpoint = o.prompt_cache_every > 0 &&
-                (o.prompt_cache_dense_tail > 0
-                     ? done >= suffix::dense_tail_next_check(pp_last_check, pp_total,
-                                                             o.prompt_cache_every,
-                                                             o.prompt_cache_dense_tail)
-                     : done >= pp_next_check);
+            // FW-2a FIX (2026-10-13, T21): the gate now compares against the per-request
+            // pp_next_check for BOTH branches.  The dense-tail branch recomputed its
+            // threshold from pp_last_check, which persists ACROSS requests: after a long
+            // cold read (A: 5665) a warm resumed read (B: from 2598) waited for
+            // 5665+1024=6689 - past the prompt - and never took a periodic anchor
+            // (measured dt-steady8: B captured only turn@5670 + tail@5697; 3622/4646
+            // piece boundaries passed with no checkpoint).  pp_next_check IS initialized
+            // per request at the resume site (dense_tail_next_check(resume, n, ...)) and
+            // advanced at each capture below - the gate just has to read it.  Cost of the
+            // fix: one ~150ms checkpoint save per boundary that already exists (T19:
+            // sync 0.0ms, save ~100-150ms); the read's piece structure is unchanged.
+            const bool periodic_checkpoint = o.prompt_cache_every > 0 && done >= pp_next_check;
             // Keep the prefill's existing chunk geometry. One extra near-tail checkpoint
             // can serve a branch whose shared prefix ends before the final cached state.
             const bool tail_checkpoint = o.prompt_cache_tail && o.prompt_cache > 0 && o.prompt_cache_every > 0 &&
