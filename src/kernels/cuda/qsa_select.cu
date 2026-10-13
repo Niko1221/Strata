@@ -298,8 +298,8 @@ __global__ void __launch_bounds__(128) block_scores_tc_kernel(const float* __res
 #if defined(__gfx1200__) || defined(__gfx1201__)
 #define STRATA_SEL_GFX12 1
 #define STRATA_SEL_GFX11 0
-#elif defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || \
-    defined(__gfx1151__)
+#elif defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || \
+    defined(__gfx1150__) || defined(__gfx1151__)
 #define STRATA_SEL_GFX12 0
 #define STRATA_SEL_GFX11 1
 #else

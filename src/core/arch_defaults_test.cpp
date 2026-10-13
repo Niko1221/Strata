@@ -28,6 +28,8 @@ int main() {
     unset("STRATA_GFX1151_DEFAULTS");
     // other architectures (and CUDA, which passes an empty name): nothing
     CHECK(arch_default_env("gfx1100").empty());
+    CHECK(arch_default_env("gfx1102").empty());
+    CHECK(arch_default_env("gfx1103").empty());   // the port keeps gfx1103 out of the defaults: setup writes its switches
     CHECK(arch_default_env("gfx1150").empty());
     CHECK(arch_default_env("gfx1152").empty());
     CHECK(arch_default_env("gfx11510").empty());   // not a prefix match

@@ -1732,7 +1732,7 @@ __global__ void to_bf16_kernel(const float* __restrict__ x, uint16_t* __restrict
 typedef __bf16 um_b16 __attribute__((ext_vector_type(16)));
 typedef float um_f8 __attribute__((ext_vector_type(8)));
 __device__ __forceinline__ um_f8 um_wmma(um_b16 a, um_b16 b, um_f8 c) {
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
     return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, c);
 #else
     (void) a; (void) b; return c;   // not a gfx11 device pass: never launched (runtime gate)

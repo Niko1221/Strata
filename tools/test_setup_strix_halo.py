@@ -91,12 +91,13 @@ class ExactArch(unittest.TestCase):
 
     def test_matches_the_engines_header(self):
         """include/strata/kernels/gfx_arch.hpp is the reference: gfx1151 has the WMMA kernels and the gfx1151 defaults;
-        gfx1103 and gfx1152 are outside its list."""
+        gfx1103 has the WMMA kernels too (the gfx1103 port; its speed switches are setup's, not the engine's); gfx1152 is
+        outside its list."""
         hpp = (ROOT / "include/strata/kernels/gfx_arch.hpp").read_text(encoding="utf-8")
         wmma = re.search(r"gfx_arch_is_gfx11_wmma.*?\n}", hpp, re.S).group(0)
         listed = set(re.findall(r'"(gfx\d+)"', wmma))
         self.assertIn("gfx1151", listed)
-        self.assertNotIn("gfx1103", listed)
+        self.assertIn("gfx1103", listed)
         self.assertNotIn("gfx1152", listed)
         self.assertIn('gfx_arch_is(gcn, "gfx1151")', hpp)
         self.assertEqual(setup.STRIX_HALO_ARCH, "gfx1151")
