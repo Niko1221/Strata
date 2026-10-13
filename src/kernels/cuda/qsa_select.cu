@@ -7,6 +7,7 @@
 
 #include <cuda_runtime.h>
 
+#include <atomic>
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
@@ -455,6 +456,19 @@ bool sel_gfx12_device() {
     }
     return ok[dev] == 1;
 }
+
+// RDNA2 (gfx1030-gfx1036): the FP32 tiled scorer's tiling measured there
+bool sel_gfx103_device() {
+    static int ok[64] = {};   // per device: 0 unknown, 1 yes, 2 no
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
+    if (ok[dev] == 0) {
+        cudaDeviceProp prop;
+        ok[dev] = (cudaGetDeviceProperties(&prop, dev) == cudaSuccess && std::strncmp(prop.gcnArchName, "gfx103", 6) == 0) ? 1 : 2;
+        cudaGetLastError();
+    }
+    return ok[dev] == 1;
+}
 #endif  // __HIPCC__
 
 // the tail block n_bid of each query: exactly block_scores_kernel's arithmetic for that block
@@ -484,51 +498,61 @@ __global__ void __launch_bounds__(32) block_scores_tail_kernel(const float* __re
     }
 }
 
-// ---- the block scores as an FP32 tiled GEMM for CUDA cards without TF32 tensor cores (below sm_80): rows (query,
-// indexer head) x columns (blocks), K = 128 through shared memory, 2 queries x 4 heads x 4 blocks per thread, relu per
-// head summed in registers.  The warp kernel spends 5 shuffles per 4 products and reached ~1 TFLOPS on an RTX 2080
-// Ti; this one ~6.9 (256 queries: 4.5x at 4K, 6.8x at 120K-250K).  FP32 like the warp kernel in another summation
-// order, so not bitwise (as the tensor-core scorer).  Blocks < n_bid only; the tail block is block_scores_tail_kernel's.
-constexpr int SM_QT = 32, SM_NB = 64, SM_KC = 32, SM_QS = SM_QT * IDX_HEADS + 4, SM_KS = SM_NB + 4;
+// ---- the block scores as an FP32 tiled GEMM for cards without a matrix-core scorer (CUDA below sm_80; HIP, opt-in):
+// rows (query, indexer head) x columns (blocks), K = 128 through shared memory, 2 queries x 4 heads x TN blocks per
+// thread, relu per head summed in registers.  The warp kernel spends 5 shuffles per 4 products and reached ~1 TFLOPS
+// on an RTX 2080 Ti; this one ~6.9 (256 queries: 4.5x at 4K, 6.8x at 120K-250K).  FP32 like the warp kernel in another
+// summation order, so not bitwise (as the tensor-core scorer).  Blocks < n_bid only; the tail block is
+// block_scores_tail_kernel's.
+//
+// The tiling (QT queries and NB blocks per CTA, KC of K per shared-memory pass, TN blocks per thread) only decides
+// which thread computes which score: every score is still the fmaf chain over k = 0..127 in order and the same relu sum
+// over the heads, so every tiling gives the same bytes (an RX 6900 XT, qsa_select_bench at 32K and 128K, 14 tilings,
+// also with 60 and 72 of its 80 CUs: all byte-identical).  CUDA keeps the tiling it was written with (32/64/32/4);
+// gfx103x runs 32/128/16/8, 15% faster there at 128K (0.695 -> 0.587 ms per 256 queries).
+template <int QT, int NB, int KC, int TN>
 __global__ void __launch_bounds__(256) block_scores_simt_kernel(const float* __restrict__ pooled,
                                                                 const float* __restrict__ q_idx,
                                                                 const int32_t* __restrict__ steps, int64_t nq,
                                                                 int64_t max_blocks, int64_t reach,
                                                                 float* __restrict__ out) {
-    __shared__ __align__(16) float Qs[SM_KC][SM_QS];
-    __shared__ __align__(16) float Ks[SM_KC][SM_KS];
-    const int64_t q0 = (int64_t) blockIdx.y * SM_QT, b0 = (int64_t) blockIdx.x * SM_NB;
-    const int64_t qlast = (q0 + SM_QT < nq ? q0 + SM_QT : nq) - 1;
+    constexpr int ROWS = QT * IDX_HEADS, QS = ROWS + 4, KS = NB + 4, CX = NB / TN;
+    static_assert((ROWS / 8) * CX == 256, "256 threads, 8 rows (2 queries x 4 heads) each");
+    static_assert(TN % 4 == 0 && KC % 4 == 0 && IDX_DIM % KC == 0, "float4 loads");
+    __shared__ __align__(16) float Qs[KC][QS];
+    __shared__ __align__(16) float Ks[KC][KS];
+    const int64_t q0 = (int64_t) blockIdx.y * QT, b0 = (int64_t) blockIdx.x * NB;
+    const int64_t qlast = (q0 + QT < nq ? q0 + QT : nq) - 1;
     if (b0 >= steps[qlast * kStepCount + kStepNBid]) return;   // n_bid rises with the position
-    const int tid = threadIdx.x, tx = tid & 15, ty = tid >> 4;
-    float acc[8][4] = {};
-    for (int kc = 0; kc < IDX_DIM; kc += SM_KC) {
-#pragma unroll
-        for (int i = 0; i < 4; ++i) {   // the query rows: 128 x 8 float4
-            const int idx = tid + i * 256, r = idx >> 3, k4 = idx & 7;
+    const int tid = threadIdx.x, tx = tid % CX, ty = tid / CX;
+    float acc[8][TN] = {};
+    for (int kc = 0; kc < IDX_DIM; kc += KC) {
+        for (int idx = tid; idx < ROWS * (KC / 4); idx += 256) {   // the query rows: ROWS x KC/4 float4
+            const int r = idx / (KC / 4), k4 = idx % (KC / 4);
             float4 v = make_float4(0.f, 0.f, 0.f, 0.f);
             if (q0 + (r >> 2) < nq)
                 v = *reinterpret_cast<const float4*>(q_idx + (q0 * IDX_HEADS + r) * IDX_DIM + kc + k4 * 4);
             Qs[k4 * 4 + 0][r] = v.x; Qs[k4 * 4 + 1][r] = v.y; Qs[k4 * 4 + 2][r] = v.z; Qs[k4 * 4 + 3][r] = v.w;
         }
-#pragma unroll
-        for (int i = 0; i < 2; ++i) {   // the pooled keys: 64 x 8 float4
-            const int idx = tid + i * 256, c = idx >> 3, k4 = idx & 7;
+        for (int idx = tid; idx < NB * (KC / 4); idx += 256) {   // the pooled keys: NB x KC/4 float4
+            const int c = idx / (KC / 4), k4 = idx % (KC / 4);
             float4 v = make_float4(0.f, 0.f, 0.f, 0.f);
             if (b0 + c < reach) v = *reinterpret_cast<const float4*>(pooled + (b0 + c) * IDX_DIM + kc + k4 * 4);
             Ks[k4 * 4 + 0][c] = v.x; Ks[k4 * 4 + 1][c] = v.y; Ks[k4 * 4 + 2][c] = v.z; Ks[k4 * 4 + 3][c] = v.w;
         }
         __syncthreads();
 #pragma unroll 8
-        for (int k = 0; k < SM_KC; ++k) {
-            const float4 qa = *reinterpret_cast<const float4*>(&Qs[k][ty * 8]);
-            const float4 qb = *reinterpret_cast<const float4*>(&Qs[k][ty * 8 + 4]);
-            const float4 kv = *reinterpret_cast<const float4*>(&Ks[k][tx * 4]);
-            const float qr[8] = {qa.x, qa.y, qa.z, qa.w, qb.x, qb.y, qb.z, qb.w}, kr[4] = {kv.x, kv.y, kv.z, kv.w};
+        for (int k = 0; k < KC; ++k) {
+            float qr[8], kr[TN];
+            *reinterpret_cast<float4*>(&qr[0]) = *reinterpret_cast<const float4*>(&Qs[k][ty * 8]);
+            *reinterpret_cast<float4*>(&qr[4]) = *reinterpret_cast<const float4*>(&Qs[k][ty * 8 + 4]);
+#pragma unroll
+            for (int t = 0; t < TN; t += 4)
+                *reinterpret_cast<float4*>(&kr[t]) = *reinterpret_cast<const float4*>(&Ks[k][tx * TN + t]);
 #pragma unroll
             for (int i = 0; i < 8; ++i)
 #pragma unroll
-                for (int j = 0; j < 4; ++j) acc[i][j] = fmaf(qr[i], kr[j], acc[i][j]);
+                for (int j = 0; j < TN; ++j) acc[i][j] = fmaf(qr[i], kr[j], acc[i][j]);
         }
         __syncthreads();
     }
@@ -538,8 +562,8 @@ __global__ void __launch_bounds__(256) block_scores_simt_kernel(const float* __r
         if (q >= nq) continue;
         const int64_t n_bid = steps[q * kStepCount + kStepNBid];
 #pragma unroll
-        for (int j = 0; j < 4; ++j) {
-            const int64_t b = b0 + tx * 4 + j;
+        for (int j = 0; j < TN; ++j) {
+            const int64_t b = b0 + tx * TN + j;
             if (b >= n_bid || b >= max_blocks) continue;
             float sc = 0.0f;
 #pragma unroll
@@ -550,6 +574,23 @@ __global__ void __launch_bounds__(256) block_scores_simt_kernel(const float* __r
             out[q * max_blocks + b] = sc;
         }
     }
+}
+
+// The FP32 tiled scores and the tail block; false when the grid does not fit.  `rdna2_tiles`: gfx103x's tiling.
+static bool block_scores_simt(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps,
+                              int64_t nq, int64_t max_blocks, int64_t reach, float* scores, cudaStream_t stream,
+                              bool rdna2_tiles) {
+    const int64_t qt = 32, nb = rdna2_tiles ? 128 : 64;
+    const dim3 grid((unsigned) ((reach + nb - 1) / nb), (unsigned) ((nq + qt - 1) / qt));
+    if (grid.y > 65535) return false;
+    if (rdna2_tiles)
+        block_scores_simt_kernel<32, 128, 16, 8><<<grid, 256, 0, stream>>>(pooled, q_idx, steps, nq, max_blocks, reach, scores);
+    else
+        block_scores_simt_kernel<32, 64, 32, 4><<<grid, 256, 0, stream>>>(pooled, q_idx, steps, nq, max_blocks, reach, scores);
+    block_scores_tail_kernel<<<(unsigned) nq, 32, 0, stream>>>(dead, q_idx, steps, max_blocks, scores);
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores (simt): %s\n", cudaGetErrorString(e)); std::exit(1); }
+    return true;
 }
 
 // ---- the same top-k with each query's keys read once: 1,024 threads hold up to TK_PER consecutive blocks' keys in
@@ -1126,6 +1167,21 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
         const char* v = std::getenv("STRATA_SELECT_WMMA");
         return v != nullptr && v[0] != '\0' && v[0] != '0';
     }();
+    // any HIP card: the FP32 tiled scorer, opt-in as on CUDA (STRATA_SELECT_SIMT=1; another summation order than the
+    // warp kernel, so the default keeps the warp kernel).  RX 6900 XT, 256 queries at 128K: 2.71 -> 0.587 ms
+    static const bool simt_on = [] {
+        const char* v = std::getenv("STRATA_SELECT_SIMT");
+        return v != nullptr && v[0] == '1';
+    }();
+    if (simt_on && !(wmma_on && sel_gfx12_device())) {
+        const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
+        const bool rdna2 = sel_gfx103_device();
+        static std::atomic<bool> said{false};
+        if (!said.exchange(true))
+            std::fprintf(stderr, "qsa select: FP32 tiled scorer (STRATA_SELECT_SIMT=1), tiles %s\n",
+                         rdna2 ? "32/128/16/8 (gfx103x)" : "32/64/32/4");
+        return block_scores_simt(pooled, dead, q_idx, steps, nq, max_blocks, reach, scores, (cudaStream_t) stream, rdna2);
+    }
     if (!wmma_on || !sel_gfx12_device()) return false;
     {
         const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
@@ -1161,15 +1217,8 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
             }();
             if (!simt) return false;
             const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
-            const dim3 grid((unsigned) ((reach + SM_NB - 1) / SM_NB), (unsigned) ((nq + SM_QT - 1) / SM_QT));
-            if (grid.y > 65535) return false;
-            block_scores_simt_kernel<<<grid, 256, 0, (cudaStream_t) stream>>>(pooled, q_idx, steps, nq, max_blocks,
-                                                                              reach, scores);
-            block_scores_tail_kernel<<<(unsigned) nq, 32, 0, (cudaStream_t) stream>>>(dead, q_idx, steps, max_blocks,
-                                                                                    scores);
-            const cudaError_t e = cudaGetLastError();
-            if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores (simt): %s\n", cudaGetErrorString(e)); std::exit(1); }
-            return true;
+            return block_scores_simt(pooled, dead, q_idx, steps, nq, max_blocks, reach, scores, (cudaStream_t) stream,
+                                     false);
         }
     }
     static bool attr[64] = {};   // the shared-memory opt-in is per device (a layer split runs it on several)
