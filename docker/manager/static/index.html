@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strata 管理台</title>
+<link rel="stylesheet" href="/static/uPlot.min.css">
+<link rel="stylesheet" href="/static/xterm.css">
+<style>
+:root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--fg:#c9d1d9;--acc:#58a6ff;--ok:#3fb950;--err:#f85149;--warn:#d29922;--purple:#bc8cff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;height:100vh;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:12px;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--border)}
+header h1{font-size:16px;margin:0}
+#status{padding:2px 10px;border-radius:10px;font-size:12px;background:#30363d}
+#status.running{background:#238636;color:#fff}#status.stopped{background:#6e7681}#status.error{background:var(--err);color:#fff}
+header .spacer{flex:1}
+button{background:#21262d;color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:13px}
+button:hover{border-color:var(--acc)}button:disabled{opacity:.4;cursor:not-allowed}
+button.primary{background:#238636;border-color:#2ea043;color:#fff}button.danger{background:#da3633;border-color:#f85149;color:#fff}
+nav{display:flex;gap:4px;padding:6px 16px 0;background:var(--panel)}
+nav button{border-radius:6px 6px 0 0;border-bottom:none}
+nav button.active{background:var(--bg);color:var(--acc)}
+main{flex:1;overflow:hidden;display:flex}
+.tab{flex:1;display:none;flex-direction:column;overflow:hidden}
+.tab.active{display:flex}
+.pad{padding:14px 16px;overflow:auto;flex:1}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 14px}
+.card .k{font-size:12px;color:#8b949e}.card .v{font-size:22px;font-weight:600;margin-top:2px}
+.card .s{font-size:12px;color:#8b949e}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:1100px){.grid2{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;min-width:0}
+.panel h3{margin:0 0 6px;font-size:13px;color:#8b949e;font-weight:600}
+.rangebar{display:flex;gap:6px;margin-bottom:12px;align-items:center}
+.rangebar span{font-size:12px;color:#8b949e;margin-right:4px}
+.rangebar button{padding:3px 10px;font-size:12px}
+.rangebar button.active{background:var(--acc);color:#0d1117;border-color:var(--acc)}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{padding:4px 8px;text-align:right;border-bottom:1px solid var(--border);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{color:#8b949e;font-weight:600}
+table.wrap th,table.wrap td{white-space:normal}
+#logbox,#chatlog{flex:1;overflow:auto;background:#0a0e14;border:1px solid var(--border);border-radius:8px;padding:8px;font:12px/1.6 Consolas,monospace}
+#logbox div{white-space:pre-wrap;word-break:break-all}
+.k-access{color:var(--acc)}.k-container{color:#8b949e}.k-sys{color:var(--warn)}.k-metric{color:var(--ok)}
+.chatrow{margin:10px 0}
+.chatrow .role{font-size:12px;color:#8b949e;margin-bottom:2px}
+.chatrow.user .body{white-space:pre-wrap;font-family:inherit}
+.chatrow.assistant .body{white-space:pre-wrap;font-family:inherit;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 12px}
+.chatstats{font-size:12px;color:var(--ok);margin-top:3px}
+.chatin{display:flex;gap:8px;padding:10px 0 0}
+.chatin textarea{flex:1;height:56px;background:#0a0e14;color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:inherit;resize:vertical}
+.chatin .side{display:flex;flex-direction:row;flex-wrap:wrap;gap:6px;align-items:center;align-content:flex-start;max-width:42%}
+.chatin .side input,.chatin .side select{background:#0a0e14;color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:12px;width:auto}
+.chatin .side label{font-size:11px;color:#8b949e}
+#key-create-box{display:none;gap:6px;align-items:center;flex-wrap:wrap}
+#key-create-box.show{display:flex}
+#term{flex:1;min-height:0;background:#0a0e14;border:1px solid var(--border);border-radius:8px;padding:6px}
+.bar{height:6px;border-radius:3px;background:#21262d;overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;background:var(--acc)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Strata 管理台</h1>
+  <span id="status">…</span>
+  <span id="modelinfo" style="font-size:12px;color:#8b949e"></span>
+  <div class="spacer"></div>
+  <span id="userinfo" style="font-size:12px;color:#8b949e"></span>
+  <button onclick="toggleLang()" id="btn-lang" title="Switch language / 切换语言" style="font-size:12px">EN</button>
+  <button onclick="logout()" style="font-size:12px;display:none" id="btn-logout">退出</button>
+  <button onclick="control('start')" class="primary">启动</button>
+  <button onclick="control('stop')" class="danger">停止</button>
+  <button onclick="control('restart')">重启</button>
+</header>
+<div id="keybanner" style="display:none;background:#8a6d1d;color:#fff;font-size:12px;padding:4px 16px">
+  ⚠️ 尚未创建任何 API key：管理面临时开放。请立即到「密钥管理」页创建 admin key。
+</div>
+<div id="login-overlay" style="display:none;position:fixed;inset:0;background:rgba(13,17,23,.94);z-index:50;align-items:center;justify-content:center">
+  <div class="panel" style="width:330px">
+    <h3 id="login-title" style="color:var(--fg);font-size:15px">登录 Strata 管理台</h3>
+    <div id="login-hint" style="display:none;color:var(--warn);font-size:12px;margin-bottom:8px">
+      🎉 首次使用：请创建<b>管理员账户</b>（牢记用户名和密码）
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+      <input id="login-user" placeholder="用户名" autocomplete="username"
+             style="background:#0a0e14;color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:13px">
+      <input id="login-pass" type="password" placeholder="密码" autocomplete="current-password"
+             style="background:#0a0e14;color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:13px">
+      <div id="login-err" style="color:var(--err);font-size:12px;min-height:16px"></div>
+      <button class="primary" onclick="doLogin()">登录</button>
+    </div>
+  </div>
+</div>
+<nav>
+  <button data-tab="sys" class="active">系统监控</button>
+  <button data-tab="llm">推理指标</button>
+  <button data-tab="chat">测试聊天</button>
+  <button data-tab="keys">密钥管理</button>
+  <button data-tab="settings">设置</button>
+  <button data-tab="logs">日志</button>
+  <button data-tab="term">终端</button>
+</nav>
+<main>
+<!-- ==================== system ==================== -->
+<div class="tab active" id="tab-sys">
+  <div class="pad">
+    <div class="cards" id="syscards"></div>
+    <div class="rangebar"><span>时间范围</span>
+      <button data-min="60" class="active">1小时</button><button data-min="360">6小时</button>
+      <button data-min="1440">24小时</button><button data-min="10080">7天</button>
+    </div>
+    <div class="grid2">
+      <div class="panel"><h3>GPU 利用率 / 温度</h3><div id="ch-gpu"></div></div>
+      <div class="panel"><h3>显存占用</h3><div id="ch-vram"></div></div>
+      <div class="panel"><h3>CPU（宿主机 / 容器）</h3><div id="ch-cpu"></div></div>
+      <div class="panel"><h3>内存（宿主机 / 容器）</h3><div id="ch-mem"></div></div>
+      <div class="panel"><h3>GPU 功耗 / 温度</h3><div id="ch-power"></div></div>
+    </div>
+  </div>
+</div>
+<!-- ==================== metrics ==================== -->
+<div class="tab" id="tab-llm">
+  <div class="pad">
+    <div class="cards" id="llmcards"></div>
+    <div class="rangebar"><span>时间范围</span>
+      <button data-min="60" class="active">1小时</button><button data-min="360">6小时</button>
+      <button data-min="1440">24小时</button><button data-min="10080">7天</button>
+    </div>
+    <div class="grid2">
+      <div class="panel"><h3>首字延迟 TTFT（均值折线 + 原始请求散点）</h3><div id="ch-ttft"></div></div>
+      <div class="panel"><h3>生成速度 Decode（tok/s）</h3><div id="ch-decode"></div></div>
+    </div>
+    <div class="panel" style="margin-top:12px"><h3>最近请求</h3>
+      <table><thead><tr><th>时间</th><th>端点</th><th>输入tok</th><th>输出tok</th><th>TTFT</th><th>总耗时</th><th>Prefill</th><th>Decode</th></tr></thead>
+      <tbody id="reqtbody"></tbody></table>
+    </div>
+  </div>
+</div>
+<!-- ==================== chat ==================== -->
+<div class="tab" id="tab-chat">
+  <div class="pad" style="display:flex;flex-direction:column">
+    <div id="chatlog"></div>
+    <div class="chatin">
+      <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+        <div id="imgpreview" style="display:none;position:relative;width:120px">
+          <img id="imgthumb" style="max-width:120px;max-height:90px;border-radius:6px;border:1px solid var(--border)">
+          <button onclick="clearImg()" style="position:absolute;top:-8px;right:-8px;padding:0 6px;border-radius:50%">✕</button>
+        </div>
+        <textarea id="chatmsg" placeholder="输入消息，Enter 发送（Shift+Enter 换行）；可点 📎 附图片"></textarea>
+      </div>
+      <div class="side">
+        <input type="file" id="imgfile" accept="image/*" style="display:none" onchange="onPickImg(event)">
+        <button onclick="$('#imgfile').click()" title="附加图片">📎</button>
+        <label>输出</label><input id="maxtok" type="number" title="max_tokens（思考也占预算）" style="width:64px">
+        <label>温度</label><input id="temp" type="number" step="0.1" title="temperature" style="width:52px">
+        <select id="effort" title="思考强度">
+          <option value="off">不思考</option>
+          <option value="low">浅思考</option>
+          <option value="medium" selected>中思考</option>
+          <option value="high">深思考</option>
+        </select>
+        <select id="preset">
+          <option value="">快捷提示词…</option>
+          <option>用一句话解释量子纠缠</option>
+          <option>写一段快速排序的Python代码</option>
+          <option>把「人工智能正在改变世界」翻译成英文</option>
+          <option>9.11 和 9.9 哪个大？</option>
+          <option>用100字介绍杭州</option>
+        </select>
+        <button class="primary" onclick="sendChat()">发送</button>
+        <button onclick="clearChat()">清空</button>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ==================== keys ==================== -->
+<div class="tab" id="tab-keys">
+  <div class="pad">
+    <div class="panel"><h3>🔑 API Keys（对外 API 访问凭证，经 nginx 鉴权）</h3>
+      <div id="keystate" style="font-size:12px;color:var(--acc);margin-bottom:6px">状态检测中…</div>
+      <div id="key-empty-hint" style="display:none;color:var(--warn);font-size:12px;margin-bottom:8px">
+        尚未创建任何 key —— 当前为首次设置窗口，请立即创建一个 <b>admin</b> key 并妥善保存。
+      </div>
+      <table><thead><tr><th style="text-align:left">名称</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+      <tbody id="keysttbody"></tbody></table>
+      <div id="key-create-box" style="margin-top:10px">
+        <input id="keyname" placeholder="key 名称，如：张三的笔记本" style="background:#0a0e14;color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:12px;width:180px">
+        <select id="keyrole" style="background:#0a0e14;color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:12px">
+          <option value="user">user（仅推理 API）</option>
+          <option value="admin">admin（管理面+推理）</option>
+        </select>
+        <button class="primary" onclick="createKey()">创建</button>
+      </div>
+      <div id="keyresult" style="display:none;margin-top:10px;background:#0a0e14;border:1px solid var(--ok);border-radius:6px;padding:8px 12px;font-size:12px">
+        ✅ 已创建，<b>完整 key 只显示这一次</b>——复制下来发给使用者：
+        <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
+          <code id="keyfull" style="flex:1;word-break:break-all;color:var(--ok)"></code>
+          <button onclick="copyKey()">复制</button>
+          <button onclick="$('#keyresult').style.display='none'">完成</button>
+        </div>
+        <div style="margin-top:6px;color:#8b949e">
+          给使用者的配置：base URL = <code>https://&lt;本机IP&gt;:38888/v1</code> ·
+          认证 = <code>Authorization: Bearer &lt;key&gt;</code> · 自签证书需允许（或装根证书）
+        </div>
+      </div>
+      <div style="margin-top:8px;font-size:12px;color:#8b949e">
+        外部应用用法：base URL = <code>https://&lt;本机IP&gt;:38888/v1</code>，认证 = <code>Authorization: Bearer &lt;key&gt;</code>（自签证书需客户端允许）。
+        普通 key 只能调推理 API；admin key 全通。
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ==================== settings ==================== -->
+<div class="tab" id="tab-settings">
+  <div class="pad">
+    <div class="grid2">
+      <div class="panel">
+        <h3>运行参数（保存后自动重启，约 1-2 分钟生效）</h3>
+        <table class="wrap"><tbody>
+          <tr><td style="text-align:left;width:40%">默认输出上限 max_tokens<br><span style="color:#8b949e">（防长回答被截断，0/空 = 不限）</span></td>
+              <td><input id="cfg-maxtok" type="number" style="width:100%"></td></tr>
+          <tr><td style="text-align:left">超限自动收缩 fit_max_tokens</td>
+              <td style="text-align:left"><input id="cfg-fitmax" type="checkbox"></td></tr>
+          <tr><td style="text-align:left">允许的 Host 名（逗号分隔）</td>
+              <td><input id="cfg-hosts" type="text" style="width:100%"></td></tr>
+          <tr><td style="text-align:left">CPU 线程数 threads</td>
+              <td><input id="cfg-threads" type="number" style="width:100%"></td></tr>
+        </tbody></table>
+        <div style="margin-top:10px"><button class="primary" onclick="saveConfig()">保存并重启</button>
+          <span id="cfg-msg" style="font-size:12px;color:var(--ok);margin-left:8px"></span></div>
+      </div>
+      <div class="panel">
+        <h3>模型重建（换模型/上下文/显卡，走 setup 流程）</h3>
+        <table class="wrap"><tbody>
+          <tr><td style="text-align:left;width:40%">MODEL</td>
+              <td><select id="rb-model" style="width:100%">
+                <option>Q2_0</option><option>IQ2_XS</option><option>IQ3_XXS</option>
+                <option>IQ3_S</option><option>IQ1_M</option><option>UD-Q4_K_XL</option>
+              </select></td></tr>
+          <tr><td style="text-align:left">CONTEXT</td>
+              <td><input id="rb-context" type="number" style="width:100%"></td></tr>
+          <tr><td style="text-align:left">VISION</td>
+              <td><select id="rb-vision" style="width:100%"><option value="no">no</option><option value="yes">yes</option><option value="cpu">cpu</option></select></td></tr>
+          <tr><td style="text-align:left">KV 量化</td>
+              <td><select id="rb-kv" style="width:100%"><option value="">默认(int8)</option><option value="int8">int8</option><option value="q4_0">q4_0</option><option value="k8v4">k8v4</option></select></td></tr>
+          <tr><td style="text-align:left">GPU（单卡编号，空 = 自动）</td>
+              <td><input id="rb-gpu" type="text" style="width:100%"></td></tr>
+          <tr><td style="text-align:left">GPUS（多卡，如 0,1）</td>
+              <td><input id="rb-gpus" type="text" style="width:100%"></td></tr>
+        </tbody></table>
+        <div style="margin-top:10px"><button class="danger" onclick="rebuild()">应用并重建</button>
+          <span id="rb-msg" style="font-size:12px;color:var(--warn);margin-left:8px"></span></div>
+        <div style="margin-top:8px;font-size:12px;color:#8b949e">
+          当前模型文件若已下载则很快；新模型需先下载（数十 GB）。进度在「日志」页查看。
+          重建会按所选参数重新生成运行配置（覆盖左侧运行参数中 setup 相关的项）。
+        </div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:12px"><h3>当前运行配置（strata 容器内 config）</h3>
+      <pre id="cfg-view" style="font-size:12px;white-space:pre-wrap;margin:0;color:#8b949e"></pre></div>
+  </div>
+</div>
+<!-- ==================== logs ==================== -->
+<div class="tab" id="tab-logs">
+  <div class="pad" style="display:flex;flex-direction:column;gap:8px">
+    <div><button id="logpause" onclick="toggleLogPause()">暂停</button></div>
+    <div id="logbox"></div>
+  </div>
+</div>
+<!-- ==================== terminal ==================== -->
+<div class="tab" id="tab-term">
+  <div class="pad" style="display:flex;flex-direction:column;gap:8px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span id="term-dot" style="width:9px;height:9px;border-radius:50%;background:#6e7681;display:inline-block"></span>
+      <span id="term-state" style="font-size:12px;color:#8b949e">未连接</span>
+      <div style="flex:1"></div>
+      <button id="term-connect" class="primary" onclick="termConnect()">连接终端</button>
+      <button id="term-disconnect" onclick="termDisconnect()" disabled>断开连接</button>
+    </div>
+    <div style="font-size:12px;color:#8b949e">
+      ⚠️ 连接后可在 Strata 容器内执行命令（root 权限）。断开即终止该 shell 会话。
+    </div>
+    <div id="term"></div>
+  </div>
+</div>
+</main>
+<script src="/static/uPlot.min.js"></script>
+<script src="/static/xterm.min.js"></script>
+<script src="/static/addon-fit.min.js"></script>
+<script>
+"use strict";
+/* 全局错误横幅：图表等 JS 出错时直接显示，便于排障 */
+(function(){
+  const b=document.createElement("div");
+  b.style.cssText="position:fixed;top:46px;right:12px;z-index:99;max-width:60%;background:#da3633;color:#fff;padding:8px 12px;border-radius:6px;font:12px/1.4 monospace;display:none;white-space:pre-wrap";
+  document.body.appendChild(b);
+  let last=0;
+  window.addEventListener("error",e=>{
+    const t=Date.now(); if(t-last<2000)return; last=t;
+    b.style.display="block";
+    b.textContent=t("JS错误: ")+(e.message||"")+" @ "+String(e.filename||"".split("/").pop()+":"+e.lineno);
+    clearTimeout(b._t); b._t=setTimeout(()=>b.style.display="none",15000);
+  });
+})();
+
+/* ---------- bilingual UI (English default, Chinese per browser) ---------- */
+const I18N = {"Strata 管理台": "Strata Console", "退出": "Sign out", "启动": "Start", "停止": "Stop", "重启": "Restart", "系统监控": "System", "推理指标": "Metrics", "测试聊天": "Chat", "密钥管理": "Keys", "设置": "Settings", "日志": "Logs", "终端": "Terminal", "登录 Strata 管理台": "Sign in to the Strata console", "创建管理员账户": "Create an administrator", "🎉 首次使用：请创建管理员账户（牢记用户名和密码）": "🎉 First run: create an administrator account and keep the credentials safe", "用户名": "Username", "密码": "Password", "登录": "Sign in", "创建": "Create", "删除": "Delete", "复制": "Copy", "完成": "Done", "确定": "Confirm", "清空": "Clear", "发送": "Send", "继续": "Resume", "暂停": "Pause", "启用": "Enable", "停用": "Disable", "应用并重建": "Apply and rebuild", "保存并重启": "Save and restart", "重新检查状态": "Re-check status", "时间范围": "Range", "1小时": "1h", "6小时": "6h", "24小时": "24h", "7天": "7d", "GPU 利用率 / 温度": "GPU utilization / temperature", "显存占用": "VRAM usage", "CPU（宿主机 / 容器）": "CPU (host / container)", "内存（宿主机 / 容器）": "Memory (host / container)", "GPU 功耗 / 温度": "GPU power / temperature", "请求数": "Requests", "Prompt Tokens": "Prompt tokens", "Completion Tokens": "Completion tokens", "平均 TTFT": "Average TTFT", "最大 TTFT": "Max TTFT", "Decode 中位": "Decode median", "Prefill 中位": "Prefill median", "平均总耗时": "Average total time", "首字延迟 TTFT（均值折线 + 原始请求散点）": "Time to first token (bucket average + individual requests)", "生成速度 Decode（tok/s）": "Decode speed (tok/s)", "最近请求": "Recent requests", "时间": "Time", "端点": "Endpoint", "输入tok": "Prompt", "输出tok": "Output", "总耗时": "Total", "GPU 利用率": "GPU utilization", "GPU 温度": "GPU temperature", "GPU 功耗": "GPU power", "宿主机 CPU": "Host CPU", "宿主机内存": "Host memory", "容器 CPU": "Container CPU", "容器内存": "Container memory", "采样时间": "Sampled at", "容器: ": "Container: ", "（管理员）": " (admin)", "输出": "Output", "温度": "Temp", "思考强度": "Thinking", "不思考": "Off", "浅思考": "Low", "中思考": "Medium", "深思考": "High", "快捷提示词…": "Prompt shortcuts…", "用一句话解释量子纠缠": "Explain quantum entanglement in one sentence", "写一段快速排序的Python代码": "Write a Python quicksort implementation", "把「人工智能正在改变世界」翻译成英文": "Translate 'AI is changing the world' into English", "9.11 和 9.9 哪个大？": "Which is bigger, 9.11 or 9.9?", "用100字介绍杭州": "Describe Hangzhou in 100 characters", "附加图片": "Attach image", "📎": "📎", "图片": "image", "（图片）": "(image)", "请描述这张图片。": "Please describe this image.", "（无内容）": "(no content)", "（⚠️ 已达 max_tokens，回答被截断——调大预算可续全）": "(⚠️ max_tokens reached, the answer was truncated — raise the budget to finish it)", "（思考占满了 token 预算，没来得及给答案——把 max_tokens 调大再试）": "(the thinking phase used the whole token budget — raise max_tokens and try again)", "图片请小于 8MB": "The image must be smaller than 8 MB", "请求失败: ": "Request failed: ", "🔑 API Keys（对外 API 访问凭证，经 nginx 鉴权）": "🔑 API keys (credentials for the external API, checked by nginx)", "状态检测中…": "Checking status…", "尚未创建任何 key —— 当前为首次设置窗口，请立即创建一个 admin key 并妥善保存。": "No keys yet — this is the first-run window. Create an admin key and store it safely.", "名称": "Name", "角色": "Role", "创建时间": "Created", "操作": "Actions", "user（仅推理 API）": "user (inference API only)", "admin（管理面+推理）": "admin (console + inference)", "user": "user", "admin": "admin", "key 名称，如：张三的笔记本": "key name, e.g. alice-laptop", "✅ 已创建，完整 key 只显示这一次——复制下来发给使用者：": "✅ Created. The full key is shown only once — copy it for the recipient:", "给使用者的配置：base URL =": "Settings for the recipient: base URL =", "，认证 =": ", auth =", "·": "·", "自签证书需允许（或装根证书）": "the client must trust the self-signed certificate", "外部应用用法：base URL =": "For external clients: base URL =", "，认证 = Authorization: Bearer <key>（自签证书需客户端允许）。": ", auth = Authorization: Bearer <key> (the client must trust the self-signed certificate).", "普通 key 只能调推理 API；admin key 全通。": "A user key reaches only the inference API; an admin key reaches everything.", "确定删除该 key？": "Delete this key?", "已登录管理员 · 库中有 ": "Signed in as admin · ", "个 key": " keys in the store", "未登录：请先通过登录框登录": "Not signed in — sign in through the login box first", "当前账户角色为 ": "The current role is ", "，密钥管理需要管理员": " — key management requires an administrator", "当前账户无密钥管理权限（需要管理员）": "This account cannot manage keys (administrator required)", "请把这条发我": " — please report this line", "运行参数（保存后自动重启，约 1-2 分钟生效）": "Runtime parameters (saved → automatic restart, effective in about 1-2 minutes)", "默认输出上限 max_tokens": "Default output limit max_tokens", "（防长回答被截断，0/空 = 不限）": "(prevents truncation; 0 or empty = unlimited)", "超限自动收缩 fit_max_tokens": "Clamp instead of erroring (fit_max_tokens)", "允许的 Host 名（逗号分隔）": "Allowed Host names (comma separated)", "CPU 线程数 threads": "CPU threads", "已保存": "Saved", "已保存，容器重启中（约1-2分钟加载模型）": "Saved; the container is restarting (the model reloads in about 1-2 minutes)", "模型重建（换模型/上下文/显卡，走 setup 流程）": "Model rebuild (change model / context / GPU through the setup flow)", "当前模型文件若已下载则很快；新模型需先下载（数十 GB）。进度在「日志」页查看。": "Fast when the model is already downloaded; a new model must be fetched first (tens of GB). Watch progress on the Logs tab.", "重建已启动：到「日志」页查看进度（含下载/装包时会较久）": "Rebuild started — watch progress on the Logs tab (long if a model must be downloaded)", "当前运行配置（strata 容器内 config）": "Effective configuration (inside the strata container)", "（无法读取 config）": "(configuration could not be read)", "(无法读取 config)": "(configuration could not be read)", "连接终端": "Connect shell", "断开连接": "Disconnect", "未连接": "Not connected", "连接中…": "Connecting…", "连接失败": "Connection failed", "已连接": "Connected", "已断开": "Disconnected", "会话结束": "Session ended", "⚠️ 连接后可在 Strata 容器内执行命令（root 权限）。断开即终止该 shell 会话。": "⚠️ Connecting grants a root shell inside the Strata container. Disconnecting ends the session.", "终端未连接。点击右上「连接终端」以开启一个 root shell 会话。": "Not connected. Use “Connect shell” above to open a root shell session.", "[已断开] shell 会话已终止": "[disconnected] the shell session has ended", "确定停止 Strata 容器？": "Stop the Strata container?", "登录失败 (": "Sign-in failed (", "登录成功但会话校验未通过，请重试": "Signed in, but the session check failed — please try again", "用户名或密码错误": "Incorrect username or password", "用户名和密码必填": "username and password are required", "创建失败": "Creation failed", "首个管理员账户已创建: ": "First administrator account created: ", "读入 ": "prompt ", " tok": " tok", "输出 ": "output ", " tok（含思考）· 全程平均 ": " tok (incl. thinking) · overall average ", " tok/s": " tok/s", " ｜ ": " | ", "TTFT ": "TTFT ", "已保存，容器重启中": "Saved; the container is restarting", "s · ": " s · ", "s": "s", "JS错误: ": "JS error: ", "Switch language / 切换语言": "Switch language", "输入消息，Enter 发送（Shift+Enter 换行）；可点 📎 附图片": "Type a message, Enter to send (Shift+Enter for a newline); the paperclip attaches an image", "max_tokens（思考也占预算）": "max_tokens (thinking counts against it)", "⚠️ 尚未创建任何 API key：管理面临时开放。请立即到「密钥管理」页创建 admin key。": "⚠️ No API key yet: the console is temporarily open. Create an admin key on the Keys tab.", "温度 ℃": "Temperature (C)", "显存 MB": "VRAM (MB)", "宿主机 %": "Host %", "容器 %": "Container %", "宿主机 GB": "Host (GB)", "容器 GB": "Container (GB)", "功耗 W": "Power (W)", "TTFT 均值": "TTFT average", "原始请求": "individual requests", "Decode 均值": "Decode average", "显存": "VRAM", "每 10s": "every 10s", "P50 / P95 TTFT": "P50 / P95 TTFT", "我": "me", "模型": "model", "(图片)": "(image)", "已启动": "Started", "失败": "Failed", "[会话结束]": "[session ended]", "[连接断开]": "[disconnected]", " 个 key": " keys", "tok（含思考）· 全程平均": "tok (incl. thinking) · overall average", "确定按所选参数重建？容器将重启，模型未下载时需要较长时间。": "Rebuild with these settings? The container restarts; this takes a while if a model still has to be downloaded.", "？": "?", "🎉 首次使用：请创建\u0001管理员账户\u0001（牢记用户名和密码）": "🎉 First run: create an \u0001administrator account\u0001 and keep the credentials safe", "尚未创建任何 key —— 当前为首次设置窗口，请立即创建一个\u0001admin key 并妥善保存。": "No keys yet — this is the first-run window. Create an \u0001admin key and store it safely.", "状态": "Status", "✅ 已创建，\u0001完整 key 只显示这一次\u0001——复制下来发给使用者：": "✅ Created. \u0001The full key is shown only once — \u0001copy it for the recipient:", "https://&lt;本机IP&gt;:38888/v1": "https://&lt;your-host&gt;:38888/v1", "\u0001 认证 =": " · auth =", "· 自签证书需允许（或装根证书）": "· the client must trust the self-signed certificate", "（自签证书需客户端允许）。\u0001 普通 key 只能调推理 API；admin key 全通。": "(the client must trust the self-signed certificate). \u0001 A user key reaches only the inference API; an admin key reaches everything.", "KV 量化": "KV quantization", "本机IP": "your-host", "FAMILY": "FAMILY", "https://<本机IP>:38888/v1": "https://<your-host>:38888/v1", "默认(int8)": "default (int8)", "GPU（单卡编号，空 = 自动）": "GPU (single card index, empty = auto)", "GPUS（多卡，如 0,1）": "GPUS (several cards, e.g. 0,1)", "/* 全局错误横幅：图表等 JS 出错时直接显示，便于排障 */": "/* global error banner: shown when a script fails, for diagnostics */", "尚未创建任何 key —— 当前为首次设置窗口，请立即创建一个": "No keys yet — this is the first-run window. Create an", "key 并妥善保存。": "admin key and store it safely.", "（自签证书需客户端允许）。": "(the client must trust the self-signed certificate).", "重建会按所选参数重新生成运行配置（覆盖左侧运行参数中 setup 相关的项）。": "The rebuild regenerates the runtime configuration from the selected settings (overriding the setup-related runtime parameters on the left).", "认证 =": "auth ="};
+let LANG = (function(){
+  const saved = localStorage.getItem("ui_lang");
+  if (saved) return saved;
+  return (navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en";
+})();
+const t = (zh) => (LANG === "zh" ? zh : (I18N[zh] || zh));
+function splitTranslate(n, raw){
+  let hits = 0;
+  for (const k in I18N) {
+    if (k.indexOf("") !== -1) continue;          // handled by the sibling pass
+    if (k.length < 3) continue;
+    if (raw.indexOf(k) !== -1) { n.nodeValue = n.nodeValue.split(k).join(I18N[k]); hits++; }
+  }
+  return hits > 0;
+}
+function applyLang(){
+  if (LANG === "zh") return;                 // HTML already holds the Chinese text
+  const nodes = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n != null; n = walker.nextNode()) nodes.push(n);
+  for (const n of nodes) {
+    const raw = n.nodeValue;
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    if (I18N[trimmed]) { n.nodeValue = raw.replace(trimmed, I18N[trimmed]); continue; }
+    // A text node may hold several sentences: translate each known fragment.
+    if (splitTranslate(n, raw)) continue;
+    // A sentence split across inline tags: a dictionary key may use  to
+    // mark where the tag boundary was. Match the fragments in order against
+    // this node and its following inline siblings, then rewrite them all.
+    for (const k in I18N) {
+      if (k.indexOf("") === -1) continue;
+      const parts = k.split("");
+      const chain = [n];
+      let sib = n.nextSibling, guard = 0;
+      // walk siblings, stepping into inline elements (their text counts too)
+      while (sib && guard++ < 12) {
+        if (sib.nodeType === 3) chain.push(sib);
+        else if (sib.nodeType === 1 && /^(B|I|EM|STRONG|CODE|SPAN|A|SMALL)$/.test(sib.tagName || "")) {
+          (function collect(el) {
+            (el.childNodes || []).forEach(c => {
+              if (c.nodeType === 3) chain.push(c);
+              else if (c.nodeType === 1) collect(c);
+            });
+          })(sib);
+        } else break;
+        sib = sib.nextSibling;
+      }
+      if (chain.length < parts.length) continue;
+      if (parts.length > 1 && parts.some(x => !x.trim())) continue;
+      let ok = true;
+      for (let i = 0; i < parts.length; i++) {
+        if (chain[i].nodeValue.indexOf(parts[i]) === -1) { ok = false; break; }
+      }
+      if (!ok) continue;
+      const en = I18N[k].split("");
+      chain.forEach((node, i) => {
+        if (i < en.length && parts[i]) node.nodeValue = node.nodeValue.replace(parts[i], en[i]);
+      });
+      break;
+    }
+  }
+  document.querySelectorAll("[placeholder]").forEach(el => {
+    const v = el.getAttribute("placeholder");
+    if (I18N[v]) el.setAttribute("placeholder", I18N[v]);
+  });
+  document.querySelectorAll("[title]").forEach(el => {
+    const v = el.getAttribute("title");
+    if (I18N[v]) el.setAttribute("title", I18N[v]);
+  });
+}
+function toggleLang(){
+  LANG = LANG === "zh" ? "en" : "zh";
+  localStorage.setItem("ui_lang", LANG);
+  location.reload();
+}
+const $=s=>document.querySelector(s);
+/* ---------- session auth (login page + cookie) ---------- */
+let ME=null;
+async function api(path,opts={}){opts.headers={...(opts.headers||{})};return fetch(path,opts);}
+async function checkAuth(){
+  try{
+    const r=await fetch("/api/me");
+    if(r.status===401){
+      ME=null;
+      if(logWS){try{logWS.close();}catch(e){}logWS=null;}
+      $("#userinfo").textContent="";
+      $("#btn-logout").style.display="none";
+      $("#keybanner").style.display="none";
+      setKeyState(t("未登录：请先通过登录框登录"),"var(--warn)");
+      showLogin(true);
+      return false;}
+    ME=await r.json();
+    $("#userinfo").textContent="👤 "+ME.username+(ME.role==="admin"?t("（管理员）"):"");
+    $("#btn-logout").style.display="";
+    showLogin(false);
+    logWSRetry=0;
+    initLogWS();              // reconnect once the session is restored (at boot, initLogWS is skipped while ME is still null)
+    if(ME.role==="admin"){
+      const kr=await fetch("/api/keys");
+      if(kr.status===200)renderKeys(await kr.json());
+      else setKeyState("/api/keys → "+kr.status+" ("+ME.role+") "+t("——请把这条发我"),"var(--err)");
+    }else{
+      setKeyState(t("当前账户角色为 ")+ME.role+t("，密钥管理需要管理员"),"var(--warn)");
+      $("#keysttbody").innerHTML=`<tr><td colspan="5" style="text-align:left;color:var(--warn)">${t("当前账户无密钥管理权限（需要管理员）")}</td></tr>`;
+      $("#key-create-box").classList.remove("show");
+    }
+    return true;
+  }catch(e){return false;}
+}
+async function showLogin(on){
+  const o=$("#login-overlay");
+  if(!on){o.style.display="none";return;}
+  o.style.display="flex";
+  try{
+    const st=await (await fetch("/api/setup-status")).json();
+    $("#login-hint").style.display=st.need_setup?"block":"none";
+    $("#login-title").textContent=st.need_setup?t("创建管理员账户"):t("登录 Strata 管理台");
+  }catch(e){}
+  setTimeout(()=>$("#login-user").focus(),50);
+}
+async function doLogin(){
+  $("#login-err").textContent="";
+  const r=await fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({username:$("#login-user").value.trim(),password:$("#login-pass").value})});
+  const d=await r.json();
+  if(!r.ok){const e=typeof d.error==="string"?d.error:(d.error?JSON.stringify(d.error):null);$("#login-err").textContent=e||("登录失败 ("+r.status+")");return;}
+  $("#login-pass").value="";
+  const ok=await checkAuth();
+  if(!ok){$("#login-err").textContent=t("登录成功但会话校验未通过，请重试");return;}
+  logWSRetry=0;initLogWS();
+  refreshAll();
+}
+$("#login-pass")&&$("#login-pass").addEventListener("keydown",e=>{if(e.key==="Enter")doLogin();});
+async function logout(){
+  await fetch("/api/logout",{method:"POST"});
+  location.reload();
+}
+/* ---------- remembered parameters ---------- */
+function loadParams(){
+  $("#maxtok").value=localStorage.getItem("p_maxtok")||4096;
+  $("#temp").value=localStorage.getItem("p_temp")||0.6;
+  $("#effort").value=localStorage.getItem("p_effort")||"medium";
+}
+const AXCOL="#8b949e",GRID="#21262d";
+const COLORS=["#58a6ff","#3fb950","#f85149","#d29922","#bc8cff","#76e3ea"];
+let g_spanSec=3600;   // current time span of the charts in seconds, updated on refresh; labels include the date above one day
+const timeAxis={space:110,values:(u,sp)=>{
+  const long=g_spanSec>86400;
+  return sp.map((t,i)=>{
+    if(sp.length>2&&i%Math.ceil(sp.length/8)!==0&&i!==sp.length-1)return "";  // show at most 8 labels to avoid overlap
+    const d=new Date(t*1000);
+    const hm=String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
+    return long?(d.getMonth()+1)+"-"+d.getDate()+" "+hm:hm;
+  });
+}};
+function mkChart(el,labelY,series){
+  const n=series.length+1;
+  const init=Array.from({length:n},(_,i)=>i?[null]:[1]);  // the number of arrays must match the number of series
+  return new uPlot({width:el.clientWidth||600,height:220,
+    legend:{show:false},cursor:{show:false},
+    scales:{x:{time:true}},
+    axes:[{stroke:AXCOL,grid:{show:false},ticks:{stroke:GRID},...timeAxis},
+          {stroke:AXCOL,grid:{stroke:GRID},ticks:{stroke:GRID},size:60}],
+    series:[{},{...series[0]},...(series.slice(1).map((s,i)=>({...s})))]},
+    init,el);
+}
+function setSize(u){const w=u.root.parentElement.clientWidth;if(w>50)u.setSize({width:w-4,height:220});}
+function axisFmt(fmt){return {values:(u,sp)=>sp.map(t=>fmt(t))};}
+/* ---------- API key management ---------- */
+function setKeyState(msg,color){const el=$("#keystate");if(el){el.textContent=msg;el.style.color=color||"var(--acc)";}}
+function renderKeys(d){
+  const tb=$("#keysttbody");if(!tb)return;
+  setKeyState(t("已登录管理员 · 库中有 ")+(d.keys||[]).length+t(" 个 key"),"var(--ok)");
+  tb.innerHTML=(d.keys||[]).map(k=>`<tr><td style="text-align:left">${k.name}</td><td>${k.role}</td><td>${k.enabled?"✅":"⛔"}</td><td>${new Date(k.created_at*1000).toLocaleString()}</td>
+   <td><button onclick="toggleKey(${k.id})">${k.enabled?t("停用"):t("启用")}</button>
+       <button class="danger" onclick="delKey(${k.id})">${t("删除")}</button></td></tr>`).join("");
+  $("#key-create-box").classList.add("show");
+  $("#key-empty-hint").style.display=d.bootstrap_keys?"block":"none";
+}
+async function createKey(){
+  const r=await api("/api/keys",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({name:$("#keyname").value,role:$("#keyrole").value})});
+  const d=await r.json();
+  if(d.key){
+    $("#keyresult").style.display="block";
+    $("#keyfull").textContent=d.key;
+  }else{alert(d.error||t("创建失败"));}
+  checkAuth();
+}
+function copyKey(){navigator.clipboard.writeText($("#keyfull").textContent);}
+async function toggleKey(id){await api("/api/keys/"+id+"/toggle",{method:"POST"});checkAuth();}
+async function delKey(id){if(!confirm(t("确定删除该 key？")))return;await api("/api/keys/"+id,{method:"DELETE"});checkAuth();}
+/* ---------- tabs ---------- */
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("nav button").forEach(x=>x.classList.remove("active"));
+  document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+  b.classList.add("active");$("#tab-"+b.dataset.tab).classList.add("active");
+  if(b.dataset.tab==="term")initTerm();
+  if(b.dataset.tab==="keys")checkAuth();
+  if(b.dataset.tab==="settings")checkAuth().then(ok=>{if(ok)loadSettings();});
+  refreshAll();
+});
+/* ---------- sys dashboard ---------- */
+let sysRange=60;
+const sysCharts={};
+function initSysCharts(){
+  sysCharts.gpu=mkChart($("#ch-gpu"),"%",[{label:"GPU %",stroke:COLORS[0]},{label:t("温度 ℃"),stroke:COLORS[3],scale:"t"}]);
+  sysCharts.vram=mkChart($("#ch-vram"),"MB",[{label:t("显存 MB"),stroke:COLORS[0]}]);
+  sysCharts.cpu=mkChart($("#ch-cpu"),"%",[{label:t("宿主机 %"),stroke:COLORS[0]},{label:t("容器 %"),stroke:COLORS[1]}]);
+  sysCharts.mem=mkChart($("#ch-mem"),"GB",[{label:t("宿主机 GB"),stroke:COLORS[0]},{label:t("容器 GB"),stroke:COLORS[1]}]);
+  sysCharts.power=mkChart($("#ch-power"),"W",[{label:t("功耗 W"),stroke:COLORS[4]},{label:t("温度 ℃"),stroke:COLORS[3],scale:"t"}]);
+}
+function setChart(u,xs,arrs){try{u.setData([xs,...arrs]);setSize(u);}catch(e){console.error("setData failed",e);}}
+async function refreshSys(){
+  if(!ME)return;
+  g_spanSec=sysRange*60;
+  const r0=await api("/api/sys/latest");
+  if(r0.status!==200)return;
+  const rj=await r0.json();
+  const r=await (await api("/api/sys/latest")).json();
+  const L=rj.latest||{},h=rj.health||{};
+  const pill=$("#status");pill.className=r.container_status==="running"?"running":(r.container_status==="exited"?"stopped":"error");
+  pill.textContent=t("容器: ")+r.container_status;
+  $("#modelinfo").textContent=h&&h.model?h.model+" · ctx "+h.max_context:"";
+  const bar=(pct)=>`<div class="bar"><i style="width:${Math.min(pct,100)}%"></i></div>`;
+  const cards=[
+    [t("GPU 利用率"),(L.gpu_util??"-")+"%",bar(L.gpu_util||0)],
+    [t("显存"),(L.vram_used_mb?(L.vram_used_mb/1024).toFixed(1):"-")+" / "+(L.vram_total_mb?(L.vram_total_mb/1024).toFixed(0):"-")+" GB",bar(L.vram_used_mb/L.vram_total_mb*100||0)],
+    [t("GPU 温度"),(L.gpu_temp??"-")+" ℃",""],[t("GPU 功耗"),(L.gpu_power_w??"-")+" W",""],
+    [t("宿主机 CPU"),(L.host_cpu??"-")+" %",bar(L.host_cpu||0)],
+    [t("宿主机内存"),(L.mem_used_gb??"-")+" / "+(L.mem_total_gb??"-")+" GB",bar(L.mem_used_gb/L.mem_total_gb*100||0)],
+    [t("容器 CPU"),(L.cont_cpu??"-")+" %",""],[t("容器内存"),(L.cont_mem_gb??"-")+" GB",""],
+    [t("采样时间"),L.ts?new Date(L.ts*1000).toLocaleTimeString():"-",t("每 10s")],
+  ];
+  $("#syscards").innerHTML=cards.map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]||""}</div></div>`).join("");
+  const hr=await api("/api/sys/history?minutes="+sysRange);
+  if(hr.status!==200)return;
+  const d=await hr.json();
+  const S=d.series;const xs=S.map(r=>r[0]);
+  setChart(sysCharts.gpu,xs,[S.map(r=>r[3]),S.map(r=>r[5])]);
+  setChart(sysCharts.vram,xs,[S.map(r=>r[4])]);
+  setChart(sysCharts.cpu,xs,[S.map(r=>r[1]),S.map(r=>r[7])]);
+  setChart(sysCharts.mem,xs,[S.map(r=>r[2]),S.map(r=>r[8])]);
+  setChart(sysCharts.power,xs,[S.map(r=>r[6]),S.map(r=>r[5])]);
+}
+document.querySelectorAll("#tab-sys .rangebar button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("#tab-sys .rangebar button").forEach(x=>x.classList.remove("active"));
+  b.classList.add("active");sysRange=+b.dataset.min;refreshSys();});
+/* ---------- llm dashboard ---------- */
+let llmRange=60;
+const llmCharts={};
+function initLlmCharts(){
+  llmCharts.ttft=mkChart($("#ch-ttft"),"ms",[
+    {label:t("TTFT 均值"),stroke:COLORS[0]},
+    {label:t("原始请求"),stroke:COLORS[3],width:1,points:{show:true,size:3},paths:()=>null}]);
+  llmCharts.decode=mkChart($("#ch-decode"),"tok/s",[{label:t("Decode 均值"),stroke:COLORS[1]}]);
+}
+async function refreshLlm(){
+  if(!ME)return;
+  g_spanSec=llmRange*60;
+  const hrs=Math.max(1,llmRange/60);
+  const sr=await api("/api/llm/stats?hours="+hrs);
+  if(sr.status!==200)return;
+  const d=await sr.json();
+  const a=d.agg||{};
+  const cards=[
+    [t("请求数"),a.count??0,""],["Prompt Tokens",a.prompt_tokens??0,""],["Completion Tokens",a.completion_tokens??0,""],
+    [t("平均 TTFT"),(a.ttft_avg??"-")+" ms",""],[t("P50 / P95 TTFT"),(a.ttft_p50??"-")+" / "+(a.ttft_p95??"-")+" ms",""],[t("最大 TTFT"),(a.ttft_max??"-")+" ms",""],
+    [t("Decode 中位"),(a.decode_avg??"-")+" tok/s",""],[t("Prefill 中位"),(a.prefill_avg??"-")+" tok/s",""],[t("平均总耗时"),(a.total_ms_avg??"-")+" ms",""],
+  ];
+  $("#llmcards").innerHTML=cards.map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]||""}</div></div>`).join("");
+  const S=d.series||[];
+  const rq=await api("/api/llm/requests?limit=300");
+  if(rq.status!==200)return;
+  const reqs=await rq.json();
+  const pts=reqs.requests.filter(r=>r.ttft_ms!=null&&(!S.length||r.ts>=S[0][0]-1));
+  // merge bucket averages and raw samples, sorted by time (uPlot requires ascending x)
+  const pairs=[];
+  S.forEach(r=>pairs.push([r[0],r[1],null]));
+  pts.forEach(p=>pairs.push([p.ts,null,p.ttft_ms]));
+  pairs.sort((a,b)=>a[0]-b[0]);
+  setChart(llmCharts.ttft,pairs.map(p=>p[0]),[pairs.map(p=>p[1]),pairs.map(p=>p[2])]);
+  const xs=S.map(r=>r[0]);
+  setChart(llmCharts.decode,xs,[S.map(r=>r[2])]);
+  $("#reqtbody").innerHTML=reqs.requests.slice(0,30).map(r=>{
+    const t=new Date(r.ts*1000);
+    return `<tr><td>${t.toLocaleTimeString()}</td><td style="text-align:left">${r.endpoint}</td><td>${r.prompt_tokens}</td><td>${r.completion_tokens}</td><td>${r.ttft_ms??"-"}</td><td>${r.total_ms??"-"}</td><td>${r.prefill_tps??"-"}</td><td style="color:var(--ok)">${r.decode_tps??"-"}</td></tr>`;
+  }).join("");
+}
+document.querySelectorAll("#tab-llm .rangebar button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("#tab-llm .rangebar button").forEach(x=>x.classList.remove("active"));
+  b.classList.add("active");llmRange=+b.dataset.min;refreshLlm();});
+/* ---------- control ---------- */
+async function control(a){
+  if(!confirm(a==="stop"?t("确定停止 Strata 容器？"):t("确定")+a+t("？")))return;
+  await api("/api/control/"+a,{method:"POST"});
+  setTimeout(refreshAll,1500);
+}
+/* ---------- chat ---------- */
+$("#preset").onchange=e=>{if(e.target.value){$("#chatmsg").value=e.target.value;e.target.value="";}};
+let pendingImg=null;   // data URL
+function onPickImg(e){
+  const f=e.target.files[0];if(!f)return;
+  if(f.size>8*1024*1024){alert(t("图片请小于 8MB"));return;}
+  const r=new FileReader();
+  r.onload=()=>{pendingImg=r.result;$("#imgthumb").src=pendingImg;$("#imgpreview").style.display="block";};
+  r.readAsDataURL(f);
+}
+function clearImg(){pendingImg=null;$("#imgpreview").style.display="none";$("#imgfile").value="";}
+$("#chatmsg").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendChat();}});
+function addRow(role,text){const d=document.createElement("div");d.className="chatrow "+role;
+  d.innerHTML=`<div class="role">${role==="user"?t("我"):t("模型")}</div><div class="body"></div><div class="chatstats"></div>`;
+  d.querySelector(".body").textContent=text;$("#chatlog").appendChild(d);$("#chatlog").scrollTop=1e9;return d;}
+function clearChat(){$("#chatlog").innerHTML="";}
+async function sendChat(){
+  const msg=$("#chatmsg").value.trim();
+  if(!msg&&!pendingImg)return;
+  $("#chatmsg").value="";
+  const userRow=addRow("user",msg||(pendingImg?t("(图片)"):""));
+  const imgToSend=pendingImg;clearImg();
+  if(imgToSend){
+    const im=document.createElement("img");im.src=imgToSend;
+    im.style.cssText="max-width:200px;max-height:150px;border-radius:6px;border:1px solid var(--border);display:block;margin-top:4px";
+    userRow.querySelector(".body").appendChild(im);
+  }
+  const row=addRow("assistant","…");const body=row.querySelector(".body"),st=row.querySelector(".chatstats");
+  const t0=performance.now();let tFirst=null,content="",usage=null,finish=null;
+  const textPart=msg||(imgToSend?t("请描述这张图片。"):"");
+  const payload={model:"qwen3.8-flash-next-iq2_xs",stream:true,
+      max_tokens:+$("#maxtok").value||4096,temperature:+$("#temp").value||0.6,
+      messages:[{role:"user",content:imgToSend
+        ?[{type:"text",text:textPart},{type:"image_url",image_url:{url:imgToSend}}]
+        :textPart}]};
+  const eff=$("#effort").value;if(eff)payload.reasoning_effort=eff;
+  const resp=await fetch("/v1/chat/completions",{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+  if(!resp.ok){body.textContent=t("请求失败: ")+resp.status;row.querySelector(".chatstats").textContent="";return;}
+  const reader=resp.body.getReader();const dec=new TextDecoder();let buf="";
+  while(true){
+    const{done,value}=await reader.read();if(done)break;
+    buf+=dec.decode(value,{stream:true});
+    const lines=buf.split("\n");buf=lines.pop();
+    for(const ln of lines){
+      if(!ln.startsWith("data:"))continue;
+      const payload2=ln.slice(5).trim();if(payload2==="[DONE]")continue;
+      try{const j=JSON.parse(payload2);
+        if(j.usage)usage=j.usage;
+        const ch=j.choices&&j.choices[0];
+        if(ch&&ch.finish_reason)finish=ch.finish_reason;
+        const c=ch&&ch.delta&&ch.delta.content;
+        if(c){if(tFirst===null)tFirst=performance.now();content+=c;body.textContent=content;$("#chatlog").scrollTop=1e9;}
+      }catch(e){}
+    }
+  }
+  if(!content){
+    body.textContent=finish==="length"
+      ? t("（思考占满了 token 预算，没来得及给答案——把 max_tokens 调大再试）")
+      : t("（无内容）");
+  }else if(finish==="length"){
+    body.textContent=content+"\n\n"+t("（⚠️ 已达 max_tokens，回答被截断——调大预算可续全）");
+  }
+  const totalS=(performance.now()-t0)/1000;          // end to end: prefill + thinking + answering
+  const ct=usage?usage.completion_tokens:0;
+  const pt=usage?usage.prompt_tokens:0;
+  const ttft=tFirst?(tFirst-t0)/1000:null;
+  const parts=[];
+  if(pt)parts.push(`${t("读入")} ${pt} tok`+(ttft!=null&&ttft>0.05?` · ${(pt/ttft).toFixed(0)} tok/s`:""));
+  if(ct)parts.push(`${t("输出")} ${ct} ${t("tok（含思考）· 全程平均")} ${(ct/totalS).toFixed(1)} tok/s`);
+  if(ttft!=null)parts.push(`TTFT ${ttft.toFixed(2)}s`);
+  st.textContent=parts.join(" | ");
+  refreshLlm();
+}
+/* ---------- settings ---------- */
+async function loadSettings(){
+  const d=await (await api("/api/config")).json();
+  const cfg=d.config||{},env=d.env||{};
+  $("#cfg-view").textContent=cfg?JSON.stringify(cfg,null,1):t("(无法读取 config)");
+  $("#cfg-maxtok").value=cfg.max_tokens??"";
+  $("#cfg-fitmax").checked=cfg.fit_max_tokens===true;
+  $("#cfg-hosts").value=(cfg.allowed_hosts||[]).join?cfg.allowed_hosts.join(","):(cfg.allowed_hosts||"");
+  $("#cfg-threads").value=cfg.threads??"";
+  $("#rb-model").value=env.MODEL||"IQ2_XS";
+  $("#rb-context").value=env.CONTEXT||"32768";
+  $("#rb-vision").value=env.VISION||"no";
+  $("#rb-kv").value=env.KV||"";
+  $("#rb-gpu").value=env.GPU||"";
+  $("#rb-gpus").value=env.GPUS||"";
+}
+async function saveConfig(){
+  const body={
+    max_tokens:+$("#cfg-maxtok").value||null,
+    fit_max_tokens:$("#cfg-fitmax").checked,
+    allowed_hosts:$("#cfg-hosts").value,
+    threads:+$("#cfg-threads").value||null,
+  };
+  const r=await (await api("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
+  $("#cfg-msg").textContent=r.ok?(r.msg||t("已保存")):(r.error||t("失败"));
+  if(r.ok)setTimeout(()=>{$("#cfg-msg").textContent="";loadSettings();refreshAll();},20000);
+}
+async function rebuild(){
+  if(!confirm(t("确定按所选参数重建？容器将重启，模型未下载时需要较长时间。")))return;
+  const env={MODEL:$("#rb-model").value,CONTEXT:$("#rb-context").value,VISION:$("#rb-vision").value};
+  if($("#rb-kv").value)env.KV=$("#rb-kv").value;
+  if($("#rb-gpu").value)env.GPU=$("#rb-gpu").value;
+  if($("#rb-gpus").value)env.GPUS=$("#rb-gpus").value;
+  const r=await (await api("/api/rebuild",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({env})})).json();
+  $("#rb-msg").textContent=r.ok?(r.msg||t("已启动")):(r.error||t("失败"));
+}
+/* ---------- logs ---------- */
+let logPaused=false,logWS=null;
+function toggleLogPause(){logPaused=!logPaused;$("#logpause").textContent=logPaused?t("继续"):t("暂停");}
+function appendLog(e){
+  if(logPaused)return;
+  const box=$("#logbox");const d=document.createElement("div");
+  const line=e.kind==="metric"?e.line:`${e.ts} [${e.kind}] ${e.line||e.method+" "+e.path+" "+e.detail}`;
+  d.textContent=line;d.className="k-"+(e.kind==="access"?"access":e.kind);
+  box.appendChild(d);
+  while(box.children.length>1500)box.removeChild(box.firstChild);
+  box.scrollTop=1e9;
+}
+let logWSRetry=0;
+function initLogWS(){
+  if(logWS||!ME)return;
+  if(logWSRetry>=5)return;
+  logWS=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws/logs");
+  logWS.onopen=()=>{logWSRetry=0;};
+  logWS.onmessage=ev=>appendLog(JSON.parse(ev.data));
+  logWS.onclose=()=>{logWS=null;logWSRetry++;setTimeout(initLogWS,3000*logWSRetry);};
+}
+/* ---------- terminal ---------- */
+let term=null,termWS=null,termInit=false;
+function initTerm(){
+  if(termInit)return;termInit=true;
+  term=new Terminal({fontSize:13,fontFamily:"Consolas,monospace",theme:{background:"#0a0e14"},cursorBlink:true});
+  const fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open($("#term"));fit.fit();
+  new ResizeObserver(()=>{try{fit.fit();}catch(e){}}).observe($("#term"));
+  term.onData(d=>{if(termWS&&termWS.readyState===1)termWS.send(JSON.stringify({type:"input",data:btoa(String.fromCharCode(...new TextEncoder().encode(d)))}));});
+  term.onResize(sz=>{if(termWS&&termWS.readyState===1)termWS.send(JSON.stringify({type:"resize",rows:sz.rows,cols:sz.cols}));});
+  term.writeln("[2m"+t("终端未连接。点击右上「连接终端」以开启一个 root shell 会话。")+"[0m");
+}
+function setTermState(on,msg){
+  $("#term-dot").style.background=on?"var(--ok)":"#6e7681";
+  $("#term-state").textContent=msg||(on?t("已连接"):t("未连接"));
+  $("#term-connect").disabled=on;
+  $("#term-disconnect").disabled=!on;
+}
+function termConnect(){
+  if(termWS&&termWS.readyState===1)return;
+  setTermState(false,t("连接中…"));
+  connectTerm();
+}
+function termDisconnect(){
+  if(!termWS)return;
+  try{termWS.close();}catch(e){}
+  termWS=null;
+  setTermState(false,t("已断开"));
+  if(term)term.writeln("\r\n\x1b[2m"+t("[已断开] shell 会话已终止")+"\x1b[0m");
+}
+function connectTerm(){
+  termWS=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws/console");
+  termWS.onmessage=ev=>{const m=JSON.parse(ev.data);
+    if(m.type==="output"){const bin=atob(m.b64);const bytes=Uint8Array.from(bin,c=>c.charCodeAt(0));term.write(new TextDecoder().decode(bytes));}
+    else if(m.type==="error"){term.writeln("\x1b[31m"+m.data+"\x1b[0m");}
+    else if(m.type==="exit"){setTermState(false,t("会话结束"));term.writeln("\r\n\x1b[2m"+t("[会话结束]")+"\x1b[0m");}};
+  termWS.onopen=()=>setTermState(true);
+  termWS.onerror=()=>setTermState(false,t("连接失败"));
+  termWS.onclose=()=>{termWS=null;setTermState(false,t("已断开"));
+    if(term)term.writeln("\r\n\x1b[2m"+t("[连接断开]")+"\x1b[0m");};
+}
+/* ---------- boot ---------- */
+function refreshAll(){refreshSys();refreshLlm();}
+window.addEventListener("resize",()=>{Object.values(sysCharts).forEach(setSize);Object.values(llmCharts).forEach(setSize);});
+function safe(fn){try{fn();}catch(e){console.error(e);}}
+safe(initSysCharts);safe(initLlmCharts);safe(initLogWS);safe(loadParams);
+applyLang();
+document.getElementById("btn-lang").textContent = LANG === "zh" ? "EN" : "中文";
+applyLang();
+checkAuth();            // run first so a chart failure cannot block it
+safe(refreshAll);
+["maxtok","temp","effort"].forEach(id=>$("#"+id).addEventListener("change",
+  e=>localStorage.setItem("p_"+id,e.target.value)));
+setInterval(()=>{if($("#tab-sys").classList.contains("active"))refreshSys();},10000);
+setInterval(()=>{if($("#tab-llm").classList.contains("active"))refreshLlm();},10000);
+</script>
+</body>
+</html>
