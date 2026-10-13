@@ -622,7 +622,8 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
     mib = info.get("conversation_cache_mib")
     last = hist[-1] if hist else None
     return {"enabled": isinstance(mib, int) and mib > 0, "budget_mib": mib if isinstance(mib, int) else None,
-            "slots": info.get("conversation_cache_slots"), **parked,
+            "slots": info.get("conversation_cache_slots"),
+            "storage": info.get("conversation_cache_storage", "ram"), **parked,
             "requests": len(hist), "requests_reused": sum(1 for r in hist if (r.get("reused") or 0) > 0),
             "reused_tokens": totals.get("reused", 0), "prompt_tokens": totals.get("prompt_tokens", 0),
             "last_reused": last.get("reused") if last else None,
