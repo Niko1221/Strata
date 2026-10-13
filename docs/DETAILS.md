@@ -1389,6 +1389,22 @@ with an `mcpServers` block; add it to the `serve/server.py` line of your run scr
   up to `max_rounds` calls in a row per answer. A tool that fails or takes longer than `timeout_s` (default 60 s)
   gives the model an `error: ...` result instead of ending the chat. Results longer than `max_result_chars`
   (default 20,000 characters) are cut, with a note, before the model reads them. Stop stops a running tool too.
+- **A picture comes back as a picture.** A result that carries an MCP image block - what a server that reads image
+  files, takes screenshots or renders charts hands back - goes to the vision encoder and into the prompt where the
+  server put it, so the model sees the pixels instead of a line saying a picture was there; the tool block in the
+  chat shows the same picture, and the next question of the conversation still has it. At most 8 pictures of 32 MiB
+  each are taken from one result (the rest are named in the text, as they always were), and pictures are not counted
+  in `max_result_chars`. Without the vision encoder, or for a picture it cannot decode, the model gets
+  `[image omitted: ...]` in its place and the chat goes on. A server that names a file instead of sending its bytes
+  (`resource_link`) is still only text: Strata never opens a path an MCP server mentions.
+- **A client that runs the MCP server itself can hand the picture back as text, and that is read as a picture too.**
+  Chatbox and the other clients built on the AI SDK run MCP servers on their own side and, for
+  `/v1/chat/completions`, JSON-stringify a tool's `content` output - so the base64 of the picture lands inside the
+  tool message (one photo of a chat: 1,491,022 tokens, a request no context can hold). A long enough base64 run in a
+  **tool's** text that decodes to a picture is therefore taken out of the text and goes to the vision encoder like an
+  MCP one, with the same caps, and the text keeps the line naming it. A client that sends the picture as a real image
+  part (an Anthropic `tool_result`, an OpenAI `image_url`) never needed this and works as before; a user's own text
+  is never read this way.
 - Only the chat page uses them. API clients (omp, Claude Code, OpenAI and Anthropic SDKs) see the API exactly as
   before and keep their own tools; a request to `/v1/chat/completions` opts in with `"strata_mcp": true` (it then
   gets `strata_mcp` tool events in the stream).

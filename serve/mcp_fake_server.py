@@ -4,9 +4,10 @@
     python serve/mcp_fake_server.py --http 8765      Streamable HTTP on 127.0.0.1:8765/mcp
 
 Tools: echo (returns its text), fail (a tool error, isError), sleep (answers after `seconds`), big (`n` characters),
-die (the process exits mid-call), add (two integers).  tools/list pages two tools at a time (`--page N`), so the
-client's pagination is exercised.  `--crash-at-start` exits before answering anything.  With FAKE_MCP_LOG set, the
-server appends what it saw (calls, cancellations) to that file, one JSON line each.
+die (the process exits mid-call), add (two integers), picture (`n` pictures, each after a line of its own: as `image`
+blocks, as embedded `resource`s, or as `audio`).  tools/list pages two tools at a time (`--page N`), so the client's
+pagination is exercised.  `--crash-at-start` exits before answering anything.  With FAKE_MCP_LOG set, the server
+appends what it saw (calls, cancellations) to that file, one JSON line each.
 """
 from __future__ import annotations
 
@@ -28,7 +29,12 @@ TOOLS = [
     {"name": "die", "description": "Ends the server.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "add", "description": "Adds two integers.",
      "inputSchema": {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}}},
+    {"name": "picture", "description": "Returns n small PNGs.",
+     "inputSchema": {"type": "object", "properties": {"n": {"type": "integer"}, "kind": {"type": "string"},
+                                                      "mime": {"type": "string"}}}},
 ]
+# a 1x1 red PNG: the tests follow the bytes, they do not look at the picture
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
 PAGE = 2
 cancelled: set = set()
 
@@ -80,6 +86,19 @@ def handle(msg: dict):
             os._exit(3)
         elif name == "add":
             result = text(str(int(args.get("a", 0)) + int(args.get("b", 0))))
+        elif name == "picture":
+            n, kind, mime = int(args.get("n", 1)), str(args.get("kind", "image")), str(args.get("mime", "image/png"))
+            blocks = []
+            for i in range(n):                           # a line of text before each picture: the order must survive
+                blocks.append({"type": "text", "text": f"picture {i + 1} of {n}:"})
+                if kind == "resource":                   # the same base64 in an embedded resource
+                    blocks.append({"type": "resource",
+                                   "resource": {"uri": f"file:///p{i}.png", "mimeType": mime, "blob": PNG}})
+                elif kind == "audio":
+                    blocks.append({"type": "audio", "data": PNG, "mimeType": "audio/mpeg"})
+                else:
+                    blocks.append({"type": "image", "data": PNG, "mimeType": mime})
+            result = {"content": blocks}
         else:
             return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": f"unknown tool {name}"}}
         return {"jsonrpc": "2.0", "id": rid, "result": result}
