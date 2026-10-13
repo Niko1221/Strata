@@ -12702,6 +12702,16 @@ int main(int argc, char** argv) {
                     {
                         splice_target = suffix::narrowed_resume_target(
                             splice_narrowed_resume, chain_lengths);
+                        // T18 (2026-10-13): replay-gated gap read.  dt-steady5 proved reading
+                        // [P, n) on state@checkpoint loses the gap [ckpt, P) from the GDN/PLE
+                        // recurrence (C under-counted the ledger; gap 826 tokens).  Fail-closed
+                        // default: read from the checkpoint (byte-equal to strict semantics);
+                        // STRATA_SFX_REPLAY=1 (FW-2 day) restores the gap-read [P, n).
+                        static const bool sfx_replay_on =
+                            std::getenv("STRATA_SFX_REPLAY") != nullptr;
+                        if (splice_restore_anchor_length > 0)
+                            splice_target.read_from = suffix::partial_gap_read_from(
+                                sfx_replay_on, splice_narrowed_resume, chain_lengths);
                         // Resume becomes the restore length (the deepest surviving checkpoint at
                         // or below the splice-narrowed resume, or 0 when none survives - in
                         // which case this is a fresh prefill from 0, no error).  The chunk
