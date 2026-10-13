@@ -247,6 +247,33 @@ int main() {
               "an oversized put drops nothing");
     }
     {
+        // --conversation-cache-park-gain N: parked_prefix_tokens reports what a park now would supersede, so a
+        // conversation that advanced fewer than N tokens since that copy keeps it instead of writing the whole
+        // snapshot again for the next turn to drop.  It must name exactly the entries drop_superseded() would remove.
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        ConversationCache cache(1 << 20, 8);
+        check(cache.parked_prefix_tokens({1, 2, 3}, {}, {}, true) == 0, "an empty cache supersedes nothing");
+
+        const std::vector<int32_t> live_ids = {1, 2, 3, 4, 60, 70};
+        const std::vector<ConversationCheckpoint> chain = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 60})};
+        SavedConversation same = image({1, 2, 3, 4, 60, 70});
+        same.checkpoints = chain;
+        check(cache.put(std::move(same)), "park a conversation with a checkpoint chain");
+        check(cache.parked_prefix_tokens(live_ids, {}, chain, true) == 5,
+              "the entry the outgoing chain supersedes is reported by its deepest checkpoint");
+
+        const std::vector<ConversationCheckpoint> other_chain = {cp({1, 2, 3})};
+        check(cache.parked_prefix_tokens({1, 2, 3, 40, 50}, {}, other_chain, true) == 0,
+              "a conversation sharing only the root supersedes nothing");
+        check(cache.parked_prefix_tokens(live_ids, {}, chain, false) == 0,
+              "the other steering mode is a different entry");
+        check(cache.parked_prefix_tokens({1, 2, 3, 4, 60, 70, 71}, {}, chain, true) == 5,
+              "an appended tail keeps the reported depth at the parked one");
+        SavedConversation no_cp = image({1, 2, 3, 9});
+        check(cache.put(std::move(no_cp)) && cache.parked_prefix_tokens({1, 2, 3, 9}, {}, {}, true) == 0,
+              "an entry without checkpoints is never reported");
+    }
+    {
         ConversationCache disabled(0,4), no_slots(1024,0);
         check(!disabled.enabled() && !no_slots.enabled(), "both disable switches");
         check(!disabled.put(image({1,2,3})) && !no_slots.put(image({1,2,3})), "disabled cache stores nothing");

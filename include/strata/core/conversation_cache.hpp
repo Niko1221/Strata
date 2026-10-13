@@ -335,6 +335,26 @@ public:
         return dropped;
     }
     size_t superseded() const { return superseded_; }
+    /// --conversation-cache-park-gain N: the longest parked entry this conversation's outgoing state supersedes, in
+    /// tokens, 0 when it has none.  It is the entry drop_superseded() would remove, so the caller can tell whether a
+    /// park now would only rewrite what a turn from now drops: the prefix such an entry holds is this conversation's
+    /// prefix, and the conversation only appends, so the copy stays usable for the reuse it was made for.
+    size_t parked_prefix_tokens(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
+                                const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) const {
+        size_t longest = 0;
+        for (const auto& e : entries_) {
+            if (e.cvec != cvec) continue;
+            const ConversationCheckpoint* deepest = nullptr;
+            for (const auto& c : e.checkpoints)
+                if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
+            if (!deepest || deepest->ids.empty()) continue;
+            bool holds = deepest->ids == ids && deepest->imgs == images;
+            for (const auto& k : checkpoints)
+                if (!holds && k.ids == deepest->ids && k.imgs == deepest->imgs) holds = true;
+            if (holds) longest = std::max(longest, deepest->ids.size());
+        }
+        return longest;
+    }
 
     bool put(SavedConversation&& image, size_t held = 0) {
         const size_t n = image.bytes();
