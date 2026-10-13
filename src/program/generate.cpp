@@ -102,6 +102,9 @@
 #include <sys/stat.h>
 #if !defined(__APPLE__)   // major() / minor(): <sys/types.h> on macOS
 #include <sys/sysmacros.h>
+#if defined(__GLIBC__)
+#include <malloc.h>   // malloc_trim
+#endif
 #endif
 #endif
 
@@ -8259,19 +8262,29 @@ int main(int argc, char** argv) {
             conversations.set_on_evict([&conv_disk](strata::core::SavedConversation&& image) {
                 conv_disk.put(std::move(image));   // queued for the writer; a refusal is in its log
             });
-        // Room in RAM for `need` more bytes above `floor`: the disk tier's queued writes first (their RAM comes back),
-        // then the RAM cache's oldest conversations.  `mem` keeps the last reading for the caller's message.
+        // freed images stay in malloc's heap, which MemAvailable does not count
+        auto return_freed_heap = [] {
+#if defined(__GLIBC__)
+            malloc_trim(0);
+#endif
+        };
+        // Room in RAM for `need` more bytes above `floor`: malloc's freed heap first, then the disk tier's queued
+        // writes (their RAM comes back), then the RAM cache's oldest conversations.  `mem` keeps the last reading
+        // for the caller's message.
         auto make_ram = [&](uint64_t need, uint64_t floor, size_t& evicted,
                             std::optional<strata::core::HostMemoryReading>& mem) -> bool {
+            bool trimmed = false;
             for (;;) {
                 mem = strata::core::sample_host_memory();
                 if (strata::core::conversation_memory_admit(mem ? std::optional<uint64_t>(mem->available) : std::nullopt,
                                                             need, floor))
                     return true;
-                if (conv_disk.pending()) { conv_disk.wait_idle(); continue; }
+                if (!trimmed) { return_freed_heap(); trimmed = true; continue; }
+                if (conv_disk.pending()) { conv_disk.wait_idle(); trimmed = false; continue; }
                 if (conversations.size() == 0 || evicted >= conversations.slots() || !conversations.evict_oldest())
                     return false;
                 ++evicted;
+                trimmed = false;
             }
         };
         // Save only on a switch/rewind, not on each continuing request. No graph
