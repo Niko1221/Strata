@@ -373,4 +373,17 @@ The feature was first validated on a build with the remote decode pipelined (`--
 on an earlier base), on an RTX 3080 main + an RTX 2080 Ti worker over 10 GbE: the answers after a
 restore matched the request that saved the checkpoint byte for byte, the default path matched its base build, and a
 forced restore miss read from 0 and finished. Those numbers belong to that build and are not repeated here.
-TODO(v1-gpu): checkpoints with `--pipeline-windows 2` on this branch.
+On this branch with `--pipeline-windows 2`, the same PCs and model, exact flags, `--expert-cache 1951` and
+`STRATA_ROUTE_TAIL_SKIP=0` on the main process:
+
+| Check | Result |
+|---|---|
+| Repeated turns (every request sent twice) | 8 of 8 repeats byte-identical; 15 restores on both sides, 0 errors |
+| Repeated turns, thinking on (300 tokens) | 8 of 8; 15 restores |
+| Cancellation | 8 of 8, and all 8 answers equal the run without cancels; 23 restores |
+| Fallback (`STRATA_REMOTE_CKPT_DROP=1`) | 2 restores missed in 16 requests (two passes over the 8 turns, one miss in each: the second chat's first request); those requests read their prompt from 0 and finished; 0 errors |
+| Default path (no `--prompt-cache`), the first replay on fresh servers, against the first `--pipeline-windows 0` server of the branch this one is built on | `0`: 4, 8 and 8 of 8; `2`: 8 and 7 of 8 |
+
+The runs at 4 and 7 of 8 took another word partway into an answer. In the same session, #1887's head (no
+`--pipeline-windows` on a remote main) gave 5 and 5 of 8 against the same run, and 2 of 8 against each other, so a
+single fresh server does not settle the default path here; three of this branch's five matched it.
