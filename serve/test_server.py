@@ -4317,7 +4317,7 @@ class AmdTelemetry(unittest.TestCase):
                 hops.append(str(h))
             (Path(hops[-1]) / "current_link_speed").write_text("16.0 GT/s PCIe\n")
             (Path(hops[-1]) / "current_link_width").write_text("16\n")
-            a = telemetry.gpu_reader(0, amd=True)
+            a = telemetry._Amd(0)         # the sysfs reader itself: on Windows gpu_reader(amd=True) is the DXGI path
             a.dev = hops[-1]
             with mock.patch.object(telemetry._Amd, "_hops", lambda self: hops):
                 self.assertEqual(a.link(), {"pcie_gen": 3, "pcie_gen_max": 3, "pcie_own_gen": 4, "pcie_width": 8,

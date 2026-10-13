@@ -3,7 +3,8 @@
 A background thread samples once a second and keeps the last 60 readings of each series for the sparklines:
 - GPU: NVIDIA's own NVML library (nvml.dll / libnvidia-ml.so.1, installed with every driver) through ctypes, so no
   pip package is needed: load, VRAM, temperature, power, PCIe link and throughput.  With the AMD backend (#301): the
-  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.
+  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power; on Windows, where there is no sysfs, the
+  card's VRAM and load from DXGI (#1380) and its temperature and power from AMD's own ADLX library.
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
   the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
 Anything that cannot be read is None; nothing here can stop the server.
@@ -23,6 +24,10 @@ HISTORY = 60
 
 # ------------------------------------------------------------------------------------------------ NVML
 class _Nvml:
+    # Whether this reader sees the PCIe traffic itself.  NVML does (nvmlDeviceGetPcieThroughput, in read() below);
+    # the AMD paths do not, and the server then fills gpu_pcie_rx_mb from the bytes the engine moved over the link.
+    has_pcie_throughput = True
+
     class Util(ctypes.Structure):
         _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
 
@@ -138,6 +143,8 @@ class _Amd:
     interface: load (gpu_busy_percent), VRAM (mem_info_vram_used / _total), and from its hwmon folder the temperature
     (temp1_input, the edge sensor, m°C), power (power1_average or power1_input, µW) and its cap (power1_cap)."""
 
+    has_pcie_throughput = False          # sysfs has no PCIe byte counter: the link files are link state, not traffic
+
     def __init__(self, index=0, sysfs=None):
         self.dev = amd_device_dir(index, sysfs)
         self.hwmon = None
@@ -246,9 +253,326 @@ class _Amd:
         return out
 
 
+# ------------------------------------------------------------------------------------------------ AMD (Windows, DXGI)
+class _DxgiLuid(ctypes.Structure):                                             # LUID, inside DXGI_ADAPTER_DESC1
+    _fields_ = [("LowPart", ctypes.c_uint), ("HighPart", ctypes.c_int)]
+
+
+class _DxgiDVal(ctypes.Structure):                                    # PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE
+    _fields_ = [("Status", ctypes.c_ulong), ("Value", ctypes.c_double)]
+
+
+class _DxgiItem(ctypes.Structure):                                    # PDH_FMT_COUNTERVALUE_ITEM_W (pdh.h)
+    _fields_ = [("name", ctypes.c_wchar_p), ("value", _DxgiDVal)]
+
+
+class _Adlx:
+    """An AMD card's temperature and power on Windows, from AMD's own ADLX library (amdadlx64.dll, installed with the
+    Adrenalin driver).  A driver newer than the library knows is gated out of its GPU list (measured: ADLX 1.5.0.124,
+    driver 32.0.23033.1002: plain ADLXInitialize answers GetGPUs with an empty list); ADLXInitializeWithIncompatible
+    Driver2 takes it, and the GPU then comes from the ADL mapping - GetADLXGPUFromAdlAdapterIndex - not from the list,
+    whose At() answers UNKNOWN_INTERFACE there.  Measured on an RX 7900 XT on that driver while the engine held 19 GiB:
+    GPUTemperature 48 C and GPUTotalBoardPower 370 W while the GPU ran at 100 percent, 82-101 W near idle; GPUPower
+    and GPUIntakeTemperature answer NOT_SUPPORTED, so the power falls back to the board power.  No device, no context,
+    no VRAM taken.  The vtable slots are from the SDK headers at the library's version, and a wrong slot is silent:
+    slot 8 is the hotspot temperature (18 C above the GPU one), and slot 11, the fan speed, is an int that answers a
+    denormal double when read as one.  The values are sanity-checked anyway.  Stays silent when the library, the
+    export or the card is not there."""
+
+    SYS_PERFMON = 9                                       # IADLXSystem::GetPerformanceMonitoringServices
+    MAP_GPU = 1                                           # IADLMapping::GetADLXGPUFromAdlAdapterIndex
+    IFACE_RELEASE = 1                                     # IADLXInterface::Release
+    GPU_NAME = 7                                          # IADLXGPU::Name
+    PM_START, PM_CURRENT = 11, 18                         # PerformanceMonitoringServices::Start, ::GetCurrentGPUMetrics
+    M_TEMP, M_POWER, M_BOARD = 7, 9, 10                   # GPUMetrics::GPUTemperature, ::GPUPower, ::GPUTotalBoardPower
+    _shared = None                                        # (system, mapping, pm): ADLX initializes once per process,
+    #                                                     # and its GetPerformanceMonitoringServices hangs on the
+    #                                                     # second call (measured) - so the service is kept too
+
+    @staticmethod
+    def _call(obj, slot, argtypes, *args, restype=ctypes.c_int):
+        """Call the slot-th method of an ADLX object's vtable, this pointer as the first argument; the ADLX_RESULT
+        back.  ADLX interfaces are plain C++ vtables, not COM: no QueryInterface, no IID."""
+        vt = ctypes.cast(obj, ctypes.POINTER(ctypes.c_void_p)).contents.value
+        at = vt + slot * ctypes.sizeof(ctypes.c_void_p)
+        fn = ctypes.cast(ctypes.cast(at, ctypes.POINTER(ctypes.c_void_p)).contents.value,
+                         ctypes.CFUNCTYPE(restype, *argtypes))
+        return fn(*args)
+
+    def _open(self):
+        """The ADLX system, mapping and metrics service, once per process: a second ADLXInitialize answers
+        ALREADY_INITIALIZED and a second GetPerformanceMonitoringServices hangs (both measured), so every later
+        reader (a second card, free_vram_mib's) reuses the first one's objects.  The tracking is started here,
+        once; GetCurrentGPUMetrics on the shared service is safe to call any number of times."""
+        if type(self)._shared is not None:
+            return type(self)._shared
+        dll = ctypes.WinDLL("amdadlx64.dll")
+        init = getattr(dll, "ADLXInitializeWithIncompatibleDriver2", None)
+        if init is None:                                   # ADLX before 1.2: no way past the driver gate
+            return None
+        ver = ctypes.c_ulonglong(0)
+        dll.ADLXQueryFullVersion.argtypes = [ctypes.POINTER(ctypes.c_ulonglong)]
+        if dll.ADLXQueryFullVersion(ctypes.byref(ver)) != 0:
+            return None
+        system, mapping = ctypes.c_void_p(), ctypes.c_void_p()
+        init.argtypes = [ctypes.c_ulonglong, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
+        if init(ver.value, ctypes.byref(system), ctypes.byref(mapping)) != 0 or not mapping.value:
+            return None
+        pm = ctypes.c_void_p()
+        if self._call(system, self.SYS_PERFMON, [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)],
+                      system, ctypes.byref(pm)) != 0 or not pm.value:
+            return None
+        if self._call(pm, self.PM_START, [ctypes.c_void_p], pm) != 0:   # StartPerformanceMetricsTracking
+            return None
+        type(self)._shared = (system, mapping, pm)
+        return type(self)._shared
+
+    def __init__(self, want=None):
+        self._pm = self._gpu = None
+        if os.name != "nt":
+            return
+        try:
+            opened = self._open()
+            if opened is None:
+                return
+            _, mapping, pm = opened
+            gpu = self._find(mapping, want)
+            if gpu is None:
+                return
+            self._pm, self._gpu = pm, gpu
+        except OSError:
+            self._pm = self._gpu = None
+
+    def _find(self, mapping, want):
+        """The GPU object for this card: the ADL adapter indexes in order (the mapping is the only path that reaches
+        it on a gated driver).  The name must be the one DXGI reported for the card; with exactly one card found,
+        that one."""
+        found = []
+        for i in range(16):
+            g = ctypes.c_void_p()
+            if self._call(mapping, self.MAP_GPU,
+                          [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)],
+                          mapping, i, ctypes.byref(g)) != 0 or not g.value:
+                continue
+            s = ctypes.c_char_p()
+            if self._call(g, self.GPU_NAME, [ctypes.c_void_p, ctypes.POINTER(ctypes.c_char_p)],
+                          g, ctypes.byref(s)) == 0:
+                if want and (s.value or b"").decode(errors="replace") == want:
+                    return g
+                found.append(g)
+        return found[0] if len(found) == 1 else None
+
+    def _double(self, obj, slot):
+        v = ctypes.c_double()
+        return v.value if self._call(obj, slot, [ctypes.c_void_p, ctypes.POINTER(ctypes.c_double)],
+                                     obj, ctypes.byref(v)) == 0 else None
+
+    def read(self):
+        """{"temp": C, "power": W} for the values that answer and are plausible; {} for the rest.  The metrics object
+        is a fresh reference each read, so it is released again."""
+        out = {}
+        if self._pm is None:
+            return out
+        try:
+            m = ctypes.c_void_p()
+            if self._call(self._pm, self.PM_CURRENT,
+                          [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)],
+                          self._pm, self._gpu, ctypes.byref(m)) != 0 or not m.value:
+                return out
+            try:
+                t = self._double(m, self.M_TEMP)
+                if t is not None and 0.0 < t < 150.0:
+                    out["temp"] = t
+                w = self._double(m, self.M_POWER)
+                if w is None or not 0.0 < w < 1200.0:
+                    w = self._double(m, self.M_BOARD)
+                if w is not None and 0.0 < w < 1200.0:
+                    out["power"] = w
+            finally:
+                self._call(m, self.IFACE_RELEASE, [ctypes.c_void_p], m)
+        except OSError:
+            pass
+        return out
+
+
+class _Dxgi:
+    """#1380: an AMD card's readings on Windows, where there is no NVML and no amdgpu sysfs to read.  DXGI is the
+    display API every Windows GPU driver implements: it gives the card's name and its dedicated memory (total).
+    For the VRAM in use, DXGI's own QueryVideoMemoryInfo is per-process - it reported 0 on the AMD driver while the
+    engine held 19 GiB - so the used figure comes from the same performance counter Task Manager reads, selected by
+    the adapter's LUID.  So does the busy percent, from the GPU Engine counter beside it: the busiest engine, as
+    Task Manager shows it.  Enumeration and counters only - no device, no context: it takes no VRAM from the engine
+    and cannot stall it.  Temperature and power come
+    from the ADLX library below (_Adlx), the only one that answered them on this machine: ADL enumerates the card but
+    rejects every sensor call (-1/-5), and no performance counter or WMI class reports them."""
+
+    AMD_VENDOR = 0x1002          # the PCI vendor ID of ATI/AMD: the card HIP runs on, not an NVIDIA display card
+    # No PCIe traffic here to read: the performance counters have no PCIe counter set (only the five GPU sets and
+    # RDMA Activity), amdadlx64.dll and atiadlxx.dll export no bus metric, and ADLX 1.5's headers name no link
+    # counter - measured on an RX 7900 XT.  The server fills that figure from the bytes the engine moved instead.
+    has_pcie_throughput = False
+
+    class Desc1(ctypes.Structure):                                             # DXGI_ADAPTER_DESC1
+        _fields_ = [("Description", ctypes.c_wchar * 128), ("VendorId", ctypes.c_uint),
+                    ("DeviceId", ctypes.c_uint), ("SubSysId", ctypes.c_uint), ("Revision", ctypes.c_uint),
+                    ("DedicatedVideoMemory", ctypes.c_size_t), ("DedicatedSystemMemory", ctypes.c_size_t),
+                    ("SharedSystemMemory", ctypes.c_size_t), ("AdapterLuid", _DxgiLuid), ("Flags", ctypes.c_uint)]
+
+    class Val(ctypes.Structure):                                               # PDH_FMT_COUNTERVALUE, PDH_FMT_LARGE
+        _fields_ = [("Status", ctypes.c_long), ("Value", ctypes.c_longlong)]
+
+    @staticmethod
+    def _iid(s):
+        """A GUID string as the 16 bytes REFIID wants: the first three fields little-endian, the last two as written."""
+        b = bytes.fromhex(s.replace("-", ""))
+        return (ctypes.c_ubyte * 16).from_buffer_copy(b[3::-1] + b[5:3:-1] + b[7:5:-1] + b[8:])
+
+    @staticmethod
+    def _com(obj, slot, argtypes, *args):
+        """Call the slot-th method of a COM object's vtable, this pointer as the first argument; the HRESULT back.
+        The vtable holds function pointers, so read the slot before calling it."""
+        vt = ctypes.cast(obj, ctypes.POINTER(ctypes.c_void_p)).contents.value
+        at = vt + slot * ctypes.sizeof(ctypes.c_void_p)
+        fn = ctypes.cast(ctypes.cast(at, ctypes.POINTER(ctypes.c_void_p)).contents.value,
+                         ctypes.CFUNCTYPE(ctypes.c_long, *argtypes))
+        return fn(*args)
+
+    def __init__(self, index=0):
+        self.ad = self.total = self._name = self.luid = None
+        self._pdh = self._q = self._c = None                                  # the busy-percent query, kept open
+        self._adlx = None
+        if os.name != "nt":
+            return
+        try:
+            fac = ctypes.c_void_p()
+            create = ctypes.CDLL("dxgi.dll").CreateDXGIFactory1
+            create.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+            create.restype = ctypes.c_long
+            # IID_IDXGIFactory1 {770AAE78-F26F-4DBA-A829-253C83D1B387} (dxgi.h)
+            if create(self._iid("770aae78-f26f-4dba-a829-253c83d1b387"), ctypes.byref(fac)) != 0:
+                return
+            seen = -1
+            for i in range(16):
+                ad = ctypes.c_void_p()
+                if self._com(fac, 12, [ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p)],
+                             fac, i, ctypes.byref(ad)) != 0:                  # IDXGIFactory1::EnumAdapters1
+                    break
+                d = self.Desc1()
+                if self._com(ad, 10, [ctypes.c_void_p, ctypes.POINTER(self.Desc1)], ad,
+                             ctypes.byref(d)) == 0 and d.VendorId == self.AMD_VENDOR:   # IDXGIAdapter1::GetDesc1
+                    seen += 1
+                    if seen == index:
+                        self.ad, self.total, self._name = ad, d.DedicatedVideoMemory or None, d.Description or None
+                        self.luid = (d.AdapterLuid.HighPart & 0xFFFFFFFF, d.AdapterLuid.LowPart)
+                        break
+                self._com(ad, 2, [ctypes.c_void_p], ad)                       # Release the cards we do not keep
+        except OSError:
+            self.ad = None
+        if self.ad is not None:
+            self._adlx = _Adlx(self._name)                                    # temperature and power, above
+
+    def ok(self):
+        return self.ad is not None
+
+    def name(self):
+        return self._name
+
+    def _dedicated_usage(self):
+        """The VRAM this card holds, from the performance counter Task Manager reads; the counter instance is the
+        adapter's LUID.  None when the counter is not there."""
+        pdh = ctypes.WinDLL("pdh.dll")
+        q = ctypes.c_void_p()
+        pdh.PdhOpenQueryW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+        if pdh.PdhOpenQueryW(None, None, ctypes.byref(q)) != 0:
+            return None
+        try:
+            c = ctypes.c_void_p()
+            path = "\\GPU Adapter Memory(luid_0x%08x_0x%08x_phys_0)\\Dedicated Usage" % self.luid
+            pdh.PdhAddEnglishCounterW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_void_p,
+                                                  ctypes.POINTER(ctypes.c_void_p)]
+            if pdh.PdhAddEnglishCounterW(q, path, None, ctypes.byref(c)) != 0:
+                return None
+            if pdh.PdhCollectQueryData(q) != 0:
+                return None
+            v = self.Val()
+            pdh.PdhGetFormattedCounterValue.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p,
+                                                        ctypes.POINTER(self.Val)]
+            if pdh.PdhGetFormattedCounterValue(c, 0x400, None, ctypes.byref(v)) != 0:   # PDH_FMT_LARGE
+                return None
+            return v.Value if v.Status == 0 else None
+        finally:
+            pdh.PdhCloseQuery(q)
+
+    def _util(self):
+        """How busy the card is, from the GPU Engine counter Task Manager's GPU column is built from, its instances
+        picked by the adapter's LUID: the busiest engine, which is what Task Manager shows.  The counter is a rate
+        over the time since its last sample, so the query and its counter stay open between reads - a handle with
+        no previous sample answers PDH_NO_DATA - and the first read after startup has no value.  Measured on an RX
+        7900 XT decoding at 60 tok/s: 93% on the compute engine, where the Running Time counter beside it computed
+        94% over the same window.  None when the counter set is not there."""
+        if self.luid is None:
+            return None
+        if self._q is None:
+            pdh = ctypes.WinDLL("pdh.dll")
+            q = ctypes.c_void_p()
+            pdh.PdhOpenQueryW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+            if pdh.PdhOpenQueryW(None, None, ctypes.byref(q)) != 0:
+                return None
+            c = ctypes.c_void_p()
+            path = "\\GPU Engine(*luid_0x%08x_0x%08x_phys_0*)\\Utilization Percentage" % self.luid
+            pdh.PdhAddEnglishCounterW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_void_p,
+                                                  ctypes.POINTER(ctypes.c_void_p)]
+            if pdh.PdhAddEnglishCounterW(q, path, None, ctypes.byref(c)) != 0:
+                pdh.PdhCloseQuery(q)
+                return None
+            self._pdh, self._q, self._c = pdh, q, c
+        pdh = self._pdh
+        if pdh.PdhCollectQueryData(self._q) != 0:
+            return None
+        n, k = ctypes.c_ulong(0), ctypes.c_ulong(0)
+        pdh.PdhGetFormattedCounterArrayW.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong),
+                                                     ctypes.POINTER(ctypes.c_ulong), ctypes.c_void_p]
+        # 0x2 = PDH_FMT_DOUBLE.  The first call only fills the size and answers PDH_MORE_DATA, so its return is not
+        # checked; a counter with no second sample yet reports no size at all.
+        pdh.PdhGetFormattedCounterArrayW(self._c, 0x2, ctypes.byref(n), ctypes.byref(k), None)
+        if not n.value:
+            return None
+        buf = ctypes.create_string_buffer(n.value)
+        if pdh.PdhGetFormattedCounterArrayW(self._c, 0x2, ctypes.byref(n), ctypes.byref(k), buf) != 0:
+            return None
+        top = None
+        for i in range(k.value):
+            it = _DxgiItem.from_address(ctypes.addressof(buf) + i * ctypes.sizeof(_DxgiItem))
+            if it.value.Status == 0 and (top is None or it.value.Value > top):
+                top = it.value.Value
+        return None if top is None else max(0, min(100, int(round(top))))
+
+    def read(self):
+        out = {}
+        if self.ad is None:
+            return out
+        try:
+            used = self._dedicated_usage()
+            if used is not None:
+                out["mem_used"], out["mem_total"] = used, self.total
+            u = self._util()
+            if u is not None:
+                out["util"] = u
+        except OSError:
+            pass
+        if self._adlx is not None:
+            out.update(self._adlx.read())
+        return out
+
+
 def gpu_reader(index=0, amd=False):
-    """The card's readings: NVML (NVIDIA), or the amdgpu sysfs files with the AMD backend (#301)."""
-    return _Amd(index) if amd else _Nvml(index)
+    """The card's readings: NVML (NVIDIA), or the amdgpu sysfs files with the AMD backend (#301) - and on Windows,
+    where there is no /sys at all, its VRAM from DXGI (#1380).  A sysfs root that exists but holds no amdgpu (a
+    Linux without the driver, a test tree) stays on the sysfs path: nothing, as before."""
+    if not amd:
+        return _Nvml(index)
+    g = _Amd(index)
+    return g if g.ok() or os.path.isdir(SYSFS) else _Dxgi(index)
 
 
 def free_vram_mib(index=0, amd=False):
@@ -351,10 +675,10 @@ class Telemetry:
         self.static = {
             "gpu_name": " + ".join(g.name() or "?" for _, g in self.gpus) if self.gpu.ok() else None,
             "gpu_count": len(self.gpus),
-            # #1380: the AMD readings are the amdgpu driver's Linux sysfs files; a Windows AMD card has none yet, and the
-            # dashboard said "not readable (NVML)" or showed empty tiles with no word why
-            "gpu_note": ("no GPU load or VRAM readings for AMD cards on Windows yet (Linux reads them from the amdgpu "
-                         "driver); the engine's own VRAM figures are in its log" if amd and not self.gpu.ok() else None),
+            # #1380: the AMD readings are the amdgpu driver's Linux sysfs files, on Windows DXGI; a card none of them
+            # reaches gets a word why, instead of "not readable (NVML)" or empty tiles in silence
+            "gpu_note": ("no GPU readings for this card: an AMD card on Windows is read through DXGI, and it gave "
+                         "nothing; the engine's own VRAM figures are in its log" if amd and not self.gpu.ok() else None),
             "cpu_name": _cpu_name(),
             "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or None,
             "threads": os.cpu_count(),
