@@ -26,6 +26,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <utility>
 
 namespace strata::program::conv_cache {
 
@@ -76,5 +78,59 @@ inline size_t eviction_victim(const uint64_t* stamps, size_t n, int64_t cap, con
         if (stamps[i] < stamps[v]) v = i;
     return v;
 }
+
+/// --prompt-cache-roots N (opt-in): the system-prompt roots (above) the engine made last, kept apart from any one
+/// conversation's chain.  With --batch the chain a root was made in does not stay whole: a slot keeps only its turn
+/// checkpoint, and a request that continues from a slot takes over that checkpoint alone, so the next NEW chat of
+/// the same client found no root and read its whole system prompt again.  A root's state depends on its tokens
+/// alone, so any session whose cells hold those tokens (the main one, an idle slot) can mount through a copy kept
+/// here.  At most `cap` are kept (one per distinct system prompt, the least recently made or used leaves first); a
+/// root equal to one kept (same tokens, images and control-vector mode) refreshes it instead of adding another copy.
+template<class Ck>
+class SharedRoots {
+public:
+    explicit SharedRoots(size_t cap) : cap_(cap) {}
+    bool enabled() const { return cap_ > 0; }
+    size_t size() const { return items_.size(); }
+    void clear() { items_.clear(); }
+
+    /// keep a copy of `c` (made with the control vector `cvec`); true when it was new
+    bool keep(const Ck& c, bool cvec) {
+        if (cap_ == 0) return false;
+        for (size_t i = 0; i < items_.size(); ++i)
+            if (items_[i].second == cvec && items_[i].first.ids == c.ids && items_[i].first.imgs == c.imgs) {
+                touch(i);
+                return false;
+            }
+        items_.emplace_back(c, cvec);
+        while (items_.size() > cap_) items_.pop_front();
+        return true;
+    }
+
+    /// the longest kept root with the control vector `cvec` that `fits` accepts (nullptr: none); a hit counts as a
+    /// use.  The pointer stays valid until the next keep / find / clear.
+    template<class Fits>
+    const Ck* find(bool cvec, Fits&& fits) {
+        size_t best = items_.size();
+        for (size_t i = items_.size(); i-- > 0;)
+            if (items_[i].second == cvec && (best == items_.size() || items_[i].first.ids.size() > items_[best].first.ids.size()) &&
+                fits(items_[i].first))
+                best = i;
+        if (best == items_.size()) return nullptr;
+        return &touch(best);
+    }
+
+private:
+    Ck& touch(size_t i) {   // the most recently used goes last
+        if (i + 1 != items_.size()) {
+            std::pair<Ck, bool> it = std::move(items_[i]);
+            items_.erase(items_.begin() + (std::ptrdiff_t) i);
+            items_.push_back(std::move(it));
+        }
+        return items_.back().first;
+    }
+    size_t cap_ = 0;
+    std::deque<std::pair<Ck, bool>> items_;   // least recently made or used first
+};
 
 }  // namespace strata::program::conv_cache

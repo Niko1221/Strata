@@ -973,7 +973,9 @@ prompt when that is 2,048 tokens or more (engine 0.1.20; PR #62 + #65), so that 
 system prompts and tool lists. Claude Code stamps its system prompt with a billing header that changes on every
 request (`cch=...`) and every session (the 4th part of `cc_version=`); the server pins both stamps (to `f`s, as
 llama.cpp does), so the system prompt and the tool list in front of it are the same prompt on every turn. Engine options: `--prompt-cache N` (0 = off), `--prompt-cache-every N`,
-`--prompt-cache-root N` (0 = no system-prompt checkpoint), `--turn-token ID`.
+`--prompt-cache-root N` (0 = no system-prompt checkpoint), `--prompt-cache-roots N` (opt-in, default 0: keep the
+last N system-prompt checkpoints apart from the conversations, so with `--batch` a new chat still starts after its
+system prompt; [BATCHING.md](BATCHING.md)), `--turn-token ID`.
 A one-shot request that no later request continues (a classification call, a probe) can send
 `"strata_checkpoint": false` in its body: it saves no checkpoint at its last turn nor every 16K tokens, so what
 follows the reused prefix (or the root) is read in one run, and its session is not kept or parked for a next request.

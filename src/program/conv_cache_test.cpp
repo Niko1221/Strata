@@ -20,6 +20,15 @@
 #include <vector>
 
 using strata::program::conv_cache::eviction_victim;
+using strata::program::conv_cache::SharedRoots;
+
+namespace {
+struct FakeCk {   // what SharedRoots reads of a checkpoint: its tokens and images
+    std::vector<int32_t> ids;
+    std::vector<int> imgs;
+    int state = 0;   // stands for the running state a copy carries
+};
+}  // namespace
 
 namespace {
 int g_fail = 0;
@@ -86,6 +95,29 @@ int main() {
         const std::vector<uint64_t> s4 = {1, 9, 3, 5};
         check(eviction_victim(s4.data(), s4.size(), 4, nullptr, all) == 2, "everything pinned: the oldest pin leaves, never the root");
         check(eviction_victim(s4.data(), s4.size(), 1, nullptr, all) == 0, "a one-slot budget keeps no pin: the oldest leaves");
+    }
+    {   // --prompt-cache-roots: the system-prompt roots kept apart from any one chain
+        SharedRoots<FakeCk> off(0);
+        check(!off.enabled() && !off.keep({{1, 2}, {}, 1}, true) && off.size() == 0, "0: off, nothing kept");
+        SharedRoots<FakeCk> r(2);
+        const FakeCk a{{1, 2, 3}, {}, 1}, b{{7, 8}, {}, 2}, c{{9, 9, 9, 9}, {}, 3};
+        check(r.keep(a, true) && r.keep(b, true) && r.size() == 2, "two system prompts: two roots kept");
+        check(!r.keep(a, true) && r.size() == 2, "the same root again refreshes it, no second copy");
+        const FakeCk a_img{{1, 2, 3}, {5}, 4};
+        check(r.keep(c, true) && r.size() == 2, "a third: still two kept");
+        auto any = [](const FakeCk&) { return true; };
+        auto ids_are = [](const std::vector<int32_t>& want) { return [want](const FakeCk& k) { return k.ids == want; }; };
+        check(r.find(true, ids_are({7, 8})) == nullptr, "the least recently made or used one left (b, a was refreshed)");
+        const FakeCk* hit = r.find(true, ids_are({1, 2, 3}));
+        check(hit != nullptr && hit->state == 1, "a match returns the kept copy");
+        check(r.find(false, any) == nullptr, "another control-vector mode matches nothing");
+        check(r.find(true, any)->state == 3, "several fit: the longest");
+        r.keep(b, true);   // c was used after a, so a leaves
+        check(r.find(true, ids_are({1, 2, 3})) == nullptr && r.find(true, ids_are({9, 9, 9, 9})) != nullptr,
+              "a use counts: the root used longest ago leaves");
+        check(r.keep(a_img, true) && r.size() == 2, "the same tokens with other images are another root");
+        r.clear();
+        check(r.size() == 0 && r.find(true, any) == nullptr, "clear drops them all (#879)");
     }
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
