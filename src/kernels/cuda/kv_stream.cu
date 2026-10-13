@@ -314,8 +314,13 @@ void kv_stage_from_host(const QsaAttnPools& stage, const KvHostPools& host, int 
     const Runs r = runs_of(stage, host, fmt, s);
     // Both sides are the identity layout, so a contiguous byte range is exactly the blocks' bytes whatever the
     // residency unit is: n_blocks blocks = n_blocks * (len / unit) bytes.
+    // A q2/q2k unit is a GROUP of 8 blocks, and half a group is not a byte range the format means (its slots
+    // are group-major), so round the block count UP to whole units first. Safe: n_blocks <= n_pages, and
+    // layer.cpp's kv_plan rounds n_pages up to a multiple of the unit, so the rounded range is inside both
+    // pools. unit == 1 leaves nb == n_blocks - the copy every other format makes.
+    const int64_t nb = (n_blocks + r.unit - 1) / r.unit * r.unit;
     for (int a = 0; a < r.n; ++a)
-        if (cudaMemcpyAsync(r.dst[a], r.src[a], (size_t) (n_blocks * (r.len[a] / r.unit)), cudaMemcpyDefault,
+        if (cudaMemcpyAsync(r.dst[a], r.src[a], (size_t) (nb * (r.len[a] / r.unit)), cudaMemcpyDefault,
                             (cudaStream_t) stream) != cudaSuccess)
             check("stage");
 }
@@ -324,9 +329,15 @@ void kv_unstage_to_host(const QsaAttnPools& stage, const KvHostPools& host, int 
                         const QsaShapes& s, void* stream) {
     if (b1 <= b0) return;
     const Runs r = runs_of(stage, host, fmt, s);   // src: the host copy, dst: the staging pool (identity layout both)
+    // Whole units only. The staging pool holds a q2/q2k GROUP, never a slice of one (kv_stage_from_host staged
+    // it from the host in whole units), so expand [b0, b1) down/up to unit boundaries before copying: b0 down
+    // to a multiple of the unit, b1 up to one (b1 <= n_pages, which kv_plan rounds up to a multiple of the
+    // unit, so the rounded end is inside the pool). unit == 1 leaves both bounds exactly as they were.
+    const int64_t u0 = b0 / r.unit * r.unit;
+    const int64_t u1 = (b1 + r.unit - 1) / r.unit * r.unit;
     for (int a = 0; a < r.n; ++a)
-        if (cudaMemcpyAsync((void*) (r.src[a] + b0 * (r.len[a] / r.unit)), r.dst[a] + b0 * (r.len[a] / r.unit),
-                            (size_t) ((b1 - b0) * (r.len[a] / r.unit)), cudaMemcpyDefault,
+        if (cudaMemcpyAsync((void*) (r.src[a] + u0 * (r.len[a] / r.unit)), r.dst[a] + u0 * (r.len[a] / r.unit),
+                            (size_t) ((u1 - u0) * (r.len[a] / r.unit)), cudaMemcpyDefault,
                             (cudaStream_t) stream) != cudaSuccess)
             check("unstage");
 }

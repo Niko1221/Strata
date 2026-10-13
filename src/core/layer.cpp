@@ -576,6 +576,10 @@ struct ElasticPool {
     strata::core::VmmRange range;
     std::vector<uint64_t> off, per_slot;   // each array's offset in the range (whole chunks) and bytes per page slot
     int64_t n_slots = 0, page_size = 0;
+    // Page slots per residency unit: 32/page_size for q2/q2k (kv_stream_unit_blocks), 1 otherwise. A q2 group's
+    // 10-byte slots are group-major, so writing ANY cell of a group touches bytes across the whole group: the
+    // mapped extent must end on a group boundary, or the last partial group writes past the mapped chunks.
+    int64_t unit = 1;
 };
 std::vector<std::unique_ptr<ElasticPool>> g_pools;
 
@@ -584,7 +588,10 @@ int64_t pool_chunks(const ElasticPool& p, size_t a, int64_t slots) {
     return (int64_t) (((uint64_t) slots * p.per_slot[a] + G - 1) / G);
 }
 int64_t pool_slots(const ElasticPool& p, int64_t cells) {
-    return std::min<int64_t>(p.n_slots, std::max<int64_t>((cells + p.page_size - 1) / p.page_size, 1));
+    // rounded UP to whole units, so a grow maps every byte of the group the last cell is in (n_slots is a
+    // multiple of the unit: kv_plan rounds the page count to it)
+    const int64_t s = std::max<int64_t>((cells + p.page_size - 1) / p.page_size, 1);
+    return std::min<int64_t>(p.n_slots, (s + p.unit - 1) / p.unit * p.unit);
 }
 /// Whole page slots every array of the pool has mapped.
 int64_t pool_slots_mapped(const ElasticPool& p) {
@@ -597,7 +604,7 @@ int64_t pool_slots_mapped(const ElasticPool& p) {
         while (c0 + c < end && p.range.mapped(c0 + c)) ++c;
         slots = std::min<int64_t>(slots, (int64_t) ((uint64_t) c * G / p.per_slot[a]));
     }
-    return slots;
+    return slots / p.unit * p.unit;   // usable capacity ends on a whole group (see ElasticPool::unit)
 }
 bool pool_grow(ElasticPool& p, int64_t cells, const std::function<strata::core::VmmChunk()>& take) {
     const uint64_t G = strata::core::vmm_granularity();
@@ -685,14 +692,6 @@ struct KvPlan {
 };
 KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
     KvPlan p;
-    p.pages = (max_cells + s.page_size - 1) / s.page_size;
-    p.slots = p.pages;
-    p.pooled_rows = max_cells / s.idx_block + 2;
-    if (g_kv_resident <= 0 || ring_cells < 0) return p;   // ring_cells < 0: always fully resident
-    // A/B only: STRATA_KV_RING_OFF keeps the drafter fully resident, STRATA_KV_MAIN_OFF the main layers
-    static const bool ring_off = std::getenv("STRATA_KV_RING_OFF") != nullptr;
-    static const bool main_off = std::getenv("STRATA_KV_MAIN_OFF") != nullptr;
-    if (ring_cells > 0 ? ring_off : main_off) return p;
     // q2's residency unit is a GROUP of 32/page_size = 8 pages (its per-channel scale is shared by the whole
     // group, kv_stream.hpp), so the slot count is rounded up to whole groups and to at least one sweep step of
     // them (the resolve block's 1,024 threads each look at one group). q2k takes the same unit for the same
@@ -702,6 +701,20 @@ KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
                              ? (int64_t) strata::kernels::kv_stream_unit_blocks(
                                    s, g_kv_q2k ? strata::kernels::kKvQ2K : strata::kernels::kKvQ2)
                              : 1;
+    p.pages = (max_cells + s.page_size - 1) / s.page_size;
+    // A q2/q2k pool holds WHOLE GROUPS: its 10-byte slots are group-major, so a page count that is not a
+    // multiple of the unit sizes the pool short inside its last group - 100 cells (25 pages) allocate 8,000 B
+    // per KV head, and group 3 addresses up to byte 10,239. Round the page count up to whole groups HERE,
+    // before it sizes the VRAM slots, the host copy, the staging pool and the page table. unit == 1 formats
+    // take no branch.
+    if (unit > 1) p.pages = ((p.pages + unit - 1) / unit) * unit;
+    p.slots = p.pages;
+    p.pooled_rows = max_cells / s.idx_block + 2;
+    if (g_kv_resident <= 0 || ring_cells < 0) return p;   // ring_cells < 0: always fully resident
+    // A/B only: STRATA_KV_RING_OFF keeps the drafter fully resident, STRATA_KV_MAIN_OFF the main layers
+    static const bool ring_off = std::getenv("STRATA_KV_RING_OFF") != nullptr;
+    static const bool main_off = std::getenv("STRATA_KV_MAIN_OFF") != nullptr;
+    if (ring_cells > 0 ? ring_off : main_off) return p;
     const int64_t unit_min = unit * 1024;
     const auto round_unit = [unit, unit_min](int64_t r) {
         r = ((r + unit - 1) / unit) * unit;
@@ -819,6 +832,9 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         pool->per_slot = per;
         pool->n_slots = p.slots;
         pool->page_size = s.page_size;
+        if (st.kv_q2 || st.kv_q2k)
+            pool->unit = strata::kernels::kv_stream_unit_blocks(s, st.kv_q2k ? strata::kernels::kKvQ2K
+                                                                             : strata::kernels::kKvQ2);
         if (!pool->range.reserve(at) || !pool_grow(*pool, g_kv_elastic_init, [] { return (strata::core::VmmChunk) 0; })) {
             std::fprintf(stderr, "strata: the elastic K/V could not reserve or map its pools\n");
             return 0;

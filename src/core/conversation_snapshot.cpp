@@ -42,7 +42,12 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
         error = "conversation snapshot: invalid K/V geometry";
         return false;
     }
-    const int64_t cells = ((upto + s.page_size - 1) / s.page_size) * s.page_size;
+    // q2/q2k: the image's K side is GROUP-MAJOR (one 10-byte slot per (32-cell group, head, dim), kv_q2.hpp),
+    // so the image has to hold whole groups - a cell count that stops mid-group would store half a group's
+    // slots. Every other format keeps the page rounding it always had.
+    int64_t cells = ((upto + s.page_size - 1) / s.page_size) * s.page_size;
+    if (st.kv_q2 || st.kv_q2k)
+        cells = ((cells + strata::kernels::Q2_0 - 1) / strata::kernels::Q2_0) * strata::kernels::Q2_0;
     // `per` is the K side's bytes per (cell, head); the V side is stated separately below (l.value_data).
     // q2k is where that split earns its keep: K is the q2 width and V the q4_0 one, in the same image.
     const size_t per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
@@ -181,7 +186,12 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
         error = "conversation snapshot: invalid unchanged prefix";
         return false;
     }
-    const int64_t whole_cells = (unchanged_tokens / l.page_size) * l.page_size;
+    // The reusable byte prefix. q2/q2k round it DOWN to a whole group as well: a group's slots are rewritten
+    // when any later cell of that group is written (its scale and the other cells' bits live in the same
+    // 10-byte slot), so a partial group's bytes are not reusable.
+    int64_t whole_cells = (unchanged_tokens / l.page_size) * l.page_size;
+    if (st.kv_q2 || st.kv_q2k)
+        whole_cells = (whole_cells / strata::kernels::Q2_0) * strata::kernels::Q2_0;
     image.format = l.format;
     image.cells = l.cells;
     image.heads = g.n_head_kv;
