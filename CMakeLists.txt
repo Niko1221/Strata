@@ -408,6 +408,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(qsa_topk_active_parity PRIVATE strata_kernels CUDA::cudart)
     add_test(NAME qsa_topk_active_parity COMMAND qsa_topk_active_parity)
     set_tests_properties(qsa_topk_active_parity PROPERTIES SKIP_RETURN_CODE 77)
+    # fork: the Daily's decode attention (STRATA_ATTN_DAILY=1: PR #540's chunk kernel on every card and the bounded
+    # merge) against upstream's kernels, bitwise; the production entries checked with the variable off and on
+    add_executable(qsa_merge_daily_parity src/kernels/qsa_merge_daily_parity.cpp)
+    target_include_directories(qsa_merge_daily_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+    target_link_libraries(qsa_merge_daily_parity PRIVATE strata_kernels CUDA::cudart)
+    add_test(NAME qsa_merge_daily_parity_default COMMAND qsa_merge_daily_parity)
+    add_test(NAME qsa_merge_daily_parity_daily COMMAND qsa_merge_daily_parity)
+    set_tests_properties(qsa_merge_daily_parity_default PROPERTIES ENVIRONMENT "STRATA_ATTN_DAILY=0"
+                         SKIP_RETURN_CODE 77)
+    set_tests_properties(qsa_merge_daily_parity_daily PROPERTIES ENVIRONMENT "STRATA_ATTN_DAILY=1"
+                         SKIP_RETURN_CODE 77)
   endif()
   # the QSA selection (block scores on the warp kernel and the tensor-core one, top-k): a GPU bench with a
   # scorer-vs-scorer comparison and an FP64 accuracy gate (synthetic, no model); the ctest runs a 32K context under a
