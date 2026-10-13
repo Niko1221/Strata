@@ -49,9 +49,12 @@ if os.environ.get("KV_LENGTHS"):
     LENGTHS = [(a, int(b)) for a, b in (x.split(":") for x in os.environ["KV_LENGTHS"].split(","))]
 
 # Exact-copy probes.  A five-digit code is either stated in the BODY (bulk precision decides whether it comes back)
-# or in the last ~120 tokens before the question (inside the 128-cell window, which the overlay stores exactly).
-# Reproducing a five-digit string from a quantized cache is a sharp test: the vault-fact recall above saturates at
-# every context length on all three arms, so it cannot separate them.
+# or in a record placed directly before its own question (~50 tokens from the generation position, inside the
+# 128-cell window, which the overlay stores exactly). Each tail code is asked in its OWN request: put all six in one
+# prompt and the instructions plus twelve questions push the earliest of them several hundred tokens back, out of
+# the window, so "tail" would measure the bulk. The tail requests share the body as a prefix, so the serve's
+# conversation cache makes them cheap. Reproducing a five-digit string from a quantized cache is a sharp test: the
+# vault-fact recall above saturates at every context length on all three arms, so it cannot separate them.
 N_MID, N_TAIL = 6, 6
 MID_CODES = [("M1", "71624"), ("M2", "38150"), ("M3", "90277"), ("M4", "64538"), ("M5", "55913"), ("M6", "18746")]
 TAIL_CODES = [("R1", "26409"), ("R2", "10587"), ("R3", "48391"), ("R4", "73920"), ("R5", "81736"), ("R6", "59248")]
@@ -62,29 +65,42 @@ SHORT = [
 ]
 
 
-def document(nonce: int, paras: int) -> str:
-    """The nonce makes every document unique, so the prefill rate is a real prefill and not a cache hit."""
+def body(nonce: int, paras: int) -> str:
+    """The document: filler with the MID records spread through it. The nonce makes every document unique, so the
+    prefill rate is a real prefill and not a cache hit."""
     para = ("The archive holds routine correspondence from the regional office. Boxes are catalogued by year and "
             "storage vault. Entries are transcribed by hand and verified twice before they are filed. ")
     at = {}
     span = max(8, paras - 8)
     for i, (label, code) in enumerate(MID_CODES):            # spread through the body of the document
         at[int(span * (i + 1) / (len(MID_CODES) + 1))] = (label, code)
-    tail_start = max(len(at) + 1, paras - 3)                 # the last few paragraphs: inside the window
-    for i, (label, code) in enumerate(TAIL_CODES):
-        at[tail_start + i] = (label, code)
     parts = []
-    total = max(paras, tail_start + len(TAIL_CODES) + 1)
-    for i in range(total):
+    for i in range(max(paras, max(at) + 1)):
         parts.append(para)
         if i in at:
             label, code = at[i]
             parts.append(f"Record: the access code for module {label} is {code}. ")
-    head = f"Archive index {nonce}. "
-    asks = "\n".join(f"What is the access code for module {label}?" for label, _ in MID_CODES + TAIL_CODES)
-    return (head + "".join(parts) +
-            "\n\nUsing only the document above, answer each question on its own line as 'module N: CODE', "
-            "copying each code exactly.\n" + asks)
+    return f"Archive index {nonce}. " + "".join(parts)
+
+
+def mid_prompt(doc: str) -> str:
+    asks = "\n".join(f"What is the access code for module {label}?" for label, _ in MID_CODES)
+    return (doc + "\n\nUsing only the document above, answer each question on its own line as 'module N: CODE', "
+                  "copying each code exactly.\n" + asks)
+
+
+def tail_prompt(doc: str, label: str, code: str) -> str:
+    # the record is the last thing in the document, so it sits ~50 tokens before generation: inside the window
+    return (doc + f"Record: the access code for module {label} is {code}.\n\n"
+                  f"What is the access code for module {label}? Answer on one line as 'module {label}: CODE', "
+                  "copying the code exactly.")
+
+
+def module_hits(text: str, codes: list) -> int:
+    """(label, code) pairs stated in the reply - 'module M1: 71624' - so a code is credited to the module it was
+    asked for. \\D{0,40}? spans the separator but never crosses another number."""
+    pairs = set(re.findall(r"module\s*([a-z]\d)\D{0,40}?(\d{5})", text.lower()))
+    return sum(1 for label, code in codes if (label.lower(), code) in pairs)
 
 
 def cfg_for(arm: str, kv: str, no_overlay: bool) -> Path:
@@ -175,10 +191,12 @@ def main() -> int:
                 continue
             for label, paras in LENGTHS:
                 nonce = int(time.time() * 1000) % 10_000_000
-                reply = ask(document(nonce, paras), budget=0, max_tokens=320)
-                got = text_of(reply).lower()
-                mid = sum(1 for _, c in MID_CODES if c in got)      # copied exactly from the body
-                tail = sum(1 for _, c in TAIL_CODES if c in got)     # copied exactly from inside the window
+                doc = body(nonce, paras)
+                reply = ask(mid_prompt(doc), budget=0, max_tokens=320)
+                mid = module_hits(text_of(reply), MID_CODES)         # copied exactly from the body
+                tail = sum(module_hits(text_of(ask(tail_prompt(doc, lab, code), budget=0, max_tokens=120)),
+                                       [(lab, code)])                # copied exactly from inside the window
+                           for lab, code in TAIL_CODES)
                 t = reply.get("timings") or {}
                 pre = t.get("prompt_per_second")
                 dec = t.get("predicted_per_second")
