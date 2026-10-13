@@ -209,16 +209,28 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
             k::qsa_decode_attn_batch(d_q + t0 * NH * HD, pl, d_ids + t0 * cap, d_steps + t0 * k::kStepCount, cap, s,
                                      scratch, d_old + t0 * NH * HD, std::min(batch, nq - t0), nullptr);
     };
+    // int8 KV: v2 here, and the opt-in INT8-MMA kernel (STRATA_PROMPT_ATTN_IMMA) checked and timed below beside it
+    if (fmt == 1) k::qsa_prompt_attn_set_imma(0);
     auto new_run = [&]() {
         if (!k::qsa_prompt_attn_batch(d_q, pl, d_ids, d_steps, cap, s, d_new, nq, nullptr)) {
             std::fprintf(stderr, "qsa_prompt_attn_batch refused the pools\n");
             std::exit(2);
         }
     };
+    float* d_im = nullptr;
+    ck(cudaMalloc(&d_im, nq * NH * HD * 4), "malloc");
+    auto imma_run = [&]() {
+        k::qsa_prompt_attn_set_imma(1);
+        const bool ok = k::qsa_prompt_attn_batch(d_q, pl, d_ids, d_steps, cap, s, d_im, nq, nullptr);
+        k::qsa_prompt_attn_set_imma(0);
+        if (!ok) { std::fprintf(stderr, "qsa_prompt_attn_batch refused the pools (imma)\n"); std::exit(2); }
+    };
     old_run();
     new_run();
+    if (fmt == 1) imma_run();
     ck(cudaDeviceSynchronize(), "run");
-    std::vector<float> o((size_t) (nq * NH * HD)), nw(o.size());
+    std::vector<float> o((size_t) (nq * NH * HD)), nw(o.size()), im(fmt == 1 ? o.size() : 0);
+    if (fmt == 1) ck(cudaMemcpy(im.data(), d_im, im.size() * 4, cudaMemcpyDeviceToHost), "down");
     ck(cudaMemcpy(o.data(), d_old, o.size() * 4, cudaMemcpyDeviceToHost), "down");
     ck(cudaMemcpy(nw.data(), d_new, nw.size() * 4, cudaMemcpyDeviceToHost), "down");
     {   // a hash of the new kernel's output bits (bitwise A/B of two builds / switches)
@@ -227,7 +239,7 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         std::printf("NEWHASH %016llx\n", (unsigned long long) hh);
     }
     // 1. FP64 reference on a sample of queries
-    double err_old = 0, err_new = 0, ref_scale = 0;
+    double err_old = 0, err_new = 0, err_im = 0, ref_scale = 0;
     for (int64_t i = 0; i < nq; i += std::max<int64_t>(1, nq / 16)) {
         const int64_t w = steps[i * k::kStepCount + k::kStepWidth];
         const int32_t* sel = ids.data() + i * cap;
@@ -261,6 +273,7 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                 ref_scale = std::max(ref_scale, std::fabs(r));
                 err_old = std::max(err_old, std::fabs(o[at] - r));
                 err_new = std::max(err_new, std::fabs(nw[at] - r));
+                if (fmt == 1) err_im = std::max(err_im, std::fabs(im[at] - r));
             }
         }
     }
@@ -285,7 +298,31 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     cudaEventRecord(e1);
     ck(cudaEventSynchronize(e1), "time");
     cudaEventElapsedTime(&ms_new, e0, e1);
-    const bool ok1 = err_new <= std::max(4.0 * err_old, 1e-6 * ref_scale);
+    bool ok_im = true;
+    if (fmt == 1) {   // the INT8-MMA kernel: the same bounds as v2's, against FP64 and against v2
+        double d_iv = 0;
+        for (size_t i = 0; i < o.size(); ++i) d_iv = std::max(d_iv, (double) std::fabs(im[i] - nw[i]));
+        float ms_im = 0, ms_v2 = 0;
+        for (int round = 0; round < 2; ++round) {   // alternating, v2 then imma, twice; the second round counts
+            cudaEventRecord(e0);
+            for (int r = 0; r < reps; ++r) new_run();
+            cudaEventRecord(e1);
+            ck(cudaEventSynchronize(e1), "time");
+            cudaEventElapsedTime(&ms_v2, e0, e1);
+            cudaEventRecord(e0);
+            for (int r = 0; r < reps; ++r) imma_run();
+            cudaEventRecord(e1);
+            ck(cudaEventSynchronize(e1), "time");
+            cudaEventElapsedTime(&ms_im, e0, e1);
+        }
+        ok_im = err_im <= std::max(4.0 * err_old, 1e-6 * ref_scale) && d_iv <= 1e-4 * scale;
+        std::printf("%s int8 IMMA ctx %lld, %lld queries: vs FP64 %.3g (v2 %.3g, FP32 %.3g); IMMA vs v2 %.3g (%.2g of scale); "
+                    "v2 %.3f -> IMMA %.3f ms per chunk (%.2fx)\n", ok_im ? "PASS" : "FAIL", (long long) ctx, (long long) nq,
+                    err_im, err_new, err_old, d_iv, d_iv / scale, ms_v2 / reps, ms_im / reps, ms_v2 / ms_im);
+    }
+    k::qsa_prompt_attn_set_imma(-1);
+    cudaFree(d_im);
+    const bool ok1 = err_new <= std::max(4.0 * err_old, 1e-6 * ref_scale) && ok_im;
     const bool ok2 = diff <= 1e-4 * scale;
     std::printf("%s %s ctx %lld, %lld queries: vs FP64 old %.3g new %.3g (output scale %.3g); new vs old %.3g (%.2g of "
                 "scale); %.3f -> %.3f ms per chunk (%.2fx)\n",
