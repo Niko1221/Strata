@@ -2227,6 +2227,73 @@ void native_q5_k_f32(const void* weights, const float* x, void* scratch_q8_1,
     native_q5_k_mmvq(weights, scratch_q8_1, y, n_in, n_out, ncols, stream);
 }
 
+namespace {
+// Turing: Q2_0 one to four columns with one warp per RPW rows.  The exact layout gives each row four warps, a chunk of
+// a 64-weight block per thread and a cross-warp reduction; at the engine's 2560 inputs (40 blocks a row) 48 of the 128
+// threads have no chunk and the reduction is most of the time (QSA attn_q 2560x12288 at 3 columns: 80 us, 110 GB/s on
+// an RTX 2080 Ti).  Here lane l runs the chunks of the exact kernel's threads l, 32+l, 64+l and 96+l in their loop
+// order, adds the four sums as warp 0 adds the other warps' partials, then the same warp_sum: every output is bit for
+// bit native_q2_0_mmvq_kernel's (one column) and launch_multi's exact layout (two to four).  80 -> 31 us at three
+// columns, 37 -> 25 us at one.  STRATA_Q2_WARP=0 keeps the old kernels; =1 takes this one on any CUDA card.
+constexpr int kQ20WarpRows = 4;
+template <int NCOLS>
+__global__ void __launch_bounds__(WARPS * WARP) q2_0_warp_rows_kernel(const Q20Block* __restrict__ w,
+                                                                      const Q81Block* __restrict__ x,
+                                                                      float* __restrict__ y, int n_in, int n_out) {
+    using F = Q20Traits;
+    constexpr int RPW = kQ20WarpRows;
+    static_assert(F::T == 2 && F::BPI == WARPS * WARP / 2, "the lanes play the exact layout's threads");
+    const int lane = int(threadIdx.x) & (WARP - 1);
+    const int row0 = (int(blockIdx.x) * WARPS + int(threadIdx.x) / WARP) * RPW;
+    if (row0 >= n_out) return;
+    const int bpr = n_in / F::DIV, x_stride = n_in / Q8K;
+    float acc[NCOLS][RPW];
+#pragma unroll
+    for (int v = 0; v < WARPS; ++v) {   // the exact kernel's thread WARP * v + lane
+        const int tid = WARP * v + lane;
+        const int kqs = F::kqs(tid);
+        float tmp[NCOLS][RPW] = {};
+        for (int kbx = tid / F::T; kbx < bpr; kbx += F::BPI) {
+            const int kby = kbx * F::KBY;
+#pragma unroll
+            for (int i = 0; i < RPW; ++i) {
+                if (row0 + i < n_out) {
+                    const F::W wv = F::load(w + std::size_t(row0 + i) * bpr + kbx, kqs);
+#pragma unroll
+                    for (int j = 0; j < NCOLS; ++j) tmp[j][i] += F::apply(wv, x + std::size_t(j) * x_stride + kby, kqs);
+                }
+            }
+        }
+#pragma unroll
+        for (int j = 0; j < NCOLS; ++j)
+#pragma unroll
+            for (int i = 0; i < RPW; ++i) acc[j][i] = v == 0 ? tmp[j][i] : acc[j][i] + tmp[j][i];
+    }
+#pragma unroll
+    for (int j = 0; j < NCOLS; ++j)
+#pragma unroll
+        for (int i = 0; i < RPW; ++i) {
+            const float sum = warp_sum(acc[j][i]);
+            if (lane == i && row0 + i < n_out) y[std::size_t(j) * n_out + row0 + i] = sum;
+        }
+}
+bool q2_0_warp_rows_on() {
+    static int on[16] = {};   // by device ordinal: 0 unknown, 1 yes, -1 no
+    static const int env = [] { const char* v = std::getenv("STRATA_Q2_WARP"); return v ? (v[0] == '0' ? 0 : 1) : -1; }();
+    if (env >= 0) return env == 1;
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 16) return false;
+    if (on[dev] == 0) {
+        int maj = 0, mnr = 0;
+        const bool ok = cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                        cudaDeviceGetAttribute(&mnr, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        if (!ok) cudaGetLastError();
+        on[dev] = ok && maj == 7 && mnr == 5 ? 1 : -1;   // measured on Turing only
+    }
+    return on[dev] > 0;
+}
+}  // namespace
+
 void native_q2_0_mmvq(const void* weights, const void* x_q8_1, float* y,
                       int n_in, int n_out, int ncols, void* stream) {
     validate_shape(n_in, ncols, 64);
@@ -2236,6 +2303,24 @@ void native_q2_0_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(y);
     validate_stream(stream);
     STRATA_WAVE_MMVQ(Q20Traits)
+#if !defined(__HIPCC__)
+    // one column always (bitwise the single-column kernel); two to four only where the exact layout is the one in use
+    if (ncols <= 4 && (ncols == 1 || g_multi_exact) && q2_0_warp_rows_on()) {
+        const auto* w = static_cast<const Q20Block*>(weights);
+        const auto* x = static_cast<const Q81Block*>(x_q8_1);
+        const auto s = static_cast<cudaStream_t>(stream);
+        const int warps = (n_out + kQ20WarpRows - 1) / kQ20WarpRows;
+        const unsigned blocks = unsigned((warps + WARPS - 1) / WARPS);
+        switch (ncols) {
+            case 1: q2_0_warp_rows_kernel<1><<<blocks, WARPS * WARP, 0, s>>>(w, x, y, n_in, n_out); break;
+            case 2: q2_0_warp_rows_kernel<2><<<blocks, WARPS * WARP, 0, s>>>(w, x, y, n_in, n_out); break;
+            case 3: q2_0_warp_rows_kernel<3><<<blocks, WARPS * WARP, 0, s>>>(w, x, y, n_in, n_out); break;
+            default: q2_0_warp_rows_kernel<4><<<blocks, WARPS * WARP, 0, s>>>(w, x, y, n_in, n_out); break;
+        }
+        launch_check();
+        return;
+    }
+#endif
     if (ncols > 1) {
         launch_multi<Q20Traits>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
         launch_check();
