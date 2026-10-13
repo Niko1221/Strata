@@ -121,6 +121,10 @@ main { flex: 1; min-height: 0; display: flex; }
 .table-wrap.all { max-height: 420px; overflow-y: auto; }
 .req-totals { margin: 0; font-size: var(--st-fs-sm); }
 .req-totals:empty { display: none; }
+.usage-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
+.usage-note { margin: 0; }
+.usage-note:empty { display: none; }
+.price-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--st-s-3) var(--st-s-4); }
 .cc-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
 .cc-bars { display: grid; grid-template-columns: 1fr 1fr; gap: var(--st-s-2) var(--st-s-6); }
 .cc-bars[hidden] { display: none; }
@@ -160,6 +164,13 @@ main { flex: 1; min-height: 0; display: flex; }
 .scrim { position: fixed; inset: 0; background: rgba(15, 23, 42, .18); z-index: 39; }
 .seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 4px; background: var(--st-surface-2);
        border: 1px solid var(--st-line); border-radius: var(--st-r-md); }
+.seg--2 { grid-template-columns: repeat(2, 1fr); }   /* the About settings: two choices, not four */
+.about .seg { max-width: 300px; }
+/* the same two choices beside the Monitor card's title: small, and pushed to the right */
+.usage-card .req-head { justify-content: flex-start; }
+.usage-card .req-head #usage-pricing-note { margin-left: auto; }
+.seg--sm { flex: none; padding: 3px; }
+.seg--sm button { height: 26px; font-size: var(--st-fs-xs); }
 .seg button { height: 32px; border: 0; border-radius: 10px; background: transparent; color: var(--st-ink-muted);
               font: 500 var(--st-fs-sm)/1 var(--st-font); cursor: pointer; }
 .seg button[aria-checked="true"] { background: var(--st-surface); color: var(--st-ink); font-weight: var(--st-fw-bold);

@@ -79,7 +79,13 @@ function showTab(name) {
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
   if (tab === "monitor") loadMcp();
-  if (tab === "about") loadConfig();
+  if (tab === "about") {
+    loadConfig();
+    if (lastMetrics && lastMetrics.usage) {              // the pricing card: the prices the costs are shown at
+      $("price-card").hidden = false;
+      fillPricing(lastMetrics.pricing);
+    } else $("price-card").hidden = true;                // an older server: no usage, no pricing
+  }
   if (lastMetrics) render(lastMetrics);
 }
 for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(b.dataset.tab);
@@ -192,6 +198,7 @@ function render(m) {
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
+  if (tab === "monitor") renderUsage(m.usage, m.pricing);
   if (tab === "about") renderAbout(eng, hw, st);
 }
 
@@ -227,6 +234,109 @@ function renderConvCache(c) {
     ? "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full."
     : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
 }
+
+// token use kept across starts (GET /usage, in /metrics): today, all time, and the cost at the current prices.
+// The numbers add up every model whose usage file sits next to the run config; About > Settings switches the card
+// (and its list) to one line per model instead.
+const CUR = {CNY: "¥", USD: "$", EUR: "€", JPY: "¥", GBP: "£"};
+function moneyOf(v, cur) {
+  const sym = CUR[cur] || "";
+  if (!v) return `${sym}0`;
+  return v < 0.01 ? `${sym}${v.toFixed(4)}` : `${sym}${v.toFixed(2)}`;
+}
+function money(c) {
+  if (!c || c.total_cost == null) return "–";
+  return moneyOf(c.total_cost, c.currency);
+}
+// the electricity a day holds: the card's own reading, plus the rest of the box, at the price per kWh
+function energyLine(d) {
+  const c = (d && d.cost) || {};
+  if (c.energy_kwh == null) return "–";
+  const kwh = c.energy_kwh;
+  const size = kwh < 0.1 ? `${(kwh * 1000).toFixed(1)} Wh` : `${kwh.toFixed(2)} kWh`;
+  const secs = (d && d.seconds) || 0;
+  const avg = secs > 0 ? (c.gpu_energy_wh || 0) / (secs / 3600) : 0;
+  return `${size} at ${avg.toFixed(0)} W · ${moneyOf(c.energy_cost, c.currency)}`;
+}
+const usageTokens = (d) => `${fmt(d.requests)} requests · ${fmt(d.prompt_tokens)} prompt · ` +
+  `${fmt(d.reused)} reused · ${fmt(d.output_tokens)} written`;
+function renderUsage(u, pricing) {
+  const card = $("usage-card");
+  card.hidden = !u;
+  if (!u) return;                                        // an older server
+  const models = u.models || [];
+  // "By model" needs the server's per-model view; an older server (or a folder whose models it does not know)
+  // stays merged
+  const byModel = usageScope === "models" && models.length > 0;
+  const t = u.today || {}, a = u.total || {};
+  const rows = [];
+  if (byModel) {
+    for (const m of models) {
+      const mt = m.today || {}, ma = m.total || {};
+      rows.push([m.name, `today ${fmt(mt.requests)} requests · ${money(mt.cost)} — all time ` +
+        `${usageTokens(ma)} · ${energyLine(ma)} · ${money(ma.cost)}`]);
+    }
+    rows.push(["All models · today", `${usageTokens(t)} · ${money(t.cost)}`]);
+    rows.push(["All models · all time", `${usageTokens(a)} · ${money(a.cost)}`]);
+  } else {
+    rows.push(["Today", usageTokens(t)],
+              ["Today's tokens", moneyOf((t.cost || {}).token_cost, (t.cost || {}).currency)],
+              ["Today's electricity", energyLine(t)],
+              ["Today's total", money(t.cost)],
+              ["All time", usageTokens(a)],
+              ["All-time tokens", moneyOf((a.cost || {}).token_cost, (a.cost || {}).currency)],
+              ["All-time electricity", energyLine(a)],
+              ["All-time total", money(a.cost)]);
+    if (models.length > 1) rows.push(["Models added up", `${models.length} · ${models.map((m) => m.name).join(", ")}`]);
+  }
+  facts($("usage-facts"), rows);
+  const p = pricing || {};
+  $("usage-pricing-note").textContent = p.input_per_mtok != null
+    ? `${p.input_per_mtok} / ${p.cached_input_per_mtok} / ${p.output_per_mtok} per 1M in·cached·out · `
+      + `${p.price_per_kwh} per kWh + ${p.other_watts} W (${p.currency})` : "";
+  // the list: a row a day, or a row a model and a day when the models are shown apart
+  let days = [];
+  if (byModel) {
+    for (const m of models) for (const d of (m.days || [])) if (d.requests) days.push({...d, model: m.name});
+    days.sort((x, y) => (x.date === y.date ? (y.cost.total_cost || 0) - (x.cost.total_cost || 0)
+                                           : (x.date < y.date ? 1 : -1)));
+  } else {
+    days = (u.days || []).filter((d) => d.requests);
+  }
+  const shown = days.slice(0, byModel ? 40 : 14);        // a fortnight per model is still a long list
+  $("usage-model-th").hidden = !byModel;
+  $("usage-days-wrap").hidden = shown.length < 2;
+  $("usage-days-body").innerHTML = shown.map((d) => `<tr><td>${esc(d.date)}</td>` +
+    (byModel ? `<td>${esc(d.model)}</td>` : "") +
+    `<td class="num">${fmt(d.requests)}</td>
+    <td class="num">${fmt(d.prompt_tokens)}</td><td class="num">${fmt(d.reused)}</td>
+    <td class="num">${fmt(d.output_tokens)}</td>
+    <td class="num">${(((d.cost || {}).energy_kwh) || 0).toFixed(2)}</td>
+    <td class="num">${esc(money(d.cost))}</td></tr>`).join("");
+  const note = "Kept per day across starts, next to the run config. The card's power is measured once a second "
+    + "while Strata runs, so the electricity counts idle time too; the tokens are what they would have cost at API "
+    + "prices — both under About > Token pricing.";
+  $("usage-note").textContent = note + (models.length > 1
+    ? (byModel ? " Each model is shown on its own (About > Settings: Merged)."
+               : ` Every model with a usage file in this folder is added up (${models.length} of them); About > `
+                 + "Settings shows them one by one.")
+    : "");
+}
+
+// the card's two views: merged over the folder's models, or one line per model. Two controls, one choice - the
+// card's own title bar and About > Settings - kept in this browser like the theme; a server that sends no
+// per-model view (an older one) shows the merged card anyway.
+let usageScope = store.get("usage.scope", "merged");
+const usageScopeBoxes = ["usage-scope", "usage-scope-card"].map($);
+function setUsageScope(v, save) {
+  usageScope = v === "models" ? "models" : "merged";
+  for (const box of usageScopeBoxes)
+    for (const b of box.children) b.setAttribute("aria-checked", String(b.dataset.v === usageScope));
+  if (save) store.set("usage.scope", usageScope);
+  if (lastMetrics) render(lastMetrics);
+}
+for (const box of usageScopeBoxes) for (const b of box.children) b.onclick = () => setUsageScope(b.dataset.v, true);
+setUsageScope(usageScope, false);
 
 function renderTotals(t) {
   if (!t || !t.requests) return "";
@@ -488,6 +598,41 @@ $("cfg-save").addEventListener("click", async () => {
     $("cfg-msg").textContent = "";
     toast("error", "Not saved", String(e.message || e), 6000);
   }
+});
+
+// ------------------------------------------------------------------ Token pricing (GET /usage, POST /pricing)
+// The prices the Monitor's cost readout uses. They live next to the run config (strata-<model>.pricing.json);
+// an empty field is the default. The card shows the current values, which come with the metrics poll.
+const PRICE_FIELDS = [["price-input", "input_per_mtok"], ["price-cached", "cached_input_per_mtok"],
+                      ["price-output", "output_per_mtok"], ["price-kwh", "price_per_kwh"],
+                      ["price-other-w", "other_watts"]];
+function fillPricing(p) {
+  if (!p) return;
+  $("price-currency").value = p.currency || "CNY";
+  for (const [id, key] of PRICE_FIELDS) $(id).value = p[key] ?? "";
+}
+$("price-save").addEventListener("click", async () => {
+  const pricing = {currency: $("price-currency").value};
+  for (const [id, key] of PRICE_FIELDS) {
+    const s = $(id).value.trim();
+    pricing[key] = s === "" ? null : Number(s);
+  }
+  try {
+    const r = await fetch("pricing", {method: "POST", headers: headers(true), body: JSON.stringify({pricing})});
+    const b = await r.json();
+    if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
+    fillPricing(b.pricing);
+    $("price-msg").textContent = "Saved; the Monitor's costs use these prices.";
+    if (lastMetrics) { lastMetrics.pricing = b.pricing; lastMetrics.usage = b.usage; render(lastMetrics); }
+  } catch (e) {
+    $("price-msg").textContent = "";
+    toast("error", "Not saved", String(e.message || e), 6000);
+  }
+});
+$("price-default").addEventListener("click", () => {
+  $("price-currency").value = "CNY";
+  for (const [id] of PRICE_FIELDS) $(id).value = "";
+  $("price-msg").textContent = "Save to go back to the default prices.";
 });
 
 // ------------------------------------------------------------------ Markdown (escaped first, then formatted)

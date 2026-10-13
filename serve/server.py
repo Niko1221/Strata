@@ -60,6 +60,7 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
+from serve import usage  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
@@ -2858,6 +2859,8 @@ def slot_save_dir(value, base: str | None = None) -> str:
     return path
 
 class Service:
+    GPU_BUSY_PCT = 10.0                   # the GPU load gpu_busy() and the usage stats call "the card is working"
+
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
                  fit_max_tokens: bool = False):
@@ -2912,6 +2915,14 @@ class Service:
         from serve.prometheus import Latencies
         self.latencies = Latencies()                     # GET /metrics in Prometheus text: the latency histograms
         self.last_request_at = None                      # when a request last started or finished
+        # token use kept across starts (serve/usage.py) and the prices it is shown at; main() points these at the
+        # files next to the run config, so a server started without one keeps the numbers in memory only.  The
+        # other models of the same folder are read from their own files, for the card's merged and by-model views.
+        self.usage = usage.UsageStore()
+        self.models_usage = usage.ModelsUsage()
+        self.usage_path = None
+        self.pricing_path = None
+        self.pricing = dict(usage.DEFAULT_PRICING)
         self.started_at = time.time()
         self.status_lock = threading.Lock()
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
@@ -3287,6 +3298,41 @@ class Service:
                 print(f"[strata] could not save the shared settings: {e}", flush=True)
         return self.shared
 
+    def usage_view(self, pricing: dict | None = None) -> dict:
+        """The Monitor's Token usage and cost card (GET /usage, and /metrics' `usage`): the models of this folder
+        added up, which is what the card shows, plus each model on its own for the card's "By model" choice.
+
+        The running model's counts come from the live store, the other models' from their usage files next to
+        their run configs; one folder, one bill.  Every figure is priced with this server's prices - the page has
+        one Token pricing card, so a model one ran months ago is shown at today's prices too."""
+        pricing = self.pricing if pricing is None else pricing
+        today = time.strftime("%Y-%m-%d")
+        entries = self.models_usage.models(self.usage.snapshot(), self.model)
+        models = [{"name": name, **usage.days_view(days, pricing, today)} for name, days in entries]
+        models.sort(key=lambda m: (-m["total"]["cost"]["total_cost"], m["name"]))   # dearest first
+        return {**usage.days_view(usage.summed([days for _, days in entries]), pricing, today), "models": models}
+
+    def load_pricing(self) -> None:
+        """The prices from the file next to the run config (strata-<model>.pricing.json); absent or unreadable:
+        the defaults.  Called once at start, before the first request could be recorded."""
+        if not self.pricing_path:
+            return
+        try:
+            self.pricing = usage.clean_pricing(json.loads(Path(self.pricing_path).read_text(encoding="utf-8-sig")))
+        except (OSError, ValueError):
+            self.pricing = dict(usage.DEFAULT_PRICING)
+
+    def set_pricing(self, d) -> dict:
+        """The prices the usage is shown at (POST /pricing): every field optional, null = the default again.
+        Kept in the pricing file when there is one; the web app shows the costs at these prices right away."""
+        self.pricing = usage.clean_pricing(d, base=self.pricing)
+        if self.pricing_path:
+            try:
+                Path(self.pricing_path).write_text(json.dumps(self.pricing, indent=1), encoding="utf-8")
+            except OSError as e:
+                print(f"[strata] could not save the token prices: {e}", flush=True)
+        return self.pricing
+
     def with_shared(self, req: dict, api: str) -> dict:
         """The request with the shared thinking level and max tokens filled in where it has none of its own."""
         s = self.shared
@@ -3321,7 +3367,19 @@ class Service:
             if getattr(self, "engine", None) is not None and hasattr(self.engine, "gpu_busy"):
                 # #1317: the quick frozen-engine check does not end an engine whose GPU is busy (a long prompt chunk on a
                 # slow card keeps the GPU at work while the host thread sleeps)
-                self.engine.gpu_busy = lambda: (self.telemetry.snapshot()["now"].get("gpu_util") or 0) >= 10
+                self.engine.gpu_busy = lambda: (self.telemetry.snapshot()["now"].get("gpu_util") or 0) >= self.GPU_BUSY_PCT
+            # every reading also becomes watt-hours for the usage stats, so the Monitor can bill the electricity
+            self.telemetry.on_sample = self._sample_power
+
+    def _sample_power(self, sample: dict, dt: float) -> None:
+        """One reading from the hardware sampler (serve/telemetry.py) folded into the usage stats: the card's own
+        draw, over the seconds it was held, becomes watt-hours.  The rest of the box is not measured - it is added
+        when the bill is drawn, at the pricing's `other_watts` - so a machine whose power cannot be read still keeps
+        the seconds and loses only the card's share of the bill."""
+        store = getattr(self, "usage", None)
+        if store is None:
+            return
+        store.record_energy(sample.get("gpu_power"), dt, busy=(sample.get("gpu_util") or 0) >= self.GPU_BUSY_PCT)
 
     def _tok_s(self):
         """tok/s over the last RATE_WINDOW_S seconds.  Returns 0.0 while nothing is generating.  With parallel requests:
@@ -3442,7 +3500,10 @@ class Service:
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
-                tel["static"], "history": tel["history"], "time": now}
+                tel["static"], "history": tel["history"], "time": now,
+                # token use kept across starts and its cost at the current prices (serve/usage.py): the folder's
+                # models added up, and each of them for the card's "By model" choice
+                "usage": self.usage_view(), "pricing": dict(self.pricing)}
 
     def prometheus(self) -> str:
         """GET /metrics/prometheus: the totals and what is running in Prometheus' text format, under llama-server's
@@ -4202,6 +4263,7 @@ class Service:
                             t["prompt_tokens"] += seen
                             t["reused"] += last.get("reused") or 0
                             t["output_tokens"] += n
+                            self.usage.record(seen, last.get("reused") or 0, n)   # kept across starts
                             t["prompt_ms"] += last.get("prompt_ms") or 0.0
                             t["decode_ms"] += last.get("decode_ms") or 0.0
                             t["drafts_offered"] += last.get("drafts_offered") or 0
@@ -5056,6 +5118,10 @@ def make_handler(svc: Service):
                 if self._authorized():
                     self._config_get()
                 return
+            if path == "/usage":                             # token use kept across starts, priced for display
+                if self._authorized():
+                    self._json(200, {"usage": svc.usage_view(), "pricing": dict(svc.pricing)})
+                return
             if path == "/mcp":
                 # the MCP servers, their state and tools (the web app's switch and Monitor card)
                 if self._authorized():
@@ -5145,6 +5211,9 @@ def make_handler(svc: Service):
                 return
             if path == "/config":
                 self._config_post()
+                return
+            if path == "/pricing":
+                self._pricing_post()
                 return
             if path in ("/unload", "/load") and not self._control_body():
                 return
@@ -5402,6 +5471,21 @@ def make_handler(svc: Service):
                 print(f"[strata] the Settings view changed {', '.join(changed)} in {Path(svc.config_path).name} "
                       f"(the earlier file: {bak.name}); used from the next start", flush=True)
             self._json(200, {**runconfig.view(new, svc.config_path), "changed": changed})
+
+        def _pricing_post(self):
+            """The prices the token usage is shown at (the web app's Token pricing card): JSON from Strata's own
+            page only, as /settings.  Every field optional; null returns one field to the default."""
+            body = self._body()
+            if not self._own_page("the token prices can be changed"):
+                return
+            try:
+                req = json.loads(body or b"{}")
+                pricing = svc.set_pricing(req.get("pricing") if isinstance(req, dict) else None)
+            except ValueError as e:
+                self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+                return
+            self._json(200, {"pricing": pricing, "usage": svc.usage_view()})
+
         def _foreign_origin(self) -> bool:
             """A web page of another origin sent this.  The Origin must be this server's own address (host and port),
             or an origin the config trusts (trusted_origins: the web app behind a reverse proxy or tunnel); no Origin
@@ -6551,6 +6635,13 @@ def main() -> int:
     svc.backend = cfg.get("backend")                    # "hip": the AMD cards' readings come from sysfs (#301)
     if a.config:
         svc.config_path = a.config                      # #564: the web page's Settings view
+        # token use kept across starts and the prices it is shown at, next to the run config; the folder's other
+        # models are read from their own usage files, for the card's merged and by-model views
+        svc.usage = usage.UsageStore(str(Path(a.config).with_suffix("")) + ".usage.json")
+        svc.usage_path = str(Path(a.config).with_suffix("")) + ".usage.json"
+        svc.models_usage = usage.ModelsUsage(svc.usage_path)
+        svc.pricing_path = str(Path(a.config).with_suffix("")) + ".pricing.json"
+        svc.load_pricing()
     if a.config:                                        # the Chat settings shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
         try:
@@ -6607,7 +6698,7 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\n[strata] stopping (Ctrl+C again to end the engine at once) ...", flush=True)
         closers = [httpd.shutdown, getattr(engine, "close", None), vision.shutdown if vision else None,
-                   hub.close if hub is not None else None]
+                   hub.close if hub is not None else None, getattr(getattr(svc, "usage", None), "flush", None)]
         for close in filter(None, closers):
             try:
                 close()
