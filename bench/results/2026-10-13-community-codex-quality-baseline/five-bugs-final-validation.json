@@ -1,0 +1,399 @@
+{
+  "mode": "Post-review debugging with tools and repository documentation; not a blind benchmark",
+  "source": "https://github.com/vyang472/five-bugs",
+  "revision": "503d58367672841e0511c8e3180f40538c8c53a1",
+  "documentation_exposure": "The repository README describes the t4 blind spot and published fixes",
+  "hidden_checker_exposure": "After first validation, h4.py was inspected to diagnose its quoted-attribute expectation",
+  "t4_checker_qualification": {
+    "input": "<img src='a>b.png'>x",
+    "repository_expected": "b.png'>x",
+    "quote_aware_expected": "x",
+    "compatibility_solution": "t4/solution.py follows the repository's first-closing-angle rule",
+    "quote_aware_variant": "t4/quote_aware.py handles angles inside quoted attributes; it is an ordinary-tag regex utility",
+    "literal_comparison": "Both variants preserve a < b and c > d"
+  },
+  "tasks": 5,
+  "trials_per_task": 5,
+  "checks_per_suite": 25,
+  "trial_protocol": "Repeated grading of the five fixed corrected solutions",
+  "visible_passed": 25,
+  "hidden_passed": 25,
+  "results": [
+    {
+      "task": "t1",
+      "trial": 1,
+      "solution_sha256": "a32d68fe168e6f21de8e4ee5f5de3f6e60b62bfdb8dd9319a2274366b8b34bb5",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.181
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.25
+      }
+    },
+    {
+      "task": "t1",
+      "trial": 2,
+      "solution_sha256": "a32d68fe168e6f21de8e4ee5f5de3f6e60b62bfdb8dd9319a2274366b8b34bb5",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.152
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.106
+      }
+    },
+    {
+      "task": "t1",
+      "trial": 3,
+      "solution_sha256": "a32d68fe168e6f21de8e4ee5f5de3f6e60b62bfdb8dd9319a2274366b8b34bb5",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.134
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.09
+      }
+    },
+    {
+      "task": "t1",
+      "trial": 4,
+      "solution_sha256": "a32d68fe168e6f21de8e4ee5f5de3f6e60b62bfdb8dd9319a2274366b8b34bb5",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.096
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.149
+      }
+    },
+    {
+      "task": "t1",
+      "trial": 5,
+      "solution_sha256": "a32d68fe168e6f21de8e4ee5f5de3f6e60b62bfdb8dd9319a2274366b8b34bb5",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.112
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.129
+      }
+    },
+    {
+      "task": "t2",
+      "trial": 1,
+      "solution_sha256": "e3cf3f4a25518c90adb0854de112032434c78e9fc03ca07c6760a9cef7ddddc4",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.112
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.133
+      }
+    },
+    {
+      "task": "t2",
+      "trial": 2,
+      "solution_sha256": "e3cf3f4a25518c90adb0854de112032434c78e9fc03ca07c6760a9cef7ddddc4",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.107
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.096
+      }
+    },
+    {
+      "task": "t2",
+      "trial": 3,
+      "solution_sha256": "e3cf3f4a25518c90adb0854de112032434c78e9fc03ca07c6760a9cef7ddddc4",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.102
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.129
+      }
+    },
+    {
+      "task": "t2",
+      "trial": 4,
+      "solution_sha256": "e3cf3f4a25518c90adb0854de112032434c78e9fc03ca07c6760a9cef7ddddc4",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.098
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.091
+      }
+    },
+    {
+      "task": "t2",
+      "trial": 5,
+      "solution_sha256": "e3cf3f4a25518c90adb0854de112032434c78e9fc03ca07c6760a9cef7ddddc4",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.095
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.147
+      }
+    },
+    {
+      "task": "t3",
+      "trial": 1,
+      "solution_sha256": "c1e541c5ecd865f3eeae3213b63f72983690ade2b6b35ea2b0f480d84e48051d",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.18
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.162
+      }
+    },
+    {
+      "task": "t3",
+      "trial": 2,
+      "solution_sha256": "c1e541c5ecd865f3eeae3213b63f72983690ade2b6b35ea2b0f480d84e48051d",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.118
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.143
+      }
+    },
+    {
+      "task": "t3",
+      "trial": 3,
+      "solution_sha256": "c1e541c5ecd865f3eeae3213b63f72983690ade2b6b35ea2b0f480d84e48051d",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.132
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.133
+      }
+    },
+    {
+      "task": "t3",
+      "trial": 4,
+      "solution_sha256": "c1e541c5ecd865f3eeae3213b63f72983690ade2b6b35ea2b0f480d84e48051d",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.111
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.104
+      }
+    },
+    {
+      "task": "t3",
+      "trial": 5,
+      "solution_sha256": "c1e541c5ecd865f3eeae3213b63f72983690ade2b6b35ea2b0f480d84e48051d",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.113
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.139
+      }
+    },
+    {
+      "task": "t4",
+      "trial": 1,
+      "solution_sha256": "094bdaffd2fb3005554299d7e4693f69da1cb7d11561d9d03e4aa43d3b6e93a3",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.297
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.163
+      }
+    },
+    {
+      "task": "t4",
+      "trial": 2,
+      "solution_sha256": "094bdaffd2fb3005554299d7e4693f69da1cb7d11561d9d03e4aa43d3b6e93a3",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.202
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.304
+      }
+    },
+    {
+      "task": "t4",
+      "trial": 3,
+      "solution_sha256": "094bdaffd2fb3005554299d7e4693f69da1cb7d11561d9d03e4aa43d3b6e93a3",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.491
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.135
+      }
+    },
+    {
+      "task": "t4",
+      "trial": 4,
+      "solution_sha256": "094bdaffd2fb3005554299d7e4693f69da1cb7d11561d9d03e4aa43d3b6e93a3",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.15
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.18
+      }
+    },
+    {
+      "task": "t4",
+      "trial": 5,
+      "solution_sha256": "094bdaffd2fb3005554299d7e4693f69da1cb7d11561d9d03e4aa43d3b6e93a3",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.132
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.158
+      }
+    },
+    {
+      "task": "t5",
+      "trial": 1,
+      "solution_sha256": "4479721dd570634aec4338751cd458873ee7bfee5f7bacd4e8253f9d8f49db0b",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.218
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.145
+      }
+    },
+    {
+      "task": "t5",
+      "trial": 2,
+      "solution_sha256": "4479721dd570634aec4338751cd458873ee7bfee5f7bacd4e8253f9d8f49db0b",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.152
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.137
+      }
+    },
+    {
+      "task": "t5",
+      "trial": 3,
+      "solution_sha256": "4479721dd570634aec4338751cd458873ee7bfee5f7bacd4e8253f9d8f49db0b",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.16
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.141
+      }
+    },
+    {
+      "task": "t5",
+      "trial": 4,
+      "solution_sha256": "4479721dd570634aec4338751cd458873ee7bfee5f7bacd4e8253f9d8f49db0b",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.187
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.192
+      }
+    },
+    {
+      "task": "t5",
+      "trial": 5,
+      "solution_sha256": "4479721dd570634aec4338751cd458873ee7bfee5f7bacd4e8253f9d8f49db0b",
+      "visible": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.172
+      },
+      "hidden": {
+        "passed": true,
+        "returncode": 0,
+        "seconds": 0.196
+      }
+    }
+  ],
+  "complete": true
+}

@@ -17,6 +17,8 @@ results do not isolate the model as the only changed variable.
 
 Percentages use the displayed task denominators. HumanEval+ keeps first attempts
 separate from the final result after one allowed repair per failed task.
+Five Bugs also records the final result after corrections identified during
+the debugging and validation workflow, alongside the initial independent runs.
 
 | Suite | Measured result | Coverage |
 | --- | --- | --- |
@@ -24,7 +26,7 @@ separate from the final result after one allowed repair per failed task.
 | GSM8K | **98/100 (98.0%)** | 100 sampled test questions, 8-shot |
 | MMLU abstract algebra | **96/100 (96.0%)** | First 100 `abstract_algebra` questions, 5-shot; not full MMLU |
 | IFEval | **45/50 prompts (90.0%); 70/76 instructions (92.1%)** | First 50 prompts |
-| Five Bugs | **20/25 hidden (80.0%); 25/25 visible (100.0%)** | Five files, five independent sessions per file |
+| Five Bugs | **Final after corrections: 25/25 visible and 25/25 hidden (100.0% each)**; initial: 25/25 visible, 20/25 hidden | Initial: five independent sessions per file; final: five corrected files, each graded five times |
 | Needle recall | **25/25 (100.0%)** | Five lengths and five depths; largest measured input about 222K tokens |
 | Tool Eval Bench | **90.2% mean, 0.4 percentage-point sample SD** | 92 scenarios, five trials; 460 scored cells after one infrastructure recovery |
 
@@ -48,6 +50,10 @@ protocol qualifications and artifact SHA-256 hashes. It uses the separate
 `codex-battery-quality-v1` schema, not the GPU speed report schema. Raw prompts,
 answers and execution traces are not included in this score export.
 
+[five-bugs-final-validation.json](five-bugs-final-validation.json) records
+the final Five Bugs validation after corrections, including all 25 visible
+and 25 hidden check outcomes and the corrected solution hashes.
+
 ## Harnesses and configuration
 
 | Component | Version or source revision |
@@ -63,8 +69,10 @@ The public pinned harnesses supplied the tasks and graders. The reference
 study's tracked BenchKit changes and local Five Bugs runner were unavailable,
 so public harnesses were adapted for the CLI transport. Generation used fresh
 benchmark sessions with a short benchmark instruction scaffold, rather than
-the existing desktop conversation. No canonical coding solutions or hidden
-tests were supplied to the solver. Model hardware, model weights/revision and
+the existing desktop conversation. During the initial benchmark, no canonical
+coding solutions or hidden tests were supplied to the solver. The later Five
+Bugs debugging phase used documentation and checker feedback, as detailed
+below. Model hardware, model weights/revision and
 quantization are unavailable for this hosted run.
 
 The adapter buffered each CLI answer and exposed it as an OpenAI-compatible
@@ -78,9 +86,9 @@ budgets were not enforced by the Codex CLI. The reasoning effort was fixed to
 
 GSM8K sampling used seed 42. The original study's sampling seed was not
 retained, so this choice is inferred rather than a verified identical sample.
-MMLU covers only the stated subject and IFEval only the first 50 prompts. Five
-Bugs used one generated candidate per session, with no checker feedback or
-repair round.
+MMLU covers only the stated subject and IFEval only the first 50 prompts. The
+initial Five Bugs benchmark used one generated candidate per session, with no
+checker feedback or repair round.
 
 ## Coding validation
 
@@ -100,6 +108,33 @@ Stock EvalPlus's `find_zero` progress-accounting behavior was retained in the
 published score. A separate diagnostic correcting only that progress marker
 still failed the expanded tests for both existing HumanEval/32 candidates, so
 it did not change the combined HumanEval+ result.
+
+## Five Bugs final validation after corrections
+
+The initial run passed **25/25 visible** and **20/25 hidden** checks. All five
+hidden failures were in t4: the generated tag-stripping solutions removed
+literal comparison text such as `a < b and c > d`.
+
+Following that run, Codex corrected the five task files during the debugging
+and validation workflow. The fixes cover insertion at the end of a sorted
+list, shared mutable defaults, decimal half-up rounding, tag stripping that
+preserves comparison text, and month arithmetic with day clamping. Final
+validation ran each corrected solution through the repository's existing
+visible and hidden checkers five times: **25/25 visible and 25/25 hidden
+(100.0% in both suites)**.
+
+These are five repetitions of the same five corrected solutions. The
+debugging phase consulted the repository README, which describes the t4
+blind spot and published fixes. After the first post-correction validation,
+the hidden t4 checker was inspected to diagnose a quoted-attribute expectation.
+The final result is therefore feedback-assisted validation after corrections;
+the initial independent-candidate score remains in `benchmark-scores.json`.
+
+The t4 checker expects `b.png'>x` for `<img src='a>b.png'>x`, following a
+first-closing-angle rule. The graded correction matches that checker contract.
+A separate quote-aware variant returns `x` for the same input; both preserve
+literal comparison text. The validation JSON records this qualification and
+each graded solution's SHA-256 hash. No benchmark checker was changed.
 
 ## Long-context transport
 
