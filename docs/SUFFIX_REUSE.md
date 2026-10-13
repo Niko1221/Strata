@@ -189,7 +189,7 @@ Verbatim-offload context management — the agent keeps its working state in fil
 
 ## 8. Configuration
 
-Two new flags; the rest is existing upstream machinery:
+Three new flags; the rest is existing upstream machinery:
 
 ```
 --cache-suffix-reuse 64          # the feature (opt-in; 0 = off, default)
@@ -205,17 +205,19 @@ Refused (logged, falls back to full re-read, never crashes): `--kv-resident > 0`
 ## 9. Verification summary
 
 - CPU ctest **53/53** (39 upstream + 14 suffix-reuse), re-run after every commit.
-- Suffix-reuse suites: partial-prefix **74/0** (incl. T16.7 cross-conversation pin), dense-tail **23/23**.
+- Suffix-reuse suites: partial-prefix **82/0** (incl. T16.7 cross-conversation pin and T22.1–5c two-pool pick), dense-tail **23/23**.
 - CUDA (sm_86, toolkit 13.0) builds clean; `-Wall -Wextra` single-header syntax check clean.
-- Live GPU probes: splice fired and answers correct on every format (§5.2); dense-tail chain GREEN with all answers correct (§5.7).
-- Independent fail-closed code reviews: all-quant splice **APPROVE** (3 MINOR doc findings, closed); `sfx-future` **r1 REJECT → fix → r2 APPROVE** (1 MAJOR cross-conversation dominance bug found and fixed TDD-style; zero new findings at r2).
+- Live GPU probes: splice fired and answers correct on every format (§5.2); dense-tail chain GREEN (§5.7); FW-2b chain GREEN with byte-identical reuse across all five KV formats (§5.9).
+- Independent fail-closed code reviews: all-quant splice **APPROVE** (3 MINOR doc findings, closed); `sfx-future` **r1 REJECT → fix → r2 APPROVE** (1 MAJOR cross-conversation dominance bug found and fixed TDD-style; zero new findings at r2); `sfx-fw2b` (state-cadence, T22/T23/cap) **APPROVE, zero blocking** (3 informational MINORs: documented T18 behavior, conservative `capacity()` byte accounting, doc wording).
 - Not tested: HIP compile (no AMD hardware available to the author — the new code is host-side C++ behind the existing transport layer; an AMD build pass is requested from the community/maintainers).
 
 ## 10. Limitations and future work
 
-- The fail-close gap-read (§5.8) leaves bounded re-read when an edit lands deeper than every checkpoint. Next milestone: state-cadence checkpoints plus a replay path (restore the deepest state checkpoint at or before the edit, prefill forward — attention over the gap reads valid arena K/V). The env gate `STRATA_SFX_REPLAY` and the `partial_gap_read_from` seam exist and are tested; the state-cadence banking is not built yet. Projected anchors: 59.7% (parked) / 91.2% (session-local) on the §5.7 probe shape.
+- **Built and certified (FW-2b):** fine-cadence state-only checkpoints (`--prompt-cache-state-every 256`) with two-pool restore shrink the fail-close gap to ≤ N tokens below the edit. Remaining gap beyond that: an edit landing deeper than every anchor still triggers a bounded gap-read (§5.8); with state-every 256 the bound is 256 tokens, not `every`-spacings.
+- **FW-2c (designed, next):** session-local partial K/V splice — the parked conversation image already retains real K/V (`ConversationKvReuse`, captured/unchanged extents); splicing the unchanged prefix from it instead of re-reading is projected at 91.2% session-local reuse on the §5.7 probe shape. Design notes: `docs/FW2C_DESIGN_NOTES.md`.
+- The env-gated replay path (`STRATA_SFX_REPLAY`, off by default) remains an alternative to FW-2c for gap closure; the `partial_gap_read_from` seam is shared.
 - Streaming-ring (`--kv-resident`) and layer-split layouts remain refused — splicing a ring requires cell re-homing, not just rotation.
-- Recurrence state (GDN/PLE) is replayed from the narrowed checkpoint rather than transformed; a forward-state transform would cut the remaining gap-read further.
+- Recurrence state (GDN/PLE) is restored from the narrowed checkpoint rather than transformed; a forward-state transform would cut the remaining gap-read further.
 
 ## References
 
