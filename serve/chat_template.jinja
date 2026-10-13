@@ -105,9 +105,10 @@
 {%- endfor %}
 {%- for message in messages %}
     {%- if loop.index0 >= num_sys %}
-    {%- set content = render_content(message.content, true)|trim %}
-    {%- if message.role == "system" or message.role == "developer" %}
-        {{- raise_exception('System message must be at the beginning.') }}
+    {%- set is_system = message.role == "system" or message.role == "developer" %}
+    {%- set content = render_content(message.content, not is_system, is_system)|trim %}
+    {%- if is_system %}
+        {{- '<|im_start|>system\n' + content + '<|im_end|>\n' }}
     {%- elif message.role == "user" %}
         {{- '<|im_start|>' + message.role + '\n' + content + '<|im_end|>' + '\n' }}
     {%- elif message.role == "assistant" %}

@@ -27,7 +27,7 @@ import json
 import time
 import uuid
 
-from serve.frontend import Event, _late_system_to_user, _parts_of, effort_kwargs
+from serve.frontend import Event, _parts_of, effort_kwargs
 
 ENCRYPTED_PREFIX = "strata.r1:"                   # our own reasoning replay strings; others' are ignored
 HOSTED_TOOLS = ("web_search", "web_search_preview", "file_search", "computer_use_preview", "computer_use",
@@ -201,13 +201,13 @@ def input_messages(req: dict) -> list[dict]:
                                  "unsupported_parameter")
     _order_tool_results(messages)
     # leading system/developer messages (Codex: instructions, then its developer message) become one system message
-    # at the start; later ones become user messages in place, as on the chat path
+    # at the start; later system/developer messages keep their roles and positions, as on the chat path
     lead = 0
     while lead < len(messages) and messages[lead]["role"] == "system" and isinstance(messages[lead]["content"], str):
         lead += 1
     if lead > 1:
         messages[:lead] = [{"role": "system", "content": "\n\n".join(m["content"] for m in messages[:lead])}]
-    return _late_system_to_user(messages)
+    return messages
 
 
 def _order_tool_results(messages):

@@ -36,14 +36,14 @@ class Parsing(unittest.TestCase):
         self.assertEqual(input_messages({"input": "hi", "instructions": "Be brief."}),
                          [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "hi"}])
 
-    def test_leading_developer_messages_join_the_system_message_later_ones_become_user(self):
+    def test_leading_developer_messages_join_system_and_late_roles_are_preserved(self):
         msgs = input_messages({"instructions": "I", "input": [
             {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "D1"},
                                                                  {"type": "input_text", "text": "D2"}]},
             {"role": "user", "content": "u"},
             {"type": "message", "role": "developer", "content": "late"}]})
         self.assertEqual(msgs, [{"role": "system", "content": "I\n\nD1D2"}, {"role": "user", "content": "u"},
-                                {"role": "user", "content": "late"}])
+                                {"role": "system", "content": "late"}])
 
     def test_codex_history_becomes_one_assistant_turn_per_answer(self):
         items = [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "edit it"}]},

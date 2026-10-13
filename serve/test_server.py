@@ -1293,7 +1293,7 @@ class ClientShapes(unittest.TestCase):
                 return e.code, json.loads(e.read())
 
     def prompt_text(self):
-        return bytes(i for i in self.engine.last_ids if i < 256).decode("utf-8", "replace")
+        return self.svc.tok.decode(self.engine.last_ids)
 
     def test_query_string(self):
         body = {"model": "x", "max_tokens": 20, "messages": [{"role": "user", "content": "hi"}]}
@@ -1313,7 +1313,7 @@ class ClientShapes(unittest.TestCase):
         self.assertEqual(status, 200, b)
         text = self.prompt_text()
         self.assertIn("You are terse.", text)
-        self.assertIn("<system-reminder>answer in digits</system-reminder>", text)
+        self.assertIn("<|im_start|>system\n<system-reminder>answer in digits</system-reminder><|im_end|>", text)
         self.assertLess(text.index("You are terse."), text.index("1+1?"))          # the first system stays first
         self.assertLess(text.index("1+1?"), text.index("answer in digits"))        # the late one stays in place
 
@@ -1325,8 +1325,16 @@ class ClientShapes(unittest.TestCase):
                          {"role": "system", "content": "Also this."}, {"role": "user", "content": "1+1?"}]})
         self.assertEqual(status, 200, b)
         text = self.prompt_text()
-        for part in ("Be brief.", "Now use digits.", "Also this.", "1+1?"):
+        parts = ["<|im_start|>system\nNow use digits.<|im_end|>",
+                 "<|im_start|>system\nAlso this.<|im_end|>",
+                 "<|im_start|>user\n1+1?<|im_end|>"]
+        for part in parts:
             self.assertIn(part, text)
+        positions = [text.index(part) for part in parts]
+        self.assertLess(text.index("hi<|im_end|>"), positions[0])
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(text.count("Now use digits."), 1)
+        self.assertEqual(text.count("Also this."), 1)
 
     def test_no_user_turn_is_a_400(self):
         # #365: the template's own refusal (Qwen's "No user query found in messages." when no turn is a user's query)
