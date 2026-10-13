@@ -809,7 +809,10 @@ tokens each card's expert kernels take 160-170 ms of the trace's 1.1 s). The set
 loans, no adaptive swaps).
 
 - Needs `--stream-experts` and every expert in one of the two cards' VRAM; not with `--layer-split`, `--peer-device`
-  or `--pipeline-windows`. `ONEAPI_DEVICE_SELECTOR=level_zero:*` and `STRATA_MIRROR_MIB=0` in the config's `"env"`.
+  or `--pipeline-windows`.
+- In a server config: `"gpu": [0, 1]`, `"--expert-parallel-device", "1"` in `"args"` and
+  `"ONEAPI_DEVICE_SELECTOR": "level_zero:*"` in `"env"` (setup writes the last for a list of cards). The server adds
+  no `--layer-split` beside the option. With every expert in VRAM nothing is mirrored in RAM.
 - `--batch N` works with it: 4 requests at once give the same outputs as one at a time.
 - The prompt path reads card N's experts from the GGUF on card 0 (a 1,996-token prompt: 719 tok/s against 768 on one
   card with the mirror). `STRATA_EP_MIRROR=1` mirrors them in pinned RAM as well (18 GB for IQ3_XXS).
