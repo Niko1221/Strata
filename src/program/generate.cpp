@@ -9448,11 +9448,15 @@ int main(int argc, char** argv) {
                 if (gpu_sync_ok() && checkpoint_save(sc, ss, g)) {
                     sc.used = ++check_clock;
                     state_checks.push_back(std::move(sc));
-                    // byte cap, not count: state blobs are small but not free; 256 MiB
-                    // of running-state history is already thousands of anchors.
+                    // byte cap, not count: state blobs are ~20-25 MiB per 1k conversation
+                    // tokens (measured: pool=2 at 5.7k under a 256 MiB cap), so the cap,
+                    // not the cadence, sets the anchor depth the pool covers.  2 GiB keeps
+                    // ~10 anchors at needle scale - the head region periodic cadence goes
+                    // sparse (max(every, 8192)) and the state pool is what keeps deep
+                    // anchors there.  Host RAM only (checkpoint_save copies to host vectors).
                     int64_t state_bytes = 0;
                     for (const ConvCheckpoint& k : state_checks) state_bytes += (int64_t) k.bytes();
-                    while (!state_checks.empty() && state_bytes > 256 << 20) {
+                    while (!state_checks.empty() && state_bytes > 2048 << 20) {
                         state_bytes -= (int64_t) state_checks.front().bytes();
                         state_checks.erase(state_checks.begin());   // oldest first
                     }
