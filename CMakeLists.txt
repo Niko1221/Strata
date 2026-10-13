@@ -934,6 +934,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(gr_multi_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(gr_multi_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME gr_multi_parity COMMAND gr_multi_parity)
+  # STRATA_HC_PERSIST=1: the persistent hyper-connection read against the default multi read (bounded, two runs bitwise),
+  # and with the variable unset it never runs (a skip where the card cannot hold its 80 blocks, and on CUDA)
+  add_executable(hc_persist_parity src/kernels/hc_persist_parity.cpp)
+  target_include_directories(hc_persist_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(hc_persist_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME hc_persist_parity COMMAND hc_persist_parity)
+  add_test(NAME hc_persist_default_off COMMAND hc_persist_parity --off)
   if(STRATA_HIP_GFX906)
     # the S6 router (STRATA_HIP_ROUTER_FAST=1 on gfx906) against the portable kernel, bitwise, on wave64
     add_executable(hip_router_fast tests/hip/router_fast.cpp)
