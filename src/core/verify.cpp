@@ -226,6 +226,25 @@ bool head_mix_multi_enabled() {
 // copy_rows_from_mapped_after): same reads, same values, one kernel node fewer each.  A dependent kernel costs ~2.4 us in a
 // gfx1201 graph whatever it does; measured on gfx12 only, so it is on there by default.  STRATA_FUSE_WAIT=0 / 1 forces it
 // off / on (HIP builds; a CUDA build never fuses).
+// sm_75 (Turing) defaults of the CUDA build's switches below, read per device
+bool device_is_sm75() {
+#if defined(STRATA_USE_HIP)
+    return false;
+#else
+    static int per_dev[64];   // 0 unknown, 1 no, 2 yes
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (!per_dev[dev]) {
+        int maj = 0, mnr = 0;
+        const bool ok = cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                        cudaDeviceGetAttribute(&mnr, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        if (!ok) cudaGetLastError();
+        per_dev[dev] = ok && maj == 7 && mnr == 5 ? 2 : 1;
+    }
+    return per_dev[dev] == 2;
+#endif
+}
+
 bool fuse_wait_on() {
 #if defined(STRATA_USE_HIP)
     static const int env = [] {
@@ -242,7 +261,21 @@ bool fuse_wait_on() {
     }
     return per_dev[dev] == 2;
 #else
-    return false;
+    // CUDA: STRATA_FUSE_WAIT=1 folds both waits (the plan's and the CPU rows'), =2 only the plan's, =0 neither.  Turing
+    // default 2 (RTX 2080 Ti, Flash-Next Q2_0, two runs each: +0.6..+1.4 % decode); the rows' version makes every row
+    // block of the copy poll the flag over PCIe and was -1.5 % there, so it stays opt-in.
+    static const int env = [] { const char* v = std::getenv("STRATA_FUSE_WAIT"); return v != nullptr ? std::atoi(v) : -1; }();
+    if (env >= 0) return env == 1 || env == 2;
+    return device_is_sm75();
+#endif
+}
+// 143-amdk's rows version of the folded wait (copy_rows_from_mapped_after): HIP with fuse_wait_on, CUDA STRATA_FUSE_WAIT=1
+bool fuse_rows_on() {
+#if defined(STRATA_USE_HIP)
+    return fuse_wait_on();
+#else
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_WAIT"); return v != nullptr && std::atoi(v) == 1; }();
+    return on;
 #endif
 }
 
@@ -1083,6 +1116,22 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         stamp(l, 1, grp);
         float* xm = mixed_ + tb * N;
         bool il_ready = false;   // xil_ holds xq_'s interleaved copy (reset whenever xq_ is rewritten)
+        // a projection input's q8_1 blocks and their interleaved copy in one launch (native_quantize_q8_1_il, the same
+        // bytes): Turing default (+0.5..+1 % decode, two launches fewer per GDN layer and per QSA layer); STRATA_QIL=0 / 1
+        // forces it off / on
+        auto quant_in = [&](const float* x, int n_in) {
+#if !defined(STRATA_USE_HIP)
+            static const int qil_env = [] { const char* v = std::getenv("STRATA_QIL"); return v != nullptr ? std::atoi(v) : -1; }();
+            const bool qil = qil_env >= 0 ? qil_env != 0 : device_is_sm75();
+            if (qil && n >= 2 && n <= 4 && g_mmvq_il()) {
+                strata::kernels::native_quantize_q8_1_il(x, xq_, xil_, n_in, n, cs);
+                il_ready = true;
+                return;
+            }
+#endif
+            native_quantize_q8_1(x, xq_, n_in, n, cs);
+            il_ready = false;
+        };
         auto mm = [&](const WeightRef* w, float* out, int n_in, int n_out) {
             if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(w->native_type, n, n_out)) {
                 if (!il_ready && n >= 2) {   // one column reads the plain q8_1 blocks
@@ -1113,7 +1162,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 float* hb = h_L_ + (size_t) gi * MT * C;
                 float* gate = gate_L_ + (size_t) gi * MT * HV;
                 float* beta = beta_L_ + (size_t) gi * MT * HV;
-                if (!q8_attn) native_quantize_q8_1(xm, xq_, (int) N, n, cs);
+                if (!q8_attn) quant_in(xm, (int) N);
                 if (br) {   // STRATA_DF_BRANCH: a/b and z beside q/k/v and the conv; all of them read only this layer's input
                     fork(0);
                     gdn_ab_multi(xm, (const uint16_t*) wa->data, (const uint16_t*) wb->data, (const float*) wdt->data,
@@ -1177,8 +1226,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 stamp(l, 6, grp);
                 // STRATA_QFUSE: done above by gdn_step_norm_multi - but a batch's per-slot recurrence passes it no q8_1
                 // destination (#1139: the out-projection read stale bytes), so that case quantizes here as without it
-                if (!g_qfuse() || batch_rec_) native_quantize_q8_1(y_ + (size_t) tb * ZV, xq_, (int) ZV, n, cs);
-                il_ready = false;
+                if (!g_qfuse() || batch_rec_) quant_in(y_ + (size_t) tb * ZV, (int) ZV);
+                else il_ready = false;
                 mm(wout, bo_ + tb * N, (int) ZV, (int) N);
             } else {
                 // ======================= QSA =======================
@@ -1221,7 +1270,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     return e != nullptr && std::atoi(e) != 0;
                 }();
                 const bool qb = dec_batch && n > 1 && native_qsa_enabled() && native_rope_enabled() && (!st.kv_q4 || qb_q4);
-                if (!q8_attn) native_quantize_q8_1(xm, xq_, (int) N, n, cs);
+                if (!q8_attn) quant_in(xm, (int) N);
                 // STRATA_DF_BRANCH: the query side (q and its norm/RoPE/rotation on side 0, the indexer query on side 1)
                 // beside the K/V side; the indexer query joins before the block scores, the query before attention
                 const bool qbr = br && qb;
@@ -1404,8 +1453,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         qsa_gate_apply_f32(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, s, attn32_ + t * NH * HD, cs);
                 }
                 stamp(l, 14, grp);
-                native_quantize_q8_1(attn32_ + tb * NH * HD, xq_, (int) (NH * HD), n, cs);
-                il_ready = false;
+                quant_in(attn32_ + tb * NH * HD, (int) (NH * HD));
                 mm(wo, bo_ + tb * N, (int) (NH * HD), (int) N);
             }
         } catch (const std::exception& e) {
@@ -1624,7 +1672,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 copy_or_zero_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (long long) n * K * N,
                                          skip_ + grp, ring, cs);
             } else {
-                const bool fuse_rows = fuse_wait_on() && !prof_on_ && !remote_opt_ && dec_batch;   // 143-amdk
+                const bool fuse_rows = fuse_rows_on() && !prof_on_ && !remote_opt_ && dec_batch;   // 143-amdk
                 if (!fuse_rows) wait_flag_ge(m_flag_, ring, cs);               // the CPU's share is in the mapped rows
                 stamp(l, 23, grp);
                 if (remote_opt_)   // #578: the helper's rows come back reduced; skip them as well
