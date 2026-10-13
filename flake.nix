@@ -29,7 +29,6 @@
           packages = with pkgs; [
             # ./setup.sh: makes .venv and runs setup.py
             python3
-            git
 
             # setup.py's engine build. cmake/ninja from PATH: the pip wheels' binaries do not run on NixOS.
             cuda
