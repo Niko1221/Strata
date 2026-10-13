@@ -11994,6 +11994,17 @@ int main(int argc, char** argv) {
             bool from_live = false;
             if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
+                // [SFX-DBG] probe: the session-local strict search has no visibility - log every
+                // candidate (live + each checkpoint) and its starts_with verdict so a shallow
+                // mount can be attributed to the candidate set, not the search.
+                if (o.cache_suffix_reuse > 0) {
+                    std::fprintf(stderr, "[SFX-DBG] local-search: live_ok=%d live_len=%zu n=%lld checks=%zu:",
+                                 live_ok ? 1 : 0, live.size(), (long long) cur.size(), checks.size());
+                    for (const ConvCheckpoint& c : checks)
+                        std::fprintf(stderr, " %lld/%d", (long long) c.ids.size(),
+                                     starts_with(c.ids, c.imgs) ? 1 : 0);
+                    std::fprintf(stderr, "\n");
+                }
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() > resume && starts_with(c.ids, c.imgs)) {
                         resume = (int64_t) c.ids.size();
