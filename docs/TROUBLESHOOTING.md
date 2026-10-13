@@ -1,5 +1,7 @@
 # Something went wrong?
 
+**English** · [한국어](TROUBLESHOOTING.ko.md)
+
 The common problems and what to do. Back to the [README](../README.md#something-went-wrong). The full table of
 error messages, with the older engine fixes, is in the [details](DETAILS.md#troubleshooting).
 

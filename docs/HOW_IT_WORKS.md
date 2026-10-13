@@ -1,5 +1,7 @@
 # How does Strata work?
 
+**English** · [한국어](HOW_IT_WORKS.ko.md)
+
 Models like Qwen3.8-Flash-Next normally run on servers with hundreds of gigabytes of graphics memory. Your graphics
 card has 12-24 GB. Strata makes it fit by **sharing the work across your whole PC** - the same idea as a kitchen, where
 the things you use all the time stay on the counter and the rest waits in the pantry. Back to the

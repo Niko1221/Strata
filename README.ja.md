@@ -1,6 +1,6 @@
 <h1 align="center">Strata</h1>
 
-[English](README.md) · [简体中文](README.zh-CN.md) · **日本語** · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
+[English](README.md) · [简体中文](README.zh-CN.md) · [한국어](README.ko.md) · **日本語** · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
 <p align="center"><b>1,250 億パラメータの AI モデルを、手元のゲーミング PC で動かす</b><br>
 NVIDIA または AMD のグラフィックカード（12 GB 以上） · Windows または Linux · 無料・オープンソース</p>
