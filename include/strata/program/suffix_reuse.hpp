@@ -504,7 +504,12 @@ inline SuffixHookOutcome suffix_reuse_partial_apply(
     const size_t n_new = cur_tokens.size();
     if (L <= 0 || P <= 0 || P >= L) return out;               // not a valid partial match
     if ((int64_t) partial_ck_tokens.size() != L) return out;  // inconsistent: tokens vs length
-    if (L > (int64_t) n_new) return out;                      // strict would have matched (L == n is valid partial; the helper is called only when the cache refused strict)
+    // T17 (2026-10-13): L > n_new is now a VALID partial shape - the parked live
+    // (prompt+response) is typically longer than the next turn's prompt, and this
+    // refusal was the third guard that refused the live anchor.  The LCP below is
+    // prompt-bounded, the tail walk in compute_suffix_plan is min-bounded, and the
+    // runtime restores the deepest checkpoint <= P (never state@L).  The strict
+    // path keeps its own refusal (a longer checkpoint is never a strict prefix).
     // verify the LCP claim: partial_ck[0..P) == cur[0..P) and partial_ck[P] != cur[P] (or P == L).
     for (int64_t i = 0; i < P; ++i)
         if (partial_ck_tokens[(size_t) i] != cur_tokens[(size_t) i]) return out;

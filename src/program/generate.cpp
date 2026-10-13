@@ -12651,7 +12651,17 @@ int main(int argc, char** argv) {
                     cudaStreamSynchronize(st->stream);
                 }
                 checks.clear();
-            } else if (!from_live) {
+            } else if (!from_live || splice_restore_anchor_length > 0) {
+                // T17 (2026-10-13): the partial mount with a LIVE anchor (parked.live = true)
+                // sets from_live = true, which previously routed past this branch entirely -
+                // the session sat at the stale state@L (wrong for the edited history; the v3
+                // semantic probe answered "160" for an edited 161-row ledger) and the restore
+                // search then failed for lack of a checkpoint at P.  A partial mount with
+                // splice_restore_anchor_length > 0 ALWAYS routes through narrowed_resume_target:
+                // restore the deepest checkpoint <= P (state consistent with the shared
+                // prefix), the arena K/V covers [ckpt, P) (identical tokens by the LCP), and
+                // the chunk loop reads [P, n) via wire_splice_read_from.  Strict mounts
+                // (anchor == 0, from_live as before) keep today's byte-identical behaviour.
                 // The splice hook may have narrowed `resume` to `plan_edit_pos` (e.g. 3239)
                 // while erasing the exact-length checkpoint the restore search wants (e.g.
                 // 3240).  Without the helper below, the loop's `c == nullptr` path errors

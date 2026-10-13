@@ -213,9 +213,18 @@ template<class Token>
 int64_t conversation_lcp(const ConversationCheckpoint& c, const std::vector<Token>& prompt,
                          const std::vector<ConversationImageKey>& images) {
     const size_t n = c.ids.size();
-    if (n < 1 || n > prompt.size()) return 0;            // empty or larger than the prompt: no LCP
+    if (n < 1) return 0;                       // empty: no LCP
+    // T17 (2026-10-13): a candidate LONGER than the prompt is a valid partial
+    // candidate - the parked LIVE (prompt+response) is almost always slightly
+    // longer than the next turn's prompt, and the old `n > prompt.size()` early
+    // out here (plus the two guards beside it) refused the single most valuable
+    // anchor in every edit chain (probe: e0.live:L=5786:skip, prompt 5736).
+    // The walk is bounded by min(n, prompt.size()): tokens past the prompt are
+    // irrelevant (the partial mount discards them), and the p == n < prompt.size
+    // case reports the full length (the strict-prefix shape, unchanged).
     int64_t p = 0;
-    while (p < (int64_t) n && c.ids[(size_t) p] == (Token) prompt[(size_t) p]) ++p;
+    while (p < (int64_t) n && p < (int64_t) prompt.size() &&
+           c.ids[(size_t) p] == (Token) prompt[(size_t) p]) ++p;
     if (p == 0) return 0;                                // token 0 mismatches
     // Image check: request images at positions < p must match the checkpoint's images.  The
     // checkpoint's images at positions >= p are irrelevant (we re-prefill [p, n) on the new
@@ -359,9 +368,13 @@ public:
             if (e.cvec != cvec) { if (dbg_partial) std::fprintf(stderr, " e%zu:cvec", i); continue; }
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
                 const int64_t L = (int64_t) c.ids.size();
-                if (L < 1 || L > (int64_t) prompt.size()) {
+                // T17: the size guard is lifted for the PARTIAL pass - a longer-than-prompt
+                // candidate (the parked live) is the most valuable partial anchor.  The strict
+                // pass above keeps its own guard (conversation_prefix refuses longer), so this
+                // scan alone can surface it.  L < 1 stays refused (empty).
+                if (L < 1) {
                     if (dbg_partial) std::fprintf(stderr, " e%zu.%s:L=%lld:skip", i, live ? "live" : "ck", (long long) L);
-                    return;   // must be <= prompt.size() (L == n is valid partial: same length, mid-file edit)
+                    return;
                 }
                 const int64_t p = conversation_lcp(c, prompt, images);
                 if (dbg_partial)
