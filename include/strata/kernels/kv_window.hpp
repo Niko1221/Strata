@@ -6,8 +6,9 @@
 // hundred KB while the quantized bulk still costs hundreds of MB, so the error is removed exactly where the
 // model attends most closely.
 //
-// At the serving geometry (12 QSA layers, 2 KV heads, head_dim 256): (128 + 8) cells x 1 KB x 2 x 12 ~= 3.3 MB
-// against 906 MB of q4_0 bulk at 262144 cells.
+// At the serving geometry (12 QSA layers, 2 KV heads, head_dim 256): (8 sinks + 128 window + 16 slack) slots x
+// 1 KiB (2 heads x 256 dims x 2 B) x 2 (K and V) = 304 KiB per layer, 3.56 MiB over 12 layers, against 1.69 GiB
+// of q4_0 bulk at 262144 cells (576 B per cell and layer).
 //
 // The bulk pools stay COMPLETE.  Every cell is still written to k_q4/v_q4 (or k_q/v_q) by the append kernels as
 // before, so snapshots, KV-streaming residency, ring modes and prompt checkpoints keep reading exactly the pools

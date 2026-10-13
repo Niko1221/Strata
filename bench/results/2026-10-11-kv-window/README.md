@@ -39,13 +39,20 @@ Cost, measured where it is paid:
 | decode attention, 8192 cells, overlay off -> on | 0.080 ms -> 0.080 ms (0.0%; -0.1%..0.0% over runs) |
 | extra writes per append | one ~1 KB K/V row per layer per token |
 | overlay footprint | 304 KB per layer for 152 slots (8 sinks + 128 window + 16 slack) |
-| q4_0 bulk for comparison | 288 KB per layer per 1024 cells (overlay is 3.2% of a 32K-cell layer) |
+| q4_0 bulk for comparison | 576 KiB per layer per 1024 cells (576 B per cell: K + V, 2 heads); the overlay is 1.65% of a 32K-cell layer |
 
 ## End to end (RTX 5080, IQ3_XXS, ctx up to 140000, `--kv-resident 20480` streaming, `--spec 4`)
 
 Probe: a long archive document with **12 five-digit codes** to copy exactly - six stated in the body of the
-document (bulk precision decides them) and six in the last ~120 tokens before the question (inside the 128-cell
-window) - plus three short questions. Score is codes reproduced exactly, out of 12.
+document (bulk precision decides them) and six "tail" codes in the document's last few paragraphs - plus three
+short questions. Score is codes reproduced exactly, out of 12.
+
+**Correction (review of this PR):** in the probe as these numbers were measured, the six tail codes were spread over
+the last ~6 paragraphs and followed by the answer instructions and all twelve questions - several hundred tokens
+before the generation position, i.e. **outside** the 128-cell window. So the table below does not isolate window
+recall; every arm (including exact FP16) scored 12/12, so it shows "no regression", not an overlay effect.
+`tools/kv_pr_report.py` now asks each tail code in its own request with the record placed directly before the
+question (~50 tokens from generation, inside the window); these numbers predate that change.
 
 | arm | 4K | 16K | 32K | 64K | 131K | loops | prefill t/s | decode t/s |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -90,8 +97,7 @@ KV_ENGINE=... KV_LENGTHS="64K:1600,131K:3200" bash run-gpu-bench.sh kv_pr_report
 - **Speculative decoding** needs `window + slack >= draft length`: a draft batch is appended before it is read, and
   `kKvWindowSlack` (16 slots) keeps those look-ahead writes off live window slots. A larger `--spec T` than the
   slack would need the slack raised.
-- **`--dump-logits` writes 0-byte files** on this configuration (native IQ pack, graph replay; the engine still
-  prints `logits dumped`), so the teacher-forced KL / top-1 / perplexity table of the earlier KV results README
-  (`2026-09-27-kv-q4`) could not be reproduced for this change. That table is the one metric this write-up is
-  missing; the server exposes no `logprobs`/`echo` either, which is the alternative route. Reproduce with:
-  `strata.exe --pack ... --native ... --tokens 1000,1001 --max-new 1 --dump-logits out.txt` -> `out.txt` is empty.
+- **`--dump-logits` on the native IQ pack** wrote 0-byte files when this README was first written (the speculative
+  loop never reached the per-token dump site). Fixed later in this PR: the native speculative loop now writes rows
+  through the verifier's logits, and the header is repaired to the rows actually written. The teacher-forced KL /
+  top-1 table this write-up lacked is in `bench/results/2026-10-12-kv-precision/README.md`.

@@ -237,7 +237,7 @@ Checked against the sources (2026-10-12), not against summaries. What the papers
   transform-invariant permutation that groups channels with similar statistics), **clipped dynamic
   quantization** (per-group min/max, dynamic, i.e. asymmetric with a zero-point), and a **sliding window of
   recent tokens kept in high precision**. Headline: K 2-bit, V 1.5-bit, "almost no accuracy drop".
-- The 2-bit-K / 1-bit-V split (1.5-bit average) is **AsymKV** (Zhang et al., arXiv 2411.17034), not KIVI's
+- The 2-bit-K / 1-bit-V split (1.5-bit average) is **AsymKV** (Tao et al., arXiv 2410.13212), not KIVI's
   main configuration.
 
 Five reasons our measurement is worse than their claim, in the order they bite:

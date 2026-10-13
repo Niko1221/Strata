@@ -18,8 +18,10 @@ recent cells are kept in FP16 and read from there, while the bulk stays in whate
 * Keys deserve more bits than values (arXiv 2502.15075); the overlay gives both sides exactness at the recent end,
   which is where the next token's attention actually lands.
 
-At the serving geometry (12 QSA layers, 2 KV heads, head_dim 256): `(8 + 128 + 16) * 2 * 256 * 2 * 2` = ~155 KB per
-layer, ~1.9 MB for the whole model, against 6,912 B/cell of q4_0 bulk (906 MB at 262144 cells).
+At the serving geometry (12 QSA layers, 2 KV heads, head_dim 256), counting the 16 slack slots
+(`kKvWindowSlack`): `(8 + 128 + 16) slots * 2 heads * 256 dims * 2 B * 2 (K and V)` = 311,296 B = 304 KiB per layer,
+3.56 MiB for the whole model - against 6,912 B/cell of q4_0 bulk over the 12 layers (576 B/cell/layer), which is
+1.69 GiB at 262,144 cells.
 
 ## Design
 
