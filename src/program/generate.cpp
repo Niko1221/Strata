@@ -732,6 +732,9 @@ struct Options {
     bool session_save_reclaim = false;
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
     int64_t prompt_cache_every = 16384;
+    /// FW-1: --prompt-cache-dense-tail N - dense checkpoint cadence in the last N tokens
+    /// (sparse max(every, 8192) head; 0 = off = today's uniform cadence).  Needs every > 0.
+    int64_t prompt_cache_dense_tail = 0;
     bool prompt_cache_tail = false;   // optional extra checkpoint at an existing near-tail chunk boundary
     bool prompt_cache_spread = false;   ///< --prompt-cache-spread: keep checkpoints spread back from the end, not the latest
     /// --serve: a prompt read from token 0 is also checkpointed at its first turn boundary - the end of the system
@@ -932,7 +935,10 @@ void usage() {
                  "  --prompt-cache-every N  --serve: also save a checkpoint every N new prompt tokens (default 16384;\n"
                  "                       0 = off).  Smaller N puts a reusable point closer to a mid-text\n"
                  "                       edit - pair with --prefill N when using --cache-suffix-reuse\n"
-                 "  --prompt-cache-tail  --serve, single GPU: one extra checkpoint near the prompt's end, at an existing\n"
+                 "  --prompt-cache-tail  --serve, single GPU: one extra checkpoint near the prompt's end, at an existing\n""  --prompt-cache-dense-tail N  --serve: save checkpoints sparsely while reading the prompt, then\n"
+                 "                       every --prompt-cache-every tokens within the last N tokens only.\n"
+                 "                       Cheap cold read + reusable points near the end, where mid-text edits\n"
+                 "                       usually happen.  0 = off (uniform cadence); needs --prompt-cache-every > 0\n"
                  "                       chunk boundary (default off; requires --prompt-cache and --prompt-cache-every > 0)\n"
                  "  --prompt-cache-spread  --serve: keep the checkpoints spread back from the conversation's end (dense\n"
                  "                       near it, thinner further back) instead of the most recently used: a client that\n"
@@ -2554,6 +2560,7 @@ int main(int argc, char** argv) {
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
         else if (a == "--prompt-cache-spread") o.prompt_cache_spread = true;
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
+        else if (a == "--prompt-cache-dense-tail") o.prompt_cache_dense_tail = std::max(0LL, std::atoll(next("--prompt-cache-dense-tail")));
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
         else if (a == "--tail-role-token") o.tail_role_token = std::atoll(next("--tail-role-token"));
@@ -2791,7 +2798,8 @@ int main(int argc, char** argv) {
     // the reason; we print and return 2 on a non-empty reason.
     {
         const std::string reason = suffix::validate_suffix_reuse_options(
-            o.cache_suffix_reuse, o.prompt_cache, o.kv, o.kv_resident, !o.layer_split.empty());
+            o.cache_suffix_reuse, o.prompt_cache, o.kv, o.kv_resident, !o.layer_split.empty(),
+            o.prompt_cache_every, o.prompt_cache_dense_tail);
         if (!reason.empty()) {
             std::fprintf(stderr, "strata generate: %s\n", reason.c_str());
             return 2;
@@ -9088,6 +9096,7 @@ int main(int argc, char** argv) {
             }
         };
         int64_t pp_total = 0, pp_from = 0, pp_next_check = 0;
+        int64_t pp_last_check = 0;   // FW-1: position of the last periodic checkpoint (dense-tail cadence)
         bool pp_tail_saved = false;
         // #471: the position the prompt pass has read up to (a chunk's or a window's end): what a request cancelled
         // mid-read reports as read, instead of the whole prompt
@@ -9349,7 +9358,17 @@ int main(int argc, char** argv) {
             strata::core::progress_at("reading the prompt (batched), done up to token", done);
             strata::core::progress_beat();
             std::fflush(stdout);
-            const bool periodic_checkpoint = o.prompt_cache_every > 0 && done >= pp_next_check;
+            // FW-1: with --prompt-cache-dense-tail N the cadence is position-dependent
+            // (sparse head, dense tail, never skipping the zone - dense_tail_next_check).
+            // With it OFF (0) the gate below is byte-identical to the original
+            // `done >= pp_next_check` / `pp_next_check = done + every` pair: pp_next_check
+            // starts at 0 so the FIRST chunk always checkpoints, exactly as before.
+            const bool periodic_checkpoint = o.prompt_cache_every > 0 &&
+                (o.prompt_cache_dense_tail > 0
+                     ? done >= suffix::dense_tail_next_check(pp_last_check, pp_total,
+                                                             o.prompt_cache_every,
+                                                             o.prompt_cache_dense_tail)
+                     : done >= pp_next_check);
             // Keep the prefill's existing chunk geometry. One extra near-tail checkpoint
             // can serve a branch whose shared prefix ends before the final cached state.
             const bool tail_checkpoint = o.prompt_cache_tail && o.prompt_cache > 0 && o.prompt_cache_every > 0 &&
@@ -9372,7 +9391,15 @@ int main(int argc, char** argv) {
                     saved = checkpoint_at(done, nullptr, tail_checkpoint && !periodic_checkpoint);
                 }
                 if (!saved) { e = "saving a conversation checkpoint failed" + ckpt_why; return false; }
-                if (periodic_checkpoint) pp_next_check = done + o.prompt_cache_every;
+                if (periodic_checkpoint) {
+                    pp_last_check = done;
+                    if (o.prompt_cache_dense_tail > 0)
+                        pp_next_check = suffix::dense_tail_next_check(done, pp_total,
+                                                                      o.prompt_cache_every,
+                                                                      o.prompt_cache_dense_tail);
+                    else
+                        pp_next_check = done + o.prompt_cache_every;   // original cadence
+                }
                 if (tail_checkpoint) pp_tail_saved = true;
             }
             return true;
