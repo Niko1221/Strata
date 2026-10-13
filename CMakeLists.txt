@@ -1353,6 +1353,9 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
     # + SPLICE_UNSUPPORTED guard fires for unsupported configs).
     add_executable(suffix_reuse_apply_test src/program/suffix_reuse_apply_test.cpp)
     target_include_directories(suffix_reuse_apply_test PRIVATE include)
+    add_executable(suffix_reuse_dense_tail_test src/program/suffix_reuse_dense_tail_test.cpp)
+    target_include_directories(suffix_reuse_dense_tail_test PRIVATE include)
+    add_test(NAME suffix_reuse_dense_tail_test COMMAND suffix_reuse_dense_tail_test)
     add_test(NAME suffix_reuse_apply_test COMMAND suffix_reuse_apply_test)
     # Phase 2 hotfix T7: the device-path regression for the 2026-10-12 SIGSEGV.  Pins the
     # LIVE failing inputs (edit_pos=3239, old_suffix_len=1, uniform delta=+54) plus the
