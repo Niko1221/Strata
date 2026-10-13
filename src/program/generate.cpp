@@ -9626,11 +9626,15 @@ int main(int argc, char** argv) {
         // here (a checkpoint, a park, the next request and the serial paths all find both stages and the drafter idle).
         // Every window in flight is served to its end (its picks discarded), then both stages and the drafter idle.
         // (--adapt-async: the decode loop then settles the asynchronous tier's round, a_pl_settle, see its end.)
+        // remote-stage: the error the last pl_drain set aside (a checkpoint is not saved on the worker after one)
+        std::string pl_drain_err;
         auto pl_drain = [&]() {
             std::string e2;
+            pl_drain_err.clear();
             // remote-stage: a drain that stops at an error first waits for a window still waiting on the worker
-            // (Verifier::remote_settle), so the next request's Reset is the only user of the link
-            auto stop_at = [&] {
+            // (Verifier::remote_settle), so the next request's Reset or CkptRestore is the only user of the link
+            auto stop_at = [&](const std::string& why) {
+                pl_drain_err = why.empty() ? std::string("a pipelined window failed") : why;
                 for (int st = 0; st < n_stages && pipe; ++st)
                     for (int par = 0; par < 2; ++par) stage_ver_p(st, par).remote_settle();
             };
@@ -9641,15 +9645,16 @@ int main(int argc, char** argv) {
                         strata::core::Verifier& v = stage_ver_p(st, par);
                         if (!v.in_flight()) continue;
                         any = true;
-                        if (v.service(&drive_pool_split, PSD[par], e2) < 0) return stop_at();
+                        if (v.service(&drive_pool_split, PSD[par], e2) < 0) return stop_at(e2);
                         if (v.done(e2)) v.pl_finish(nullptr, e2);
-                        else if (!e2.empty()) return stop_at();
+                        else if (!e2.empty()) return stop_at(e2);
                         remote_wait = remote_wait || v.remote_waiting();
                     }
                 if (!any) break;
                 // remote-stage: the worker's reply takes milliseconds, not rounds (its own timeout ends a lost one)
                 if (remote_wait) std::this_thread::sleep_for(std::chrono::microseconds(50));
             }
+            pl_drain_err = e2;   // (a window's pl_finish that failed)
             for (int st = 0; st < n_stages && pipe; ++st) {
                 const strata::core::OnDevice on(stage_ver_p(st, 0).device());
                 cudaStreamSynchronize(stage_ver_p(st, 0).stream());
@@ -10077,6 +10082,12 @@ int main(int argc, char** argv) {
                 for (const ConvCheckpoint* k : after)
                     if (k->remote_id != 0) keep.push_back(k->remote_id);
                 if (std::find(keep.begin(), keep.end(), c.remote_id) == keep.end()) keep.push_back(c.remote_id);
+                // the part's windows are on the wire before this (read_windows_pl ends with nothing in flight), and
+                // a pipelined window that failed meanwhile is not saved over
+                if (!pl_drain_err.empty()) {
+                    ckpt_why = ": a pipelined window failed before it (" + pl_drain_err + ")";
+                    return false;
+                }
                 bool stored = false;
                 std::string re;
                 if (!remote_link.ckpt_save(c.remote_id, L, keep, stored, re)) {
@@ -15173,6 +15184,7 @@ int main(int argc, char** argv) {
                 std::sort(cuts.begin(), cuts.end());   // the skipped -1s first, n - 1 still last
             }
             int64_t at = read_from;
+            pl_drain_err.clear();   // (an earlier request's: a checkpoint follows this prompt's own windows)
             // STRATA_ADMIT_MERGE_FIRST: the last part, when it goes through the windows, leaves its last tokens (up to
             // max_t with the last prompt token) to the first window, which starts at merge_at (-1: the first window
             // holds the last prompt token alone).  Only where every window row is the same in any window: a batch
@@ -16375,6 +16387,9 @@ int main(int argc, char** argv) {
                 live.swap(consumed);
                 live_imgs = imgs_below(req_imgs, (int64_t) live.size());
                 live_ok = o.prompt_cache > 0 && req_ckpt;   // ckpt=0: nothing to continue or park (#830)
+                // remote-stage: a window the last pl_drain saw fail leaves the worker's state unconfirmed; the next
+                // request mounts a checkpoint instead (both sides restore it) or reads from 0
+                if (remote_main && !pl_drain_err.empty()) live_ok = false;
                 if (nf_hit) live_ok = false;   // #879 (the next request's start drops the rest)
             } else if (!nf_hit && pp_exact && pp_reached > 0 && o.prompt_cache > 0 && req_ckpt &&
                        pp_reached <= (int64_t) cur.size()) {

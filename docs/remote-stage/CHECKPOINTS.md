@@ -129,10 +129,15 @@ Main side:
 - `checkpoint_at(L, nullptr, ...)` in remote mode: choose the eviction victims without applying them, send
   `CkptSave(id, L, keep)`; a=1 -> save the main's part (a failure there is fatal, as on one GPU), apply the eviction,
   insert with `remote_id = id`; a=0 -> stderr line, nothing changes.
-- Ordering: CkptSave follows the part's last window on the same ordered connection. A remote main runs its windows
-  one at a time (a remote stage refuses `--pipeline-windows` at start): each Run waits for the worker's reply, and the
-  window's one-way Commit goes out before the next message, so the worker has run that Commit when it reads the
-  CkptSave, and a Commit that failed comes back as the CkptSave's error.
+- Ordering: CkptSave follows the part's last window on the same ordered connection. The worker gets one window at a
+  time: each Run waits for the worker's reply, and the window's one-way Commit goes out before the next message, so
+  the worker has run that Commit when it reads the CkptSave, and a Commit that failed comes back as the CkptSave's
+  error. With `--pipeline-windows` a Run waits on a job thread, so every use of the link from the request's own
+  thread (CkptSave, CkptRestore, Reset, Positions, the `alive()` look at a request's start) comes after a
+  `pl_drain`, which ends with no Run in flight (one that stops at an
+  error first waits for a window still waiting on the worker, and gives it up without its Commit); that error is set
+  aside (`pl_drain_err`): no CkptSave over it, and no live continuation after a decode it ended, so the worker's
+  session is next replaced by a Reset or a CkptRestore.
 - Request start, checkpoint path: after the main's restore, `CkptRestore(c.remote_id, resume, keep)`. On the
   missing-id Error: one shared helper zeroes the main's session, sends Reset (keep = {}), and sets `resume = 0`,
   `from_live = false`, `reread_to = -1`, `checks.clear()`; everything after (MTP `kv_restore`, `read_from`,
@@ -365,6 +370,7 @@ Builds:
   compile.
 
 The feature was first validated on a build with the remote decode pipelined (`--pipeline-windows 2` on a remote main,
-which this branch does not have), on an RTX 3080 main + an RTX 2080 Ti worker over 10 GbE: the answers after a
+on an earlier base), on an RTX 3080 main + an RTX 2080 Ti worker over 10 GbE: the answers after a
 restore matched the request that saved the checkpoint byte for byte, the default path matched its base build, and a
 forced restore miss read from 0 and finished. Those numbers belong to that build and are not repeated here.
+TODO(v1-gpu): checkpoints with `--pipeline-windows 2` on this branch.
