@@ -45,6 +45,9 @@ struct FusedGrArgs {
     /// bytes native_quantize_q8_1 would write); q8_cnt = n_embd / 32 zeroed counters owned by the caller (token 0's)
     uint8_t* q8_mixed = nullptr;
     unsigned* q8_cnt = nullptr;
+    /// With q8_mixed, 2-4 tokens: also the interleaved copy of the tokens' q8_1 images (native_q8_1_il_bytes(n_embd,
+    /// n_tok) bytes, token t = column t), so native_mmvq_il needs no native_q8_1_interleave launch (token 0's pointer)
+    uint8_t* q8_il = nullptr;
 };
 
 bool fused_gr_supported(int64_t n_embd, int64_t hc, int64_t hc_lr);
@@ -56,8 +59,10 @@ void fused_gr_read(const FusedGrArgs& a, void* stream);
 /// token's outputs are bitwise `fused_gr_read(a[t])`.
 constexpr int kFusedGrMaxT = 8;
 /// Returns true when it also wrote the q8_1 images (every token's q8_mixed set and this read supports it).
+/// `gr_sync` (STRATA_GR_FUSE=1): four zeroed device counters only this caller's reads use (one stream at a time): the
+/// Q8_0 read then runs as one launch (gr_fused_q8_kernel; bitwise the two).  Null: two launches.
 bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream,
-                         unsigned long long* stamp_buf = nullptr, int stamp_i0 = 0);
+                         unsigned long long* stamp_buf = nullptr, int stamp_i0 = 0, unsigned* gr_sync = nullptr);
 
 /// The bench only: the AMD latency-hidden kernels on (1) or off (0); -1 = STRATA_GR_FAST.
 void fused_gr_set_fast(int on);

@@ -75,6 +75,21 @@ struct Q81One {
     }
 };
 
+// NC columns of plain q8_1 blocks (nb a column, 36 bytes each) behind Q81Il's interface: the same values as the
+// interleaved copy, one load a column instead of one for all of them, and no copy to write first (STRATA_MMVQ_IL_PLAIN)
+template <int NC> struct Q81Plain {
+    const uint8_t* __restrict__ x;
+    int nb;
+    __device__ __forceinline__ void u(int b, int p, int (&o)[NC]) const {
+#pragma unroll
+        for (int c = 0; c < NC; ++c) o[c] = reinterpret_cast<const int*>(x + (std::size_t(c) * nb + b) * 36 + 4)[p];
+    }
+    __device__ __forceinline__ void scales(int b, float (&o)[NC]) const {
+#pragma unroll
+        for (int c = 0; c < NC; ++c) o[c] = __low2float(*reinterpret_cast<const half2*>(x + (std::size_t(c) * nb + b) * 36));
+    }
+};
+
 // The activations a kernel for NC columns reads: one column's q8_1 blocks, 2+ columns' interleaved copy (nb blocks a
 // column)
 template <int NC, bool PM>

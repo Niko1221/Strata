@@ -28,7 +28,7 @@
 #include "strata/kernels/q8_1_finite.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "s26_tsum.cuh"
-#if !defined(__HIPCC__)
+#if !defined(__HIPCC__) || defined(STRATA_HIP_MMVQ_IL)   // STRATA_HIP_MMVQ_IL: the interleaved path in an RDNA build too
 #include "q8_1_il.cuh"
 #endif
 #include "strata/kernels/pdl.hpp"
@@ -1306,7 +1306,7 @@ void launch_multi(const void* weights, const void* x_q8_1, float* y, int n_in, i
     }
 }
 
-#if !defined(__HIPCC__)   // CUDA only: the HIP paths keep native_mmvq's kernels
+#if !defined(__HIPCC__) || defined(STRATA_HIP_MMVQ_IL)   // STRATA_HIP_MMVQ_IL: the interleaved path in an RDNA build too
 // ============================ ncols = 2..4 from interleaved activations (fork F4, Eddoursul) ============================
 //
 // `native_quantize_q8_1_il` also writes the columns interleaved (native_mmvq.hpp), so one load reads the same int of
@@ -1450,14 +1450,19 @@ struct IlQ6K {
     }
 };
 
-template <typename I, int NC, int R>
+// XM, where the columns come from: 0 the interleaved copy (xq, xd); 1 the plain q8_1 columns themselves (xq, Q81Plain),
+// which needs no copy written before the launch. Both read the same values: bitwise the same output.
+template <typename I, int NC, int R, int XM = 0>
 __launch_bounds__(4 * WARP)
 __global__ void native_mmvq_il_kernel(const typename I::F::Block* __restrict__ w, const int* __restrict__ xq,
                                       const float* __restrict__ xd, float* __restrict__ y, int n_in, int n_out) {
     using F = typename I::F;
     constexpr int SUB = WARP / F::T;   // weight blocks a chunk covers
     const int lane = int(threadIdx.x) & (WARP - 1);
-    const auto x = q8_1_cols<NC, I::PM>(xq, xd, n_in / Q8K);
+    const auto x = [&] {
+        if constexpr (XM == 1) return Q81Plain<NC>{reinterpret_cast<const uint8_t*>(xq), n_in / Q8K};
+        else return q8_1_cols<NC, I::PM>(xq, xd, n_in / Q8K);
+    }();
     const int bpr = n_in / F::DIV;
     const int kqs = F::kqs(lane);
     const int nm = (bpr + SUB - 1) / SUB;
@@ -1503,32 +1508,38 @@ __global__ void native_mmvq_il_kernel(const typename I::F::Block* __restrict__ w
     }
 }
 
-template <typename I, int R>
-void launch_il(const void* weights, const void* x_il, float* y, int n_in, int n_out, int ncols, cudaStream_t s) {
+template <typename I, int R, int XM = 0>
+void launch_il(const void* weights, const void* x, float* y, int n_in, int n_out, int ncols, cudaStream_t s) {
     const auto* w = static_cast<const typename I::F::Block*>(weights);
     const unsigned blocks = unsigned(((n_out + R - 1) / R + 3) / 4);
-    if (ncols == 1) {   // 143-dense: one column reads the plain q8_1 blocks (x_il is then the caller's x_q8_1)
-        native_mmvq_il_kernel<I, 1, R><<<blocks, 4 * WARP, 0, s>>>(w, static_cast<const int*>(x_il), nullptr, y, n_in, n_out);
-        return;
+    const int* xq = static_cast<const int*>(x);   // XM 1: the q8_1 columns
+    const float* xd = nullptr;
+    if constexpr (XM == 0) {
+        const Q81IlParts parts = q8_1_il_parts(x, n_in, ncols);
+        xq = I::PM ? parts.pm : parts.bm;
+        xd = parts.d;
     }
-    const Q81IlParts parts = q8_1_il_parts(x_il, n_in, ncols);
-    const int* xq = I::PM ? parts.pm : parts.bm;
-    const float* xd = parts.d;
     switch (ncols) {
-#define STRATA_IL_CASE(N) case N: native_mmvq_il_kernel<I, N, R><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out); break;
+#define STRATA_IL_CASE(N) case N: native_mmvq_il_kernel<I, N, R, XM><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out); break;
         STRATA_IL_CASE(2) STRATA_IL_CASE(3) STRATA_IL_CASE(4)
 #undef STRATA_IL_CASE
         default: throw std::invalid_argument("native_mmvq_il requires 1 <= ncols <= 4");
     }
 }
 
-template <typename I>
-void launch_il_rows(int r, const void* weights, const void* x_il, float* y, int n_in, int n_out, int ncols, cudaStream_t s) {
+template <typename I, int XM>
+void launch_il_rows_x(int r, const void* weights, const void* x, float* y, int n_in, int n_out, int ncols, cudaStream_t s) {
     switch (r) {
-    case 1: launch_il<I, 1>(weights, x_il, y, n_in, n_out, ncols, s); break;
-    case 4: launch_il<I, 4>(weights, x_il, y, n_in, n_out, ncols, s); break;
-    default: launch_il<I, 2>(weights, x_il, y, n_in, n_out, ncols, s); break;
+    case 1: launch_il<I, 1, XM>(weights, x, y, n_in, n_out, ncols, s); break;
+    case 4: launch_il<I, 4, XM>(weights, x, y, n_in, n_out, ncols, s); break;
+    default: launch_il<I, 2, XM>(weights, x, y, n_in, n_out, ncols, s); break;
     }
+}
+template <typename I>
+void launch_il_rows(int r, bool plain, const void* weights, const void* x, float* y, int n_in, int n_out, int ncols,
+                    cudaStream_t s) {
+    if (plain) launch_il_rows_x<I, 1>(r, weights, x, y, n_in, n_out, ncols, s);
+    else launch_il_rows_x<I, 0>(r, weights, x, y, n_in, n_out, ncols, s);
 }
 
 // The interleaved copy (native_mmvq.hpp) of columns already quantized into plain q8_1 blocks, whoever wrote them (the
@@ -2515,7 +2526,7 @@ void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* 
     }
 }
 
-#if !defined(__HIPCC__)
+#if !defined(__HIPCC__) || defined(STRATA_HIP_MMVQ_IL)   // STRATA_HIP_MMVQ_IL: the interleaved path in an RDNA build too
 std::size_t native_q8_1_il_bytes(int n_in, int ncols) {
     validate_shape(n_in, ncols);
     return std::size_t(n_in / Q8K) * std::size_t(native_q8_1_il_cp(ncols)) * (16 * sizeof(int) + sizeof(float));
@@ -2534,6 +2545,62 @@ void native_q8_1_interleave(const void* x_q8_1, void* x_il, int n_in, int ncols,
         static_cast<const Q81Block*>(x_q8_1), const_cast<int*>(parts.bm), const_cast<int*>(parts.pm),
         const_cast<float*>(parts.d), nb, n_total, cp);
     launch_check();
+}
+
+namespace {
+// STRATA_MMVQ_IL_CHECK=1: a copy written by a producer against native_q8_1_interleave's of the same columns, word for
+// word (the columns' entries only - neither writes the padding); counters in host-mapped memory: [0] compared, [1] differ
+__global__ void native_q8_1_il_compare_kernel(const int* __restrict__ a, const int* __restrict__ b, int nb, int n_total,
+                                              int cp, unsigned* __restrict__ count) {
+    const int i = int(blockIdx.x) * 256 + int(threadIdx.x);
+    unsigned bad = 0;
+    if (i < n_total) {
+        const int ncols = n_total / (nb * 8);
+        const int c = i / (nb * 8), r = i - c * nb * 8, blk = r / 8, p = r % 8;
+        const std::size_t words = std::size_t(nb) * 8 * cp;
+        const std::size_t ib = (std::size_t(blk) * 8 + p) * cp + c, ip = words + (std::size_t(p) * nb + blk) * cp + c;
+        bad += a[ib] != b[ib];
+        bad += a[ip] != b[ip];
+        if (p == 0) bad += a[2 * words + std::size_t(blk) * cp + c] != b[2 * words + std::size_t(blk) * cp + c];
+        (void) ncols;
+    }
+    if (bad) atomicAdd(count + 1, bad);
+    if (threadIdx.x == 0) atomicAdd(count, unsigned(min(256, n_total - int(blockIdx.x) * 256)));
+}
+unsigned* g_il_chk_h = nullptr;   // host-mapped [compared, differ]
+unsigned* g_il_chk_d = nullptr;
+void* g_il_chk_scratch = nullptr;
+std::size_t g_il_chk_bytes = 0;
+}  // namespace
+
+bool native_q8_1_il_check_init(int max_in) {
+    if (g_il_chk_h != nullptr) return true;
+    g_il_chk_bytes = native_q8_1_il_bytes(max_in, 4);
+    if (cudaHostAlloc(reinterpret_cast<void**>(&g_il_chk_h), 2 * sizeof(unsigned), cudaHostAllocMapped) != cudaSuccess ||
+        cudaHostGetDevicePointer(reinterpret_cast<void**>(&g_il_chk_d), g_il_chk_h, 0) != cudaSuccess ||
+        cudaMalloc(&g_il_chk_scratch, g_il_chk_bytes) != cudaSuccess) {
+        cudaGetLastError();
+        g_il_chk_h = nullptr;
+        return false;
+    }
+    g_il_chk_h[0] = g_il_chk_h[1] = 0;
+    return true;
+}
+
+void native_q8_1_il_check(const void* x_q8_1, const void* x_il, int n_in, int ncols, void* stream) {
+    if (g_il_chk_h == nullptr || native_q8_1_il_bytes(n_in, ncols) > g_il_chk_bytes) return;
+    native_q8_1_interleave(x_q8_1, g_il_chk_scratch, n_in, ncols, stream);
+    const int nb = n_in / Q8K, n_total = nb * 8 * ncols;
+    native_q8_1_il_compare_kernel<<<unsigned((n_total + 255) / 256), 256, 0, static_cast<cudaStream_t>(stream)>>>(
+        static_cast<const int*>(x_il), static_cast<const int*>(g_il_chk_scratch), nb, n_total, native_q8_1_il_cp(ncols),
+        g_il_chk_d);
+    launch_check();
+}
+
+void native_q8_1_il_check_report() {
+    if (g_il_chk_h == nullptr) return;
+    const unsigned n = *reinterpret_cast<volatile unsigned*>(g_il_chk_h), bad = *reinterpret_cast<volatile unsigned*>(g_il_chk_h + 1);
+    std::fprintf(stderr, "strata: STRATA_MMVQ_IL_CHECK: %u entries compared, %u words differ\n", n, bad);
 }
 
 namespace {
@@ -2605,60 +2672,92 @@ constexpr IlArch kIlArch[] = {
     {70, kIlRows_70, sizeof(kIlRows_70) / sizeof(IlRows)},   // Volta: PR 1401, measured on a V100-SXM2
     {86, kIlRows_86, sizeof(kIlRows_86) / sizeof(IlRows)},   // 143-dense: RTX A4000 with the real shapes (Q3_K added)
 };
-// STRATA_MMVQ_IL_ROWS="type:ncols:r0,r1,r2,r3,r4;..." overrides single rows of the table for every card (type = ggml
-// type 23/12/13/14, ncols 2-4, r* = rows a warp 0/1/2/4 for the five n_out classes).  Parsed once.
-struct IlEnvRow { int type, ncols; uint8_t r[5]; };
-const std::vector<IlEnvRow>& il_env_rows() {
-    static const std::vector<IlEnvRow> v = [] {
-        std::vector<IlEnvRow> out;
-        const char* e = std::getenv("STRATA_MMVQ_IL_ROWS");
-        if (!e) return out;
-        std::string str(e);
-        size_t pos = 0;
-        while (pos < str.size()) {
-            size_t end = str.find(';', pos);
-            if (end == std::string::npos) end = str.size();
-            int t = 0, n = 0, r[5] = {0, 0, 0, 0, 0}, used = 0;
-            if (std::sscanf(str.substr(pos, end - pos).c_str(), "%d:%d:%d,%d,%d,%d,%d%n", &t, &n, &r[0], &r[1], &r[2], &r[3],
-                            &r[4], &used) >= 7 && n >= 1 && n <= 4) {
-                IlEnvRow x{t, n, {}};
-                bool ok = true;
-                for (int i = 0; i < 5; ++i) { ok = ok && (r[i] == 0 || r[i] == 1 || r[i] == 2 || r[i] == 4); x.r[i] = (uint8_t) r[i]; }
-                if (ok) out.push_back(x);
-                else std::fprintf(stderr, "strata: STRATA_MMVQ_IL_ROWS: rows must be 0/1/2/4 - entry ignored\n");
-            } else {
-                std::fprintf(stderr, "strata: STRATA_MMVQ_IL_ROWS: cannot read '%s' (type:ncols:r0,r1,r2,r3,r4) - ignored\n",
-                             str.substr(pos, end - pos).c_str());
-            }
-            pos = end + 1;
+// STRATA_MMVQ_IL_ROWS / STRATA_MMVQ_ILP_ROWS="type:ncols:r0,r1,r2,r3,r4[,r5];..." override single rows of the
+// interleaved-copy (IL) / plain-column (ILP) table for every card (type = ggml type 23/12/13/14, ncols 2-4, r* = rows a
+// warp 0/1/2/4 for the n_out classes; r5, the heads' class of 65536 rows and more, is r4 when left out).  Parsed once.
+struct IlEnvRow { int type, ncols; uint8_t r[6]; };
+std::vector<IlEnvRow> parse_il_env(const char* name) {
+    std::vector<IlEnvRow> out;
+    const char* e = std::getenv(name);
+    if (!e) return out;
+    std::string str(e);
+    size_t pos = 0;
+    while (pos < str.size()) {
+        size_t end = str.find(';', pos);
+        if (end == std::string::npos) end = str.size();
+        int t = 0, n = 0, r[6] = {0, 0, 0, 0, 0, -1};
+        const int got = std::sscanf(str.substr(pos, end - pos).c_str(), "%d:%d:%d,%d,%d,%d,%d,%d", &t, &n, &r[0], &r[1],
+                                    &r[2], &r[3], &r[4], &r[5]);
+        if (got >= 7 && n >= 2 && n <= 4) {
+            if (got == 7) r[5] = r[4];
+            IlEnvRow x{t, n, {}};
+            bool ok = true;
+            for (int i = 0; i < 6; ++i) { ok = ok && (r[i] == 0 || r[i] == 1 || r[i] == 2 || r[i] == 4); x.r[i] = (uint8_t) r[i]; }
+            if (ok) out.push_back(x);
+            else std::fprintf(stderr, "strata: %s: rows must be 0/1/2/4 - entry ignored\n", name);
+        } else {
+            std::fprintf(stderr, "strata: %s: cannot read '%s' (type:ncols:r0,r1,r2,r3,r4[,r5]) - ignored\n", name,
+                         str.substr(pos, end - pos).c_str());
         }
-        return out;
-    }();
-    return v;
+        pos = end + 1;
+    }
+    return out;
 }
+const std::vector<IlEnvRow>& il_env_rows() { static const std::vector<IlEnvRow> v = parse_il_env("STRATA_MMVQ_IL_ROWS"); return v; }
+const std::vector<IlEnvRow>& ilp_env_rows() { static const std::vector<IlEnvRow> v = parse_il_env("STRATA_MMVQ_ILP_ROWS"); return v; }
+// The n_out classes: below 2048, 4096, 8192, 12288, 65536, and the heads (65536 rows and more; the shared tables above
+// have five classes and give the heads their fifth)
+int il_class(int n_out) { return n_out < 2048 ? 0 : n_out < 4096 ? 1 : n_out < 8192 ? 2 : n_out < 12288 ? 3 : n_out < 65536 ? 4 : 5; }
+// gfx1100 (RX 7900 XTX; HIP reports compute capability 11.0): measured in the engine (rocprofv3 kernel times of a 4K
+// decode, each rows count forced in turn; ROCm 10.2) on this model's shapes - per cell the rows count that takes at
+// least 3% off native_mmvq's time, else 0 (mmvq_il_parity --bench, back-to-back launches at full clock, favours 2 and 4
+// rows a warp by 20-60% over what the engine sees). IL reads the
+// interleaved copy (the QFUSE hyper-connection read writes it beside its q8_1 images; the head interleaves once a
+// window), ILP the plain q8_1 columns (no copy at all) - used where no copy was written.
+struct IlRows6 { int type; uint8_t r[3][6]; };
+constexpr IlRows6 kIlRows_110[] = {
+    {23, {{0, 0, 0, 0, 1, 1}, {0, 0, 0, 1, 1, 1}, {0, 0, 0, 1, 1, 1}}},   // IQ4_XS
+    {12, {{0, 0, 2, 1, 2, 2}, {0, 0, 2, 1, 1, 1}, {0, 0, 2, 1, 2, 2}}},   // Q4_K
+    {13, {{0, 0, 0, 1, 1, 1}, {0, 0, 0, 1, 1, 1}, {0, 0, 1, 1, 1, 1}}},   // Q5_K
+    {14, {{0, 0, 2, 1, 2, 1}, {0, 0, 2, 1, 2, 2}, {0, 0, 2, 1, 1, 2}}},   // Q6_K
+};
+// in the engine the plain columns never beat native_mmvq (the out projections, the only ones left without a copy)
+constexpr IlRows6 kIlpRows_110[] = {
+    {23, {{0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0}}},   // IQ4_XS
+    {12, {{0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0}}},   // Q4_K
+    {13, {{0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0}}},   // Q5_K
+    {14, {{0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0}}},   // Q6_K
+};
 }  // namespace
 // The rows a warp for a card of compute capability `cc` (major * 10 + minor); 0: native_mmvq's kernels.  Pure, so a test
 // can check every architecture's table without that card.
 int native_mmvq_il_rows_for(int cc, int type, int ncols, int n_out) {
-    if (ncols < 1 || ncols > 4) return 0;
-    const int cls = n_out < 2048 ? 0 : n_out < 4096 ? 1 : n_out < 8192 ? 2 : n_out < 12288 ? 3 : 4;
+    if (ncols < 2 || ncols > 4) return 0;
+    const int cls6 = il_class(n_out), cls = cls6 < 4 ? cls6 : 4;
     for (const IlEnvRow& e : il_env_rows())
-        if (e.type == type && e.ncols == ncols) return e.r[cls];
-    if (ncols == 1) {   // 143-dense: one column (the plain q8_1 blocks, no interleaved copy); STRATA_MMVQ_IL_T1=0 turns it off
-        if (!il_t1_on()) return 0;
-        for (const Il1Arch& a : kIl1Arch)
-            if (a.cc == cc)
-                for (size_t i = 0; i < a.n; ++i)
-                    if (a.t[i].type == type) return a.t[i].r[cls];
+        if (e.type == type && e.ncols == ncols) return e.r[cls6];
+    if (cc == 110) {
+        for (const IlRows6& t : kIlRows_110)
+            if (t.type == type) return t.r[ncols - 2][cls6];
         return 0;
     }
-    if (type == 11 && !il_q3k_on()) return 0;   // STRATA_MMVQ_IL_Q3K=0: Q3_K keeps native_mmvq's kernels
     const IlRows* t = kIlRowsShared;
     size_t n = sizeof(kIlRowsShared) / sizeof(IlRows);
     for (const IlArch& a : kIlArch)
         if (a.cc == cc && a.t != nullptr) { t = a.t; n = a.n; }
     for (size_t i = 0; i < n; ++i)
         if (t[i].type == type) return t[i].r[ncols - 2][cls];
+    return 0;
+}
+// The same for the plain q8_1 columns (native_mmvq_il with no interleaved copy): only gfx1100 has measured them.
+int native_mmvq_ilp_rows_for(int cc, int type, int ncols, int n_out) {
+    if (ncols < 2 || ncols > 4) return 0;
+    const int cls6 = il_class(n_out);
+    for (const IlEnvRow& e : ilp_env_rows())
+        if (e.type == type && e.ncols == ncols) return e.r[cls6];
+    if (cc == 110)
+        for (const IlRows6& t : kIlpRows_110)
+            if (t.type == type) return t.r[ncols - 2][cls6];
     return 0;
 }
 namespace {
@@ -2675,9 +2774,16 @@ int il_cc() {
     return cc[dev];
 }
 int il_rows(int type, int ncols, int n_out) { return native_mmvq_il_rows_for(il_cc(), type, ncols, n_out); }
+int ilp_rows(int type, int ncols, int n_out) { return native_mmvq_ilp_rows_for(il_cc(), type, ncols, n_out); }
 int g_tune_rows = 0;   // native_mmvq_il_tune (tests, benchmarks): rows a warp for every shape (0: the table)
+int g_tune_plain = -1;   // native_mmvq_il_tune_plain (tests): -1 the call decides (no x_il: the plain columns), 0 / 1 force
 }  // namespace
 void native_mmvq_il_tune(int rows) { g_tune_rows = rows; }
+void native_mmvq_il_tune_plain(int plain) { g_tune_plain = plain; }
+bool native_mmvq_il_plain() {
+    static const bool env = [] { const char* v = std::getenv("STRATA_MMVQ_IL_PLAIN"); return v != nullptr && v[0] == '1'; }();
+    return env;
+}
 
 namespace {
 // sm_80 and newer (measured on sm_86 and sm_120) and Volta (sm_70, its own table above); Pascal/Turing keep
@@ -2707,27 +2813,33 @@ bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out) {
     return (g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out)) != 0 &&
            (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 11);
 }
+bool native_mmvq_ilp_supported(int ggml_type, int ncols, int n_out) {
+    if (ncols < 2 || ncols > 4 || !g_multi_exact || !il_arch_ok()) return false;
+    return (g_tune_rows ? g_tune_rows : ilp_rows(ggml_type, ncols, n_out)) != 0 &&
+           (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14);
+}
 
 void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void* x_il, float* y, int n_in,
                     int n_out, int ncols, void* stream) {
-    if (!native_mmvq_il_supported(ggml_type, ncols, n_out)) {
+    const bool plain = g_tune_plain >= 0 ? g_tune_plain != 0 : x_il == nullptr;
+    if (!(plain ? native_mmvq_ilp_supported(ggml_type, ncols, n_out) : native_mmvq_il_supported(ggml_type, ncols, n_out))) {
         native_mmvq(ggml_type, weights, x_q8_1, y, n_in, n_out, ncols, stream);
         return;
     }
-    const int r = g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out);
+    const int r = g_tune_rows ? g_tune_rows : plain ? ilp_rows(ggml_type, ncols, n_out) : il_rows(ggml_type, ncols, n_out);
+    const void* x = plain ? x_q8_1 : x_il;
     validate_shape(n_in, ncols, QK);
     validate_pointer(weights);
-    if (ncols == 1) x_il = x_q8_1;   // one column: the plain blocks, no interleaved copy
-    validate_pointer(x_il);
+    validate_pointer(x);
     validate_pointer(y);
     validate_stream(stream);
     const auto s = static_cast<cudaStream_t>(stream);
     switch (ggml_type) {
-    case 23: launch_il_rows<IlIQ4XS>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
-    case 12: launch_il_rows<IlQ4K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
-    case 13: launch_il_rows<IlQ5K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
-    case 14: launch_il_rows<IlQ6K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
-    case 11: launch_il_rows<IlQ3K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
+    case 23: launch_il_rows<IlIQ4XS>(r, plain, weights, x, y, n_in, n_out, ncols, s); break;
+    case 12: launch_il_rows<IlQ4K>(r, plain, weights, x, y, n_in, n_out, ncols, s); break;
+    case 13: launch_il_rows<IlQ5K>(r, plain, weights, x, y, n_in, n_out, ncols, s); break;
+    case 14: launch_il_rows<IlQ6K>(r, plain, weights, x, y, n_in, n_out, ncols, s); break;
+    case 11: launch_il_rows<IlQ3K>(r, plain, weights, x, y, n_in, n_out, ncols, s); break;
     }
     launch_check();
 }
@@ -2744,6 +2856,13 @@ void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, cons
     native_mmvq(ggml_type, weights, x_q8_1, y, n_in, n_out, ncols, stream);
 }
 void native_mmvq_il_tune(int) {}
+void native_mmvq_il_tune_plain(int) {}
+bool native_mmvq_il_plain() { return false; }
+bool native_q8_1_il_check_init(int) { return false; }
+void native_q8_1_il_check(const void*, const void*, int, int, void*) {}
+void native_q8_1_il_check_report() {}
+bool native_mmvq_ilp_supported(int, int, int) { return false; }
+int native_mmvq_ilp_rows_for(int, int, int, int) { return 0; }
 #endif  // !__HIPCC__
 
 } // namespace strata::kernels

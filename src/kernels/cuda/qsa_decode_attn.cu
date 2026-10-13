@@ -519,10 +519,20 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
 }
 #endif  // STRATA_ATTN_PRE75_BUILT
 
+bool merge_bound() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_ATTN_MERGE_BOUND"); return v == nullptr || v[0] != '0'; }();
+    return on;
+}
+
+// `step` (STRATA_ATTN_MERGE_BOUND, on unless =0): the loops stop at the last chunk the chunk kernel filled.  A chunk
+// at or past step[kStepWidth] cells wrote m = -FLT_MAX and l = 0 in this launch, which changes neither the max nor the
+// sums, so the output is bit for bit the full loop's.  (The MTP drafter's attention spans a 32K-cell capacity: 512
+// chunks a head where a 4K context fills ~70.)
 __global__ void __launch_bounds__(HD) attn_merge_kernel(const float* __restrict__ part_acc,
                                                         const float* __restrict__ part_m,
                                                         const float* __restrict__ part_l, int n_chunks,
-                                                        float* __restrict__ attn, long long scratch_stride = 0) {
+                                                        float* __restrict__ attn, long long scratch_stride = 0,
+                                                        const int32_t* __restrict__ step = nullptr) {
     part_acc += (size_t) blockIdx.y * (size_t) scratch_stride;
     part_m += (size_t) blockIdx.y * (size_t) scratch_stride;
     part_l += (size_t) blockIdx.y * (size_t) scratch_stride;
@@ -530,10 +540,15 @@ __global__ void __launch_bounds__(HD) attn_merge_kernel(const float* __restrict_
     const int h = blockIdx.x;                 // global query head
     const int kvh = h / G, hl = h % G;
     const int d = threadIdx.x;
+    int n_used = n_chunks;
+    if (step != nullptr) {
+        const int n_ids = __ldg(step + (size_t) blockIdx.y * kStepCount + kStepWidth);
+        n_used = n_ids <= 0 ? 0 : min(n_chunks, (n_ids + CHUNK - 1) / CHUNK);
+    }
     float M = -FLT_MAX;
-    for (int c = 0; c < n_chunks; ++c) M = fmaxf(M, part_m[(kvh * n_chunks + c) * G + hl]);
+    for (int c = 0; c < n_used; ++c) M = fmaxf(M, part_m[(kvh * n_chunks + c) * G + hl]);
     float L = 0.0f, acc = 0.0f;
-    for (int c = 0; c < n_chunks; ++c) {
+    for (int c = 0; c < n_used; ++c) {
         const int slot = kvh * n_chunks + c;
         const float m = part_m[slot * G + hl];
         if (m == -FLT_MAX) continue;
@@ -605,7 +620,16 @@ bool pre75_attn() {
 #endif
 }
 #if defined(__HIPCC__)
-#define STRATA_ATTN_CHUNK(M) (pre75_attn() ? attn_chunk_kernel_pre75<M, 8, true> : attn_chunk_kernel<M>)
+// STRATA_ATTN_PRE75_NC=2 / 4 (HIP): PR #540's kernel with that many cells a step instead of 8 - fewer registers, more
+// waves; every cell's dot product and butterfly are the same expression, so the output is bit for bit the same
+int pre75_nc() {
+    static const int nc = [] { const char* e = std::getenv("STRATA_ATTN_PRE75_NC"); const int v = e ? std::atoi(e) : 8;
+                               return v == 1 || v == 2 || v == 4 ? v : 8; }();
+    return nc;
+}
+#define STRATA_ATTN_CHUNK(M) (!pre75_attn() ? attn_chunk_kernel<M> : pre75_nc() == 4 ? attn_chunk_kernel_pre75<M, 4, true> \
+                              : pre75_nc() == 2 ? attn_chunk_kernel_pre75<M, 2, true> \
+                              : pre75_nc() == 1 ? attn_chunk_kernel_pre75<M, 1, true> : attn_chunk_kernel_pre75<M, 8, true>)
 #else
 #define STRATA_ATTN_CHUNK(M) (pre75_attn() ? attn_chunk_kernel_pre75<M> : attn_chunk_kernel<M>)
 #endif
@@ -700,7 +724,7 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         STRATA_ATTN_CHUNK(0)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
                                                         scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
     attn_merge_kernel<<<dim3((unsigned) s.n_head, (unsigned) n_q), HD, 0, st>>>(part_acc, part_m, part_l, n_chunks,
-                                                                                  attn, stride);
+                                                                                  attn, stride, merge_bound() ? steps : nullptr);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "qsa_decode_attn_batch: %s\n", cudaGetErrorString(e));
@@ -747,7 +771,8 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
     else
         STRATA_ATTN_CHUNK(0)<<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
                                                         scale, part_acc, part_m, part_l, n_chunks, 0, 0);
-    attn_merge_kernel<<<(unsigned) s.n_head, HD, 0, st>>>(part_acc, part_m, part_l, n_chunks, attn);
+    attn_merge_kernel<<<(unsigned) s.n_head, HD, 0, st>>>(part_acc, part_m, part_l, n_chunks, attn, 0,
+                                                          merge_bound() ? step : nullptr);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "qsa_decode_attn: %s\n", cudaGetErrorString(e));

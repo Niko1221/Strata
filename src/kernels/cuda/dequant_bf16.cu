@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace strata::kernels {
 namespace {
@@ -175,6 +176,77 @@ __global__ void dequant_kernel(const uint8_t* __restrict__ blocks, int64_t row_b
     group32<TYPE>(blocks + (row0 + r) * row_bytes, (int) gi, out + r * ld + gi * 32);
 }
 
+// STRATA_DQ_FAST (on; =0 the kernel above): Q6_K with one warp per 256-value block, each lane eight consecutive
+// values of one 32-value group (so one scale), stored as one 16-byte vector.  Every value is group32<14>'s expression,
+// d * sc * (q - 32) multiplied in the same order, then the same conversion: the same bits.  (The kernel above gives a
+// thread a whole group: 70 byte loads and 32 two-byte stores 64 bytes apart, ~6x below the memory's speed.)
+template <typename T>
+__global__ void __launch_bounds__(256) dequant_q6k_warp_kernel(const uint8_t* __restrict__ blocks, int64_t row_bytes,
+                                                               int64_t row0, int64_t rows, int64_t blocks_per_row,
+                                                               int64_t ld, T* __restrict__ out) {
+    const int64_t w = ((int64_t) blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int lane = threadIdx.x & 31;
+    if (w >= rows * blocks_per_row) return;
+    const int64_t r = w / blocks_per_row, bi = w % blocks_per_row;
+    const uint8_t* b = blocks + (row0 + r) * row_bytes + bi * 210;
+    const int gi = lane >> 2, l0 = (lane & 3) * 8;           // the group and its first value (0, 8, 16 or 24)
+    const int n = gi / 4, qu = gi % 4, is = l0 / 16;
+    const uint8_t* ql = b + 64 * n + ((qu & 1) ? 32 : 0) + l0;
+    const uint8_t* qh = b + 128 + 32 * n + l0;
+    const float sc = (float) (reinterpret_cast<const int8_t*>(b + 192) + 8 * n)[is + 2 * qu];
+    const float d = h2f(b + 208);
+    const int lo_shift = (qu & 2) ? 4 : 0, hi_shift = 2 * qu;
+    uint32_t packed[4];
+#pragma unroll
+    for (int i = 0; i < 8; i += 2) {
+        const int q0 = ((ql[i] >> lo_shift) & 0xF) | (((qh[i] >> hi_shift) & 3) << 4);
+        const int q1 = ((ql[i + 1] >> lo_shift) & 0xF) | (((qh[i + 1] >> hi_shift) & 3) << 4);
+        T v[2];
+        put(v, 0, d * sc * (float) (q0 - 32));
+        put(v, 1, d * sc * (float) (q1 - 32));
+        uint16_t h[2];
+        memcpy(h, v, 4);
+        packed[i / 2] = (uint32_t) h[0] | ((uint32_t) h[1] << 16);
+    }
+    *reinterpret_cast<uint4*>(out + r * ld + bi * 256 + gi * 32 + l0) = make_uint4(packed[0], packed[1], packed[2], packed[3]);
+}
+// STRATA_DQ_FAST: IQ4_XS likewise - one warp per 256-value block, a lane eight consecutive values of one 32-value
+// sub-block (so one scale), group32<23>'s expression dl * kv_iq4nl[q] per value, one 16-byte store.
+template <typename T>
+__global__ void __launch_bounds__(256) dequant_iq4xs_warp_kernel(const uint8_t* __restrict__ blocks, int64_t row_bytes,
+                                                                 int64_t row0, int64_t rows, int64_t blocks_per_row,
+                                                                 int64_t ld, T* __restrict__ out) {
+    const int64_t w = ((int64_t) blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int lane = threadIdx.x & 31;
+    if (w >= rows * blocks_per_row) return;
+    const int64_t r = w / blocks_per_row, bi = w % blocks_per_row;
+    const uint8_t* b = blocks + (row0 + r) * row_bytes + bi * 136;
+    const int ib = lane >> 2, l0 = (lane & 3) * 8;            // the sub-block and its first value (0, 8, 16, 24)
+    const float d = h2f(b);
+    const uint16_t scales_h = (uint16_t) (b[2] | (b[3] << 8));
+    const int ls = ((b[4 + ib / 2] >> (4 * (ib % 2))) & 0xf) | (((scales_h >> (2 * ib)) & 3) << 4);
+    const float dl = d * (float) (ls - 32);
+    const uint8_t* qs = b + 8 + 16 * ib;
+    // values j (0..15) of a sub-block: the low nibbles of qs[j]; values j + 16: the high nibbles
+    const int jb = l0 & 15, hi = l0 >= 16;
+    uint32_t packed[4];
+#pragma unroll
+    for (int i = 0; i < 8; i += 2) {
+        const int q0 = hi ? (qs[jb + i] >> 4) : (qs[jb + i] & 0xf);
+        const int q1 = hi ? (qs[jb + i + 1] >> 4) : (qs[jb + i + 1] & 0xf);
+        T v[2];
+        put(v, 0, dl * (float) kv_iq4nl[q0]);
+        put(v, 1, dl * (float) kv_iq4nl[q1]);
+        uint16_t h[2];
+        memcpy(h, v, 4);
+        packed[i / 2] = (uint32_t) h[0] | ((uint32_t) h[1] << 16);
+    }
+    *reinterpret_cast<uint4*>(out + r * ld + bi * 256 + ib * 32 + l0) = make_uint4(packed[0], packed[1], packed[2], packed[3]);
+}
+bool dq_fast() {
+    static const bool on = [] { const char* e = std::getenv("STRATA_DQ_FAST"); return e == nullptr || e[0] != '0'; }();
+    return on;
+}
 // Q8_0 with four threads per block, 8 values each: the warp reads 8 consecutive blocks and writes 512 consecutive
 // bytes (a thread per block wrote 2-byte values 64 bytes apart: ~110 GB/s, a quarter of a prompt projection's time)
 template <typename T>
@@ -230,6 +302,21 @@ void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t co
     const unsigned grid = (unsigned) ((total + 255) / 256);
     const uint8_t* p = (const uint8_t*) blocks;
     cudaStream_t st = (cudaStream_t) stream;
+    // STRATA_DQ_FAST: Q6_K to FP16 / BF16 by warps (8 values = 16 bytes a lane, so 16-byte aligned rows)
+    if (type == 23 && sizeof(T) == 2 && dq_fast() && ld % 8 == 0 && ((uintptr_t) out & 15) == 0) {
+        const int64_t bpr = cols / 256, warps = rows * bpr;
+        dequant_iq4xs_warp_kernel<T><<<(unsigned) ((warps + 7) / 8), 256, 0, st>>>(p, row_bytes, row0, rows, bpr, ld, out);
+        const cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) { std::fprintf(stderr, "dequant launch: %s\n", cudaGetErrorString(e)); std::exit(1); }
+        return;
+    }
+    if (type == 14 && sizeof(T) == 2 && dq_fast() && ld % 8 == 0 && ((uintptr_t) out & 15) == 0) {
+        const int64_t bpr = cols / 256, warps = rows * bpr;
+        dequant_q6k_warp_kernel<T><<<(unsigned) ((warps + 7) / 8), 256, 0, st>>>(p, row_bytes, row0, rows, bpr, ld, out);
+        const cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) { std::fprintf(stderr, "dequant launch: %s\n", cudaGetErrorString(e)); std::exit(1); }
+        return;
+    }
     if (type == 8 && ld == cols && (reinterpret_cast<uintptr_t>(blocks) & 1) == 0 &&
         (reinterpret_cast<uintptr_t>(out) & 15) == 0) {   // contiguous rows only (the kernel writes out + g * 32)
         dequant_q8_0_kernel<T><<<(unsigned) ((4 * total + 255) / 256), 256, 0, st>>>(p, row_bytes, row0, rows, gpr, out);

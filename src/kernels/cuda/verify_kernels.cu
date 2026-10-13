@@ -496,6 +496,75 @@ __global__ void __launch_bounds__(S * RG) gdn_out_norm_kernel(const float* __res
     }
 }
 
+// STRATA_GDN_NORM128 (default on; =0 the kernel above): gdn_out_norm_kernel with only the row group that works (128
+// threads, not S x RG = 512: the other row groups only wrote zeros to wsum[4..15], which nothing reads), its lane
+// exchanges as DPP moves on wave32 RDNA (the same values move), the same expressions - bitwise the same outputs.
+template <int M>
+__device__ __forceinline__ float gx(float v) {
+#if defined(__HIPCC__) && (defined(__GFX10__) || defined(__GFX11__) || defined(__GFX12__))
+    if constexpr (M == 16)
+        return __int_as_float(__builtin_amdgcn_permlanex16(__float_as_int(v), __float_as_int(v), 0x76543210u, 0xfedcba98u,
+                                                           false, false));
+    else return __int_as_float(__builtin_amdgcn_update_dpp(__float_as_int(v), __float_as_int(v), 0x160 + M, 0xf, 0xf, false));
+#else
+    return __shfl_xor_sync(0xffffffffu, v, M);
+#endif
+}
+// an add the compiler may not fuse with the product feeding it: with ds_bpermute between them the old kernel's
+// `sq_part = oc * oc; sq_part += shfl(sq_part)` stayed a multiply and an add, with a DPP move it became one FMA
+__device__ __forceinline__ float add_nc(float a, float b) {
+#pragma clang fp contract(off)
+    return a + b;
+}
+__device__ __forceinline__ void gdn_q8_1_store_x(GdnQ81* __restrict__ xq, size_t idx, float xi) {
+#pragma clang fp contract(off)
+    float amax = fabsf(xi), sum = xi;
+    amax = fmaxf(amax, gx<16>(amax)); amax = fmaxf(amax, gx<8>(amax)); amax = fmaxf(amax, gx<4>(amax));
+    amax = fmaxf(amax, gx<2>(amax)); amax = fmaxf(amax, gx<1>(amax));
+    sum += gx<16>(sum); sum += gx<8>(sum); sum += gx<4>(sum); sum += gx<2>(sum); sum += gx<1>(sum);
+    const float d = q8_1_finite(amax / 127.0f);   // #606: as native_quantize_q8_1_kernel - finite blocks bit for bit
+    const int8_t q = q8_1_quant(xi, d, amax);
+    xq[idx / 32].qs[idx % 32] = q;
+    if (idx % 32 == 0) xq[idx / 32].ds = q8_1_ds(d, sum);
+}
+template<bool Q>
+__global__ void __launch_bounds__(S) gdn_out_norm128_kernel(const float* __restrict__ z, const float* __restrict__ gamma,
+                                                            float eps, float* __restrict__ y, int h_v, int T,
+                                                            const int32_t* __restrict__ n_keep, int t_out_begin,
+                                                            GdnQ81* __restrict__ xq) {
+    __shared__ float wsum[S / 32];
+    const int head = blockIdx.x, t = blockIdx.y + t_out_begin, col = threadIdx.x;
+    const int tid = col;
+    const int n = n_keep ? *n_keep : T;
+    if (t >= n) return;
+    const int value_dim = S * h_v;
+    float oc = 0.0f, sq_part = 0.0f;
+    oc = y[(size_t) t * value_dim + head * S + col];
+    sq_part = oc * oc;
+    sq_part = add_nc(sq_part, gx<16>(sq_part)); sq_part = add_nc(sq_part, gx<8>(sq_part));
+    sq_part = add_nc(sq_part, gx<4>(sq_part)); sq_part = add_nc(sq_part, gx<2>(sq_part));
+    sq_part = add_nc(sq_part, gx<1>(sq_part));
+    if ((tid & 31) == 0) wsum[tid >> 5] = sq_part;
+    __syncthreads();
+    {
+        const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
+        const float scale = rsqrtf(ss / (float) S + eps);
+        const float zz = z[(size_t) t * value_dim + head * S + col];
+        if constexpr (Q) {
+            const float yv = oc * scale * gamma[col] * (1.0f / (1.0f + __expf(-zz)));
+            y[(size_t) t * value_dim + head * S + col] = yv;
+            gdn_q8_1_store_x(xq, (size_t) (t - t_out_begin) * value_dim + head * S + col, yv);
+        } else {
+            y[(size_t) t * value_dim + head * S + col] = oc * scale * gamma[col] * (1.0f / (1.0f + __expf(-zz)));
+        }
+    }
+}
+static_assert(S == 128, "gdn_out_norm128_kernel sums four warps");
+bool gdn_norm128() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_GDN_NORM128"); return v == nullptr || std::atoi(v) != 0; }();
+    return on;
+}
+
 __global__ void embedding_gather_dev_kernel(const uint8_t* __restrict__ codes, const float* __restrict__ scales,
                                             const float* __restrict__ offsets, const int32_t* __restrict__ tokens,
                                             int64_t n, int code_bits, int code_bias, int group_elems,
@@ -578,13 +647,25 @@ __global__ void map_ids_kernel(int32_t* ids, const int32_t* __restrict__ table, 
 }
 
 __global__ void row_top_prob_kernel(const float* __restrict__ logits, int n_vocab, const int32_t* __restrict__ ids,
-                                    float* __restrict__ probs) {
+                                    float* __restrict__ probs, bool unroll = false) {
     __shared__ float part[32];
     const int t = blockIdx.x;
     const float* l = logits + (size_t) t * n_vocab;
     const float m = l[ids[t]];
     float s = 0.0f;
-    for (int i = threadIdx.x; i < n_vocab; i += blockDim.x) s += __expf(l[i] - m);
+    int i = threadIdx.x;
+    // STRATA_SCAN_UNROLL (on): eight loads before their eight adds - the adds in the same order, the same sum
+    if (unroll) {
+        const int B = (int) blockDim.x;
+        for (; i + 7 * B < n_vocab; i += 8 * B) {
+            float x[8];
+#pragma unroll
+            for (int k = 0; k < 8; ++k) x[k] = l[i + k * B];
+#pragma unroll
+            for (int k = 0; k < 8; ++k) s += __expf(x[k] - m);
+        }
+    }
+    for (; i < n_vocab; i += blockDim.x) s += __expf(l[i] - m);
     for (int o = 16; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
     if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = s;
     __syncthreads();
@@ -673,7 +754,10 @@ void copy_row_to_first(const int32_t* row_dev, float* a, int64_t a_n, float* b, 
 
 void mtp_select(const float* R_src, int64_t R_stride, const int32_t* ids, const int32_t* row_dev, float* R_dst,
                 int32_t* tok_dst, int32_t* out, int j, void* stream, const float* probs, float* out_p) {
-    mtp_select_kernel<<<1, 256, 0, (cudaStream_t) stream>>>(R_src, R_stride, ids, row_dev, R_dst, tok_dst, out, j,
+    // STRATA_MTP_SELECT_WIDE (on): the row copy over up to 40 blocks (its loop strides the grid; the same bytes)
+    static const bool wide = [] { const char* v = std::getenv("STRATA_MTP_SELECT_WIDE"); return v == nullptr || v[0] != '0'; }();
+    const unsigned nbk = wide ? (unsigned) std::min<int64_t>(40, (R_stride + 255) / 256) : 1u;
+    mtp_select_kernel<<<nbk, 256, 0, (cudaStream_t) stream>>>(R_src, R_stride, ids, row_dev, R_dst, tok_dst, out, j,
                                                             probs, out_p);
     check("mtp_select");
 }
@@ -700,14 +784,23 @@ void map_ids(int32_t* ids, const int32_t* table, int n, void* stream) {
 }
 
 void row_top_prob(const float* logits, int n_rows, int n_vocab, const int32_t* ids, float* probs, void* stream) {
-    row_top_prob_kernel<<<n_rows, 1024, 0, (cudaStream_t) stream>>>(logits, n_vocab, ids, probs);
+    static const bool unroll = [] { const char* v = std::getenv("STRATA_SCAN_UNROLL"); return v == nullptr || v[0] != '0'; }();
+    row_top_prob_kernel<<<n_rows, 1024, 0, (cudaStream_t) stream>>>(logits, n_vocab, ids, probs, unroll);
     check("row_top_prob");
 }
 
-#if !defined(__HIPCC__)   // warp-32 kernels: an AMD card keeps the one-block row_top_prob and sampler_greedy_kernel
+// Warp-32 kernels: a HIP build runs them on a wave32 card (gfx1100) - STRATA_MULTI_BLOCK_ARGMAX, below.
 namespace {
 
 constexpr int kArgMaxBlocks = 128, kArgThreads = 256, kTopBlocks = 8;
+// HIP (gfx1100): each thread's loads issued four (the pick) / sixteen (the sum) at a time - the same values in the same
+// order, so the same pick and the same sum; one at a time the 1,024 sums' 243 loads each are a chain of memory round
+// trips (31 us a call, the one-block kernel's 12; 9.4 us with sixteen).  CUDA keeps its loops.
+#if defined(__HIPCC__)
+constexpr int kArgUnroll = 4, kTopUnroll = 16;
+#else
+constexpr int kArgUnroll = 1, kTopUnroll = 1;
+#endif
 
 // the larger value, on equality the lower index: sampler_greedy_kernel's order
 __device__ __forceinline__ void arg_take(float ov, int oi, float& bv, int& bi) {
@@ -758,7 +851,18 @@ __global__ void argmax_rows_kernel(const float* __restrict__ logits, int n, int 
     const int lo = b * per_block, hi = min(n, lo + per_block);
     float bv = __int_as_float(0xff800000);   // -inf
     int bi = n;
-    for (int v = lo + (int) threadIdx.x; v < hi; v += (int) blockDim.x) {
+    int v = lo + (int) threadIdx.x;
+    const int B = (int) blockDim.x;
+    if (kArgUnroll > 1)
+        for (; v + (kArgUnroll - 1) * B < hi; v += kArgUnroll * B) {
+            float x[kArgUnroll];
+#pragma unroll
+            for (int k = 0; k < kArgUnroll; ++k) x[k] = l[v + k * B];
+#pragma unroll
+            for (int k = 0; k < kArgUnroll; ++k)
+                if (x[k] > bv) { bv = x[k]; bi = v + k * B; }
+        }
+    for (; v < hi; v += B) {
         const float s = l[v];
         if (s > bv) { bv = s; bi = v; }
     }
@@ -802,7 +906,16 @@ __global__ void row_top_prob_split_kernel(const float* __restrict__ logits, int 
     const float m = l[ids[row]];
     const int vt = (int) (blockIdx.x * blockDim.x + threadIdx.x);
     float s = 0.0f;
-    for (int i = vt; i < n_vocab; i += 1024) s += __expf(l[i] - m);
+    int i = vt;
+    if (kTopUnroll > 1)
+        for (; i + (kTopUnroll - 1) * 1024 < n_vocab; i += kTopUnroll * 1024) {
+            float x[kTopUnroll];
+#pragma unroll
+            for (int k = 0; k < kTopUnroll; ++k) x[k] = l[i + k * 1024];
+#pragma unroll
+            for (int k = 0; k < kTopUnroll; ++k) s += __expf(x[k] - m);
+        }
+    for (; i < n_vocab; i += 1024) s += __expf(l[i] - m);
     for (int o = 16; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
     if ((threadIdx.x & 31) == 0) parts[vt >> 5] = s;
     __threadfence();
@@ -840,18 +953,6 @@ void row_top_prob_split(const float* logits, int n_rows, int n_vocab, const int3
         logits, n_vocab, ids, probs, (TopRow*) scratch);
     check("row_top_prob_split");
 }
-#else
-uint64_t argmax_rows_scratch_bytes(int) { return 0; }
-void argmax_rows(const float*, int, int, void*, int32_t*, void*) {
-    std::fprintf(stderr, "argmax_rows: not built for this backend\n");
-    std::exit(1);
-}
-uint64_t row_top_prob_scratch_bytes(int) { return 0; }
-void row_top_prob_split(const float* logits, int n_rows, int n_vocab, const int32_t* ids, float* probs, void*,
-                        void* stream) {
-    row_top_prob(logits, n_rows, n_vocab, ids, probs, stream);
-}
-#endif
 
 namespace {
 // grid (kNonfiniteBlocks, rows): block b of row t scans [b * per_block, +per_block) and writes its own word.  The
@@ -876,21 +977,21 @@ void logits_nonfinite_rows(const float* logits, int n_rows, int n, uint32_t* fla
     check("logits_nonfinite_rows");
 }
 
+
+// STRATA_MULTI_BLOCK_ARGMAX (on; =0 the one-block kernels): the verify head's and the drafter's greedy pick and the
+// drafter's top probability over many blocks a row - bitwise the one-block kernels'.  On HIP (wave32, gfx1100) too:
+// 12 -> 5.6 us a pick, 12.3 -> 9.4 us a top probability.
 bool multi_block_head_ops() {
-#if defined(__HIPCC__)
-    return false;
-#else
     static const bool on = [] {
         const char* v = std::getenv("STRATA_MULTI_BLOCK_ARGMAX");
         return v == nullptr || std::atoi(v) != 0;
     }();
     return on;
-#endif
 }
 
 bool argmax_rows_wanted() {
 #if defined(__HIPCC__)
-    return false;
+    return multi_block_head_ops();   // sample_tokens' greedy pick on HIP is the one-block kernel
 #else
     // sm_80 to sm_89: sample_tokens' greedy pick there is the one-block kernel (sm_90+ has the cluster kernel)
     static const bool want = [] {
@@ -1011,7 +1112,10 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
             gdn_step_split_kernel<true><<<grid, block, 0, (cudaStream_t) stream>>>(
                 state, h, conv_channels, gate, beta, y, h_k, h_v, n_tok, n_keep, t_out_begin);
             const dim3 ng((unsigned) h_v, (unsigned) (n_tok - t_out_begin));
-            if (xq) gdn_out_norm_kernel<true><<<ng, dim3(S, RG), 0, (cudaStream_t) stream>>>(z, gamma, eps, y, h_v, n_tok, n_keep, t_out_begin, xq);
+            if (gdn_norm128()) {
+                if (xq) gdn_out_norm128_kernel<true><<<ng, dim3(S), 0, (cudaStream_t) stream>>>(z, gamma, eps, y, h_v, n_tok, n_keep, t_out_begin, xq);
+                else gdn_out_norm128_kernel<false><<<ng, dim3(S), 0, (cudaStream_t) stream>>>(z, gamma, eps, y, h_v, n_tok, n_keep, t_out_begin, nullptr);
+            } else if (xq) gdn_out_norm_kernel<true><<<ng, dim3(S, RG), 0, (cudaStream_t) stream>>>(z, gamma, eps, y, h_v, n_tok, n_keep, t_out_begin, xq);
             else gdn_out_norm_kernel<false><<<ng, dim3(S, RG), 0, (cudaStream_t) stream>>>(z, gamma, eps, y, h_v, n_tok, n_keep, t_out_begin, nullptr);
         }
         check("gdn_step_norm_multi (split)");
@@ -1274,26 +1378,99 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
     check("copy_or_zero_from_mapped");
 }
 
+void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
+    wait_flag_ge_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value);
+    check("wait_flag_ge");
+}
+
+// STRATA_WAIT_FUSE=1: a doorbell wait folded into the copy that always follows it - one launch instead of two (each
+// costs ~2.7 us of dependent-launch latency on gfx1100).  The same bytes are copied after the same flag: thread 0 of
+// every block spins as wait_flag_ge_kernel does, then the block follows it.
 namespace {
-__global__ void wait_copy_i32_kernel(const volatile uint32_t* flag, uint32_t value, int32_t* __restrict__ dst,
-                                     const volatile int32_t* src, int n) {
+__device__ __forceinline__ void block_wait_flag_ge(const volatile uint32_t* flag, uint32_t value) {
     if (threadIdx.x == 0) {
         while (*flag < value) strata_spin_pause();
         __threadfence_system();
     }
     __syncthreads();
+    __threadfence_system();
+}
+__global__ void wait_copy_i32_kernel(const volatile uint32_t* flag, uint32_t value, int32_t* __restrict__ dst,
+                                     const volatile int32_t* src, int n) {
+    block_wait_flag_ge(flag, value);
+    // 16-byte reads where both sides allow (the verify plan: 568 words a group): about one PCIe round trip instead
+    // of four or five; the same words, read after the same flag and fence as wait_copy_rows_kernel reads its rows
+    if (((reinterpret_cast<uintptr_t>(dst) | reinterpret_cast<uintptr_t>(src)) & 15) == 0) {
+        const int n4 = n >> 2;
+        const int4* s4 = reinterpret_cast<const int4*>(const_cast<const int32_t*>(src));
+        int4* d4 = reinterpret_cast<int4*>(dst);
+        for (int i = threadIdx.x; i < n4; i += blockDim.x) d4[i] = s4[i];
+        for (int i = 4 * n4 + threadIdx.x; i < n; i += blockDim.x) dst[i] = src[i];
+        return;
+    }
     for (int i = threadIdx.x; i < n; i += blockDim.x) dst[i] = src[i];
 }
+__global__ void wait_copy_rows_kernel(const volatile uint32_t* flag, uint32_t value, float4* __restrict__ dst,
+                                      const volatile float4* src, int64_t row4, const int32_t* __restrict__ hit_rows,
+                                      const int32_t* __restrict__ count) {
+    block_wait_flag_ge(flag, value);
+    const int row = blockIdx.x;   // copy_rows_from_mapped_kernel from here on
+    __shared__ int hit;
+    if (threadIdx.x == 0) {
+        int h = 0;
+        const int c = *count;
+        for (int i = 0; i < c; ++i) h |= hit_rows[i] == row;
+        hit = h;
+    }
+    __syncthreads();
+    float4* d = dst + (int64_t) row * row4;
+    if (hit) {
+        for (int64_t i = threadIdx.x; i < row4; i += blockDim.x) d[i] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    } else {
+        const volatile float4* sr = src + (int64_t) row * row4;
+        for (int64_t i = threadIdx.x; i < row4; i += blockDim.x) d[i] = const_cast<const float4*>(sr)[i];
+    }
+}
+__global__ void wait_fetch_blobs_kernel(const volatile uint32_t* flag, uint32_t value,
+                                        const unsigned long long* __restrict__ src, const int32_t* __restrict__ n,
+                                        uint4* __restrict__ dst, long long per) {
+    block_wait_flag_ge(flag, value);
+    const long long total = (long long) *n * per;   // fetch_blobs_kernel from here on
+    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < total;
+         i += (long long) gridDim.x * blockDim.x) {
+        const long long k = i / per, off = i - k * per;
+        dst[i] = ((const uint4*) src[k])[off];
+    }
+}
 }  // namespace
-void wait_copy_i32_from_mapped(const uint32_t* flag, uint32_t value, int32_t* dst, const int32_t* src, int64_t n,
+
+void wait_copy_i32_from_mapped(const uint32_t* flag, uint32_t value, int32_t* dst, const int32_t* src, long long n,
                                void* stream) {
-    wait_copy_i32_kernel<<<1, 128, 0, (cudaStream_t) stream>>>(flag, value, dst, src, (int) n);
+    // STRATA_WAIT_COPY256 (on): 256 threads, so a verify plan (568 words, 142 16-byte reads) crosses PCIe in one round
+    // of reads instead of two - the same words (ping-pong bench: host write -> plan on the GPU 4.47 -> 3.57 us)
+    static const bool wide = [] { const char* v = std::getenv("STRATA_WAIT_COPY256"); return v == nullptr || v[0] != '0'; }();
+    wait_copy_i32_kernel<<<1, wide && n > 512 ? 256 : 128, 0, (cudaStream_t) stream>>>(flag, value, dst, (const volatile int32_t*) src, (int) n);
     check("wait_copy_i32_from_mapped");
 }
-
-void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
-    wait_flag_ge_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value);
-    check("wait_flag_ge");
+void wait_copy_rows_from_mapped(const uint32_t* flag, uint32_t value, float* dst, const float* src, int64_t rows,
+                                int64_t width, const int32_t* hit_rows, const int32_t* count, void* stream) {
+    if (rows <= 0) { wait_flag_ge(flag, value, stream); return; }
+    if ((width & 3) != 0 || ((uintptr_t) dst & 15) != 0 || ((uintptr_t) src & 15) != 0) {
+        std::fprintf(stderr, "wait_copy_rows_from_mapped: width must be a multiple of 4 and both pointers 16-byte aligned\n");
+        std::exit(1);
+    }
+    wait_copy_rows_kernel<<<(unsigned) rows, 128, 0, (cudaStream_t) stream>>>(flag, value, (float4*) dst,
+                                                                            (const volatile float4*) src, width / 4,
+                                                                            hit_rows, count);
+    check("wait_copy_rows_from_mapped");
+}
+void wait_fetch_blobs(const uint32_t* flag, uint32_t value, const unsigned long long* src, const int32_t* n, uint8_t* dst,
+                      int64_t blob_bytes, int cap, void* stream) {
+    if (cap <= 0) { wait_flag_ge(flag, value, stream); return; }
+    if (blob_bytes % 16 != 0) { std::fprintf(stderr, "wait_fetch_blobs: blob size must be a multiple of 16\n"); std::exit(1); }
+    wait_fetch_blobs_kernel<<<48 * 8, 256, 0, (cudaStream_t) stream>>>(flag, value, src, n, (uint4*) dst,
+                                                                      (long long) (blob_bytes / 16));
+    check("wait_fetch_blobs");
 }
 
 void embedding_gather_dev(const uint8_t* codes, const float* scales, const float* offsets, const int32_t* tokens,

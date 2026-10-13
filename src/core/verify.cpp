@@ -132,11 +132,20 @@ RouteResidentCfg& route_resident_cfg() {
 }
 inline bool g_lfuse_gate() { static const bool on = [] { const char* v = std::getenv("STRATA_LFUSE_GATE"); return v == nullptr || v[0] != '0'; }(); return on; }
 inline bool g_lfuse_pair() { static const bool on = [] { const char* v = std::getenv("STRATA_LFUSE_PAIR"); return v == nullptr || v[0] != '0'; }(); return on; }
+// STRATA_WAIT_FUSE=1: each doorbell wait of the expert path folded into the copy behind it (wait_copy_* kernels)
+inline bool g_wait_fuse() { static const bool on = [] { const char* v = std::getenv("STRATA_WAIT_FUSE"); return v != nullptr && std::atoi(v) != 0; }(); return on; }
 inline bool g_qdedup() { static const bool on = [] { const char* v = std::getenv("STRATA_VERIFY_QDEDUP"); return v != nullptr && std::atoi(v) != 0; }(); return on; }
 // S26 STRATA_QFUSE=1: activation q8_1 images written by their producers (the GDN output norm) - the same bytes
 // fork F4 (Eddoursul): 2-4 token dense projections read an interleaved copy of the q8_1 activations (bitwise the same
 // outputs); STRATA_MMVQ_IL=0 keeps native_mmvq's multi-column kernels
 inline bool g_mmvq_il() { static const bool on = [] { const char* v = std::getenv("STRATA_MMVQ_IL"); return v == nullptr || v[0] != '0'; }(); return on; }
+// STRATA_MMVQ_IL_PLAIN=1: no interleave launch before a dense projection - the QFUSE hyper-connection read writes the
+// interleaved copy beside its q8_1 images (2-4 tokens), and projections without one read the plain columns
+// (native_mmvq_ilp_supported) or take native_mmvq; bitwise the same outputs either way
+inline bool g_il_plain() { return g_mmvq_il() && strata::kernels::native_mmvq_il_plain(); }
+// STRATA_COMBINE_HITS=1: moe_hit_add folded into the window's combine (native_moe_combine_multi_add_hits), bitwise
+inline bool g_combine_hits() { static const bool on = [] { const char* v = std::getenv("STRATA_COMBINE_HITS"); return v != nullptr && v[0] == '1'; }(); return on; }
+inline bool g_il_check() { static const bool on = [] { const char* v = std::getenv("STRATA_MMVQ_IL_CHECK"); return v != nullptr && v[0] == '1'; }(); return on; }
 // 143-amdk: STRATA_QFUSE_HC - only the hyper-connection read writes its consumer's q8_1 image (not the GDN recurrence): gfx12 default (=0 / 1 forces off / on)
 inline bool g_qfuse_hc() {
 #if defined(STRATA_USE_HIP)
@@ -176,6 +185,15 @@ bool env_on(const char* name) {
 #if defined(STRATA_USE_HIP)
 const bool g_coherent = env_on("STRATA_VERIFY_COHERENT");
 const bool g_doorbell_store = env_on("STRATA_DOORBELL_STORE");
+// STRATA_ROUTE_PUB=1: the window's top-10 and its doorbell (doorbell_publish_res) in one launch; the same ids, weights
+// and published words (native_router_top10_multi_publish_res)
+const bool g_route_pub = env_on("STRATA_ROUTE_PUB");
+// STRATA_WAIT_COMBINE=1: the CPU rows' wait and copy (wait_copy_rows_from_mapped) ride in the add-hits combine
+// (native_moe_wait_combine_multi_add_hits): the same rows, the same sums
+const bool g_wait_combine = env_on("STRATA_WAIT_COMBINE");
+// STRATA_PCIE_FORK=1: the PCIe pass (the wait for flag B and the PCIe groups' gate/up, SwiGLU and down) on a side
+// stream from the plan copy to the combine, beside the VRAM groups; it writes only its own entries' scratch and rows
+const bool g_pcie_fork = env_on("STRATA_PCIE_FORK");
 #endif
 const bool g_trace = env_on("STRATA_VERIFY_TRACE");
 const bool g_no_multi_gr = env_on("STRATA_NO_MULTI_GR");   // #783 PR-g: per-token GR reads/writes and generic-T kernels again
@@ -400,6 +418,8 @@ bool Verifier::release_gpu_waits(int timeout_ms) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
+    // STRATA_DMA_FLAG_WRITE: a stream write that landed during the drain may have lowered flag B; copy_ is drained now
+    if (h_flagB_ != nullptr) *(volatile uint32_t*) h_flagB_ = UINT32_MAX;
     trace_ev("RELEASE-DRAINED", -1, -1, (int64_t) ms_since(t0));   // aux: ms the GPU took to finish once released
     return true;
 }
@@ -483,6 +503,7 @@ Verifier::~Verifier() {
     }
     if (cs_) cudaStreamSynchronize(cs_);
     if (sh_cs_) cudaStreamSynchronize(sh_cs_);
+    if (pf_cs_) cudaStreamSynchronize(pf_cs_);
     for (auto& e : exec_)
         if (e) cudaGraphExecDestroy(e);
     for (auto& e : exec_nr_)
@@ -495,10 +516,14 @@ Verifier::~Verifier() {
     if (arena_b_) cudaFree(arena_b_);
     if (h_commitb_) cudaFreeHost(h_commitb_);
     if (qcnt_) cudaFree(qcnt_);
+    if (gr_sync_) cudaFree(gr_sync_);
     if (d_spec_) cudaFree(d_spec_);
     if (logit_bias_device_) cudaFree(logit_bias_device_);
     if (cs_ && cs_ != ext_stream_) cudaStreamDestroy(cs_);   // set_stream: the stage's stream, shared, not ours
     if (sh_cs_) cudaStreamDestroy(sh_cs_);
+    if (pf_cs_) cudaStreamDestroy(pf_cs_);
+    if (ev_pplan_) cudaEventDestroy(ev_pplan_);
+    if (ev_pjoin_) cudaEventDestroy(ev_pjoin_);
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
     if (commit_done_) cudaEventDestroy(commit_done_);
     if (ev_done_) cudaEventDestroy(ev_done_);
@@ -655,6 +680,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         xq_ = b.take<uint8_t>(strata::kernels::native_q8_1_bytes(max_in, (int) T));
         sh_xq_ = b.take<uint8_t>(strata::kernels::native_q8_1_bytes(max_in, (int) T));
         xil_ = b.take<uint8_t>(strata::kernels::native_q8_1_il_bytes(max_in, 4));
+        if (g_il_check() && g_il_plain() && !strata::kernels::native_q8_1_il_check_init((int) max_in))
+            std::fprintf(stderr, "strata: STRATA_MMVQ_IL_CHECK: cannot allocate - no check\n");
         qkv_L_ = b.take<float>(nG * T * C); h_L_ = b.take<float>(nG * T * C);
         gate_L_ = b.take<float>(nG * T * HV); beta_L_ = b.take<float>(nG * T * HV);
         z_ = b.take<float>(T * ZV); y_ = b.take<float>(T * ZV); y_dummy_ = b.take<float>(T * ZV);
@@ -743,6 +770,14 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         err = "verify: event create failed";
         return false;
     }
+    if (g_pcie_fork && pf_cs_ == nullptr &&
+        (cudaStreamCreateWithFlags(&pf_cs_, cudaStreamNonBlocking) != cudaSuccess ||
+         cudaEventCreateWithFlags(&ev_pplan_, cudaEventDisableTiming) != cudaSuccess ||
+         cudaEventCreateWithFlags(&ev_pjoin_, cudaEventDisableTiming) != cudaSuccess)) {
+        cudaGetLastError();
+        if (pf_cs_) cudaStreamDestroy(pf_cs_);
+        pf_cs_ = nullptr;
+    }
     {   // STRATA_DF_BRANCH=1 (opt-in): the mixer's side branches.  Off by default: on Linux (open modules, GSP) a
         // stage's window with the branches stopped inside its graph when an NVML query (nvidia-smi) came between
         // requests (2x RTX 3090 and 2x RTX 2080 Ti, #905); never seen on Windows.  0 / unset: one stream, as before
@@ -792,6 +827,14 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
             cudaGetLastError();
             if (qcnt_) cudaFree(qcnt_);
             qcnt_ = nullptr;
+        }
+    }
+    {   // STRATA_GR_FUSE: the window HC read's down/up counters, zeroed once (each launch leaves them zero)
+        if (cudaMalloc((void**) &gr_sync_, 4 * sizeof(unsigned)) != cudaSuccess ||
+            cudaMemset(gr_sync_, 0, 4 * sizeof(unsigned)) != cudaSuccess) {
+            cudaGetLastError();
+            if (gr_sync_) cudaFree(gr_sync_);
+            gr_sync_ = nullptr;
         }
     }
     if (all_resident_ || device_plan_) {
@@ -1064,12 +1107,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 a.inject_out = inj_out + t * HC; a.mixed = mixed_ + t * N;
                 if (qcnt_ != nullptr) {   // S26 STRATA_QFUSE: the consumer's q8_1 image written by the read itself
                     a.q8_cnt = qcnt_;
-                    if (half == 0) a.q8_mixed = xq_ + (size_t) (t - tb) * (N / 32) * 36;
-                    else if (strata::kernels::cpu::expert_layout().native) a.q8_mixed = nat_xq_ + (size_t) t * (N / 32) * 36;
+                    if (half == 0) {
+                        a.q8_mixed = xq_ + (size_t) (t - tb) * (N / 32) * 36;
+                        if (g_il_plain() && n >= 2 && n <= 4) a.q8_il = xil_;   // and its interleaved copy
+                    } else if (strata::kernels::cpu::expert_layout().native) a.q8_mixed = nat_xq_ + (size_t) t * (N / 32) * 36;
                 }
             }
             return fused_gr_read_multi(fa, n, xn_ + (size_t) tb * HC * N, cs, (prof_on_ && grp == 0) ? prof_ : nullptr,
-                                (int) (l * kProfPer + (half == 0 ? 27 : 30)));
+                                (int) (l * kProfPer + (half == 0 ? 27 : 30)), gr_sync_);
         };
         const bool q8_attn = gr_read_group(0, pending, inj2_, inj_);   // true: xq_ holds mixed's q8_1 (STRATA_QFUSE)
         {   // measurement only: STRATA_DUMMY_NODES=k adds k empty kernel nodes per layer (what one node costs in a window)
@@ -1082,8 +1127,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         stamp(l, 1, grp);
         float* xm = mixed_ + tb * N;
-        bool il_ready = false;   // xil_ holds xq_'s interleaved copy (reset whenever xq_ is rewritten)
+        // xil_ holds xq_'s interleaved copy (reset whenever xq_ is rewritten); STRATA_MMVQ_IL_PLAIN: the read wrote it
+        bool il_ready = q8_attn && qcnt_ != nullptr && g_il_plain() && n >= 2 && n <= 4;
+        if (il_ready && g_il_check()) strata::kernels::native_q8_1_il_check(xq_, xil_, (int) N, n, cs);
         auto mm = [&](const WeightRef* w, float* out, int n_in, int n_out) {
+            if (g_il_plain()) {   // no interleave launch: the copy the read wrote, else the plain columns
+                if (il_ready && strata::kernels::native_mmvq_il_supported(w->native_type, n, n_out))
+                    strata::kernels::native_mmvq_il(w->native_type, w->native_data, xq_, xil_, out, n_in, n_out, n, cs);
+                else if (strata::kernels::native_mmvq_ilp_supported(w->native_type, n, n_out))
+                    strata::kernels::native_mmvq_il(w->native_type, w->native_data, xq_, nullptr, out, n_in, n_out, n, cs);
+                else
+                    native_mmvq(w->native_type, w->native_data, xq_, out, n_in, n_out, n, cs);
+                return;
+            }
             if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(w->native_type, n, n_out)) {
                 if (!il_ready && n >= 2) {   // one column reads the plain q8_1 blocks
                     strata::kernels::native_q8_1_interleave(xq_, xil_, n_in, n, cs);
@@ -1435,15 +1491,32 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         // move into the combine, gate + up share one launch (all bitwise; resident combine path, 2-8 rows only)
         const WeightRef* w_sgi = lfuse_on(n) && g_lfuse_gate() ? v.get("ffn_gate_inp_shexp.weight") : nullptr;
         bool sg_ready = false;
+        bool route_published = false;   // STRATA_ROUTE_PUB: the doorbell went out with the top-10
         if (dec_batch && n > 1 && w_router != nullptr && native_router_enabled() && NE == 512 && K == 10) {
             try {
+                // STRATA_ROUTE_PUB: when the doorbell below would be doorbell_publish_res right after the top-10
+                const bool rpub = g_route_pub && n <= 8 && !ar_on() && !device_plan_ && !g_doorbell_store && !remote_opt_ &&
+                                  !always_publish_ && !(route_resident_cfg().margin > 0.0f && hits_.d_res != nullptr);
+                // STRATA_ROUTE_FAST: the router GEMV's blocks copy the MoE input rows to the host (every row, fenced) and
+                // the top-10 launch only rings
+                float* const x_host = rpub && native_router_fast() ? m_x_ + tb * N : nullptr;
+                bool x_on_host = false;
                 if (w_sgi != nullptr)
                     sg_ready = bf16_gemv_fp32_mmvf_multi_aux(mixed_ + tb * N, N, (const uint16_t*) w_router->data,
                                                              logits_ + tb * NE, NE, N, NE, n,
-                                                             (const uint16_t*) w_sgi->data, sh_g_ + tb, 1, cs);
+                                                             (const uint16_t*) w_sgi->data, sh_g_ + tb, 1, cs, x_host,
+                                                             &x_on_host);
                 if (!sg_ready)
                 bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) w_router->data, logits_ + tb * NE, NE, N,
-                                          NE, n, cs);
+                                          NE, n, cs, x_host, &x_on_host);
+                if (rpub) {
+                    native_router_top10_multi_publish_res(logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, n,
+                                                          x_on_host ? nullptr : xm,
+                                                          hits_.d_res != nullptr ? hits_.d_res + l * g.n_expert : nullptr,
+                                                          (int) g.n_expert, (int64_t) n * N, m_x_ + tb * N, m_ids_ + tb * K,
+                                                          m_seq_, cs, (uint32_t) ((l - lb_) * G + grp + 1));
+                    route_published = true;
+                } else
                 native_router_top10_multi(logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, n, cs);
             } catch (const std::exception& e) { err = "verify router: " + std::string(e.what()); return false; }
 #if defined(STRATA_HIP_GFX906)
@@ -1495,7 +1568,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (remote_opt_ || always_publish_)
                 doorbell_publish(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
                                  m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
-            else {
+            else if (!route_published) {
                 const int32_t* layer_res = hits_.d_res != nullptr ? (hits_.d_res + l * g.n_expert) : nullptr;
                 doorbell_publish_res(xm, ids_ + tb * K, layer_res, (int) g.n_expert, (int64_t) n * N, (int64_t) n * K,
                                      m_x_ + tb * N, m_ids_ + tb * K, m_seq_, cs);
@@ -1571,63 +1644,89 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         const int32_t* p_start2 = pl + ptr_off + 4 * capx;
         float* hit_out = hit_out_ + (size_t) tb * K * N;
         float* parts_out = parts_ + (size_t) tb * K * N;
+        bool hits_pending = false;   // STRATA_COMBINE_HITS: moe_hit_add left to the combine
+        bool wc_fused = false;       // STRATA_WAIT_COMBINE: the CPU rows' wait and copy left to the combine
         const auto& lay = strata::kernels::cpu::expert_layout();
         // plan v0.3 P6: the VRAM groups now; the PCIe groups once the copy engine has landed them in staging.
         // `gy`: the native launch's groups side by side (0: cap, one block row per possible group).
-        auto grouped = [&](const unsigned long long* gp, const int32_t* gs, const int32_t* gn, int64_t gy, float* dst_buf) {
+        auto grouped = [&](const unsigned long long* gp, const int32_t* gs, const int32_t* gn, int64_t gy, float* dst_buf,
+                           cudaStream_t gst) {
             if (lay.native) {
                 // the layer's GGUF formats (i-quant gate/up, Q2_0 / IQ4_NL down)
                 const auto& f = lay.fmt[(size_t) l];
                 const NativeExpertLayout L = native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
                 native_expert_grouped(L, gp, gs, gn, p_dst, p_tok, cap, cap,
-                                      nat_xq_ + (size_t) tb * (N / 32) * 36, hit_scratch_, dst_buf, cs, gy);
+                                      nat_xq_ + (size_t) tb * (N / 32) * 36, hit_scratch_, dst_buf, gst, gy);
             } else {
                 moe_grouped_s2(gp, gs, gn, p_dst, p_tok, cap, cap, hit_xq_ + (size_t) tb * (N / 32) * 34,
-                               hit_xs_ + (size_t) tb * (N / 32), hit_scratch_, dst_buf, cs);
+                               hit_xs_ + (size_t) tb * (N / 32), hit_scratch_, dst_buf, gst);
             }
         };
+        // STRATA_PCIE_FORK: the native layouts only (their scratch is per entry: the PCIe entries follow the VRAM ones)
+        const bool pcie_fork = g_pcie_fork && pf_cs_ != nullptr && !prof_on_ && !ar_on() && !device_plan_ &&
+                               sink_.pcie_mode != 2 && lay.native;
         bool hits_in_combine = false;
         if (ar_on()) {
             stamp(l, 19, grp);
-            grouped(p_ptr, p_start, p_counts, 0, parts_out);
+            grouped(p_ptr, p_start, p_counts, 0, parts_out, cs);
             stamp(l, 20, grp);
         } else {
             if (device_plan_) {   // E-6: skipped when the device planned this group (all its experts resident)
                 wait_flag_ge_or(m_flagA_, ring, skip_ + grp, cs);
                 copy_i32_from_mapped_unless(pl, m_plan_ + (size_t) grp * (size_t) plan_i32_, plan_i32_, skip_ + grp, ring, cs);
             } else {
-                if (fuse_wait_on() && !prof_on_) {   // 143-amdk: one launch for the wait and the copy
+                if (g_wait_fuse() || (fuse_wait_on() && !prof_on_))   // (143-amdk: the gfx12 default)
                     wait_copy_i32_from_mapped(m_flagA_, ring, pl, m_plan_ + (size_t) grp * (size_t) plan_i32_, plan_i32_, cs);
-                } else {
+                else {
                 wait_flag_ge(m_flagA_, ring, cs);                  // the pool published this group's GPU plan
                 copy_i32_from_mapped(pl, m_plan_ + (size_t) grp * (size_t) plan_i32_, plan_i32_, cs);
                 }
             }
             stamp(l, 19, grp);
-            grouped(p_ptr, p_start, p_counts, 0, hit_out);
+            if (pcie_fork) {   // the PCIe pass forks off here: it needs the plan copy, nothing of the VRAM groups
+                cudaEventRecord(ev_pplan_, cs);
+                cudaStreamWaitEvent(pf_cs_, ev_pplan_, 0);
+                wait_flag_ge(m_flagB_, ring, pf_cs_);              // the PCIe share is in staging (DMA) or mapped
+                grouped(p_ptr2, p_start2, p_counts + 2, kPcieGroupRows, hit_out, pf_cs_);
+                cudaEventRecord(ev_pjoin_, pf_cs_);
+            }
+            grouped(p_ptr, p_start, p_counts, 0, hit_out, cs);
             stamp(l, 20, grp);
-            if (device_plan_) wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
-            else wait_flag_ge(m_flagB_, ring, cs);                 // the PCIe share is in staging (DMA) or mapped
+            if (pcie_fork) {}   // (above, on its own stream)
+            else if (device_plan_) wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
+            else if (!(g_wait_fuse() && sink_.pcie_mode == 2))
+                wait_flag_ge(m_flagB_, ring, cs);                 // the PCIe share is in staging (DMA) or mapped
             if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
                 const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
                 uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
+                if (g_wait_fuse() && !device_plan_)
+                    wait_fetch_blobs(m_flagB_, ring, p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
+                else
                 fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
                 rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
             }
             stamp(l, 21, grp);
             // the PCIe share is pcie_frac of the misses: a few groups when the cache is cold, usually none (always none at
             // pcie_frac 0), so its launch is kPcieGroupRows block rows striding over the groups, not cap of them
-            grouped(p_ptr2, p_start2, p_counts + 2, kPcieGroupRows, hit_out);
+            if (!pcie_fork) grouped(p_ptr2, p_start2, p_counts + 2, kPcieGroupRows, hit_out, cs);
             stamp(l, 22, grp);
             if (device_plan_) {   // no CPU share when the device planned the group: its rows are zeros
                 wait_flag_ge_or(m_flag_, ring, skip_ + grp, cs);
                 copy_or_zero_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (long long) n * K * N,
                                          skip_ + grp, ring, cs);
             } else {
-                const bool fuse_rows = fuse_wait_on() && !prof_on_ && !remote_opt_ && dec_batch;   // 143-amdk
-                if (!fuse_rows) wait_flag_ge(m_flag_, ring, cs);               // the CPU's share is in the mapped rows
+                const bool fuse_rows = (g_wait_fuse() || (fuse_wait_on() && !prof_on_)) && !remote_opt_ && dec_batch;
+                wc_fused = fuse_rows && g_wait_combine && g_combine_hits() && n > 1 && n <= 8 &&
+                           native_moe_combine_enabled() && !sg_gated_[grp] && K == 10 &&
+                           native_moe_wait_combine_ok(m_ymiss_ + (size_t) tb * K * N, hit_out, shared_ + tb * N, bo_ + tb * N,
+                                                      N, K, n);
+                if (!fuse_rows) wait_flag_ge(m_flag_, ring, cs);   // the CPU's share is in the mapped rows
                 stamp(l, 23, grp);
-                if (remote_opt_)   // #578: the helper's rows come back reduced; skip them as well
+                if (wc_fused) {}   // the combine below waits for the rows and reads them
+                else if (fuse_rows)
+                    wait_copy_rows_from_mapped(m_flag_, ring, parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
+                                               p_dst, p_counts + 1, cs);
+                else if (remote_opt_)   // #578: the helper's rows come back reduced; skip them as well
                     remote_opt_->copy_rows(parts_out, m_ymiss_ + (size_t) tb * K * N, tb, n, p_dst, p_counts + 1, cs);
                 else if (fuse_rows)   // the wait folded into the copy's blocks
                     copy_rows_from_mapped_after(m_flag_, ring, parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
@@ -1638,17 +1737,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 else
                     copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
             }
-            // 143-amdk: the add of the GPU's hit rows is done by the combine that follows (one launch fewer)
-            hits_in_combine = fuse_hits_on() && !prof_on_ && !remote_opt_ && !sg_gated_[grp] && dec_batch && n > 1 &&
-                              native_moe_combine_enabled() && n <= 8 &&
-                              native_moe_combine_hits_supported(parts_ + (size_t) tb * K * N, shared_ + tb * N, bo_ + tb * N, N, K, n);
-            if (!hits_in_combine) moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);
+            hits_pending = (g_combine_hits() || (fuse_hits_on() && !prof_on_ && !remote_opt_)) && dec_batch && n > 1 && n <= 8 && native_moe_combine_enabled() &&
+                           !sg_gated_[grp] && K == 10;   // the combine below adds them (STRATA_COMBINE_HITS)
+            if (!hits_pending) {
+                if (pcie_fork) cudaStreamWaitEvent(cs, ev_pjoin_, 0);   // the hit add reads the PCIe groups' rows too
+                moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);
+            }
         }
         // Same condition as `sh_fork` above, which is per group and out of scope here: wait only when the fork
         // actually ran (a wait on an event never recorded is a no-op, but saying it outright reads better).
         if (sh_stream_on() && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr) {
             cudaStreamWaitEvent(cs, ev_join_, 0);
         }
+        if (pcie_fork) cudaStreamWaitEvent(cs, ev_pjoin_, 0);   // STRATA_PCIE_FORK: the PCIe groups' rows
         if (sg_gated_[grp]) {   // STRATA_LFUSE: the shared expert's gate was not applied: the combine applies it (all rows are hits)
             try {
                 native_moe_combine_multi_hits_gated(parts_out, w_ + tb * K, shared_ + tb * N, sh_g_ + tb, bo_ + tb * N, N, K, n, cs);
@@ -1662,6 +1763,17 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         } else
         if (dec_batch && n > 1 && native_moe_combine_enabled()) {   // one launch for the window's rows
             try {
+                if (wc_fused) {
+                    native_moe_wait_combine_multi_add_hits(m_flag_, ring, m_ymiss_ + (size_t) tb * K * N, hit_out, p_dst,
+                                                           p_counts + 1, w_ + tb * K, shared_ + tb * N, bo_ + tb * N, N, K,
+                                                           n, cs);   // (hits_pending stays: no other combine)
+                } else
+                if (hits_pending && !native_moe_combine_multi_add_hits(parts_out, hit_out, p_dst, p_counts + 1, w_ + tb * K,
+                                                                        shared_ + tb * N, bo_ + tb * N, N, K, n, cs)) {
+                    moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);
+                    hits_pending = false;
+                }
+                if (!hits_pending)
                 native_moe_combine_multi(parts_ + (size_t) tb * K * N, w_ + tb * K, shared_ + tb * N, bo_ + tb * N, N, K, n, cs);
             } catch (const std::exception& e) { err = "verify combine: " + std::string(e.what()); return false; }
         } else
@@ -2059,6 +2171,8 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
     *(volatile uint32_t*) h_seq_ = 0;
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
+    if (b_streamed_ != 0 && *(volatile uint32_t*) h_flagB_ < b_streamed_) cudaStreamSynchronize(copy_);   // (landed)
+    b_streamed_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     last_t_ = T;
@@ -2146,6 +2260,10 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     refresh_ar();
     if (!capture(T, err) || !capture_commit(err)) return false;
     VDBG("captured; staging\n");
+    if (g_il_check()) {   // STRATA_MMVQ_IL_CHECK: the counts so far, every 256 windows
+        static unsigned windows = 0;
+        if (++windows % 256 == 0) strata::kernels::native_q8_1_il_check_report();
+    }
     const Clock::time_point t0 = Clock::now();
     if (!staged_) stage_inputs(T, tokens, pos0);
     staged_ = false;
@@ -2258,7 +2376,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             sink_.start2[0] = 0;
             std::atomic_thread_fence(std::memory_order_seq_cst);
             *(volatile uint32_t*) h_flagA_ = want;
-            raise_flag(h_flagB_, want);
+            raise_b(want);
         }
         // Layer 1's pre(1, 0) copies h_ple_ -> ple_ after Layer 0's wait_flag_ge(m_flag_, 1).
         // By collecting PLE here at k == 0 (after publishing flagA/flagB for Layer 0 so the GPU can run
@@ -2404,7 +2522,7 @@ void Verifier::raise_flag(uint32_t* flag, uint32_t value) {
 void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t bytes) {
     Verifier* v = (Verifier*) ctx;
     const uint32_t want = v->cur_layer_ + 1;
-    if (n <= 0) { raise_flag(v->h_flagB_, want); return; }
+    if (n <= 0) { v->raise_b(want); return; }
     v->copy_used_ = true;
     uint8_t* stage = (uint8_t*) v->sink_.staging;                  // this group's half in a split window
     // STRATA_DMA_BATCH (midhatn's #807, F12): the group's independent uploads as one cudaMemcpyBatchAsync.  Mode 0 is
@@ -2423,10 +2541,43 @@ void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t byt
             std::abort();
         }
     }
+#if defined(STRATA_USE_HIP)
+    // STRATA_DMA_FLAG_WRITE (on; =0 a host function): the copy stream writes flag B itself once the uploads have
+    // landed.  A host function reaches the GPU 15.0 us after the copies' end (a HIP runtime thread wakes for it), the
+    // stream's own write 6.7 us (measured, gfx1100).  The same flag in mapped host memory (a device-memory flag is seen
+    // late by the spinning kernel), the same values.  A layer with PCIe experts waits for them after its VRAM experts:
+    // 20.24 -> 19.67 ms a window with the default's placement, 23.00 -> 22.03 without the adaptive tier (paired runs
+    // with the same drafts; the A/B with the timing-dependent drafts could not see it).
+    static const bool fw = [] { const char* e = std::getenv("STRATA_DMA_FLAG_WRITE"); return e == nullptr || e[0] != '0'; }();
+    if (fw) {
+        if (hipStreamWriteValue32(v->copy_, (void*) v->m_flagB_, want, 0) == hipSuccess) {
+            v->b_streamed_ = want;
+            return;
+        }
+        (void) hipGetLastError();   // (a host function below)
+    }
+#endif
     FlagSet& fs = v->flag_sets_[v->cur_layer_ % (sizeof v->flag_sets_ / sizeof v->flag_sets_[0])];
     fs.flag = v->h_flagB_;
     fs.value = want;
     cudaLaunchHostFunc(v->copy_, [](void* p) { FlagSet* s = (FlagSet*) p; raise_flag(s->flag, s->value); }, &fs);
+}
+
+// Flag B raised from the host.  The copy stream's writes (STRATA_DMA_FLAG_WRITE) are plain stores in issue order: while
+// the last one has not landed, a direct raise could be lowered by it (a split window's second group with no PCIe
+// share raising past the first group's write still in flight), so the raise goes behind it on the stream.
+void Verifier::raise_b(uint32_t want) {
+#if defined(STRATA_USE_HIP)
+    if (b_streamed_ != 0 && *(volatile uint32_t*) h_flagB_ < b_streamed_) {
+        if (hipStreamWriteValue32(copy_, (void*) m_flagB_, want, 0) == hipSuccess) {
+            b_streamed_ = want;
+            return;
+        }
+        (void) hipGetLastError();
+        cudaStreamSynchronize(copy_);   // (cannot queue it: the earlier write lands first)
+    }
+#endif
+    raise_flag(h_flagB_, want);
 }
 
 void Verifier::publish_plan(void* ctx) {
@@ -2822,6 +2973,8 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
     *(volatile uint32_t*) h_seq_ = 0;
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
+    if (b_streamed_ != 0 && *(volatile uint32_t*) h_flagB_ < b_streamed_) cudaStreamSynchronize(copy_);   // (landed)
+    b_streamed_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     last_t_ = S;
@@ -2924,7 +3077,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
             sink_.start2[0] = 0;
             std::atomic_thread_fence(std::memory_order_seq_cst);
             *(volatile uint32_t*) h_flagA_ = want;
-            raise_flag(h_flagB_, want);
+            raise_b(want);
         }
         *flag = want;
         ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
@@ -3079,7 +3232,7 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
             sink_.start2[0] = 0;
             std::atomic_thread_fence(std::memory_order_seq_cst);
             *(volatile uint32_t*) h_flagA_ = want;
-            raise_flag(h_flagB_, want);
+            raise_b(want);
         }
         *(volatile uint32_t*) h_flag_ = want;
         ms_pool += ms_since(b);
@@ -3360,7 +3513,7 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
             sink_.start2[0] = 0;
             std::atomic_thread_fence(std::memory_order_seq_cst);
             *(volatile uint32_t*) h_flagA_ = want;
-            raise_flag(h_flagB_, want);
+            raise_b(want);
         }
         if (fl_k_ == 0 && !gather_ple()) return -1;
         *(volatile uint32_t*) h_flag_ = want;

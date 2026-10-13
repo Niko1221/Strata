@@ -55,26 +55,59 @@ __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_kernel(const fl
     }
 }
 
-__global__ void __launch_bounds__(TOPK_T) block_topk_kernel(const float* __restrict__ scores,
-                                                            const int32_t* __restrict__ steps, int64_t max_blocks,
-                                                            int64_t cap, int32_t* __restrict__ ids) {
-    __shared__ int hist[256];
-    __shared__ int s_a[TOPK_T], s_b[TOPK_T];
-    __shared__ int s_digit, s_above;
-    const int64_t qi = blockIdx.x;
-    const int32_t* st = steps + qi * kStepCount;
-    const int64_t n_kv = st[kStepNKv], n_bid = st[kStepNBid], width = st[kStepWidth];
-    int32_t* out = ids + qi * cap;
-    const int t = threadIdx.x;
-    if (n_kv <= width) {                               // everything is selected: the identity, ascending
-        for (int64_t j = t; j < n_kv; j += TOPK_T) out[j] = (int32_t) j;
-        return;
+// STRATA_TOPK_SCAN (on; =0 thread 0's loops): the block-wide sums block_topk_kernel needs, as warp scans - integer
+// sums of the same counts, so the same digits, prefixes and selected cells.  Inclusive scan of v over the block's
+// threads in thread order; `wsum` holds blockDim.x / 32 ints of shared memory.
+__device__ __forceinline__ int topk_block_scan(int v, int* wsum) {
+    const int t = threadIdx.x, lane = t & 31, w = t >> 5;
+#pragma unroll
+    for (int o = 1; o < 32; o <<= 1) {
+        const int u = __shfl_up_sync(0xffffffffu, v, o);
+        if (lane >= o) v += u;
     }
-    const float* sc = scores + qi * max_blocks;
-    const int64_t nb = n_bid + 1;                      // blocks 0..n_bid, the last possibly empty
+    if (lane == 31) wsum[w] = v;
+    __syncthreads();
+    int off = 0;
+    for (int i = 0; i < w; ++i) off += wsum[i];
+    __syncthreads();
+    return v + off;
+}
+bool topk_regkeys_on() {
+    static const bool on = [] { const char* e = std::getenv("STRATA_TOPK_REGKEYS"); return e == nullptr || e[0] != '0'; }();
+    return on;
+}
+bool topk_scan_on() {
+    static const bool on = [] { const char* e = std::getenv("STRATA_TOPK_SCAN"); return e == nullptr || e[0] != '0'; }();
+    return on;
+}
+
+// STRATA_TOPK_REGKEYS (default on; =0 the keys re-read from memory at every pass): block_topk_kernel's body with this
+// thread's block keys in registers when it holds at most 64 of them (a 64K-cell context) - the same keys, so
+// the same histograms, threshold, counts and cells; 6 key reads a block become one.
+template <bool SCAN, int KEYS>
+__device__ __forceinline__ void topk_ref_body(const float* __restrict__ sc, const int64_t nb, const int64_t n_bid,
+                                              const int64_t n_kv, const int64_t width, int32_t* __restrict__ out,
+                                              int* hist, int* s_a, int* s_b, int& s_digit, int& s_above, int* wsum) {
+    const int t = threadIdx.x;
     const int64_t per = (nb + TOPK_T - 1) / TOPK_T;
+    // STRATA_TOPK_REGKEYS: this thread's keys read once into registers (KEYS > 0) instead of at every pass
+    uint32_t kc[KEYS > 0 ? KEYS : 1];
     const int64_t b0 = (int64_t) t * per, b1 = (b0 + per < nb) ? b0 + per : nb;
     auto weight = [&](int64_t b) -> int { return b < n_bid ? R : (int) (n_kv - n_bid * R); };
+    if constexpr (KEYS > 0) {
+#pragma unroll
+        for (int i = 0; i < KEYS; ++i) kc[i] = b0 + i < b1 ? order_key(sc[b0 + i]) : 0u;
+    }
+    // f(b, key) for this thread's blocks in ascending order
+    auto each = [&](auto&& f) {
+        if constexpr (KEYS > 0) {
+#pragma unroll
+            for (int i = 0; i < KEYS; ++i)
+                if (b0 + i < b1) f(b0 + i, kc[i]);
+        } else {
+            for (int64_t b = b0; b < b1; ++b) f(b, order_key(sc[b]));
+        }
+    };
     // ---- radix select: the largest key thr with (cells with key >= thr) >= width, 8 bits at a time
     uint32_t prefix = 0;
     int above = 0;                                     // cells strictly above the digits fixed so far
@@ -82,14 +115,28 @@ __global__ void __launch_bounds__(TOPK_T) block_topk_kernel(const float* __restr
         for (int i = t; i < 256; i += TOPK_T) hist[i] = 0;
         __syncthreads();
         const uint32_t hi_mask = shift == 24 ? 0u : (0xffffffffu << (shift + 8));
-        for (int64_t b = b0; b < b1; ++b) {
+        each([&](int64_t b, uint32_t k) {
             const int w = weight(b);
-            if (w == 0) continue;
-            const uint32_t k = order_key(sc[b]);
+            if (w == 0) return;
             if ((k & hi_mask) == (prefix & hi_mask)) atomicAdd(&hist[(k >> shift) & 255], w);
-        }
+        });
         __syncthreads();
-        if (t == 0) {
+        if constexpr (SCAN) {
+            // thread t holds digit 255 - t: the inclusive scan is the suffix sum S[d] = hist[d] + ... + hist[255].  The
+            // loop below stops at the largest d >= 1 with above + S[d] >= width (else d = 0); S falls as d rises, so
+            // that d is the number of digits 1..255 passing the test, and the loop's cum is above + S[d + 1].
+            const int d_of = 255 - t;
+            const int suf = topk_block_scan(hist[d_of], wsum);   // S[d_of]
+            s_a[d_of] = suf;
+            const int pass = (d_of >= 1 && (int64_t) above + suf >= width) ? 1 : 0;
+            const int npass = topk_block_scan(pass, wsum);       // thread 255 holds the total
+            if (t == TOPK_T - 1) s_digit = npass;
+            __syncthreads();
+            if (t == 0) {
+                const int d = s_digit;
+                s_above = above + (d < 255 ? s_a[d + 1] : 0);
+            }
+        } else if (t == 0) {
             int cum = above, d = 255;
             for (; d > 0; --d) {
                 if (cum + hist[d] >= width) break;
@@ -107,13 +154,18 @@ __global__ void __launch_bounds__(TOPK_T) block_topk_kernel(const float* __restr
     const int64_t eq_budget = width - above;          // cells equal to thr that fit, lowest index first
     // ---- per-thread counts of cells above and at the threshold, then their exclusive prefixes
     int gt = 0, eq = 0;
-    for (int64_t b = b0; b < b1; ++b) {
+    each([&](int64_t b, uint32_t k) {
         const int w = weight(b);
-        if (w == 0) continue;
-        const uint32_t k = order_key(sc[b]);
+        if (w == 0) return;
         if (k > thr) gt += w;
         else if (k == thr) eq += w;
-    }
+    });
+    if constexpr (SCAN) {
+        const int pg = topk_block_scan(gt, wsum), pe = topk_block_scan(eq, wsum);
+        s_a[t] = pg - gt;
+        s_b[t] = pe - eq;
+        __syncthreads();
+    } else {
     s_a[t] = gt;
     s_b[t] = eq;
     __syncthreads();
@@ -126,31 +178,63 @@ __global__ void __launch_bounds__(TOPK_T) block_topk_kernel(const float* __restr
         }
     }
     __syncthreads();
+    }
     const int64_t eq_before = s_b[t];
     int64_t my_eq = eq_budget - eq_before;
     if (my_eq < 0) my_eq = 0;
     if (my_eq > eq) my_eq = eq;
     const int sel = gt + (int) my_eq;
     __syncthreads();
+    if constexpr (SCAN) {
+        s_a[t] = topk_block_scan(sel, wsum) - sel;
+    } else {
     s_a[t] = sel;
     __syncthreads();
     if (t == 0) {
         int a = 0;
         for (int i = 0; i < TOPK_T; ++i) { const int c = s_a[i]; s_a[i] = a; a += c; }
     }
+    }
     __syncthreads();
     int64_t wpos = s_a[t];
     int64_t eq_left = my_eq;
-    for (int64_t b = b0; b < b1; ++b) {
+    each([&](int64_t b, uint32_t k) {
         const int w = weight(b);
-        if (w == 0) continue;
-        const uint32_t k = order_key(sc[b]);
+        if (w == 0) return;
         if (k > thr) {
             for (int c = 0; c < w; ++c) out[wpos++] = (int32_t) (b * R + c);
         } else if (k == thr) {
             for (int c = 0; c < w && eq_left > 0; ++c, --eq_left) out[wpos++] = (int32_t) (b * R + c);
         }
+    });
+}
+template <bool SCAN>
+__global__ void __launch_bounds__(TOPK_T) block_topk_kernel(const float* __restrict__ scores,
+                                                            const int32_t* __restrict__ steps, int64_t max_blocks,
+                                                            int64_t cap, int32_t* __restrict__ ids,
+                                                            bool reg_keys = false) {
+    __shared__ int hist[256];
+    __shared__ int s_a[TOPK_T], s_b[TOPK_T];
+    __shared__ int s_digit, s_above;
+    __shared__ int wsum[TOPK_T / 32];
+    const int64_t qi = blockIdx.x;
+    const int32_t* st = steps + qi * kStepCount;
+    const int64_t n_kv = st[kStepNKv], n_bid = st[kStepNBid], width = st[kStepWidth];
+    int32_t* out = ids + qi * cap;
+    const int t = threadIdx.x;
+    if (n_kv <= width) {                               // everything is selected: the identity, ascending
+        for (int64_t j = t; j < n_kv; j += TOPK_T) out[j] = (int32_t) j;
+        return;
     }
+    const float* sc = scores + qi * max_blocks;
+    const int64_t nb = n_bid + 1;                      // blocks 0..n_bid, the last possibly empty
+    const int64_t per = (nb + TOPK_T - 1) / TOPK_T;
+    if (reg_keys && per <= 4) topk_ref_body<SCAN, 4>(sc, nb, n_bid, n_kv, width, out, hist, s_a, s_b, s_digit, s_above, wsum);
+    else if (reg_keys && per <= 8) topk_ref_body<SCAN, 8>(sc, nb, n_bid, n_kv, width, out, hist, s_a, s_b, s_digit, s_above, wsum);
+    else if (reg_keys && per <= 16) topk_ref_body<SCAN, 16>(sc, nb, n_bid, n_kv, width, out, hist, s_a, s_b, s_digit, s_above, wsum);
+    else if (reg_keys && per <= 32) topk_ref_body<SCAN, 32>(sc, nb, n_bid, n_kv, width, out, hist, s_a, s_b, s_digit, s_above, wsum);
+    else if (reg_keys && per <= 64) topk_ref_body<SCAN, 64>(sc, nb, n_bid, n_kv, width, out, hist, s_a, s_b, s_digit, s_above, wsum);
+    else topk_ref_body<SCAN, 0>(sc, nb, n_bid, n_kv, width, out, hist, s_a, s_b, s_digit, s_above, wsum);
 }
 
 
@@ -594,13 +678,14 @@ __device__ __forceinline__ int block_excl_scan(int v, int* s_warp, int& total) {
     return r;
 }
 
-template <int PER>
+template <int PER, bool SCAN = false>
 __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __restrict__ scores,
                                                               const int32_t* __restrict__ steps, int64_t max_blocks,
                                                               int64_t cap, int32_t* __restrict__ ids) {
     __shared__ int hist[TK_T / 32][256];
     __shared__ int s_warp[33];
     __shared__ int s_digit, s_above;
+    __shared__ int s_suf[257], wsum32[TK_T / 32];
     const int64_t qi = blockIdx.x;
     const int32_t* st = steps + qi * kStepCount;
     const int64_t n_kv = st[kStepNKv], n_bid = st[kStepNBid], width = st[kStepWidth];
@@ -639,7 +724,17 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
             hist[0][t] = s;
         }
         __syncthreads();
-        if (t == 0) {
+        if constexpr (SCAN) {   // STRATA_TOPK_SCAN: thread 0's loop as two scans (see block_topk_kernel)
+            const int d_of = 255 - t;
+            const int suf = topk_block_scan(t < 256 ? hist[0][d_of] : 0, wsum32);
+            if (t < 256) s_suf[d_of] = suf;
+            if (t == 0) s_suf[256] = 0;
+            const int pass = (t < 256 && d_of >= 1 && (int64_t) above + suf >= width) ? 1 : 0;
+            const int npass = topk_block_scan(pass, wsum32);
+            if (t == 255) s_digit = npass;
+            __syncthreads();
+            if (t == 0) s_above = above + s_suf[s_digit + 1];
+        } else if (t == 0) {
             int cum = above, d = 255;
             for (; d > 0; --d) {
                 if (cum + hist[0][d] >= width) break;
@@ -1203,7 +1298,8 @@ void qsa_block_topk_ref(const float* scores, const int32_t* steps, int64_t nq, i
         std::fprintf(stderr, "qsa_block_topk: unsupported geometry or cap\n");
         std::exit(1);
     }
-    block_topk_kernel<<<(unsigned) nq, TOPK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+    if (topk_scan_on()) block_topk_kernel<true><<<(unsigned) nq, TOPK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids, topk_regkeys_on());
+    else block_topk_kernel<false><<<(unsigned) nq, TOPK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids, topk_regkeys_on());
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_topk: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }
@@ -1354,10 +1450,13 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
         block_topk_wide_kernel<<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
     else
 #endif
-    if (reach <= (int64_t) TK_T * TK_PER)
-        block_topk_reg_kernel<TK_PER><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
-    else
-        block_topk_reg_kernel<TK_PER_MAX><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+    if (reach <= (int64_t) TK_T * TK_PER) {
+        if (topk_scan_on()) block_topk_reg_kernel<TK_PER, true><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+        else block_topk_reg_kernel<TK_PER><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+    } else {
+        if (topk_scan_on()) block_topk_reg_kernel<TK_PER_MAX, true><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+        else block_topk_reg_kernel<TK_PER_MAX><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+    }
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_topk: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }

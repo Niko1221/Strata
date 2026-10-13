@@ -407,6 +407,7 @@ private:
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)
     uint32_t* skip_ = nullptr;            ///< E-6: per group, the ring whose plan the device built (0: the host's)
     unsigned* qcnt_ = nullptr;             ///< S26 STRATA_QFUSE: the HC read's q8_1 group counters (n_embd / 32)
+    unsigned* gr_sync_ = nullptr;          ///< STRATA_GR_FUSE: the window HC read's four counters (zeroed once)
     unsigned long long* slot_off_d_ = nullptr;   ///< E-6: the slot offsets on the device
     int64_t lb_ = 0, le_ = -1;           ///< set_stage: the layers this verifier runs (-1: to the last)
     const float* hand_in_ = nullptr;
@@ -448,6 +449,10 @@ private:
     cudaStream_t cs_ = nullptr;
     cudaStream_t sh_cs_ = nullptr;
     cudaEvent_t ev_fork_ = nullptr, ev_join_ = nullptr;
+    // STRATA_PCIE_FORK: a layer's PCIe pass (flag B, then its experts) on its own stream, forked once the plan is copied
+    // and joined before the combine
+    cudaStream_t pf_cs_ = nullptr;
+    cudaEvent_t ev_pplan_ = nullptr, ev_pjoin_ = nullptr;
     // STRATA_DF_BRANCH: a layer's mixer work that reads only the layer's input, captured as parallel graph branches
     // on these side streams (record_window); the same kernels on the same inputs, only their order is freer
     bool df_branch_ = false;
@@ -483,6 +488,10 @@ private:
     struct FlagSet { uint32_t* flag; uint32_t value; };
     FlagSet flag_sets_[2 * 64 * 2] = {};                          // host-function arguments, one per (layer, group)
     static void fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t bytes);
+    /// STRATA_DMA_FLAG_WRITE: the last value the copy stream was given to write into flag B (0: none this window);
+    /// while it has not landed, a later raise of flag B goes behind it on the stream (a direct store could be lowered)
+    uint32_t b_streamed_ = 0;
+    void raise_b(uint32_t want);
     static void raise_flag(uint32_t* flag, uint32_t value);
     int32_t* h_plan_ = nullptr;  int32_t* m_plan_ = nullptr;     // counts | start | dst | tok | ptr (as int32 pairs)
     int64_t plan_i32_ = 0;                                        // int32 words in the plan block

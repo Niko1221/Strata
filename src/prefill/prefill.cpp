@@ -274,6 +274,16 @@ inline int ring_budget_slots() {
     const int cap = ring_cap();
     return (int) (n <= 0 ? 0 : (n > cap ? cap : n));
 }
+// STRATA_PF_LEAN_ISSUE=1: the threaded issuer's host calls per streamed expert cut from three to about one.  A fused
+// batch's slots were released by one event each, all recorded at the same point of the compute stream; now one event
+// releases the batch and the copy stream waits on it once, and a slot's `copied` event is recorded only where a batch
+// ends (the only copies the compute stream waits for).  The same copies into the same slots in the same order, each
+// still after the kernels that read the slot before: the same bytes.  (At 3 calls a blob the issuer took ~68 us of
+// host time per 1.9 MB copy and the copy engine idled ~40% of a 4K prompt.)
+inline bool lean_issue() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_PF_LEAN_ISSUE"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
 inline int ring_slots(size_t T) {
     const char* v = std::getenv("STRATA_PREFILL_RING");
 #if defined(STRATA_USE_HIP)
@@ -747,6 +757,8 @@ struct Prefill::Impl {
     int64_t T = 0, T_max = 0;
     bool borrowed = false;
     cudaStream_t cs = nullptr, copy = nullptr;
+    cudaStream_t copy2 = nullptr;            // STRATA_PF_COPY2: the small chunks' second copy stream (two DMA engines)
+    cudaEvent_t copy2_mark = nullptr;        // ... and in the lean streamed walk, the other stream's progress at a batch end
     Gemm gemm;
     std::vector<void*> owned;
     // chunk buffers
@@ -837,6 +849,9 @@ struct Prefill::Impl {
     // the event that releases each ring slot: its own `used`, or - when an MMQ group is gathered in one launch - the
     // `used` of the last slot gathered with it, recorded once for all of them (a later record only waits longer)
     int used_of[RING_MAX] = {};
+    // STRATA_PF_LEAN_ISSUE: the fused batch whose one release event frees the slot (0: the slot's own record)
+    uint32_t used_bid[RING_MAX] = {};
+    uint32_t bid_next = 0;
     // PLE
     float* ple_emb = nullptr;
     std::vector<float> ple_pageable[2];      // the fallback when no more RAM can be pinned
@@ -920,6 +935,7 @@ void Prefill::release() {
     if (!impl_) return;
     if (impl_->cs) cudaStreamSynchronize(impl_->cs);
     if (impl_->copy) cudaStreamSynchronize(impl_->copy);
+    if (impl_->copy2) cudaStreamSynchronize(impl_->copy2);
     if (impl_->kv_copy) cudaStreamSynchronize(impl_->kv_copy);
     for (int i = 0; i < RING_MAX; ++i) {
         if (impl_->copied[i]) cudaEventDestroy(impl_->copied[i]);
@@ -931,6 +947,8 @@ void Prefill::release() {
         if (impl_->ple_emb_host[b] && impl_->ple_pageable[b].empty()) cudaFreeHost(impl_->ple_emb_host[b]);
     }
     if (impl_->copy) cudaStreamDestroy(impl_->copy);
+    if (impl_->copy2) cudaStreamDestroy(impl_->copy2);
+    if (impl_->copy2_mark) cudaEventDestroy(impl_->copy2_mark);
     if (impl_->kv_copy) cudaStreamDestroy(impl_->kv_copy);
     if (impl_->kv_released) cudaEventDestroy(impl_->kv_released);
     if (impl_->kv_ready) cudaEventDestroy(impl_->kv_ready);
@@ -1089,6 +1107,16 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         m.tok_up.init((size_t) chunk);
     }
     if (cudaStreamCreateWithFlags(&m.copy, cudaStreamNonBlocking) != cudaSuccess) { err = "prefill: copy stream"; return false; }
+    // STRATA_PF_COPY2=1: a chunk below stream_all_min() alternates its experts' copies over two streams (the H2D copies
+    // of 1.2-1.9 MB blobs reach ~25 GB/s on one stream and ~27.6 on two, gfx1100 PCIe 4.0); every compute still waits
+    // on its own slot's copy event and every slot is refilled after its release, so the same bytes in the same slots
+    if (const char* c2 = std::getenv("STRATA_PF_COPY2"); c2 != nullptr && c2[0] == '1' && m.copy2 == nullptr &&
+        (cudaStreamCreateWithFlags(&m.copy2, cudaStreamNonBlocking) != cudaSuccess ||
+         cudaEventCreateWithFlags(&m.copy2_mark, cudaEventDisableTiming) != cudaSuccess)) {
+        cudaGetLastError();
+        if (m.copy2) cudaStreamDestroy(m.copy2);
+        m.copy2 = nullptr;
+    }
     const size_t T = (size_t) chunk;
     m.T_max = chunk;
     m.borrowed = borrow != nullptr;
@@ -1293,13 +1321,13 @@ bool Prefill::carve(size_t T, void* alloc) {
         for (int i = 0; ok && i < m.ring; ++i) {
             m.stage_dev[i] = ring_base + (size_t) i * (size_t) MAXBLOB();
             m.stage_live[i] = false;
-            m.used_of[i] = i;
+            m.used_of[i] = i; m.used_bid[i] = 0;
         }
     } else {
         for (int i = 0; i < m.ring; ++i) {
             m.stage_dev[i] = o.take<uint8_t>((size_t) MAXBLOB(), ok);
             m.stage_live[i] = false;                        // a new buffer: nothing of an earlier layout to wait for
-            m.used_of[i] = i;
+            m.used_of[i] = i; m.used_bid[i] = 0;
         }
     }
     m.ple_emb = o.take<float>(T * N, ok);
@@ -1316,6 +1344,7 @@ bool Prefill::relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::
         return false;
     }
     if (cudaStreamSynchronize(m.cs) != cudaSuccess || cudaStreamSynchronize(m.copy) != cudaSuccess ||
+        (m.copy2 && cudaStreamSynchronize(m.copy2) != cudaSuccess) ||
         (m.kv_copy && cudaStreamSynchronize(m.kv_copy) != cudaSuccess)) {
         err = "prefill: relayout: the stream failed";
         return false;
@@ -2421,6 +2450,39 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             const char* v = std::getenv("STRATA_PREFILL_ISSUER");
             return v == nullptr || std::atoi(v) != 0;
         }();
+        // STRATA_PF_LEAN_ISSUE: which copies end a fused batch (the fused walk's batches, formed as below), per layer
+        const bool lean = lean_issue() && stream_all && issuer_on;
+        std::vector<uint8_t> rec_copied;   // 1: record the slot's `copied` event after this copy
+        std::vector<char> lean_fused;      // the layers the fused walk takes (checked against the layer loop's choice)
+        if (lean) {
+            rec_copied.assign(seq.size(), 1);
+            lean_fused.assign((size_t) g.n_layers, 0);
+            const strata::kernels::cpu::ExpertLayout& layp = strata::kernels::cpu::expert_layout();
+            const bool no_peer_p = !core::peer_portable();
+            const size_t per_p = (size_t) std::max(1, m.ring / 3);
+            for (int64_t l = LB; l < LE; ++l) {
+                const bool use_mmq_p = mmq_plan().any && mmq_plan().layer[(size_t) l];
+                const bool fused_only_p = mmq_plan().any && mmq_plan().fo[(size_t) l];
+                const int gt = layp.native ? layp.fmt[(size_t) l].gu_type : 42;
+                const int dt = layp.native ? layp.fmt[(size_t) l].d_type : 42;
+                const bool nat_p = (use_mmq_p || fused_only_p) && no_peer_p && layp.native && fused::native_supported(gt, dt);
+                if (!((use_mmq_p && no_peer_p && !layp.native && fused::enabled()) || nat_p)) continue;
+                lean_fused[(size_t) l] = 1;
+                const size_t kbeg = seq_start[(size_t) l], kend = seq_start[(size_t) l + 1];
+                for (size_t i = kbeg; i < kend; ++i) rec_copied[i] = 0;
+                size_t k = kbeg;
+                for (int32_t e = 0; e < m.g->n_expert;) {   // the fused walk's batch loop, slot bookkeeping only
+                    const int32_t e0 = e;
+                    const size_t k0 = k;
+                    for (; e < m.g->n_expert && e - e0 < fused::kMaxBatch; ++e)
+                        if (k < kend && seq[k].e == e) {
+                            if (k - k0 == per_p) break;
+                            ++k;
+                        }
+                    if (k > k0) rec_copied[k - 1] = 1;
+                }
+            }
+        }
         std::atomic<size_t> a_issued{0}, a_consumed{0};
         std::atomic<bool> a_stop{false};
         double iss_ms = 0;
@@ -2436,6 +2498,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             issuer = std::thread([&] {
                 strata::aux_cpus::pin_current_thread();
                 const core::OnDevice od(m.device);
+                uint32_t last_bid[2] = {0, 0};   // STRATA_PF_LEAN_ISSUE: the batch release each copy stream last waited for
+                // STRATA_PF_COPY2 in the lean walk: a fused layer's entries alternate over the two copy streams; at a batch
+                // end the stream of the last copy first waits for the other one's latest copy, so the batch's `copied`
+                // event still covers every copy of the batch (and before it)
+                const bool two = lean && m.copy2 != nullptr && m.copy2_mark != nullptr;
                 for (size_t idx = 0; idx < seq.size(); ++idx) {
                     while (idx >= a_consumed.load(std::memory_order_acquire) + (size_t) m.ring) {
                         if (a_stop.load(std::memory_order_acquire)) return;
@@ -2445,16 +2512,28 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const int sl = (int) (idx % (size_t) m.ring);
                     const auto th = Clock::now();
                     const size_t bytes = (size_t) lay0.blob_bytes(en.l);
-                    if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
+                    const bool alt = two && lean_fused[(size_t) en.l] && (idx & 1);
+                    const cudaStream_t cps = alt ? m.copy2 : m.copy;
+                    if (m.stage_live[sl]) {
+                        const uint32_t bid = lean ? m.used_bid[sl] : 0;
+                        if (bid == 0 || bid != last_bid[alt]) cudaStreamWaitEvent(cps, m.used[m.used_of[sl]], 0);
+                        last_bid[alt] = bid;
+                    }
                     if (en.job < 0) {
-                        cudaMemcpyAsync(m.stage_dev[sl], en.blob, bytes, cudaMemcpyHostToDevice, m.copy);
+                        cudaMemcpyAsync(m.stage_dev[sl], en.blob, bytes, cudaMemcpyHostToDevice, cps);
                         ++iss_dma;
                     } else {
                         const uint8_t* hb = m.stager->wait(en.job);
-                        cudaMemcpyAsync(m.stage_dev[sl], hb, bytes, cudaMemcpyHostToDevice, m.copy);
-                        m.stager->issued_one(en.job, m.copy);
+                        cudaMemcpyAsync(m.stage_dev[sl], hb, bytes, cudaMemcpyHostToDevice, cps);
+                        m.stager->issued_one(en.job, cps);
                     }
-                    cudaEventRecord(m.copied[sl], m.copy);
+                    if (!lean || rec_copied[idx]) {
+                        if (two) {   // the other stream's copies so far, then this one: the event covers both
+                            cudaEventRecord(m.copy2_mark, alt ? m.copy : m.copy2);
+                            cudaStreamWaitEvent(cps, m.copy2_mark, 0);
+                        }
+                        cudaEventRecord(m.copied[sl], cps);
+                    }
                     m.stage_live[sl] = true;
                     iss_ms += ms_since(th);
                     ++iss_streamed;
@@ -3010,6 +3089,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     bool cpu_arm = true;                  // auto: this layer may share (false: the arm without)
                     int cpu_set = -1;                     // auto: the wall events' set, -1 when not measured
                     bool cpu_cold = false;                // auto: one-time costs in the window (no reading)
+                    if (lean && (fused_l != (lean_fused[(size_t) l] != 0))) {
+                        err = "prefill: STRATA_PF_LEAN_ISSUE planned layer " + std::to_string(l) + " differently";
+                        return false;
+                    }
                     if (fused_l) {
                         if (static bool said = false; !said) {
                             said = true;
@@ -3047,6 +3130,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             if (k > k0) {
                                 // one copy stream, in order: the batch's last blob covers the others
                                 pt.mark(kPfWaitCopy, cs);
+                                if (lean && !rec_copied[k - 1]) {
+                                    err = "prefill: STRATA_PF_LEAN_ISSUE: a fused batch ends where no copy event was planned";
+                                    return false;
+                                }
                                 wait_issued(k - 1);
                                 cudaStreamWaitEvent(m.cs, m.copied[(k - 1) % (size_t) m.ring], 0);
                             }
@@ -3059,9 +3146,19 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             } else {
                                 fused::experts(b, (int) m.g->n_expert, T * K, m.GU, m.Xq, m.src_dev, m.H, m.Dm, m.cs);
                             }
+                            if (lean && k > k0) {   // one release for the batch: its kernels read all its slots
+                                const int rel = (int) ((k - 1) % (size_t) m.ring);
+                                cudaEventRecord(m.used[rel], m.cs);
+                                if (++m.bid_next == 0) ++m.bid_next;
+                                for (size_t kk = k0; kk < k; ++kk) {
+                                    m.used_of[kk % (size_t) m.ring] = rel;
+                                    m.used_bid[kk % (size_t) m.ring] = m.bid_next;
+                                }
+                            } else
                             for (size_t kk = k0; kk < k; ++kk) {
                                 cudaEventRecord(m.used[kk % (size_t) m.ring], m.cs);
                                 m.used_of[kk % (size_t) m.ring] = (int) (kk % (size_t) m.ring);
+                                m.used_bid[kk % (size_t) m.ring] = 0;
                             }
                             if (k > k0) {
                                 consumed = k;
@@ -3718,19 +3815,21 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const bool pinned = m.src->pinned(l, e);   // pinned: never transient
                             const uint8_t* b = pinned ? m.src->blob_stable(l, e) : nullptr;
                             if (pinned && !b) { err = "prefill: expert source has no blob"; return false; }
+                            // STRATA_PF_COPY2: odd slots on the second stream (each compute waits on its own slot's event)
+                            const cudaStream_t cps = (m.copy2 != nullptr && (sl & 1)) ? m.copy2 : m.copy;
                             if (pinned) {
                                 // DMA straight from the page-locked arena: the copy stream only waits for the slot
-                                if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
-                                cudaMemcpyAsync(m.stage_dev[sl], b, (size_t) lay.blob_bytes(l), cudaMemcpyHostToDevice, m.copy);
+                                if (m.stage_live[sl]) cudaStreamWaitEvent(cps, m.used[m.used_of[sl]], 0);
+                                cudaMemcpyAsync(m.stage_dev[sl], b, (size_t) lay.blob_bytes(l), cudaMemcpyHostToDevice, cps);
                                 ++stats_.experts_dma;
                             } else {
                                 // copied to a pinned buffer by the stager (waits only if it is behind), then DMA
                                 const uint8_t* hb = m.stager->wait(job_of[j]);
-                                if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
-                                cudaMemcpyAsync(m.stage_dev[sl], hb, (size_t) lay.blob_bytes(l), cudaMemcpyHostToDevice, m.copy);
-                                m.stager->issued_one(job_of[j], m.copy);
+                                if (m.stage_live[sl]) cudaStreamWaitEvent(cps, m.used[m.used_of[sl]], 0);
+                                cudaMemcpyAsync(m.stage_dev[sl], hb, (size_t) lay.blob_bytes(l), cudaMemcpyHostToDevice, cps);
+                                m.stager->issued_one(job_of[j], cps);
                             }
-                            cudaEventRecord(m.copied[sl], m.copy);
+                            cudaEventRecord(m.copied[sl], cps);
                             m.stage_live[sl] = true;
                             stage_of[j] = sl;
                             stats_.ms_experts_host += ms_since(th);
@@ -3772,7 +3871,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             if (gg_nslots > 0) {
                                 const int rel = gg_slots[gg_nslots - 1];
                                 cudaEventRecord(m.used[rel], m.cs);
-                                for (int i = 0; i < gg_nslots; ++i) m.used_of[gg_slots[i]] = rel;
+                                for (int i = 0; i < gg_nslots; ++i) { m.used_of[gg_slots[i]] = rel; m.used_bid[gg_slots[i]] = 0; }
                             }
                             gg_nslots = 0;
                             gg.first = gg.n;
@@ -3799,7 +3898,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 } else {
                                     mmq::gather_strata_q2(blob_dev, m.grp_gu + q * mmq_gub, m.grp_d + q * mmq_db, m.cs);
                                 }
-                                if (slot >= 0 && !group_gather) { cudaEventRecord(m.used[slot], m.cs); m.used_of[slot] = slot; }
+                                if (slot >= 0 && !group_gather) { cudaEventRecord(m.used[slot], m.cs); m.used_of[slot] = slot; m.used_bid[slot] = 0; }
                                 if (q + 1 < MMQ_GROUP && j + 1 < order.size()) return true;
                                 // the group's products: gate/up, swiglu, the group's H to q8_1, down
                                 const size_t j0 = j - q, g = j0 / MMQ_GROUP, n = order.size();
@@ -3837,7 +3936,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             } else {
                                 blob_dequant_f16(blob_dev, m.dq_gu[q], m.dq_d[q], m.cs);
                             }
-                            if (slot >= 0) { cudaEventRecord(m.used[slot], m.cs); m.used_of[slot] = slot; }
+                            if (slot >= 0) { cudaEventRecord(m.used[slot], m.cs); m.used_of[slot] = slot; m.used_bid[slot] = 0; }
                             const int64_t o0 = m.off[(size_t) e], ne = m.cnt[(size_t) e];
                             pt.mark(kPfGemmGU, cs);
                             m.gemm.f16(m.Xs + o0 * N, m.dq_gu[q], m.GU + o0 * 1280, ne, 1280, N);
@@ -3881,6 +3980,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     const int sl = (int) (k % (size_t) m.ring);
                                     cudaEventRecord(m.used[sl], m.cs);
                                     m.used_of[sl] = sl;
+                                    m.used_bid[sl] = 0;
                                     consumed = ++k;
                                     give_back(consumed);
                                 }
@@ -4148,6 +4248,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         err = std::string("prefill: expert copy stream: ") + cudaGetErrorString(cst);
         return false;
     }
+    if (m.copy2 != nullptr)
+        if (const cudaError_t cst = cudaStreamSynchronize(m.copy2); cst != cudaSuccess) {
+            err = std::string("prefill: expert copy stream 2: ") + cudaGetErrorString(cst);
+            return false;
+        }
     if (kv_prefetch) {
         if (const cudaError_t cst = cudaStreamSynchronize(m.kv_copy); cst != cudaSuccess) {
             err = std::string("prefill: KV prefetch stream: ") + cudaGetErrorString(cst);

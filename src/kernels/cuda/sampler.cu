@@ -118,7 +118,7 @@ __device__ __forceinline__ float apply_penalties(float logit, int count, const S
 /// SMALLER index - the same total order, so `sampler_parity` and C1 see no change.
 __global__ void sampler_greedy_kernel(const float* __restrict__ logits, int n_vocab,
                                       const int* __restrict__ history, int history_len, const SamplerParams p,
-                                      int pmin, int plen, int* __restrict__ out) {
+                                      int pmin, int plen, int* __restrict__ out, bool scan_unroll = false) {
     const int t = blockIdx.x;
     const float* l = logits + (size_t) t * n_vocab;
     (void) pmin;
@@ -157,7 +157,21 @@ __global__ void sampler_greedy_kernel(const float* __restrict__ logits, int n_vo
     // elements contributes nothing rather than contributing a bogus zero.
     float bv = __int_as_float(0xff800000);   // -inf
     int best = n_vocab;
-    for (int v = threadIdx.x; v < n_vocab; v += blockDim.x) {
+    int v = threadIdx.x;
+    // STRATA_SCAN_UNROLL (on; =0 off): without penalties the scan loads eight of its logits before it compares them -
+    // the same comparisons in the same ascending order, so the same pick; the loop alone waited on one load at a time
+    if (!use_bits && scan_unroll && p.logit_bias == nullptr) {
+        const int B = (int) blockDim.x;
+        for (; v + 7 * B < n_vocab; v += 8 * B) {
+            float x[8];
+#pragma unroll
+            for (int k = 0; k < 8; ++k) x[k] = l[v + k * B];
+#pragma unroll
+            for (int k = 0; k < 8; ++k)
+                if (x[k] > bv) { bv = x[k]; best = v + k * B; }
+        }
+    }
+    for (; v < n_vocab; v += blockDim.x) {
         const float s = apply_penalties(p.logit_bias ? l[v] + p.logit_bias[v] : l[v], hit_count(v), p);
         if (s > bv) { bv = s; best = v; }
     }
@@ -1236,6 +1250,10 @@ bool sample_greedy_cluster(const float* logits, int n_tokens, int n_vocab, int* 
 #endif
 }
 
+static bool scan_unroll_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_SCAN_UNROLL"); return v == nullptr || v[0] != '0'; }();
+    return on;
+}
 void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
                    const SamplerParams& p_in, int* out, void* stream) {
     SamplerParams p = p_in;
@@ -1260,7 +1278,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
         const int gthreads = 1024;
         if (!(multi && shmem == 0 && !p.logit_bias && sample_greedy_cluster(logits, n_tokens, n_vocab, out, stream)))
             sampler_greedy_kernel<<<(unsigned) n_tokens, gthreads, shmem, (cudaStream_t) stream>>>(
-                logits, n_vocab, history, history_len, p, p.penalty_last_n, p.penalty_last_n, out);
+                logits, n_vocab, history, history_len, p, p.penalty_last_n, p.penalty_last_n, out, scan_unroll_on());
     } else if (sampled_path() == SampledPath::Old) {
         // The same block-per-token shape: the selection's k argmax rounds reduce inside the block.  See
         // `sampler_kernel`'s header for what the old one-thread-per-token launch cost.
