@@ -1,0 +1,111 @@
+{
+ "hardware": "RTX 3070 8 GB, Ryzen 9 5900X, 96 GB RAM",
+ "local_runs": [
+  {
+   "run": "m0",
+   "quantization": "IQ3_S",
+   "thinking": "default (high)",
+   "passed": "8/8",
+   "mean_score": 100.0,
+   "total_time_s": 6100,
+   "time_per_pass_s": 763,
+   "decode_tok_s": 30.8,
+   "prompt_tok_s": null,
+   "tool_call_errors": "10/183"
+  },
+  {
+   "run": "m1",
+   "quantization": "IQ2_XS",
+   "thinking": "default (high)",
+   "passed": "8/8",
+   "mean_score": 99.4,
+   "total_time_s": 4339,
+   "time_per_pass_s": 542,
+   "decode_tok_s": 46.5,
+   "prompt_tok_s": 563.1,
+   "tool_call_errors": "14/252"
+  },
+  {
+   "run": "m2",
+   "quantization": "IQ3_XXS",
+   "thinking": "default (high)",
+   "passed": "8/8",
+   "mean_score": 100.0,
+   "total_time_s": 6474,
+   "time_per_pass_s": 809,
+   "decode_tok_s": 36.9,
+   "prompt_tok_s": 429.3,
+   "tool_call_errors": "12/241"
+  },
+  {
+   "run": "m3",
+   "quantization": "IQ3_S, repeat of m0",
+   "thinking": "default (high)",
+   "passed": "8/8",
+   "mean_score": 100.0,
+   "total_time_s": 6064,
+   "time_per_pass_s": 758,
+   "decode_tok_s": 31.5,
+   "prompt_tok_s": 301.8,
+   "tool_call_errors": "6/192"
+  },
+  {
+   "run": "m4",
+   "quantization": "IQ3_S",
+   "thinking": "medium",
+   "passed": "8/8",
+   "mean_score": 100.0,
+   "total_time_s": 4112,
+   "time_per_pass_s": 514,
+   "decode_tok_s": 32.3,
+   "prompt_tok_s": 294.1,
+   "tool_call_errors": "10/158"
+  },
+  {
+   "run": "m5",
+   "quantization": "IQ3_S",
+   "thinking": "low",
+   "passed": "8/8",
+   "mean_score": 100.0,
+   "total_time_s": 5742,
+   "time_per_pass_s": 718,
+   "decode_tok_s": 31.4,
+   "prompt_tok_s": 289.5,
+   "tool_call_errors": "6/192"
+  }
+ ],
+ "hosted_reference": [
+  {
+   "agent": "Codex CLI 0.160.0",
+   "model": "gpt-5.6-terra, reasoning xhigh",
+   "passed": "8/8",
+   "mean_score": 99.4,
+   "median_task_s": 179.8,
+   "tokens_reported": 6984690
+  },
+  {
+   "agent": "Antigravity CLI (`agy`) 1.3.2",
+   "model": "Gemini 3.8 Flash (High)",
+   "passed": "8/8",
+   "mean_score": 100.0,
+   "median_task_s": 560.5,
+   "tokens_reported": 3619431
+  },
+  {
+   "agent": "Claude Code 2.1.296",
+   "model": "Claude Sonnet 5.5, effort max",
+   "passed": "8/8",
+   "mean_score": 99.4,
+   "median_task_s": 1184.0,
+   "tokens_reported": 79393206
+  },
+  {
+   "agent": "OpenCode 1.18.16 + this machine (IQ3_S, default thinking)",
+   "model": "Flash-Next IQ3_S",
+   "passed": "8/8",
+   "mean_score": 100.0,
+   "median_task_s": 835.0,
+   "tokens_reported": 11940936
+  }
+ ]
+}
