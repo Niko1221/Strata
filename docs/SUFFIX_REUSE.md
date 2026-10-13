@@ -136,7 +136,20 @@ When an edit lands deeper than every checkpoint, the engine fail-closes: restore
 | kv-store | 1.000 / 43.1% | **1.000 / 72.3%** |
 | log-triage | 0.583 / 21.5% | **0.625 / 77.2%** |
 
-Two findings. First, the reuse gains are real and large (kv +29.2 pp, log +55.7 pp) and scores on those families rose, not fell — mounted cache answers exactly as fresh-prefilled text does. Second, needle fell to 0.500 — and the decomposition isolates why it is not the code: the same binary with the §5.1 config scores 0.750 on needle, identical to the flags-off arm's 0.750 (both within the seed band of the multi-seed needle mean 0.847 ± 0.171); only the dense-tail *configuration* drops it to 0.500, and needle's reuse was unchanged (16.1% → 17.0%) — the failure is not cache corruption but the fail-close gap-read colliding with that seed's unbounded-growth agent trajectory (23 messages, no compaction). Closing this gap is the next milestone (state-cadence replay, §10).
+Two findings. First, the reuse gains are real and large (kv +29.2 pp, log +55.7 pp) and scores on those families rose, not fell — mounted cache answers exactly as fresh-prefilled text does. Second, needle fell to 0.500 — and the decomposition isolates why it is not the code: the same binary with the §5.1 config scores 0.750 on needle, identical to the flags-off arm's 0.750 (both within the seed band of the multi-seed needle mean 0.847 ± 0.171); only the dense-tail *configuration* drops it to 0.500, and needle's reuse was unchanged (16.1% → 17.0%) — the failure is not cache corruption but the fail-close gap-read colliding with that seed's unbounded-growth agent trajectory (23 messages, no compaction).
+
+### 5.9 FW-2b — state-cadence checkpoints close the gap (2026-10-13)
+
+`--prompt-cache-state-every N` (FW-2b) adds a side pool of *state-only* checkpoints (the recurrence state `checkpoint_save` already copies for periodic anchors — gdn/ple/tails/dead/block_pos host vectors, no K/V) at a fine cadence, and the splice-narrowed restore picks the deepest anchor ≤ P across **both** pools. Fail-close semantics are unchanged — the gap [anchor, P) is still read through the normal chunk loop; the anchor just sits closer to the edit. 0 = off = byte-identical.
+
+Same binary, same seed 42, same dt configuration, only the flag differs:
+
+| arm | reward | reuse | wall | prefill ms/token |
+|---|---|---|---|---|
+| dt + state-every 256 | **0.833** (80/96) | **25.2%** | 1252 s | 3.66 |
+| dt (control) | 0.750 (72/96) | 0.0% | 992 s | 4.02 |
+
+Needle recovers into the seed band (0.847 ± 0.171) and per-token prefill *drops* 9% despite a longer trajectory. The control's per-request table shows the mechanism: all 17 of its mid-file rewrites found no anchor (0% reuse, ~44 s full prefill each); with the state ladder, the compaction-phase tail-preserving rewrites mount at 38–66% (9 of 26 requests; the growing phase and head-rewrites legitimately have nothing to mount). Steady-state chain (dt-steady10/10b): answers 160/161/162, C-turn reuse 81.0% @ 10.8 s, cold and append turns identical to pre-FW-2b — the side pool taxes nothing (captures ~105 ms each, host-RAM pool capped at 2 GiB ≈ 10 anchors at needle scale).
 
 ## 6. Purpose in context management (CLM) terms
 
@@ -158,6 +171,7 @@ Two new flags; the rest is existing upstream machinery:
 
 ```
 --cache-suffix-reuse 64          # the feature (opt-in; 0 = off, default)
+--prompt-cache-state-every 256   # FW-2b: fine-cadence state-only checkpoints (0 = off = prior behavior)
 --prompt-cache-dense-tail 4096   # adaptive cadence (opt-in; 0 = off = uniform cadence)
 --conversation-cache-mib 4096    # upstream flag; default 0 = parking off (needed: nothing to splice from without it)
 --prompt-cache 6                 # upstream default (>= 2 required by the validator)
