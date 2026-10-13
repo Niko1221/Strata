@@ -2400,8 +2400,9 @@ def layer_split_value(cfg: dict) -> str:
 
 def layer_split_of(cfg: dict) -> bool:
     """Several GPUs in the config are a layer split, unless the args put the later card(s) to another use: with
-    --peer-device the second card is an expert-cache tier, and the engine refuses that beside --layer-split (#665)."""
-    return len(gpu_list(cfg)) > 1 and "--peer-device" not in cfg["args"]
+    --peer-device the second card is an expert-cache tier, with --expert-parallel-device (SYCL) it computes its share
+    of every layer's experts, and the engine refuses either beside --layer-split (#665)."""
+    return len(gpu_list(cfg)) > 1 and not any(a in cfg["args"] for a in ("--peer-device", "--expert-parallel-device"))
 
 
 def engine_args(cfg: dict) -> list[str]:
@@ -6400,6 +6401,9 @@ def main() -> int:
             except ValueError as e:
                 raise SystemExit(f"[strata] config {e}")
             print(f"[strata] layer split across GPUs {gpu_list(cfg)} ({split})", flush=True)
+        elif len(gpu_list(cfg)) > 1 and "--expert-parallel-device" in cfg["args"]:
+            print(f"[strata] GPUs {gpu_list(cfg)}: the cards compute each layer's experts together "
+                  "(--expert-parallel-device)", flush=True)
         elif len(gpu_list(cfg)) > 1:
             print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as the peer expert tier (--peer-device)",
                   flush=True)
