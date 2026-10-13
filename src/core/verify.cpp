@@ -4365,6 +4365,14 @@ int Verifier::remote_poll(std::string& err) {
     return 1;
 }
 
+void Verifier::remote_settle() {
+    if (!rl_wait_ || rjob_ == nullptr) return;
+    if (rjob_->thr.joinable()) rjob_->thr.join();
+    rl_wait_ = false;
+    rl_commit_ = 0;
+    fl_active_ = false;
+}
+
 int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
     if (!fl_active_) return 1;
     if (rl_wait_) {   // remote-stage: the window's graph launches once the worker's rows are back

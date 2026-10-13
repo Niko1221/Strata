@@ -333,6 +333,11 @@ public:
     /// commit goes out after its reply.  The worker gets the windows and commits in the order this stage gets them.
     /// True while a window waits for the worker's rows.
     bool remote_waiting() const { return rl_wait_; }
+    /// A drain that stops at an error: a window still waiting for the worker's rows is given up once its job has
+    /// ended (the worker's reply, or the link's own timeout), so no thread uses the link after it.  Its graph never
+    /// runs and its queued commit is not sent: the worker's session stays unconfirmed until the next request's Reset
+    /// replaces it.
+    void remote_settle();
     /// The watchdog's line for a pipelined verifier: in flight, layers served, the GPU's ring and flags, its events.
     void diag_pipelined(std::FILE* f, const char* name) const;
 
