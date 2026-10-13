@@ -2,11 +2,8 @@
   "schema": "strata.supervisor-handoff-result.v1",
   "qualification": "resource_lifecycle_and_build_feedback_verified_with_disclosed_prompt_deviation",
   "hardware": {
-    "cpu": "AMD Ryzen 9 7940HS",
-    "gpu": "NVIDIA RTX 4070 Laptop 8 GB",
-    "installed_ram": "64 GB DDR5-5600",
     "os": "Windows",
-    "storage": "NVMe PCIe 4.0"
+    "backend": "CUDA"
   },
   "configuration": {
     "upstream_base": "v0.1.41",

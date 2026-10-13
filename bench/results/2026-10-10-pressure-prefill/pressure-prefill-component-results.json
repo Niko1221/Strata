@@ -6,10 +6,8 @@
   "native_sha256": "42b42060fdff6f0c00f4ea002647bedbff99a9aa89d950a730aaf65d74701387",
   "server_sha256": "e291fd6b7e5179a6bb212628d1173342e85fa454782bc446aa3f60130e13799a",
   "hardware": {
-    "cpu": "AMD Ryzen 9 7940HS",
-    "gpu": "NVIDIA RTX 4070 Laptop 8GB",
-    "installed_ram_gib": 64,
-    "platform": "Windows"
+    "platform": "Windows",
+    "backend": "CUDA"
   },
   "profile": {
     "model": "ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S",

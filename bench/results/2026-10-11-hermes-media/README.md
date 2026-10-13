@@ -6,7 +6,7 @@ This is useful functional evidence for [adaptive resource leases, Strata #1493](
 
 ## What ran
 
-- Windows; Ryzen 9 7940HS; RTX 4070 Laptop 8 GiB; 64 GiB DDR5-5600.
+- Windows/CUDA test host; machine inventory withheld for privacy.
 - ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S; 65,536 context capacity; high reasoning; CPU vision; experimental projection off.
 - One model-serving engine, one supervisor and two sequential direct workers. Context capacity was 64K; the largest observed request was 43,163 tokens, not a fully occupied 64K test.
 - The Hermes supervisor selected Qwen Image Q8_0 using a resource forecast; the host validated and prepared the assets. Three verified cached assets were reused; no model download occurred in this run. The image worker generated the reference; the video worker used it with the local MiniMax H3/ComfyUI workflow.

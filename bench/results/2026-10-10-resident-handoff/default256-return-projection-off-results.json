@@ -11,9 +11,6 @@
   },
   "profile": {
     "model": "ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S",
-    "cpu": "AMD Ryzen 9 7940HS",
-    "gpu": "NVIDIA RTX 4070 Laptop 8 GB",
-    "installed_ram_gib": 64,
     "operating_system": "Windows",
     "context_tokens": 65536,
     "reasoning": "high",
@@ -26,7 +23,8 @@
     "return_gpu_target_mib": 576,
     "sampled_gpu_guard_mib": 250,
     "sampled_ram_guard_gib": 3,
-    "resident_budget_gib": 32
+    "resident_budget_gib": 32,
+    "backend": "CUDA"
   },
   "acceptance": {
     "passed_without_failures": true,

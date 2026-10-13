@@ -297,7 +297,7 @@ Immutable expert weights and mutable KV/recurrent state require different evicti
 
 [Repository](https://github.com/XpuOS/xsched). Accelerator queue scheduling and preemption address compute
 sharing independently of memory capacity. Its documented tested CUDA architectures do not establish
-compatibility with this RTX 4070 Laptop. No interposition or driver changes were applied.
+compatibility with the tested CUDA host. No interposition or driver changes were applied.
 
 ### Additional leads, with limitations
 
@@ -437,8 +437,8 @@ separately from the older campaign below and the new idle-parking implementation
 `b17c3ef7a55ff1b00e217fb5a5251a23583734b2ce6e2d57d1423012215d83aa` and server source SHA-256
 `f714e58627696099ecda6969307c066fee597a6b28412d218805045a98ea0e45`.
 
-On Windows with a Ryzen 9 7940HS, RTX 4070 Laptop 8 GiB and 64 GiB installed RAM, three real-engine
-service-level streaming cases passed: uninterrupted control, park/resume, and cancellation while parked.
+On the Windows/CUDA test host, three real-engine service-level streaming cases passed: uninterrupted
+control, park/resume, and cancellation while parked.
 The model was IQ3_S with 65,536 configured context; this was a short text prompt, not a filled-64K parking
 test. Sampling was greedy with seed 42, high reasoning, an 8,192-token reasoning allowance and a
 12,288-token total output limit.
@@ -571,8 +571,8 @@ behavior.
 
 ## Initial local validation of the port
 
-Machine: Ryzen 9 7940HS, RTX 4070 Laptop 8 GiB, 64 GiB installed DDR5; Windows; IQ3_S; 65,536 configured
-context. This short test did not fill 64K, test vision inputs, run Hermes tools or simulate external workloads.
+Test platform: Windows/CUDA, IQ3_S, 65,536 configured context; machine inventory withheld for privacy.
+This short test did not fill 64K, test vision inputs, run Hermes tools or simulate external workloads.
 
 - CUDA Release build succeeded. Five native CTest targets passed, covering live memory, conversation cache,
   conversation memory/snapshot and serving-window behavior.

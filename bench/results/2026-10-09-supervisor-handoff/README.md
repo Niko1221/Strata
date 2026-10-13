@@ -1,6 +1,6 @@
 # v0.1.41 adaptive merge and supervisor handoff qualification
 
-Hardware: Windows, Ryzen 9 7940HS, RTX 4070 Laptop 8 GiB, 64 GiB DDR5-5600.
+Test platform: Windows/CUDA; machine inventory withheld for privacy.
 Model: ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S. Context is configured to
 65,536; main requests use high reasoning, with vision enabled. These runs do
 not constitute a new near-64K prompt qualification or a speed comparison.

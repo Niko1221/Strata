@@ -14,7 +14,7 @@ and can fall back to the existing verified unload/reload lifecycle. Strict
 
 ## Matched component comparison
 
-Hardware: Windows, Ryzen 9 7940HS, RTX 4070 Laptop 8 GiB, 64 GiB DDR5-5600.
+Test platform: Windows/CUDA; machine inventory withheld for privacy.
 Model: ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S; high reasoning; configured
 65,536-token context; CPU vision enabled. The complete allowlisted settings,
 hashes, token usage and individual measurements are in

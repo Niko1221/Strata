@@ -1,6 +1,6 @@
 # Adaptive background control: bounded Windows acceptance
 
-This packet describes measurements from **2026-10-08** on one consumer laptop,
+This packet describes measurements from **2026-10-08** on one Windows/CUDA test host,
 using an experimental branch based on **Strata v0.1.40.3**. It is a correctness
 and resource-control report, not a general speedup claim. Production settings
 were not changed by these isolated campaigns.
@@ -14,15 +14,11 @@ continuation of its earlier turn-limit failure; both attempts' costs are retaine
 generated answer lengths prevent attributing shorter model completion times to
 pacing. A previous output-limit failure is retained below.
 
-## Hardware, software and identity
+## Test platform, software and identity
 
 | Item | Tested configuration |
 |---|---|
-| CPU | AMD Ryzen 9 7940HS, 8 cores / 16 threads; AVX-512-capable |
-| GPU | NVIDIA GeForce RTX 4070 Laptop GPU, nominal 8 GiB; native CUDA reported 8,187 MiB total; compute capability 8.9 |
-| Host RAM | 64 GiB installed DDR5-5600, dual channel; Windows exposed about 59.72 GiB after hardware reservations |
-| Storage | Model files on a dedicated 4 TB BIWIN X570 NVMe drive, operating through the laptop's PCIe 4.0 connection |
-| OS | Windows x64, build 26300.9457, reported display version 26H2 |
+| Test platform | Windows x64, CUDA; machine inventory withheld for privacy |
 | Model | [ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF), two shards, PLE enabled; not Swift |
 | Native build | Release, CUDA architecture 89; MSVC 19.51.36260.0, CUDA compiler 13.4.59 |
 | Foreground fixture | Original C++20 code in `foreground_work.cpp`, GCC `-O2 -pthread -static`; no AVX-512-only flags |

@@ -7,9 +7,6 @@
   "prompt_sha256": "0bb21f7e4a8d5d279168c53819d561acb786613cf6f197efee03ee4ba5af7bd2",
   "common": {
     "model": "ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S",
-    "cpu": "AMD Ryzen 9 7940HS",
-    "gpu": "NVIDIA RTX 4070 Laptop 8 GiB",
-    "installed_ram_gib": 64,
     "os": "Windows",
     "context_limit": 65536,
     "reasoning_effort": "high",
@@ -26,7 +23,8 @@
     "pool_workers": 7,
     "effective_base_free_vram_mib": 320,
     "sampled_vram_guard_mib": 250,
-    "startup_excluded_from_cycle": true
+    "startup_excluded_from_cycle": true,
+    "backend": "CUDA"
   },
   "qualification": "The explicit zero additional VRAM allowance only covers this bounded already-allocated workspace; default256 return/fallback is qualified separately.",
   "rows": [

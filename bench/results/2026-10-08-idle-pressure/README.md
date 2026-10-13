@@ -9,8 +9,7 @@ retains its original revisions and failed attempts.
 
 ## Tested setup and identity
 
-Windows x64; Ryzen 9 7940HS; RTX 4070 Laptop 8 GiB; 64 GiB dual-channel DDR5-5600,
-about 59.72 GiB exposed to Windows; model files on a PCIe 4.0 NVMe SSD.
+Windows x64, CUDA; machine inventory withheld for privacy.
 ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S, two GGUF shards with PLE, 65,536
 configured context, high main-request reasoning, int8 KV, MTP and CPU vision.
 The existing experimental projection was held constant, not evaluated as a quality gain.

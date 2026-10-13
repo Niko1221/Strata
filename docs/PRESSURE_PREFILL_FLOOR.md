@@ -110,9 +110,8 @@ passed. This is test-harness repair, not an engine performance finding.
 
 ### Model, compiler and agent results
 
-On Windows with a Ryzen 9 7940HS, RTX 4070 Laptop 8 GB and 64 GiB installed RAM,
-the IQ3_S candidate was tested at 65,536 configured context capacity, high
-reasoning, CPU vision enabled and experimental projection disabled. The ordinary
+On the Windows/CUDA test host, the IQ3_S candidate was tested at 65,536 configured context capacity,
+high reasoning, CPU vision enabled and experimental projection disabled. The ordinary
 256 MiB additional return allowance was retained: the controller required
 576 MiB total fresh headroom for return. These were short text workloads, not
 65,536-token occupied prompts.
