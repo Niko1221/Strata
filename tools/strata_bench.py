@@ -489,7 +489,7 @@ def gpu_info_local() -> dict:
             gpus.append({"name": p[0], "vram_mib": int(float(p[1])) if p[1].replace(".", "").isdigit() else None, "driver": p[2]})
     info = {"gpus": gpus}
     head = run_cmd(["nvidia-smi"])
-    m = re.search(r"CUDA Version:\s*([\d.]+)", head)
+    m = re.search(r"CUDA (?:UMD )?Version:\s*([\d.]+)", head)
     if m:
         info["cuda"] = m.group(1)
     if not gpus:

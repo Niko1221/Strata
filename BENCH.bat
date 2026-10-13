@@ -10,6 +10,7 @@ if not exist ".venv\Scripts\python.exe" (
   pause
   exit /b 1
 )
+set PYTHONUTF8=1
 ".venv\Scripts\python.exe" tools\strata_bench.py %*
 set "RC=%ERRORLEVEL%"
 pause
