@@ -333,13 +333,16 @@ bool resident_stage_swaps(strata::core::FileExpertSource &src,
         if (slot < 0) continue;
         const SwapHome home = locate(s.layer);
         const strata::core::OnDevice on(home.dev);
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
-
+        // the evicted expert's bytes go back into exchange buffer q BEFORE its slot is overwritten
+        // (CUDA: cudaMemcpyAsync D2H on the owning card's stream; the dpct migration had dropped the call)
+        try {
+            home.stream->memcpy(src.exchange_buffer(q), home.cache->device_slot(slot),
+                                (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer));
+        } catch (sycl::exception const& e) {
+            std::fprintf(stderr, "strata: copy back of layer %d slot %d (device %d) failed: %s\n", (int) s.layer,
+                         (int) slot, home.dev, e.what());
+            return false;
+        }
         bool seen = false;
         for (const SwapHome& u : used) seen = seen || u.stream == home.stream;
         if (!seen) used.push_back(home);
@@ -349,6 +352,32 @@ bool resident_stage_swaps(strata::core::FileExpertSource &src,
     if (!staged.empty()) {
         for (const SwapHome& u : used) {
             const strata::core::OnDevice on(u.dev);
+            try {
+                u.stream->wait();
+            } catch (sycl::exception const& e) {
+                std::fprintf(stderr, "strata: copy back sync (device %d) failed: %s\n", u.dev, e.what());
+                return false;
+            }
+        }
+        // STRATA_CHECK_SWAPS=1 (a test aid): each evicted expert's exchange buffer must hold the model file's bytes
+        if (const char* chk = std::getenv("STRATA_CHECK_SWAPS"); chk != nullptr && chk[0] != '\0' && chk[0] != '0') {
+            static std::atomic<int64_t> n_ok{0}, n_bad{0};
+            std::vector<uint8_t> ref;
+            int64_t bad = 0;
+            for (const Staged& x : staged) {
+                ref.resize((size_t) strata::kernels::cpu::expert_layout().blob_bytes(x.layer));
+                if (!src.copy_blob_from_file(x.layer, x.out, ref.data()) ||
+                    std::memcmp(ref.data(), src.exchange_buffer(x.q), ref.size()) != 0) {
+                    ++bad;
+                    std::fprintf(stderr, "strata: STRATA_CHECK_SWAPS: layer %d expert %d: the exchange buffer differs from the file\n",
+                                 (int) x.layer, (int) x.out);
+                } else {
+                    ++n_ok;
+                }
+            }
+            n_bad += bad;
+            std::fprintf(stderr, "strata: STRATA_CHECK_SWAPS: %zu staged, %lld differ (total %lld ok, %lld differ)\n",
+                         staged.size(), (long long) bad, (long long) n_ok.load(), (long long) n_bad.load());
         }
         for (const Staged& x : staged)
             if (!src.stage_exchange(x.layer, x.in, x.out, x.q)) {
@@ -3003,7 +3032,13 @@ int main(int argc, char **argv) try {
             if (rps >= kSlowRowsPerS)
                 std::fprintf(stderr, "strata generate: PLE direct read probe: %.0f rows/s (fine)\n", rps);
             if (rps > 0 && rps < kSlowRowsPerS) {
-                if (!o.ple_io_explicit) {
+                // #1984 #1971 #2040: on no platform is the switch made on its own.  Windows: the mapped reads stalled prompts (the first chunk waits for 16 serial page faults
+                // a token from a cold table with no progress mark).  Linux SATA SSD: the 15K rows/s bar is NVMe-calibrated, a SATA SSD
+                // tops out at 10-14K with direct's 16 reads in flight and mapped reads were 7x slower.  The switch is only made when asked for
+                // (STRATA_PLE_AUTO_MMAP=1, the 0.1.42 behaviour); otherwise the slow probe warns and direct is kept.
+                bool auto_mmap = !o.ple_io_explicit;
+                if (const char* am = std::getenv("STRATA_PLE_AUTO_MMAP"); am == nullptr || std::atoi(am) == 0) auto_mmap = false;
+                if (auto_mmap) {
                     std::fprintf(stderr, "strata generate: --ple-io direct measures slow here (%.0f rows/s, about %.0f MB/s of "
                                          "random 4 KiB reads): using --ple-io mmap instead (the OS file cache holds the pages; "
                                          "--ple-io direct forces the old mode, --ple-io ram keeps the table in RAM)\n",
@@ -3018,8 +3053,9 @@ int main(int argc, char **argv) try {
                 } else {
                     std::fprintf(stderr, "strata generate: WARNING: --ple-io direct measures slow here (%.0f rows/s, about %.0f "
                                          "MB/s of random 4 KiB reads): a prompt can spend minutes reading layer 1 and trip the "
-                                         "stall watchdog (#1425, #1629). --ple-io mmap was 40-100x faster on such drives; "
-                                         "--ple-io ram needs the RAM for the table\n", rps, rps * 4096.0 / 1e6);
+                                         "stall watchdog (#1425, #1629). --ple-io mmap was 40-100x faster on some DRAM-less NVMe drives but 7x slower on a SATA SSD (#2040), so it is not chosen for you; "
+                                         "--ple-io ram needs the RAM for the table%s\n", rps, rps * 4096.0 / 1e6,
+                                 o.ple_io_explicit ? "" : " (kept direct: pass --ple-io mmap or --ple-io ram to change it)");
                 }
             }
         }
@@ -4931,6 +4967,29 @@ int main(int argc, char **argv) try {
     }
     if (multi_gpu)
         std::fprintf(stderr, "strata generate: layer split: CUDA0 runs layers 0-%lld\n", (long long) (split_at[0] - 1));
+    // #1980: the host mirror and the "REFUSED" count above cover the first stage only. A later stage whose cache does not
+    // hold all of its layers' experts has no mirror entry for the rest, and with STRATA_VERIFY_NO_HOST no host answers for
+    // them: the device plan reads a bad address and the card is lost at the first verify window (2x Arc Pro B60, xe CAT
+    // fault). Refuse at the start with the same message, and say how to get a complete load.
+    if (multi_gpu) {
+        const bool no_host_split = [] { const char* v = std::getenv("STRATA_VERIFY_NO_HOST"); return v && *v && std::strcmp(v, "0") != 0; }();
+        int64_t later_misses = 0;
+        for (auto& stp : stages) {
+            const GpuStage& st = *stp;
+            later_misses += std::max<int64_t>(0, (st.le - st.lb) * g.n_expert - (int64_t) st.cache.slots());
+        }
+        if (later_misses > 0 && no_host_split) {
+            std::fprintf(stderr, "strata generate: REFUSED: %lld experts of the later layer-split stages are neither in VRAM nor mirrored "
+                                 "(the host mirror covers the first stage only); with STRATA_VERIFY_NO_HOST the device plan cannot run them "
+                                 "and the card is lost at the first verify window - set STRATA_STAGE_TRIM=1 (with --layer-split N) to free "
+                                 "each card's duplicate dense weights, lower --max-context or --vram-reserve-mib, or unset "
+                                 "STRATA_VERIFY_NO_HOST\n", (long long) later_misses);
+            return 2;
+        }
+        if (later_misses > 0)
+            std::fprintf(stderr, "strata generate: layer split: %lld experts of the later stages are not in VRAM (served by the host)\n",
+                         (long long) later_misses);
+    }
 
     std::array<strata::core::RemoteExperts, 3> remote_experts;
     std::unique_ptr<strata::core::RemoteExpertOpt> remote_opt;
@@ -12534,6 +12593,31 @@ int main(int argc, char **argv) try {
             std::printf("%-24s %.2f GiB of experts in RAM, %lld exchanged with the VRAM tier, %lld blob reads from "
                         "the file\n", "resident RAM", (double) src.resident_bytes() / 1073741824.0,
                         (long long) src.exchanges(), (long long) src.file_reads());
+        // STRATA_CHECK_SWAPS=1 (a test aid): after the run every expert must be held (the GPU cache or the RAM copy),
+        // and every RAM-copy blob must equal the model file's bytes (nothing lost, nothing stale after the swaps)
+        if (src.complement_ready())
+            if (const char* chk = std::getenv("STRATA_CHECK_SWAPS"); chk != nullptr && chk[0] != '\0' && chk[0] != '0') {
+                int64_t held_ram = 0, held_gpu = 0, lost = 0, stale = 0;
+                std::vector<uint8_t> ref;
+                for (int64_t l = 0; l < g.n_layers; ++l)
+                    for (int64_t e = 0; e < g.n_expert; ++e) {
+                        const bool ram = src.has_resident(l, e);
+                        const bool gpu = host_res[(size_t) l * (size_t) g.n_expert + (size_t) e] >= 0;
+                        held_ram += ram;
+                        held_gpu += gpu;
+                        if (!ram && !gpu) { ++lost; continue; }
+                        if (!ram) continue;
+                        ref.resize((size_t) strata::kernels::cpu::expert_layout().blob_bytes(l));
+                        if (!src.copy_blob_from_file(l, e, ref.data()) ||
+                            std::memcmp(ref.data(), src.resident_blob(l, e), ref.size()) != 0) {
+                            if (stale++ < 8)
+                                std::fprintf(stderr, "strata: STRATA_CHECK_SWAPS: layer %d expert %d: the RAM copy differs from the file\n",
+                                             (int) l, (int) e);
+                        }
+                    }
+                std::printf("%-24s audit: %lld experts in RAM, %lld in the GPU cache, %lld held by neither, %lld RAM blobs differ from the file\n",
+                            "STRATA_CHECK_SWAPS", (long long) held_ram, (long long) held_gpu, (long long) lost, (long long) stale);
+            }
         if (srcp == &src) {  // CS-T: the RAM and file tiers (the GPU cache's share is the hit rate above)
             const double fms = src.file_ms() - fms0, fmb = (double) (src.file_blob_bytes() - fbytes0) / 1e6;
             std::printf("%-24s decode: RAM %lld blobs, files %lld blobs, %.1f MB read from the files (%.2f MB/round, "

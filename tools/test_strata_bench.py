@@ -2,6 +2,8 @@
 writing and the comparison.  Light: no GPU, no Strata server, a few seconds."""
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -254,6 +256,75 @@ class ReportTests(unittest.TestCase):
             self.assertIn("chat decode tok/s", table)
             self.assertIn("+100.0%", table)
             self.assertIn("engine: 1.0 -> 9.9.9", table)
+
+    def test_only_the_gpus_the_engine_uses_are_listed(self):
+        """#1985: a PC with two cards, the engine on one: the report names that one, with its VRAM."""
+        srv = FakeStrata()
+        self.addCleanup(srv.stop)
+        two = {"gpus": [{"name": "NVIDIA GeForce RTX 3060", "vram_mib": 12288, "driver": "560.1"},
+                        {"name": "NVIDIA GeForce RTX 9999", "vram_mib": 16384, "driver": "560.1"}]}
+        with mock.patch.object(B, "gpu_info_local", return_value=two):
+            m = B.collect_machine(srv.base, "", {"gpu": 1})
+            self.assertEqual((m["gpu"], m["gpu_vram_mib"]), (["NVIDIA GeForce RTX 9999"], 16384))
+            m = B.collect_machine(srv.base, "", {"gpu": [0, 1]})
+            self.assertEqual((m["gpu"], m["gpu_vram_mib"]), (["NVIDIA GeForce RTX 3060", "NVIDIA GeForce RTX 9999"], 28672))
+            m = B.collect_machine(srv.base, "", {"gpu": "0"}, "1")            # the bench's own --gpu wins
+            self.assertEqual(m["gpu"], ["NVIDIA GeForce RTX 9999"])
+            m = B.collect_machine(srv.base, "", {"args": ["--gpu", "0"]})
+            self.assertEqual(m["gpu"], ["NVIDIA GeForce RTX 3060"])
+            # nothing selected: one card, the one the server reports (not every card of the PC)
+            m = B.collect_machine(srv.base, "", {})
+            self.assertEqual((m["gpu"], m["gpu_vram_mib"]), (["NVIDIA GeForce RTX 9999"], 16384))
+        self.assertEqual(B.gpu_selection({"gpu": "0,2"}), [0, 2])
+        self.assertEqual(B.gpu_selection({}, None), [])
+
+    def test_the_slug_names_mixed_cards_one_by_one(self):
+        """#2062: two different cards are not N copies of the first."""
+        a, b = "NVIDIA GeForce RTX 5070 Ti", "NVIDIA RTX A4000"
+        self.assertEqual(B.gpu_slug({"gpu": [a]}), "rtx-5070-ti")
+        self.assertEqual(B.gpu_slug({"gpu": [a, b]}), "rtx-5070-ti-plus-rtx-a4000")
+        self.assertEqual(B.gpu_slug({"gpu": [b, a]}), "rtx-a4000-plus-rtx-5070-ti")
+        self.assertEqual(B.gpu_slug({"gpu": [b, b]}), "2x-rtx-a4000")
+        self.assertEqual(B.gpu_slug({"gpu": [b, a, b]}), "2x-rtx-a4000-plus-rtx-5070-ti")
+
+    def test_a_card_the_pc_s_nvidia_smi_does_not_list_is_the_servers_own(self):
+        """#2001: the engine on an Intel Arc beside a GeForce: the report names the Arc (the name the server reads)."""
+        srv = FakeStrata()
+        self.addCleanup(srv.stop)
+        nv = {"gpus": [{"name": "NVIDIA GeForce RTX 3080 Ti", "vram_mib": 12288, "driver": "560.1"}], "cuda": "12.6"}
+        with mock.patch.object(B, "gpu_info_local", return_value=nv), mock.patch.object(
+                B, "try_json", side_effect=lambda base, path, *a, **k: (
+                    {"hardware_static": {"gpu_name": "Intel Arc Pro B70"}} if path == "/metrics" else {})):
+            m = B.collect_machine(srv.base, "", {"backend": "sycl"})
+        self.assertEqual((m["gpu"], m["cuda"]), (["Intel Arc Pro B70"], None))
+
+    def test_a_bench_server_never_saves_over_the_users_profile(self):
+        """#2088: --expert-profile-save writes the profile at quit; the bench's own server runs without it."""
+        cfg = {"args": ["--expert-profile", "p.bin", "--expert-profile-save", "p.bin", "--spec", "4"]}
+        safe, removed = B.without_profile_save(cfg)
+        self.assertTrue(removed)
+        self.assertEqual(safe["args"], ["--expert-profile", "p.bin", "--spec", "4"])
+        self.assertEqual(cfg["args"][3], "p.bin")                       # the input is not changed
+        safe, removed = B.without_profile_save({"args": ["--expert-profile-save=p.bin", "--spec", "4"]})
+        self.assertEqual((safe["args"], removed), (["--spec", "4"], True))
+        same = {"args": ["--spec", "4"]}
+        self.assertEqual(B.without_profile_save(same), (same, False))
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+            c = Path(d) / "strata-x.json"
+            c.write_text(json.dumps(cfg))
+            with mock.patch.object(B.subprocess, "Popen") as popen, contextlib.redirect_stderr(io.StringIO()):
+                B.start_server(c, 8080, None, Path(d) / "run.log")
+            used = Path(popen.call_args[0][0][popen.call_args[0][0].index("--config") + 1])
+            self.assertNotIn("--expert-profile-save", json.loads(used.read_text())["args"])
+            self.assertIn("--expert-profile-save", json.loads(c.read_text())["args"])   # the user's file is as it was
+
+    def test_an_attached_server_is_not_stopped(self):
+        """#2088: with --url the bench only reads; the server it did not start keeps running."""
+        srv = FakeStrata()
+        self.addCleanup(srv.stop)
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(B, "stop_server") as stop:
+            self.assertEqual(self.run_main(srv, d), 0)
+        stop.assert_not_called()
 
     def test_names(self):
         m = {"gpu": ["NVIDIA GeForce RTX 3060"], "model": "Qwen3.8 Flash-Next", "quant": "IQ3_XXS"}

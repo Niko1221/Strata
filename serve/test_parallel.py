@@ -105,6 +105,14 @@ while True:
         if bytes(int(x) & 255 for x in ids).find(b"REFUSEME") >= 0:   # #1059: refused up front, then idle (no DONE)
             print("ERR refused: images are not enabled", flush=True)
             continue
+        # #1994: the engine's own view of its slots differs: BUSYSLOT is refused once, BUSYALL always
+        pbx = bytes(int(x) & 255 for x in ids)
+        if slot is not None and (b"BUSYALL" in pbx or (b"BUSYSLOT" in pbx and "busyslot" not in fired)):
+            fired.add("busyslot")
+            print(f"ERR BGEN: no such free slot (--batch {slots}) or a bad max_new", flush=True)
+            if log:
+                log.write(f"REFUSED {slot}\n"); log.flush()
+            continue
         if log:
             log.write(f"{f[0]} {slot} {len(ids)} {max(len(active), 0)}\n"); log.flush()
         pb = bytes(int(x) & 255 for x in ids)
@@ -313,6 +321,46 @@ class ParallelService(unittest.TestCase):
     def get(self, path):
         with urllib.request.urlopen(self.base + path, timeout=10) as r:
             return json.loads(r.read().decode())
+
+    def _two_at_once(self, text_b):
+        """A long request first, then one that has to go to a batch slot (the engine is busy with the first)."""
+        out = {}
+        def go(k, text):
+            try:
+                out[k] = ("ok", self.chat(text, max_tokens=64))
+            except urllib.error.HTTPError as e:
+                out[k] = ("http", e.code, e.read().decode(), dict(e.headers))
+        ta = threading.Thread(target=go, args=("a", "LONGREPLY please"))
+        ta.start()
+        time.sleep(0.15)
+        tb = threading.Thread(target=go, args=("b", text_b))
+        tb.start()
+        ta.join(30); tb.join(30)
+        return out
+
+    def test_bgen_refused_by_the_engine_is_retried_not_a_400(self):
+        """#1994: the engine refuses a BGEN ("no such free slot") although the server saw the slot free: the request
+        goes to another slot (or waits) and is answered; the same conversation's next turn works too."""
+        self.start(2)
+        self.engine.SLOT_PARK_S = 0.2
+        out = self._two_at_once("BUSYSLOT hello")
+        self.assertEqual(out["b"][0], "ok", out["b"])
+        self.assertIn("REFUSED", self.log.read_text())
+        again = self.chat("BUSYSLOT hello")                     # the conversation is not poisoned
+        self.assertEqual(again["choices"][0]["message"]["content"], "ok, done.")
+        time.sleep(0.5)
+        self.assertEqual(self.engine.slot_busy, [False, False])
+
+    def test_bgen_refused_for_good_is_a_retryable_503_and_frees_the_slots(self):
+        """#1994: when the engine keeps refusing, the answer is a 503 (retryable), never a 400, and no slot stays busy."""
+        self.start(2)
+        self.engine.SLOT_PARK_S = 0.05
+        out = self._two_at_once("BUSYALL hello")
+        self.assertEqual(out["b"][0], "http", out["b"])
+        self.assertEqual(out["b"][1], 503, out["b"])
+        time.sleep(0.5)
+        self.assertEqual(self.engine.slot_busy, [False, False])
+        self.assertEqual(self.chat("fine again")["choices"][0]["message"]["content"], "ok, done.")
 
     def test_engine_reports_fewer_slots(self):
         self.start(4, fit=2)

@@ -291,6 +291,10 @@ def install(argv) -> None:
             # needs an explicit ONEAPI_DEVICE_SELECTOR (kept if the user set one)
             selector = "level_zero:*" if split else f"level_zero:{idx}"
             cfg.setdefault("env", {}).setdefault("ONEAPI_DEVICE_SELECTOR", selector)
+        if split:
+            # #1980: without it every card keeps a full copy of the dense weights (1.4 GiB each on Flash-Next IQ2_XS) and the
+            # load stops at 96-97% resident; the later stage's missing experts have no host mirror (STRATA_VERIFY_NO_HOST)
+            cfg.setdefault("env", {}).setdefault("STRATA_STAGE_TRIM", "1")
         need = S.MODELS.get(model, {}).get("ram_gb", 0)
         sel_alch = sel["driver"] == "i915" or sel.get("devid") in ALCHEMIST_IDS
         if sel_alch and need and real_ram < need:
