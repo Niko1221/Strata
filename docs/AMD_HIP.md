@@ -448,6 +448,13 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   matrix cores; `hip_prefill_hipblaslt_gemm`, no hipBLASLt table) and 3 that fail for reasons outside the engine
   (`ple_parity` needs a Q2_0 PLE file that is not on that machine, `expert_multi_test` refuses the CPU without AVX-512,
   `platform_memory_test` cannot `mlock` at the shell's default `ulimit -l`).
+- **The verifier's hyper-connection read as one persistent kernel:** `STRATA_HC_PERSIST=1` (opt-in, HIP, 32-lane
+  waves) runs the read of 1-8 tokens as one kernel of 80 blocks with two grid barriers instead of three launches; a
+  start-up run per token count with a barrier timeout decides where it is resident, and one `strata hc:` line per card
+  says so. On 2x RX 6900 XT (ROCm 10.0, layer split): the read 1.35-2.10x, ms per verify window -4.2 % / -2.8 % at
+  4K / 32K (6 rounds), not bit-identical (as close to a double-accumulation reference as the default read):
+  [bench/results/2026-10-12-hc-persist-gfx1030](../bench/results/2026-10-12-hc-persist-gfx1030/README.md). Other
+  RDNA cards are untested; the `strata hc:` line and a `STRATA_DECODE_TIMING` run from one are welcome.
 - **gfx1031** (RX 6700 XT, #524): setup knows it (the `gfx103X-all` wheels, unvalidated); its reporter runs it daily
   on one card. More reports: an RX 6700 XT 12 GB run as gfx1030 on ROCm 7.2.4 (#1027: IQ2_XS, decode 30-32 tok/s, prompt about 300 tok/s, 6 of 6
   needles), and an RX 6800M 12 GB on Windows with a self-built engine (#915, #1078: Q2_0, decode 9-27 tok/s, prompt 50-114 tok/s; the

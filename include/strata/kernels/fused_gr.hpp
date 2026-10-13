@@ -74,4 +74,12 @@ void fused_gr_set_fast(int on);
 void fused_gr_check();
 int fused_gr_variant();
 
+/// Opt-in STRATA_HC_PERSIST=1 (HIP): the multi read as one persistent kernel (80 resident blocks, the down projection
+/// split by column slices, two grid barriers).  Another summation order (not bitwise).
+/// `fused_gr_persist_init` checks residency and the result against the default read once per card (Verifier::init);
+/// `fused_gr_read_persist` returns false when it did not run (off, too many tokens, a Q8 / QFUSE read) - then the caller
+/// runs `fused_gr_read_multi`.  Only for reads on a stream no other persistent read runs on concurrently (the verifier's).
+void fused_gr_persist_init();
+bool fused_gr_read_persist(const FusedGrArgs* a, int n_tok, void* stream);
+
 }  // namespace strata::kernels

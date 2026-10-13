@@ -11,6 +11,8 @@
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <type_traits>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -2168,5 +2170,434 @@ void fused_gr_check() {
                                    "for the earlier ones)" : "");
 }
 
+
+// ===================================== the read as ONE persistent kernel (opt-in STRATA_HC_PERSIST=1, HIP) ==============
+// 80 blocks that must all be resident (a start-up run per T decides; larger T keep the default read) and two grid
+// barriers on an atomic counter.  Block b: (A) stages R' * w_norm for columns [128 b, 128 b + 128) (one stream) and writes
+// that slice's sum of squares and the UNSCALED partial dots of the 320 down + 4 inject rows (the v3 identity
+// w . xn = sum_c rs[c] (w[:, c] . x'[c])); barrier; (B) rs per stream, then rows (k, r) = b + 80 j reduced to lo / inject;
+// barrier; (C) the up projection read straight from VRAM, a thread pair per row, the epilogue as gr_up_kernel.
+// ANOTHER SUMMATION ORDER than the default read (not bitwise; the init check bounds the difference).  Only the verifier's hyper-connection reads use it: they run on one stream per card (both pipeline
+// verifiers share it), so two of these kernels never wait on each other; the drafter's reads keep the default kernels.
+#if defined(__HIPCC__)
+namespace {
+namespace hcp {
+// Measured on gfx1030 (bench/results/2026-10-12-hc-persist-gfx1030): the gain over the three-kernel read is (1) the down
+// projection split by column slices over all 80 blocks (the default read runs 41 blocks staging the activations through
+// LDS) and (2) one launch with two grid barriers instead of three launches and the gaps between them.  Prefetching the
+// up weights (into registers or by touching them into L2 / Infinity Cache) and the epilogue inputs measured no gain on
+// gfx1030 and is gone: the 13 MB are read once from VRAM whichever way.
+constexpr int NB = 80, SL = D / NB, SPS = N / SL, UPC = N / NB, NR = LR + HC;
+static_assert(UPC * HC * 2 == THREADS, "a thread pair per up row");
+struct PArgs {
+    FusedGrArgs a[kFusedGrMaxT];
+    float* part;        // [T][NR][NB]
+    float* ssp;         // [T][NB]
+    unsigned* bar;      // [0] count, [32] generation, [48] abort (a barrier that timed out)
+    unsigned long long timeout_ticks;   // s_memrealtime ticks (100 MHz) a barrier waits before it aborts the read
+    double* partd;      // STRATA_HC_PERSIST=3 (a reference only): the partial dots and sums of squares in double
+    double* sspd;
+};
+// Returns false when the read was aborted: a block waited longer than `ticks` (the 80 blocks were not all resident - the
+// start-up check finds that out by running every T with a short timeout) or another block aborted.  Then every block
+// leaves the kernel; the outputs are not written completely and bar[48] stays set until the host clears the words.
+__device__ __forceinline__ bool grid_sync(unsigned* bar, unsigned long long ticks) {
+    __shared__ int s_abort;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        int ab = 0;
+        const unsigned gen = __hip_atomic_load(&bar[32], __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+        __threadfence();
+        const unsigned arrived = __hip_atomic_fetch_add(&bar[0], 1u, __ATOMIC_ACQ_REL, __HIP_MEMORY_SCOPE_AGENT);
+        if (arrived == NB - 1) {
+            __hip_atomic_store(&bar[0], 0u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+            __hip_atomic_fetch_add(&bar[32], 1u, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_AGENT);
+        } else {
+            const unsigned long long t0 = __builtin_amdgcn_s_memrealtime();
+            while (__hip_atomic_load(&bar[32], __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_AGENT) == gen) {
+                if (__hip_atomic_load(&bar[48], __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT) != 0u) { ab = 1; break; }
+                if (__builtin_amdgcn_s_memrealtime() - t0 > ticks) {
+                    __hip_atomic_store(&bar[48], 1u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+                    ab = 1;
+                    break;
+                }
+                __builtin_amdgcn_s_sleep(1);
+            }
+        }
+        if (__hip_atomic_load(&bar[48], __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT) != 0u) ab = 1;
+        s_abort = ab;
+    }
+    __syncthreads();
+    __threadfence();
+    return s_abort == 0;
+}
+// STRATA_HC_PERSIST=3 (a reference only, slow): every dot and sum accumulated in double
+__device__ __forceinline__ double dot8d(const uint4 w, const float* x) {
+    double acc = 0.0;
+    const unsigned u[4] = {w.x, w.y, w.z, w.w};
+#pragma unroll
+    for (int q = 0; q < 4; ++q) {
+        acc += (double) __uint_as_float(u[q] << 16) * (double) x[2 * q];
+        acc += (double) __uint_as_float(u[q] & 0xffff0000u) * (double) x[2 * q + 1];
+    }
+    return acc;
+}
+template <int T, bool DP = false>
+__global__ void __launch_bounds__(THREADS) persist_kernel(PArgs f) {
+    using A = typename std::conditional<DP, double, float>::type;
+    __shared__ __align__(16) float xs[T][SL];
+    __shared__ __align__(16) float lo[T][LR];
+    __shared__ float s_rs[T][HC];
+    __shared__ float g[T][HC][UPC];
+    const int tid = threadIdx.x, lane = tid & 31, b = blockIdx.x;
+    const FusedGrArgs& a0 = f.a[0];
+    // (A) block b: columns [128 b, 128 b + 128) of D (one stream): R' * w_norm into LDS, the slice's sum of squares, and
+    // the UNSCALED partial dots of the 320 down + 4 inject rows (w . xn = sum_c rs[c] (w[:, c] . x'[c]))
+    const int c_b = b / SPS, col0 = b * SL;
+    if (tid < T * (SL / 4)) {
+        const int k = tid / (SL / 4), o4 = tid - k * (SL / 4);
+        const FusedGrArgs& a = f.a[k];
+        const int i = col0 + o4 * 4, d = i - c_b * N;
+        float4 r = *reinterpret_cast<const float4*>(a.R + i);
+        if (a.apply) {
+            const float gw = 2.0f * sigmoidf_(a.inj_prev[c_b] / (float) HC);
+            const float4 bo = *reinterpret_cast<const float4*>(a.bo_prev + d);
+            r.x = fmaf(bo.x, gw, r.x); r.y = fmaf(bo.y, gw, r.y); r.z = fmaf(bo.z, gw, r.z); r.w = fmaf(bo.w, gw, r.w);
+        }
+        const float4 gn = *reinterpret_cast<const float4*>(a.w_norm + i);
+        if constexpr (DP) {
+            double ss = (double) r.x * r.x + (double) r.y * r.y + (double) r.z * r.z + (double) r.w * r.w;
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) ss += __shfl_xor(ss, o);
+            if (lane == 0) f.sspd[k * NB + b] = ss;
+        } else {
+            const float ss = warp_sum(r.x * r.x + r.y * r.y + r.z * r.z + r.w * r.w);   // warp k = token k
+            if (lane == 0) f.ssp[k * NB + b] = ss;
+        }
+        *reinterpret_cast<float4*>(&xs[k][o4 * 4]) = make_float4(r.x * gn.x, r.y * gn.y, r.z * gn.z, r.w * gn.w);
+    }
+    __syncthreads();
+    const int hw = tid >> 4, hl = tid & 15;
+    const bool inj = a0.w_inject != nullptr;
+    const int nrows = inj ? NR : LR;
+#pragma unroll 3
+    for (int r = hw; r < nrows; r += 16) {
+        const uint16_t* wrow = r < LR ? a0.w_down + (size_t) r * D : a0.w_inject + (size_t) (r - LR) * D;
+        const uint4 w = __ldg(reinterpret_cast<const uint4*>(wrow + col0) + hl);
+        A acc[T];
+#pragma unroll
+        for (int k = 0; k < T; ++k) {
+            A v;
+            if constexpr (DP) v = dot8d(w, &xs[k][hl * 8]); else v = dot8(w, &xs[k][hl * 8]);
+#pragma unroll
+            for (int o = 8; o > 0; o >>= 1) v += __shfl_xor(v, o);
+            acc[k] = v;
+        }
+#pragma unroll
+        for (int k = 0; k < T; ++k)
+            if (hl == k) {
+                if constexpr (DP) f.partd[((size_t) k * NR + r) * NB + b] = acc[k];
+                else f.part[((size_t) k * NR + r) * NB + b] = (float) acc[k];
+            }
+    }
+    if (!grid_sync(f.bar, f.timeout_ticks)) return;
+    // (B) rs per stream (every block), then rows (k, r) = b + 80 j reduced to lo / inject by the blocks in turn
+    if (tid < T * HC) {
+        const int k = tid / HC, c = tid - k * HC;
+        float rr;
+        if constexpr (DP) {
+            double sd = 0.0;
+            for (int j = 0; j < SPS; ++j) sd += f.sspd[k * NB + c * SPS + j];
+            rr = (float) (1.0 / sqrt(sd / (double) N + (double) f.a[k].eps));
+        } else {
+            float s = 0.0f;
+            for (int j = 0; j < SPS; ++j) s += f.ssp[k * NB + c * SPS + j];
+            rr = rsqrtf(s / (float) N + f.a[k].eps);
+        }
+        s_rs[k][c] = rr;
+        if (b == 0) f.a[k].rs[c] = rr;
+    }
+    __syncthreads();
+    for (int idx = b + NB * tid; idx < T * nrows; idx += NB * THREADS) {
+        const int k = idx / nrows, r = idx - k * nrows;
+        A sum = 0;
+        if constexpr (DP) {
+            const double* p1 = f.partd + ((size_t) k * NR + r) * NB;
+            for (int c = 0; c < HC; ++c) {
+                double p = 0.0;
+                for (int j = 0; j < SPS; ++j) p += p1[c * SPS + j];
+                sum += (double) s_rs[k][c] * p;
+            }
+        } else {
+            const float4* p4 = reinterpret_cast<const float4*>(f.part + ((size_t) k * NR + r) * NB);
+#pragma unroll
+            for (int c = 0; c < HC; ++c) {
+                float p = 0.0f;
+#pragma unroll
+                for (int j = 0; j < SPS / 4; ++j) {
+                    const float4 v = p4[c * (SPS / 4) + j];
+                    p += (v.x + v.y) + (v.z + v.w);
+                }
+                sum = fmaf(s_rs[k][c], p, sum);
+            }
+        }
+        if (r < LR) {
+            const A x = sum / (A) HC;
+            f.a[k].lo[r] = (float) (x / ((A) 1 + (DP ? (A) exp((double) -x) : (A) __expf((float) -x))));
+        } else {
+            f.a[k].inject_out[r - LR] = (float) sum;
+        }
+    }
+    if (!grid_sync(f.bar, f.timeout_ticks)) return;
+    for (int idx = tid; idx < T * LR; idx += THREADS) {
+        const int k = idx / LR, r = idx - k * LR;
+        lo[k][r] = f.a[k].lo[r];
+    }
+    __syncthreads();
+    // (C) the up projection, a thread pair per row (block b: columns 32 b .. 32 b + 31 of all four streams), then the
+    // epilogue as gr_up_kernel
+    {
+        const int d0 = b * UPC;
+        const int ur = tid >> 1, uh = tid & 1, uc = ur / UPC, udd = ur - uc * UPC, ui = uc * N + d0 + udd;
+        const uint4* w4u = reinterpret_cast<const uint4*>(a0.w_up + (size_t) ui * LR) + uh * 20;
+        A v[T];
+#pragma unroll
+        for (int k = 0; k < T; ++k) v[k] = 0;
+#pragma unroll 1
+        for (int j0 = 0; j0 < 20; j0 += 5) {   // five chunks a batch (all twenty at once costs registers)
+            uint4 w[5];
+#pragma unroll
+            for (int q = 0; q < 5; ++q) w[q] = __ldg(w4u + j0 + q);
+#pragma unroll
+            for (int q = 0; q < 5; ++q)
+#pragma unroll
+                for (int k = 0; k < T; ++k) {
+                    if constexpr (DP) v[k] += dot8d(w[q], &lo[k][uh * 160] + (j0 + q) * 8);
+                    else v[k] += dot8(w[q], &lo[k][uh * 160] + (j0 + q) * 8);
+                }
+        }
+        float acc[T];
+#pragma unroll
+        for (int k = 0; k < T; ++k) acc[k] = (float) (v[k] + __shfl_xor(v[k], 1));
+        if (uh == 0) {
+            const float wn = a0.w_norm[ui];
+#pragma unroll
+            for (int k = 0; k < T; ++k) {
+                const FusedGrArgs& a = f.a[k];
+                float rv = a.R[ui];
+                if (a.apply) {
+                    rv = fmaf(a.bo_prev[d0 + udd], 2.0f * sigmoidf_(a.inj_prev[uc] / (float) HC), rv);
+                    a.R_out[ui] = rv;
+                }
+                g[k][uc][udd] = rv * wn * s_rs[k][uc] * sigmoidf_(acc[k]);
+            }
+        }
+    }
+    __syncthreads();
+    for (int idx = tid; idx < T * UPC; idx += THREADS) {
+        const int k = idx / UPC, col = idx - k * UPC;
+        float s = 0.0f;
+#pragma unroll
+        for (int c = 0; c < HC; ++c) s += g[k][c][col];
+        f.a[k].mixed[b * UPC + col] = s / (float) HC;
+    }
+}
+struct DevState {
+    float* part = nullptr;
+    float* ssp = nullptr;
+    double* partd = nullptr;
+    double* sspd = nullptr;
+    unsigned* bar = nullptr;
+    int max_t = 0;      // 0: off on this card
+    bool tried = false;
+};
+DevState g_dev[64];
+using KFn = void (*)(PArgs);
+template <bool DP>
+KFn kernel_t(int T) {
+    switch (T) {
+        case 1: return persist_kernel<1, DP>;
+        case 2: return persist_kernel<2, DP>;
+        case 3: return persist_kernel<3, DP>;
+        case 4: return persist_kernel<4, DP>;
+        case 5: return persist_kernel<5, DP>;
+        case 6: return persist_kernel<6, DP>;
+        case 7: return persist_kernel<7, DP>;
+        case 8: return persist_kernel<8, DP>;
+    }
+    return nullptr;
+}
+bool dp_on() {
+    static const bool dp = [] { const char* v = std::getenv("STRATA_HC_PERSIST"); return v != nullptr && std::atoi(v) == 3; }();
+    return dp;
+}
+KFn kernel_for(int T) { return dp_on() ? kernel_t<true>(T) : kernel_t<false>(T); }
+// s_memrealtime runs at 100 MHz on RDNA: a barrier gives up after 2 s in a read (never in a working run; it only turns a
+// hang into a wrong read) and after 50 ms in the start-up check (where a timeout means "not resident here")
+constexpr unsigned long long kTicksRun = 200000000ULL, kTicksCheck = 5000000ULL;
+void launch(const FusedGrArgs* a, int n_tok, const DevState& st, cudaStream_t s, unsigned long long ticks) {
+    PArgs f;
+    for (int t = 0; t < n_tok; ++t) f.a[t] = a[t];
+    f.part = st.part; f.ssp = st.ssp; f.bar = st.bar; f.partd = st.partd; f.sspd = st.sspd; f.timeout_ticks = ticks;
+    kernel_for(n_tok)<<<NB, THREADS, 0, s>>>(f);
+}
+bool env_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_HC_PERSIST"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+}  // namespace hcp
+}  // namespace
+
+void fused_gr_persist_init() {
+    if (!hcp::env_on()) return;
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 0 || dev >= 64 || hcp::g_dev[dev].tried) return;
+    hcp::DevState& st = hcp::g_dev[dev];
+    st.tried = true;
+    cudaDeviceProp prop{};
+    cudaGetDeviceProperties(&prop, dev);
+    if (prop.warpSize != 32) {
+        std::fprintf(stderr, "strata hc: CUDA%d: STRATA_HC_PERSIST=1 is off here: the kernel is written for 32-lane waves "
+                             "(this card runs %d)\n", dev, prop.warpSize);
+        return;
+    }
+    const int mp = prop.multiProcessorCount;   // only for the confirmation line (WGPs on RDNA)
+    bool ok = cudaMalloc((void**) &st.part, (size_t) kFusedGrMaxT * hcp::NR * hcp::NB * sizeof(float)) == cudaSuccess &&
+              cudaMalloc((void**) &st.ssp, (size_t) kFusedGrMaxT * hcp::NB * sizeof(float)) == cudaSuccess &&
+              cudaMalloc((void**) &st.bar, 64 * sizeof(unsigned)) == cudaSuccess &&
+              cudaMalloc((void**) &st.partd, (size_t) kFusedGrMaxT * hcp::NR * hcp::NB * sizeof(double)) == cudaSuccess &&
+              cudaMalloc((void**) &st.sspd, (size_t) kFusedGrMaxT * hcp::NB * sizeof(double)) == cudaSuccess &&
+              cudaMemset(st.bar, 0, 64 * sizeof(unsigned)) == cudaSuccess;
+    if (!ok) {
+        cudaGetLastError();
+        std::fprintf(stderr, "strata hc: CUDA%d: STRATA_HC_PERSIST=1 is off here: workspace allocation failed\n", dev);
+        return;
+    }
+    // the check: random weights and inputs with the pending write and the inject rows, against the default read; the
+    // persistent read sums in another order, so it is bounded, not bitwise.  Every T is RUN with a 50 ms barrier timeout; a
+    // timeout means "not resident here" and larger T keep the default read.  No occupancy API in front of it: it promised
+    // more than the card holds on 30 WGPs under HSA_CU_MASK (a hang without the timeout) and less than it holds with
+    // the HIP 7.1 runtime (1 block per WGP on 40 WGPs, which turned the read off although it runs resident).
+    std::mt19937 rng(11);
+    std::normal_distribution<float> nd(0.f, 1.f);
+    auto bf = [](float x) { uint32_t u; std::memcpy(&u, &x, 4); return (uint16_t) ((u + 0x7fff + ((u >> 16) & 1)) >> 16); };
+    const int TM = kFusedGrMaxT;
+    std::vector<float> R((size_t) TM * D), bo((size_t) TM * N), inj((size_t) TM * HC), wn(D);
+    for (auto& x : R) x = nd(rng);
+    for (auto& x : bo) x = 0.5f * nd(rng);
+    for (auto& x : inj) x = nd(rng);
+    for (auto& x : wn) x = 1.0f + 0.3f * nd(rng);
+    std::vector<uint16_t> wd((size_t) LR * D), wu((size_t) D * LR), wi((size_t) HC * D);
+    for (auto& x : wd) x = bf(0.02f * nd(rng));
+    for (auto& x : wu) x = bf(0.05f * nd(rng));
+    for (auto& x : wi) x = bf(0.02f * nd(rng));
+    float *dR, *dbo, *dinj, *dwn, *dxn, *dlo, *drs, *dio, *dmix;
+    uint16_t *dwd, *dwu, *dwi;
+    cudaMalloc((void**) &dR, R.size() * 4); cudaMalloc((void**) &dbo, bo.size() * 4);
+    cudaMalloc((void**) &dinj, inj.size() * 4); cudaMalloc((void**) &dwn, wn.size() * 4);
+    cudaMalloc((void**) &dxn, (size_t) TM * D * 4); cudaMalloc((void**) &dlo, (size_t) TM * LR * 4);
+    cudaMalloc((void**) &drs, (size_t) TM * HC * 4); cudaMalloc((void**) &dio, (size_t) TM * HC * 4);
+    cudaMalloc((void**) &dmix, (size_t) TM * N * 4);
+    cudaMalloc((void**) &dwd, wd.size() * 2); cudaMalloc((void**) &dwu, wu.size() * 2); cudaMalloc((void**) &dwi, wi.size() * 2);
+    cudaMemcpy(dbo, bo.data(), bo.size() * 4, cudaMemcpyHostToDevice);
+    cudaMemcpy(dinj, inj.data(), inj.size() * 4, cudaMemcpyHostToDevice);
+    cudaMemcpy(dwn, wn.data(), wn.size() * 4, cudaMemcpyHostToDevice);
+    cudaMemcpy(dwd, wd.data(), wd.size() * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(dwu, wu.data(), wu.size() * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(dwi, wi.data(), wi.size() * 2, cudaMemcpyHostToDevice);
+    double worst = 0.0;
+    int bad_t = 0, timeouts = 0;
+    // 0: the read agrees with the default read; 1: a barrier timed out (not resident); 2: wrong or a device error
+    auto check = [&](int T) -> int {
+        FusedGrArgs a[kFusedGrMaxT];
+        for (int t = 0; t < T; ++t) {
+            a[t] = FusedGrArgs{};
+            a[t].R = dR + (size_t) t * D; a[t].R_out = dR + (size_t) t * D; a[t].apply = true;
+            a[t].bo_prev = dbo + (size_t) t * N; a[t].inj_prev = dinj + (size_t) t * HC;
+            a[t].w_norm = dwn; a[t].w_down = dwd; a[t].w_up = dwu; a[t].w_inject = dwi; a[t].eps = 1e-6f;
+            a[t].lo = dlo + (size_t) t * LR; a[t].rs = drs + (size_t) t * HC;
+            a[t].inject_out = dio + (size_t) t * HC; a[t].mixed = dmix + (size_t) t * N;
+        }
+        std::vector<float> out[2];
+        for (int which = 0; which < 2; ++which) {
+            cudaMemcpy(dR, R.data(), R.size() * 4, cudaMemcpyHostToDevice);
+            cudaMemset(dmix, 0xff, (size_t) TM * N * 4);
+            cudaMemset(dio, 0xff, (size_t) TM * HC * 4);
+            cudaDeviceSynchronize();
+            if (which == 0) fused_gr_read_multi(a, T, dxn, nullptr);
+            else hcp::launch(a, T, st, nullptr, hcp::kTicksCheck);
+            if (cudaDeviceSynchronize() != cudaSuccess) { cudaGetLastError(); return 2; }
+            if (which == 1) {
+                unsigned abort_word = 0;
+                cudaMemcpy(&abort_word, st.bar + 48, sizeof abort_word, cudaMemcpyDeviceToHost);
+                if (abort_word != 0u) {
+                    cudaMemset(st.bar, 0, 64 * sizeof(unsigned));
+                    cudaDeviceSynchronize();
+                    return 1;
+                }
+            }
+            out[which].resize((size_t) T * (N + HC + D));
+            cudaMemcpy(out[which].data(), dmix, (size_t) T * N * 4, cudaMemcpyDeviceToHost);
+            cudaMemcpy(out[which].data() + (size_t) T * N, dio, (size_t) T * HC * 4, cudaMemcpyDeviceToHost);
+            cudaMemcpy(out[which].data() + (size_t) T * (N + HC), dR, (size_t) T * D * 4, cudaMemcpyDeviceToHost);
+        }
+        double mref = 0.0, md = 0.0;
+        bool finite = true;
+        for (size_t i = 0; i < out[0].size(); ++i) {
+            finite = finite && std::isfinite(out[1][i]);
+            mref = std::fmax(mref, std::fabs((double) out[0][i]));
+            md = std::fmax(md, std::fabs((double) out[1][i] - out[0][i]));
+        }
+        const double rel = md / (mref > 0 ? mref : 1.0);
+        worst = std::fmax(worst, rel);
+        return finite && rel < 1e-4 ? 0 : 2;
+    };
+    int max_t = 0;
+    for (int T = 1; T <= kFusedGrMaxT && ok; ++T) {
+        const int r = check(T);
+        if (r == 1) ++timeouts; else if (r == 2) { bad_t = T; ok = false; }
+        if (r != 0) break;
+        max_t = T;
+    }
+    cudaFree(dR); cudaFree(dbo); cudaFree(dinj); cudaFree(dwn); cudaFree(dxn); cudaFree(dlo); cudaFree(drs);
+    cudaFree(dio); cudaFree(dmix); cudaFree(dwd); cudaFree(dwu); cudaFree(dwi);
+    cudaMemset(st.bar, 0, 64 * sizeof(unsigned));
+    cudaDeviceSynchronize();
+    cudaGetLastError();
+    if (!ok) {
+        std::fprintf(stderr, "strata hc: CUDA%d: STRATA_HC_PERSIST=1 is off here: the check failed at %d tokens "
+                             "(max relative difference %.3g)\n", dev, bad_t, worst);
+        return;
+    }
+    if (max_t == 0) {
+        std::fprintf(stderr, "strata hc: CUDA%d: STRATA_HC_PERSIST=1 is off here: 80 blocks are not resident at once on %d "
+                             "multiprocessors (the check timed out)\n", dev, mp);
+        return;
+    }
+    st.max_t = max_t;
+    std::fprintf(stderr, "strata hc: CUDA%d: STRATA_HC_PERSIST=1: the verifier's hyper-connection read runs as one "
+                         "persistent kernel (80 blocks on %d multiprocessors, up to %d tokens; %d token counts timed out in "
+                         "the check; checked against the default read, max relative difference %.2g)\n", dev, mp, max_t,
+                 timeouts, worst);
+}
+
+bool fused_gr_read_persist(const FusedGrArgs* a, int n_tok, void* stream) {
+    if (!hcp::env_on() || n_tok < 1) return false;
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 0 || dev >= 64) return false;
+    const hcp::DevState& st = hcp::g_dev[dev];
+    if (n_tok > st.max_t) return false;
+    if (a[0].q8_down != nullptr || a[0].q8_up != nullptr) return false;    // STRATA_HC_Q8: the default read
+    for (int t = 0; t < n_tok; ++t)
+        if (a[t].q8_mixed != nullptr) return false;                         // STRATA_QFUSE: the default read
+    hcp::launch(a, n_tok, st, (cudaStream_t) stream, hcp::kTicksRun);
+    return true;
+}
+#else
+void fused_gr_persist_init() {}
+bool fused_gr_read_persist(const FusedGrArgs*, int, void*) { return false; }
+#endif
 
 }  // namespace strata::kernels
