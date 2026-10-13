@@ -1,6 +1,6 @@
 # Suffix-Reuse: KV Cache Splicing for Edited Contexts
 
-**Design and benchmark document** for the `--cache-suffix-reuse` feature (branch `sfx-043-fixed`, base v0.1.43)
+**Design and benchmark document** for the `--cache-suffix-reuse` feature and its adaptive-cadence extension (`--prompt-cache-dense-tail`). Covers branch `sfx-043-fixed` (all-quant splice, base v0.1.43) plus `sfx-future` @ `fd64fdf6` (dense-tail cadence, partial-prefix engagement, per-request checkpoint gate — 11 commits, review-clean).
 All numbers measured on: RTX 3090 (24 GB), Qwen3.8-Flash-Next abliterated GSQ-RCO IQ3_XXS (2-file pack + PLE), 131k context, MTP spec-4, unless noted. Probes deterministic (temperature 0).
 
 ---
@@ -43,6 +43,7 @@ Given the old prompt O and the new prompt N with a common prefix of length P (th
    - k8v4: the hybrid's K half is byte-identical int8 storage (same codes/scales at the same offsets); V (rotated Q4_0) is untouched.
    - q4_0: whole K rows are Q4_0 blocks (18 B per 32 values); dequant/requant per block with the parity-reference quantizer.
 4. **Fail-closed.** Unsupported memory layouts (`--kv-resident > 0`, `--layer-split`) refuse with a logged reason and fall through to the re-read path. Off (the default), behavior is byte-identical to today (pinned by `suffix_reuse_off_parity_test`).
+5. **Adaptive cadence (`--prompt-cache-dense-tail N`, `sfx-future`).** Checkpoints are taken sparsely through the head of the prompt and every `--prompt-cache-every` tokens within the last N tokens — cheap cold read, dense anchors exactly where mid-text edits land. The periodic gate is per-request (it reads the request's own `pp_next_check`, not a value persisting across requests, so a warm read banks anchors at its piece boundaries). The engagement rule prefers a partial mount only when its LCP is at least the strict match's depth AND its anchor is deeper (`p >= s` *and* `L > s`) — enforced across conversations (a different conversation's deeper-but-shallower-LCP partial never mounts; pinned by T16.7/T16.7b). When an edit sits deeper than every checkpoint, the engine fail-closes: it restores the deepest checkpoint at or before the edit and reads forward (§5.8), rather than splicing recurrence state across the edit.
 
 ## 5. Benchmarks
 
@@ -106,11 +107,36 @@ Summarization destroys exact values (0/96 recoveries) — every ID, count and to
 - *Usage trace* (kv-store seed 42, 68 turns): 45.5% aggregate, but split 25 pure-append requests at 97–98% vs **41 edit requests at 0%** — every CLM note-rewrite paid a full re-prefill.
 - *Campaign profile* (P0b, 4 families, 248 requests, 14,336 budget): needle 1.000 (96/96) at **16.1% reuse**, sudoku 1.000 (15/15) at 57.6%, kv 1.000 (24/24) at 43.1%, log-triage 0.583 (14/24) at 21.5%; total 28.9% (491,299/1,700,229 tokens), 2,378 s prefill saved. Reuse tracks workload shape: append-heavy families reuse; insert/edit families (needle's mid-file inserts, log's rolling edits) are the starved ones.
 
-**After the splice (fixed engine, .43 + suffix-reuse):** the engine-level edit-turn measurement is §5.1/§5.2 — a mid-prompt edit now reuses 89% (5120/5736) instead of 0%, at 3.4 s instead of 10.4 s, answers provably correct on every KV format. The ContextBench families whose reuse was starved (needle 16.1%, log 21.5%) are exactly the edit-shaped workloads this converts. A full re-run of the 4-family campaign on the fixed engine was not repeated for this PR — the per-request evidence (§5.1–5.3) plus the campaign usage profile above bound the expected effect: scores unchanged (cache changes compute cost, not token visibility — confirmed by score invariance across cache states in the campaigns), edit-turn prefill time cut by the §5.1 factor.
+**After the splice (fixed engine, .43 + suffix-reuse):** the engine-level edit-turn measurement is §5.1/§5.2 — a mid-prompt edit now reuses 89% (5120/5736) instead of 0%, at 3.4 s instead of 10.4 s, answers provably correct on every KV format. The ContextBench families whose reuse was starved (needle 16.1%, log 21.5%) are exactly the edit-shaped workloads this converts. A full 4-family re-run on the fixed engine with the dense-tail configuration exists and is §5.8: reuse rose exactly where predicted (log 21.5% → 77.2%, kv 43.1% → 72.3%), with the remaining failure mode (needle's fail-close gap-read) measured and decomposed there rather than hidden.
 
 ### 5.6 The honest cost: checkpoint granularity
 
 Reuse requires a checkpoint at or before the edit position. With `--prefill auto` (one big chunk) there are no mid-prompt checkpoints and mid-edit reuse does not fire (appends still reuse). The proven configuration is `--prefill 1024 --prompt-cache-every 1024`, which costs cold-read throughput: 46.6 s vs 10.9 s for a cold 5.7k prompt (4.3×) on this GPU. `--prefill 2048` halves the checkpoint density and recovers most of the cold-read cost. This trade-off is why the feature is opt-in and the knob is exposed.
+
+### 5.7 Dense-tail cadence: the trade-off dissolved (`sfx-future`)
+
+`--prompt-cache-dense-tail 4096` with `--prefill auto`: sparse checkpoints through the head, dense through the last 4096 tokens. Same three-turn ledger probe, same seed, dense-tail stack (T21 per-request gate):
+
+| Turn | Edit-path config (§5.1: prefill 1024 + every 1024) | Dense-tail config (prefill auto + dense-tail 4096) |
+|---|---|---|
+| A: cold read | 46.6 s | **42.4 s** |
+| B: append → 161 ✓ | 20.2 s (54%) | 27.9 s |
+| C: edit → 162 ✓ | 3.4 s (89.3%) | **10.1 s (81.0% — 4646/5736)** |
+
+All answers correct (160/161/162). The C-turn anchor lands on a dense-tail checkpoint at 4646 (just below the second edit at 5230) — strict-mount, no splice needed. Checkpoint cost at existing boundaries is ~100–150 ms per save (measured T19: pipeline sync 0.0 ms, state save 100–150 ms); the per-boundary ~8 s cost of the §5.6 config is the *pipeline restart between chunks*, which dense-tail's single-chunk head avoids.
+
+### 5.8 The remaining gap — and the honest failure mode
+
+When an edit lands deeper than every checkpoint, the engine fail-closes: restore the deepest checkpoint at or before the edit position, read the rest fresh (826 tokens in the §5.7 probe). Correctness is never traded. The cost is bounded but real, and it is the dominant residual inefficiency. A 4-family ContextBench campaign on the dense-tail config (seed 42, budget 14,336, CLM-skill agent) measured where this bites:
+
+| Family | base .40.3 (reward / reuse) | dense-tail stack (reward / reuse) |
+|---|---|---|
+| needle | 1.000 / 16.1% | 0.500 / 17.0% |
+| sudoku | 1.000 / 57.6% | 0.867 / 73.5% |
+| kv-store | 1.000 / 43.1% | **1.000 / 72.3%** |
+| log-triage | 0.583 / 21.5% | **0.625 / 77.2%** |
+
+Two findings. First, the reuse gains are real and large (kv +29.2 pp, log +55.7 pp) and scores on those families rose, not fell — mounted cache answers exactly as fresh-prefilled text does. Second, needle fell to 0.500 — and the decomposition isolates why it is not the code: the same binary with the §5.1 config scores 0.750 on needle, identical to the flags-off arm's 0.750 (both within the seed band of the multi-seed needle mean 0.847 ± 0.171); only the dense-tail *configuration* drops it to 0.500, and needle's reuse was unchanged (16.1% → 17.0%) — the failure is not cache corruption but the fail-close gap-read colliding with that seed's unbounded-growth agent trajectory (23 messages, no compaction). Closing this gap is the next milestone (state-cadence replay, §10).
 
 ## 6. Purpose in context management (CLM) terms
 
@@ -128,28 +154,30 @@ Verbatim-offload context management — the agent keeps its working state in fil
 
 ## 8. Configuration
 
-One new flag; the rest is existing upstream machinery:
+Two new flags; the rest is existing upstream machinery:
 
 ```
 --cache-suffix-reuse 64          # the feature (opt-in; 0 = off, default)
+--prompt-cache-dense-tail 4096   # adaptive cadence (opt-in; 0 = off = uniform cadence)
 --conversation-cache-mib 4096    # upstream flag; default 0 = parking off (needed: nothing to splice from without it)
 --prompt-cache 6                 # upstream default (>= 2 required by the validator)
---prefill 1024 --prompt-cache-every 1024   # checkpoint density near the edit (mid-edit reuse needs this)
+--prefill 1024 --prompt-cache-every 1024   # uniform checkpoint density (the §5.1 edit-path config; not needed with dense-tail)
 ```
 
 Refused (logged, falls back to full re-read, never crashes): `--kv-resident > 0`, `--layer-split`, rotated formats with head_dim ≠ 256 (fwht256 is order-256).
 
 ## 9. Verification summary
 
-- CPU ctest **52/52** (39 upstream + 13 suffix-reuse), re-run after every commit.
+- CPU ctest **53/53** (39 upstream + 14 suffix-reuse), re-run after every commit.
+- Suffix-reuse suites: partial-prefix **74/0** (incl. T16.7 cross-conversation pin), dense-tail **23/23**.
 - CUDA (sm_86, toolkit 13.0) builds clean; `-Wall -Wextra` single-header syntax check clean.
-- Live GPU probes: splice fired and answers correct on every format (§5.2).
-- Independent fail-closed code review: **APPROVE** (3 MINOR documentation findings, all closed).
+- Live GPU probes: splice fired and answers correct on every format (§5.2); dense-tail chain GREEN with all answers correct (§5.7).
+- Independent fail-closed code reviews: all-quant splice **APPROVE** (3 MINOR doc findings, closed); `sfx-future` **r1 REJECT → fix → r2 APPROVE** (1 MAJOR cross-conversation dominance bug found and fixed TDD-style; zero new findings at r2).
 - Not tested: HIP compile (no AMD hardware available to the author — the new code is host-side C++ behind the existing transport layer; an AMD build pass is requested from the community/maintainers).
 
 ## 10. Limitations and future work
 
-- Mid-edit reuse requires periodic checkpoints (§5.6); an adaptive checkpoint policy (checkpoint at likely edit points) would remove the cold-read tax.
+- The fail-close gap-read (§5.8) leaves bounded re-read when an edit lands deeper than every checkpoint. Next milestone: state-cadence checkpoints plus a replay path (restore the deepest state checkpoint at or before the edit, prefill forward — attention over the gap reads valid arena K/V). The env gate `STRATA_SFX_REPLAY` and the `partial_gap_read_from` seam exist and are tested; the state-cadence banking is not built yet. Projected anchors: 59.7% (parked) / 91.2% (session-local) on the §5.7 probe shape.
 - Streaming-ring (`--kv-resident`) and layer-split layouts remain refused — splicing a ring requires cell re-homing, not just rotation.
 - Recurrence state (GDN/PLE) is replayed from the narrowed checkpoint rather than transformed; a forward-state transform would cut the remaining gap-read further.
 
