@@ -737,18 +737,16 @@ struct Options {
     /// --serve: a prompt read from token 0 is also checkpointed at its first turn boundary - the end of the system
     /// prompt, which every chat of the same client shares - when that is at least N tokens (0 = never)
     int64_t prompt_cache_root = 2048;
-    /// --cache-suffix-reuse N (--serve; opt-in, default 0 = off): on a re-edit, invalidate every
-    /// prompt-cache checkpoint whose length surpasses the edit position (the splice plan's edit_pos
-    /// against the RESUME checkpoint's tokens - the deepest prefix match the request mounts through).
-    /// Phase 2 slice: K is rotated in place over the unchanged tail (V is untouched); gdn/ple
-    /// recurrence replays from `replay_from = edit_pos` (Task 5).  N is accepted and parsed; the
-    /// splice path runs for any N>0 and the runtime guards refuse int8/q4_0/hybrid K / kv-resident /
-    /// layer-split (`SPLICE_UNSUPPORTED: <format|kv_resident|layer_split>` - fall through to today's
-    /// re-read).  When 0 (default), today's `limit_reuse(first_dirty)` behaviour byte-identical -
+    /// --cache-suffix-reuse N (--serve; opt-in, default 0 = off): when a prompt repeats an
+    /// earlier one with a change in the middle, keep the cached text before the change: the
+    /// unchanged tail's K rows are rotated in place to their new positions (V is untouched -
+    /// position-free), gdn/ple recurrence replays from `replay_from = edit_pos` (Task 5), and
+    /// prompt-cache checkpoints past the edit position are invalidated.  The splice runs for any
+    /// N > 0 and works with every --kv format (fp16, int8, int8+STRATA_KV_ROT, k8v4, q4_0);
+    /// kv-resident and layer-split refuse (`SPLICE_UNSUPPORTED` - falls through to re-read).  When 0 (default), today's `limit_reuse(first_dirty)` behaviour byte-identical -
     /// the predicate `suffix_reuse_should_invalidate` returns false and the hook is a no-op
     /// (verifier: `suffix_reuse_off_parity_test` byte-equals today's accounting).  Requires
-    /// --prompt-cache >= 2 and refuses --layer-split / --kv-resident / --kv q4_0|k8v4 (Phase 3:
-    /// --kv int8 IS supported, dequant-rotate-requant in kv_splice_apply_int8.hpp).
+    /// --prompt-cache >= 2.  Refuses (falls back to re-read): --kv-resident, --layer-split.
     /// BOUNDED PESSIMIZATION (r2 F1): a coincidental role-header suffix (k <= 4 tokens of
     /// trailing role header that happens to match) DOES narrow `resume` to that header's position
     /// and forces the next request to re-prefill the conversation body.  This is a known bounded
@@ -889,17 +887,21 @@ void usage() {
                  "  --shared-late        A/B: shared expert after the CPU pool (default: overlapped with it)\n"
                  "  --keep-canonical     A/B: also load canonical copies of natively served tensors (more VRAM)\n"
                  "  --vision             --serve takes images too (GENI requests; embeddings from strata-vision)\n"
-                 "  --prompt-cache N     --serve: keep N conversation checkpoints between requests (default 6, ~118 MB\n"
-                 "                       of RAM each; 0 = read every prompt from the start)\n"
-                 "  --cache-suffix-reuse N  --serve, opt-in (default 0 = off): on a re-edited prompt whose OLD cache\n"
-                 "                       is reachable, INVALIDATE prompt-cache checkpoints past the edit\n"
-                 "                       position (the splice plan's edit_pos against the resume checkpoint's\n"
-                 "                       tokens).  KV splice: PLANNED - the rotate-of-K + V-as-is tail\n"
-                 "                       splice lands in a follow-up commit; today the unchanged tail is\n"
-                 "                       re-read at prefill speed.  N is the future splice path's edit-\n"
-                 "                       magnitude bound.  Requires --prompt-cache >= 2; --layer-split refuses.\n"
-                 "  --conversation-cache-mib N  --serve: RAM budget for parked conversations (default 0 = off)\n"
-                 "  --conversation-cache-slots N  --serve: at most N parked conversations (default 4)\n"
+                 "  --prompt-cache N     --serve: keep N checkpoints of recent prompts for reuse (default 6, ~118 MB\n"
+                 "                       of RAM each; 0 = no reuse - every prompt is read in full)\n"
+                 "  --cache-suffix-reuse N  --serve, opt-in (default 0 = off): when a prompt repeats an earlier\n"
+                 "                       one with a change in the middle, reuse the cached text BEFORE the\n"
+                 "                       change instead of re-reading it (rotate the kept K rows to their new\n"
+                 "                       positions; V rows are position-free).  Works with every --kv format\n"
+                 "                       (fp16, int8, int8+STRATA_KV_ROT, k8v4, q4_0).  Measured on RTX 3090,\n"
+                 "                       IQ3_XXS 5.7k-token prompt, mid-prompt edit: 89%% of the prompt reused,\n"
+                 "                       3.4 s prefill vs 45.2 s from cold.  Needs periodic checkpoints: use\n"
+                 "                       --prefill N with --prompt-cache-every N.  N caps\n"
+                 "                       the edit size the splice will handle.  Off or refused configs fall\n"
+                 "                       back to re-reading - answers stay correct either way.\n"
+                 "  --conversation-cache-mib N  --serve: RAM (MiB) for keeping finished conversations cached, so the\n"
+                 "                       next message in the same chat can reuse them (default 0 = off)\n"
+                 "  --conversation-cache-slots N  --serve: how many finished conversations to keep cached (default 4)\n"
                  "  --conversation-cache-min-free-mib N  --serve: RAM floor (under MemAvailable, the cgroup limits and\n"
                  "                       --memory-limit-mib) when parking, saving or restoring a session (default 2560)\n"
                  "  --memory-limit-mib N  --serve: the total RAM (MiB) this engine's container or cgroup may use, when\n"
@@ -927,7 +929,9 @@ void usage() {
                  "                       with the GPUs overlapped - 1 = the prompt's short reads, 2 = decode as well\n"
                  "                       (stage 0 runs the next window while stage 1 verifies this one); docs/MULTI_GPU.md\n"
                  "  --trim-stage-weights an explicit --layer-split: each GPU loads only its own layers' dense weights\n"
-                 "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
+                 "  --prompt-cache-every N  --serve: also save a checkpoint every N new prompt tokens (default 16384;\n"
+                 "                       0 = off).  Smaller N puts a reusable point closer to a mid-text\n"
+                 "                       edit - pair with --prefill N when using --cache-suffix-reuse\n"
                  "  --prompt-cache-tail  --serve, single GPU: one extra checkpoint near the prompt's end, at an existing\n"
                  "                       chunk boundary (default off; requires --prompt-cache and --prompt-cache-every > 0)\n"
                  "  --prompt-cache-spread  --serve: keep the checkpoints spread back from the conversation's end (dense\n"
