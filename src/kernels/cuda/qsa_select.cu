@@ -555,6 +555,102 @@ __global__ void __launch_bounds__(256) block_scores_simt_kernel(const float* __r
     }
 }
 
+// block_scores_simt_kernel with larger tiles (QT queries x NB blocks, RI x CJ products per thread) and the next K
+// chunk's loads in registers while the current one is used.  Every (row, block) dot is the same fmaf chain over
+// k = 0..127 from 0, and the relu sum over the heads in the same order: the same bits as block_scores_simt_kernel.
+// STRATA_SELECT_SIMT=2.
+constexpr int S2_KC = 32;
+template <int QT, int NB>
+__global__ void __launch_bounds__(256, 1) block_scores_simt2_kernel(const float* __restrict__ pooled,
+                                                                    const float* __restrict__ q_idx,
+                                                                    const int32_t* __restrict__ steps, int64_t nq,
+                                                                    int64_t max_blocks, int64_t reach,
+                                                                    float* __restrict__ out) {
+    constexpr int ROWS = QT * IDX_HEADS, RI = ROWS / 16, CJ = NB / 16, QS = ROWS + 4, KS = NB + 4;
+    constexpr int QL = ROWS * S2_KC / 4 / 256, KL = NB * S2_KC / 4 / 256;   // float4 loads per thread
+    static_assert(RI % 4 == 0 && CJ % 4 == 0 && QL >= 1 && KL >= 1, "tile");
+    __shared__ __align__(16) float Qs[S2_KC][QS];
+    __shared__ __align__(16) float Ks[S2_KC][KS];
+    const int64_t q0 = (int64_t) blockIdx.y * QT, b0 = (int64_t) blockIdx.x * NB;
+    const int64_t qlast = (q0 + QT < nq ? q0 + QT : nq) - 1;
+    if (b0 >= steps[qlast * kStepCount + kStepNBid]) return;   // n_bid rises with the position
+    const int tid = threadIdx.x, tx = tid & 15, ty = tid >> 4;
+    float acc[RI][CJ];
+#pragma unroll
+    for (int i = 0; i < RI; ++i)
+#pragma unroll
+        for (int j = 0; j < CJ; ++j) acc[i][j] = 0.0f;
+    float4 qv[QL], kv[KL];
+    auto load = [&](int kc) {
+#pragma unroll
+        for (int i = 0; i < QL; ++i) {
+            const int idx = tid + i * 256, r = idx >> 3, k4 = idx & 7;
+            qv[i] = make_float4(0.f, 0.f, 0.f, 0.f);
+            if (q0 + (r >> 2) < nq)
+                qv[i] = *reinterpret_cast<const float4*>(q_idx + (q0 * IDX_HEADS + r) * IDX_DIM + kc + k4 * 4);
+        }
+#pragma unroll
+        for (int i = 0; i < KL; ++i) {
+            const int idx = tid + i * 256, c = idx >> 3, k4 = idx & 7;
+            kv[i] = make_float4(0.f, 0.f, 0.f, 0.f);
+            if (b0 + c < reach) kv[i] = *reinterpret_cast<const float4*>(pooled + (b0 + c) * IDX_DIM + kc + k4 * 4);
+        }
+    };
+    load(0);
+#pragma unroll 1
+    for (int kc = 0; kc < IDX_DIM; kc += S2_KC) {
+#pragma unroll
+        for (int i = 0; i < QL; ++i) {
+            const int idx = tid + i * 256, r = idx >> 3, k4 = idx & 7;
+            Qs[k4 * 4 + 0][r] = qv[i].x; Qs[k4 * 4 + 1][r] = qv[i].y; Qs[k4 * 4 + 2][r] = qv[i].z; Qs[k4 * 4 + 3][r] = qv[i].w;
+        }
+#pragma unroll
+        for (int i = 0; i < KL; ++i) {
+            const int idx = tid + i * 256, c = idx >> 3, k4 = idx & 7;
+            Ks[k4 * 4 + 0][c] = kv[i].x; Ks[k4 * 4 + 1][c] = kv[i].y; Ks[k4 * 4 + 2][c] = kv[i].z; Ks[k4 * 4 + 3][c] = kv[i].w;
+        }
+        __syncthreads();
+        if (kc + S2_KC < IDX_DIM) load(kc + S2_KC);   // in flight during this chunk's products
+#pragma unroll 4
+        for (int k = 0; k < S2_KC; ++k) {
+            float qr[RI], kr[CJ];
+#pragma unroll
+            for (int m = 0; m < RI / 4; ++m) {
+                const float4 a = *reinterpret_cast<const float4*>(&Qs[k][ty * RI + 4 * m]);
+                qr[4 * m] = a.x; qr[4 * m + 1] = a.y; qr[4 * m + 2] = a.z; qr[4 * m + 3] = a.w;
+            }
+#pragma unroll
+            for (int g = 0; g < CJ / 4; ++g) {
+                const float4 b = *reinterpret_cast<const float4*>(&Ks[k][g * 64 + tx * 4]);
+                kr[4 * g] = b.x; kr[4 * g + 1] = b.y; kr[4 * g + 2] = b.z; kr[4 * g + 3] = b.w;
+            }
+#pragma unroll
+            for (int i = 0; i < RI; ++i)
+#pragma unroll
+                for (int j = 0; j < CJ; ++j) acc[i][j] = fmaf(qr[i], kr[j], acc[i][j]);
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int qi = 0; qi < RI / 4; ++qi) {
+        const int64_t q = q0 + ty * (RI / 4) + qi;
+        if (q >= nq) continue;
+        const int64_t n_bid = steps[q * kStepCount + kStepNBid];
+#pragma unroll
+        for (int j = 0; j < CJ; ++j) {
+            const int64_t b = b0 + (j >> 2) * 64 + tx * 4 + (j & 3);
+            if (b >= n_bid || b >= max_blocks) continue;
+            float sc = 0.0f;
+#pragma unroll
+            for (int h = 0; h < IDX_HEADS; ++h) {
+                const float d = acc[qi * 4 + h][j];
+                sc += d > 0.0f ? d : 0.0f;
+            }
+            out[q * max_blocks + b] = sc;
+        }
+    }
+}
+
 // ---- the same top-k with each query's keys read once: 1,024 threads hold up to TK_PER consecutive blocks' keys in
 // registers (contexts up to 4 * 1024 * TK_PER cells), per-warp histograms, block-wide scans. The selection rule is
 // block_topk_kernel's (radix threshold, ties to the lowest index, cells ascending): identical ids.
@@ -1158,16 +1254,33 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
         if (cc_major[dev] < 8) {
             // no TF32 tensor cores: the FP32 tiled kernel, opt-in (STRATA_SELECT_SIMT=1): its sum order differs from the
             // warp kernel's, so the default stays the caller's warp kernel and the output bytes stay the same
-            static const bool simt = [] {
+            // STRATA_SELECT_SIMT=2: block_scores_simt2_kernel (the same bits as =1, larger tiles)
+            static const int simt = [] {
                 const char* v = std::getenv("STRATA_SELECT_SIMT");
-                return v != nullptr && v[0] == '1';
+                return v == nullptr ? 0 : v[0] == '1' ? 1 : v[0] == '2' ? 2 : 0;
             }();
             if (!simt) return false;
             const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
-            const dim3 grid((unsigned) ((reach + SM_NB - 1) / SM_NB), (unsigned) ((nq + SM_QT - 1) / SM_QT));
-            if (grid.y > 65535) return false;
-            block_scores_simt_kernel<<<grid, 256, 0, (cudaStream_t) stream>>>(pooled, q_idx, steps, nq, max_blocks,
-                                                                              reach, scores);
+            if (simt == 2) {
+                // STRATA_SIMT2_TILE=2: 64 x 64 tiles (measured slower: 400K 3.00 vs 2.82 ms)
+                static const int tile = [] { const char* v = std::getenv("STRATA_SIMT2_TILE"); return v ? std::atoi(v) : 1; }();
+                if (tile != 2) {
+                    const dim3 grid((unsigned) ((reach + 127) / 128), (unsigned) ((nq + 31) / 32));
+                    if (grid.y > 65535) return false;
+                    block_scores_simt2_kernel<32, 128><<<grid, 256, 0, (cudaStream_t) stream>>>(pooled, q_idx, steps, nq,
+                                                                                               max_blocks, reach, scores);
+                } else {
+                    const dim3 grid((unsigned) ((reach + 63) / 64), (unsigned) ((nq + 63) / 64));
+                    if (grid.y > 65535) return false;
+                    block_scores_simt2_kernel<64, 64><<<grid, 256, 0, (cudaStream_t) stream>>>(pooled, q_idx, steps, nq,
+                                                                                              max_blocks, reach, scores);
+                }
+            } else {
+                const dim3 grid((unsigned) ((reach + SM_NB - 1) / SM_NB), (unsigned) ((nq + SM_QT - 1) / SM_QT));
+                if (grid.y > 65535) return false;
+                block_scores_simt_kernel<<<grid, 256, 0, (cudaStream_t) stream>>>(pooled, q_idx, steps, nq, max_blocks,
+                                                                                  reach, scores);
+            }
             block_scores_tail_kernel<<<(unsigned) nq, 32, 0, (cudaStream_t) stream>>>(dead, q_idx, steps, max_blocks,
                                                                                     scores);
             const cudaError_t e = cudaGetLastError();

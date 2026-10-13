@@ -1,3 +1,4 @@
+#include <cstring>
 // src/kernels/qsa_select_bench.cpp - the prompt path's QSA selection (qsa_select.hpp) timed per stage, block scores
 // (the warp kernel and the fast one: tensor cores, or the FP32 tiled kernel on CUDA below sm_80) and top-k, for a batch of consecutive queries at a given context, and
 // the two scorers compared: score difference and how many selections differ (GPU, synthetic, no model).
@@ -92,6 +93,18 @@ int main(int argc, char** argv) {
     std::vector<int32_t> ia((size_t) (nq * cap)), ib(ia.size());
     ck(cudaMemcpy(a.data(), sc_old, a.size() * 4, cudaMemcpyDeviceToHost), "down");
     ck(cudaMemcpy(b.data(), sc_new, b.size() * 4, cudaMemcpyDeviceToHost), "down");
+    if (std::getenv("QSA_BENCH_HASH")) {   // the fast scorer's bytes (compare STRATA_SELECT_SIMT=1 and =2)
+        unsigned long long h = 1469598103934665603ull;
+        for (int64_t i = 0; i < nq; ++i) {
+            const int64_t nbid = steps[(size_t) (i * k::kStepCount + k::kStepNBid)];
+            for (int64_t j = 0; j < nbid; ++j) {
+                uint32_t u;
+                std::memcpy(&u, &b[(size_t) (i * max_blocks + j)], 4);
+                h = (h ^ u) * 1099511628211ull;
+            }
+        }
+        std::printf("fast scores hash %016llx\n", h);
+    }
     ck(cudaMemcpy(ia.data(), ids_old, ia.size() * 4, cudaMemcpyDeviceToHost), "down");
     ck(cudaMemcpy(ib.data(), ids_new, ib.size() * 4, cudaMemcpyDeviceToHost), "down");
     std::vector<int32_t> ir(ia.size());
