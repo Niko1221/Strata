@@ -3,6 +3,8 @@
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
 #include "strata/core/geometry.hpp"
 #include "strata/kernels/fused_gr.hpp"
+#include "strata/kernels/fused_gr_policy.hpp"
+#include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/kernels/gfx_arch.hpp"
@@ -653,7 +655,118 @@ __global__ void __launch_bounds__(THREADS) gr_up_v3_kernel(GrMulti m, const floa
 //    weights are loaded while the current one is used.  A tile is 160 = 5 x 32 chunks of 8, so a lane still
 //    accumulates its chunks lane + 32 q in ascending order, as in the plain read with either tile.  Before sm_80
 //    (and on HIP) the staging is a plain copy: the same bits, only not asynchronous.
-constexpr int kHcPlain = 1, kHcSplit = 2, kHcStaged = 3;
+constexpr int kHcPlain = 1, kHcSplit = 2, kHcStaged = 3, kHcRegisterHalf = 7;
+constexpr int kP4SelfTest = 4; // ok_variant/set-array index; STRATA_HC_SPLIT selector remains 7
+static_assert(kHcPlain == detail::kGrVariantPlain && kHcSplit == detail::kGrVariantSplit &&
+              kHcStaged == detail::kGrVariantStaged && kHcRegisterHalf == detail::kGrVariantRegisterHalf,
+              "the selector's numbers are the policy header's variant numbers");
+
+// The runtime codes the policy header classifies, tied to this backend's own header names: a header that
+// renames or renumbers one breaks the build here instead of silently changing the fatal/recoverable split.
+// The shared numbers are asserted in both backends; the CUDA-only device faults and the HIP-only HSA runtime
+// codes only in their own, and HIP's different meanings for 911/912 are asserted where they differ.
+#if defined(__HIPCC__)
+constexpr detail::GrBackend kGrBackend = detail::GrBackend::Hip;
+static_assert(hipErrorInvalidValue == detail::kGrErrInvalidValue, "hipErrorInvalidValue");
+static_assert(hipErrorMemoryAllocation == detail::kGrErrMemoryAllocation, "hipErrorMemoryAllocation");
+static_assert(hipErrorInvalidDevicePointer == detail::kGrErrInvalidDevicePointer, "hipErrorInvalidDevicePointer");
+static_assert(hipErrorInvalidMemcpyDirection == detail::kGrErrInvalidMemcpyDirection, "hipErrorInvalidMemcpyDirection");
+static_assert(hipErrorInvalidConfiguration == detail::kGrErrInvalidConfiguration, "hipErrorInvalidConfiguration");
+static_assert(hipErrorNoDevice == detail::kGrErrNoDevice, "hipErrorNoDevice");
+static_assert(hipErrorInvalidDevice == detail::kGrErrInvalidDevice, "hipErrorInvalidDevice");
+static_assert(hipErrorInvalidDeviceFunction == detail::kGrErrInvalidDeviceFunction, "hipErrorInvalidDeviceFunction");
+static_assert(hipErrorInvalidImage == detail::kGrErrInvalidKernelImage, "hipErrorInvalidImage");
+static_assert(hipErrorNoBinaryForGpu == detail::kGrErrNoKernelImageForDevice, "hipErrorNoBinaryForGpu");
+static_assert(hipErrorInvalidResourceHandle == detail::kGrErrInvalidResourceHandle, "hipErrorInvalidResourceHandle");
+static_assert(hipErrorNotReady == detail::kGrErrNotReady, "hipErrorNotReady");
+static_assert(hipErrorIllegalAddress == detail::kGrErrIllegalAddress, "hipErrorIllegalAddress");
+static_assert(hipErrorLaunchOutOfResources == detail::kGrErrLaunchOutOfResources, "hipErrorLaunchOutOfResources");
+static_assert(hipErrorLaunchTimeOut == detail::kGrErrLaunchTimeout, "hipErrorLaunchTimeOut");
+static_assert(hipErrorContextIsDestroyed == detail::kGrErrContextIsDestroyed, "hipErrorContextIsDestroyed");
+static_assert(hipErrorAssert == detail::kGrErrAssert, "hipErrorAssert");
+static_assert(hipErrorLaunchFailure == detail::kGrErrLaunchFailure, "hipErrorLaunchFailure");
+static_assert(hipErrorCooperativeLaunchTooLarge == detail::kGrErrCooperativeLaunchTooLarge,
+              "hipErrorCooperativeLaunchTooLarge");
+static_assert(hipErrorStreamCaptureUnsupported == detail::kGrErrStreamCaptureUnsupported,
+              "hipErrorStreamCaptureUnsupported");
+static_assert(hipErrorUnknown == detail::kGrErrUnknown, "hipErrorUnknown");
+static_assert(hipErrorECCNotCorrectable == detail::kGrErrECCNotCorrectable, "hipErrorECCNotCorrectable");
+static_assert(hipErrorUnsupportedLimit == detail::kGrErrUnsupportedLimit, "hipErrorUnsupportedLimit");
+static_assert(hipErrorNotSupported == detail::kGrErrNotSupported, "hipErrorNotSupported");
+static_assert(hipErrorRuntimeMemory == detail::kGrHipErrRuntimeMemory, "hipErrorRuntimeMemory");
+static_assert(hipErrorRuntimeOther == detail::kGrHipErrRuntimeOther, "hipErrorRuntimeOther");
+// HIP's 911/912 are its own API errors, not CUDA's external-device fault / cluster-size error: the policy
+// header keeps them out of the fatal set for this backend, and these say the numbers mean what we assume.
+static_assert(hipErrorInvalidChannelDescriptor == detail::kGrCudaErrExternalDevice,
+              "HIP's 911 is hipErrorInvalidChannelDescriptor, not CUDA's cudaErrorExternalDevice");
+static_assert(hipErrorInvalidTexture == detail::kGrCudaErrInvalidClusterSize,
+              "HIP's 912 is hipErrorInvalidTexture, not CUDA's cudaErrorInvalidClusterSize");
+static_assert(!detail::fused_gr_context_fatal(detail::kGrCudaErrExternalDevice, kGrBackend),
+              "HIP's 911 is a plain API error: not context-fatal here");
+static_assert(detail::fused_gr_context_fatal(detail::kGrCudaErrIllegalInstruction, kGrBackend) &&
+                  detail::fused_gr_context_fatal(detail::kGrCudaErrLaunchIncompatibleTexturing, kGrBackend),
+              "unclassified HIP status values fail closed");
+static_assert(!detail::fused_gr_context_fatal(detail::kGrHipErrRuntimeMemory, kGrBackend) &&
+                  !detail::fused_gr_context_fatal(detail::kGrHipErrRuntimeOther, kGrBackend),
+              "HIP documents 1052/1053 as a runtime call failing, not as the context going bad");
+static_assert(detail::fused_gr_context_fatal(detail::kGrErrIllegalAddress, kGrBackend) &&
+                  detail::fused_gr_context_fatal(detail::kGrErrLaunchFailure, kGrBackend) &&
+                  detail::fused_gr_context_fatal(hipErrorECCNotCorrectable, kGrBackend) &&
+                  detail::fused_gr_context_fatal(hipErrorUnknown, kGrBackend),
+              "HIP's illegal address, device exception, uncorrectable ECC, and unknown statuses fail closed");
+#else
+constexpr detail::GrBackend kGrBackend = detail::GrBackend::Cuda;
+static_assert(cudaErrorInvalidValue == detail::kGrErrInvalidValue, "cudaErrorInvalidValue");
+static_assert(cudaErrorMemoryAllocation == detail::kGrErrMemoryAllocation, "cudaErrorMemoryAllocation");
+static_assert(cudaErrorInvalidDevicePointer == detail::kGrErrInvalidDevicePointer, "cudaErrorInvalidDevicePointer");
+static_assert(cudaErrorInvalidMemcpyDirection == detail::kGrErrInvalidMemcpyDirection, "cudaErrorInvalidMemcpyDirection");
+static_assert(cudaErrorInvalidConfiguration == detail::kGrErrInvalidConfiguration, "cudaErrorInvalidConfiguration");
+static_assert(cudaErrorNoDevice == detail::kGrErrNoDevice, "cudaErrorNoDevice");
+static_assert(cudaErrorInvalidDevice == detail::kGrErrInvalidDevice, "cudaErrorInvalidDevice");
+static_assert(cudaErrorInvalidDeviceFunction == detail::kGrErrInvalidDeviceFunction, "cudaErrorInvalidDeviceFunction");
+static_assert(cudaErrorInvalidKernelImage == detail::kGrErrInvalidKernelImage, "cudaErrorInvalidKernelImage");
+static_assert(cudaErrorNoKernelImageForDevice == detail::kGrErrNoKernelImageForDevice,
+              "cudaErrorNoKernelImageForDevice");
+static_assert(cudaErrorContained == detail::kGrCudaErrContained, "cudaErrorContained");
+static_assert(cudaErrorInvalidResourceHandle == detail::kGrErrInvalidResourceHandle, "cudaErrorInvalidResourceHandle");
+static_assert(cudaErrorNotReady == detail::kGrErrNotReady, "cudaErrorNotReady");
+static_assert(cudaErrorIllegalAddress == detail::kGrErrIllegalAddress, "cudaErrorIllegalAddress");
+static_assert(cudaErrorLaunchOutOfResources == detail::kGrErrLaunchOutOfResources, "cudaErrorLaunchOutOfResources");
+static_assert(cudaErrorLaunchTimeout == detail::kGrErrLaunchTimeout, "cudaErrorLaunchTimeout");
+static_assert(cudaErrorLaunchIncompatibleTexturing == detail::kGrCudaErrLaunchIncompatibleTexturing,
+              "cudaErrorLaunchIncompatibleTexturing");
+static_assert(cudaErrorContextIsDestroyed == detail::kGrErrContextIsDestroyed, "cudaErrorContextIsDestroyed");
+static_assert(cudaErrorAssert == detail::kGrErrAssert, "cudaErrorAssert");
+static_assert(cudaErrorHardwareStackError == detail::kGrCudaErrHardwareStackError, "cudaErrorHardwareStackError");
+static_assert(cudaErrorIllegalInstruction == detail::kGrCudaErrIllegalInstruction, "cudaErrorIllegalInstruction");
+static_assert(cudaErrorMisalignedAddress == detail::kGrCudaErrMisalignedAddress, "cudaErrorMisalignedAddress");
+static_assert(cudaErrorInvalidAddressSpace == detail::kGrCudaErrInvalidAddressSpace, "cudaErrorInvalidAddressSpace");
+static_assert(cudaErrorInvalidPc == detail::kGrCudaErrInvalidPc, "cudaErrorInvalidPc");
+static_assert(cudaErrorLaunchFailure == detail::kGrErrLaunchFailure, "cudaErrorLaunchFailure");
+static_assert(cudaErrorCooperativeLaunchTooLarge == detail::kGrErrCooperativeLaunchTooLarge,
+              "cudaErrorCooperativeLaunchTooLarge");
+static_assert(cudaErrorTensorMemoryLeak == detail::kGrCudaErrTensorMemoryLeak, "cudaErrorTensorMemoryLeak");
+static_assert(cudaErrorMpsClientTerminated == detail::kGrCudaErrMpsClientTerminated, "cudaErrorMpsClientTerminated");
+static_assert(cudaErrorStreamCaptureUnsupported == detail::kGrErrStreamCaptureUnsupported,
+              "cudaErrorStreamCaptureUnsupported");
+static_assert(cudaErrorExternalDevice == detail::kGrCudaErrExternalDevice, "cudaErrorExternalDevice");
+static_assert(cudaErrorInvalidClusterSize == detail::kGrCudaErrInvalidClusterSize, "cudaErrorInvalidClusterSize");
+static_assert(cudaErrorUnknown == detail::kGrErrUnknown, "cudaErrorUnknown");
+static_assert(cudaErrorECCUncorrectable == detail::kGrErrECCNotCorrectable, "cudaErrorECCUncorrectable");
+static_assert(cudaErrorUnsupportedLimit == detail::kGrErrUnsupportedLimit, "cudaErrorUnsupportedLimit");
+static_assert(cudaErrorNotSupported == detail::kGrErrNotSupported, "cudaErrorNotSupported");
+static_assert(detail::fused_gr_context_fatal(detail::kGrCudaErrContained, kGrBackend) &&
+                  detail::fused_gr_context_fatal(detail::kGrCudaErrIllegalInstruction, kGrBackend) &&
+                  detail::fused_gr_context_fatal(detail::kGrCudaErrExternalDevice, kGrBackend) &&
+                  detail::fused_gr_context_fatal(cudaErrorECCUncorrectable, kGrBackend) &&
+                  detail::fused_gr_context_fatal(cudaErrorUnknown, kGrBackend),
+              "CUDA's device faults, uncorrectable ECC, and unknown statuses fail closed");
+static_assert(!detail::fused_gr_context_fatal(cudaErrorLaunchOutOfResources, kGrBackend) &&
+                  !detail::fused_gr_context_fatal(cudaErrorInvalidConfiguration, kGrBackend) &&
+                  !detail::fused_gr_context_fatal(cudaErrorInvalidResourceHandle, kGrBackend) &&
+                  !detail::fused_gr_context_fatal(cudaErrorInvalidClusterSize, kGrBackend),
+              "a refused launch, a bad handle and a bad cluster size leave the context usable");
+#endif
 constexpr int H_TILE = 1280;                          // staged tile: half a stream = 160 chunks of 8, 5 per lane
 constexpr int HQ = H_TILE / 8 / 32;
 constexpr int N_HTILES = D / H_TILE;                  // 8
@@ -881,6 +994,144 @@ __global__ void __launch_bounds__(THREADS) gr_down_staged_kernel(GrMulti m) {
     }
 }
 
+// The compile-time register tuple used by P4. Each chain slot is a VGPR-resident float4; compile-time indexing
+// prevents the runtime-indexed array from lowering to private scratch on gfx1201. Slots outside the runtime token
+// count are initialized to zero and never scattered.
+template <int I> struct HcChain { float4 head; HcChain<I - 1> tail; };
+template <> struct HcChain<0> { float4 head; };
+
+template <int Dd, int NN>
+__device__ __forceinline__ void hc_load_all(HcChain<NN>& c, const GrMulti& m, int h, int t, int total) {
+    const int idx = t + Dd * THREADS;
+    if (idx < total) {
+        const int k = idx / (H_TILE / 4), s4 = idx - k * (H_TILE / 4);
+        c.head = *reinterpret_cast<const float4*>(m.xn + (size_t) k * D + (size_t) h * H_TILE + (size_t) s4 * 4);
+    } else {
+        c.head = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    if constexpr (NN > 0) hc_load_all<Dd + 1, NN - 1>(c.tail, m, h, t, total);
+}
+
+template <int Dd, int NN>
+__device__ __forceinline__ void hc_scatter_all(const HcChain<NN>& c, float4* buf, int t, int total) {
+    const int idx = t + Dd * THREADS;
+    if (idx < total) {
+        const int k = idx / (H_TILE / 4), s4 = idx - k * (H_TILE / 4);
+        buf[(size_t) k * (H_TILE / 4) + (s4 & 1) * (H_TILE / 8) + (s4 >> 1)] = c.head;
+    }
+    if constexpr (NN > 0) hc_scatter_all<Dd + 1, NN - 1>(c.tail, buf, t, total);
+}
+
+// P4 (gfx1200/gfx1201 only): staged's activation pipeline with the next tile carried in two compile-time halves.
+// The arithmetic and q/k order are unchanged; the second tuple half is fetched mid-dot to shorten live ranges.
+template <int MAX_T = kFusedGrMaxT, bool EXACT_T = false>
+__global__ void __launch_bounds__(THREADS) gr_down_register_half_kernel(GrMulti m) {
+    extern __shared__ __align__(16) float4 hbuf[];
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
+    const int T = EXACT_T ? MAX_T : m.T;
+    const bool inject_block = blockIdx.x == DOWN_BLOCKS;
+    const int row = inject_block ? warp : blockIdx.x * WARPS + warp;
+    const bool active = !(inject_block && (m.a[0].w_inject == nullptr || warp >= HC));
+    const uint16_t* wrow = (inject_block ? m.a[0].w_inject : m.a[0].w_down) + (size_t) (active ? row : 0) * D;
+    const uint4* w4 = reinterpret_cast<const uint4*>(wrow);
+    const size_t buf_f4 = (size_t) T * (H_TILE / 4);
+    const int total = T * (H_TILE / 4);
+    constexpr int NS = (MAX_T * (H_TILE / 4) + THREADS - 1) / THREADS;
+    constexpr int H0 = (NS + 1) / 2;
+    float acc[MAX_T];
+#pragma unroll
+    for (int k = 0; k < MAX_T; ++k) acc[k] = 0.0f;
+    uint4 wv[HQ], wnext[HQ];
+    if (active) {
+#pragma unroll
+        for (int q = 0; q < HQ; ++q) wv[q] = __ldg(w4 + lane + 32 * q);
+    }
+    stage_htile(m, T, 0, hbuf, t);
+    cp_async_commit();
+    stage_htile(m, T, 1, hbuf + buf_f4, t);
+    cp_async_commit();
+    HcChain<H0 - 1> t0;
+    HcChain<NS - H0 - 1> t1;
+    hc_load_all<0, H0 - 1>(t0, m, 2, t, total);
+#pragma unroll 1
+    for (int h = 0; h < N_HTILES; ++h) {
+        if (active && h + 1 < N_HTILES) {
+#pragma unroll
+            for (int q = 0; q < HQ; ++q) wnext[q] = __ldg(w4 + (h + 1) * (H_TILE / 8) + lane + 32 * q);
+        }
+        if (h + 1 < N_HTILES) cp_async_wait1();
+        else cp_async_wait0();
+        __syncthreads();
+        const float4* cur = hbuf + (h & 1) * buf_f4;
+        if (active) {
+#pragma unroll
+            for (int q = 0; q < HQ; ++q) {
+                // Fetch the next register half at q==2 so its global loads overlap the remaining dot products.
+                if (q == 2 && h + 2 < N_HTILES)
+                    hc_load_all<H0, NS - H0 - 1>(t1, m, h + 2, t, total);
+                const int j = lane + 32 * q;
+                const Bf16x8 wvq = unpack8(wv[q]);
+#pragma unroll
+                for (int k = 0; k < MAX_T; ++k) {
+                    if (EXACT_T || k < T) {
+                        const float4* pk = cur + (size_t) k * (H_TILE / 4);
+                        acc[k] += dot8u(wvq, pk[j], pk[H_TILE / 8 + j]);
+                    }
+                }
+            }
+        }
+        // Inactive lanes skip the mid-dot prefetch but still take part in the shared-buffer scatter.
+        if (h + 2 < N_HTILES && !active) hc_load_all<H0, NS - H0 - 1>(t1, m, h + 2, t, total);
+        __syncthreads();
+        if (h + 2 < N_HTILES) {
+            hc_scatter_all<0, H0 - 1>(t0, hbuf + (h & 1) * buf_f4, t, total);
+            hc_scatter_all<H0, NS - H0 - 1>(t1, hbuf + (h & 1) * buf_f4, t, total);
+        }
+        if (h + 3 < N_HTILES) hc_load_all<0, H0 - 1>(t0, m, h + 3, t, total);
+        cp_async_commit();
+        if (h + 1 < N_HTILES) {
+#pragma unroll
+            for (int q = 0; q < HQ; ++q) wv[q] = wnext[q];
+        }
+    }
+    if (!active) return;
+#pragma unroll
+    for (int k = 0; k < MAX_T; ++k) {
+        const float s = (EXACT_T || k < T) ? warp_sum(acc[k]) : 0.0f;
+        if ((!EXACT_T && k >= T) || lane != k) continue;
+        if (inject_block) m.a[k].inject_out[row] = s;
+        else {
+            const float x = s / (float) HC;
+            m.a[k].lo[row] = x / (1.0f + __expf(-x));
+        }
+    }
+}
+
+// Defined below beside the self-test; these guards are also used by the device/attribute helpers above it.
+void fused_gr_leave_if_context_fatal(cudaError_t err, const char* what);
+
+// Check an immediate runtime status before any later GPU call. Recoverable query/configuration failures are cleared
+// and reported to the caller for its safe fallback; a context-fatal status exits before continuing.
+bool fused_gr_api_ok_or_exit(cudaError_t err, const char* what) {
+    fused_gr_leave_if_context_fatal(err, what);
+    if (err == cudaSuccess) return true;
+    const cudaError_t pending_err = cudaGetLastError();
+    fused_gr_leave_if_context_fatal(pending_err, what);
+    return false;
+}
+
+// Runtime architecture gate: never expose P4 as default outside the exact gfx1200/gfx1201 RDNA4 family.
+bool p4_gfx12_device(int dev) {
+#if defined(__HIPCC__)
+    cudaDeviceProp prop{};
+    if (!fused_gr_api_ok_or_exit(cudaGetDeviceProperties(&prop, dev), "the P4 architecture query")) return false;
+    return strata::kernels::gfx_arch_is_gfx12(prop.gcnArchName);
+#else
+    (void) dev;
+    return false;
+#endif
+}
+
 // the current device is Volta (sm_70): the fast norm/up is its default
 bool cur_dev_volta() {
 #if defined(__HIPCC__)
@@ -888,12 +1139,15 @@ bool cur_dev_volta() {
 #else
     static int per_dev[64];   // 0 unknown, 1 no, 2 yes
     int dev = 0;
-    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (!fused_gr_api_ok_or_exit(cudaGetDevice(&dev), "the Volta device query") || dev < 0 || dev >= 64)
+        return false;
     if (!per_dev[dev]) {
         int major = 0, minor = 0;
-        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
-        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
-        per_dev[dev] = major == 7 && minor == 0 ? 2 : 1;
+        const bool major_ok = fused_gr_api_ok_or_exit(
+            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev), "the Volta major-capability query");
+        const bool minor_ok = fused_gr_api_ok_or_exit(
+            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev), "the Volta minor-capability query");
+        per_dev[dev] = major_ok && minor_ok && major == 7 && minor == 0 ? 2 : 1;
     }
     return per_dev[dev] == 2;
 #endif
@@ -908,15 +1162,20 @@ int down_chunk(bool staged, int* tile_out) {
     static int chunk_staged[64] = {};  // the same for staged
     static int tile[64] = {};    // the plain down kernel's TILEV on this card (1280 on sm_75, 2560 elsewhere)
     int dev = 0;
-    cudaGetDevice(&dev);
-    if (dev < 0 || dev >= 64) {
+    if (!fused_gr_api_ok_or_exit(cudaGetDevice(&dev), "down-kernel current-device query") || dev < 0 || dev >= 64) {
         *tile_out = 2560;
         return kFusedGrMaxT;
     }
     if (!attr[dev]) {
         int optin = 0;
-        cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
+        (void) fused_gr_api_ok_or_exit(
+            cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev),
+            "down-kernel shared-memory capability query");
         optin = strata::smem_optin_of(optin);   // STRATA_EMULATE_CC (tests only)
+        auto set_func_attr = [&](auto kernel, auto attr, int value) {
+            (void) fused_gr_api_ok_or_exit(cudaFuncSetAttribute(kernel, attr, value),
+                                           "down-kernel shared-memory attribute setup");
+        };
         // the down kernel stages n_tok*TILEV floats of dynamic shared memory - 80 KB at the full 8 tokens of the
         // CUDA tile.  sm_75 gets the smaller tile: all eight tokens fit one 40 KiB launch there (no more slicing),
         // the TQ-5 prefetch holds half the registers, and the smaller blocks raise how many of the 41-block grid
@@ -931,25 +1190,30 @@ int down_chunk(bool staged, int* tile_out) {
 #endif
 #else
         int cc_maj = 0, cc_min = 0;
-        cudaDeviceGetAttribute(&cc_maj, cudaDevAttrComputeCapabilityMajor, dev);
-        cudaDeviceGetAttribute(&cc_min, cudaDevAttrComputeCapabilityMinor, dev);
-        const bool small_tile = strata::cc_major_of(cc_maj) * 10 + strata::cc_minor_of(cc_min) == 75;
+        const bool major_ok = fused_gr_api_ok_or_exit(
+            cudaDeviceGetAttribute(&cc_maj, cudaDevAttrComputeCapabilityMajor, dev),
+            "down-kernel compute-capability major query");
+        const bool minor_ok = fused_gr_api_ok_or_exit(
+            cudaDeviceGetAttribute(&cc_min, cudaDevAttrComputeCapabilityMinor, dev),
+            "down-kernel compute-capability minor query");
+        const bool small_tile = major_ok && minor_ok &&
+            strata::cc_major_of(cc_maj) * 10 + strata::cc_minor_of(cc_min) == 75;
 #endif
         const int tv = small_tile ? 1280 : 2560;
         tile[dev] = tv;
         int want = (int) (kFusedGrMaxT * tv * sizeof(float));
         if (optin > 0 && want > optin) want = optin;
         if (small_tile) {
-            cudaFuncSetAttribute(gr_down_multi_kernel<1280>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
+            set_func_attr(gr_down_multi_kernel<1280>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
         } else {
-            cudaFuncSetAttribute(gr_down_multi_kernel<2560>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
+            set_func_attr(gr_down_multi_kernel<2560>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
         }
         auto set_staged_attr = [&](auto kernel, int max_t) {
             int ws = (int) (2 * max_t * H_TILE * sizeof(float));
             if (optin > 0 && ws > optin) ws = optin;
             if (ws > 48 * 1024)
-                cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, ws);
-            cudaFuncSetAttribute(kernel, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+                set_func_attr(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, ws);
+            set_func_attr(kernel, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
         };
         set_staged_attr(gr_down_staged_kernel<1, true>, 1);
         set_staged_attr(gr_down_staged_kernel<2, true>, 2);
@@ -957,9 +1221,15 @@ int down_chunk(bool staged, int* tile_out) {
         set_staged_attr(gr_down_staged_kernel<4, true>, 4);
         set_staged_attr(gr_down_staged_kernel<5, true>, 5);
         set_staged_attr(gr_down_staged_kernel<6, true>, 6);
+        set_staged_attr(gr_down_register_half_kernel<1, true>, 1);
+        set_staged_attr(gr_down_register_half_kernel<2, true>, 2);
+        set_staged_attr(gr_down_register_half_kernel<3, true>, 3);
+        set_staged_attr(gr_down_register_half_kernel<4, true>, 4);
+        set_staged_attr(gr_down_register_half_kernel<kFusedGrMaxT, false>, kFusedGrMaxT);
         set_staged_attr(gr_down_staged_kernel<4, false>, 4);
         set_staged_attr(gr_down_staged_kernel<kFusedGrMaxT, false>, kFusedGrMaxT);
-        cudaGetLastError();      // drop any error the attempt left behind
+        const cudaError_t attr_pending_err = cudaGetLastError();
+        fused_gr_leave_if_context_fatal(attr_pending_err, "down-kernel attribute setup's pending error");
         // The opt-in is a promise a pre-Volta card does not keep: an sm_60 answers 65536 and accepts the
         // cudaFuncSetAttribute for 61440 B, then fails the LAUNCH with "invalid argument".  What such a card
         // will launch is its per-block limit, so the capacity comes from that below sm_70 - the same tokens
@@ -968,10 +1238,14 @@ int down_chunk(bool staged, int* tile_out) {
         const int usable = optin > 0 ? optin : 48 * 1024;
 #else
         int cc = 0, per_block = 0;
-        cudaDeviceGetAttribute(&cc, cudaDevAttrComputeCapabilityMajor, dev);
-        cudaDeviceGetAttribute(&per_block, cudaDevAttrMaxSharedMemoryPerBlock, dev);
+        const bool cc_ok = fused_gr_api_ok_or_exit(
+            cudaDeviceGetAttribute(&cc, cudaDevAttrComputeCapabilityMajor, dev),
+            "down-kernel usable capability query");
+        const bool per_block_ok = fused_gr_api_ok_or_exit(
+            cudaDeviceGetAttribute(&per_block, cudaDevAttrMaxSharedMemoryPerBlock, dev),
+            "down-kernel shared-memory limit query");
         cc = strata::cc_major_of(cc);
-        const int usable = (cc >= 7 && optin > 0) ? optin : per_block;
+        const int usable = cc_ok && cc >= 7 && optin > 0 ? optin : (per_block_ok ? per_block : 0);
 #endif
         const int capacity = usable / (int) (tv * sizeof(float));
         chunk[dev] = capacity < 1 ? 1 : (capacity > kFusedGrMaxT ? kFusedGrMaxT : capacity);
@@ -1013,10 +1287,13 @@ bool norm_fast_on() {
     if (env >= 0) return env != 0;
     static int per_dev[64];   // 0 unknown, 1 no, 2 yes
     int dev = 0;
-    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (!fused_gr_api_ok_or_exit(cudaGetDevice(&dev), "register-norm current-device query") || dev < 0 || dev >= 64)
+        return false;
     if (!per_dev[dev]) {
-        cudaDeviceProp p;
-        per_dev[dev] = cudaGetDeviceProperties(&p, dev) == cudaSuccess && strata::kernels::gfx_arch_is_gfx12(p.gcnArchName) ? 2 : 1;
+        cudaDeviceProp p{};
+        const bool props_ok = fused_gr_api_ok_or_exit(
+            cudaGetDeviceProperties(&p, dev), "register-norm architecture query");
+        per_dev[dev] = props_ok && strata::kernels::gfx_arch_is_gfx12(p.gcnArchName) ? 2 : 1;
     }
     return per_dev[dev] == 2;
 #else
@@ -1071,7 +1348,15 @@ void launch_multi(const GrMulti& m, int variant, cudaStream_t st, unsigned long 
         // kFusedGrMaxT - the same tile, block size, accumulation order and plain/split/staged path, so the same bits
         // (decided once per device: this runs per layer when decode is not captured)
         const bool max4 = ct <= 4 && gr_down_max4();
-        if (staged) {
+        if (staged && variant == kHcRegisterHalf) {
+            // P4 shares staged's grid and dynamic shared-memory layout.
+            const size_t cta_smem = (size_t) ct * 2 * H_TILE * sizeof(float);
+            if (exact_t && ct == 1) gr_down_register_half_kernel<1, true><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
+            else if (exact_t && ct == 2) gr_down_register_half_kernel<2, true><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
+            else if (exact_t && ct == 3) gr_down_register_half_kernel<3, true><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
+            else if (exact_t && ct == 4) gr_down_register_half_kernel<4, true><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
+            else gr_down_register_half_kernel<kFusedGrMaxT, false><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
+        } else if (staged) {
             // #783 PR-g (stuchapin909): a launch of exactly ct <= 6 tokens is its own instantiation, the loop bounds
             // are compile-time (the same sums in the same order); STRATA_NO_MULTI_GR=1 keeps the generic kernels
             if (exact_t && ct == 1) gr_down_staged_kernel<1, true><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
@@ -1120,13 +1405,12 @@ void launch_multi(const GrMulti& m, int variant, cudaStream_t st, unsigned long 
     }
 }
 
-/// STRATA_HC_SPLIT: unset or 2 = the newest the check accepts (staged), 1 = at most split, 0 = the plain read
+/// STRATA_HC_SPLIT: unset = staged, the upstream path - it never asks for the P4 candidate.  2 requests staged,
+/// 1 split, 0 plain, each with the check's fallback.  7 is the only value that opts into P4 self-testing, and only
+/// on gfx1200/gfx1201; it is selected once both parity gates pass, otherwise the staged/split/plain fallback.
 int env_variant() {
-    const char* e = std::getenv("STRATA_HC_SPLIT");
-    if (e == nullptr || e[0] == '\0') return kHcStaged;
-    if (e[0] == '0') return kHcPlain;
-    if (e[0] == '1') return kHcSplit;
-    return kHcStaged;
+    const char* const e = std::getenv("STRATA_HC_SPLIT");
+    return detail::fused_gr_env_variant(e != nullptr ? std::string_view{e} : std::string_view{});
 }
 
 // per device: the variant `fused_gr_check` chose (0 = not checked yet)
@@ -1982,6 +2266,7 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         launch_q8(m, xn_scratch, st, stamp_buf, stamp_i0);   // S23 experiment: STRATA_HC_Q8=1
         const cudaError_t eq = cudaGetLastError();
         if (eq != cudaSuccess) {
+            fused_gr_leave_if_context_fatal(eq, "fused_gr_read_multi Q8 kernel");
             std::fprintf(stderr, "fused_gr_read_multi q8: %s\n", cudaGetErrorString(eq));
             std::exit(1);
         }
@@ -1990,35 +2275,54 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
     // STRATA_GR_V3=1: the two-kernel read above (another summation order - opt-in)
     static const bool v3 = [] { const char* v = std::getenv("STRATA_GR_V3"); return v != nullptr && std::atoi(v) != 0; }();
     static int split3[64] = {};   // per device: 0 = not decided yet, 1 / 2 = column halves S, -1 = does not fit
-    int dev3 = 0;
-    if (v3) {
-        cudaGetDevice(&dev3);
+    int dev3 = -1;
+    if (v3 && fused_gr_api_ok_or_exit(cudaGetDevice(&dev3), "STRATA_GR_V3 current-device query")) {
         if (dev3 >= 0 && dev3 < 64 && split3[dev3] == 0) {
             int optin = 0;
-            cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev3);
+            (void) fused_gr_api_ok_or_exit(
+                cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev3),
+                "STRATA_GR_V3 shared-memory query");
             const int limit = optin > 0 ? optin : 48 * 1024;
             const int need1 = (int) (kFusedGrMaxT * N * sizeof(float)), need6 = (int) (6 * N * sizeof(float)),
                       need5 = (int) (5 * N * sizeof(float)), need2 = need1 / 2;
             int split = -1;
             if (need1 <= limit &&
-                cudaFuncSetAttribute(gr_down_v3_kernel<1, kFusedGrMaxT, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, need1) == cudaSuccess &&
-                cudaFuncSetAttribute(gr_down_v3_kernel<1, 6, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, need6) == cudaSuccess &&
-                cudaFuncSetAttribute(gr_down_v3_kernel<1, 5, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, need5) == cudaSuccess) {
-                cudaFuncSetAttribute(gr_down_v3_kernel<1, 1, true>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-                cudaFuncSetAttribute(gr_down_v3_kernel<1, 2, true>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-                cudaFuncSetAttribute(gr_down_v3_kernel<1, 3, true>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-                cudaFuncSetAttribute(gr_down_v3_kernel<1, 4, true>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-                cudaFuncSetAttribute(gr_down_v3_kernel<1, 5, true>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-                cudaFuncSetAttribute(gr_down_v3_kernel<1, 6, true>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-                cudaFuncSetAttribute(gr_down_v3_kernel<1, 4, false>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-                cudaFuncSetAttribute(gr_down_v3_kernel<1, kFusedGrMaxT, false>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+                fused_gr_api_ok_or_exit(
+                    cudaFuncSetAttribute(gr_down_v3_kernel<1, kFusedGrMaxT, false>,
+                                         cudaFuncAttributeMaxDynamicSharedMemorySize, need1),
+                    "STRATA_GR_V3 full-batch shared-memory setup") &&
+                fused_gr_api_ok_or_exit(
+                    cudaFuncSetAttribute(gr_down_v3_kernel<1, 6, true>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                         need6),
+                    "STRATA_GR_V3 six-token shared-memory setup") &&
+                fused_gr_api_ok_or_exit(
+                    cudaFuncSetAttribute(gr_down_v3_kernel<1, 5, true>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                         need5),
+                    "STRATA_GR_V3 five-token shared-memory setup")) {
+                (void) fused_gr_api_ok_or_exit(cudaFuncSetAttribute(gr_down_v3_kernel<1, 1, true>,
+                    cudaFuncAttributePreferredSharedMemoryCarveout, 100), "STRATA_GR_V3 carveout setup");
+                (void) fused_gr_api_ok_or_exit(cudaFuncSetAttribute(gr_down_v3_kernel<1, 2, true>,
+                    cudaFuncAttributePreferredSharedMemoryCarveout, 100), "STRATA_GR_V3 carveout setup");
+                (void) fused_gr_api_ok_or_exit(cudaFuncSetAttribute(gr_down_v3_kernel<1, 3, true>,
+                    cudaFuncAttributePreferredSharedMemoryCarveout, 100), "STRATA_GR_V3 carveout setup");
+                (void) fused_gr_api_ok_or_exit(cudaFuncSetAttribute(gr_down_v3_kernel<1, 4, true>,
+                    cudaFuncAttributePreferredSharedMemoryCarveout, 100), "STRATA_GR_V3 carveout setup");
+                (void) fused_gr_api_ok_or_exit(cudaFuncSetAttribute(gr_down_v3_kernel<1, 5, true>,
+                    cudaFuncAttributePreferredSharedMemoryCarveout, 100), "STRATA_GR_V3 carveout setup");
+                (void) fused_gr_api_ok_or_exit(cudaFuncSetAttribute(gr_down_v3_kernel<1, 6, true>,
+                    cudaFuncAttributePreferredSharedMemoryCarveout, 100), "STRATA_GR_V3 carveout setup");
+                (void) fused_gr_api_ok_or_exit(cudaFuncSetAttribute(gr_down_v3_kernel<1, 4, false>,
+                    cudaFuncAttributePreferredSharedMemoryCarveout, 100), "STRATA_GR_V3 carveout setup");
+                (void) fused_gr_api_ok_or_exit(cudaFuncSetAttribute(gr_down_v3_kernel<1, kFusedGrMaxT, false>,
+                    cudaFuncAttributePreferredSharedMemoryCarveout, 100), "STRATA_GR_V3 carveout setup");
                 split = 1;
             } else if (need2 <= limit)
                 // #375 (kenh0u): the S = 2 split (a 64 KB opt-in card: Turing) disagrees with itself in gr_parity
                 // (graph replay vs direct call) - such a card keeps the default read until that split is fixed
                 std::fprintf(stderr, "strata: STRATA_GR_V3=1 needs the two-half split on this card, which fails its "
                                      "checks (#375): the default read is used\n");
-            cudaGetLastError();   // drop any error the attempts left behind
+            const cudaError_t pending_err = cudaGetLastError();
+            fused_gr_leave_if_context_fatal(pending_err, "STRATA_GR_V3 attribute setup's pending error");
             split3[dev3] = split;
         }
     }
@@ -2047,6 +2351,7 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         else gr_up_v3_kernel<1, kFusedGrMaxT, false><<<UPM_BLOCKS, THREADS, 0, st>>>(m, part, ssg);
         const cudaError_t e3 = cudaGetLastError();
         if (e3 != cudaSuccess) {
+            fused_gr_leave_if_context_fatal(e3, "fused_gr_read_multi v3 kernels");
             std::fprintf(stderr, "fused_gr_read_multi v3: %s\n", cudaGetErrorString(e3));
             std::exit(1);
         }
@@ -2071,6 +2376,7 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         else gr_up_multi_kernel<<<UPM_BLOCKS, THREADS, 0, st>>>(m);
         const cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) {
+            fused_gr_leave_if_context_fatal(e, "fused_gr_read_multi kernels");
             std::fprintf(stderr, "fused_gr_read_multi: %s\n", cudaGetErrorString(e));
             std::exit(1);
         }
@@ -2081,6 +2387,7 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
     launch_multi(m, fused_gr_variant(), st, stamp_buf, stamp_i0);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
+        fused_gr_leave_if_context_fatal(e, "fused_gr_read_multi default kernels");
         std::fprintf(stderr, "fused_gr_read_multi: %s\n", cudaGetErrorString(e));
         std::exit(1);
     }
@@ -2139,6 +2446,7 @@ void fused_gr_read(const FusedGrArgs& a, void* stream) {
     gr_up_kernel<<<UP_BLOCKS, THREADS, 0, st>>>(a);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
+        fused_gr_leave_if_context_fatal(e, "fused_gr_read kernels");
         std::fprintf(stderr, "fused_gr_read: %s\n", cudaGetErrorString(e));
         std::exit(1);
     }
@@ -2147,13 +2455,36 @@ void fused_gr_read(const FusedGrArgs& a, void* stream) {
 
 namespace {
 
+/// A device fault poisons the shared context for the whole process: every later call returns the same error, and
+/// unwinding the destructors on it can hang until the 60 s watchdog.  #224's precedent in `generate.cpp` leaves at
+/// once, before any further GPU call or cleanup; do the same here.  A code the policy header does not classify as
+/// context-fatal (a refused launch, a bad handle, an allocation, HIP's HSA runtime call failures) leaves the
+/// context usable, so this returns and the caller keeps its recoverable fallback path.
+void fused_gr_leave_if_context_fatal(cudaError_t err, const char* what) {
+    if (!detail::fused_gr_context_fatal((int) err, kGrBackend)) return;
+    std::fprintf(stderr, "strata hc: %s left the GPU context unusable (%s); exiting before any further GPU work\n",
+                 what, cudaGetErrorString(err));
+    std::fflush(stdout);
+    std::fflush(stderr);
+    std::_Exit(1);
+}
+
 /// The plain read, split, staged and (for one token) the single-token read on random bf16 weights and random inputs,
 /// 1..8 tokens, with and without the pending write; every output of split and staged compared with the plain read's
 /// bit for bit (and the plain read's with the single-token read's).  `why[v]` gets the first difference of variant
 /// v; false if the check itself could not run.
-bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
+bool fused_gr_selftest(bool ok_variant[5], std::string why[5], bool test_p4) {
     constexpr int TM = kFusedGrMaxT;
-    constexpr int NV = 4;                             // sets: 0 = plain, 1 = split, 2 = staged, 3 = single-token
+    constexpr int NV = 5;                             // sets: plain, split, staged, single-token, register-half
+    for (int v = 0; v < NV; ++v) { ok_variant[v] = v == 1; why[v].clear(); }
+    ok_variant[kP4SelfTest] = false;
+    int dev = 0;
+    if (!fused_gr_api_ok_or_exit(cudaGetDevice(&dev), "the self-test current-device query")) {
+        why[0] = "querying the current device failed";
+        return false;
+    }
+    const bool allow_p4 = test_p4 && p4_gfx12_device(dev);
+    ok_variant[kP4SelfTest] = allow_p4;
     std::mt19937 rng(20260930u);
     std::normal_distribution<float> nd(0.0f, 1.0f);
     std::vector<uint16_t> h_down((size_t) LR * D), h_up((size_t) D * LR), h_inj((size_t) HC * D);
@@ -2165,14 +2496,21 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
     for (auto& x : h_R) x = nd(rng);
     for (auto& x : h_bo) x = 0.5f * nd(rng);
     for (auto& x : h_ip) x = 2.0f * nd(rng);
-    for (int v = 0; v < 4; ++v) { ok_variant[v] = v == 1; why[v].clear(); }
 
     const size_t n_set = (size_t) TM * (D + D + LR + HC + HC + N);   // R_out, xn, lo, rs, inject, mixed (floats)
+    const size_t q8_per_token = (size_t) (N / 32) * sizeof(GrQ81);
+    const size_t q8_set_bytes = (size_t) TM * q8_per_token;
+    const size_t q8_cnt_bytes = (size_t) (N / 32) * sizeof(unsigned);
     const size_t bytes = h_down.size() * 2 + h_up.size() * 2 + h_inj.size() * 2 +
-                         (h_norm.size() + h_R.size() + h_bo.size() + h_ip.size() + NV * n_set) * 4 + 32 * 256;
+                         (h_norm.size() + h_R.size() + h_bo.size() + h_ip.size() + NV * n_set) * 4 +
+                         NV * (q8_set_bytes + q8_cnt_bytes) + 50 * 256;
+    // `take()` rounds each allocation up to 256 bytes; reserve the worst-case padding for all source, result and q8 buffers.
     uint8_t* base = nullptr;
-    if (cudaMalloc((void**) &base, bytes) != cudaSuccess) {
-        cudaGetLastError();
+    const cudaError_t alloc_err = cudaMalloc((void**) &base, bytes);
+    if (alloc_err != cudaSuccess) {
+        fused_gr_leave_if_context_fatal(alloc_err, "the self-test allocation");
+        const cudaError_t pending_err = cudaGetLastError();
+        fused_gr_leave_if_context_fatal(pending_err, "the self-test allocation's pending error");
         why[0] = "no room for the check (" + std::to_string(bytes >> 20) + " MiB)";
         return false;
     }
@@ -2185,32 +2523,73 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
     float* d_R = (float*) take(h_R.size() * 4);
     float* d_bo = (float*) take(h_bo.size() * 4);
     float* d_ip = (float*) take(h_ip.size() * 4);
-    struct Set { float *R_out, *xn, *lo, *rs, *inj, *mixed; } set[NV];
+    struct Set { float *R_out, *xn, *lo, *rs, *inj, *mixed; uint8_t* q8_mixed; unsigned* q8_cnt; } set[NV];
     for (Set& x : set) {
         x.R_out = (float*) take((size_t) TM * D * 4); x.xn = (float*) take((size_t) TM * D * 4);
         x.lo = (float*) take((size_t) TM * LR * 4); x.rs = (float*) take((size_t) TM * HC * 4);
         x.inj = (float*) take((size_t) TM * HC * 4); x.mixed = (float*) take((size_t) TM * N * 4);
+        x.q8_mixed = (uint8_t*) take(q8_set_bytes); x.q8_cnt = (unsigned*) take(q8_cnt_bytes);
     }
-    cudaStream_t st = nullptr;
-    bool ok = off <= bytes && cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking) == cudaSuccess &&
-              cudaMemcpyAsync(d_down, h_down.data(), h_down.size() * 2, cudaMemcpyHostToDevice, st) == cudaSuccess &&
-              cudaMemcpyAsync(d_up, h_up.data(), h_up.size() * 2, cudaMemcpyHostToDevice, st) == cudaSuccess &&
-              cudaMemcpyAsync(d_inj, h_inj.data(), h_inj.size() * 2, cudaMemcpyHostToDevice, st) == cudaSuccess &&
-              cudaMemcpyAsync(d_norm, h_norm.data(), h_norm.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess &&
-              cudaMemcpyAsync(d_R, h_R.data(), h_R.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess &&
-              cudaMemcpyAsync(d_bo, h_bo.data(), h_bo.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess &&
-              cudaMemcpyAsync(d_ip, h_ip.data(), h_ip.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess;
+    cudaStream_t st = nullptr, p4_st = nullptr;
+    bool ok = off <= bytes;
+    if (ok) {
+        const cudaError_t st_create_err = cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking);
+        ok = st_create_err == cudaSuccess;
+        if (!ok) {
+            fused_gr_leave_if_context_fatal(st_create_err, "the check stream creation");
+            const cudaError_t pending_err = cudaGetLastError();
+            fused_gr_leave_if_context_fatal(pending_err, "the check stream creation's pending error");
+        }
+    }
+    if (!ok) why[0] = off <= bytes ? "creating the check stream failed" : "self-test buffer sizing failed";
+
+    bool p4_ok = !allow_p4;
+    if (allow_p4 && ok) {
+        const cudaError_t p4_create_err = cudaStreamCreateWithFlags(&p4_st, cudaStreamNonBlocking);
+        p4_ok = p4_create_err == cudaSuccess;
+        if (!p4_ok) {
+            fused_gr_leave_if_context_fatal(p4_create_err, "the P4 self-test stream creation");
+            const cudaError_t pending_err = cudaGetLastError();
+            fused_gr_leave_if_context_fatal(pending_err, "the P4 stream creation's pending error");
+            why[kP4SelfTest] = "creating the P4 self-test stream failed";
+        }
+    } else if (allow_p4) {
+        p4_ok = false;
+        why[kP4SelfTest] = "the check stream was unavailable for the P4 self-test";
+    }
+    ok = ok &&
+        fused_gr_api_ok_or_exit(cudaMemcpyAsync(d_down, h_down.data(), h_down.size() * 2, cudaMemcpyHostToDevice, st),
+                                "uploading self-test down weights") &&
+        fused_gr_api_ok_or_exit(cudaMemcpyAsync(d_up, h_up.data(), h_up.size() * 2, cudaMemcpyHostToDevice, st),
+                                "uploading self-test up weights") &&
+        fused_gr_api_ok_or_exit(cudaMemcpyAsync(d_inj, h_inj.data(), h_inj.size() * 2, cudaMemcpyHostToDevice, st),
+                                "uploading self-test injection weights") &&
+        fused_gr_api_ok_or_exit(cudaMemcpyAsync(d_norm, h_norm.data(), h_norm.size() * 4, cudaMemcpyHostToDevice, st),
+                                "uploading self-test norm weights") &&
+        fused_gr_api_ok_or_exit(cudaMemcpyAsync(d_R, h_R.data(), h_R.size() * 4, cudaMemcpyHostToDevice, st),
+                                "uploading self-test inputs") &&
+        fused_gr_api_ok_or_exit(cudaMemcpyAsync(d_bo, h_bo.data(), h_bo.size() * 4, cudaMemcpyHostToDevice, st),
+                                "uploading self-test pending writes") &&
+        fused_gr_api_ok_or_exit(cudaMemcpyAsync(d_ip, h_ip.data(), h_ip.size() * 4, cudaMemcpyHostToDevice, st),
+                                "uploading self-test injection state");
     if (!ok) why[0] = "setting up the check failed";
     std::vector<float> h1, h2;
     // true when equal; false with the first difference in `w` (or a read-back failure in `ok`)
-    auto same = [&](const float* d1, const float* d2, size_t n, const char* what, int T, int apply, std::string& w) {
+    auto same = [&](const float* d1, const float* d2, size_t n, const char* what, int T, int apply,
+                    cudaStream_t cmp_st, bool& check_ok, std::string& w) {
         h1.resize(n);
         h2.resize(n);
-        if (cudaMemcpyAsync(h1.data(), d1, n * 4, cudaMemcpyDeviceToHost, st) != cudaSuccess ||
-            cudaMemcpyAsync(h2.data(), d2, n * 4, cudaMemcpyDeviceToHost, st) != cudaSuccess ||
-            cudaStreamSynchronize(st) != cudaSuccess) {
-            why[0] = "reading back the check failed";
-            ok = false;
+        // The read-back sync is where an asynchronous fault from a kernel launched on `cmp_st` surfaces, so its
+        // code is classified: a context-fatal one leaves the process, a candidate-only one fails this check only.
+        cudaError_t err = cudaMemcpyAsync(h1.data(), d1, n * 4, cudaMemcpyDeviceToHost, cmp_st);
+        if (err == cudaSuccess) err = cudaMemcpyAsync(h2.data(), d2, n * 4, cudaMemcpyDeviceToHost, cmp_st);
+        if (err == cudaSuccess) err = cudaStreamSynchronize(cmp_st);
+        if (err != cudaSuccess) {
+            fused_gr_leave_if_context_fatal(err, "the check's read-back");
+            const cudaError_t pending_err = cudaGetLastError();
+            fused_gr_leave_if_context_fatal(pending_err, "the check's read-back pending error");
+            check_ok = false;
+            w = "reading back the check failed";
             return false;
         }
         for (size_t i = 0; i < n; ++i) {
@@ -2227,59 +2606,185 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
         }
         return true;
     };
-    auto all_same = [&](const Set& s1, const Set& s2, int T, int apply, std::string& w) {
-        return same(s1.lo, s2.lo, (size_t) T * LR, "lo", T, apply, w) &&
-               same(s1.rs, s2.rs, (size_t) T * HC, "rs", T, apply, w) &&
-               same(s1.inj, s2.inj, (size_t) T * HC, "inject", T, apply, w) &&
-               same(s1.mixed, s2.mixed, (size_t) T * N, "mixed", T, apply, w) &&
-               same(s1.R_out, s2.R_out, (size_t) T * D, "R", T, apply, w);
+    std::vector<uint8_t> b1, b2;
+    auto same_bytes = [&](const uint8_t* d1, const uint8_t* d2, size_t n, const char* what, int T, int apply,
+                          cudaStream_t cmp_st, bool& check_ok, std::string& w) {
+        b1.resize(n);
+        b2.resize(n);
+        cudaError_t err = cudaMemcpyAsync(b1.data(), d1, n, cudaMemcpyDeviceToHost, cmp_st);
+        if (err == cudaSuccess) err = cudaMemcpyAsync(b2.data(), d2, n, cudaMemcpyDeviceToHost, cmp_st);
+        if (err == cudaSuccess) err = cudaStreamSynchronize(cmp_st);
+        if (err != cudaSuccess) {
+            fused_gr_leave_if_context_fatal(err, "the q8_1 check's read-back");
+            const cudaError_t pending_err = cudaGetLastError();
+            fused_gr_leave_if_context_fatal(pending_err, "the q8_1 check's read-back pending error");
+            check_ok = false;
+            w = "reading back the " + std::string(what) + " check failed";
+            return false;
+        }
+        for (size_t i = 0; i < n; ++i) {
+            if (b1[i] != b2[i]) {
+                char buf[192];
+                std::snprintf(buf, sizeof buf, "%s differs for %d token(s)%s at byte %zu (%02x, not %02x)", what,
+                              T, apply ? " with the pending write" : "", i, (unsigned) b2[i], (unsigned) b1[i]);
+                w = buf;
+                return false;
+            }
+        }
+        return true;
+    };
+    auto all_same = [&](const Set& s1, const Set& s2, int T, int apply, bool inject, bool q8,
+                        cudaStream_t cmp_st, bool& check_ok, std::string& w) {
+        return same(s1.lo, s2.lo, (size_t) T * LR, "lo", T, apply, cmp_st, check_ok, w) &&
+               same(s1.rs, s2.rs, (size_t) T * HC, "rs", T, apply, cmp_st, check_ok, w) &&
+               (!inject || same(s1.inj, s2.inj, (size_t) T * HC, "inject", T, apply, cmp_st, check_ok, w)) &&
+               same(s1.mixed, s2.mixed, (size_t) T * N, "mixed", T, apply, cmp_st, check_ok, w) &&
+               (!q8 || same_bytes(s1.q8_mixed, s2.q8_mixed, (size_t) T * q8_per_token, "q8_1", T, apply, cmp_st,
+                                  check_ok, w)) &&
+               same(s1.R_out, s2.R_out, (size_t) T * D, "R", T, apply, cmp_st, check_ok, w);
     };
     ok_variant[2] = ok_variant[3] = ok;
+    // A rejected P4 candidate must not invalidate the established split/staged fallback.
+    ok_variant[4] = allow_p4 && p4_ok && ok;
     bool single_ok = ok;
-    for (int apply = 0; apply < 2 && ok; ++apply) {
-        for (int T = 1; T <= TM && ok; ++T) {
-            FusedGrArgs a[NV][TM];
-            for (int v = 0; v < NV; ++v) {
-                const size_t span = (size_t) ((uint8_t*) (set[v].mixed + (size_t) TM * N) - (uint8_t*) set[v].R_out);
-                ok = ok && cudaMemsetAsync(set[v].R_out, 0xFF, span, st) == cudaSuccess;   // the whole set
-                for (int k = 0; k < T; ++k) {
-                    FusedGrArgs& x = a[v][k];
-                    x.R = d_R + (size_t) k * D; x.R_out = set[v].R_out + (size_t) k * D; x.apply = apply != 0;
-                    x.bo_prev = d_bo + (size_t) k * N; x.inj_prev = d_ip + (size_t) k * HC;
-                    x.w_norm = d_norm; x.w_down = d_down; x.w_up = d_up; x.w_inject = d_inj; x.eps = 1e-6f;
-                    x.lo = set[v].lo + (size_t) k * LR; x.rs = set[v].rs + (size_t) k * HC;
-                    x.inject_out = set[v].inj + (size_t) k * HC; x.mixed = set[v].mixed + (size_t) k * N;
+    for (int q8 = 0; q8 < 2 && ok; ++q8) {
+        for (int inject = 0; inject < 2 && ok; ++inject) {
+            for (int apply = 0; apply < 2 && ok; ++apply) {
+                for (int T = 1; T <= TM && ok; ++T) {
+                    FusedGrArgs a[NV][TM];
+                    for (int v = 0; v < NV; ++v) {
+                        const size_t span = (size_t) ((uint8_t*) (set[v].mixed + (size_t) TM * N) - (uint8_t*) set[v].R_out);
+                        ok = ok && fused_gr_api_ok_or_exit(cudaMemsetAsync(set[v].R_out, 0xFF, span, st),
+                                                           "initializing self-test output buffers");
+                        if (q8) {
+                            ok = ok && fused_gr_api_ok_or_exit(
+                                cudaMemsetAsync(set[v].q8_mixed, 0xFF, q8_set_bytes, st),
+                                "initializing self-test q8_1 outputs");
+                            ok = ok && fused_gr_api_ok_or_exit(
+                                cudaMemsetAsync(set[v].q8_cnt, 0, q8_cnt_bytes, st),
+                                "initializing self-test q8_1 counters");
+                        }
+                        for (int k = 0; k < T; ++k) {
+                            FusedGrArgs& x = a[v][k];
+                            x.R = d_R + (size_t) k * D; x.R_out = set[v].R_out + (size_t) k * D; x.apply = apply != 0;
+                            x.bo_prev = d_bo + (size_t) k * N; x.inj_prev = d_ip + (size_t) k * HC;
+                            x.w_norm = d_norm; x.w_down = d_down; x.w_up = d_up; x.w_inject = inject ? d_inj : nullptr; x.eps = 1e-6f;
+                            x.lo = set[v].lo + (size_t) k * LR; x.rs = set[v].rs + (size_t) k * HC;
+                            x.inject_out = set[v].inj + (size_t) k * HC; x.mixed = set[v].mixed + (size_t) k * N;
+                            x.q8_mixed = q8 ? set[v].q8_mixed + (size_t) k * q8_per_token : nullptr;
+                            x.q8_cnt = q8 ? set[v].q8_cnt : nullptr;
+                        }
+                    }
+                    if (!ok) break;
+                    for (int v = 0; v < 3; ++v) {
+                        GrMulti m;
+                        for (int k = 0; k < T; ++k) m.a[k] = a[v][k];
+                        m.xn = set[v].xn;
+                        m.T = T;
+                        launch_multi(m, v + 1, st, nullptr, 0);
+                    }
+                    if (T == 1 && inject && !q8) fused_gr_read(a[3][0], st);
+                    const cudaError_t ref_launch = cudaGetLastError();
+                    const cudaError_t ref_sync = ref_launch == cudaSuccess ? cudaStreamSynchronize(st) : ref_launch;
+                    if (ref_launch != cudaSuccess || ref_sync != cudaSuccess) {
+                        fused_gr_leave_if_context_fatal(ref_launch == cudaSuccess ? ref_sync : ref_launch,
+                                                        "a kernel of the check");
+                        const cudaError_t pending_err = cudaGetLastError();
+                        fused_gr_leave_if_context_fatal(pending_err, "the check kernel's pending error");
+                        why[0] = q8 ? "a QFUSE_HC check kernel failed" : "a kernel of the check failed";
+                        ok = false;
+                        break;
+                    }
+                    if (ok_variant[2] && !all_same(set[0], set[1], T, apply, inject != 0, q8 != 0, st, ok, why[2]))
+                        ok_variant[2] = false;
+                    if (ok && ok_variant[3] && !all_same(set[0], set[2], T, apply, inject != 0, q8 != 0, st, ok, why[3]))
+                        ok_variant[3] = false;
+                    if (ok && T == 1 && inject && !q8 && single_ok &&
+                        !all_same(set[3], set[0], T, apply, inject != 0, false, st, ok, why[1]))
+                        single_ok = false;
+
+                    // The candidate runs on its own stream so that a *recoverable* launch error (a refused launch, a
+                    // bad configuration) is recorded against the P4 slot alone and cannot mark staged/split unusable.
+                    // It does not isolate an asynchronous device fault: an illegal address from the candidate poisons
+                    // the shared context for the whole process, so a context-fatal code leaves here at once rather
+                    // than clearing and running the fallback kernels on a dead context.  q8=1 covers QFUSE_HC's q32 path.
+                    if (allow_p4 && ok_variant[kP4SelfTest]) {
+                        GrMulti half_m;
+                        for (int k = 0; k < T; ++k) half_m.a[k] = a[kP4SelfTest][k];
+                        half_m.xn = set[kP4SelfTest].xn;
+                        half_m.T = T;
+                        launch_multi(half_m, kHcRegisterHalf, p4_st, nullptr, 0);
+                        const cudaError_t p4_launch = cudaGetLastError();
+                        const cudaError_t p4_sync = p4_launch == cudaSuccess ? cudaStreamSynchronize(p4_st) : p4_launch;
+                        if (p4_launch != cudaSuccess || p4_sync != cudaSuccess) {
+                            const cudaError_t p4_err = p4_launch != cudaSuccess ? p4_launch : p4_sync;
+                            fused_gr_leave_if_context_fatal(p4_err, "the P4 candidate");
+                            why[kP4SelfTest] = std::string("P4 candidate launch/sync failed: ") +
+                                               cudaGetErrorString(p4_err);
+                            ok_variant[kP4SelfTest] = false;
+                            const cudaError_t pending_err = cudaGetLastError();
+                            fused_gr_leave_if_context_fatal(pending_err, "the P4 candidate's pending error");
+                        } else if (!all_same(set[2], set[kP4SelfTest], T, apply, inject != 0, q8 != 0, p4_st,
+                                             ok_variant[kP4SelfTest], why[kP4SelfTest])) {
+                            ok_variant[kP4SelfTest] = false;
+                        }
+                    }
                 }
             }
-            for (int v = 0; v < 3; ++v) {
-                GrMulti m;
-                for (int k = 0; k < T; ++k) m.a[k] = a[v][k];
-                m.xn = set[v].xn;
-                m.T = T;
-                launch_multi(m, v + 1, st, nullptr, 0);
-            }
-            if (T == 1) fused_gr_read(a[3][0], st);
-            if (cudaGetLastError() != cudaSuccess || cudaStreamSynchronize(st) != cudaSuccess) {
-                why[0] = "a kernel of the check failed";
-                ok = false;
-                break;
-            }
-            if (ok_variant[2] && !all_same(set[0], set[1], T, apply, why[2])) ok_variant[2] = false;
-            if (ok && ok_variant[3] && !all_same(set[0], set[2], T, apply, why[3])) ok_variant[3] = false;
-            if (ok && T == 1 && single_ok && !all_same(set[3], set[0], T, apply, why[1])) single_ok = false;
         }
     }
-    if (!single_ok && ok) {                            // the plain read itself disagrees with the single-token read
+    if (!single_ok && ok) {
         why[2] = why[3] = "the plain read differs from the single-token read: " + why[1];
         ok_variant[2] = ok_variant[3] = false;
+        ok_variant[4] = false;
+    }
+#if !STRATA_GR_FAST_BUILD
+    if (detail::fused_gr_p4_q32_parity_marker_ok(
+            ok, qfuse_hc_local(), ok_variant[kHcStaged], ok_variant[kP4SelfTest]))
+        std::fprintf(stderr, "strata hc: P4 + QFUSE_HC q32 outputs passed bitwise parity for T=1..8/apply/inject\n");
+#endif
+    // A fault from a kernel whose sync was skipped (the loop broke early) surfaces at this last sync. Classify
+    // every teardown result before the next GPU call: a context-fatal error must not be followed by cleanup/fallback.
+    std::string cleanup_why;
+    std::string p4_cleanup_why;
+    auto record_cleanup_status = [&](cudaError_t err, const char* label, const char* message, std::string& why_out) {
+        fused_gr_leave_if_context_fatal(err, label);
+        if (err != cudaSuccess) {
+            const cudaError_t pending_err = cudaGetLastError();
+            fused_gr_leave_if_context_fatal(pending_err, label);
+            if (why_out.empty()) why_out = message;
+        }
+    };
+    if (p4_st != nullptr) {
+        record_cleanup_status(cudaStreamSynchronize(p4_st), "the P4 candidate's final sync",
+                              "the P4 candidate's final sync failed", p4_cleanup_why);
+        record_cleanup_status(cudaStreamDestroy(p4_st), "the P4 candidate stream destruction",
+                              "destroying the P4 candidate stream failed", p4_cleanup_why);
     }
     if (st != nullptr) {
-        cudaStreamSynchronize(st);
-        cudaStreamDestroy(st);
+        record_cleanup_status(cudaStreamSynchronize(st), "the check's final sync",
+                              "the check's final sync failed", cleanup_why);
+        record_cleanup_status(cudaStreamDestroy(st), "the check stream destruction",
+                              "destroying the check stream failed", cleanup_why);
     }
-    cudaFree(base);
-    cudaGetLastError();
-    if (!ok) ok_variant[2] = ok_variant[3] = false;
+    record_cleanup_status(cudaFree(base), "the self-test allocation cleanup",
+                          "freeing the self-test buffer failed", cleanup_why);
+    const cudaError_t final_error = cudaGetLastError();
+    fused_gr_leave_if_context_fatal(final_error, "the self-test's final error state");
+    if (final_error != cudaSuccess && cleanup_why.empty()) cleanup_why = "the self-test ended with a pending GPU error";
+
+    const auto cleanup_policy = detail::fused_gr_cleanup_policy(cleanup_why.empty(), ok_variant[kP4SelfTest],
+                                                               p4_cleanup_why.empty());
+    if (!p4_cleanup_why.empty() && why[kP4SelfTest].empty()) why[kP4SelfTest] = p4_cleanup_why;
+    if (!cleanup_policy.selftest_ok) {
+        ok = false;
+        if (why[0].empty()) why[0] = cleanup_why;
+    }
+    ok_variant[kP4SelfTest] = cleanup_policy.p4_ok;
+    if (!ok) {
+        ok_variant[2] = ok_variant[3] = false;
+        ok_variant[4] = false;
+    }
     return ok;
 }
 
@@ -2287,46 +2792,55 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
 
 int fused_gr_variant() {
     int dev = 0;
-    cudaGetDevice(&dev);
+    if (!fused_gr_api_ok_or_exit(cudaGetDevice(&dev), "fused_gr_variant current-device query")) return kHcStaged;
     const int v = dev >= 0 && dev < 64 ? g_variant[dev].load() : 0;
     if (v > 0) return v;
-    // not checked on this card: the plain read, unless STRATA_HC_SPLIT names a variant (a test such as gr_parity)
-    const char* e = std::getenv("STRATA_HC_SPLIT");
-    return e != nullptr && (e[0] == '1' || e[0] == '2') ? env_variant() : kHcPlain;
+    // Not checked on this card yet: the requested path, capped at staged - upstream's default.  An untested
+    // STRATA_HC_SPLIT=7 request never reaches the candidate kernel before fused_gr_check has verified it.
+    const int want = env_variant();
+    return want == kHcRegisterHalf ? kHcStaged : want;
 }
 
 void fused_gr_check() {
     int dev = 0;
-    cudaGetDevice(&dev);
+    if (!fused_gr_api_ok_or_exit(cudaGetDevice(&dev), "fused_gr_check current-device query")) return;
     if (dev < 0 || dev >= 64 || g_variant[dev].load() > 0) return;
     const int want = env_variant();
+    const bool gfx12 = p4_gfx12_device(dev);
+    // STRATA_HC_SPLIT=0 asks for the plain read; nothing else is checked or latched.
     if (want == kHcPlain) {
         g_variant[dev].store(kHcPlain);
         std::fprintf(stderr, "strata hc: CUDA%d: the hyper-connection read runs as the plain one (STRATA_HC_SPLIT=0)\n",
                      dev);
         return;
     }
-    bool okv[4];
-    std::string why[4];
-    const bool ran = fused_gr_selftest(okv, why);
-    int use = kHcPlain;
-    if (want >= kHcStaged && okv[kHcStaged]) use = kHcStaged;
-    else if (okv[kHcSplit]) use = kHcSplit;
+    // P4 is opt-in: only an explicit STRATA_HC_SPLIT=7 runs its self-test, and only on gfx1200/gfx1201.  Unset
+    // (and =2, =1) never asks for the candidate, so it never runs and never gets promoted.
+    const bool test_p4 = detail::fused_gr_p4_selftest_requested(want, gfx12);
+    bool okv[5];
+    std::string why[5];
+    const bool ran = fused_gr_selftest(okv, why, test_p4);
+    const bool p4_ok = ran && test_p4 &&
+                       detail::fused_gr_p4_parity_gate(gfx12, okv[kHcStaged], okv[kP4SelfTest]);
+    const int use = detail::fused_gr_select(want, okv[kHcSplit], okv[kHcStaged], p4_ok);
     g_variant[dev].store(use);
     if (!ran)
-        std::fprintf(stderr, "strata hc: CUDA%d: the check of split/staged could not run (%s)\n", dev, why[0].c_str());
-    static const char* const name[4] = {"", "plain", "split", "staged"};
-    for (int v = kHcStaged; v >= kHcSplit; --v)
-        if (v <= want && !okv[v] && ran)
-            std::fprintf(stderr, "strata hc: CUDA%d: the %s read differs from the plain read on this card - not used: "
-                                 "%s\n", dev, name[v], why[v].c_str());
-    static const char* const what[4] = {
-        "", "the plain read (the norm per token, the down projection on 41 blocks)",
-        "split (the norm per token and stream, then the plain read's down projection)",
-        "staged (the norm per token and stream, the down projection's activations staged ahead by cp.async)"};
-    std::fprintf(stderr, "strata hc: CUDA%d: the hyper-connection read runs as %s%s\n", dev, what[use],
-                 use >= kHcSplit ? "; checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 "
-                                   "for the earlier ones)" : "");
+        std::fprintf(stderr, "strata hc: CUDA%d: the split/staged self-test could not run (%s)\n", dev, why[0].c_str());
+    if (want == kHcRegisterHalf && !gfx12)
+        std::fprintf(stderr, "strata hc: CUDA%d: P4 is restricted to gfx1200/gfx1201; staged remains active\n", dev);
+    if (test_p4 && ran && !okv[kP4SelfTest])
+        std::fprintf(stderr, "strata hc: CUDA%d: P4 register-half failed bitwise staged parity - not used: %s\n", dev,
+                     why[kP4SelfTest].c_str());
+    if (gfx12 && want != kHcRegisterHalf)
+        std::fprintf(stderr, "strata hc: CUDA%d: P4 is opt-in: STRATA_HC_SPLIT=7 self-tests it and selects it only on "
+                             "bitwise staged parity\n", dev);
+    const char* what = use == kHcRegisterHalf ? "register-half (P4; bitwise staged parity passed)"
+                      : use == kHcStaged ? "staged"
+                      : use == kHcSplit ? "split"
+                                        : "plain";
+    std::fprintf(stderr, "strata hc: CUDA%d: runtime arch gate %s; hyper-connection read runs as %s%s\n", dev,
+                 gfx12 ? "gfx1200/gfx1201 RDNA4" : "non-RDNA4", what,
+                 use == kHcRegisterHalf ? " (STRATA_HC_SPLIT=7)" : "");
 }
 
 
