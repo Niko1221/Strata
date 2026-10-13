@@ -75,6 +75,9 @@
 #include <cstring>
 #include <exception>
 #include <immintrin.h>
+#if defined(__linux__)
+#include <sched.h>
+#endif
 
 #if defined(STRATA_GPU_METAL)
 // The Metal backend's decode window (metal/src/engine/window.cpp): this file's init/run/commit hand over to it.
@@ -603,6 +606,37 @@ void Verifier::diag(std::FILE* f) const {
     trace_dump(f);   // #649: STRATA_VERIFY_TRACE=1 only
 }
 
+namespace {
+// A remote stage's job thread (Verifier::RemoteJob): on Linux a new thread inherits its creator's affinity, and the
+// host thread is pinned to the core it spins on serving the windows; the job (which mostly waits for the worker's
+// reply) takes the affinity the process started with instead (read before main, so before any pinning).  Windows: a
+// new thread takes the process's placement.
+#if defined(__linux__)
+const cpu_set_t g_start_affinity = [] {
+    cpu_set_t s;
+    CPU_ZERO(&s);
+    if (sched_getaffinity(0, sizeof s, &s) != 0)
+        for (int c = 0; c < CPU_SETSIZE; ++c) CPU_SET(c, &s);
+    return s;
+}();
+#endif
+void widen_thread_affinity() {
+#if defined(__linux__)
+    (void) sched_setaffinity(0, sizeof g_start_affinity, &g_start_affinity);
+#endif
+}
+}  // namespace
+
+// remote-stage, pipelined: one window's remote_run_ (send the rows to the worker, its rows back into hand_in_)
+struct Verifier::RemoteJob {
+    std::thread thr;
+    std::atomic<int> state{0};   // 0: running; 1: the rows are back; -1: failed (err)
+    std::string err;
+    int32_t tok[strata::kernels::kVerifyMaxT] = {};
+    ~RemoteJob() {
+        if (thr.joinable()) thr.join();   // ended: remote_poll saw it, or ~Verifier aborted the link's wait first
+    }
+};
 
 Verifier::~Verifier() {
 #if defined(STRATA_GPU_METAL)
@@ -615,6 +649,13 @@ Verifier::~Verifier() {
         Verifier* me = this;
         slot.compare_exchange_strong(me, nullptr);
     }
+    // remote-stage, pipelined: a window still waiting for the worker (the engine ends after an error) - the link's
+    // wait is ended and the job joined here, while the link (declared before the verifiers) still exists; never
+    // detached, so it cannot touch the link or the job after they are gone
+    if (rjob_ != nullptr && rjob_->thr.joinable() && rjob_->state.load(std::memory_order_acquire) == 0 && remote_abort_)
+        remote_abort_();
+    delete rjob_;
+    rjob_ = nullptr;
     if (cs_) cudaStreamSynchronize(cs_);
     if (sh_cs_) cudaStreamSynchronize(sh_cs_);
     for (auto& e : exec_)
@@ -4172,7 +4213,8 @@ void Verifier::diag_pipelined(std::FILE* f, const char* name) const {
         return q == cudaSuccess ? "done" : q == cudaErrorNotReady ? "PENDING" : "error";
     };
     std::fprintf(f, "  %s: %s T=%d pos %lld served %lld/%lld; GPU rang %u, flags served %u A %u B %u; window event %s, "
-                    "commit event %s (commit launched %d)\n", name, fl_active_ ? "IN FLIGHT" : "idle", last_t_,
+                    "commit event %s (commit launched %d)\n", name,
+                 !fl_active_ ? "idle" : rl_wait_ ? "IN FLIGHT (waiting for the remote stage's rows)" : "IN FLIGHT", last_t_,
                  (long long) last_pos0_, (long long) fl_k_, (long long) fl_total_, rd(h_seq_), rd(h_flag_), rd(h_flagA_),
                  rd(h_flagB_), ev(ev_done_), ev(ev_commit_), (int) commit_live_);
 }
@@ -4260,19 +4302,75 @@ bool Verifier::pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string
     std::atomic_thread_fence(std::memory_order_seq_cst);
     trace_ev("WINDOW (pipelined)", -1, -1, pos0 * 16 + T);
     ms_host += ms_since(t0);
-    const cudaError_t le = cudaGraphLaunch(exec_[T], cs_);
-    trace_ev("LAUNCHED", -1, -1, (int64_t) le);
-    if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
-    if (fl_prof_) cudaMemcpyAsync(prof_pin_, prof_, prof_h_.size() * 8, cudaMemcpyDeviceToHost, cs_);
-    if (cudaEventRecord(ev_done_, cs_) != cudaSuccess) { err = "verify: event record failed"; return false; }
-    (void) cudaStreamQuery(cs_);   // WDDM: submit now
+    if (remote_run_) {   // remote-stage: the worker's rows first, on a thread of its own; `service` launches the graph
+        delete rjob_;    // the previous window's job has ended (its rows came back before its graph launched)
+        rjob_ = new RemoteJob;
+        RemoteJob* j = rjob_;
+        for (int t = 0; t < T; ++t) j->tok[t] = tokens[t];
+        try {
+            j->thr = std::thread([this, j, T, pos0] {
+                widen_thread_affinity();
+                std::string e;
+                const bool ok = remote_run_(T, j->tok, pos0, e);
+                j->err = e;
+                j->state.store(ok ? 1 : -1, std::memory_order_release);
+            });
+        } catch (const std::exception& ex) {
+            err = std::string("verify: the remote stage's thread: ") + ex.what();
+            return false;
+        }
+        rl_wait_ = true;
+        rl_commit_ = 0;
+        fl_active_ = true;
+        fl_since_ms_ = fl_flush_ms_ = fl_launch_ms_ = now_ms();
+        return true;
+    }
+    if (!pl_graph_launch(err)) return false;
     fl_active_ = true;
     fl_since_ms_ = fl_flush_ms_ = fl_launch_ms_ = now_ms();
     return true;
 }
 
+bool Verifier::pl_graph_launch(std::string& err) {
+    const cudaError_t le = cudaGraphLaunch(exec_[fl_T_], cs_);
+    trace_ev("LAUNCHED", -1, -1, (int64_t) le);
+    if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
+    if (fl_prof_) cudaMemcpyAsync(prof_pin_, prof_, prof_h_.size() * 8, cudaMemcpyDeviceToHost, cs_);
+    if (cudaEventRecord(ev_done_, cs_) != cudaSuccess) { err = "verify: event record failed"; return false; }
+    (void) cudaStreamQuery(cs_);   // WDDM: submit now
+    return true;
+}
+
+int Verifier::remote_poll(std::string& err) {
+    RemoteJob& j = *rjob_;
+    const int s = j.state.load(std::memory_order_acquire);
+    if (s == 0) return 0;   // (a lost worker: the link's own read timeout ends the job with an error)
+    if (j.thr.joinable()) j.thr.join();
+    if (s < 0) {   // the window is over (no graph ran): a drain after the error finds nothing in flight here
+        rl_wait_ = false;
+        rl_commit_ = 0;
+        fl_active_ = false;
+        err = j.err.empty() ? std::string("verify: the remote stage failed") : j.err;
+        return -1;
+    }
+    const OnDevice on_device(device_);
+    rl_wait_ = false;
+    if (!pl_graph_launch(err)) return -1;
+    fl_since_ms_ = fl_flush_ms_ = now_ms();
+    if (rl_commit_ > 0) {   // the commit queued behind the window: its graph after the window's, then the worker's
+        const int n = rl_commit_;
+        rl_commit_ = 0;
+        if (!pl_commit_async(n, err)) return -1;
+    }
+    return 1;
+}
+
 int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
     if (!fl_active_) return 1;
+    if (rl_wait_) {   // remote-stage: the window's graph launches once the worker's rows are back
+        const int r = remote_poll(err);
+        if (r <= 0) return r;
+    }
     if (fl_k_ >= fl_total_) return 1;
     // Nothing rang yet and neither the WDDM flush nor the timeout below is due: return before any CUDA call.  The
     // pipelined loop asks both stages' windows this millions of times a second while they wait on their doorbells,
@@ -4365,7 +4463,7 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
 }
 
 bool Verifier::done(std::string& err) {
-    if (!fl_active_ || fl_k_ < fl_total_) return false;
+    if (!fl_active_ || rl_wait_ || fl_k_ < fl_total_) return false;
     const OnDevice on_device(device_);
     const cudaError_t q = cudaEventQuery(ev_done_);
     if (q == cudaErrorNotReady) {
@@ -4415,6 +4513,8 @@ bool Verifier::pl_commit_async(int n_keep, std::string& err) {
     const OnDevice on_device(device_);
     if (n_keep < 1 || n_keep > last_t_) { err = "verify: commit count out of range"; return false; }
     if (commit_exec_ == nullptr || ev_commit_ == nullptr) { err = "verify: pipelined commit not prepared"; return false; }
+    if (rl_wait_) { rl_commit_ = n_keep; return true; }   // remote-stage: behind the window, once its rows are back
+    if (remote_commit_ && !remote_commit_(n_keep, err)) return false;   // remote-stage: the worker's part (one way)
     const Clock::time_point t0 = Clock::now();
     if (commit_live_) {   // its graph reads the words below when it starts: the previous one has (a window ago)
         cudaError_t q;

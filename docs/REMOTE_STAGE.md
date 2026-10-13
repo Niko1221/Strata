@@ -313,6 +313,44 @@ strata stage worker: windows: own layers 11.08 ms, next worker 8.59 ms each (64 
 own window time splits into waiting for its GPU, the CPU expert pool and the plan, and host staging: a GPU wait far
 above another card's for the same layers points at clocks (Windows, above).
 
+## Overlapping the decode windows (`--pipeline-windows 2`)
+
+`--pipeline-windows 2` works on the main process: the decode loop of [MULTI_GPU.md](MULTI_GPU.md) runs with two
+stages, layers 0 to K-1 as the front stage and the worker followed by this PC's head as the last one. While the
+worker and the head verify window N, layers 0 to K-1 already run window N+1 on the guess that N is accepted whole;
+a wrong guess is undone on this PC (its layers' recurrent state comes back from a snapshot). The worker only ever
+gets verified windows, in the serial loop's order, so it needs no new flag. `1` overlaps only the prompt's short
+reads. Both stages share this PC's GPU: the second verify window of each and two copies of layers 0 to K-1's
+recurrent state are kept out of the expert cache (444 MiB at K=26; the log says so in one line). With the automatic
+cache that took an RTX 3080 main process from 2153 to 1951 slots. Measured on an earlier base: +12% decode on
+`spec_prompts.py`. TODO(v1-gpu): this branch's decode speed, `--pipeline-windows 0` against `2`.
+
+**Comparing answers byte for byte with the serial loop.** The cache size is part of the result: a different number
+of slots places other experts on the CPU, and that moves near-tie tokens. `--pipeline-windows 2` with the automatic
+cache therefore compares two cache sizes, not two loops. To compare the loops:
+
+- give both runs the same fixed `--expert-cache N` (at most what `--pipeline-windows 2` leaves: the slot count its
+  log shows), and `--pcie-frac 0 --adapt-every 0 --adapt-swaps 0` on both PCs;
+- run the worker with `STRATA_IQ_MT_MIN=1 STRATA_PREFILL_CPU_SHARE=0`;
+- set `STRATA_ROUTE_TAIL_SKIP=0` on the main process (the worker takes the main process's value; its log says so):
+  the skip depends on which rows share a window;
+- compare the first replay on a freshly started server with the first replay on another one.
+
+Measured with this change carried onto engine 0.1.43 (the build before this branch's reconnect and hello changes),
+RTX 3080 main (layers 0-25) + RTX 2080 Ti worker over 10 GbE, greedy, `--spec 4 --mtp-max-t 1 --suffix-draft 0`
+(one-token windows), two 4-turn conversations of 16K-token prompts, 8 answers per run:
+
+| what differs between the two runs | answers the same |
+|---|---|
+| `--pipeline-windows 0` vs `2`, automatic cache | 2 of 8 |
+| `--pipeline-windows 0` at `--expert-cache 1951` vs `0` at 2153 | 2 of 8 (the same answers differ) |
+| `--expert-cache 1951`, first replay on fresh servers: `0` three times, `2` four times | 8 of 8, but one `2` run 5 of 8 (at the same near-tie tokens) |
+| `--expert-cache 1951`, one server switched between `2`, `0`, `1` and `2` with a forced miss on every third guess | 8 of 8 |
+
+Replays 2 to 4 on one server drifted with either setting (`0`: 5, 7 and 4 of 8; `2`: 8, 4, 4 and 6, 4, 3), so a
+later replay does not compare the loops; the cause of that drift is not known. Windows of more than one token were
+not compared on this base. TODO(v1-gpu): repeat the fixed-cache comparison on this branch.
+
 ## Picking K and the chunk
 
 What the measurements say (re-measure on your PCs; `tools/stage_tune.py` does it):
@@ -465,8 +503,9 @@ python3 tools/stage_tune.py apply cluster.json OUTDIR    # start the workers as 
 
 ## What is turned off or refused
 
-- **Refused at start** with a remote stage: `--batch`, `--pipeline-windows`, `--peer-device`,
-  `--control-vector` (and the speed projection, which is one), `--expert-cache-remote`.
+- **Refused at start** with a remote stage: `--batch`, `--peer-device`, `--control-vector` (and the speed
+  projection, which is one), `--expert-cache-remote`, and `--pipeline-windows` on a worker (the main process
+  takes it, see [Overlapping the decode windows](#overlapping-the-decode-windows---pipeline-windows-2)).
 - **Turned off without an error** (the main process's log says so in one line): the prompt cache, conversation
   parking (`--conversation-cache-mib`) and mid-prompt checkpoints (each PC holds only its layers' state, so every
   prompt is read from token 0), and `--kv-grow`.

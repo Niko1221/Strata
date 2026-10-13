@@ -388,6 +388,10 @@ void StageClient::break_() {
     broken_ = true;
 }
 
+void StageClient::abort() {
+    if (fd_ >= 0) (void) sock_shutdown(S(fd_));   // the waiting read fails and breaks the link itself
+}
+
 bool StageClient::connect(const std::string& host_port, const StageHello& mine, StageHello& peer, std::string& err,
                           int timeout_s, const std::atomic<bool>* stop) {
     const bool timed = timeout_s > 0;

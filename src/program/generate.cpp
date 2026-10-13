@@ -782,7 +782,9 @@ struct Options {
     /// --pipeline-windows N (--serve, a layer split on exactly two GPUs; opt-in): 1 = a prompt's short reads through
     /// the verify windows run with the stages overlapped (stage 0 reads window K+1 while stage 1 reads window K);
     /// 2 = the decode windows too: stage 0 runs window K+1 speculatively while stage 1 verifies window K (rolled back
-    /// when K is not accepted as guessed).  0 = off (the stages take turns).
+    /// when K is not accepted as guessed).  0 = off (the stages take turns).  With --remote-stage (the main process):
+    /// the last stage (stage 1) is the head on the worker's rows, on the same GPU, and the worker only ever gets verified
+    /// windows.
     /// -1 (not asked for) = 2 on gfx12 (HIP) layer splits of 3 or more stages, else 0; --pipeline-windows N asks for it.
     int pipeline_windows = -1;
     /// The suffix drafter (prompt lookup): when the text being written repeats an earlier stretch of the context (code
@@ -932,7 +934,8 @@ void usage() {
                  "  --pipeline-windows N --serve with a layer split on two GPUs (on by default for 2+ stages on AMD gfx12;\n"
                  "                       STRATA_PIPELINE_AUTO=0 or N=0 turns it off): one conversation's verify windows\n"
                  "                       with the GPUs overlapped - 1 = the prompt's short reads, 2 = decode as well\n"
-                 "                       (stage 0 runs the next window while stage 1 verifies this one); docs/MULTI_GPU.md\n"
+                 "                       (stage 0 runs the next window while stage 1 verifies this one); docs/MULTI_GPU.md;\n"
+                 "                       also on --remote-stage's main process (docs/REMOTE_STAGE.md)\n"
                  "  --trim-stage-weights an explicit --layer-split: each GPU loads only its own layers' dense weights\n"
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
                  "  --prompt-cache-tail  --serve, single GPU: one extra checkpoint near the prompt's end, at an existing\n"
@@ -3092,8 +3095,10 @@ int main(int argc, char** argv) {
                                   (o.stage_end >= 0 && (o.stage_end <= o.stage_begin ||
                                                         o.stage_end >= strata::core::ModelGeometry{}.n_layers))))
             why = "a relay worker needs both --stage-end K2 (--stage-begin < K2 < the layer count) and --stage-next HOST:PORT";
-        else if (o.batch > 0 || o.pipeline_windows > 0 || o.peer_device >= 0)
-            why = "it does not support --batch, --pipeline-windows or --peer-device";
+        else if (o.batch > 0 || o.peer_device >= 0)
+            why = "it does not support --batch or --peer-device";
+        else if (stage_worker && o.pipeline_windows > 0)   // the main process's flag: the worker runs no speculative window
+            why = "--pipeline-windows is the main process's (--remote-stage), not a worker's";
         // a control vector (and the speed projection, which is one) and helper-GPU expert caches act on every layer:
         // the worker would not apply them to its layers
         else if (!o.cvec_files.empty())
@@ -4378,9 +4383,10 @@ int main(int argc, char** argv) {
     }
     if (o.pipeline_windows > 0) {
         const bool helpers = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
+        // remote-stage: the main process's two stages (layers 0..K-1, then the head on the worker's rows) share its GPU
         const char* off = !o.serve ? "it needs --serve"
-                        : split_same ? "it needs each stage of the layer split on its own GPU"
-                        : !multi_gpu ? "it needs a layer split on two GPUs"
+                        : split_same && !remote_main ? "it needs each stage of the layer split on its own GPU"
+                        : !multi_gpu && !remote_main ? "it needs a layer split on two GPUs"
                         : split_devs.empty() ? "it needs a layer split into two or more stages"
                         : split_devs.size() > 1 && o.pipeline_windows == 1 ? "--pipeline-windows 1 needs exactly two stages"
                         : split_devs.size() > 1 && o.adapt_async ? "not with --adapt-async on three or more stages"
@@ -6135,13 +6141,15 @@ int main(int argc, char** argv) {
     // THE HEAD BEFORE THE CACHE: the native head and the logits are allocated above, before the expert arena (#620)
     const bool auto_cache = o.expert_cache < 0;
     bool reserve_adapted = false;   // #496: the auto sizing lowered the reserve so a small card's cache fits
-    // --pipeline-windows: what it allocates on CUDA0 after the cache (see kPipeWindowMib)
+    // --pipeline-windows: what it allocates on CUDA0 after the cache (see kPipeWindowMib).  remote-stage: both of the
+    // main process's stages are on CUDA0, so both second verifiers are (the head stage's arena is a full window's)
     const int64_t pipe_first = o.pipeline_windows <= 0 ? 0
-        : (kPipeWindowMib << 20) + (o.pipeline_windows >= 2 ? 2 * (int64_t) gdn_snapshot_bytes(ss) : 0);
+        : (((remote_main ? 2 : 1) * kPipeWindowMib) << 20) +
+          (o.pipeline_windows >= 2 ? 2 * (int64_t) gdn_snapshot_bytes(ss) : 0);
     if (pipe_first > 0)
         std::fprintf(stderr, "strata generate: --pipeline-windows %d: %lld MiB of CUDA0 kept out of the expert cache "
-                             "(the second verifier%s)\n", o.pipeline_windows, (long long) (pipe_first >> 20),
-                     o.pipeline_windows >= 2 ? ", the GDN snapshots" : "");
+                             "(the second verifier%s%s)\n", o.pipeline_windows, (long long) (pipe_first >> 20),
+                     remote_main ? "s of both stages" : "", o.pipeline_windows >= 2 ? ", the GDN snapshots" : "");
     // The MiB the prompt path's OWN buffers (no loan) take, which the cache sizing leaves out.  0.1.39's rule is
     // 160 + chunk * 680 / 1024 (~16 GiB at 24576 against ~2.4 GiB really allocated); STRATA_OWNED_PRICE=exact prices the
     // real allocation instead (Prefill::bytes_needed_owned: 2 MiB pages, the ring in one piece, as PR #796 measured)
@@ -9132,20 +9140,27 @@ int main(int argc, char** argv) {
         // for the odd ones, sharing one stream of their card, and a hand-off per parity - so stage 0 can run window
         // K+1 while stage 1 still reads window K's hand-off.  With more stages every stage but the last is a "front"
         // stage: window K+1 follows window K through them one card behind, and only the last stage waits for K's verdict
-        const bool pipe = o.pipeline_windows > 0 && n_stages >= 2 && !split_same && (int) stages.size() == n_stages - 1;
+        // (remote-stage: the last stage is the head on the worker's rows, `ver_same` and `ver_same_b`, on CUDA0 beside
+        // stage 0, on a stream of their own; a window's graph launches once the worker's rows are back,
+        // Verifier::remote_waiting.  The worker only ever gets verified windows: the guess runs on the front stage only)
+        const bool pipe_remote = remote_main && o.pipeline_windows > 0 && n_stages == 2;
+        const bool pipe = pipe_remote ||
+                          (o.pipeline_windows > 0 && n_stages >= 2 && !split_same && (int) stages.size() == n_stages - 1);
         strata::core::Verifier ver_b;
+        strata::core::Verifier ver_same_b;   // remote-stage, pipelined: the odd windows' head stage
         SplitDrive split_drive_b;
         std::vector<cudaStream_t> pl_stream(pipe ? (size_t) n_stages : 0, nullptr);
         // stage st's verifier of one parity (0: the even windows, 1: the odd ones)
         auto stage_ver_p = [&](int st, int par) -> strata::core::Verifier& {
             if (st == 0) return par == 0 ? ver : ver_b;
+            if (pipe_remote) return par == 0 ? ver_same : ver_same_b;   // remote-stage: the head stage, on CUDA0
             return par == 0 ? stages[(size_t) st - 1]->ver : stages[(size_t) st - 1]->ver_b;
         };
         if (pipe) {
             bool ok_p = true;
             ok_p = cudaStreamCreateWithFlags(&pl_stream[0], cudaStreamNonBlocking) == cudaSuccess;   // the current card
             for (int st = 1; st < n_stages && ok_p; ++st) {
-                const strata::core::OnDevice on(stages[(size_t) st - 1]->dev);
+                const strata::core::OnDevice on(pipe_remote ? -1 : stages[(size_t) st - 1]->dev);
                 ok_p = cudaStreamCreateWithFlags(&pl_stream[(size_t) st], cudaStreamNonBlocking) == cudaSuccess;
             }
             if (!ok_p) { std::fprintf(stderr, "strata serve: --pipeline-windows: stream creation failed\n"); return 1; }
@@ -9155,6 +9170,8 @@ int main(int argc, char** argv) {
                     stage_ver_p(st, par).set_always_publish(true);
                 }
         }
+        using RemoteRunFn = std::function<bool(int, const int32_t*, int64_t, std::string&)>;
+        std::function<RemoteRunFn(const float*, float*)> remote_run_of;   // remote-stage: see ver_same.set_remote
         if (n_stages > 1) {
             // pipelined slot groups write their rows at hbase = group * rows-per-group, so with more than
             // kVerifyMaxT slots in groups the hand-off holds one row per slot (otherwise kVerifyMaxT, as before)
@@ -9234,8 +9251,10 @@ int main(int argc, char** argv) {
                 };
                 static MainGap gap;
                 gap.on = [] { const char* v = std::getenv("STRATA_REMOTE_TIMING"); return v && v[0] == '1'; }();
-                ver_same.set_remote(
-                    [&remote_link, out0, rx, HBF](int T, const int32_t* tokens, int64_t pos0, std::string& e) {
+                // a head stage's window: stage 0's rows out of `out0`, the worker's back into `rx` (both host side).
+                // --pipeline-windows: the odd windows' head stage gets its own pair (and runs this on its job thread)
+                remote_run_of = [&remote_link, HBF](const float* out0, float* rx) -> RemoteRunFn {
+                    return [&remote_link, out0, rx, HBF](int T, const int32_t* tokens, int64_t pos0, std::string& e) {
                         const auto t0 = Clock::now();
                         if (gap.on && gap.last.time_since_epoch().count() != 0) {
                             const double d = std::chrono::duration<double, std::milli>(t0 - gap.last).count();
@@ -9251,8 +9270,11 @@ int main(int argc, char** argv) {
                         const bool ok = remote_link.run(T, tokens, pos0, out0, (size_t) T * HBF, rx, (size_t) T * HBF, e);
                         gap.last = Clock::now();
                         return ok;
-                    },
-                    [&remote_link](int n_keep, std::string& e) { return remote_link.commit(n_keep, e); });
+                    };
+                };
+                ver_same.set_remote(remote_run_of(out0, rx),
+                                    [&remote_link](int n_keep, std::string& e) { return remote_link.commit(n_keep, e); },
+                                    [&remote_link] { remote_link.abort(); });
             }
             for (int st = 1; st < n_stages; ++st) {
                 bool ok_s = false;
@@ -9301,19 +9323,46 @@ int main(int argc, char** argv) {
             const size_t hb = (size_t) strata::kernels::kVerifyMaxT *
                               (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
             std::vector<float*> hand_b((size_t) n_stages - 1, nullptr);   // the odd windows' hand-off per boundary
-            for (float*& h : hand_b) {
+            std::vector<float*> hand_b_host((size_t) n_stages - 1, nullptr);   // (its host side: remote-stage's rows out)
+            for (size_t hi = 0; hi < hand_b.size(); ++hi) {
                 float* hh = nullptr;
                 if (cudaHostAlloc((void**) &hh, hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
-                    cudaHostGetDevicePointer((void**) &h, hh, 0) != cudaSuccess) {
+                    cudaHostGetDevicePointer((void**) &hand_b[hi], hh, 0) != cudaSuccess) {
                     std::fprintf(stderr, "strata serve: --pipeline-windows: the second hand-off allocation failed\n");
                     return 1;
                 }
                 std::memset(hh, 0, hb);
+                hand_b_host[hi] = hh;
             }
             ver_b.set_stage(0, split_at[0], nullptr, hand_b[0]);
             for (int st = 1; st < n_stages; ++st) {
-                GpuStage& gs = *stages[(size_t) st - 1];
                 const bool last = st + 1 == n_stages;
+                if (pipe_remote) {   // the last stage, the odd windows' head: its rows out of hand_b, the worker's back
+                    float *rx = nullptr, *rx_d = nullptr;
+                    if (cudaHostAlloc((void**) &rx, hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+                        cudaHostGetDevicePointer((void**) &rx_d, rx, 0) != cudaSuccess) {
+                        std::fprintf(stderr, "strata serve: --pipeline-windows: the remote stage's second hand-off "
+                                             "allocation failed\n");
+                        return 1;
+                    }
+                    std::memset(rx, 0, hb);
+                    ver_same_b.set_stage(g.n_layers, -1, rx_d, nullptr);
+                    ver_same_b.set_remote(remote_run_of(hand_b_host[(size_t) st - 1], rx),
+                                          [&remote_link](int n_keep, std::string& e) { return remote_link.commit(n_keep, e); },
+                                          [&remote_link] { remote_link.abort(); });
+                    if (!ver_same_b.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
+                        std::fprintf(stderr, "strata serve: --pipeline-windows: the second head stage on CUDA0: %s (raise "
+                                             "--vram-reserve-mib by ~200, or --pipeline-windows 0)\n", err.c_str());
+                        return 1;
+                    }
+                    if (cudaMalloc((void**) &pl_mtp_R, (size_t) strata::kernels::kVerifyMaxT * (size_t) (g.hc * g.n_embd) *
+                                                           sizeof(float)) != cudaSuccess) {
+                        std::fprintf(stderr, "strata serve: --pipeline-windows: the drafter's row buffer does not fit\n");
+                        return 1;
+                    }
+                    continue;
+                }
+                GpuStage& gs = *stages[(size_t) st - 1];
                 gs.ver_b.set_stage(split_at[(size_t) st - 1], last ? -1 : split_at[(size_t) st], hand_b[(size_t) st - 1],
                                    last ? nullptr : hand_b[(size_t) st]);
                 const strata::core::OnDevice on(gs.dev);
@@ -9504,10 +9553,12 @@ int main(int argc, char** argv) {
                                  "windows%s\n", o.pipeline_windows, n_stages,
                          !pl_snap_ok ? "" : pl_snap_overlap ? " (decode too; the GDN snapshots beside the window)"
                                                             : " (decode too; the GDN snapshot on the critical path)");
-        // the verifiers by [stage][parity] - the first stage and the LAST (stage 1 of a two-stage split; the decode loop
-        // reaches the middle stages through stage_ver_p) - their pool routing, and the drafter's events (in a pipelined
-        // prompt read, a stage-1 window waits until the drafter has read the rows of the same parity's previous window)
-        strata::core::Verifier* PV[2][2] = {{&ver, &ver_b}, {pipe ? &stages.back()->ver : nullptr, pipe ? &stages.back()->ver_b : nullptr}};
+        // the verifiers by [stage][parity] - the first stage and the LAST (stage 1 of a two-stage split, or remote-stage's
+        // head; the decode loop reaches the middle stages through stage_ver_p) - their pool routing, and the drafter's
+        // events (in a pipelined prompt read, a stage-1 window waits until the drafter has read the rows of the same
+        // parity's previous window)
+        strata::core::Verifier* PV[2][2] = {{&ver, &ver_b}, {pipe ? &stage_ver_p(n_stages - 1, 0) : nullptr,
+                                                              pipe ? &stage_ver_p(n_stages - 1, 1) : nullptr}};
         SplitDrive* PSD[2] = {&split_drive, &split_drive_b};
         cudaEvent_t pl_mtp_ev[2] = {nullptr, nullptr};
         bool pl_mtp_live[2] = {false, false};
@@ -9539,7 +9590,7 @@ int main(int argc, char** argv) {
         auto pl_drain = [&]() {
             std::string e2;
             for (int round = 0; round < 10000000; ++round) {
-                bool any = false;
+                bool any = false, remote_wait = false;
                 for (int st = 0; st < n_stages && pipe; ++st)
                     for (int par = 0; par < 2; ++par) {
                         strata::core::Verifier& v = stage_ver_p(st, par);
@@ -9548,8 +9599,11 @@ int main(int argc, char** argv) {
                         if (v.service(&drive_pool_split, PSD[par], e2) < 0) return;
                         if (v.done(e2)) v.pl_finish(nullptr, e2);
                         else if (!e2.empty()) return;
+                        remote_wait = remote_wait || v.remote_waiting();
                     }
                 if (!any) break;
+                // remote-stage: the worker's reply takes milliseconds, not rounds (its own timeout ends a lost one)
+                if (remote_wait) std::this_thread::sleep_for(std::chrono::microseconds(50));
             }
             for (int st = 0; st < n_stages && pipe; ++st) {
                 const strata::core::OnDevice on(stage_ver_p(st, 0).device());

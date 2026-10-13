@@ -201,10 +201,14 @@ public:
     /// process.  `run` first calls `remote_run(T, tokens, pos0, err)`, which must leave that process's hand-off rows
     /// in this stage's `handoff_in`; `commit` calls `remote_commit(n_keep, err)`.  A stage set with
     /// set_stage(n_layers, -1, in, nullptr) runs no layer, only the head (the worker ran the last layer).
+    /// `remote_abort` (pipelined): ends a remote_run waiting on another thread, so the verifier can join that thread
+    /// when it goes before the worker answered (the engine ending after an error).
     void set_remote(std::function<bool(int T, const int32_t* tokens, int64_t pos0, std::string& err)> remote_run,
-                    std::function<bool(int n_keep, std::string& err)> remote_commit) {
+                    std::function<bool(int n_keep, std::string& err)> remote_commit,
+                    std::function<void()> remote_abort = nullptr) {
         remote_run_ = std::move(remote_run);
         remote_commit_ = std::move(remote_commit);
+        remote_abort_ = std::move(remote_abort);
     }
     bool remote() const { return (bool) remote_run_; }
 
@@ -323,6 +327,12 @@ public:
     bool pl_commit_async(int n_keep, std::string& err);
     /// Fold another verifier's counters and GPU profile into this one's (the two verifiers of one stage report once).
     void absorb_stats(Verifier& o);
+    /// REMOTE STAGE, pipelined (--pipeline-windows with --remote-stage): `pl_launch` of a stage set with set_remote
+    /// does not block on `remote_run`.  It runs on a thread of its own, and `service` launches the window's graph once
+    /// the worker's rows are back; a `pl_commit_async` made before then is queued behind that launch, and the worker's
+    /// commit goes out after its reply.  The worker gets the windows and commits in the order this stage gets them.
+    /// True while a window waits for the worker's rows.
+    bool remote_waiting() const { return rl_wait_; }
     /// The watchdog's line for a pipelined verifier: in flight, layers served, the GPU's ring and flags, its events.
     void diag_pipelined(std::FILE* f, const char* name) const;
 
@@ -456,6 +466,13 @@ private:
     double fl_since_ms_ = 0, fl_flush_ms_ = 0, fl_launch_ms_ = 0;
     int32_t pl_prev_[2] = {-1, -1};
     std::vector<uint32_t> pl_ple_rows_;   ///< the window's PLE rows (T x PLE_N_HEADS), gathered when layer 0 is served
+    bool pl_graph_launch(std::string& err);   ///< pl_launch's graph launch (a remote stage's: once its rows are back)
+    // remote-stage, pipelined (remote_waiting)
+    struct RemoteJob;                     ///< one window's remote_run_ on a thread of its own (verify.cpp)
+    RemoteJob* rjob_ = nullptr;           ///< (owned; a plain pointer: the type is complete only in verify.cpp)
+    bool rl_wait_ = false;                ///< the window in flight waits for the worker's rows (its graph not launched)
+    int rl_commit_ = 0;                   ///< a pl_commit_async (its count) queued behind that launch; 0: none
+    int remote_poll(std::string& err);    ///< 1: the rows are back and the graph launched; 0: not yet; -1: an error
     bool capture_commit_batch(const int* rows, int S, int hbase, std::string& err);
     bool stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos, std::string& err);
     strata::kernels::SamplerParams sampling_ = [] {
@@ -516,6 +533,7 @@ private:
     bool no_head_ = false;                 ///< set_no_head: the remote worker's last stage (hand-off, no head)
     std::function<bool(int, const int32_t*, int64_t, std::string&)> remote_run_;   ///< set_remote
     std::function<bool(int, std::string&)> remote_commit_;
+    std::function<void()> remote_abort_;
     bool writes_handoff() const { return le_ < g_->n_layers || no_head_; }   ///< no head here: the residual goes on
     bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
     void stage_inputs(int T, const int32_t* tokens, int64_t pos0);

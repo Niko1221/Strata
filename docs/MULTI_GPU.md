@@ -456,7 +456,8 @@ most. `--pipeline-windows 1` overlaps only the short prompt reads that go throug
 Two or more cards, `--serve`. With three or more stages every stage but the last is a front stage: the guessed
 window follows the verified one through them one card behind (each front stage keeps its own pair of recurrent-state
 copies and puts its state back on a wrong guess), and only the last stage waits for the verdict. `--pipeline-windows 1`
-and the asynchronous tier stay two-stage. In the config:
+and the asynchronous tier stay two-stage. A main process with a layer split on another PC (`--remote-stage`) takes
+it on one card: [REMOTE_STAGE.md](REMOTE_STAGE.md#overlapping-the-decode-windows---pipeline-windows-2). In the config:
 
 ```
 "args": [ ..., "--pipeline-windows", "2" ],

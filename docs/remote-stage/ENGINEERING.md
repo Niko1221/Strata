@@ -159,7 +159,9 @@ connection`), and the next request failed after 66-68 s (two runs), when the ser
 
 Decode is sequential: a window's time is the main process's layers, head and drafter, plus every worker's layers,
 plus every hop's round trip. More PCs add VRAM for the expert cache and RAM pools; they do not run at the same time on
-one conversation. Prompt chunks do overlap across stages, so the prompt rate is set by the slowest stage.
+one conversation. Prompt chunks do overlap across stages, so the prompt rate is set by the slowest stage. (Opt-in,
+`--pipeline-windows 2` on the main process lets its layers run the next window, on a guess, while the worker and the
+head run this one: [REMOTE_STAGE.md](../REMOTE_STAGE.md#overlapping-the-decode-windows---pipeline-windows-2).)
 
 ### More than two stages (relay workers)
 
