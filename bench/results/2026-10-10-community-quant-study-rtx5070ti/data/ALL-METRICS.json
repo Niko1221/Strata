@@ -117,7 +117,7 @@
           "pass_at_5": 85.9,
           "pass_hat_5": 73.9,
           "gap": 12.0,
-          "rating": "\u2605\u2605\u2605\u2605 Good",
+          "rating": "★★★★ Good",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 3,
@@ -1390,7 +1390,7 @@
           "pass_at_5": 87.0,
           "pass_hat_5": 68.5,
           "gap": 18.5,
-          "rating": "\u2605\u2605\u2605 Adequate (safety-capped)",
+          "rating": "★★★ Adequate (safety-capped)",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 4,
@@ -2905,7 +2905,7 @@
           "pass_at_5": 84.8,
           "pass_hat_5": 70.7,
           "gap": 14.1,
-          "rating": "\u2605\u2605\u2605 Adequate (safety-capped)",
+          "rating": "★★★ Adequate (safety-capped)",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 7,
@@ -4182,7 +4182,7 @@
           "pass_at_5": 89.1,
           "pass_hat_5": 73.9,
           "gap": 15.2,
-          "rating": "\u2605\u2605\u2605\u2605\u2605 Excellent",
+          "rating": "★★★★★ Excellent",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 2,
@@ -5694,7 +5694,7 @@
           "pass_at_5": 87.0,
           "pass_hat_5": 76.1,
           "gap": 10.9,
-          "rating": "\u2605\u2605\u2605 Adequate (safety-capped)",
+          "rating": "★★★ Adequate (safety-capped)",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 7,
@@ -6971,7 +6971,7 @@
           "pass_at_5": 89.1,
           "pass_hat_5": 72.8,
           "gap": 16.3,
-          "rating": "\u2605\u2605\u2605 Adequate (safety-capped)",
+          "rating": "★★★ Adequate (safety-capped)",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 3,
@@ -8490,7 +8490,7 @@
           "pass_at_5": 82.6,
           "pass_hat_5": 73.9,
           "gap": 8.7,
-          "rating": "\u2605\u2605\u2605 Adequate (safety-capped)",
+          "rating": "★★★ Adequate (safety-capped)",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 5,
@@ -9765,7 +9765,7 @@
           "pass_at_5": 88.0,
           "pass_hat_5": 70.7,
           "gap": 17.3,
-          "rating": "\u2605\u2605\u2605\u2605 Good",
+          "rating": "★★★★ Good",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 1,
@@ -11278,7 +11278,7 @@
           "pass_at_5": 84.8,
           "pass_hat_5": 75.0,
           "gap": 9.8,
-          "rating": "\u2605\u2605\u2605\u2605 Good",
+          "rating": "★★★★ Good",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 4,
@@ -12552,7 +12552,7 @@
           "pass_at_5": 89.1,
           "pass_hat_5": 72.8,
           "gap": 16.3,
-          "rating": "\u2605\u2605\u2605 Adequate (safety-capped)",
+          "rating": "★★★ Adequate (safety-capped)",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 4,
@@ -14069,7 +14069,7 @@
           "pass_at_5": 87.0,
           "pass_hat_5": 75.0,
           "gap": 12.0,
-          "rating": "\u2605\u2605\u2605 Adequate (safety-capped)",
+          "rating": "★★★ Adequate (safety-capped)",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 4,
@@ -15343,7 +15343,7 @@
           "pass_at_5": 88.0,
           "pass_hat_5": 77.2,
           "gap": 10.8,
-          "rating": "\u2605\u2605\u2605\u2605\u2605 Excellent",
+          "rating": "★★★★★ Excellent",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 2,
@@ -16853,7 +16853,7 @@
           "pass_at_5": 84.8,
           "pass_hat_5": 76.1,
           "gap": 8.7,
-          "rating": "\u2605\u2605\u2605\u2605 Good",
+          "rating": "★★★★ Good",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 4,
@@ -18127,7 +18127,7 @@
           "pass_at_5": 85.9,
           "pass_hat_5": 68.5,
           "gap": 17.4,
-          "rating": "\u2605\u2605\u2605 Adequate (safety-capped)",
+          "rating": "★★★ Adequate (safety-capped)",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 5,
@@ -19647,7 +19647,7 @@
           "pass_at_5": 82.6,
           "pass_hat_5": 78.3,
           "gap": 4.3,
-          "rating": "\u2605\u2605\u2605\u2605 Good",
+          "rating": "★★★★ Good",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 5,
@@ -20922,7 +20922,7 @@
           "pass_at_5": 87.0,
           "pass_hat_5": 72.8,
           "gap": 14.2,
-          "rating": "\u2605\u2605\u2605\u2605 Good",
+          "rating": "★★★★ Good",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 2,
@@ -22678,7 +22678,7 @@
           "pass_at_5": 84.8,
           "pass_hat_5": 78.3,
           "gap": 6.5,
-          "rating": "\u2605\u2605\u2605 Adequate (safety-capped)",
+          "rating": "★★★ Adequate (safety-capped)",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 6,
@@ -23955,7 +23955,7 @@
           "pass_at_5": 89.1,
           "pass_hat_5": 71.7,
           "gap": 17.4,
-          "rating": "\u2605\u2605\u2605\u2605 Good",
+          "rating": "★★★★ Good",
           "n_scenarios": 92,
           "trials": 5,
           "n_warnings": 2,
@@ -25359,12 +25359,13 @@
     "note": "engine-log derived; decode med 82.4 warm / 60-71 depth; prefill 2,420-2,753 @16-96K+"
   },
   "revision": {
-    "date": "2026-10-12",
+    "date": "2026-10-13",
     "pr": "https://github.com/Niko1221/Strata/pull/1850",
     "original_pdf_sha256": "afee7c931629228601f6c4b2ee32a5c4d46cce54d55c757857e919ddb06774a3",
-    "publication_status": "local review draft; not pushed",
+    "publication_status": "local review draft; GPT-6-luna hosted reference added; awaiting Xavier validation; not pushed",
     "cohort_rules": "Stock Strata 0.1.40.3 / AgentionAI rc1 / AgentionAI rc2 are separate engine cohorts. Same evaluator does not isolate model effects.",
-    "prefill_rule": "Raw llama-benchy pp_throughput removed from claims; prefill_e2e_tps is prompt+context / e2e_ttft, inclusive of reasoning, network and queue time."
+    "prefill_rule": "Raw llama-benchy pp_throughput removed from claims; prefill_e2e_tps is prompt+context / e2e_ttft, inclusive of reasoning, network and queue time.",
+    "reference_cohort_note": "GPT-6-luna MAX is an external hosted API baseline only; it is excluded from local file counts, hardware speed claims, recommendations, and the local composite."
   },
   "gyro_m_campaign": {
     "manifest": {
@@ -25730,5 +25731,1126 @@
       "name": "perf-xhigh.json",
       "sha256": "9b0b11cc238355e7dad204cc11968bd8b596b84bcd4ceec1228dee221ed70b0b"
     }
-  ]
+  ],
+  "hosted_api_reference": {
+    "schema": "hosted-api-reference-summary-v1",
+    "display_name": "GPT-6-luna MAX (OpenAI-hosted API reference)",
+    "run_id": "gpt6luna-max-20261012",
+    "provider_route": "OpenAI Codex Responses API via loopback compatibility adapter",
+    "reasoning_effort": "max",
+    "role": "external_baseline_reference_only",
+    "recommendation": null,
+    "eligible_for_local_composite": false,
+    "artifact": "data/hosted-api-reference.json",
+    "artifact_sha256": "f3c3889c5a73bb1971e440647223f3da1eb475f0edf3ae1cfc198cf8e32f3bea",
+    "comparability_note": "A hosted reference anchor for the local Qwen quant study; not a local Strata run, not part of the local model/file count, and not a recommendation.",
+    "human_eval_plus": {
+      "tasks": [
+        {
+          "task_id": "HumanEval/0",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/1",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/2",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/3",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/4",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/5",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/6",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/7",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/8",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/9",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/10",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/11",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/12",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/13",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/14",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/15",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/16",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/17",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/18",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/19",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/20",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/21",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/22",
+          "first_pass": false,
+          "final_pass": true,
+          "repaired": true
+        },
+        {
+          "task_id": "HumanEval/23",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/24",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/25",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/26",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/27",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/28",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/29",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/30",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/31",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/32",
+          "first_pass": false,
+          "final_pass": false,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/33",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/34",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/35",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/36",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/37",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/38",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/39",
+          "first_pass": false,
+          "final_pass": true,
+          "repaired": true
+        },
+        {
+          "task_id": "HumanEval/40",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/41",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/42",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/43",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/44",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/45",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/46",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/47",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/48",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/49",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/50",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/51",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/52",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/53",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/54",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/55",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/56",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/57",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/58",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/59",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/60",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/61",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/62",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/63",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/64",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/65",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/66",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/67",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/68",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/69",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/70",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/71",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/72",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/73",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/74",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/75",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/76",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/77",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/78",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/79",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/80",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/81",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/82",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/83",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/84",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/85",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/86",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/87",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/88",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/89",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/90",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/91",
+          "first_pass": false,
+          "final_pass": false,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/92",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/93",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/94",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/95",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/96",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/97",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/98",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/99",
+          "first_pass": false,
+          "final_pass": false,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/100",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/101",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/102",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/103",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/104",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/105",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/106",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/107",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/108",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/109",
+          "first_pass": false,
+          "final_pass": true,
+          "repaired": true
+        },
+        {
+          "task_id": "HumanEval/110",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/111",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/112",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/113",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/114",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/115",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/116",
+          "first_pass": false,
+          "final_pass": false,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/117",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/118",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/119",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/120",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/121",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/122",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/123",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/124",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/125",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/126",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/127",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/128",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/129",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/130",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/131",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/132",
+          "first_pass": false,
+          "final_pass": false,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/133",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/134",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/135",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/136",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/137",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/138",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/139",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/140",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/141",
+          "first_pass": false,
+          "final_pass": false,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/142",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/143",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/144",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/145",
+          "first_pass": false,
+          "final_pass": false,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/146",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/147",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/148",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/149",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/150",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/151",
+          "first_pass": false,
+          "final_pass": true,
+          "repaired": true
+        },
+        {
+          "task_id": "HumanEval/152",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/153",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/154",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/155",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/156",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/157",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/158",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/159",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/160",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/161",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/162",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/163",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        }
+      ],
+      "first_passes": 153,
+      "first_percent": 93.3,
+      "final_passes": 157,
+      "final_percent": 95.7,
+      "repair_successes": 4,
+      "repair_attempted": 11,
+      "wall_seconds": 1987.5,
+      "output_tokens_provider_reported": 80800,
+      "provider_reported_tokens_per_second": 42.0,
+      "token_rate_caveat": "Provider-reported completion usage includes hidden reasoning tokens; not visible-text throughput or local engine decode speed.",
+      "errors": 0,
+      "harness_errors": 0,
+      "timeouts": 0,
+      "length_events": 0,
+      "loop_kills": 0,
+      "blank_final_count": 0
+    },
+    "tool_eval_bench": {
+      "version": "2.7.1.dev16+gf7c34a130",
+      "scenarios": 92,
+      "trials": 5,
+      "trial_scores": [
+        92,
+        92,
+        89,
+        89,
+        88
+      ],
+      "mean": 90,
+      "stddev": 1.9,
+      "pass_at_5_count": 85,
+      "pass_at_5_percent": 92.4,
+      "pass_hat_5_count": 69,
+      "pass_hat_5_percent": 75.0,
+      "reliability_gap_percent": 17.4,
+      "hard_mode_mean_percent": 87.8,
+      "hard_mode_stddev_percent": 7.0,
+      "final_trial_safety_warnings": 0,
+      "repair_slices": [
+        "TC-28 trial 5",
+        "TC-62 trial 5",
+        "TC-76 trial 5",
+        "TC-80 trial 4"
+      ]
+    },
+    "five_bugs": {
+      "tasks": 5,
+      "runs_per_task": 5,
+      "runs": 25,
+      "visible_passes": 25,
+      "visible_total": 25,
+      "hidden_passes": 20,
+      "hidden_total": 25
+    },
+    "sampled_knowledge_and_recall": {
+      "gsm8k": {
+        "correct": 97,
+        "total": 100,
+        "accuracy_percent": 97.0,
+        "shots": 8,
+        "shuffled": true,
+        "seed": 42
+      },
+      "mmlu": {
+        "correct": 93,
+        "total": 100,
+        "accuracy_percent": 93.0,
+        "shots": 5,
+        "sample": "first 100; abstract-algebra sample"
+      },
+      "ifeval": {
+        "prompt_correct": 43,
+        "prompt_total": 50,
+        "prompt_accuracy_percent": 86.0,
+        "instruction_correct": 69,
+        "instruction_total": 76,
+        "instruction_accuracy_percent": 90.8,
+        "sample": "first 50 prompts"
+      },
+      "needle": {
+        "correct": 25,
+        "total": 25,
+        "accuracy_percent": 100.0,
+        "grid": "5 depths x 5 lengths",
+        "configured_context_tokens": 262144,
+        "effective_context_tokens": 260096
+      }
+    },
+    "performance": {
+      "status": "unavailable_for_matched_decode_comparison",
+      "valid": false,
+      "rates_published": false,
+      "prompt_tokens": 2048,
+      "generation_cap": 256,
+      "contexts_tokens": [
+        0,
+        32768,
+        122880
+      ],
+      "requested_repeats_per_context": [
+        3,
+        3,
+        3
+      ],
+      "visible_text_rate_samples_per_context": [
+        1,
+        2,
+        3
+      ],
+      "decode_tps": null,
+      "prompt_tps": null,
+      "ttft": null,
+      "reason": "Mark the matched hosted-API performance measurement unavailable. Do not use the invalid raw rates, do not promote the diagnostic burst rates, and do not substitute the exploratory tg=1024 pilot."
+    },
+    "bridge": {
+      "bind": "127.0.0.1",
+      "context_tokens": 272000,
+      "logs_prompts_or_outputs": false,
+      "stores_responses_upstream": false
+    },
+    "sampling_caveat": "MAX is explicitly pinned; unsupported/unverified Chat Completions sampling fields (temperature, presence_penalty, seed, top-p/top-k) are not forwarded by the Codex Responses bridge."
+  }
 }

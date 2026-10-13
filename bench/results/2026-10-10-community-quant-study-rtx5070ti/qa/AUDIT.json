@@ -1,11 +1,19 @@
 {
   "checks": [
     {
-      "claim": "10 files, 20 effort arms, 18 tool arms",
+      "claim": "10 local files, 20 local effort arms, 18 local tool arms",
       "passed": true
     },
     {
-      "claim": "All 20 coding arms printed exactly once in coding tables",
+      "claim": "Hosted GPT-6-luna role remains external-reference-only",
+      "passed": true
+    },
+    {
+      "claim": "All 20 local coding arms printed exactly once",
+      "passed": true
+    },
+    {
+      "claim": "Hosted HE+ reference row matches source without placeholders",
       "passed": true
     },
     {
@@ -249,7 +257,15 @@
       "passed": true
     },
     {
-      "claim": "All 18 tool arms printed exactly once",
+      "claim": "All 18 local tool arms printed exactly once",
+      "passed": true
+    },
+    {
+      "claim": "Hosted TEB row has all supported metrics and no placeholders",
+      "passed": true
+    },
+    {
+      "claim": "TEB table places hosted reference inline by Pass^5, then mean",
       "passed": true
     },
     {
@@ -469,7 +485,15 @@
       "passed": true
     },
     {
-      "claim": "All 10 knowledge/debug/needle rows printed once",
+      "claim": "All 10 local knowledge/debug/needle rows printed once",
+      "passed": true
+    },
+    {
+      "claim": "Hosted sampled-suite reference row matches sanitized source",
+      "passed": true
+    },
+    {
+      "claim": "Sampled-suite table places hosted reference inline by hidden-debug score",
       "passed": true
     },
     {
@@ -693,6 +717,26 @@
       "passed": true
     },
     {
+      "claim": "Reference baseline visible, provider identified, and non-recommendation",
+      "passed": true
+    },
+    {
+      "claim": "Hosted sampling caveat and unavailable matched performance are explicit",
+      "passed": true
+    },
+    {
+      "claim": "Hard Mode table places hosted reference inline by mean score",
+      "passed": true
+    },
+    {
+      "claim": "Hosted rows have no missing values, N/A placeholders, or medal markup",
+      "passed": true
+    },
+    {
+      "claim": "HumanEval+ table places hosted reference within score-ranked coverage tier",
+      "passed": true
+    },
+    {
       "claim": "No emoji, stars or forced page breaks",
       "passed": true
     },
@@ -701,7 +745,7 @@
       "passed": true
     },
     {
-      "claim": "PDF contains new model, status, scoring denominators and provenance",
+      "claim": "PDF contains local provenance plus hosted baseline scores and scope",
       "passed": true
     },
     {
@@ -761,25 +805,26 @@
       "passed": true
     }
   ],
-  "passed": 190,
+  "passed": 201,
   "failed": 0,
-  "pdf_sha256": "67c82ebaff406ec386527215205ed5de31a56e238a7f6943194549e1b75d9894",
-  "pdf_bytes": 1745297,
-  "pages": 13,
+  "pdf_sha256": "54f7790c08e4c1ecb615b082947a10a059d08bd5309c616bddb76b8eb6dcf380",
+  "pdf_bytes": 1914010,
+  "pages": 14,
   "page_fill": [
     0.725,
-    0.786,
-    0.766,
-    0.889,
-    0.92,
-    0.916,
-    0.928,
+    0.867,
+    0.778,
+    0.93,
     0.937,
+    0.605,
+    0.793,
+    0.841,
+    0.899,
     0.726,
-    0.571,
-    0.711,
+    0.598,
+    0.721,
     0.715,
-    0.532
+    0.578
   ],
   "figures": 10,
   "table_pages": {
@@ -796,25 +841,25 @@
       5
     ],
     "T05": [
-      6
-    ],
-    "T06": [
       7
     ],
-    "T07": [
+    "T06": [
       8
     ],
+    "T07": [
+      9
+    ],
     "T08": [
-      10
-    ],
-    "T09": [
-      10
-    ],
-    "T10": [
       11
     ],
+    "T09": [
+      11
+    ],
+    "T10": [
+      12
+    ],
     "T11": [
-      13
+      14
     ]
   }
 }

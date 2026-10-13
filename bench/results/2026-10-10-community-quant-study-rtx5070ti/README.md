@@ -1,10 +1,10 @@
 # Qwen3.8-Flash-Next: which quant should you run?
 
-Updated **2026-10-12** · **10 files / 3 labs / 20 effort arms / 18 tool arms**.
+Updated **2026-10-13** · **10 local files / 3 quant or finetune labs / 20 local effort arms / 18 local tool arms**. The separate **GPT-6-luna MAX (OpenAI) · hosted API reference** is outside those counts and anchors score-relative suite comparisons; it is not a recommendation.
 
-[Download the designed PDF](strata-community.pdf) (13 pages) · [Canonical metrics](data/ALL-METRICS.json) · [Claim registry](claims.json) · [Audit](qa/AUDIT.json)
+[Download the designed PDF](strata-community.pdf) (14 pages) · [Canonical metrics](data/ALL-METRICS.json) · [Hosted reference detail](data/hosted-api-reference.json) · [Claim registry](claims.json) · [Audit](qa/AUDIT.json)
 
-Measured on **RTX 5070 Ti 16 GB, Ryzen 9800X3D, 64 GB RAM, Windows + WSL2**. Eight stock files use Strata 0.1.40.3; Gyro-S uses historical rc1, Gyro-M rc2. Same prompts/evaluator do not isolate an engine-independent model comparison.
+Measured on **RTX 5070 Ti 16 GB, Ryzen 9800X3D, 64 GB RAM, Windows + WSL2**. Eight stock files use Strata 0.1.40.3; Gyro-S uses historical rc1, Gyro-M rc2. Shared evaluators do not isolate model-only stock/fork differences. The separate GPT-6-luna MAX row is an OpenAI-hosted baseline/reference, not a recommendation or local RTX run.
 
 ## Straight answer
 
@@ -12,7 +12,7 @@ Measured on **RTX 5070 Ti 16 GB, Ryzen 9800X3D, 64 GB RAM, Windows + WSL2**. Eig
 
 ## The cast
 
-File sizes are decimal GB, not VRAM requirements. Every common result table includes Gyro-M inline with an engine label. There is no standalone Gyro-M chapter.
+The ten local files all descend from the same Qwen3.8-Flash-Next base model; file sizes are decimal GB, not VRAM requirements. The GPT-6-luna MAX hosted API reference is not a local file and does not enter this inventory or the recommendation registry. Every common result table includes Gyro-M inline with an engine label. There is no standalone Gyro-M chapter.
 
 | File / lab | Quant | File GB | Engine | Status |
 | --- | --- | --- | --- | --- |
@@ -31,28 +31,33 @@ Downloads: [ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-G
 
 ## Reliability and agentic tools
 
-[Tool-eval-bench](https://github.com/SeraphimSerapis/tool-eval-bench): pinned `2.7.1.dev16+gf7c34a130`, 92 scenarios x five runs per effort; 0/1/2 scoring. **Pass@5** = full marks at least once (capability ceiling); **Pass^5** = full marks in ALL five (reliability floor). Category values use all-five means. Stored rating/warnings describe the last primary trial, not a five-run union. Safety-capped is not inferred merely from the warning count. Gyro-S rc1 has no usable tool baseline; it is n/a, not zero.
+[Tool-eval-bench](https://github.com/SeraphimSerapis/tool-eval-bench): pinned `2.7.1.dev16+gf7c34a130`, 92 scenarios x five runs per effort; 0/1/2 scoring. **Pass@5** = full marks at least once (capability ceiling); **Pass^5** = full marks in ALL five (reliability floor). Category values use all-five means. Warning counts describe the last primary trial, not a five-run union. The table is ordered by Pass^5 floor (descending; mean breaks ties). Evaluator rating is omitted because the hosted artifact provides no comparable rating. Safety-capped is not inferred merely from the warning count. Gyro-S rc1 has no usable tool baseline; it is n/a, not zero.
 
-| Arm / lab | Engine | Mean +/- SD | 95% CI | Pass@5 | Pass^5 | Ceiling-floor gap | Hard Mode mean | Last-trial rating | Warnings |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| S-Q2_0 (UkisAI) low | 0.1.40.3 | 85.0 +/- 1.0 | 84.2–85.8 | 82.6 | 78.3 | 4.3 | 72.8 | 4/5 Good | 5 |
-| S-IQ2_XS (UkisAI) xhigh | 0.1.40.3 | 88.2 +/- 1.5 | 87.0–89.4 | 88.0 | 77.2 | 10.8 | 79.8 | 5/5 Excellent | 2 |
-| Q-IQ3_XXS (ISTA-DASLab) low | 0.1.40.3 | 87.0 +/- 2.0 | 85.4–88.6 | 87.0 | 76.1 | 10.9 | 71.2 | 3/5 Adequate (safety-capped) | 7 |
-| S-IQ3_S (UkisAI) low | 0.1.40.3 | 88.2 +/- 1.5 | 87.0–89.2 | 84.8 | 76.1 | 8.7 | 81.0 | 4/5 Good | 4 |
-| S-IQ3_XXS (UkisAI) low | 0.1.40.3 | 84.6 +/- 0.5 | 84.2–85.0 | 84.8 | 75.0 | 9.8 | 69.6 | 4/5 Good | 4 |
-| S-IQ2_XS (UkisAI) low | 0.1.40.3 | 87.2 +/- 1.3 | 86.2–88.2 | 87.0 | 75.0 | 12.0 | 77.0 | 3/5 Adequate (safety-capped) | 4 |
-| Q-IQ3_S (ISTA-DASLab) low | 0.1.40.3 | 86.8 +/- 0.8 | 86.2–87.4 | 85.9 | 73.9 | 12.0 | 75.2 | 4/5 Good | 3 |
-| Q-Q2_0 (ISTA-DASLab) xhigh | 0.1.40.3 | 89.4 +/- 0.5 | 89.0–89.8 | 89.1 | 73.9 | 15.2 | 86.8 | 5/5 Excellent | 2 |
-| Q-IQ2_XS (ISTA-DASLab) low | 0.1.40.3 | 86.2 +/- 0.8 | 85.6–86.8 | 82.6 | 73.9 | 8.7 | 68.4 | 3/5 Adequate (safety-capped) | 5 |
-| Q-IQ3_XXS (ISTA-DASLab) xhigh | 0.1.40.3 | 88.6 +/- 1.1 | 87.8–89.4 | 89.1 | 72.8 | 16.3 | 83.6 | 3/5 Adequate (safety-capped) | 3 |
-| S-IQ3_XXS (UkisAI) xhigh | 0.1.40.3 | 86.6 +/- 1.5 | 85.4–87.8 | 89.1 | 72.8 | 16.3 | 74.4 | 3/5 Adequate (safety-capped) | 4 |
-| S-Q2_0 (UkisAI) xhigh | 0.1.40.3 | 86.8 +/- 2.2 | 85.2–88.4 | 87.0 | 72.8 | 14.2 | 82.2 | 4/5 Good | 2 |
-| Q-Q2_0 (ISTA-DASLab) low | 0.1.40.3 | 84.8 +/- 0.4 | 84.4–85.0 | 84.8 | 70.7 | 14.1 | 74.4 | 3/5 Adequate (safety-capped) | 7 |
-| Q-IQ2_XS (ISTA-DASLab) xhigh | 0.1.40.3 | 88.6 +/- 1.8 | 87.2–90.0 | 88.0 | 70.7 | 17.3 | 82.6 | 4/5 Good | 1 |
-| Q-IQ3_S (ISTA-DASLab) xhigh | 0.1.40.3 | 86.8 +/- 1.3 | 85.6–87.8 | 87.0 | 68.5 | 18.5 | 80.2 | 3/5 Adequate (safety-capped) | 4 |
-| S-IQ3_S (UkisAI) xhigh | 0.1.40.3 | 85.6 +/- 0.5 | 85.2–86.0 | 85.9 | 68.5 | 17.4 | 75.6 | 3/5 Adequate (safety-capped) | 5 |
-| Gyro-M (AgentionAI) low | rc2 | 86.0 +/- 1.4 | 84.8–87.2 | 84.8 | 78.3 | 6.5 | 73.8 | 3/5 Adequate (safety-capped) | 6 |
-| Gyro-M (AgentionAI) xhigh | rc2 | 87.8 +/- 1.1 | 86.8–88.6 | 89.1 | 71.7 | 17.4 | 86.0 | 4/5 Good | 2 |
+| Arm / lab | Engine | Mean +/- SD | Pass@5 | Pass^5 | Ceiling-floor gap | Hard Mode mean | Warnings (last trial) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Gyro-M (AgentionAI) low | rc2 | 86.0 +/- 1.4 | 84.8 | 78.3 | 6.5 | 73.8 | 6 |
+| S-Q2_0 (UkisAI) low | 0.1.40.3 | 85.0 +/- 1.0 | 82.6 | 78.3 | 4.3 | 72.8 | 5 |
+| S-IQ2_XS (UkisAI) xhigh | 0.1.40.3 | 88.2 +/- 1.5 | 88.0 | 77.2 | 10.8 | 79.8 | 2 |
+| S-IQ3_S (UkisAI) low | 0.1.40.3 | 88.2 +/- 1.5 | 84.8 | 76.1 | 8.7 | 81.0 | 4 |
+| Q-IQ3_XXS (ISTA-DASLab) low | 0.1.40.3 | 87.0 +/- 2.0 | 87.0 | 76.1 | 10.9 | 71.2 | 7 |
+| GPT-6-luna MAX (OpenAI) · hosted API reference | OpenAI Codex Responses API · max | 90.0 +/- 1.9 | 92.4 | 75.0 | 17.4 | 87.8 | 0 |
+| S-IQ2_XS (UkisAI) low | 0.1.40.3 | 87.2 +/- 1.3 | 87.0 | 75.0 | 12.0 | 77.0 | 4 |
+| S-IQ3_XXS (UkisAI) low | 0.1.40.3 | 84.6 +/- 0.5 | 84.8 | 75.0 | 9.8 | 69.6 | 4 |
+| Q-Q2_0 (ISTA-DASLab) xhigh | 0.1.40.3 | 89.4 +/- 0.5 | 89.1 | 73.9 | 15.2 | 86.8 | 2 |
+| Q-IQ3_S (ISTA-DASLab) low | 0.1.40.3 | 86.8 +/- 0.8 | 85.9 | 73.9 | 12.0 | 75.2 | 3 |
+| Q-IQ2_XS (ISTA-DASLab) low | 0.1.40.3 | 86.2 +/- 0.8 | 82.6 | 73.9 | 8.7 | 68.4 | 5 |
+| Q-IQ3_XXS (ISTA-DASLab) xhigh | 0.1.40.3 | 88.6 +/- 1.1 | 89.1 | 72.8 | 16.3 | 83.6 | 3 |
+| S-Q2_0 (UkisAI) xhigh | 0.1.40.3 | 86.8 +/- 2.2 | 87.0 | 72.8 | 14.2 | 82.2 | 2 |
+| S-IQ3_XXS (UkisAI) xhigh | 0.1.40.3 | 86.6 +/- 1.5 | 89.1 | 72.8 | 16.3 | 74.4 | 4 |
+| Gyro-M (AgentionAI) xhigh | rc2 | 87.8 +/- 1.1 | 89.1 | 71.7 | 17.4 | 86.0 | 2 |
+| Q-IQ2_XS (ISTA-DASLab) xhigh | 0.1.40.3 | 88.6 +/- 1.8 | 88.0 | 70.7 | 17.3 | 82.6 | 1 |
+| Q-Q2_0 (ISTA-DASLab) low | 0.1.40.3 | 84.8 +/- 0.4 | 84.8 | 70.7 | 14.1 | 74.4 | 7 |
+| Q-IQ3_S (ISTA-DASLab) xhigh | 0.1.40.3 | 86.8 +/- 1.3 | 87.0 | 68.5 | 18.5 | 80.2 | 4 |
+| S-IQ3_S (UkisAI) xhigh | 0.1.40.3 | 85.6 +/- 0.5 | 85.9 | 68.5 | 17.4 | 75.6 | 5 |
+
+95% CI and evaluator rating are intentionally omitted: the hosted artifact does not publish comparable values, so no proxy is inferred. GPT-6-luna MAX is ordered by its measured score but remains an external OpenAI API baseline, not a local-engine arm.
+
+GPT-6-luna MAX sampling caveat: MAX is explicitly pinned; unsupported/unverified Chat Completions sampling fields (temperature, presence_penalty, seed, top-p/top-k) are not forwarded by the Codex Responses bridge. Treat it as an observed reference run, not an identical seed/temperature-controlled local trial.
 
 ![All-model tool results](charts/F3-reliability.png)
 
@@ -70,17 +75,23 @@ Gyro-M Hard Mode gains do not imply reliability gains: its floor drops at xhigh 
 
 ![Time to quality](charts/F2-wall.png)
 
+Rows are ordered by final score, with complete-coverage runs first and partial-coverage runs after them.
+
 | Arm / lab | Engine | First % | Final % | Solved/scored | Repairs | Wall | tok/s | Blank finals | Infra excluded |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Q-IQ3_S (ISTA-DASLab) xhigh | 0.1.40.3 | 93.3 | 96.3 | 158/164 | 5/11 | 67m19s | 86.7 | 2 | 0 |
+| Gyro-S (AgentionAI) low | rc1 | 92.1 | 96.3 | 158/164 | 7/13 | 34m21s | 71.7 | 2 | 0 |
 | Q-IQ3_XXS (ISTA-DASLab) xhigh | 0.1.40.3 | 92.7 | 95.7 | 157/164 | 5/11 | 76m17s | 102.6 | 3 | 0 |
 | Q-IQ2_XS (ISTA-DASLab) low | 0.1.40.3 | 90.9 | 95.7 | 157/164 | 8/14 | 22m44s | 124.5 | 2 | 0 |
 | S-Q2_0 (UkisAI) low | 0.1.40.3 | 90.2 | 95.7 | 157/164 | 9/16 | 12m56s | 144.8 | 0 | 0 |
+| Gyro-M (AgentionAI) xhigh | rc2 | 92.1 | 95.7 | 157/164 | 6/13 | 82m51s | 77.6 | 2 | 0 |
+| GPT-6-luna MAX (OpenAI) · hosted API reference | OpenAI Codex Responses API · max | 93.3 | 95.7 | 157/164 | 4/11 | 33m08s | 42.0† | 0 | 0 |
 | Q-Q2_0 (ISTA-DASLab) low | 0.1.40.3 | 92.7 | 95.1 | 156/164 | 4/10 | 49m50s | 123.9 | 2 | 0 |
 | Q-Q2_0 (ISTA-DASLab) xhigh | 0.1.40.3 | 88.4 | 95.1 | 156/164 | 11/17 | 62m18s | 124.0 | 3 | 0 |
 | S-IQ3_XXS (UkisAI) low | 0.1.40.3 | 92.7 | 95.1 | 156/164 | 4/12 | 11m56s | 123.7 | 0 | 0 |
 | S-IQ3_XXS (UkisAI) xhigh | 0.1.40.3 | 92.1 | 95.1 | 156/164 | 5/10 | 47m11s | 104.5 | 5 | 0 |
 | S-IQ2_XS (UkisAI) low | 0.1.40.3 | 89.6 | 95.1 | 156/164 | 9/16 | 13m23s | 148.8 | 1 | 0 |
+| Gyro-M (AgentionAI) low | rc2 | 93.3 | 95.1 | 156/164 | 3/11 | 17m20s | 88.9 | 0 | 0 |
 | Q-IQ3_S (ISTA-DASLab) low | 0.1.40.3 | 92.7 | 94.5 | 155/164 | 3/12 | 14m05s | 100.4 | 0 | 0 |
 | Q-IQ2_XS (ISTA-DASLab) xhigh | 0.1.40.3 | 89.6 | 94.5 | 155/164 | 8/16 | 75m40s | 122.0 | 6 | 0 |
 | S-IQ2_XS (UkisAI) xhigh | 0.1.40.3 | 91.5 | 94.5 | 155/164 | 5/11 | 63m04s | 124.0 | 5 | 0 |
@@ -88,10 +99,9 @@ Gyro-M Hard Mode gains do not imply reliability gains: its floor drops at xhigh 
 | S-Q2_0 (UkisAI) xhigh | 0.1.40.3 | 89.6 | 93.3 | 153/164 | 6/14 | 56m20s | 121.8 | 6 | 0 |
 | S-IQ3_S (UkisAI) low | 0.1.40.3 | 94.5 | 96.3 * | 157/163 | 3/9 | 15m05s | 101.5 | 0 | 1 |
 | Q-IQ3_XXS (ISTA-DASLab) low | 0.1.40.3 | 92.6 | 95.1 * | 155/163 | 4/13 | 14m26s | 121.5 | 0 | 1 |
-| Gyro-S (AgentionAI) low | rc1 | 92.1 | 96.3 | 158/164 | 7/13 | 34m21s | 71.7 | 2 | 0 |
-| Gyro-M (AgentionAI) xhigh | rc2 | 92.1 | 95.7 | 157/164 | 6/13 | 82m51s | 77.6 | 2 | 0 |
-| Gyro-M (AgentionAI) low | rc2 | 93.3 | 95.1 | 156/164 | 3/11 | 17m20s | 88.9 | 0 | 0 |
 | Gyro-S (AgentionAI) xhigh | rc1 | 90.1 | 94.4 * | 153/162 | 7/16 | 329m15s | 63.1 | 3 | 2 |
+
+† Hosted 42.0 tok/s is provider-reported completion usage including hidden reasoning tokens. It is not visible-text throughput, local decode speed, or a matched speed result; see performance caveat below.
 
 `*` Partial: Q-IQ3_XXS low 155/163; Swift IQ3_S low 157/163; Gyro-S xhigh 153/162 after two HTTP 502 errors. Gyro-M xhigh blank HumanEval/39 and /99 ended on length and remain failures in 157/164. No raw score/status was silently upgraded.
 
@@ -99,18 +109,21 @@ Gyro-M Hard Mode gains do not imply reliability gains: its floor drops at xhigh 
 
 GSM8K 100 shuffled questions, 8-shot; MMLU first 100 entirely abstract algebra, 5-shot (NOT full MMLU); IFEval first 50 prompts / 76 constraints. [Five Bugs](https://github.com/vyang472/five-bugs): five files x five sessions with local hidden checks. Needle: 25 cells; stock and fork effective contexts differ.
 
+Rows are ordered by hidden Five Bugs score (descending); Luna is shown in score position as a hosted reference, not a local candidate.
+
 | File / lab | Engine | GSM8K | Algebra | IFEval prompt/instruction | Bugs visible | Bugs hidden | Needle % @ effective tokens |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| S-IQ3_S (UkisAI) | 0.1.40.3 | 98 | 85 | 84.0 / 89.5 | 25/25 | 20/25 | 100 @ 260,096 |
+| GPT-6-luna MAX (OpenAI) · hosted API reference | OpenAI Codex Responses API · max | 97 | 93 | 86.0 / 90.8 | 25/25 | 20/25 | 100 @ 260,096 |
 | Q-IQ3_S (ISTA-DASLab) | 0.1.40.3 | 97 | 82 | 86.0 / 90.8 | 24/25 | 19/25 | 100 @ 260,096 |
 | Q-Q2_0 (ISTA-DASLab) | 0.1.40.3 | 97 | 78 | 84.0 / 89.5 | 24/25 | 19/25 | 100 @ 260,096 |
-| Q-IQ3_XXS (ISTA-DASLab) | 0.1.40.3 | 99 | 79 | 80.0 / 85.5 | 21/25 | 16/25 | 100 @ 260,096 |
 | Q-IQ2_XS (ISTA-DASLab) | 0.1.40.3 | 97 | 83 | 84.0 / 89.5 | 24/25 | 19/25 | 100 @ 260,096 |
 | S-IQ3_XXS (UkisAI) | 0.1.40.3 | 96 | 80 | 80.0 / 86.8 | 24/25 | 19/25 | 100 @ 260,096 |
 | S-IQ2_XS (UkisAI) | 0.1.40.3 | 97 | 83 | 82.0 / 88.2 | 23/25 | 18/25 | 100 @ 260,096 |
-| S-IQ3_S (UkisAI) | 0.1.40.3 | 98 | 85 | 84.0 / 89.5 | 25/25 | 20/25 | 100 @ 260,096 |
 | S-Q2_0 (UkisAI) | 0.1.40.3 | 90 | 72 | 80.0 / 86.8 | 23/25 | 18/25 | 100 @ 260,096 |
-| Gyro-S (AgentionAI) | rc1 | 92 | 76 | 74.0 / 82.9 | 21/25 | 16/25 | 100 @ 129,024 |
 | Gyro-M (AgentionAI) | rc2 | 96 | 79 | 78.0 / 82.9 | 23/25 | 18/25 | 100 @ 129,024.0 |
+| Q-IQ3_XXS (ISTA-DASLab) | 0.1.40.3 | 99 | 79 | 80.0 / 85.5 | 21/25 | 16/25 | 100 @ 260,096 |
+| Gyro-S (AgentionAI) | rc1 | 92 | 76 | 74.0 / 82.9 | 21/25 | 16/25 | 100 @ 129,024 |
 
 ![Debugging](charts/F5-debug.png)
 
@@ -124,30 +137,30 @@ Completion tokens include thinking, repair and failures. Passing/failed task cos
 
 | Arm / lab | Engine | Output tokens | Passing tokens | Passing seconds | Failed response-time share % | Wall |
 | --- | --- | --- | --- | --- | --- | --- |
+| Q-IQ3_S (ISTA-DASLab) low | 0.1.40.3 | 66,966 | 49,239 | 594 | 23.9 | 14m05s |
 | Q-IQ3_S (ISTA-DASLab) xhigh | 0.1.40.3 | 304,962 | 200,835 | 2,461 | 38.1 | 67m19s |
-| Q-IQ3_XXS (ISTA-DASLab) xhigh | 0.1.40.3 | 390,930 | 230,123 | 2,328 | 48.5 | 76m17s |
-| Q-IQ2_XS (ISTA-DASLab) low | 0.1.40.3 | 140,583 | 97,239 | 883 | 32.1 | 22m44s |
-| S-Q2_0 (UkisAI) low | 0.1.40.3 | 87,634 | 64,502 | 542 | 23.4 | 12m56s |
 | Q-Q2_0 (ISTA-DASLab) low | 0.1.40.3 | 277,084 | 174,148 | 1,498 | 48.8 | 49m50s |
 | Q-Q2_0 (ISTA-DASLab) xhigh | 0.1.40.3 | 332,296 | 238,341 | 2,020 | 45.1 | 62m18s |
+| Q-IQ3_XXS (ISTA-DASLab) low | 0.1.40.3 | 82,843 | 59,863 | 602 | 24.7 | 14m26s |
+| Q-IQ3_XXS (ISTA-DASLab) xhigh | 0.1.40.3 | 390,930 | 230,123 | 2,328 | 48.5 | 76m17s |
+| Q-IQ2_XS (ISTA-DASLab) low | 0.1.40.3 | 140,583 | 97,239 | 883 | 32.1 | 22m44s |
+| Q-IQ2_XS (ISTA-DASLab) xhigh | 0.1.40.3 | 347,704 | 257,698 | 2,214 | 50.5 | 75m40s |
 | S-IQ3_XXS (UkisAI) low | 0.1.40.3 | 68,616 | 49,192 | 486 | 25.1 | 11m56s |
 | S-IQ3_XXS (UkisAI) xhigh | 0.1.40.3 | 175,860 | 133,095 | 1,363 | 50.7 | 47m11s |
 | S-IQ2_XS (UkisAI) low | 0.1.40.3 | 83,746 | 56,476 | 468 | 36.3 | 13m23s |
-| Q-IQ3_S (ISTA-DASLab) low | 0.1.40.3 | 66,966 | 49,239 | 594 | 23.9 | 14m05s |
-| Q-IQ2_XS (ISTA-DASLab) xhigh | 0.1.40.3 | 347,704 | 257,698 | 2,214 | 50.5 | 75m40s |
 | S-IQ2_XS (UkisAI) xhigh | 0.1.40.3 | 118,588 | 105,555 | 2,472 | 33.6 | 63m04s |
-| S-IQ3_S (UkisAI) xhigh | 0.1.40.3 | 137,839 | 81,261 | 1,017 | 60.2 | 43m32s |
-| S-Q2_0 (UkisAI) xhigh | 0.1.40.3 | 243,330 | 151,062 | 1,329 | 60.0 | 56m20s |
 | S-IQ3_S (UkisAI) low | 0.1.40.3 | 74,417 | 49,341 | 598 | 29.0 | 15m05s |
-| Q-IQ3_XXS (ISTA-DASLab) low | 0.1.40.3 | 82,843 | 59,863 | 602 | 24.7 | 14m26s |
+| S-IQ3_S (UkisAI) xhigh | 0.1.40.3 | 137,839 | 81,261 | 1,017 | 60.2 | 43m32s |
+| S-Q2_0 (UkisAI) low | 0.1.40.3 | 87,634 | 64,502 | 542 | 23.4 | 12m56s |
+| S-Q2_0 (UkisAI) xhigh | 0.1.40.3 | 243,330 | 151,062 | 1,329 | 60.0 | 56m20s |
 | Gyro-S (AgentionAI) low | rc1 | 143,288 | 69,471 | 1,316 | 34.1 | 34m21s |
-| Gyro-M (AgentionAI) xhigh | rc2 | 391,467 | 180,234 | 2,334 | 52.5 | 82m51s |
-| Gyro-M (AgentionAI) low | rc2 | 80,523 | 60,016 | 752 | 23.2 | 17m20s |
 | Gyro-S (AgentionAI) xhigh | rc1 | 618,982 | 375,211 | 6,148 | 60.1 | 329m15s |
+| Gyro-M (AgentionAI) low | rc2 | 80,523 | 60,016 | 752 | 23.2 | 17m20s |
+| Gyro-M (AgentionAI) xhigh | rc2 | 391,467 | 180,234 | 2,334 | 52.5 | 82m51s |
 
 ## Measured performance
 
-llama-benchy 0.4.0: prompt 2,048, generation 256, concurrency 1, three repeats/depth/effort. Retired inflated raw prompt-throughput values. **Prompt-to-first-token rate** = total input tokens / end-to-end TTFT, including queue/network/reasoning; not kernel prefill. Deep contexts differ: stock 131,072, rc2 122,880. Gyro-S malformed million-token/s/null profiles are excluded and labeled n/a.
+llama-benchy 0.4.0: prompt 2,048, generation 256, concurrency 1, three repeats/depth/effort. Retired inflated raw prompt-throughput values. **Prompt-to-first-token rate** = total input tokens / end-to-end TTFT, including queue/network/reasoning; not kernel prefill. Deep contexts differ: stock 131,072, rc2 122,880. Gyro-S malformed million-token/s/null profiles are excluded and labeled n/a. GPT-6-luna MAX matched decode comparison is unavailable for matched decode comparison: requested 3/3/3 repeats at 0 / 32,768 / 122,880 tokens, with only 1/2/3 valid visible-rate samples. All hosted rates are withheld; its provider-reported HE+ token rate is not a speed substitute.
 
 ![Low-effort profiles](charts/F7-decode-all.png)
 

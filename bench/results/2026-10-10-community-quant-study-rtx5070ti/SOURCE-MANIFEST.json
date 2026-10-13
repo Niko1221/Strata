@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "note": "Hashes cover distributed bytes before rebuilding (PDF timestamps can change). Manifest excludes itself.",
+  "note": "Hashes cover distributed bytes; volatile QA page/panel rasters and this manifest are excluded.",
   "files": [
     {
       "path": "PR-BODY.md",
-      "bytes": 4109,
-      "sha256": "818e506fb119253cae3754b692f34fb127862da10855d5d38f9c0fcf27c66fc3"
+      "bytes": 5687,
+      "sha256": "c80dc1236906e4e429cd39133393632668ae3ea0eead3e3d299f912d356425e3"
     },
     {
       "path": "PR-TITLE.txt",
@@ -14,18 +14,18 @@
     },
     {
       "path": "README.md",
-      "bytes": 21670,
-      "sha256": "d153a9dae333d9e471bf309383c7eed5ba8ac8e03038209187309a41ae8dd13d"
+      "bytes": 23437,
+      "sha256": "0275cecd220e4e470e601dd1a183d04b621b197ca9f1e966df5bb9bc2178d043"
     },
     {
       "path": "TRIMMED.md",
-      "bytes": 2422,
-      "sha256": "e5fec99c9e5aa71e442a22da76a8311fc832e5c1ebbcae0f54c2328cdcbe0ea3"
+      "bytes": 2817,
+      "sha256": "eeebab48c6c40b801a3186e62a9bb756963ae0124105dfb073cda84151d28a77"
     },
     {
       "path": "charts/F1-coding.png",
-      "bytes": 70982,
-      "sha256": "4f9eee373a265a8a511f146084fc9df2bdf900584e86b371b07648d157785aaa"
+      "bytes": 164713,
+      "sha256": "75fa60fdfef883ac3423d8d989020e23f1cb82eba28d87f553935eec7305e4aa"
     },
     {
       "path": "charts/F10-scoreboard.png",
@@ -44,13 +44,13 @@
     },
     {
       "path": "charts/F4-hardmode.png",
-      "bytes": 99780,
-      "sha256": "f4967415b646cae622ac5ff0668b89715af4161eed14a8c86d1ea326feadce8e"
+      "bytes": 136375,
+      "sha256": "7dff24f0ca7f38f9fc245e64adf050fd48a3a4ef8baf1fb57a9401338ae01a64"
     },
     {
       "path": "charts/F5-debug.png",
-      "bytes": 58504,
-      "sha256": "dfbf3ca0b9a59976532fc52de3f643258b6e0ddcc12ebda06cd04634451b835e"
+      "bytes": 76256,
+      "sha256": "218468ff796df0ce4d73e3cd951516944f08d55bc848069ae06393f466a38d9d"
     },
     {
       "path": "charts/F6-tokens.png",
@@ -69,18 +69,18 @@
     },
     {
       "path": "charts/F9-decomposition.png",
-      "bytes": 101697,
-      "sha256": "27cce9167852ebd12f40dd24d532d930d9927d23f8433eab4d09208a1e92e072"
+      "bytes": 113476,
+      "sha256": "8c1e9bbf54a401a82dbfe83ec8bea128f950ce5ae16d5afd32f0d16aa6272612"
     },
     {
       "path": "claims.json",
-      "bytes": 2285,
-      "sha256": "0cc862053b63957a7caf4c9ef7f1aa87902ecc8f51ac2868be82b8cb86410d7c"
+      "bytes": 3138,
+      "sha256": "00ad4f4d815de6107f38e346addeca7986f070f89648413acb810d7833e6511f"
     },
     {
       "path": "community-updated.html",
-      "bytes": 63520,
-      "sha256": "5cab14def9b0d8094d17524cb8225c25b94188b9e8ef9d4ad8f6d1bc2a2799de"
+      "bytes": 66404,
+      "sha256": "b3c5eb5a119b8443e29cfc38565cb73efe3072e1c882260051349e5e753be15e"
     },
     {
       "path": "data/2026-10-12T14-59-48.604004Z_cedd3fae--gyro-m-rc2-full-20261012-rerun-1230-gsm8k.md",
@@ -104,8 +104,8 @@
     },
     {
       "path": "data/ALL-METRICS.json",
-      "bytes": 619054,
-      "sha256": "b0c73ffc81132bcf477168713b6b6ebd09d8ff0606a5ee83a50d3cc5e1771719"
+      "bytes": 647395,
+      "sha256": "fc4021fd451d59e658b5779b6201cf02f1fbbb869de6a4fbe6d2f38d4a6777da"
     },
     {
       "path": "data/FINAL-SCOREBOARD.json",
@@ -114,8 +114,8 @@
     },
     {
       "path": "data/TABLE-INVENTORY.json",
-      "bytes": 2928,
-      "sha256": "730e3c8c790d94be7d73a100c48a2520b1a1530261d71fd19bbee7da9f9e076e"
+      "bytes": 2946,
+      "sha256": "db1acd1442c0eebe379757ca7ca397f73af471a77dcf3226be528aaecfa8b842"
     },
     {
       "path": "data/campaign11-ista-iq2_xs-perf-low.perf.json",
@@ -331,6 +331,11 @@
       "path": "data/heplus/swift-q2_0-xhigh.json.gz",
       "bytes": 381800,
       "sha256": "3c7b6d7d2035301cda5e21adf47e5b41a5b0761e4a1960ad3c3a1f6786265dbc"
+    },
+    {
+      "path": "data/hosted-api-reference.json",
+      "bytes": 53450,
+      "sha256": "f3c3889c5a73bb1971e440647223f3da1eb475f0edf3ae1cfc198cf8e32f3bea"
     },
     {
       "path": "data/independent-audit.json",
@@ -599,8 +604,8 @@
     },
     {
       "path": "qa/AUDIT.json",
-      "bytes": 19013,
-      "sha256": "1ff69814ac6585514423dc2c93343a2400f0ededb2d3fa7249e487152210152c"
+      "bytes": 20337,
+      "sha256": "f63c7249d7fd51b6ce6abebe9c755934a221cdc2968cdfd40f245c854b711d3c"
     },
     {
       "path": "qa/REDACTION.json",
@@ -614,38 +619,43 @@
     },
     {
       "path": "scripts/audit_package.py",
-      "bytes": 6439,
-      "sha256": "9e3e041df8a4b8a0af36ef0f54f8e8d0235f7d8de50dd959a4dc2761b9c565aa"
+      "bytes": 8821,
+      "sha256": "776d0f37dc97fc44046745edb76d103d7995201829bae0ca653ee7af0d392e9a"
     },
     {
       "path": "scripts/audit_revision.py",
-      "bytes": 10300,
-      "sha256": "65bba405e177593f901c7a2a7298a9a0a555f9857ca509fd182717b8a25784f4"
+      "bytes": 15245,
+      "sha256": "89d4444ba2f9a1214084eac61227042bef36eff04ca0265bd22dc4532cc82abe"
     },
     {
       "path": "scripts/build_revision.py",
-      "bytes": 15725,
-      "sha256": "53bd85c5ca5652969aa75034f3c905ae78e7a94a7daad2ecbd77e7c961a2f2e1"
+      "bytes": 19193,
+      "sha256": "a605ff58a6e716e8738ab0dfff1557adb072134e8eee851797aae2c799fe5883"
     },
     {
       "path": "scripts/report_body.py",
-      "bytes": 32937,
-      "sha256": "7859600b0894b3f9491af4ced2814c3f66621bb3a2681ac07ecdfbe1fe22086e"
+      "bytes": 38032,
+      "sha256": "b1b7c87e67da0d4c5b43949a639f1a9e386a60b70944e212d0ca239328647106"
     },
     {
       "path": "scripts/style.css",
-      "bytes": 3762,
-      "sha256": "607f65b912bff2ccef4aaf3eb2928ce3ec18e323fec3245fddad4affb4229575"
+      "bytes": 3909,
+      "sha256": "3587477e570c440100b433cace70c2e1be7170da2fc5fa4f54f7be1798d2eaf4"
+    },
+    {
+      "path": "scripts/update_source_manifest.py",
+      "bytes": 1289,
+      "sha256": "fca57686454ccb5cb11e047612ce65fc52f4c73cceb4e4f7d7dfdd8d99ff03c2"
     },
     {
       "path": "scripts/write_public_docs.py",
-      "bytes": 18122,
-      "sha256": "9135ed34b46cdd90d52ee767fc142a6df0dfacc328c674e7a83000e198b2051f"
+      "bytes": 23703,
+      "sha256": "2a415387b093a7e87a16b72fea9eebbae08f7fbe34f839d98f82371a7bee3b00"
     },
     {
       "path": "strata-community.pdf",
-      "bytes": 1745297,
-      "sha256": "67c82ebaff406ec386527215205ed5de31a56e238a7f6943194549e1b75d9894"
+      "bytes": 1914010,
+      "sha256": "54f7790c08e4c1ecb615b082947a10a059d08bd5309c616bddb76b8eb6dcf380"
     }
   ]
 }

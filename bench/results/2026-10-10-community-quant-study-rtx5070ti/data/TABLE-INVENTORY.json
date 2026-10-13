@@ -30,24 +30,22 @@
   },
   {
     "id": "T03",
-    "title": "Integrated five-trial tool reliability",
-    "rows": 18,
+    "title": "Integrated tool reliability \u2014 sorted by Pass^5 floor",
+    "rows": 19,
     "headers": [
       "Arm / lab",
       "Mean +/- SD",
-      "95% CI",
       "Pass@5",
       "Pass^5 floor",
       "Ceiling-floor gap",
-      "Last-trial rating",
-      "Warnings",
+      "Warnings (last trial)",
       "Engine"
     ]
   },
   {
     "id": "T04",
-    "title": "Multi-step tool-chain results",
-    "rows": 18,
+    "title": "Multi-step tool-chain results \u2014 sorted by Hard Mode mean",
+    "rows": 19,
     "headers": [
       "Arm / lab",
       "Hard Mode mean",
@@ -58,8 +56,8 @@
   },
   {
     "id": "T05",
-    "title": "Integrated coding results \u2014 full and qualified coverage",
-    "rows": 20,
+    "title": "Integrated coding results \u2014 sorted by final score",
+    "rows": 21,
     "headers": [
       "Arm / lab",
       "First %",
@@ -75,8 +73,8 @@
   },
   {
     "id": "T06",
-    "title": "Integrated sampled knowledge, debugging and long-context recall",
-    "rows": 10,
+    "title": "Integrated sampled suites \u2014 sorted by hidden debugging passes",
+    "rows": 11,
     "headers": [
       "File / lab",
       "GSM8K /100",

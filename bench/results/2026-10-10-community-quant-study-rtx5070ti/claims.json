@@ -90,6 +90,29 @@
     "scenarios": 92,
     "trials": 5
   },
+  "hosted_api_reference": {
+    "display_name": "GPT-6-luna MAX (OpenAI-hosted API reference)",
+    "run_id": "gpt6luna-max-20261012",
+    "role": "external_baseline_reference_only",
+    "recommendation": null,
+    "eligible_for_local_composite": false,
+    "human_eval_plus": {
+      "first_percent": 93.3,
+      "final_percent": 95.7,
+      "solved": "157/164",
+      "repairs": "4/11",
+      "provider_reported_tokens_per_second": 42.0,
+      "token_rate_caveat": "Provider-reported completion usage includes hidden reasoning tokens; not visible-text throughput or local engine decode speed."
+    },
+    "tool_eval_bench": {
+      "mean": 90,
+      "stddev": 1.9,
+      "pass_at_5_percent": 92.4,
+      "pass_hat_5_percent": 75.0,
+      "hard_mode_mean_percent": 87.8
+    },
+    "performance_status": "unavailable_for_matched_decode_comparison"
+  },
   "recommendations": [
     {
       "role": "all_rounder",

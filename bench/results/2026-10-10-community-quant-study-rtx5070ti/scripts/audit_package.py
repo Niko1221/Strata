@@ -4,12 +4,24 @@ from pathlib import Path
 import argparse,gzip,hashlib,json,re,subprocess
 BASE=Path(__file__).resolve().parent.parent
 ap=argparse.ArgumentParser();ap.add_argument('--verify-manifest',action='store_true');args=ap.parse_args()
-D=json.loads((BASE/'data/ALL-METRICS.json').read_text());M=D['models'];CL=json.loads((BASE/'claims.json').read_text());SB=json.loads((BASE/'data/FINAL-SCOREBOARD.json').read_text())
+D=json.loads((BASE/'data/ALL-METRICS.json').read_text());M=D['models'];REF=D['hosted_api_reference'];CL=json.loads((BASE/'claims.json').read_text());SB=json.loads((BASE/'data/FINAL-SCOREBOARD.json').read_text())
 checks=[]
 def check(label,ok):
  checks.append({'claim':label,'passed':bool(ok)})
  if not ok:raise AssertionError(label)
-check('10 models / 20 HE arms / 18 tool arms',len(M)==10 and sum(len(m['heplus']) for m in M.values())==20 and sum(len(m.get('trials')or{}) for m in M.values())==18)
+check('10 models / 20 HE arms / 18 local tool arms',len(M)==10 and sum(len(m['heplus']) for m in M.values())==20 and sum(len(m.get('trials')or{}) for m in M.values())==18)
+ref_path=BASE/REF['artifact'];detail=json.loads(ref_path.read_text()) if ref_path.is_file() else {}
+check('Sanitized hosted-reference artifact exists and matches pinned SHA-256',ref_path.is_file() and hashlib.sha256(ref_path.read_bytes()).hexdigest()==REF['artifact_sha256'])
+check('Hosted reference identity/role/recommendation are explicit',detail.get('role')=='external_baseline_reference_only' and detail.get('recommendation') is None and detail.get('eligible_for_local_composite') is False and detail.get('display_name')==REF['display_name'] and 'GPT-6-luna' not in M)
+source_artifacts=detail.get('source_artifacts',{})
+check('Hosted reference provenance includes source hashes',len(source_artifacts)==9 and all(re.fullmatch(r'[0-9a-f]{64}',v.get('sha256','')) for v in source_artifacts.values()))
+forbidden={'prompt','prompt_text','response','output','completion','code','code_text','thinking','thoughts','reasoning_trace','messages','bridge_payload','authorization','api_key','access_token','password'}
+def forbidden_keys(v):
+ if isinstance(v,dict):return any(str(k).lower() in forbidden or forbidden_keys(x) for k,x in v.items())
+ if isinstance(v,list):return any(forbidden_keys(x) for x in v)
+ return False
+check('Hosted detail omits prompts, outputs, code/thought traces and credentials',not forbidden_keys(detail))
+check('Hosted sample metrics equal the merged comparison summary',detail.get('metrics',{}).get('human_eval_plus',{}).get('final_percent')==REF['human_eval_plus']['final_percent'] and detail.get('metrics',{}).get('tool_eval_bench',{}).get('pass_hat_5_percent')==REF['tool_eval_bench']['pass_hat_5_percent'] and detail.get('metrics',{}).get('five_bugs',{}).get('hidden_passes')==REF['five_bugs']['hidden_passes'] and detail.get('metrics',{}).get('performance',{}).get('valid') is False and REF['performance']['valid'] is False)
 rawtool=[];rawperf=[]
 for k,m in M.items():
  for e in ['low','xhigh']:
@@ -24,6 +36,8 @@ check('All tool and performance arms have unique source files',len(set(rawtool))
 check('Excluded malformed Gyro-S performance is not packaged',not list((BASE/'data').glob('*gyro-s*perf*')))
 fb=[json.loads(x) for x in (BASE/'data/gyro-m-fivebugs.jsonl').read_text().splitlines() if x.strip()];fs=json.loads((BASE/'data/gyro-m-fivebugs-score.json').read_text());check('25 new debugging records and exact visible/hidden scores',len(fb)==25 and fs['score']=={'hidden':'18/25','visible':'23/25'})
 readme=(BASE/'README.md').read_text();body=(BASE/'PR-BODY.md').read_text();html=(BASE/'community-updated.html').read_text();inv=json.loads((BASE/'data/TABLE-INVENTORY.json').read_text())
+check('Hosted reference is visible as non-recommendation on README, PR body and PDF source',all('GPT-6-luna MAX' in x and 'OpenAI' in x and 'not a recommendation' in x for x in [readme,body,html]))
+check('Hosted reference stays outside local model inventory and recommendation registry',len(M)==10 and all(r['key']!='gpt-6-luna' for r in SB) and CL.get('hosted_api_reference',{}).get('eligible_for_local_composite') is False and CL.get('hosted_api_reference',{}).get('recommendation') is None)
 for r in CL['recommendations']:
  target=next(x for x in SB if x['key']==r['key'] and x['arm']==r['effort']);check(f'Recommendation registry rank {r["role"]}',r['rank']==target['rank'])
  label=f"{M[r['key']]['short']} ({M[r['key']]['lab']}) {r['effort']}";check(f'GitHub recommendation reflects same label/rank {r["role"]}',label in readme and ('| #'+str(r['rank'])+' |' in readme if r['rank'] else '| unranked |' in readme))

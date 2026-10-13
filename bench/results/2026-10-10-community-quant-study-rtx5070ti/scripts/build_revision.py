@@ -17,6 +17,10 @@ import numpy as np
 BASE=Path(__file__).resolve().parent.parent
 D=json.loads((BASE/'data/ALL-METRICS.json').read_text())
 M=D['models']; C=D['gyro_m_campaign']; G=M['gyro-m']; CH=BASE/'charts'; CH.mkdir(exist_ok=True)
+REF=D['hosted_api_reference']; REF_DETAIL=json.loads((BASE/REF['artifact']).read_text())
+HR=REF['human_eval_plus']; TR=REF['tool_eval_bench']; HFB=REF['five_bugs']; HKS=REF['sampled_knowledge_and_recall']; HPERF=REF['performance']
+assert REF['role']=='external_baseline_reference_only' and REF['eligible_for_local_composite'] is False and REF['recommendation'] is None
+BASELINE_COLOR='#7B2CBF'; BASELINE_LABEL='GPT-6-luna MAX (OpenAI-hosted API reference)'
 ORDER=['base-iq3_xxs','q2_0','iq3_s','ista-iq2_xs','swift-iq3_xxs','swift-iq2_xs','swift-iq3_s','swift-q2_0','gyro-s','gyro-m']
 STOCK=[k for k in ORDER if M[k]['cohort']=='stock']
 COLOR={'ISTA-DASLab':'#0072B2','UkisAI':'#D55E00','AgentionAI':'#009E73'}
@@ -70,19 +74,31 @@ BESTMEAN=max(stocktools,key=lambda x:x[2]['mean']);BESTFLOOR=max(stocktools,key=
 hewallratio=G['heplus']['xhigh']['total_time']/G['heplus']['low']['total_time']
 hetokenratio=G['heplus']['xhigh']['total_output_tokens']/G['heplus']['low']['total_output_tokens']
 claims={'inventory':D['inventory'],'fastest_full_he':{'key':FAST[0],'effort':FAST[1],'wall_s':FAST[2]['total_time']},'best_complete_he':{'score':MAXHE,'arms':BESTHE},'stock_best_mean':{'key':BESTMEAN[0],'effort':BESTMEAN[1],'mean':BESTMEAN[2]['mean']},'stock_best_floor':{'key':BESTFLOOR[0],'effort':BESTFLOOR[1],'floor':BESTFLOOR[2]['pass_hat_5']},'stock_composite_leader':TOP,'gyro_m_he_wall_ratio':hewallratio,'gyro_m_he_token_ratio':hetokenratio,'gyro_m_resources':{'min_free_vram_mib':C['min_free_vram_mib'],'max_temperature_c':C['max_temperature_c']},'partial_he_arms':D['inventory']['partial_he_arms'],'tool_method':{'version':C['manifest']['teb_version'],'scenarios':G['trials']['low']['n_scenarios'],'trials':5}}
+claims['hosted_api_reference']={'display_name':REF['display_name'],'run_id':REF['run_id'],'role':REF['role'],'recommendation':None,'eligible_for_local_composite':False,'human_eval_plus':{'first_percent':HR['first_percent'],'final_percent':HR['final_percent'],'solved':f"{HR['final_passes']}/{len(HR['tasks'])}",'repairs':f"{HR['repair_successes']}/{HR['repair_attempted']}",'provider_reported_tokens_per_second':HR['provider_reported_tokens_per_second'],'token_rate_caveat':HR['token_rate_caveat']},'tool_eval_bench':{'mean':TR['mean'],'stddev':TR['stddev'],'pass_at_5_percent':TR['pass_at_5_percent'],'pass_hat_5_percent':TR['pass_hat_5_percent'],'hard_mode_mean_percent':TR['hard_mode_mean_percent']},'performance_status':HPERF['status']}
 (BASE/'claims.json').write_text(json.dumps(claims,indent=2)+'\n')
 
-# F1 coding overview. Partial-denominator bars are hollow, not hidden or ranked.
-fig,ax=plt.subplots(figsize=(9.1,3.8));x=np.arange(len(ORDER));bw=.36
-for ei,e in enumerate(['low','xhigh']):
- for i,k in enumerate(ORDER):
-    r=M[k]['heplus'][e];ok=r['audit']['complete_scoring']
-    ax.bar(i+(ei-.5)*bw,r['score'],bw,color=clr(k) if ok else 'white',edgecolor=clr(k),alpha=.92 if e=='low' else .55,hatch=None if e=='low' else '//')
-    if not ok:ax.text(i+(ei-.5)*bw,r['score']+.07,'*',ha='center',fontsize=12)
-ax.set_xticks(x);ax.set_xticklabels([label(k) for k in ORDER],rotation=25,ha='right',fontsize=8)
-ax.set_ylim(91.5,97.5);ax.set_ylabel('Reported final pass rate (%)');ax.set_title('HumanEval+: similar ceilings, different effort costs')
-legend(ax,fig,[Patch(color='#526778',label='low'),Patch(color='#526778',alpha=.5,hatch='//',label='xhigh'),Patch(facecolor='white',edgecolor='#526778',label='* partial scoring denominator')])
-ax.grid(axis='y',alpha=.2);save('F1-coding.png',fig)
+# F1 coding results: one ranked row per effort arm plus the hosted reference.
+coding_entries=[(k,e,M[k]['heplus'][e],False) for k in ORDER for e in ['low','xhigh']]+[('hosted-reference','max',HR,True)]
+def _coding_sort_key(x):
+ k,e,r,hosted=x
+ complete=(HR['harness_errors']==0 and len(HR['tasks'])==164) if hosted else r['audit']['complete_scoring']
+ return (not complete,-(HR['final_percent'] if hosted else r['score']))
+coding_entries.sort(key=_coding_sort_key)
+fig,ax=plt.subplots(figsize=(10,8.0))
+coding_labels=[]
+for i,(k,e,r,hosted) in enumerate(coding_entries):
+ if hosted:
+  score=HR['final_percent'];c=BASELINE_COLOR;label_text='GPT-6-luna MAX (OpenAI) · hosted API reference';complete=True;hatch=None;alpha=.96
+ else:
+  score=r['score'];c=clr(k);complete=r['audit']['complete_scoring'];hatch='//' if e=='xhigh' else None;alpha=.92 if e=='low' else .58
+  label_text=f'{label(k)} {e} · {M[k]["lab"]}'+('*' if not complete else '')
+ ax.barh(i,score,height=.68,color=c if complete else 'white',edgecolor=c,alpha=alpha,hatch=hatch)
+ ax.text(score+.25,i,f'{score:.1f}',va='center',fontsize=7)
+ coding_labels.append(label_text)
+ax.set_yticks(range(len(coding_entries)));ax.set_yticklabels(coding_labels,fontsize=7);ax.invert_yaxis();ax.set_xlim(0,100)
+ax.set_xlabel('Final reported pass rate (%)');ax.set_title('HumanEval+: complete coverage first, then sorted by final score')
+legend(ax,fig,[Patch(color='#526778',label='low effort'),Patch(color='#526778',alpha=.58,hatch='//',label='xhigh effort'),Patch(facecolor='white',edgecolor='#526778',label='* partial scoring denominator'),Patch(color=BASELINE_COLOR,label='GPT-6-luna MAX · hosted API reference')],ncol=2,bottom=.24)
+ax.grid(axis='x',alpha=.2);save('F1-coding.png',fig)
 
 # F2 low time/quality with one explicit offset per point.
 fig,ax=plt.subplots(figsize=(9,4.3))
@@ -106,28 +122,36 @@ ax.set_yticks(range(len(rr)));ax.set_yticklabels([f'{label(k)} low'+(' [rc2]' if
 ax.set_xlim(65,94);ax.set_xlabel('Floor and average score (%)');ax.set_title('Five-run reliability, low effort — all measured files')
 legend(ax,fig,[plt.Line2D([],[],marker='o',ls='',c='#46606d',label='average of five runs'),plt.Line2D([],[],marker='o',ls='',markerfacecolor='white',c='#46606d',label='full marks in all five runs')],2);ax.grid(axis='x',alpha=.2);save('F3-reliability.png',fig)
 
-# F4 Hard Mode means sorted within each cohort, not from last-trial score.
-rr=sorted(stocktools,key=lambda x:x[2]['cats']['P'])+[("gyro-m",e,G['trials'][e]) for e in ['low','xhigh']]
-fig,ax=plt.subplots(figsize=(8.6,6.3))
-for i,(k,e,t) in enumerate(rr):
- ax.barh(i,t['cats']['P'],height=.63,color=clr(k),alpha=.82)
- ax.text(t['cats']['P']+.6,i,f(t['cats']['P']),va='center',fontsize=8)
-ax.set_yticks(range(len(rr)));ax.set_yticklabels([f'{label(k)} {e}'+(' [rc2]' if k=='gyro-m' else '') for k,e,t in rr],fontsize=8)
-ax.set_xlim(0,100);ax.set_xlabel('Hard Mode (P), mean of five runs (%)');ax.set_title('Long multi-step chains: extra effort often helps this axis')
-ax.grid(axis='x',alpha=.2);save('F4-hardmode.png',fig)
+# F4 Hard Mode: rank every local arm and the hosted reference by five-run mean.
+hard_entries=stocktools+[("gyro-m",e,G['trials'][e]) for e in ['low','xhigh']]+[('hosted-reference','max',TR)]
+hard_entries.sort(key=lambda x:-(TR['hard_mode_mean_percent'] if x[0]=='hosted-reference' else x[2]['cats']['P']))
+fig,ax=plt.subplots(figsize=(8.8,6.4));hard_labels=[]
+for i,(k,e,t) in enumerate(hard_entries):
+ if k=='hosted-reference':score=TR['hard_mode_mean_percent'];c=BASELINE_COLOR;hard_labels.append('GPT-6-luna MAX (OpenAI) · hosted API reference')
+ else:score=t['cats']['P'];c=clr(k);hard_labels.append(f'{label(k)} {e} · {M[k]["lab"]}')
+ ax.barh(i,score,height=.63,color=c,alpha=.86)
+ ax.text(score+.6,i,f(score),va='center',fontsize=8)
+ax.set_yticks(range(len(hard_entries)));ax.set_yticklabels(hard_labels,fontsize=7);ax.invert_yaxis()
+ax.set_xlim(0,100);ax.set_xlabel('Hard Mode (P), mean of five runs (%)');ax.set_title('Hard Mode: local arms and hosted reference, sorted by mean')
+legend(ax,fig,[Patch(color=COLOR['ISTA-DASLab'],label='ISTA-DASLab'),Patch(color=COLOR['UkisAI'],label='UkisAI'),Patch(color=COLOR['AgentionAI'],label='AgentionAI'),Patch(color=BASELINE_COLOR,label='GPT-6-luna MAX · hosted API reference')],ncol=2,bottom=.25);ax.grid(axis='x',alpha=.2);save('F4-hardmode.png',fig)
 
-# F5 debugging, ranked within cohorts. Unlike the old plot, no overlapping equal points.
-rr=sorted(STOCK,key=lambda k:-int(M[k]['fivebugs']['hid'].split('/')[0]))+['gyro-s','gyro-m']
-fig,ax=plt.subplots(figsize=(8.5,4.3));y=np.arange(len(rr))
+# F5 debugging, ranked by hidden checks across local and hosted rows.
+rr=STOCK+['gyro-s','gyro-m','hosted-reference']
+rr.sort(key=lambda k:-(HFB['hidden_passes'] if k=='hosted-reference' else int(M[k]['fivebugs']['hid'].split('/')[0])))
+fig,ax=plt.subplots(figsize=(8.5,4.6));y=np.arange(len(rr))
+labels=[]
 for i,k in enumerate(rr):
- b=M[k]['fivebugs'];ax.barh(i,int(b['vis'].split('/')[0]),height=.7,color=clr(k),alpha=.2)
- ax.barh(i,int(b['hid'].split('/')[0]),height=.4,color=clr(k),alpha=.92)
- ax.text(int(b['hid'].split('/')[0])+.2,i,b['hid'],va='center',fontsize=8)
-ax.set_yticks(y);ax.set_yticklabels([label(k) for k in rr],fontsize=8);ax.invert_yaxis();ax.set_xlim(0,27);ax.set_xlabel('Successful sessions / 25');ax.set_title('Five Bugs: hidden edge cases separate superficial fixes')
-legend(ax,fig,[Patch(color='#566e79',alpha=.2,label='visible checks'),Patch(color='#566e79',label='hidden checks')],2);save('F5-debug.png',fig)
+ if k=='hosted-reference':vis=HFB['visible_passes'];hid=HFB['hidden_passes'];c=BASELINE_COLOR;labels.append('GPT-6-luna MAX (OpenAI) · hosted API reference')
+ else:
+  b=M[k]['fivebugs'];vis=int(b['vis'].split('/')[0]);hid=int(b['hid'].split('/')[0]);c=clr(k);labels.append(label(k)+(' [rc2]' if k=='gyro-m' else ''))
+ ax.barh(i,vis,height=.7,color=c,alpha=.2)
+ ax.barh(i,hid,height=.4,color=c,alpha=.92)
+ ax.text(hid+.2,i,f'{hid}/25',va='center',fontsize=8)
+ax.set_yticks(y);ax.set_yticklabels(labels,fontsize=8);ax.invert_yaxis();ax.set_xlim(0,27);ax.set_xlabel('Successful sessions / 25');ax.set_title('Five Bugs: rows ordered by hidden-check score')
+legend(ax,fig,[Patch(color='#566e79',alpha=.2,label='visible checks'),Patch(color='#566e79',label='hidden checks'),Patch(color=BASELINE_COLOR,label='GPT-6-luna MAX · hosted API reference')],ncol=3,bottom=.25);save('F5-debug.png',fig)
 
 # F6 output token totals (no conflation of all-task average with tokens per passing task).
-fig,ax=plt.subplots(figsize=(9,3.8))
+x=np.arange(len(ORDER));bw=.36;fig,ax=plt.subplots(figsize=(9,3.8))
 for ei,e in enumerate(['low','xhigh']):
  vals=[M[k]['heplus'][e]['total_output_tokens']/1000 for k in ORDER]
  ax.bar(x+(ei-.5)*bw,vals,bw,color=[clr(k) for k in ORDER],alpha=.95 if e=='low' else .45,hatch=None if e=='low' else '//',label=e)
@@ -156,15 +180,21 @@ ax.set_xlabel('Decode tokens / second at zero background context');ax.set_title(
 legend(ax,fig,ncol=2);ax.grid(axis='x',alpha=.2);save('F8-decode-effort.png',fig)
 
 # F9 every tool arm: identical reliability decomposition across the report.
-rr=sorted([(k,e,t) for k in ORDER for e,t in (M[k].get('trials')or{}).items()],key=lambda x:(M[x[0]]['cohort']!='stock',-x[2]['pass_hat_5']))
-fig,ax=plt.subplots(figsize=(8.6,6.2));labs=['Full marks in all five','Passed some runs','Partial only','Zero in all runs'];cols=['#25845b','#e2a729','#9ba6af','#c0392b']
+rr=[(k,e,t) for k in ORDER for e,t in (M[k].get('trials')or{}).items()]
+host_points=[r['points'] for r in REF_DETAIL['metrics']['tool_eval_bench']['scenarios_by_trial']]
+host_decomp={'solid':sum(all(p==2 for p in v) for v in host_points),'flaky':sum(any(p==2 for p in v) and not all(p==2 for p in v) for v in host_points),'partial_only':sum(max(v)<2 and max(v)>0 for v in host_points),'zero_only':sum(max(v)==0 for v in host_points)}
+assert sum(host_decomp.values())==TR['scenarios']
+rr.append(('hosted-reference','max',{'decomposition':host_decomp}))
+rr.sort(key=lambda x:-x[2]['decomposition']['solid'])
+fig,ax=plt.subplots(figsize=(8.6,6.6));labs=['Full marks in all five','Passed some runs','Partial only','Zero in all runs'];cols=['#25845b','#e2a729','#9ba6af','#c0392b']
 for i,(k,e,t) in enumerate(rr):
  dd=t['decomposition'];left=0
  for j,key in enumerate(['solid','flaky','partial_only','zero_only']):
     v=dd[key];ax.barh(i,v,left=left,color=cols[j],height=.65)
     if j==0:ax.text(left+v/2,i,str(v),ha='center',va='center',fontsize=8,color='white');left+=v
     else:left+=v
-ax.set_yticks(range(len(rr)));ax.set_yticklabels([f'{label(k)} {e}'+(' [rc2]' if k=='gyro-m' else '') for k,e,t in rr],fontsize=8);ax.invert_yaxis();ax.set_xlim(0,92);ax.set_xlabel('Number of agentic scenarios / 92');ax.set_title('What the reliability floor is made of — all measured arms')
+labels=[f'{label(k)} {e}'+(' [rc2]' if k=='gyro-m' else '') if k!='hosted-reference' else 'GPT-6-luna MAX (OpenAI) · hosted API reference' for k,e,t in rr]
+ax.set_yticks(range(len(rr)));ax.set_yticklabels(labels,fontsize=8);ax.invert_yaxis();ax.set_xlim(0,92);ax.set_xlabel('Number of agentic scenarios / 92');ax.set_title('Reliability-floor decomposition — sorted by Pass^5 floor')
 ax.legend(handles=[Patch(color=c,label=l) for c,l in zip(cols,labs)],loc='upper center',bbox_to_anchor=(.5,-.14),ncol=2,frameon=False,fontsize=8)
 fig.subplots_adjust(bottom=.21)
 save('F9-decomposition.png',fig)

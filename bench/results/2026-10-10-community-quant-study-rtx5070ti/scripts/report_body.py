@@ -1,25 +1,32 @@
 """Shared report narrative/tables: all models inline, coherent recommendations.
 Executed by build_revision.py with its already-extracted metrics and chart helpers.
 """
+import os
 H=[]; TABLE_COUNT=0; TABLE_META=[]
 def w(s):H.append(s)
 def section(title,color='#0b3d5c'):w(f'<h2 class="sec" style="background:{color}">{title}</h2>')
 def how(s):w(f'<div class="how">{s}</div>')
 def verdict(s):w(f'<div class="verdict">{s}</div>')
 def call(s):w(f'<div class="callout">{s}</div>')
-def figure(fn,caption,big=False):w(f'<figure class="figure {"big" if big else ""}"><img src="charts/{fn}"><figcaption>{caption}</figcaption></figure>')
+def figure(fn,caption,big=False,tall=False):
+ classes='figure'+(' big' if big else '')+(' tall' if tall else '')
+ w(f'<figure class="{classes}"><img src="charts/{fn}"><figcaption>{caption}</figcaption></figure>')
 def table(headers,rows,title='Results'):
  global TABLE_COUNT
  TABLE_COUNT+=1; tid=f'T{TABLE_COUNT:02d}'
  TABLE_META.append({'id':tid,'title':title,'rows':len(rows),'headers':headers})
  w(f'<table data-table-id="{tid}"><caption><b>{tid} · {escape(title)}</b></caption><thead><tr>'+''.join(f'<th>{s}</th>' for s in headers)+'</tr></thead><tbody>')
- for row in rows:w('<tr>'+''.join(f'<td>{s}</td>' for s in row)+'</tr>')
+ for row in rows:
+  hosted=any('GPT-6-luna MAX' in str(cell) for cell in row)
+  w('<tr'+(' class="hosted-reference"' if hosted else '')+'>'+''.join(f'<td>{s}</td>' for s in row)+'</tr>')
  w(f'</tbody><tfoot><tr><td colspan="{len(headers)}">{tid} · {len(rows)} rows · end of table</td></tr></tfoot></table>')
 def links(items):w('<div class="links">'+''.join(f'<a href="{u}">{escape(l)}</a>' for l,u in items)+'</div>')
 def bullet(items):w('<ul>'+''.join(f'<li>{s}</li>' for s in items)+'</ul>')
 def card(title,body,warn=''):return f'<div class="card"><h4>{title}</h4>{body}'+(f'<div class="warn">{warn}</div>' if warn else '')+'</div>'
 def eng(k):return {'stock':'0.1.40.3','rc1':'rc1','rc2':'rc2'}[M[k]['cohort']]
 def note(k):return 'experimental' if k=='gyro-m' else ('historical fork' if k=='gyro-s' else 'reference')
+HOSTED_NAME='<b>GPT-6-luna MAX</b> <span class="lab" style="color:#7B2CBF">OpenAI · hosted API reference</span>'
+HOSTED_ENGINE='OpenAI Codex Responses API · max'
 def model_order(keys,value):
  return sorted(keys,key=lambda k:(M[k]['cohort']!='stock',-value(k)))
 def arm_order(rr,value,complete=False):
@@ -40,8 +47,8 @@ RECS=[
 claims['recommendations']=RECS
 (BASE/'claims.json').write_text(json.dumps(claims,indent=2)+'\n')
 css=(BASE/'scripts/style.css').read_text()
-w('<!doctype html><html><head><meta charset="utf-8"><title>Qwen3.8-Flash-Next community quant study — 2026-10-12</title><style>'+css+'</style></head><body>')
-w(f'<div class="hero"><h1>Qwen3.8-Flash-Next:<br>which quant should YOU run?</h1><div class="sub">{D["inventory"]["models"]} files · 3 labs · {D["inventory"]["effort_arms"]} effort arms · one measured RTX 5070 Ti (16 GB).</div><div class="chips"><span class="chip">Ryzen 9800X3D · 64 GB RAM · Windows + WSL2</span><span class="chip">Oct 7–12, 2026</span><span class="chip">Engine column: Strata 0.1.40.3 / AgentionAI rc1 / rc2</span><span class="chip">Blue = ISTA-DASLab · Orange = UkisAI · Green = AgentionAI</span><span class="chip">PR #1850 · revised {D["revision"]["date"]}</span></div></div>')
+w('<!doctype html><html><head><meta charset="utf-8"><title>Qwen3.8-Flash-Next quant comparison · GPT-6-luna hosted reference</title><style>'+css+'</style></head><body>')
+w(f'<div class="hero"><h1>Qwen3.8-Flash-Next:<br>which quant should YOU run?</h1><div class="sub">{D["inventory"]["models"]} local files · 3 quant/finetune labs · {D["inventory"]["effort_arms"]} effort arms · one measured RTX 5070 Ti (16 GB).</div><div class="chips"><span class="chip">Ryzen 9800X3D · 64 GB RAM · Windows + WSL2</span><span class="chip">Oct 7–12, 2026 local study</span><span class="chip">Engine column: Strata 0.1.40.3 / AgentionAI rc1 / rc2</span><span class="chip">Blue = ISTA-DASLab · Orange = UkisAI · Green = AgentionAI</span><span class="chip">GPT-6-luna MAX (OpenAI) · hosted reference only</span><span class="chip">PR #1850 · revised {D["revision"]["date"]}</span></div></div>')
 section('IN A HURRY? The study in six lines')
 bullet([
  f'<b>Best measured stock all-rounder:</b> {hlabel(TOP["key"])} {TOP["arm"]} is #{TOP["rank"]} on the corrected eligible scoreboard ({f(TOP["composite"],0)}). This is a seven-axis choice aid, not a universal intelligence score.',
@@ -52,10 +59,10 @@ bullet([
  f'<b>Fit and validity are part of the recommendation.</b> Gyro-M is experimental on this 16 GB card: {C["min_free_vram_mib"]} MiB minimum free VRAM, {C["max_temperature_c"]} C peak, invalid-slice status. No daily-driver endorsement. Partial scoring and test failures remain disclosed.'
 ])
 section('THE FOUR QUESTIONS — straight answers','#a1662f')
-w('<div class="cards">'+card('Best overall on the measured stock rig?',f'<b>{hlabel(TOP["key"])} {TOP["arm"]} · #{TOP["rank"]} overall</b>. Same winner in the final board and first Pick Your File card.','Equal-weight composite; specialists can be better at the job you actually need.')+card('Fastest complete coding loop?',f'<b>{hlabel(FAST[0])} {FAST[1]}</b> · #{rankmap[(FAST[0],FAST[1])]} overall. {wall(FAST[2]["total_time"])} at {f(FAST[2]["score"])}%.','This is elapsed coding-run time, not the fastest decoder.')+card('Best stock agent reliability?',f'<b>{hlabel(BESTFLOOR[0])} {BESTFLOOR[1]}</b> · #{rankmap[(BESTFLOOR[0],BESTFLOOR[1])]} overall. Floor {f(BESTFLOOR[2]["pass_hat_5"])}.','Gyro-M low ties the observed floor, but is a safety-capped experimental fork; no stock-composite rank.')+card('Best debugging / knowledge sample?',f'<b>{hlabel(DEBUG_PICK)}</b>: hidden debugging {M[DEBUG_PICK]["fivebugs"]["hid"]}, algebra sample {f(M[DEBUG_PICK]["knowledge"]["mmlu"]["accuracy"],0)}%.','Low coding arm is partial/unranked; xhigh is #'+str(rankmap[(DEBUG_PICK,'xhigh')])+'. A specialist, not the all-round crown.')+'</div>')
+w('<div class="cards">'+card('Best overall on the measured stock rig?',f'<b>{hlabel(TOP["key"])} {TOP["arm"]} · #{TOP["rank"]} overall</b>. Same winner in the final board and first Pick Your File card.','Equal-weight composite; specialists can be better at the job you actually need.')+card('Fastest complete coding loop?',f'<b>{hlabel(FAST[0])} {FAST[1]}</b> · #{rankmap[(FAST[0],FAST[1])]} overall. {wall(FAST[2]["total_time"])} at {f(FAST[2]["score"])}%.','This is elapsed coding-run time, not the fastest decoder.')+card('Best stock agent reliability?',f'<b>{hlabel(BESTFLOOR[0])} {BESTFLOOR[1]}</b> · #{rankmap[(BESTFLOOR[0],BESTFLOOR[1])]} overall. Floor {f(BESTFLOOR[2]["pass_hat_5"])}.','Gyro-M low ties the observed floor, but is a safety-capped experimental fork; no stock-composite rank.')+card('Best local stock debugging / knowledge sample?',f'<b>{hlabel(DEBUG_PICK)}</b>: hidden debugging {M[DEBUG_PICK]["fivebugs"]["hid"]}, algebra sample {f(M[DEBUG_PICK]["knowledge"]["mmlu"]["accuracy"],0)}%.','Low coding arm is partial/unranked; xhigh is #'+str(rankmap[(DEBUG_PICK,'xhigh')])+'. A local specialist, not the all-round crown.')+'</div>')
 links([('PR #1850',D['revision']['pr'])])
 section('THE CAST — ten files, one base model, three lineages','#0072B2')
-how('All files share Qwen3.8-Flash-Next ancestry (Qwen / Alibaba). Q- labels: ISTA-DASLab quants; S- labels: UkisAI Swift derivatives; Gyro: AgentionAI APR. File sizes are decimal GB, not VRAM requirements. Results are integrated in the same tables; the engine and validity columns preserve comparison boundaries.')
+how('All local files share Qwen3.8-Flash-Next ancestry (Qwen / Alibaba). Q- labels: ISTA-DASLab quants; S- labels: UkisAI Swift derivatives; Gyro: AgentionAI APR. File sizes are decimal GB, not VRAM requirements. Results are integrated in the same tables; the OpenAI-hosted GPT-6-luna MAX reference appears alongside matched suites but is not one of these ten files, not a local run, and not a recommendation.')
 table(['File / lab','Quant','File GB','Engine','Status','Download'],[[name(k),M[k]['quant'],f(M[k]['size_gb']),eng(k),note(k),f'<a href="{SRC[M[k]["lab"]]}">HF repo</a>'] for k in ORDER],title='Model provenance and engine cohorts')
 call('The eight reference files use stock Strata 0.1.40.3; Gyro-S uses historical AgentionAI rc1, Gyro-M rc2. Shared evaluator and prompts do not remove the engine/configuration variable. Fork rows are inline observations, not ranked stock-engine controls.')
 section('THE SCORECARD — all models in one view','#14927a')
@@ -68,41 +75,70 @@ for k in kk:
  rows.append([name(k),eng(k),f'{f(t["mean"])} +/- {f(t["std"])}' if t else 'n/a',f(t['pass_hat_5'])+(' '+medal(t['pass_hat_5'],floors) if k in STOCK else '') if t else 'n/a',f'{f(a["score"])} ({a["passed"]}/{a["scored_total"]})'+('*' if not a['audit']['complete_scoring'] else ''),f'{f(b["score"])} ({b["passed"]}/{b["scored_total"]})'+('*' if not b['audit']['complete_scoring'] else ''),f(m['knowledge']['gsm8k']['accuracy'],0),f(m['knowledge']['mmlu']['accuracy'],0),m['fivebugs']['hid']])
 table(['File / lab','Engine','Tool mean','Pass^5','HE+ low','HE+ xhigh','Math','Algebra','Debug'],rows,title='Integrated headline scorecard')
 w('<div class="small">Medals show the top three distinct stock-reference score levels, ties share. Fork rows do not receive stock medals. n/a is an intentional unavailable measurement, not zero.</div>')
+call('External anchor, not a pick: GPT-6-luna MAX (OpenAI) appears as a score-ordered reference row/bar in comparable suite tables and charts below, with no medal decoration. It did not run on the RTX 5070 Ti, is not a local file or quant, and is excluded from every local rank, recommendation and OVERALL composite.')
 figure('F2-wall.png','Low-effort observed time-to-quality. Hollow points have partial scoring; green points use separate fork engines. No model-only causal speedup is claimed.',True)
 section('RELIABILITY & SAFETY — averages are not guarantees','#b9770e')
-how(f'Tool-eval-bench: {tl["n_scenarios"]} realistic scenarios x five identical-seed runs at each effort. Score 0 / 1 / 2; 2 = full marks. Pass@5: full marks at least once, the empirical capability ceiling. Pass^5: full marks in ALL five, the reliability floor. Partial credit every run never passes the floor. These summaries are not deployment guarantees.')
+how(f'Tool-eval-bench: {tl["n_scenarios"]} realistic scenarios x five identical-seed runs at each effort. Score 0 / 1 / 2; 2 = full marks. Pass@5: full marks at least once, the empirical capability ceiling. Pass^5: full marks in ALL five, the reliability floor. Partial credit every run never passes the floor. These summaries are not deployment guarantees. The table is ordered by Pass^5 floor (descending); mean breaks ties.')
 figure('F3-reliability.png','All measured low-effort files in the same reliability view. Engine labels preserve the stock/fork distinction. The line joins mean and floor; the table gap is Pass@5 minus Pass^5.')
-rr=sorted(alltools,key=lambda x:(M[x[0]]['cohort']!='stock',-x[2]['pass_hat_5']))
 floorvals=[t['pass_hat_5'] for _,_,t in stocktools];meanvals=[t['mean'] for _,_,t in stocktools]
-table(['Arm / lab','Mean +/- SD','95% CI','Pass@5','Pass^5 floor','Ceiling-floor gap','Last-trial rating','Warnings','Engine'],[[name(k)+' '+e,f'{f(t["mean"])} +/- {f(t["std"])}'+(' '+medal(t['mean'],meanvals) if k in STOCK else ''),f'{f(t["ci95"][0])}–{f(t["ci95"][1])}',f(t['pass_at_5']),f(t['pass_hat_5'])+(' '+medal(t['pass_hat_5'],floorvals) if k in STOCK else ''),f(t['gap']),rating(t),str(t['n_warnings']),eng(k)] for k,e,t in rr],title='Integrated five-trial tool reliability')
+tool_entries=alltools+[('hosted-reference','max',TR)]
+tool_entries.sort(key=lambda x:(-(TR['pass_hat_5_percent'] if x[0]=='hosted-reference' else x[2]['pass_hat_5']),-(TR['mean'] if x[0]=='hosted-reference' else x[2]['mean'])))
+tool_rows=[]
+for k,e,t in tool_entries:
+ if k=='hosted-reference':tool_rows.append([HOSTED_NAME,f'{f(TR["mean"])} +/- {f(TR["stddev"])}',f(TR['pass_at_5_percent']),f(TR['pass_hat_5_percent']),f(TR['reliability_gap_percent']),str(TR['final_trial_safety_warnings']),HOSTED_ENGINE])
+ else:tool_rows.append([name(k)+' '+e,f'{f(t["mean"])} +/- {f(t["std"])}'+(' '+medal(t['mean'],meanvals) if k in STOCK else ''),f(t['pass_at_5']),f(t['pass_hat_5'])+(' '+medal(t['pass_hat_5'],floorvals) if k in STOCK else ''),f(t['gap']),str(t['n_warnings']),eng(k)])
+table(['Arm / lab','Mean +/- SD','Pass@5','Pass^5 floor','Ceiling-floor gap','Warnings (last trial)','Engine'],tool_rows,title='Integrated tool reliability — sorted by Pass^5 floor')
+w('<div class="small">The hosted row is MAX effort across 92 scenarios x five trials. Confidence intervals and evaluator rating are omitted because the hosted artifact does not publish comparable values; no proxy is inferred. Warning counts describe the final primary trial, not a five-run union. GPT-6-luna MAX is an external reference, excluded from the local recommendation cohort.</div>')
 countcap=sum('safety-capped' in t['rating'] for _,_,t in stocktools)
 w(f'<div class="small">{countcap}/{len(stocktools)} stock arms are capped on the stored last-trial rating. Gyro-M adds one capped and one Good rating. Not capped is NOT the same as no warnings or production safety. Warning lists/rating describe the final primary trial, not a five-run union.</div>')
-figure('F9-decomposition.png','The all-five floor is the green count / 92. All tool-capable arms appear; fork rows are labeled rc2. A higher mean can coexist with more run-to-run flakes.',True)
+figure('F9-decomposition.png','The all-five floor is the green count / 92. Rows are ordered by that floor; GPT-6-luna MAX is interleaved at its score and remains outside the local scorecard and composite.',True)
 verdict(f'Gyro-M illustrates the trade-off: always-full scenarios {tl["decomposition"]["solid"]} low / {th["decomposition"]["solid"]} xhigh; flaky {tl["decomposition"]["flaky"]} / {th["decomposition"]["flaky"]}. Its mean confidence intervals overlap, so the observed mean gain is modest. No causal mechanism is inferred from the aggregate alone.')
 links([('Tool-eval-bench','https://github.com/SeraphimSerapis/tool-eval-bench')])
 section('AGENTIC TOOL USE — hard chains reward extra thought','#4a5fc1')
-how('Hard Mode (P) stresses long chains and recovery. Every category figure uses the five-run mean, not the last-trial score. Effort comparisons stay within a measured file/build. The engine column prevents the fork data from masquerading as a stock quant A/B.')
-figure('F4-hardmode.png','All measured arms in one Hard Mode chart. Stock ranking and rc2 observational rows are distinguished by their labels.',True)
-rr=sorted(alltools,key=lambda x:(M[x[0]]['cohort']!='stock',-x[2]['cats']['P']))
+how('Hard Mode (P) stresses long chains and recovery. Every category figure uses the five-run mean, not the last-trial score. Effort comparisons stay within a measured file/build. The table is ordered by Hard Mode mean (descending); GPT-6-luna MAX is placed by its score but remains an external hosted reference.')
+figure('F4-hardmode.png','Every local effort arm and GPT-6-luna MAX are shown as score-ordered bars. The purple row is an external hosted reference, not a local model.',True)
+hard_entries=alltools+[('hosted-reference','max',TR)]
+hard_entries.sort(key=lambda x:-(TR['hard_mode_mean_percent'] if x[0]=='hosted-reference' else x[2]['cats']['P']))
 pvals=[t['cats']['P'] for _,_,t in stocktools]
-table(['Arm / lab','Hard Mode mean','SD across five','Turn budget','Engine'],[[name(k)+' '+e,f(t['cats']['P'])+(' '+medal(t['cats']['P'],pvals) if k in STOCK else ''),f(t['cats_std']['P']),str(t['config']['max_turns']),eng(k)] for k,e,t in rr],title='Multi-step tool-chain results')
+hard_rows=[]
+for k,e,t in hard_entries:
+ if k=='hosted-reference':hard_rows.append([HOSTED_NAME,f(TR['hard_mode_mean_percent']),f(TR['hard_mode_stddev_percent']),str(REF_DETAIL['metrics']['tool_eval_bench']['max_turns']),HOSTED_ENGINE])
+ else:hard_rows.append([name(k)+' '+e,f(t['cats']['P'])+(' '+medal(t['cats']['P'],pvals) if k in STOCK else ''),f(t['cats_std']['P']),str(t['config']['max_turns']),eng(k)])
+table(['Arm / lab','Hard Mode mean','SD across five','Turn budget','Engine'],hard_rows,title='Multi-step tool-chain results — sorted by Hard Mode mean')
 bullet([f'Gyro-M Hard Mode rises from {f(tl["cats"]["P"])}% to {f(th["cats"]["P"])}%, while its all-five floor falls. Optimizing only one of those axes is not a reliable workload decision.','Warnings include premature notifications, missed dependency ordering and claims that an invoice is paid while funds remain held. They are scripted failure traps, not permissions.','rc2 live forced tool calls passed streaming and non-streaming with Gyro-M; Gyro-S rc1 remains unavailable for tool-eval. This does not establish Gyro-S behavior on rc2.'])
 section('CODE — every denominator visible','#0b5c8a')
-how('164 function-writing tasks via BenchKit / EvalPlus, greedy generation, one verifier-guided repair. First = one-shot score; final includes the replacement. Scored timeout/length/blank outputs remain failures. Excluded harness errors can reduce the denominator; those rows retain observed percentages but are qualified and excluded from full-coverage/composite claims.')
-figure('F1-coding.png','All ten files; hollow starred bars use 163 or 162 scored tasks. Other ordinary failures remain in the 164-task denominator.')
+how('164 function-writing tasks via BenchKit / EvalPlus, greedy generation, one verifier-guided repair. First = one-shot score; final includes the replacement. Scored timeout/length/blank outputs remain failures. Excluded harness errors can reduce the denominator; those rows retain observed percentages but are qualified and excluded from full-coverage/composite claims. The table orders complete-coverage runs by final score, followed by partial-coverage runs.')
+figure('F1-coding.png','Complete-coverage rows are score-sorted first; partial-coverage rows follow. GPT-6-luna MAX is shown at its final-score position as a hosted reference. * marks partial scoring coverage.',True,True)
 rr=[(k,e,M[k]['heplus'][e]) for k in ORDER for e in ['low','xhigh']]
 rr=arm_order(rr,lambda r:r['score'],True)
 good=[r['score'] for k,e,r in rr if k in STOCK and r['audit']['complete_scoring']];walls=[r['total_time'] for k,e,r in rr if k in STOCK and r['audit']['complete_scoring']]
-table(['Arm / lab','First %','Final %','Solved / scored','Repairs','Wall','tok/s','Blank finals','Infra excluded','Engine'],[[name(k)+' '+e,f(r['first_attempt_score']),f(r['score'])+('*' if not r['audit']['complete_scoring'] else (' '+medal(r['score'],good) if k in STOCK else '')),f'{r["passed"]}/{r["scored_total"]}',f'{r["repair_successes"]}/{r["repair_attempted"]}',wall(r['total_time'])+(' '+medal(r['total_time'],walls,True) if k in STOCK and r['audit']['complete_scoring'] else ''),f(r['tok_s']),str(len(r['audit']['blank_final_ids'])),str(r.get('harness_errors',0)),eng(k)] for k,e,r in rr],title='Integrated coding results — full and qualified coverage')
+he_entries=[(k,e,r,False) for k,e,r in rr]+[('hosted-reference','max',HR,True)]
+def _he_order_key(x):
+ k,e,r,hosted=x
+ complete=(HR['harness_errors']==0 and len(HR['tasks'])==164) if hosted else r['audit']['complete_scoring']
+ return (not complete,-(HR['final_percent'] if hosted else r['score']))
+he_entries.sort(key=_he_order_key)
+he_rows=[]
+for k,e,r,hosted in he_entries:
+ if hosted:he_rows.append([HOSTED_NAME,f(HR['first_percent']),f(HR['final_percent']),f'{HR["final_passes"]}/{len(HR["tasks"])}',f'{HR["repair_successes"]}/{HR["repair_attempted"]}',wall(HR['wall_seconds']),f(HR['provider_reported_tokens_per_second'])+'†',str(HR['blank_final_count']),str(HR['harness_errors']),HOSTED_ENGINE])
+ else:he_rows.append([name(k)+' '+e,f(r['first_attempt_score']),f(r['score'])+('*' if not r['audit']['complete_scoring'] else (' '+medal(r['score'],good) if k in STOCK else '')),f'{r["passed"]}/{r["scored_total"]}',f'{r["repair_successes"]}/{r["repair_attempted"]}',wall(r['total_time'])+(' '+medal(r['total_time'],walls,True) if k in STOCK and r['audit']['complete_scoring'] else ''),f(r['tok_s']),str(len(r['audit']['blank_final_ids'])),str(r.get('harness_errors',0)),eng(k)])
+table(['Arm / lab','First %','Final %','Solved / scored','Repairs','Wall','tok/s','Blank finals','Infra excluded','Engine'],he_rows,title='Integrated coding results — sorted by final score')
+call(f'† GPT-6-luna MAX {f(HR["provider_reported_tokens_per_second"])} tok/s is provider-reported completion usage and includes hidden reasoning tokens; it is not visible-text throughput, local RTX 5070 Ti decode speed, or a matched speed result. No hosted performance rates are published.')
 call('Retrospective coverage correction: Q-IQ3_XXS low 155/163; Swift IQ3_S low 157/163; Gyro-S xhigh 153/162 after two HTTP 502 harness errors. Their observed percentages are preserved, not silently rescored. Gyro-M xhigh blank finals on HumanEval/39 and HumanEval/99 ended on length and remain scored failures; 157/164 is not a clean-response certificate.')
 bullet([f'Gyro-M xhigh costs {f(hewallratio)}x low wall and {f(hetokenratio)}x tokens for one additional final pass. Hard Mode benefits do not imply a coding-efficiency benefit.',f'Gyro-M low vs historical Gyro-S low has {f(lo["first_attempt_score"]-M["gyro-s"]["heplus"]["low"]["first_attempt_score"])} points more first-attempt score, {f(abs(lo["score"]-M["gyro-s"]["heplus"]["low"]["score"]))} points less final score. Engines/configurations differ; this is not isolated quant improvement.'])
 links([('EvalPlus','https://github.com/evalplus/evalplus'),('BenchKit','https://github.com/DogukanUrker/BenchKit')])
 section('KNOWLEDGE & DEBUGGING — the test we actually ran','#6c3483')
-how('GSM8K: 100 seeded-shuffled questions, 8-shot. MMLU: first 100, 5-shot, entirely abstract algebra — NOT a 57-subject exam. IFEval: first 50 prompts / 76 constraints. Five Bugs: five buggy Python files x five sessions, visible plus local hidden checks. All are limited samples; do not turn them into a whole-model intelligence ranking.')
-kk=model_order(ORDER,lambda k:int(M[k]['fivebugs']['hid'].split('/')[0]));hidden=[int(M[k]['fivebugs']['hid'].split('/')[0]) for k in STOCK]
-table(['File / lab','GSM8K /100','Algebra /100','IFEval prompt / instruction %','Bugs visible','Bugs hidden','Needle % @ tokens','Engine'],[[name(k),f(M[k]['knowledge']['gsm8k']['accuracy'],0),f(M[k]['knowledge']['mmlu']['accuracy'],0),f'{f(M[k]["knowledge"]["ifeval"]["prompt_accuracy"])} / {f(M[k]["knowledge"]["ifeval"]["instruction_accuracy"])}',M[k]['fivebugs']['vis'],M[k]['fivebugs']['hid']+(' '+medal(int(M[k]['fivebugs']['hid'].split('/')[0]),hidden) if k in STOCK else ''),f'{f(M[k]["needle"]["retrieval_accuracy"],0)} @ {int(M[k]["needle"]["effective_context"]):,}',eng(k)] for k in kk],title='Integrated sampled knowledge, debugging and long-context recall')
-figure('F5-debug.png','Every model in the same visible/hidden debugging plot. Fork results retain engine-qualified observational status.')
-verdict(f'{hlabel(DEBUG_PICK)} remains the debugging specialist at {M[DEBUG_PICK]["fivebugs"]["hid"]} hidden sessions and leads this algebra sample at {f(M[DEBUG_PICK]["knowledge"]["mmlu"]["accuracy"],0)}%. Its low coding arm is partial and cannot claim the stock all-round crown.')
+how('GSM8K: 100 seeded-shuffled questions, 8-shot. MMLU: first 100, 5-shot, entirely abstract algebra — NOT a 57-subject exam. IFEval: first 50 prompts / 76 constraints. Five Bugs: five buggy Python files x five sessions, visible plus local hidden checks. All are limited samples; do not turn them into a whole-model intelligence ranking. Rows are ordered by hidden debugging passes (descending); the hosted reference is interleaved by score, not included in the local composite.')
+hidden=[int(M[k]['fivebugs']['hid'].split('/')[0]) for k in STOCK]
+knowledge_entries=[('local',k) for k in ORDER]+[('hosted','hosted-reference')]
+knowledge_entries.sort(key=lambda x:-(HFB['hidden_passes'] if x[0]=='hosted' else int(M[x[1]]['fivebugs']['hid'].split('/')[0])))
+knowledge_rows=[]
+for kind,k in knowledge_entries:
+ if kind=='hosted':knowledge_rows.append([HOSTED_NAME,f(HKS['gsm8k']['accuracy_percent'],0),f(HKS['mmlu']['accuracy_percent'],0),f'{f(HKS["ifeval"]["prompt_accuracy_percent"])} / {f(HKS["ifeval"]["instruction_accuracy_percent"])}',f'{HFB["visible_passes"]}/{HFB["visible_total"]}',f'{HFB["hidden_passes"]}/{HFB["hidden_total"]}',f'{f(HKS["needle"]["accuracy_percent"],0)} @ {HKS["needle"]["effective_context_tokens"]:,}',HOSTED_ENGINE])
+ else:knowledge_rows.append([name(k),f(M[k]['knowledge']['gsm8k']['accuracy'],0),f(M[k]['knowledge']['mmlu']['accuracy'],0),f'{f(M[k]["knowledge"]["ifeval"]["prompt_accuracy"])} / {f(M[k]["knowledge"]["ifeval"]["instruction_accuracy"])}',M[k]['fivebugs']['vis'],M[k]['fivebugs']['hid']+(' '+medal(int(M[k]['fivebugs']['hid'].split('/')[0]),hidden) if k in STOCK else ''),f'{f(M[k]["needle"]["retrieval_accuracy"],0)} @ {int(M[k]["needle"]["effective_context"]):,}',eng(k)])
+table(['File / lab','GSM8K /100','Algebra /100','IFEval prompt / instruction %','Bugs visible','Bugs hidden','Needle % @ tokens','Engine'],knowledge_rows,title='Integrated sampled suites — sorted by hidden debugging passes')
+figure('F5-debug.png','Ten local files plus GPT-6-luna MAX; the purple bars are the separate OpenAI-hosted API reference, not a local quant.',True)
+verdict(f'Within the local stock cohort, {hlabel(DEBUG_PICK)} remains the debugging specialist at {M[DEBUG_PICK]["fivebugs"]["hid"]} hidden sessions and leads this algebra sample at {f(M[DEBUG_PICK]["knowledge"]["mmlu"]["accuracy"],0)}%. GPT-6-luna MAX posts {HFB["hidden_passes"]}/{HFB["hidden_total"]} hidden checks as an external reference, not a local quant candidate.')
 how(f'Needle: 25 cells (five lengths x five insertion depths). Effective retrieved lengths are {int(M["iq3_s"]["needle"]["effective_context"]):,} for stock and {int(G["needle"]["effective_context"]):,} for both fork rows. Gyro-M configured context {C["manifest"]["context"]:,}; no 260K claim for it.')
 links([('Five Bugs upstream','https://github.com/vyang472/five-bugs'),('TEB knowledge / needle plugins','https://github.com/SeraphimSerapis/tool-eval-bench')])
 section('REASONING ECONOMICS — what you wait for','#009e73')
@@ -124,9 +160,9 @@ for effort in ['low','xhigh']:
   ps=sorted(pp.values(),key=lambda r:r['context_tokens'])
   rows.append([name(k),eng(k),' / '.join(f(r['context_tokens'],0) for r in ps),' / '.join(f(r['tg_mean']) for r in ps),' / '.join(f(r['prefill_e2e_tps'],0) for r in ps),f(ps[-1]['e2e_ttft_ms']/1000,2)])
  table(['File / lab','Engine','Context tokens: 0 / mid / deep','Decode tok/s: 0 / mid / deep','First-token rate: 0 / mid / deep','Deep TTFT s'],rows,title=f'Integrated {effort}-effort performance profiles')
-call('Gyro-S synthetic streaming produced million-token/s decode artifacts and null depth cells. Those profiles are excluded, not recycled as a valid speed baseline. Every printed finite profile has three stored measurements per depth; both efforts appear in the same format.')
+call(f'Gyro-S synthetic streaming produced million-token/s decode artifacts and null depth cells; those profiles are excluded. GPT-6-luna MAX matched performance is {escape(HPERF["status"].replace("_"," "))}: requested {HPERF["requested_repeats_per_context"]} repeats at contexts {HPERF["contexts_tokens"]}, but only {HPERF["visible_text_rate_samples_per_context"]} valid visible-text rate samples were retained; all hosted rates are withheld and excluded from local decode plots. The provider-reported HE+ token rate above is not a substitute.')
 section('THE FINAL SCOREBOARD — one message, with explicit scope')
-how(f'OVERALL averages seven min-max-normalized axes within the {len(el)} eligible stock-engine arms: coding final, agent floor, Hard Mode mean, algebra sample, math sample, hidden debugging, zero-context decode. Full scoring only. Forks and partial arms appear inline but are unranked. This crowns the best measured STOCK ALL-ROUNDER, not every workload winner; safety and latency are not averaged into that score.')
+how(f'OVERALL averages seven min-max-normalized axes within the {len(el)} eligible stock-engine arms: coding final, agent floor, Hard Mode mean, algebra sample, math sample, hidden debugging, zero-context decode. Full scoring only. Forks and partial arms appear inline but are unranked; the GPT-6-luna MAX hosted reference is shown in suite tables only and is excluded from this local composite. This crowns the best measured STOCK ALL-ROUNDER, not every workload winner; safety and latency are not averaged into that score.')
 figure('F10-scoreboard.png','Same ranks and scope used by every recommendation below. Asterisk = partial coding denominator. Not capped is a final-trial rating status, not a safety guarantee.',True)
 verdict(f'<b>All-rounder:</b> {hlabel(TOP["key"])} {TOP["arm"]} · #{TOP["rank"]} overall ({f(TOP["composite"],0)}). <b>Specialists:</b> {hlabel(BESTFLOOR[0])} {BESTFLOOR[1]} · #{rankmap[(BESTFLOOR[0],BESTFLOOR[1])]} owns the stock floor; {hlabel(FAST[0])} {FAST[1]} · #{rankmap[(FAST[0],FAST[1])]} owns the fastest complete coding wall. Pick Your File translates THIS board; it does not introduce a second overall winner.')
 bridge_roles={'all_rounder':('Best stock all-rounder','Balance the seven measured capability axes'),'reliability':('Reliability specialist','Prioritize the empirical tool floor'),'fast_coding':('Coding-latency specialist','Prioritize complete-run wall time, outside OVERALL'),'coding_ceiling':('Coding-ceiling specialist','Prioritize the complete coding score'),'knowledge_debug':('Knowledge / debugging specialist','Prioritize independent sampled tests; low is partial/unranked'),'experimental_not_production':('Experimental observation only','Different engine and narrow 16 GB margin; no production pick')}
@@ -145,7 +181,7 @@ section('FOR MAINTAINERS — measured findings and validity','#34495e')
 bullet(['<b>Tool plumbing is build-specific:</b> rc1 forced calls were ignored with Gyro-S. rc2 live forced calls passed with Gyro-M on streaming and non-streaming. The historical finding stays scoped to rc1; Gyro-S on rc2 was not tested.',f'<b>Experimental fork fit:</b> {C["resource_samples"]} resource samples, minimum {C["min_free_vram_mib"]} MiB free, peak {C["max_temperature_c"]} C. '+', '.join(f'{k}={v}' for k,v in C['event_maxima'].items())+'. This is not long-term stability proof.',f'<b>Campaign status:</b> <code>{C["outcome"]}</code>, finished {escape(C["finished_at"])}. CTest {C["ctest"]["passed"]} pass / {C["ctest"]["skipped"]} skip / {C["ctest"]["failed"]} fail. ple_parity lacks its required Q2_0 PLE shard/capture fixtures; separate ple_reader_selftest passed.','<b>Audit bookkeeping:</b> both HumanEval+ task audits ran; a dictionary merge overwrote intended audit-step names, making done.json mark them absent. Xhigh validity logic also missed blank finals. Raw status/scores are preserved; no silently upgraded clean pass.', '<b>Monitoring:</b> corrected busy-vs-down logic after the first aborted attempt. Perf-low/needle static-counter warnings were not accompanied by engine-event counters. Standalone effort probe is excluded from scores; possible timing interference is disclosed.', '<b>Operations:</b> production Swift IQ3_S restoration passed health/chat/tool/vision and re-enabled guards/updater. Report revisions did not alter services.'])
 section('METHOD & CORRECTIONS — reproducible without hiding caveats','#5b6770')
 how('The PDF, GitHub README, scoreboard and recommendation registry are generated from the same extracted store. New data is integrated throughout, not isolated in a model-specific chapter. Source records and hashes are packaged; the portable compiler rebuilds from this folder.')
-bullet(['<b>Coding:</b> BenchKit direct, 164 attempted tasks, greedy temperature 0, presence penalty 1.0, one repair. Gyro-M timeout 900 seconds, no injected client token cap. Serving protocol and engine changes qualify historical cross-cohort comparisons.',f'<b>Tools:</b> {C["manifest"]["teb_version"]}, {tl["n_scenarios"]} scenarios x five trials per effort; seed {tl["config"]["seed"]}, temperature {tl["config"]["temperature"]}, timeout {f(tl["config"]["timeout_seconds"],0)} s, turn cap {tl["config"]["max_turns"]}. Separate Swift v2.8.0 / 97-scenario data is NOT mixed in.','<b>Corrections:</b> historical partial coding denominators qualified; category scores changed to five-run means; inflated raw prefill removed; ceiling-minus-floor gap labeled correctly; peak temperature corrected from 64 C summary to measured 78 C. These corrections, not an unmeasured model promotion, change the earlier recommendation framing.','<b>Not tested:</b> vision quality, multi-day agents, extra seeds, multi-GPU, other GPU sizes, full knowledge datasets, Gyro-M beyond 131K or Gyro-S on rc2. No automatic supported-memory or production-stability conclusion.'])
+bullet(['<b>Coding:</b> BenchKit direct, 164 attempted tasks, greedy temperature 0, presence penalty 1.0, one repair. Gyro-M timeout 900 seconds, no injected client token cap. Serving protocol and engine changes qualify historical cross-cohort comparisons.',f'<b>Tools:</b> {C["manifest"]["teb_version"]}, {tl["n_scenarios"]} scenarios x five trials per effort; seed {tl["config"]["seed"]}, temperature {tl["config"]["temperature"]}, timeout {f(tl["config"]["timeout_seconds"],0)} s, turn cap {tl["config"]["max_turns"]}. Separate Swift v2.8.0 / 97-scenario data is NOT mixed in.','<b>Corrections:</b> historical partial coding denominators qualified; category scores changed to five-run means; inflated raw prefill removed; ceiling-minus-floor gap labeled correctly; peak temperature corrected from 64 C summary to measured 78 C. These corrections, not an unmeasured model promotion, change the earlier recommendation framing.','<b>Hosted baseline protocol:</b> GPT-6-luna MAX is an OpenAI-hosted API reference, not a recommendation or a local run. '+escape(REF['sampling_caveat'])+' The matched decode profile is invalid/incomplete and all hosted rates are withheld.', '<b>Not tested:</b> vision quality, multi-day agents, extra seeds, multi-GPU, other GPU sizes, full knowledge datasets, Gyro-M beyond 131K or Gyro-S on rc2. No automatic supported-memory or production-stability conclusion.'])
 manifest=C['manifest']
 table(['Provenance item','Pinned value'],[['Stock engine digest','34CDE150B21148E6'],['Fork rc2 run',manifest['campaign_id']],['Fork engine commit','<code>'+manifest['engine_commit']+'</code>'],['Fork binary SHA256','<code>'+manifest['engine_sha256']+'</code>'],['Gyro-M model revision','<code>'+manifest['model_revision']+'</code>'],['Gyro-M model SHA256','<code>'+manifest['model_sha256']+'</code>'],['Fork context / KV',f'{manifest["context"]:,} / {manifest["kv"]}'],['Rebuild','scripts/build_revision.py; data/ALL-METRICS.json; claims.json']],title='Version-pinned provenance')
 links([('PR #1850',D['revision']['pr']),('Strata','https://github.com/Niko1221/Strata'),('AgentionAI fork','https://github.com/agentionai/Strata'),('Gyro source',SRC['AgentionAI']),('Tool-eval-bench','https://github.com/SeraphimSerapis/tool-eval-bench'),('EvalPlus','https://github.com/evalplus/evalplus'),('Five Bugs','https://github.com/vyang472/five-bugs')])
@@ -181,13 +217,16 @@ readme=text.split('</style></head><body>',1)[1].rsplit('</body>',1)[0]
 readme=re.sub(r'<div class="hero">(.*?)</div></div>',lambda x:x.group(0),readme,flags=re.S)
 (BASE/'README.md').write_text('# Community quant battery — RTX 5070 Ti 16 GB\n\n[Download the full PDF](strata-community.pdf) · Updated 2026-10-12 · 10 files / 20 effort arms.\n\n'+readme+'\n\n## Rebuild and data\n\n`python scripts/build_revision.py` rebuilds all charts, PDF and this README from `data/ALL-METRICS.json`. `scripts/audit_revision.py` checks claims. Raw HumanEval+ task files may be gzip-compressed; use Python gzip/json or `gzip -dc`. The rig-side extractor is not required to reproduce figures.\n')
 pdf=BASE/'strata-community.pdf'
-proc=subprocess.run(['chromium','--headless','--disable-gpu','--no-sandbox','--no-pdf-header-footer',f'--print-to-pdf={pdf}',(BASE/'community-updated.html').as_uri()],capture_output=True,text=True,timeout=150)
-print('CHROMIUM_RC',proc.returncode)
-if proc.returncode:print(proc.stderr);raise SystemExit(proc.returncode)
-assert pdf.stat().st_size>100000
-print('PDF',pdf,'bytes',pdf.stat().st_size)
-info=subprocess.run(['pdfinfo',str(pdf)],capture_output=True,text=True,check=True)
-print('\n'.join(s for s in info.stdout.splitlines() if s.startswith(('Pages:','Page size:','CreationDate:'))))
+if os.environ.get('REPORT_SKIP_PDF')=='1':
+    print('PDF_RENDER_SKIPPED: REPORT_SKIP_PDF=1; render the generated HTML separately before finalizing docs/audits')
+else:
+    proc=subprocess.run(['chromium','--headless','--disable-gpu','--no-sandbox','--no-pdf-header-footer',f'--print-to-pdf={pdf}',(BASE/'community-updated.html').as_uri()],capture_output=True,text=True,timeout=150)
+    print('CHROMIUM_RC',proc.returncode)
+    if proc.returncode:print(proc.stderr);raise SystemExit(proc.returncode)
+    assert pdf.stat().st_size>100000
+    print('PDF',pdf,'bytes',pdf.stat().st_size)
+    info=subprocess.run(['pdfinfo',str(pdf)],capture_output=True,text=True,check=True)
+    print('\n'.join(s for s in info.stdout.splitlines() if s.startswith(('Pages:','Page size:','CreationDate:'))))
 print('SECTION ORDER',re.findall(r'<h2[^>]*>(.*?)</h2>',text))
 print('COMPOSITE_LEADER',TOP['key'],TOP['arm'],TOP['composite'])
 print('TABLE_COUNT',TABLE_COUNT)

@@ -3,10 +3,13 @@
 from pathlib import Path
 import json,re,subprocess
 BASE=Path(__file__).resolve().parent.parent
-D=json.loads((BASE/'data/ALL-METRICS.json').read_text());M=D['models'];C=D['gyro_m_campaign']
+D=json.loads((BASE/'data/ALL-METRICS.json').read_text());M=D['models'];C=D['gyro_m_campaign'];REF=D['hosted_api_reference']
+HR=REF['human_eval_plus'];TR=REF['tool_eval_bench'];HFB=REF['five_bugs'];HKS=REF['sampled_knowledge_and_recall'];HPERF=REF['performance']
 SB=json.loads((BASE/'data/FINAL-SCOREBOARD.json').read_text());CL=json.loads((BASE/'claims.json').read_text());RECS=CL['recommendations']
 TOP=CL['stock_composite_leader']; ORDER=list(M);FORK='https://github.com/Zauberio/Strata';BRANCH='study/quant-battery-rtx5070ti';REL='bench/results/2026-10-10-community-quant-study-rtx5070ti'
 def lab(k):return f"{M[k]['short']} ({M[k]['lab']})"
+HOSTED_LABEL='GPT-6-luna MAX (OpenAI) · hosted API reference'
+HOSTED_ENGINE='OpenAI Codex Responses API · max'
 def f(x,n=1):return f'{x:,.{n}f}' if isinstance(x,(float,int)) else 'n/a'
 def engine(k):return {'stock':'0.1.40.3','rc1':'rc1','rc2':'rc2'}[M[k]['cohort']]
 def wall(x):v=round(x);return f'{v//60}m{v%60:02d}s'
@@ -18,24 +21,50 @@ roles={'all_rounder':('Best stock all-rounder','Balance seven measured axes; equ
 picks=[[roles[r['role']][0],arm(r['key'],r['effort']),f"#{r['rank']}" if r['rank'] else 'unranked',roles[r['role']][1]] for r in RECS]
 H=[]
 def w(x):H.append(x)
-w(f'# Qwen3.8-Flash-Next: which quant should you run?\n\nUpdated **{D["revision"]["date"]}** · **10 files / 3 labs / 20 effort arms / 18 tool arms**.\n\n[Download the designed PDF](strata-community.pdf) ({pages} pages) · [Canonical metrics](data/ALL-METRICS.json) · [Claim registry](claims.json) · [Audit](qa/AUDIT.json)\n\nMeasured on **RTX 5070 Ti 16 GB, Ryzen 9800X3D, 64 GB RAM, Windows + WSL2**. Eight stock files use Strata 0.1.40.3; Gyro-S uses historical rc1, Gyro-M rc2. Same prompts/evaluator do not isolate an engine-independent model comparison.')
+w(f'# Qwen3.8-Flash-Next: which quant should you run?\n\nUpdated **{D["revision"]["date"]}** · **10 local files / 3 quant or finetune labs / 20 local effort arms / 18 local tool arms**. The separate **{HOSTED_LABEL}** is outside those counts and anchors score-relative suite comparisons; it is not a recommendation.\n\n[Download the designed PDF](strata-community.pdf) ({pages} pages) · [Canonical metrics](data/ALL-METRICS.json) · [Hosted reference detail](data/hosted-api-reference.json) · [Claim registry](claims.json) · [Audit](qa/AUDIT.json)\n\nMeasured on **RTX 5070 Ti 16 GB, Ryzen 9800X3D, 64 GB RAM, Windows + WSL2**. Eight stock files use Strata 0.1.40.3; Gyro-S uses historical rc1, Gyro-M rc2. Shared evaluators do not isolate model-only stock/fork differences. The separate GPT-6-luna MAX row is an OpenAI-hosted baseline/reference, not a recommendation or local RTX run.')
 w(f'## Straight answer\n\n**{arm(TOP["key"],TOP["arm"])} is #{TOP["rank"]}, the best measured stock all-rounder** ({f(TOP["composite"],0)} overall). Reliability, latency, coding ceiling and debugging specialists can be lower on that board because their chosen priority outweighs its other axes. The final scoreboard and Pick Your File use the exact same registry and ranks. Experimental fork rows and partial coding arms remain visible but unranked.')
-w('## The cast\n\nFile sizes are decimal GB, not VRAM requirements. Every common result table includes Gyro-M inline with an engine label. There is no standalone Gyro-M chapter.\n\n'+table(['File / lab','Quant','File GB','Engine','Status'],[[lab(k),M[k]['quant'],f(M[k]['size_gb']),engine(k),'experimental on this 16 GB rig' if k=='gyro-m' else ('historical fork' if k=='gyro-s' else 'reference')] for k in ORDER]))
+w('## The cast\n\nThe ten local files all descend from the same Qwen3.8-Flash-Next base model; file sizes are decimal GB, not VRAM requirements. The GPT-6-luna MAX hosted API reference is not a local file and does not enter this inventory or the recommendation registry. Every common result table includes Gyro-M inline with an engine label. There is no standalone Gyro-M chapter.\n\n'+table(['File / lab','Quant','File GB','Engine','Status'],[[lab(k),M[k]['quant'],f(M[k]['size_gb']),engine(k),'experimental on this 16 GB rig' if k=='gyro-m' else ('historical fork' if k=='gyro-s' else 'reference')] for k in ORDER]))
 w('Downloads: [ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) · [UkisAI Swift](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF) · [AgentionAI Gyro](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF).')
-w('## Reliability and agentic tools\n\n[Tool-eval-bench](https://github.com/SeraphimSerapis/tool-eval-bench): pinned `'+C['manifest']['teb_version']+'`, 92 scenarios x five runs per effort; 0/1/2 scoring. **Pass@5** = full marks at least once (capability ceiling); **Pass^5** = full marks in ALL five (reliability floor). Category values use all-five means. Stored rating/warnings describe the last primary trial, not a five-run union. Safety-capped is not inferred merely from the warning count. Gyro-S rc1 has no usable tool baseline; it is n/a, not zero.')
-tr=[(k,e,t) for k in ORDER for e,t in (M[k].get('trials')or{}).items()];tr.sort(key=lambda r:(M[r[0]]['cohort']!='stock',-r[2]['pass_hat_5']))
-w(table(['Arm / lab','Engine','Mean +/- SD','95% CI','Pass@5','Pass^5','Ceiling-floor gap','Hard Mode mean','Last-trial rating','Warnings'],[[arm(k,e),engine(k),f'{f(t["mean"])} +/- {f(t["std"])}',f'{f(t["ci95"][0])}–{f(t["ci95"][1])}',f(t['pass_at_5']),f(t['pass_hat_5']),f(t['gap']),f(t['cats']['P']),rating(t),t['n_warnings']] for k,e,t in tr]))
+w('## Reliability and agentic tools\n\n[Tool-eval-bench](https://github.com/SeraphimSerapis/tool-eval-bench): pinned `'+C['manifest']['teb_version']+'`, 92 scenarios x five runs per effort; 0/1/2 scoring. **Pass@5** = full marks at least once (capability ceiling); **Pass^5** = full marks in ALL five (reliability floor). Category values use all-five means. Warning counts describe the last primary trial, not a five-run union. The table is ordered by Pass^5 floor (descending; mean breaks ties). Evaluator rating is omitted because the hosted artifact provides no comparable rating. Safety-capped is not inferred merely from the warning count. Gyro-S rc1 has no usable tool baseline; it is n/a, not zero.')
+tr=[(k,e,t) for k in ORDER for e,t in (M[k].get('trials')or{}).items()]+[('hosted-reference','max',TR)]
+tr.sort(key=lambda r:(-(TR['pass_hat_5_percent'] if r[0]=='hosted-reference' else r[2]['pass_hat_5']),-(TR['mean'] if r[0]=='hosted-reference' else r[2]['mean'])))
+tr_rows=[]
+for k,e,t in tr:
+ if k=='hosted-reference':tr_rows.append([HOSTED_LABEL,HOSTED_ENGINE,f'{f(TR["mean"])} +/- {f(TR["stddev"])}',f(TR['pass_at_5_percent']),f(TR['pass_hat_5_percent']),f(TR['reliability_gap_percent']),f(TR['hard_mode_mean_percent']),TR['final_trial_safety_warnings']])
+ else:tr_rows.append([arm(k,e),engine(k),f'{f(t["mean"])} +/- {f(t["std"])}',f(t['pass_at_5']),f(t['pass_hat_5']),f(t['gap']),f(t['cats']['P']),t['n_warnings']])
+w(table(['Arm / lab','Engine','Mean +/- SD','Pass@5','Pass^5','Ceiling-floor gap','Hard Mode mean','Warnings (last trial)'],tr_rows))
+w('95% CI and evaluator rating are intentionally omitted: the hosted artifact does not publish comparable values, so no proxy is inferred. GPT-6-luna MAX is ordered by its measured score but remains an external OpenAI API baseline, not a local-engine arm.')
+w('GPT-6-luna MAX sampling caveat: '+REF['sampling_caveat']+' Treat it as an observed reference run, not an identical seed/temperature-controlled local trial.')
 for fn in ['F3-reliability.png','F9-decomposition.png','F4-hardmode.png']:w(f'![All-model tool results](charts/{fn})')
 w('Gyro-M Hard Mode gains do not imply reliability gains: its floor drops at xhigh and mean confidence intervals overlap. Engine/configuration differences prevent a model-only causal comparison.')
 w('## Coding\n\n[EvalPlus](https://github.com/evalplus/evalplus) through BenchKit: 164 attempted function-writing tasks, greedy generation plus one verifier-guided replacement. First = one-shot score; final includes replacement. Blank/length-limited outputs remain scored failures. Excluded harness errors reduce coverage; those rows are qualified and excluded from complete-coverage medals/composites.\n\n![Coding](charts/F1-coding.png)\n\n![Time to quality](charts/F2-wall.png)')
-he=[(k,e,r) for k in ORDER for e,r in M[k]['heplus'].items()];he.sort(key=lambda x:(M[x[0]]['cohort']!='stock',not x[2]['audit']['complete_scoring'],-x[2]['score']))
-w(table(['Arm / lab','Engine','First %','Final %','Solved/scored','Repairs','Wall','tok/s','Blank finals','Infra excluded'],[[arm(k,e),engine(k),f(r['first_attempt_score']),f(r['score'])+(' *' if not r['audit']['complete_scoring'] else ''),f'{r["passed"]}/{r["scored_total"]}',f'{r["repair_successes"]}/{r["repair_attempted"]}',wall(r['total_time']),f(r['tok_s']),len(r['audit']['blank_final_ids']),r.get('harness_errors',0)] for k,e,r in he]))
+he=[(k,e,r) for k in ORDER for e,r in M[k]['heplus'].items()]
+he_entries=[(k,e,r,False) for k,e,r in he]+[('hosted-reference','max',HR,True)]
+def he_order_key(x):
+ k,e,r,hosted=x
+ complete=(HR['harness_errors']==0 and len(HR['tasks'])==164) if hosted else r['audit']['complete_scoring']
+ return (not complete,-(HR['final_percent'] if hosted else r['score']))
+he_entries.sort(key=he_order_key)
+he_rows=[]
+for k,e,r,hosted in he_entries:
+ if hosted:he_rows.append([HOSTED_LABEL,HOSTED_ENGINE,f(HR['first_percent']),f(HR['final_percent']),f'{HR["final_passes"]}/{len(HR["tasks"])}',f'{HR["repair_successes"]}/{HR["repair_attempted"]}',wall(HR['wall_seconds']),f(HR['provider_reported_tokens_per_second'])+'†',HR['blank_final_count'],HR['harness_errors']])
+ else:he_rows.append([arm(k,e),engine(k),f(r['first_attempt_score']),f(r['score'])+(' *' if not r['audit']['complete_scoring'] else ''),f'{r["passed"]}/{r["scored_total"]}',f'{r["repair_successes"]}/{r["repair_attempted"]}',wall(r['total_time']),f(r['tok_s']),len(r['audit']['blank_final_ids']),r.get('harness_errors',0)])
+w('Rows are ordered by final score, with complete-coverage runs first and partial-coverage runs after them.')
+w(table(['Arm / lab','Engine','First %','Final %','Solved/scored','Repairs','Wall','tok/s','Blank finals','Infra excluded'],he_rows))
+w(f'† Hosted {f(HR["provider_reported_tokens_per_second"])} tok/s is provider-reported completion usage including hidden reasoning tokens. It is not visible-text throughput, local decode speed, or a matched speed result; see performance caveat below.')
 w('`*` Partial: Q-IQ3_XXS low 155/163; Swift IQ3_S low 157/163; Gyro-S xhigh 153/162 after two HTTP 502 errors. Gyro-M xhigh blank HumanEval/39 and /99 ended on length and remain failures in 157/164. No raw score/status was silently upgraded.')
 w('## Sampled knowledge, debugging and recall\n\nGSM8K 100 shuffled questions, 8-shot; MMLU first 100 entirely abstract algebra, 5-shot (NOT full MMLU); IFEval first 50 prompts / 76 constraints. [Five Bugs](https://github.com/vyang472/five-bugs): five files x five sessions with local hidden checks. Needle: 25 cells; stock and fork effective contexts differ.')
-w(table(['File / lab','Engine','GSM8K','Algebra','IFEval prompt/instruction','Bugs visible','Bugs hidden','Needle % @ effective tokens'],[[lab(k),engine(k),f(M[k]['knowledge']['gsm8k']['accuracy'],0),f(M[k]['knowledge']['mmlu']['accuracy'],0),f'{f(M[k]["knowledge"]["ifeval"]["prompt_accuracy"])} / {f(M[k]["knowledge"]["ifeval"]["instruction_accuracy"])}',M[k]['fivebugs']['vis'],M[k]['fivebugs']['hid'],f'{f(M[k]["needle"]["retrieval_accuracy"],0)} @ {M[k]["needle"]["effective_context"]:,}'] for k in ORDER]))
+knowledge_entries=[('local',k) for k in ORDER]+[('hosted','hosted-reference')]
+knowledge_entries.sort(key=lambda x:-(HFB['hidden_passes'] if x[0]=='hosted' else int(M[x[1]]['fivebugs']['hid'].split('/')[0])))
+knowledge_rows=[]
+for kind,k in knowledge_entries:
+ if kind=='hosted':knowledge_rows.append([HOSTED_LABEL,HOSTED_ENGINE,f(HKS['gsm8k']['accuracy_percent'],0),f(HKS['mmlu']['accuracy_percent'],0),f'{f(HKS["ifeval"]["prompt_accuracy_percent"])} / {f(HKS["ifeval"]["instruction_accuracy_percent"])}',f'{HFB["visible_passes"]}/{HFB["visible_total"]}',f'{HFB["hidden_passes"]}/{HFB["hidden_total"]}',f'{f(HKS["needle"]["accuracy_percent"],0)} @ {HKS["needle"]["effective_context_tokens"]:,}'])
+ else:knowledge_rows.append([lab(k),engine(k),f(M[k]['knowledge']['gsm8k']['accuracy'],0),f(M[k]['knowledge']['mmlu']['accuracy'],0),f'{f(M[k]["knowledge"]["ifeval"]["prompt_accuracy"])} / {f(M[k]["knowledge"]["ifeval"]["instruction_accuracy"])}',M[k]['fivebugs']['vis'],M[k]['fivebugs']['hid'],f'{f(M[k]["needle"]["retrieval_accuracy"],0)} @ {M[k]["needle"]["effective_context"]:,}'])
+w('Rows are ordered by hidden Five Bugs score (descending); Luna is shown in score position as a hosted reference, not a local candidate.')
+w(table(['File / lab','Engine','GSM8K','Algebra','IFEval prompt/instruction','Bugs visible','Bugs hidden','Needle % @ effective tokens'],knowledge_rows))
 w('![Debugging](charts/F5-debug.png)\n\nThese are small samples, not a whole-model intelligence ranking or long-session guarantee.')
 w('## Reasoning economics\n\nCompletion tokens include thinking, repair and failures. Passing/failed task costs come from response times, not from subtracting job wall time.\n\n![Completion tokens](charts/F6-tokens.png)\n\n'+table(['Arm / lab','Engine','Output tokens','Passing tokens','Passing seconds','Failed response-time share %','Wall'],[[arm(k,e),engine(k),f(r['total_output_tokens'],0),f(r['audit']['passing_tokens'],0),f(r['audit']['passing_response_s'],0),f(r['audit']['failing_time_share_pct']),wall(r['total_time'])] for k,e,r in he]))
-w('## Measured performance\n\nllama-benchy 0.4.0: prompt 2,048, generation 256, concurrency 1, three repeats/depth/effort. Retired inflated raw prompt-throughput values. **Prompt-to-first-token rate** = total input tokens / end-to-end TTFT, including queue/network/reasoning; not kernel prefill. Deep contexts differ: stock 131,072, rc2 122,880. Gyro-S malformed million-token/s/null profiles are excluded and labeled n/a.\n\n![Low-effort profiles](charts/F7-decode-all.png)\n\n![Both efforts](charts/F8-decode-effort.png)')
+w(f'## Measured performance\n\nllama-benchy 0.4.0: prompt 2,048, generation 256, concurrency 1, three repeats/depth/effort. Retired inflated raw prompt-throughput values. **Prompt-to-first-token rate** = total input tokens / end-to-end TTFT, including queue/network/reasoning; not kernel prefill. Deep contexts differ: stock 131,072, rc2 122,880. Gyro-S malformed million-token/s/null profiles are excluded and labeled n/a. GPT-6-luna MAX matched decode comparison is {HPERF["status"].replace("_", " ")}: requested {"/".join(str(v) for v in HPERF["requested_repeats_per_context"])} repeats at {" / ".join(f(v,0) for v in HPERF["contexts_tokens"])} tokens, with only {"/".join(str(v) for v in HPERF["visible_text_rate_samples_per_context"])} valid visible-rate samples. All hosted rates are withheld; its provider-reported HE+ token rate is not a speed substitute.\n\n![Low-effort profiles](charts/F7-decode-all.png)\n\n![Both efforts](charts/F8-decode-effort.png)')
 for e in ['low','xhigh']:
  rows=[]
  for k in ORDER:
@@ -55,19 +84,22 @@ w('## Rebuild and verify\n\nPython, Chromium and Poppler are required. Install t
 raw=f'{FORK}/raw/{BRANCH}/{REL}';blob=f'{FORK}/blob/{BRANCH}/{REL}'
 body=f'''### What this is
 
-Updated community quality battery requested via Xavier: **10 files, 3 labs, 20 effort arms, 18 tool arms**, on **RTX 5070 Ti 16 GB / Ryzen 9800X3D / 64 GB RAM / Windows + WSL2**. Eight stock files use **0.1.40.3 (`34CDE150B21148E6`)**; Gyro-S uses historical AgentionAI rc1 and Gyro-M rc2. Shared evaluators do not isolate model-only stock/fork differences.
+Updated community quality battery requested via Xavier: **10 local files, 3 quant/finetune labs, 20 local effort arms, 18 local tool arms**, on **RTX 5070 Ti 16 GB / Ryzen 9800X3D / 64 GB RAM / Windows + WSL2**. Eight stock files use **0.1.40.3 (`34CDE150B21148E6`)**; Gyro-S uses historical AgentionAI rc1 and Gyro-M rc2. Shared evaluators do not isolate model-only stock/fork differences. A separate GPT-6-luna MAX (OpenAI-hosted API reference) anchors the suite results; it is not a recommendation or a local RTX run.
 
-**[Download the full PDF]({raw}/strata-community.pdf)** ({pages} pages) · **[GitHub report]({blob}/README.md)** · **[Canonical metrics]({blob}/data/ALL-METRICS.json)** · **[Rebuild/audit scripts]({FORK}/tree/{BRANCH}/{REL}/scripts)**.
+**[Download the full PDF]({raw}/strata-community.pdf)** ({pages} pages) · **[GitHub report]({blob}/README.md)** · **[Canonical metrics]({blob}/data/ALL-METRICS.json)** · **[Hosted API reference detail]({blob}/data/hosted-api-reference.json)** · **[Rebuild/audit scripts]({FORK}/tree/{BRANCH}/{REL}/scripts)**.
 
 ### What changed in this revision
 
 - Gyro-M is integrated into the common coding, tools, knowledge/debugging, economics, speed and final-board views — **no standalone model chapter**.
+- GPT-6-luna MAX is integrated as a **separate OpenAI-hosted reference row/bar, score-ordered where comparable, with no medal decoration**; it is excluded from local file/arm counts, recommendations, ranks, composites and local performance claims.
 - Whole tables stay on one page; section headings/explainers stay with their first result. Every table has an automated PDF-page proof.
 - Final Scoreboard and Pick Your File share one generated registry: **{arm(TOP['key'],TOP['arm'])} is #{TOP['rank']} stock all-rounder**. Lower-composite reliability/latency/debugging choices are explicitly named specialists, not alternate overall winners.
 - Historical partial coding denominators (155/163, 157/163, 153/162) are qualified and excluded from complete-coverage medals/composites. Five-run category means replace last-trial category values; inflated prompt throughput is retired.
 
 ### Measured headlines, with scope
 
+- GPT-6-luna MAX external reference: HumanEval+ {f(HR['final_percent'])}% final ({f(HR['first_percent'])}% first); TEB {f(TR['mean'])} +/- {f(TR['stddev'])}, Pass@5 {f(TR['pass_at_5_percent'])}%, Pass^5 {f(TR['pass_hat_5_percent'])}%, Hard Mode {f(TR['hard_mode_mean_percent'])}%; FiveBugs {HFB['visible_passes']}/{HFB['visible_total']} visible / {HFB['hidden_passes']}/{HFB['hidden_total']} hidden. Sampled suites and full protocols are in the linked detail/README; not a local run or recommendation.
+- Matched hosted decode performance is unavailable; invalid/partial rates are withheld. Provider-reported HE+ {f(HR['provider_reported_tokens_per_second'])} tok/s includes hidden reasoning and is not visible-text speed or a local decode measurement.
 - Gyro-M HE+: {M['gyro-m']['heplus']['low']['passed']}/164 low ({f(M['gyro-m']['heplus']['low']['score'])}%), {M['gyro-m']['heplus']['xhigh']['passed']}/164 xhigh ({f(M['gyro-m']['heplus']['xhigh']['score'])}%). Two xhigh length-limited blank finals remain failures.
 - Same pinned TEB cohort: mean {f(M['gyro-m']['trials']['low']['mean'])} +/- {f(M['gyro-m']['trials']['low']['std'])} low / {f(M['gyro-m']['trials']['xhigh']['mean'])} +/- {f(M['gyro-m']['trials']['xhigh']['std'])} xhigh; floor {f(M['gyro-m']['trials']['low']['pass_hat_5'])} / {f(M['gyro-m']['trials']['xhigh']['pass_hat_5'])}. Hard Mode improves while empirical reliability falls; no model-only causal conclusion.
 - The highest stock floor remains {arm(CL['stock_best_floor']['key'],CL['stock_best_floor']['effort'])} ({f(CL['stock_best_floor']['floor'])}); Gyro-M low ties the observed floor on an experimental fork, not a stock-composite rank.
@@ -81,11 +113,11 @@ Gyro-S rc1 has no valid tool-eval baseline and malformed speed profiles remain n
 
 ### What we did NOT test
 
-Vision quality; multi-GPU; other GPUs/VRAM sizes; multi-day agents; additional seeds; full knowledge datasets; Gyro-M beyond 131K; Gyro-S on rc2. Results are same-rig historical observations, not same-day model-only stock/fork controls.
+Vision quality; multi-GPU; other GPUs/VRAM sizes; multi-day agents; additional seeds; full knowledge datasets; Gyro-M beyond 131K; Gyro-S on rc2. Results are same-rig historical observations, not same-day model-only stock/fork controls. For the hosted API reference, {REF['sampling_caveat']} The matched decode profile is incomplete/unavailable and all hosted throughput rates are withheld.
 
 ### Reproduce and audit
 
-`data/ALL-METRICS.json -> scripts/build_revision.py -> PDF + README + ten charts + claims.json + FINAL-SCOREBOARD.json`. Task JSONs, all 18 raw five-trial tool arms, measured perf profiles, source manifest and validation scripts are included. Coding raw data is losslessly gzip-compressed; secrets/rig addresses are redacted. Scope stays one report folder plus the existing community-benchmarks row. See [TRIMMED.md]({blob}/TRIMMED.md) for exclusions.
+`data/ALL-METRICS.json -> scripts/build_revision.py -> PDF + README + ten charts + claims.json + FINAL-SCOREBOARD.json`. Task JSONs, all 18 raw local five-trial tool arms, measured local perf profiles, the sanitized hosted reference detail, source manifest and validation scripts are included. Hosted detail contains audited scores/protocol/source hashes only — no prompts, model outputs, thoughts or credentials. Coding raw data is losslessly gzip-compressed; secrets/rig addresses are redacted. Scope stays one report folder plus the existing community-benchmarks row. See [TRIMMED.md]({blob}/TRIMMED.md) for exclusions.
 
 If committing a PDF is undesirable, I can move it to a release/attachment without changing the measured report.
 '''
