@@ -53,4 +53,19 @@ if [ ! -x .venv/bin/python ]; then
     $PY -m venv .venv || { rm -rf .venv; echo "could not create .venv: sudo apt install python3-venv"; exit 1; }
   fi
 fi
+# Gentoo: nvcc builds CUDA's host code with the system gcc, and a gcc newer than CUDA supports (Gentoo moved to
+# 15) dies in that build. gcc-config's x86_64-pc-linux-gnu-14 entry (or STRATA_GCC_CONFIG=<name>) names the gcc to
+# build with; export $(gcc-config -E <index>) points PATH and LIBRARY_PATH at it, so cmake and nvcc see it.
+# Without gcc-config (every other Linux) or without a matching entry, nothing changes and the build runs as before.
+# STRATA_GCC_CONFIG= (empty) turns the step off even on Gentoo.
+if command -v gcc-config >/dev/null 2>&1; then
+  gcc_pat="${STRATA_GCC_CONFIG-x86_64-pc-linux-gnu-14}"
+  gcc_i="$(gcc-config -l 2>/dev/null | awk -v pat="$gcc_pat" '$0 ~ pat { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+[)]$/) { sub(/[)]$/, "", $i); print $i; exit } }')"
+  if [ -n "$gcc_pat" ] && [ -n "$gcc_i" ]; then
+    echo "Gentoo: building with gcc-config entry $gcc_i ($gcc_pat)"
+    for kv in $(gcc-config -E "$gcc_i" 2>/dev/null | grep '^[A-Za-z_][A-Za-z0-9_]*='); do
+      export "$kv"
+    done
+  fi
+fi
 exec .venv/bin/python setup.py "$@"
