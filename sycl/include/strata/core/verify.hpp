@@ -127,6 +127,12 @@ public:
     /// floats per token in a hand-off buffer
     static int64_t handoff_floats(const ModelGeometry& g) { return (int64_t) g.hc * g.n_embd + g.n_embd + g.hc; }
 
+    /// REMOTE STAGE (PR #1748's, ported for the SYCL worker), the worker's side: run the stage's layers up to the last
+    /// one but no head - the residual after the last layer (its pending write folded in, as the unsplit window folds
+    /// it before the head) goes to `handoff_out` like an earlier stage's.  Set before `init`.  (The main side's
+    /// set_remote is not ported: the main process of a remote stage is the CUDA/HIP build.)
+    void set_no_head(bool on) { no_head_ = on; }
+
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
     /// SYCL port: capture every window graph now (one per window size) instead of on first use, so the first
     /// request does not pay for them (a 2,400-node graph takes tens of ms to finalize on this backend).
@@ -349,6 +355,8 @@ private:
     float* hand_out_ = nullptr;
     Verifier* next_ = nullptr;
     void* next_user_ = nullptr;
+    bool no_head_ = false;                 ///< set_no_head: the remote worker's last stage (hand-off, no head)
+    bool writes_handoff() const { return le_ < g_->n_layers || no_head_; }   ///< no head here: the residual goes on
     bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
     void stage_inputs(int T, const int32_t* tokens, int64_t pos0);
     bool staged_ = false;

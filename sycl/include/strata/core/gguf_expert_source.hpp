@@ -35,6 +35,10 @@ public:
     /// `--native` shard. Refuses a canonical pack: that one has experts.bin and the arena is the right source.
     bool open(const std::string& shard1, int64_t n_layers, int64_t n_expert, std::string& err);
     void close();
+    /// REMOTE STAGE (strata-mesh stage A, the SYCL worker): hold only layers [lo, hi) (-1: to the last) - a process that
+    /// runs only those layers.  `open` checks and opens only their tensors; blob(), read_into() and mirror() refuse the
+    /// other layers' experts (null / false / skipped).  Set before `open`.  Default: every layer.
+    void set_layer_range(int64_t lo, int64_t hi) { lo_ = lo; hi_ = hi; }
 
     const uint8_t* blob(int64_t layer, int64_t expert) override;
     /// The blob gathered straight into `dst` (bytes = the layer's blob size), from any thread: no ring slot, so the
@@ -70,6 +74,8 @@ private:
     size_t ring_next_ = 0;
     std::mutex mu_;
     int64_t n_layers_ = 0, n_expert_ = 0;
+    int64_t lo_ = 0, hi_ = -1;                     ///< set_layer_range
+    bool in_range(int64_t layer) const { return layer >= lo_ && (hi_ < 0 || layer < hi_); }
     int64_t reads_ = 0;
     std::vector<uint8_t*> mirror_chunks_;          ///< USM host (pinned, device-readable); several chunks: Alchemist
                                                    ///< (Arc A-series) refuses a single host allocation past ~3 GiB

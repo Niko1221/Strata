@@ -36,7 +36,12 @@ bool GgufExpertSource::open(const std::string& shard1, int64_t n_layers, int64_t
         err = "--stream-experts needs a native (IQ) pack whose native_experts.txt carries the GGUF tensor offsets";
         return false;
     }
-    for (int64_t l = 0; l < n_layers; ++l)
+    const int64_t l_end = hi_ < 0 ? n_layers : std::min(hi_, n_layers);   // set_layer_range (default: every layer)
+    if (lo_ < 0 || lo_ >= l_end) {
+        err = "--stream-experts: the layer range " + std::to_string(lo_) + ".." + std::to_string(hi_) + " is empty";
+        return false;
+    }
+    for (int64_t l = lo_; l < l_end; ++l)
         for (int r = 0; r < 3; ++r)
             if (lay.gguf_off[(size_t) (3 * l + r)] == 0) {
                 err = "--stream-experts: layer " + std::to_string(l) + " has no GGUF offset for its experts";
@@ -48,7 +53,7 @@ bool GgufExpertSource::open(const std::string& shard1, int64_t n_layers, int64_t
     n_layers_ = n_layers;
     n_expert_ = n_expert;
     layer_fd_.assign((size_t) (3 * n_layers), -1);
-    for (int64_t l = 0; l < n_layers; ++l)
+    for (int64_t l = lo_; l < l_end; ++l)
         for (int r = 0; r < 3; ++r)
             if (fd_of(l, r, err) < 0) { close(); return false; }
     ring_.resize(kRing);
@@ -77,7 +82,8 @@ int GgufExpertSource::fd_of(int64_t layer, int role, std::string& err) {
 }
 
 const uint8_t* GgufExpertSource::blob(int64_t layer, int64_t expert) {
-    if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_ || ring_.empty()) return nullptr;
+    if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_ || ring_.empty() || !in_range(layer))
+        return nullptr;
     if (!mirror_ptr_.empty()) {
         const uint8_t* p = mirror_ptr_[(size_t) (layer * n_expert_ + expert)];
         if (p != nullptr) return p;
@@ -121,7 +127,7 @@ int64_t GgufExpertSource::mirror(const std::vector<std::pair<int64_t, int64_t>>&
     std::vector<std::pair<int64_t, int64_t>> take;
     uint64_t total = 0;
     for (const auto& [l, e] : pairs) {
-        if (l < 0 || l >= n_layers_ || e < 0 || e >= n_expert_) continue;
+        if (l < 0 || l >= n_layers_ || e < 0 || e >= n_expert_ || !in_range(l)) continue;
         const uint64_t b = (lay.bytes[(size_t) l] + 255) / 256 * 256;
         if (total + b > cap) break;
         take.push_back({l, e});
@@ -216,7 +222,8 @@ const uint8_t* GgufExpertSource::device_alias(int64_t layer, int64_t expert) con
 }
 
 bool GgufExpertSource::read_into(int64_t layer, int64_t expert, uint8_t* dst, size_t bytes) const {
-    if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_ || dst == nullptr) return false;
+    if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_ || dst == nullptr || !in_range(layer))
+        return false;
     const auto& lay = strata::kernels::cpu::expert_layout();
     const auto& fm = lay.fmt[(size_t) layer];
     const uint64_t blob = lay.bytes[(size_t) layer];

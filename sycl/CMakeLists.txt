@@ -238,9 +238,19 @@ target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_libraries(strata_prefill PUBLIC strata_engine)
 
-strata_resolve(_main src/program/generate.cpp)
+# remote stage (strata-mesh stage A): the worker's link, src/net/stage_link.cpp - plain C++ and POSIX sockets, shared
+# with the top-level build (there is no migrated copy of it)
+strata_resolve(_main src/program/generate.cpp src/net/stage_link.cpp)
 add_executable(strata ${_main})
 target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
+# the link over loopback, the same test as the top-level build's (no GPU)
+strata_resolve(_stage_link_test src/net/stage_link_test.cpp src/net/stage_link.cpp)
+add_executable(stage_link_test ${_stage_link_test})
+target_include_directories(stage_link_test PRIVATE ${STRATA_ROOT}/include)
+target_link_libraries(stage_link_test PRIVATE Threads::Threads)
+enable_testing()
+add_test(NAME stage_link_test COMMAND stage_link_test)
+set_tests_properties(stage_link_test PROPERTIES TIMEOUT 60)
 
 # --- the kernel parity self-tests (each runs on the card and compares against a CPU reference) ---------------------
 option(STRATA_SYCL_PARITY "Build the kernel parity tests" ON)

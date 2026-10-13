@@ -943,6 +943,12 @@ bool Prefill::init(const core::WeightTable &wt, const core::ModelGeometry &g,
         err = "prefill: the stage's layer range is wrong";
         return false;
     }
+    // remote stage (the shared prefill.hpp, PR #1748): a SYCL worker only reads chunks (set_hand_in, on_chunk); the
+    // sending side - a remote stage's main process or a relay worker - is not in the SYCL build
+    if (remote_send || remote_recv) {
+        err = "prefill: the SYCL build has no remote stage main process or relay worker (remote_send)";
+        return false;
+    }
     for (int b = 0; next_ != nullptr && b < 2; ++b)
         /*
         DPCT1048: The original value cudaHostAllocPortable is not meaningful

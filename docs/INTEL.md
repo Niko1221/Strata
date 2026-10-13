@@ -31,6 +31,43 @@ on the text"). The SYCL numbers are greedy runs of the engine (as in "How to run
 tokens) on engine 0.1.31-sycl (2026-10-01; 0.1.32-0.1.38-sycl reproduce them exactly);
 "Decode round 2" below lists what each change bought.
 
+## Remote stage worker (SYCL)
+
+A SYCL engine can be a remote stage worker for a CUDA or HIP main process; see
+[REMOTE_STAGE.md](REMOTE_STAGE.md#intel-arc-as-a-worker-sycl-build) for the launch commands and requirements.
+It runs the last layers with `--serve --stage-worker PORT --stage-begin K --stream-experts`.
+Every expert of those layers must fit in VRAM. The main process keeps the head and MTP drafter.
+The SYCL build does not support a remote main process (`--remote-stage`), a relay worker
+(`--stage-end` / `--stage-next`) or images (`--vision`) on a worker.
+
+Measured on **2026-10-13, engine 0.1.43.1**, with a CUDA main process:
+
+- **Loopback on trainsv:** Ryzen 9 5900X, 32 GB RAM, RTX 4070 12 GB in a PCIe 4.0 x4 slot as
+  the main process and Arc Pro B70 32 GB x16 as the worker; Ubuntu 24.04, kernel 7.0.0-38,
+  oneAPI 2026.1.1, CUDA 12.8. Qwen3.8-Flash-Next IQ2_XS, K=12: all 18,432 experts of layers
+  12-47 fit in the worker's VRAM (25.02 GiB, 2,335 MiB left), and the main process pins 8.0 GiB
+  of experts with 6,144 cache slots. Decode is about **73-109 tok/s**, against 44-74 on the B70
+  alone (7,296 experts in its pinned host mirror) and 26-32 on the 4070 alone with `--mmap-experts`.
+  A 4K prompt reads at 1,291 tok/s with the split vs 1,204 tok/s on the B70 alone. Split vs B70-alone top-20 mean
+  KL is 0.135, with 83.6% argmax agreement (12 raw texts, 25,256 positions); the B70-vs-4070
+  noise floor is 0.152 / 82.3% (11 texts, 14,096 positions).
+- **OrcaRouter IQ3_XXS on loopback:** the same B70 fits 25 layers at K=23 (12,800 experts,
+  25.94 GiB); 28 layers are 3.2 GiB short and the worker stops at start. With the same 4070
+  main process on `--mmap-experts`, decode is about 36-51 tok/s; the main process is the slow stage.
+- **Two PCs over 2.5 GbE:** llmsv02 (Ryzen 9 7945HX, 60 GB RAM, RTX 5070 Ti 16 GB, CUDA 13.3)
+  as the main process, the trainsv B70 as the worker, OrcaRouter IQ3_XXS, K=23.
+  With `net.ipv4.tcp_slow_start_after_idle=0` on both, decode is about **78-108 tok/s** vs 81-104
+  on the 5070 Ti alone; a 4K prompt reads at 1,145 vs 2,244 tok/s. Mean KL against the 5070 Ti
+  alone is 0.015, with 94.5% argmax agreement (five raw texts, 1,363 positions).
+
+Decode uses five prompts with 256 greedy tokens each, the median of five runs after discarding
+the first of six. Settings: `--max-context 32768 --prefill 4096 --kv int8 --spec 4 --spec-min-p 0.5`,
+`--mtp mtp/rt` on the main process, `STRATA_ROUTE_TAIL_SKIP=0` on CUDA. The two-PC split and
+single-card comparison both omit `--kv-resident`. See the
+[full measurements](REMOTE_STAGE.md#loopback-one-pc-measured-2026-10-13) for memory use, window
+and chunk timings, and the logprob method. A HIP main process, a relay through a SYCL worker,
+images and bf16 hand-off rows were not measured.
+
 ## Setup
 
 On Ubuntu 24.04 or newer, from nothing. The Intel GPU driver (the `xe` or `i915` kernel driver and the compute runtime;

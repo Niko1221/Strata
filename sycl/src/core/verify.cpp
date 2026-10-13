@@ -4,6 +4,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/core/logpos_ids.hpp"   // STRATA_LOGPOS_IDS (measurement, off by default)
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
 #if defined(_WIN32)
@@ -508,7 +509,7 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
     }
     if (le_ < 0) le_ = g.n_layers;
     if (lb_ < 0 || lb_ >= le_ || le_ > g.n_layers || (lb_ > 0 && hand_in_ == nullptr) ||
-        (le_ < g.n_layers && hand_out_ == nullptr)) {
+        ((le_ < g.n_layers || no_head_) && hand_out_ == nullptr)) {
         err = "verify: the stage's layer range or its hand-off buffers are wrong";
         return false;
     }
@@ -1413,7 +1414,7 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
         const char* e = std::getenv("STRATA_FUSE_HEAD_GR");
         return e && e[0] == '1';
     }();
-    const bool fuse_head_gr = fuse_head_gr_env && (le_ == g.n_layers) && (head_ != nullptr && head_->loaded()) &&
+    const bool fuse_head_gr = fuse_head_gr_env && (le_ == g.n_layers) && !no_head_ && (head_ != nullptr && head_->loaded()) &&
                               !cvec().covers(g.n_layers - 1);
     auto post = [&](int64_t l, int grp) -> bool {
         const int tb = tb_[grp], te = te_[grp], n = te - tb;
@@ -1540,7 +1541,7 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
             }
             if (l + 1 < le_ && !pre(l + 1, grp)) return false;
         }
-    if (le_ < g.n_layers) {   // a layer split's earlier stage: hand the residual on, no head
+    if (writes_handoff()) {   // a layer split's earlier stage (or a remote worker's last): hand the residual on, no head
         float* hout = hand_out_ + (size_t) hrow0 * HB;
         copy_from_mapped(hout, R_, (int64_t) T * HC * N, cs);
         copy_from_mapped(hout + (size_t) T * HC * N, bo_, (int64_t) T * N, cs);
@@ -2409,7 +2410,7 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     // own (a captured kernel would replay the same draws forever).  Row t's draw is Philox(seed, pos0 + t): tied to
     // the POSITION it samples, not to how the text was cut into windows, so a seed replays the same text whatever
     // the drafts were. Exact: a rejected row's draw is discarded, and no kept decision depends on a reused draw.
-    if (le_ < g.n_layers) {   // a layer split's earlier stage: the hand-off is written (synced above)
+    if (writes_handoff()) {   // a layer split's earlier stage (or a remote worker): the hand-off is written (synced above)
         ++windows;
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
     }
@@ -2602,6 +2603,8 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
             for (int j = 0; j < topk; ++j)
                 std::fprintf(out, "\t%d:%.6f", order[(size_t) j], (double) row[order[(size_t) j]] - lse);
         }
+        // STRATA_LOGPOS_IDS=<baseline dump> (measurement, off by default): the baseline's top ids at this position
+        if (!strata::core::logpos::write_ids(out, pos0 + t, row, n_vocab_, lse, err)) return false;
         std::fprintf(out, "\n");
     }
     std::fflush(out);
