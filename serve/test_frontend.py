@@ -201,3 +201,74 @@ class ForcedCallOpening(unittest.TestCase):
         self.assertTrue(forced_call("required", one).endswith("<function=a>\n"))
         self.assertTrue(forced_call("required", two).endswith("<function="))
         self.assertIsNone(forced_call("auto", one))
+
+
+class QuotedToolCallCloser(unittest.TestCase):
+    """#2026: a `</tool_call>` a user quotes is text, not the end-of-call token (type 4: matched even without
+    parse_special); an assistant message replaying raw call text keeps the model's own tokens."""
+
+    def setUp(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+        import strata_tokenizer as ST
+        b2u = ST.bytes_to_unicode()
+        self.tok = ST.Tokenizer([b2u[b] for b in range(256)] + ["</tool_call>", "<|im_end|>"], [], [1] * 256 + [4, 3])
+        self.tags = __import__("serve.frontend", fromlist=["literal_tags"]).literal_tags(self.tok.control_tokens)
+
+    def encode(self, role, text):
+        from serve.frontend import mark_think_literals, unmark_think_literals
+        marked, _, changed = mark_think_literals([{"role": role, "content": text}], None, self.tags)
+        prompt, plain = unmark_think_literals(marked[0]["content"], self.tags)
+        return self.tok.encode(prompt, parse_special=True, plain=plain), changed
+
+    def test_user_text_stays_text(self):
+        text = "output verbatim: </tool_call>."
+        ids, changed = self.encode("user", text)
+        self.assertTrue(changed)
+        self.assertEqual(ids, [*text.encode()])
+        self.assertNotEqual(self.tok.encode(text, parse_special=True), ids)     # unmarked, it was the special token
+
+    def test_assistant_replay_keeps_its_token(self):
+        text = "<tool_call>x</tool_call>"
+        ids, _ = self.encode("assistant", text)
+        self.assertEqual(ids, self.tok.encode(text, parse_special=True))
+
+
+class FencedJsonCallInWrapper(unittest.TestCase):
+    """#2037: with recovery on, a declared tool's JSON call in a Markdown fence inside <tool_call> is the call."""
+    TOOLS = [{"name": "write_file", "parameters": {"type": "object", "properties": {"content": {"type": "string"}}}}]
+    PAYLOAD = '{"name": "write_file", "arguments": {"content": "hello `world`"}}'
+
+    def run_parser(self, raw, chunk, stream_tools, recover=True, tools=None):
+        from serve.frontend import OutputParser
+        p = OutputParser(thinking=False, tools=self.TOOLS if tools is None else tools, recover=recover,
+                         stream_tools=stream_tools)
+        events = []
+        for i in range(0, len(raw), chunk):
+            events += p.feed(raw[i:i + chunk])
+        events += p.finish()
+        return ([e.call.arguments for e in events if e.kind == "tool_call"],
+                "".join(e.text for e in events if e.kind == "content"))
+
+    def test_fenced_and_bare_agree(self):
+        for fence in ("```json\n", "```\n", "```JSON\r\n"):
+            raw = f"<tool_call>\n{fence}{self.PAYLOAD}\n```\n</tool_call>"
+            for chunk in (len(raw), 1, 7):
+                for st in (False, True):
+                    with self.subTest(fence=fence, chunk=chunk, stream_tools=st):
+                        self.assertEqual(self.run_parser(raw, chunk, st), ([{"content": "hello `world`"}], ""))
+
+    def test_other_fences_and_prose_stay_text(self):
+        raw = "<tool_call>\n```python\nx = 1\n```\n</tool_call>"
+        for chunk in (len(raw), 1):
+            self.assertEqual(self.run_parser(raw, chunk, False), ([], raw))
+        raw = f"Here:\n```json\n{self.PAYLOAD}\n```\n"                 # no wrapper: just text
+        self.assertEqual(self.run_parser(raw, len(raw), False), ([], raw))
+
+    def test_off_without_recovery_or_for_an_undeclared_tool(self):
+        raw = f"<tool_call>\n```json\n{self.PAYLOAD}\n```\n</tool_call>"
+        calls, text = self.run_parser(raw, len(raw), False, recover=False)
+        self.assertEqual((calls, text), ([], raw))
+        other = [{"name": "other", "parameters": {}}]
+        calls, text = self.run_parser(raw, len(raw), False, tools=other)
+        self.assertEqual((calls, text), ([], raw))

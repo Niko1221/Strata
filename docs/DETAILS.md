@@ -563,8 +563,9 @@ server, three server options (all off by default; also as keys in `strata-<model
 | `--idle-unload 600` | `"idle_unload_s": 600` | unload the model after 600 s without requests; the next request loads it again |
 | `--min-free-vram-mib 11000` | `"min_free_vram_mib": 11000` | load an unloaded model only when that much VRAM is free (it waits up to 15 s for memory being given back), else answer **503** "the GPU is in use by another program" instead of starting into what a game left (with several GPUs it checks the first one) |
 | `--before-load "cmd"` | `"before_load": "cmd"` or `["cmd", "arg"]` | a command run before the model is loaded again, e.g. one that unloads another server's model |
+| | `"before_load_timeout_s": 120` | how long that command may run (default 120 s). When it exits non-zero or times out (a peer that is not running makes `curl` exit 7), the free VRAM decides: with `min_free_vram_mib` set and not enough free, the model is **not** loaded and the request gets **503** with `Retry-After`; with room (or no limit set) it loads, with a warning in the log. `"before_load_strict": true` always refuses on a failure; `"before_load_ignore_failure": true` always loads |
 
-`POST /unload` unloads it now (`409` while a request is running) and `POST /load` loads it ahead of a request (both
+`POST /unload` unloads it now (`409` while a request is running; `POST /unload?wait=1` waits for the running turn first, up to 300 s, or `?wait=<seconds>`, so a second server can really free the card) and `POST /load` loads it ahead of a request (both
 with `Content-Type: application/json`, e.g. `curl -X POST -H "Content-Type: application/json" localhost:8080/unload`);
 `/health` says `"loaded"`, `/v1/models` lists it as `unloaded` (like llama.cpp's router), `/props` sets
 `is_sleeping` and the Monitor shows the state. Unloading ends the engine process - and the image encoder, when images
@@ -640,6 +641,28 @@ flat (59.9% to 63.0%) and decode fell from 40.9 to 16.6 tok/s. Every step there 
 with the fallback off it still starts and degrades instead of failing - the slack left for the rest of the card is
 worth more than the extra slots, which is the same ordering measured above (enkynakamura, #781; one 256-token sample
 per step, so the upper rows are noisy).
+
+**The free figure moves after startup.** The `... MiB of VRAM free with everything loaded` line is read before the
+verify windows are captured (each captured window, and each `--batch` slot layout, takes some tens of MiB: 538 MiB at
+that line was 395 MiB after the last capture in #2065, an RTX 4090 D with `--batch 2` at 262,144 context). Below about
+a gigabyte on Windows the driver can page GPU memory to system RAM instead of failing: decode fell from 91 to 3 tok/s
+at 70K tokens and then a window never finished, the watchdog stopping the engine after 60 s. From 0.1.43.1 each request
+re-reads the free VRAM, says `WARNING: only N MiB of VRAM free at the start of this request` once it is under 1 GiB
+(512 MiB elsewhere) with the `--vram-reserve-mib` that would leave room, and the stall report prints the figure. The
+engine only says it; the fix is a larger `--vram-reserve-mib`, a smaller `--max-context` or `--batch`, or
+`Prefer No Sysmem Fallback` for the engine.
+
+**A stall named "request" can be the OS paging the engine's own memory.** Before a request that switches
+conversation, the engine parks the outgoing one in RAM: copies of its running checkpoints and K/V, which then sit in
+ordinary memory until the conversation comes back. On a 64 GB PC with `--resident-budget-gib 40`, an 8 GiB conversation
+cache and a 256K context, the working set was 8-30 GB of 56 GB committed and the engine took about 190 page faults
+a second (under 1 MB/s if each is a pagefile read) in #2049: one silent step of more than 60 s, five times, on 0.1.41
+and 0.1.43 alike (thread dumps: the main thread inside the copy of the checkpoints, at the same instruction each time). The log's `verify window (last window, not the
+current stage) ... host at layer step 48; the GPU rang 48` line in that report is the previous request's last window,
+not the stalled one. From 0.1.43.1 the park is named in the stage (`request: parking the previous conversation`), its
+copies report progress to the watchdog, and Windows counts page faults at 8 a unit instead of 64 when it decides
+whether the file tier is busy. The cure for the slowness itself is memory: a smaller `--resident-budget-gib`, a smaller
+`--conversation-cache-mib`, or the pagefile on an SSD.
 
 ---
 
@@ -1696,20 +1719,34 @@ the pairs in which the switched arm won). They are here so you can try them on y
   -0.1% (5/6). Boxes that hold all experts in RAM never use the stage buffers.
 - **`STRATA_ADAPT_LAG=2`: the adaptive tier's copies are waited for one window later** (#764). Decode, 6 pairs: Tesla P100
   (PCIe 3.0 x16) +3.5% (6/6 pairs faster), RTX 5070 +0.2% (4/6), RTX 3060 -1.3% (0/6), so it stays opt-in.
-- **`STRATA_ADAPT_OVERLAP` (CUDA on Linux: on, `=0` turns it off; CUDA on Windows and HIP: `=1` turns it on, since an RTX 5070 on Windows decoded Q2_0 2.6% slower with it and IQ3_XXS no faster): the adaptive tier's copies land while the next
+- **`STRATA_ADAPT_OVERLAP` (`=1` turns it on, on every backend; the startup log names the state and, when it cannot run, why): the adaptive tier's copies land while the next
   window runs, with the same tokens.** The window takes the swaps at the same moment as with #463's wait (so the same experts run
   on the GPU and the CPU in every window), but the copies go in layer order and the verify window holds a layer's plan back
   until that layer's copies have landed, instead of the whole window waiting for the round (about 10 ms every fourth window on
   an A4000, PCIe 3.0 x16). One GPU, the whole arena in RAM, no `--adapt-async`, `--pipeline-windows`, `STRATA_ADAPT_LAG`,
-  `STRATA_ADAPT_NOWAIT` or `STRATA_DMA_BATCH`; otherwise the log says why it is off. RTX A4000, 6 interleaved pairs each,
-  decode median tok/s: Q2_0 16 GB 62.5 -> 66.2 (+5.9%), Q2_0 as a 12 GB card 51.3 -> 54.2 (+5.7%), IQ3_XXS 16 GB 48.6 -> 52.6 (+8.3%),
-  IQ3_XXS as 12 GB 39.3 -> 41.5 (+5.5%), 6/6 pairs faster every time.
+  `STRATA_ADAPT_NOWAIT` or `STRATA_DMA_BATCH`. On by default on CUDA on Linux since 0.1.43, opt-in on Windows and HIP;
+  opt-in on every backend since #2010, after an RTX 5090 Laptop lost 21% decode with it. What it is worth per box: an RTX A4000 (6
+  interleaved pairs each, decode median tok/s: Q2_0 16 GB 62.5 -> 66.2 (+5.9%), Q2_0 as a 12 GB card 51.3 -> 54.2 (+5.7%),
+  IQ3_XXS 16 GB 48.6 -> 52.6 (+8.3%), IQ3_XXS as 12 GB 39.3 -> 41.5 (+5.5%), 6/6 pairs faster every time) and a Tesla P100
+  (+4.4%) gain, but an RTX 5070 on Windows loses 2.6% on Q2_0 (IQ3_XXS no faster) and an RTX 5090 Laptop (WSL2, Core Ultra 9
+  275HX, native IQ3_XXS pack, `--expert-cache-per-layer`) loses 21%: 84.6 vs 106.6 tok/s medians of 5 generations of 256
+  tokens from one build, the slowest of the fast run above the fastest of the slow one (#2010).
+- **`STRATA_ADAPT_CALLBACK_WARMUP` (Linux, on by default since 0.1.43.1; =0 turns it off): start the GPU host-callback thread before the CPU
+  pool pins the host thread.** A callback thread created later can inherit the host's one-CPU affinity and compete
+  with the verifier spinning for its signal (#1975). The warm-up runs and synchronizes one no-op host callback before
+  constructing the pool; swap selection, per-layer callbacks and residency updates stay unchanged. On an RTX 5090 /
+  Ryzen 9 9950X, a paired 4K three-prompt test averaged 142.82 -> 207.75 tok/s. Other GPUs and drivers remain untested;
+  see the [reproducer, settings and limitations](../bench/results/2026-10-11-rtx-5090-callback-affinity/README.md).
+- **`STRATA_ADAPT_SIGNAL=host`: the overlap's per-layer "landed" signal as a host function** (the 0.1.43 way). From 0.1.43.1 the default is a
+  4-byte stream-ordered copy into pinned memory, which needs no driver callback thread: on a 20-core desktop (RTX 3060) the host
+  functions still cost ~7 ms per window with the thread started early, because the pool's workers occupy every other CPU.
 
 ## Thread placement: `--aux-cpus` (Linux, off by default)
 
 The CPU pool pins its workers (one logical CPU per physical core) and the host thread pins itself to the pool's reserved
 core. A thread the engine starts after that inherits the host's one CPU: the adaptive tier's job thread, the prefill
-helpers, the router look-ahead. The threads the CUDA driver starts are free to run on any CPU, the workers' included.
+helpers, the router look-ahead. CUDA driver threads created before pinning can run on any allowed CPU, the workers'
+included; a lazily created host-callback thread can instead inherit the pinned host's one CPU (see the warm-up above).
 `--aux-cpus` puts every thread that is neither a pool worker nor the host thread on spare CPUs. It moves threads only and
 never changes a result.
 
@@ -1829,7 +1866,7 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 - **RAM:** all 24,576 experts, pinned. The CPU computes the experts that are not on the GPU **in place**, at the same time
   as the GPU works on the cached ones (AVX-512 / AVX2 kernels, ggml's for the i-quants).
 - **SSD:** the 28.8 GB n-gram table, a few rows per token, read unbuffered past the OS cache (`--ple-io direct`, the
-  default, made for SSDs; on a rotational disk `--ple-io ram` keeps the table in RAM, #605). The engine reads the table
+  default, made for SSDs; on a rotational disk `--ple-io ram` keeps the table in RAM, #605). A start-up probe warns when direct reads measure slow (under 15K rows/s) but never switches by itself (since 0.1.43.1; `STRATA_PLE_AUTO_MMAP=1` brings back the 0.1.42 switch to `--ple-io mmap`): the bar is calibrated for NVMe, a SATA SSD tops out at 10-14K rows/s with direct's 16 reads in flight, and on one (Linux, 77.8K-token prompt) mmap read 2.1K rows/s against direct's 14.4K (#2040), while on a Windows box with a slow mapped file mmap stalled prompts (#1984). The engine reads the table
   in the format the GGUF has it: IQ4_NL (the default table), Q4_0, Q5_0, Q5_1, Q8_0, FP8 (E4M3 with a scale) or BF16.
   Measured on 4,000 random rows against the checkpoint's own BF16 table, the mean per-row error is Q8_0 0.53%, FP8 2.64%,
   Q5_1 3.78%, Q5_0 4.25%, IQ4_NL 7.60%, Q4_1 7.80%, Q4_0 8.55% (a Q8_0 table is 54 GB, an IQ4_NL one 28.8 GB). On the Q2_0 model, 700 teacher-forced tokens, the mean KL against the BF16 table is 0.0117 (Q5_0), 0.0121 (Q5_1), 0.0125

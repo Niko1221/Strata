@@ -242,7 +242,11 @@ THINK_TAGS = {"<think>": "\U000F0E01", "</think>": "\U000F0E02"}
 # the same special ids, so text with <|vision_start|><|image_pad|> before a picture took that picture's embeddings
 VISION_TAGS = {"<|vision_start|>": "\U000F0E03", "<|image_pad|>": "\U000F0E04", "<|vision_end|>": "\U000F0E05",
                "<|video_pad|>": "\U000F0E06"}
-LITERAL_TAGS = {**THINK_TAGS, **VISION_TAGS}
+# #2026: `</tool_call>` the same way.  A user asking for the string verbatim handed the model the real end-of-call token
+# (type 4, matched everywhere); it copied that token into its answer and the reply came back empty.  An assistant
+# message keeps its own: a client replaying the model's raw call text sends the tokens the model wrote.
+TOOL_LITERAL_TAGS = {"</tool_call>": "\U000F0E07"}
+LITERAL_TAGS = {**THINK_TAGS, **VISION_TAGS, **TOOL_LITERAL_TAGS}
 THINK_MARKS = {v: k for k, v in LITERAL_TAGS.items()}
 CONTROL_MARK0 = 0xF0E10      # the control tokens' marks start here, clear of the two sets above
 
@@ -292,17 +296,19 @@ def mark_think_literals(messages: list[dict], tools: list[dict] | None, tags: di
     if not _has_tag(messages, tags) and not _has_tag(tools, tags):
         return messages, tools, False
     out = []
+    own = {t: v for t, v in tags.items() if t not in TOOL_LITERAL_TAGS}     # what an assistant message keeps as written
     for m in messages:
         m = dict(m)
         content = m.get("content")
+        mine = own if m.get("role") == "assistant" else tags
         for k, v in m.items():
             if k != "role":
-                m[k] = _mark_deep(v, tags)
+                m[k] = _mark_deep(v, mine)
         if m.get("role") == "assistant" and isinstance(content, str) and content.lstrip().startswith("<think>") \
                 and "</think>" in content:
             i, j = content.index("<think>") + len("<think>"), content.index("</think>")
-            m["content"] = (content[:i] + _mark(content[i:j], tags) + "</think>" +
-                            _mark(content[j + len("</think>"):], tags))
+            m["content"] = (content[:i] + _mark(content[i:j], own) + "</think>" +
+                            _mark(content[j + len("</think>"):], own))
         out.append(m)
     return out, _mark_deep(tools, tags), True
 
@@ -716,9 +722,17 @@ def function_end(text: str) -> int:
             return -1
 
 
+_JSON_FENCE = re.compile(r"```[ \t]*(?:json)?[ \t]*\r?\n\s*", re.I)
+
+
 def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
     """`{"name": N, "arguments": {...}}` (or "parameters", or the arguments as a JSON string) of a declared tool -> its
-    call; anything else -> None."""
+    call; anything else -> None.  #2037: the object may sit in a Markdown fence (```json ... ```)."""
+    body = body.strip()
+    m = _JSON_FENCE.match(body)
+    if m:
+        body = body[m.end():].rstrip()
+        body = body[:-3] if body.endswith("```") else body
     try:
         obj = json.loads(body)
     except ValueError:
@@ -822,6 +836,15 @@ class OutputParser:
             return "param" if after[len(PARAM_START):gt] in self.schemas else "text"
         if after.startswith("{"):
             return "json" if self.schemas else "text"
+        if after.startswith("```") or (after and "```".startswith(after)):
+            # #2037: the JSON call inside a Markdown fence (```json ... ```) in the explicit wrapper
+            m = _JSON_FENCE.match(after)
+            if m:
+                rest = after[m.end():]
+                if rest.startswith("{"):
+                    return "json" if self.schemas else "text"
+                return "wait" if not rest else "text"
+            return "wait" if "\n" not in after else "text"
         if not after or FUNC_START.startswith(after) or PARAM_START.startswith(after):
             return "wait"
         return "text"

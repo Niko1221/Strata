@@ -49,6 +49,14 @@ struct AdaptGate {
     std::atomic<bool> active{false};
     std::vector<uint8_t> has;             ///< per layer: a swap copies into this layer's slots
     std::vector<Tick> ticks;              ///< host-function contexts, one per layer and the final one (stable storage)
+    const int32_t* dvals = nullptr;       ///< device [0..n_layers]: the source of those copies
+    volatile int32_t* hland = nullptr;   ///< pinned host int the copy stream writes (a D2H copy of the layer number), instead of a host function; null: host functions
+    int32_t reached() const {
+        const int32_t a = landed.load(std::memory_order_acquire);
+        if (hland == nullptr) return a;
+        const int32_t b = *hland;
+        return a > b ? a : b;
+    }
 };
 
 class NativeHead;
