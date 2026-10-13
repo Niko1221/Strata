@@ -2895,11 +2895,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     }
                     // STRATA_QSA_DUMP=<file>: append every QSA layer's selected cells for the prompt's last
                     // STRATA_QSA_DUMP_LAST (4096) positions - records of int32 {qsa layer, pos0, T, cap} + T*cap cells,
-                    // for tools/qsa_locality.py (how local the sparse attention's reads are: the KV-streaming question)
+                    // for tools/qsa_locality.py (how local the sparse attention's reads are: the KV-streaming question).
+                    // STRATA_QSA_DUMP_LAYER=i: QSA layer i only; STRATA_QSA_DUMP_STEPS=1: each record then ends with the
+                    // T * kStepCount steps too (tests/cuda/pa_bench.cpp replays such a record)
                     if (static const char* dump = std::getenv("STRATA_QSA_DUMP"); dump != nullptr) {
                         static const long long last = std::getenv("STRATA_QSA_DUMP_LAST")
                                                           ? std::atoll(std::getenv("STRATA_QSA_DUMP_LAST")) : 4096;
-                        if (p0 + T > pos0 + n - last) {
+                        static const int only = std::getenv("STRATA_QSA_DUMP_LAYER") ? std::atoi(std::getenv("STRATA_QSA_DUMP_LAYER")) : -1;
+                        if (p0 + T > pos0 + n - last && (only < 0 || only == (int) qsa_index)) {
                             std::vector<int32_t> h((size_t) (T * m.cap));
                             cudaMemcpyAsync(h.data(), m.sel_ids, h.size() * 4, cudaMemcpyDeviceToHost, m.cs);
                             cudaStreamSynchronize(m.cs);
@@ -2907,6 +2910,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 const int32_t hdr[4] = {(int32_t) qsa_index, (int32_t) p0, (int32_t) T, (int32_t) m.cap};
                                 std::fwrite(hdr, 4, 4, f);
                                 std::fwrite(h.data(), 4, h.size(), f);
+                                if (std::getenv("STRATA_QSA_DUMP_STEPS")) {
+                                    std::vector<int32_t> sv((size_t) (T * strata::kernels::kStepCount));
+                                    cudaMemcpy(sv.data(), m.steps_dev, sv.size() * 4, cudaMemcpyDeviceToHost);
+                                    std::fwrite(sv.data(), 4, sv.size(), f);
+                                }
                                 std::fclose(f);
                             }
                         }
