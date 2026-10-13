@@ -735,6 +735,11 @@ struct Options {
     /// FW-1: --prompt-cache-dense-tail N - dense checkpoint cadence in the last N tokens
     /// (sparse max(every, 8192) head; 0 = off = today's uniform cadence).  Needs every > 0.
     int64_t prompt_cache_dense_tail = 0;
+    /// FW-2b: --prompt-cache-state-every N - fine-cadence STATE-only checkpoints
+    /// (gdn/ple/tails/dead/block_pos, no K/V; ~100-150ms each).  They shrink the
+    /// fail-close gap when an edit lands deeper than every periodic anchor.  A side
+    /// pool (never LRU-evicts the deep periodic anchors).  0 = off = today.
+    int64_t prompt_cache_state_every = 0;
     bool prompt_cache_tail = false;   // optional extra checkpoint at an existing near-tail chunk boundary
     bool prompt_cache_spread = false;   ///< --prompt-cache-spread: keep checkpoints spread back from the end, not the latest
     /// --serve: a prompt read from token 0 is also checkpointed at its first turn boundary - the end of the system
@@ -945,6 +950,10 @@ void usage() {
                  "  --prompt-cache-spread  --serve: keep the checkpoints spread back from the conversation's end (dense\n"
                  "                       near it, thinner further back) instead of the most recently used: a client that\n"
                  "                       rewrites its history N tokens back reads about N again, not the whole conversation\n"
+                 "  --prompt-cache-state-every N  --serve: also save lightweight state-only checkpoints every N\n"
+                 "                       prompt tokens (the running state, no K/V copy - cheap).  An edit deeper than\n"
+                 "                       every regular checkpoint restores from the nearest one of these instead of\n"
+                 "                       re-reading the whole gap.  0 = off\n"
                  "  --turn-token ID      --serve: the token that opens a chat turn (default 248045, <|im_start|>)\n"
                  "  --tail-role-token ID --serve: a turn of this role right before the last turn is left out of\n"
                  "                       the conversation checkpoint (a trailing effort turn; default -1 = off)\n"
@@ -2562,6 +2571,7 @@ int main(int argc, char** argv) {
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
         else if (a == "--prompt-cache-spread") o.prompt_cache_spread = true;
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
+        else if (a == "--prompt-cache-state-every") o.prompt_cache_state_every = std::max(0LL, std::atoll(next("--prompt-cache-state-every")));
         else if (a == "--prompt-cache-dense-tail") o.prompt_cache_dense_tail = std::max(0LL, std::atoll(next("--prompt-cache-dense-tail")));
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
@@ -8841,6 +8851,13 @@ int main(int argc, char** argv) {
         // --prefill-pipe: the plan of the prompt segment being read (read_part sets it around its runs), for the
         // checkpoints taken inside it
         ConvCheckpoint::PromptPlan seg_plan;
+        // FW-2b: fine-cadence state-only checkpoints.  A SIDE pool: the periodic `checks`
+        // list is LRU-capped at o.prompt_cache, and fine checkpoints there would evict the
+        // deep anchors the splice mounts.  Each entry is state only (checkpoint_save copies
+        // gdn/ple/tails/dead/block_pos - no K/V; T19 measured ~100-150ms per save), so the
+        // pool is capped by bytes, not count.  Cleared together with checks on every reset.
+        std::vector<ConvCheckpoint> state_checks;
+        int64_t state_next = INT64_MAX;   // the fine-cadence ladder (INT64_MAX = off)
         bool cvec_cached = true;   // the control vector's state the live session and the checkpoints were read with
         // without --mtp the conversation cache stays on: a parked image carries the draft layer's K/V only when there is one
         // (the snapshots accept a null draft)
@@ -9418,6 +9435,37 @@ int main(int argc, char** argv) {
                         pp_next_check = done + o.prompt_cache_every;   // original cadence
                 }
                 if (tail_checkpoint) pp_tail_saved = true;
+            }
+            // FW-2b: the fine-cadence state-only capture.  state_cadence_next clamps to
+            // n, and `done < n` in the gate below, so a capture never lands at the live
+            // conversation's end.  A state checkpoint is ~100-150ms (T19: sync 0.0ms,
+            // save only) - at 256-token cadence that is ~0.6s per 1k fresh tokens, the
+            // price of a <=256-token fail-close gap instead of up to `every`.
+            if (o.prompt_cache_state_every > 0 && done >= state_next && done < pp_total) {
+                ConvCheckpoint sc;
+                sc.ids.assign(cur.begin(), cur.begin() + done);
+                sc.imgs = imgs_below(req_imgs, done);
+                if (gpu_sync_ok() && checkpoint_save(sc, ss, g)) {
+                    sc.used = ++check_clock;
+                    state_checks.push_back(std::move(sc));
+                    // byte cap, not count: state blobs are small but not free; 256 MiB
+                    // of running-state history is already thousands of anchors.
+                    int64_t state_bytes = 0;
+                    for (const ConvCheckpoint& k : state_checks) state_bytes += (int64_t) k.bytes();
+                    while (!state_checks.empty() && state_bytes > 256 << 20) {
+                        state_bytes -= (int64_t) state_checks.front().bytes();
+                        state_checks.erase(state_checks.begin());   // oldest first
+                    }
+                    state_next = suffix::state_cadence_next(done, pp_total, o.prompt_cache_state_every);
+                    if (o.cache_suffix_reuse > 0)
+                        std::fprintf(stderr, "[SFX-DBG] state-ckpt: L=%lld pool=%zu\n",
+                                     (long long) done, state_checks.size());
+                } else {
+                    // fail-open on the SIDE pool only: a failed state capture must not
+                    // fail the request (the periodic anchors are untouched).  Retry at
+                    // the next boundary.
+                    state_next = suffix::state_cadence_next(done, pp_total, o.prompt_cache_state_every);
+                }
             }
             return true;
         };
@@ -11981,6 +12029,7 @@ int main(int argc, char** argv) {
                 const size_t n_checks = checks.size();
                 live_ok = false;
                 checks.clear();
+                state_checks.clear();   // FW-2b: the side pool dies with the session state it describes
                 tail_ckpt_len = -1;
                 const size_t n_parked = conversations.clear();
                 size_t n_slots = 0, n_running = 0;
@@ -12373,10 +12422,12 @@ int main(int argc, char** argv) {
                     live.clear();
                     live_imgs.clear();
                     checks.clear();
+                    state_checks.clear();   // FW-2b
                     resume = 0;
                     from_live = false;
                 } else {
                     checks.clear();   // the main session's checkpoints were of the conversation it held before
+                    state_checks.clear();   // FW-2b: same conversation, same fate
                     // a read that gave way, the same request again (into its own slot): on with it - its segments and
                     // checkpoints as if it had not stopped
                     if (slot_ck == nullptr && bs[(size_t) slot_source].partial && admit_slot == slot_source) {
@@ -12625,6 +12676,7 @@ int main(int argc, char** argv) {
             if (want_cvec != cvec_cached) {
                 live_ok = false;
                 checks.clear();
+                state_checks.clear();   // FW-2b
                 cvec_cached = want_cvec;
             }
             if (strata::kernels::cvec().loaded()) strata::kernels::cvec_set_enabled(want_cvec);
@@ -12637,6 +12689,13 @@ int main(int argc, char** argv) {
                 ckpt_pool.erase_if(checks, off_path);
             else
                 checks.erase(std::remove_if(checks.begin(), checks.end(), off_path), checks.end());
+            // FW-2b: the side pool follows the same validity rule as checks - a state
+            // checkpoint is only a mount candidate while it is a prefix of THIS prompt.
+            // (state-only entries carry no K/V, but their running state describes exactly
+            // the tokens [0, L); restoring one for a non-prefix would corrupt the recurrence.)
+            state_checks.erase(std::remove_if(state_checks.begin(), state_checks.end(), [&](const ConvCheckpoint& c) {
+                             return (int64_t) c.ids.size() > resume || !starts_with(c.ids, c.imgs);
+                         }), state_checks.end());
             live_ok = false;   // until this request has finished, the session is in between
             // the elastic K/V: the outgoing session is parked and this request rewrites every cell from `resume` on,
             // so cells past this prompt's are no longer anyone's - far more than it needs go back to the cache
@@ -12703,6 +12762,11 @@ int main(int argc, char** argv) {
                     std::vector<int64_t> chain_lengths;
                     chain_lengths.reserve(checks.size());
                     for (const ConvCheckpoint& c : checks) chain_lengths.push_back((int64_t) c.ids.size());
+                    // FW-2b: the two-pool pick - the fine-cadence state-only pool competes
+                    // with the periodic anchors; the deepest <= P across both wins.
+                    std::vector<int64_t> state_lengths;
+                    state_lengths.reserve(state_checks.size());
+                    for (const ConvCheckpoint& c : state_checks) state_lengths.push_back((int64_t) c.ids.size());
                     // [SFX-FIX 2026-10-12 v3] The anchor-restore variant (restore the parked
                     // image's end state at L, read [P, n)) produced WRONG ANSWERS: the parked
                     // image's running state (GDN/PLE recurrence) summarizes the OLD sequence
@@ -12717,8 +12781,8 @@ int main(int argc, char** argv) {
                         std::fprintf(stderr, "[SFX-DBG] anchor(v3): partial mount routed through narrowed_resume_target (state@L is stale; restoring deepest checkpoint <= P=%lld)\n",
                                      (long long) splice_narrowed_resume);
                     {
-                        splice_target = suffix::narrowed_resume_target(
-                            splice_narrowed_resume, chain_lengths);
+                        splice_target = suffix::narrowed_resume_target_state(
+                            splice_narrowed_resume, chain_lengths, state_lengths);
                         // T18 (2026-10-13): replay-gated gap read.  dt-steady5 proved reading
                         // [P, n) on state@checkpoint loses the gap [ckpt, P) from the GDN/PLE
                         // recurrence (C under-counted the ledger; gap 826 tokens).  Fail-closed
@@ -12773,6 +12837,12 @@ int main(int argc, char** argv) {
                         if ((int64_t) k.ids.size() == resume && starts_with(k.ids, k.imgs)) { c = &k; lent = true; }
                 if (!lent) lent_slot = -1;
                 if (c != nullptr) c->used = ++check_clock;   // mounting through it is the use LRU counts
+                // FW-2b: the pick may have come from the side pool.  Same restore call
+                // (checkpoint_restore replays gdn/ple/tails/dead/block_pos into the session;
+                // the arena K/V below the pick is unchanged by it, so a state-only entry
+                // restores exactly like a periodic one).
+                if (c == nullptr)
+                    for (ConvCheckpoint& k : state_checks) if ((int64_t) k.ids.size() == resume) c = &k;
                 static const bool reread = std::getenv("STRATA_CKPT_REREAD") != nullptr;
                 if (reread && c != nullptr) {
                     // THE CHECK OF THE CHECKPOINT: instead of restoring it, read its tokens again from position 0 in
@@ -12872,6 +12942,11 @@ int main(int argc, char** argv) {
                 (o.prompt_cache_dense_tail > 0
                      ? suffix::dense_tail_next_check(resume, n, o.prompt_cache_every, o.prompt_cache_dense_tail)
                      : resume + o.prompt_cache_every);   // ckpt=0: none
+            // FW-2b: the fine-cadence state ladder starts at the resume position too -
+            // same per-request rule as pp_next_check (T21's lesson: a cross-request
+            // carryover starves warm reads of their anchors).
+            state_next = reread_to > 0 || !req_ckpt ? INT64_MAX :
+                suffix::state_cadence_next(resume, n, o.prompt_cache_state_every);
             pp_tail_saved = reread_to > 0 || !req_ckpt;   // ckpt=0 (#861): no tail checkpoint either
             {
                 std::lock_guard<std::mutex> lk(part_mu);
