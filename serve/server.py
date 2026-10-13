@@ -63,7 +63,7 @@ sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a
 from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
-from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
+from serve.mcp import MAX_RESULT_IMAGES, McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from strata_control import engine_component  # noqa: E402
 from strata_control import hipblaslt_tuning  # noqa: E402
@@ -4603,6 +4603,63 @@ class Service:
         finally:
             self.fifo.release()
 
+    # A client that runs the MCP server itself (Chatbox, and other clients built on the AI SDK) hands a tool's
+    # picture back as text: for a chat-completions upstream the SDK JSON-stringifies a `content` tool output, so the
+    # base64 of the picture lands in the tool message and costs ~1.4 tokens a character - one photo of a chat was
+    # 1,491,022 tokens, a prompt no context holds.  A long enough base64 run in a tool's text that decodes to a
+    # picture therefore goes to the encoder as a picture, the way serve/mcp.py sends a picture on Strata's own MCP
+    # path.  The text keeps the line naming it, so the model still knows what it is looking at, and the caps are the
+    # MCP ones (serve/mcp.py's MAX_RESULT_IMAGES, this file's IMAGE_URL_MAX).
+    BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{1024,}={0,2}")   # 1024 characters: a 32x32 PNG and everything bigger
+    IMAGE_MAGICS = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"BM", "image/bmp"),
+                    (b"GIF89a", "image/gif"), (b"GIF87a", "image/gif"))
+
+    @classmethod
+    def _picture_kind(cls, data: bytes) -> str | None:
+        """These bytes' image type, or None when they are not a picture.  The magic is checked rather than a
+        client's label, because the run may be any long base64 a tool printed: a checksum, a font, a zip."""
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "image/webp"                             # the encoder converts it (needs Pillow)
+        for magic, mime in cls.IMAGE_MAGICS:
+            if data.startswith(magic):
+                return mime
+        return None
+
+    def _lift_pictures_from_tool_text(self, messages) -> int:
+        """`messages` in place: a tool message whose text hides a picture gets that picture as the prompt's image
+        part, its base64 replaced by the line naming it; -> how many pictures were taken.  Only a tool's own text:
+        a user who writes base64 into a message means the text, and a client that can send a picture already does."""
+        taken = 0
+        for i, m in enumerate(messages):
+            text = m.get("content")
+            if m.get("role") != "tool" or not isinstance(text, str) or len(text) < 1024:
+                continue
+            parts, pos, kept = [], 0, 0
+            for run in self.BASE64_RUN.finditer(text):
+                blob = run.group(0)
+                try:
+                    data = base64.b64decode(blob + "=" * (-len(blob) % 4))
+                except ValueError:                          # not a whole base64 group: ordinary text
+                    continue
+                mime = self._picture_kind(data)
+                if mime is None:
+                    continue
+                kept += 1
+                why = (f"is over {IMAGE_URL_MAX >> 20} MiB" if len(data) > IMAGE_URL_MAX else
+                       f"is past the {MAX_RESULT_IMAGES} pictures one result may carry"
+                       if kept > MAX_RESULT_IMAGES else "")
+                note = f"[image ({mime}, {len(data):,} bytes)" + (f": {why}, not shown to the model]" if why else "]")
+                parts.append({"type": "text", "text": text[pos:run.start()] + note})
+                pos = run.end()
+                if not why:
+                    parts.append({"type": "image", "source": f"data:{mime};base64,{blob}"})
+                    taken += 1
+            if not parts:
+                continue
+            parts.append({"type": "text", "text": text[pos:]})
+            messages[i] = {**m, "content": [p for p in parts if p["type"] == "image" or p["text"]]}
+        return taken
+
     def _note_unreadable_tool_images(self, messages, cancel=None):
         """A picture a tool returned (Claude Code's Read of an image file) that this server cannot read - it has no
         image encoder, or the encoder refuses that picture - becomes a short note in its place instead of a 400.
@@ -4647,6 +4704,9 @@ class Service:
         prompt; with thinking, Service.run writes it once the thinking is over."""
         # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
         # between pictures and raise ClientGone
+        lifted = self._lift_pictures_from_tool_text(messages)
+        if lifted:
+            print(f"[strata] {lifted} picture(s) a tool had left as base64 text were taken out of its text", flush=True)
         fetched = self._note_unreadable_tool_images(messages, cancel)
         ids = encoded_ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
@@ -5510,9 +5570,11 @@ def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
                  mcp_names):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
-    the call and its result to the conversation and lets the model continue - up to `max_rounds` times.  Yields what
-    Service.run yields (text, thinking, the request's own tool calls) plus ("mcp", {...}) for the tool activity, and
-    one ("done", ...) at the very end with the output tokens of every round.
+    the call and its result to the conversation and lets the model continue - up to `max_rounds` times.  A result that
+    carried pictures adds them to the conversation as the prompt's image parts, so the model sees them instead of a
+    line saying a picture was there (serve/mcp.py).  Yields what Service.run yields (text, thinking, the request's own
+    tool calls) plus ("mcp", {...}) for the tool activity, and one ("done", ...) at the very end with the output
+    tokens of every round.
 
     `mcp_names`: the MCP tools this request offered; any other call is one of the request's own tools and ends the
     turn as always (the client answers it).  MCP calls written in the same answer are then not run (their results
@@ -5579,17 +5641,22 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             if "r" not in box:
                 break
             r = box["r"]
-            print(f"[strata] tool {c.name}: {'ok' if r['ok'] else 'error'}, {r['chars']:,} characters in "
+            n_pic = len(r["images"])
+            pics = f", {n_pic} picture{'s' if n_pic != 1 else ''} for the model" if n_pic else ""
+            print(f"[strata] tool {c.name}: {'ok' if r['ok'] else 'error'}, {r['chars']:,} characters{pics} in "
                   f"{r['ms'] / 1000:.1f} s{' (truncated for the model)' if r['truncated'] else ''}", flush=True)
-            results.append(r["text"])
-            yield "mcp", {"event": "result", "id": c.id, **{k: r[k] for k in ("ok", "text", "chars", "truncated", "ms")}}
+            results.append(r)
+            yield "mcp", {"event": "result", "id": c.id,
+                          **{k: r[k] for k in ("ok", "text", "chars", "truncated", "ms")},
+                          **({"images": r["images"]} if n_pic else {})}
         if cancel.is_set() or len(results) < len(calls):
             done = {**done, "finish": "cancel"}
             break
         messages.append({"role": "assistant", "content": "".join(text).strip(),
                          **({"reasoning_content": "".join(reasoning).strip()} if reasoning else {}),
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]})
-        messages += [{"role": "tool", "content": r} for r in results]
+        # a result's pictures ride along as the prompt's image parts (serve/mcp.py's result_parts)
+        messages += [{"role": "tool", "content": r["parts"] or r["text"]} for r in results]
         try:
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req, cancel=cancel)
         except ClientGone:                                      # #1999: the client left while a picture was prepared

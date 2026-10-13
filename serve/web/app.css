@@ -64,6 +64,8 @@ main { flex: 1; min-height: 0; display: flex; }
 .tool-call__pre { margin: 0; padding: 10px 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
                   font: 400 12.5px/1.5 var(--st-font-mono); color: var(--st-ink-soft); background: var(--st-surface);
                   border: 1px solid var(--st-line-soft); border-radius: var(--st-r-sm); }
+.tool-call__imgs { display: flex; flex-wrap: wrap; gap: var(--st-s-2); margin: var(--st-s-1) 0 var(--st-s-2); }
+.tool-call__imgs img { max-width: 220px; max-height: 180px; border-radius: var(--st-r-md); border: 1px solid var(--st-line); }
 
 .composer-wrap { flex: none; padding: 0 var(--st-s-6) var(--st-s-6); }
 .st-composer { max-width: 860px; margin: 0 auto; }
