@@ -1,0 +1,13 @@
+arm upstream-a0116b27: <work>/strata-tmp/kl/upstream-a0116b27.tsv exists, skipped
+arm pr-caa9b001: ready in 16 s
+  code16k: prefix 13.6 s (DONE 1 16384 13520.7 51.8 stop 0 0 0 127), tail 11.3 s (DONE 1 17408 11236.1 25.7 stop 0 0 16384), 711716 bytes scored
+  docs16k: prefix 13.3 s (DONE 1 16384 13313.9 21.4 stop 0 0 0 226), tail 9.9 s (DONE 1 17408 9856.3 22.8 length 0 0 1638), 698344 bytes scored
+  code64k: prefix 41.4 s (DONE 1 65536 41397.4 25.0 length 0 0 174), tail 6.4 s (DONE 1 66048 6367.0 25.4 stop 0 0 65536 ), 353590 bytes scored
+
+# Teacher-forced KL against `upstream-a0116b27` (kl-pr3)
+
+| arm | positions | same top-1 | mean KL | p99 KL | max KL | text-only: same top-1 | mean KL | p99 KL | PPL ref / arm (text-only) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| pr-caa9b001 | 2557 | 100.0% | 0.0000 | 0.000 | 0.000 | 100.0% | 0.0000 | 0.000 | 4.442 / 4.442 |
+|  (text-only mean KL per text: code16k 0.0000; docs16k 0.0000; code64k 0.0000) | | | | | | | | | |
+
