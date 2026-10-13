@@ -191,7 +191,9 @@ inline size_t invalidate_checkpoints(std::vector<CheckpointLength>& chain, int64
 /// runtime hook (kv_splice_apply_session.hpp) refuses it explicitly when the flag is on.
 inline std::string validate_suffix_reuse_options(int64_t cache_suffix_reuse, int prompt_cache,
                                                  const std::string& kv_format,
-                                                 int64_t kv_resident, bool layer_split_active) {
+                                                 int64_t kv_resident, bool layer_split_active,
+                                                 int64_t prompt_cache_every = 0,
+                                                 int64_t dense_tail = 0) {
     if (cache_suffix_reuse <= 0) return {};
     if (prompt_cache < 2)
         return "--cache-suffix-reuse N requires --prompt-cache >= 2";
@@ -206,7 +208,42 @@ inline std::string validate_suffix_reuse_options(int64_t cache_suffix_reuse, int
     if (layer_split_active)
         return "--cache-suffix-reuse N is unsupported with --layer-split (per-stage splice is "
                "follow-up work; see plans/2026-10-11_130800-strata-suffix-reuse.md A2.1)";
+    if (dense_tail > 0 && prompt_cache_every <= 0)
+        return "--prompt-cache-dense-tail N requires --prompt-cache-every > 0 (dense checkpoints "
+               "are a cadence on the same periodic mechanism)";
     return {};
+}
+
+/// FW-1: position-dependent periodic-checkpoint cadence.  PURE so it is CPU-testable
+/// without a GPU (suffix_reuse_dense_tail_test).  Returns the `done` threshold at/after
+/// which the NEXT periodic checkpoint fires, given the position just checkpointed (`done`,
+/// 0 when starting), the prompt's total length AS KNOWN at decision time (`pp_total` - the
+/// prompt pass discovers it incrementally, so callers re-ask as it grows), the periodic
+/// cadence (`every`, > 0), and the dense-tail width (`dense_tail`; 0 = OFF).
+///
+///   dense_tail == 0  -> next = done + every  (EXACTLY today's cadence, generate.cpp's
+///                       `pp_next_check = done + o.prompt_cache_every`; byte-identical
+///                       behavior when the flag is off).
+///   dense_tail > 0   -> the last `dense_tail` tokens of the prompt are the DENSE zone:
+///                       cadence `every` there (mid-prompt edits land near the tail - the
+///                       splice needs an anchor at or before the edit).  Before the zone
+///                       the cadence is max(every, 8192) (sparse head: the cold read pays
+///                       for far fewer checkpoint pauses; one deep anchor survives for the
+///                       deep-prefix rescue).  A sparse next that would overshoot the
+///                       dense zone CLAMPS to the zone start - the zone is never skipped,
+///                       whatever the head cadence stepped over.
+///
+/// Fail-closed by construction: every path returns a threshold > done (or the zone start
+/// when clamping; the caller's `done >= threshold` check fires there immediately).
+inline int64_t dense_tail_next_check(int64_t done, int64_t pp_total, int64_t every,
+                                     int64_t dense_tail) {
+    if (every <= 0) return INT64_MAX;                 // periodic checkpoints off
+    if (dense_tail <= 0) return done + every;         // OFF: today's exact cadence
+    const int64_t zone_start = pp_total > dense_tail ? pp_total - dense_tail : 0;
+    if (done >= zone_start) return done + every;      // dense zone (or a tiny prompt)
+    const int64_t sparse = std::max<int64_t>(every, 8192);
+    const int64_t next = done + sparse;
+    return next > zone_start ? zone_start : next;     // never skip the dense zone
 }
 
 /// FINDING 1: the parity predicate (the runtime hook's fire decision).  Centralised here so
