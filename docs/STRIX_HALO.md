@@ -116,13 +116,31 @@ export STRATA_PF_SWITCH_MIN_T=4096
 export STRATA_PREFILL_STREAM_MIN=128   # prompt reads of 128-1,023 tokens on the fused experts too (below)
 ```
 
+`STRATA_PF_SWITCH_MIN_T` is compared with the length of the prompt **chunk**, not of the prompt: the switches it gates
+(`STRATA_PF_GEMM`, `STRATA_PA_FAST` and the hyper-connection and padding switches) act on a chunk of at least that many tokens.
+With the prompt cache on (the default), a `--serve` chat request with reasoning off is cut at the last `<|im_start|>` (a
+7-token header) and its last token is read alone, so a 4,096-token request (the "4K" of the benchmarks) reads a chunk of 4,089
+tokens and stays under `4096` (UD-Q4_K_XL, 4K: 975-985 tok/s against 1,128-1,135 with 2048;
+[#2021](https://github.com/Niko1221/Strata/issues/2021)). Set it at or below the chunk of the shortest prompt you want on the
+switches, for example `2048`. Those prompts then differ from the default by rounding. First-token KL against the default
+engine, the switches above (UD-Q4_K_XL with `STRATA_PF_FUSED_KQ=1`), 8 chat requests of 1.5K-8K tokens built from the docs and
+sources of 296b59d2, on which it was measured (the values in #2021 are of an older build and, for most prompts, other
+texts), mean (max):
+
+| | `STRATA_PF_SWITCH_MIN_T=4096` | `STRATA_PF_SWITCH_MIN_T=2048` |
+|---|---:|---:|
+| UD-IQ4_XS | 0.0071 (0.014) | 0.0051 (0.014) |
+| UD-Q4_K_XL | 0.0062 (0.025) | 0.0058 (0.018) |
+
+The top token is the default's at both values in all 8 prompts.
+
 `STRATA_PF_FUSED=1` reaches only chunks of `STRATA_PREFILL_STREAM_MIN` tokens or more (1,024 by default, the floor measured on
 a discrete card, where a smaller chunk does not pay for streaming every expert); a smaller read runs its experts through MMQ.
 With every expert in the unified memory nothing streams, and MMQ is the slow part: an agent's turn - a tool result of ~1,000
 tokens on a cached conversation - read in 3.1-6.0 s at 1,024 and 0.9-2.5 s at 128 (C2T8, `--no-prefill-borrow`; 12-turn
 replay 3.4 -> 2.1 s per turn). Its output is the fused path's, which reads of 1,024 tokens or more already take; it is not
-under `STRATA_PF_SWITCH_MIN_T`, which gates only the hyper-connection and padding switches. A UD-Q4_K_XL or other K-quant
-pack takes the fused experts only with `STRATA_PF_FUSED_KQ=1` as well.
+under `STRATA_PF_SWITCH_MIN_T`, which gates `STRATA_PF_GEMM`, `STRATA_PA_FAST` and the hyper-connection and padding
+switches. A UD-Q4_K_XL or other K-quant pack takes the fused experts only with `STRATA_PF_FUSED_KQ=1` as well.
 
 Two engine flags help on long contexts and are not Strix-specific: `--mtp-window 8192` (the draft layer attends to the last 8,192
 cells: 64K output +3.5%, 32K -0.4%) and `--spec`, `--lookup-chain`, `--mtp-q4` (see [DETAILS.md](DETAILS.md)).
