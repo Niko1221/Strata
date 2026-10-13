@@ -2594,6 +2594,58 @@ uint64_t FileExpertSource::release(int64_t layer, int64_t expert) {
 #endif
 }
 
+// --drop-file-cache (Linux): the mapped model files' cached pages, given back in one go once the startup reads are
+// done.  Every expert is in VRAM or in the RAM copy by then, and the file tier serves none of them, so the page cache
+// holds a third copy of the same bytes - the copy the kernel cannot take back cheaply, because the pages belong to
+// files this process still maps.  #1250 makes the same two calls when a page-locked complement needs the room; here
+// it is asked for by name.  madvise(MADV_DONTNEED) first unmaps the pages (posix_fadvise(DONTNEED) alone skips a
+// page that is still mapped) and posix_fadvise(DONTNEED) then drops them from the page cache (madvise alone leaves
+// them on the LRU): measured on this host, the pair took all 512 MiB of a probe file with mincore back at 0, and
+// either call alone took none.  The pages are clean and file-backed, so a later read faults them back in - the
+// prompt path's lend-region refill reads the drive once after this, and no answer changes.
+uint64_t FileExpertSource::drop_file_cache(std::string& why) {
+    why.clear();
+#if !defined(__linux__)
+    why = "dropping the file cache is Linux only (Windows hands a VRAM expert's pages back per expert, "
+          "STRATA_FILE_RELEASE)";
+    return 0;
+#else
+    if (base_ == nullptr) { why = "the mapped experts are not open"; return 0; }
+    if (unmapped_) { why = "the mapped view of the experts is closed (drop_mapping)"; return 0; }
+    uint64_t bytes = 0;
+    int failures = 0;
+    auto drop = [&](const uint8_t* at, uint64_t len, int fd, const char* path) {
+        if (at == nullptr || len == 0) return;
+        if (madvise((void*) at, (size_t) len, MADV_DONTNEED) != 0) {
+            ++failures;
+            std::fprintf(stderr, "FileExpertSource: --drop-file-cache: madvise of %s failed (%s)\n", path,
+                         std::strerror(errno));
+            return;
+        }
+        bytes += len;
+        // Best effort, and the pages that were unmapped above are the ones it can take: the pages of a file someone
+        // else still maps, or a dirty one, stay (the caller's own check makes them redundant either way).
+        if (fd >= 0 && posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED) != 0) {
+            ++failures;
+            std::fprintf(stderr, "FileExpertSource: --drop-file-cache: posix_fadvise of %s failed (%s)\n", path,
+                         std::strerror(errno));
+        }
+    };
+    if (maps_.empty()) drop(base_, mapped_bytes_, fd_, "the mapped experts");
+    else
+        for (size_t i = 0; i < maps_.size(); ++i)
+            drop(maps_[i].closed ? nullptr : maps_[i].base, maps_[i].bytes, maps_[i].fd,
+                 i < paths_.size() ? paths_[i].c_str() : "a mapped file");
+    if (failures > 0) {
+        char note[96];
+        std::snprintf(note, sizeof note, "%d of the mapped file%s could not be advised", failures,
+                      failures == 1 ? "" : "s");
+        why = note;
+    }
+    return bytes;
+#endif
+}
+
 bool FileExpertSource::pin_cache_complement(
     const ExpertCache& cache, std::string& err, bool pin,
     const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs, int64_t lend_from_slot,

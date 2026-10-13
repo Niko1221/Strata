@@ -29,6 +29,14 @@
 #include <string>
 #include <vector>
 
+#if defined(__linux__)
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/vfs.h>
+#include <unistd.h>
+#endif
+
 namespace fs = std::filesystem;
 using strata::kernels::cpu::ExpertLayout;
 
@@ -53,6 +61,43 @@ struct TempDir {
 };
 
 void write_text(const fs::path& p, const std::string& s) { std::ofstream(p, std::ios::binary) << s; }
+
+#if defined(__linux__)
+// --drop-file-cache: how many of a file's pages are in the page cache.  mincore answers for the cache (not for this
+// process's page tables) and faults nothing in; the view is closed before anything is dropped, because
+// posix_fadvise(DONTNEED) skips a page that is still mapped.
+uint64_t cached_pages(const fs::path& file) {
+    const int fd = ::open(file.c_str(), O_RDONLY);
+    if (fd < 0) return 0;
+    struct stat st{};
+    if (fstat(fd, &st) != 0 || st.st_size <= 0) { ::close(fd); return 0; }
+    const size_t bytes = (size_t) st.st_size;
+    uint64_t resident = 0;
+    void* view = mmap(nullptr, bytes, PROT_READ, MAP_SHARED, fd, 0);
+    if (view != MAP_FAILED) {
+        std::vector<unsigned char> vec((bytes + 4095) / 4096);
+        if (mincore(view, bytes, vec.data()) == 0)
+            for (const unsigned char c : vec) resident += c & 1;
+        (void) munmap(view, bytes);
+    }
+    ::close(fd);
+    return resident;
+}
+
+/// A page written a moment ago is still dirty, and posix_fadvise(DONTNEED) skips a dirty page: flush first.
+void write_back(const fs::path& file) {
+    const int fd = ::open(file.c_str(), O_RDONLY);
+    if (fd < 0) return;
+    (void) fsync(fd);
+    ::close(fd);
+}
+
+/// tmpfs keeps no page cache to give back: there the drop takes nothing and the residency check is skipped.
+bool on_tmpfs(const fs::path& file) {
+    struct statfs st{};
+    return statfs(file.c_str(), &st) == 0 && (uint64_t) st.f_type == 0x01021994u;   // TMPFS_MAGIC
+}
+#endif
 
 bool load(const fs::path& dir, int64_t n_layers, int64_t n_expert, std::string& err) {
     err.clear();
@@ -269,6 +314,41 @@ void arena() {
                 }
             check(pre && fs.file_blob_bytes() > 0 && fs.file_ms() >= 0.0,
                   "prefetch on 2 threads, then blob(): the same bytes");
+            // --drop-file-cache: once the startup reads are done the mapped shards' cached pages are handed back, and
+            // the experts still read back byte for byte (clean file-backed pages: the read faults them in again)
+#if defined(__linux__)
+            {
+                write_back(A);
+                write_back(B);
+                const uint64_t before = cached_pages(A) + cached_pages(B);
+                std::string why;
+                const uint64_t advised = fs.drop_file_cache(why);
+                const uint64_t after = cached_pages(A) + cached_pages(B);
+                check(advised == wa.size + wb.size && why.empty(),
+                      "--drop-file-cache advises every mapped byte of both shards (" + std::to_string(advised) + "/" +
+                          std::to_string(wa.size + wb.size) + (why.empty() ? ")" : ": " + why + ")"));
+                if (on_tmpfs(A))
+                    check(before > 0, "the shards' pages were cached before the drop (tmpfs: nothing to drop)");
+                else
+                    check(before > 0 && after == 0,
+                          "the shards' pages leave the page cache (" + std::to_string(before) + " -> " +
+                              std::to_string(after) + " pages)");
+                bool back = true;
+                std::vector<uint8_t> reread((size_t) std::max(f0.bytes, f1.bytes));
+                for (int64_t l = 0; l < 2; ++l)
+                    for (int64_t e = 0; e < NE; ++e)
+                        back = back && fs.copy_blob(l, e, reread.data()) &&
+                               std::memcmp(reread.data(), dst.data() + L.blob_offset(l, e),
+                                           (size_t) L.blob_bytes(l)) == 0;
+                check(back, "the experts read back byte for byte after their pages were dropped");
+            }
+#else
+            {
+                std::string why;
+                check(fs.drop_file_cache(why) == 0 && !why.empty(),
+                      "--drop-file-cache is Linux only and says so (\"" + why + "\")");
+            }
+#endif
         }
         fs.close();
         // with experts.bin present, the pack's file is mapped as before, whatever set_gguf says

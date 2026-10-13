@@ -449,6 +449,11 @@ struct Options {
     /// not hold that the expert profile ranks hottest are copied into RAM, the rest are read from the files in place
     /// (the GGUF shards when the pack has no experts.bin).  0 = the whole complement (--resident-experts).
     uint64_t resident_budget = 0;
+    /// `--drop-file-cache` (Linux): once the startup reads are done, hand the mapped model files' cached pages back
+    /// to the kernel (FileExpertSource::drop_file_cache).  Every expert is in VRAM or in the RAM copy by then, so the
+    /// file cache holds a third copy of the same bytes - 55 GiB of them on the 48-layer packs - and it is the copy
+    /// the kernel cannot take back cheaply.  **Off by default, and off is byte-identical to before.**
+    bool drop_file_cache = false;
     /// R4: slots of VRAM-resident experts.  **0 = off, and off is the default.**
     /// **THE COMMENT THAT USED TO BE HERE WAS FALSE AND ROUND 328 MEASURED IT.**  It said "the cache has no
     /// consumer yet - `moe_hit_grouped_s2` does not exist - so switching it on costs the fill traffic and
@@ -921,7 +926,14 @@ void usage() {
                  "                       the one it replaces by more than F (default 1.5; higher = fewer, surer swaps)\n"
                  "  --adapt-async 1      --serve with the resident RAM mode (opt-in): the adaptive tier's swaps\n"
                  "                       advance between verify windows instead of a window waiting for a whole\n"
-                 "                       round.  Not bit-exact run to run.  0 (default) = the blocking tier.\n");
+                 "                       round.  Not bit-exact run to run.  0 (default) = the blocking tier.\n"
+                 "  --drop-file-cache    Linux: once the startup reads are done, hand the mapped model files' cached\n"
+                 "                       pages back to the kernel.  Every expert is in VRAM or in the RAM copy by\n"
+                 "                       then, so the file cache holds a third copy of the same bytes (55 GiB on the\n"
+                 "                       48-layer packs), and it is the copy the kernel cannot take back cheaply.\n"
+                 "                       Needs a resident mode that holds the whole complement in RAM: with experts\n"
+                 "                       left in the files, their reads go through this cache.  A prompt's lend-region\n"
+                 "                       refill then reads those pages from the drive once.  Off by default.\n");
 }
 
 // --lookup-chain: the context's last tokens for the draft sources (at most 64), the MTP's pending drafts last
@@ -2169,6 +2181,7 @@ int main(int argc, char** argv) {
             if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
                 o.resident_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
         }
+        else if (a == "--drop-file-cache") o.drop_file_cache = true;
         else if (a == "--stats") o.stats = true;
         else if (a == "--shared-late") o.shared_late = true;
         else if (a == "--keep-canonical") o.keep_canonical = true;
@@ -6895,6 +6908,46 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: note: --ple-io %s keeps %s mapped; if that shard holds experts, their "
                                  "reads stay serialized (--ple-io direct, the default, keeps no mapping)\n",
                          o.ple_io.c_str(), o.ple_gguf.c_str());
+    }
+    // --drop-file-cache: the file cache holds a third copy of the experts once the startup reads are done - every one
+    // of them is in VRAM or in the RAM copy - and it is the copy the kernel cannot take back cheaply, so it is the
+    // one that fills a machine that pages under load.  Opt-in, and only when no expert's reads go through the files:
+    // with experts left in them the file cache IS the tier that serves those reads, and dropping it would put every
+    // one of them on the drive.  The check below is the same question the startup's own read-ahead asks, same grid.
+    if (o.drop_file_cache) {
+        int64_t from_files = 0;
+        if (srcp == &src)
+            for (int64_t l = 0; l < g.n_layers; ++l)
+                for (int64_t e = 0; e < g.n_expert; ++e)
+                    // a layer split keeps the later stages' experts out of the RAM copy and they do read the files:
+                    // they are counted here, and then the pages stay
+                    if (xcache.slot_of(l, e) < 0 && !src.has_resident(l, e)) ++from_files;
+        if (srcp != &src) {
+            std::fprintf(stderr, "strata generate: --drop-file-cache off: the experts come from %s, not from mapped "
+                                 "model files\n",
+                         srcp == nullptr ? "no file tier" : "the resident arena");
+        } else if (from_files > 0) {
+            std::fprintf(stderr, "strata generate: --drop-file-cache off: %lld of the %lld experts are in neither the "
+                                 "GPU cache nor the RAM copy, and their reads go through the file cache "
+                                 "(--resident-cpu-experts with the whole complement in RAM drops it)\n",
+                         (long long) from_files, (long long) (g.n_layers * g.n_expert));
+        } else {
+            std::string why;
+            const auto drop_t0 = std::chrono::steady_clock::now();
+            const uint64_t freed = src.drop_file_cache(why);
+            const double drop_ms =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drop_t0).count();
+            if (freed > 0)
+                std::fprintf(stderr, "strata generate: --drop-file-cache: %.2f GiB of the model files' pages advised "
+                                     "back to the kernel in %.0f ms (the bytes advised, not a measurement of what the "
+                                     "kernel reclaimed; every expert is in VRAM or in the RAM copy, and the "
+                                     "lend-region refill reads them again)%s\n",
+                             (double) freed / 1073741824.0, drop_ms,
+                             why.empty() ? "" : "; see the lines above");
+            else
+                std::fprintf(stderr, "strata generate: --drop-file-cache off: %s\n",
+                             why.empty() ? "the model files hold no cached pages" : why.c_str());
+        }
     }
     // 0.1.42 (H11): the default CPU share is armed only when the host has the memory for it.  One line says why not;
     // an explicit STRATA_PREFILL_CPU_SHARE (other than 0) is armed anyway, with a warning when memory is short.
