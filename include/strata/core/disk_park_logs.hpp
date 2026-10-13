@@ -103,11 +103,6 @@ public:
         std::uint64_t part_bytes_at_cap[5] = {0, 0, 0, 0, 0};
         std::size_t max_open = 16;         // 同时打开几个会话文件
         std::size_t max_tracked = 4096;    // 跟踪多少个「摘要 → 会话」
-        // ★★ 2026-10-13：盘上【总占用】上限（字节，0 = 不限）。超过就按 LRU 删掉最久未用的
-        //   会话目录（连同文件）。取代原来"只忘不删"的 trim() —— 那是 87 GB 孤儿数据的来源。
-        //   注意：不要用"每日写入上限"当刹车，它装在 disk_park 快照桥上，而实际写盘的是
-        //   disk_park_stream，那条路没有刹车。
-        std::uint64_t max_bytes = 0;
     };
 
     struct Stats {
@@ -117,9 +112,6 @@ public:
         std::uint64_t fresh = 0;           // 开了新会话的次数
         std::uint64_t opens = 0, closes = 0;
         std::uint64_t failures = 0;
-        // ★★ 2026-10-13：容量淘汰的计数（原来只淘汰"记忆"、不删文件，所以没有这两个）
-        std::uint64_t evicted_dirs = 0;
-        std::uint64_t evicted_bytes = 0;
     };
 
     // 一次追加的输入
@@ -293,7 +285,10 @@ private:
     std::map<std::string, std::uint64_t> open_dir_stamp_;   // P18：目录 → 最近使用序号
     std::uint64_t open_stamp_ = 0;                          // P18：序号发生器
     mutable Stats stats_{};
-    // ★★ 2026-10-13：会话目录 → 已写字节；以及所有目录之和（用于 max_bytes 判断）。
+    // ★★ 2026-10-13：会话目录 → 已写字节；以及所有目录之和。
+    //   只用于启动时那行诊断（[启动] 盘上已有 N 个会话目录，共 X GiB）。
+    //   ★ 引擎【不做】容量上限：流式层的字节预算归 tools/park-gc（--max-gib），
+    //   那里能同时看见会话目录和 checkpoints.bin，并用 st_blocks 而不是表观大小记账。
     //   按【目录】而不是按【摘要】记账：一个目录会被多个摘要（别名 frontier）指向。
     std::map<std::string, std::uint64_t> dir_bytes_;
     std::uint64_t total_bytes_ = 0;

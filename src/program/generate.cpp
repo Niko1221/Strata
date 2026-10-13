@@ -633,7 +633,6 @@ struct Options {
     ///   （与没有这一层时的行为一致）。
     int64_t disk_park_daily_gib = 0;
     // ★★ 2026-10-13：盘上总占用上限（GiB，0 = 不限）。超过就按 LRU 删最久未用的会话目录（连文件）。
-    int64_t disk_park_max_gib = 0;
     /// ★ P9 流式停放层：把「每个请求结束后的本轮增量」追加进【每会话一个】的日志，
     ///   而不是每次淘汰整份快照重写。空 = 关闭（行为与没有它逐字节一致）。
     std::string disk_park_stream_dir;
@@ -2448,10 +2447,6 @@ int main(int argc, char** argv) {
         else if (a == "--disk-park-restore") o.disk_park_restore = true;
         else if (a == "--no-disk-park-restore") o.disk_park_restore = false;
         else if (a == "--disk-park-daily-gib") o.disk_park_daily_gib = std::max<int64_t>(0, std::atoll(next("--disk-park-daily-gib")));
-        // ★★ 2026-10-13：--disk-park-max-gib N —— 盘上【总占用】上限（0/不给 = 不限）。
-        //   与 --disk-park-daily-gib 的区别：那个限"每天写多少"，这个限"盘上留多少"。
-        //   限容量才是对的刹车 —— 限写入会让盘被占满的同时又写不进新数据。
-        else if (a == "--disk-park-max-gib") o.disk_park_max_gib = std::max<int64_t>(0, std::atoll(next("--disk-park-max-gib")));
         else if (a == "--disk-park-stream-dir") o.disk_park_stream_dir = next("--disk-park-stream-dir");
         else if (a == "--prefix-cache-file") o.prefix_cache_file = next("--prefix-cache-file");
         else if (a == "--value-aware-demote") {
@@ -8251,10 +8246,6 @@ int main(int argc, char** argv) {
                     //   取回时它由重算/后续版本补 —— 见 HANDOFF 的"已知限制"。
                     c.part_bytes_at_cap[4] = 0;
                     c.max_open       = 8;
-                    // ★★ 2026-10-13：总占用上限（GiB → 字节）。超了 trim() 按 LRU 删目录（连文件）。
-                    c.max_bytes      = o.disk_park_max_gib > 0
-                                       ? (std::uint64_t) o.disk_park_max_gib * 1024ull * 1024ull * 1024ull
-                                       : 0;
                     auto logs = std::make_unique<strata::core::DiskParkLogs>(std::move(c));
                     if (!logs->enabled()) {
                         std::fprintf(stderr, "strata serve: disk park stream: OFF (几何不自洽)\n");

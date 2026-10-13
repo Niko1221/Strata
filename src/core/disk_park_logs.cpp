@@ -121,10 +121,8 @@ DiskParkLogs::DiskParkLogs(Config cfg) : cfg_(std::move(cfg)) {
     }
     enabled_ = true;
     // ★★★ 2026-10-13：启动时把盘上已有的会话目录重建进 tracked_/lru_/dir_bytes_。
-    //   ① 容量上限（max_bytes）必须看见【存量】—— 否则 total_bytes_ 从 0 开始，上限只能拦
-    //      新写入，那 87 GB 存量永远不被淘汰，"限制容量"就形同虚设。
-    //   ② tracked_ 不落盘 ⇒ 重启后 lookup() 全 miss ⇒ 同一对话被当新会话重写一份。
-    //      目录名就是摘要的 hex，能反解，所以可以重建。
+    //   tracked_ 不落盘 ⇒ 重启后 lookup() 全 miss ⇒ 同一对话被当新会话重写一份。
+    //   目录名就是摘要的 hex，能反解，所以可以重建。
     {
         char tagbuf[16];
         std::snprintf(tagbuf, sizeof tagbuf, "%08X", cfg_.tag);
@@ -165,9 +163,8 @@ DiskParkLogs::DiskParkLogs(Config cfg) : cfg_(std::move(cfg)) {
         }
         if (n_dirs > 0)
             std::fprintf(stderr, "strata serve: disk park stream: [启动] 盘上已有 %zu 个会话目录，"
-                                 "共 %.2f GiB；容量上限 %s\n",
-                         n_dirs, (double) total_bytes_ / 1073741824.0,
-                         cfg_.max_bytes > 0 ? "已启用" : "未设（不限）");
+                                 "共 %.2f GiB\n",
+                         n_dirs, (double) total_bytes_ / 1073741824.0);
     }
 }
 
@@ -349,12 +346,12 @@ std::uint64_t DiskParkLogs::append_layers(const Request& req, std::size_t layers
     touch(req.next);
     ++stats_.writes;
     stats_.write_bytes += written;
-    // ★★ 2026-10-13：把本轮写入记到这个【目录】上，供 max_bytes 淘汰使用
+    // ★★ 2026-10-13：把本轮写入记到这个【目录】上（只供启动诊断那行用）
     if (written > 0) { dir_bytes_[dir_name] += written; total_bytes_ += written; }
     // ★★★ 2026-10-13：把本轮的头部指纹记进索引（供取回路径零 I/O 预筛）
     if (req.head_n > 0 && req.fp_head != 0)
         note_dir_head(dir_name, req.to_tokens, req.head_n, req.fp_head);
-    trim();                  // ★ 容量满了就在这里删（原来只有 remember() 里会调）
+    trim();                  // ★ max_tracked 的 LRU 淘汰（只淘汰"记忆"，不动盘上文件）
     evict_open_dirs();       // ★ P18：逐层路径也要有界（单层那条老循环保持不变）
     return written;
 }
@@ -639,43 +636,16 @@ void DiskParkLogs::trim() {
         }
         tracked_.erase(victim);
     }
-    // ★★★ 2026-10-13：盘上【总占用】上限。超了按 LRU 把最久未用的会话目录【连文件一起删】。
-    //   为什么必须有：原来的 trim() 只从 tracked_ 里"忘记"，盘上文件留着 ⇒ 下次同一对话
-    //   找不到记忆 ⇒ 当新会话重写一份新目录 ⇒ 目录只增不减（实测 3,818 个 / 87 GB），
-    //   而 max_tracked=4096 一满，这个正反馈就持续加速。
-    if (cfg_.max_bytes > 0) {
-        while (total_bytes_ > cfg_.max_bytes && !lru_.empty()) {
-            const DiskParkLogDigest vkey = lru_.back();
-            lru_.pop_back();
-            const auto victim = tracked_.find(vkey);
-            if (victim == tracked_.end()) continue;
-            const std::string dir = victim->second.dir_name;
-            bool still_referenced = false;
-            for (const auto& kv : tracked_)
-                if (kv.first != victim->first && kv.second.dir_name == dir) { still_referenced = true; break; }
-            if (!still_referenced) {
-                const auto db = dir_bytes_.find(dir);
-                const std::uint64_t freed = (db != dir_bytes_.end()) ? db->second : 0;
-                std::error_code ec;
-                const std::uint64_t removed = std::filesystem::remove_all(dir_for(dir), ec);
-                if (!ec) {
-                    total_bytes_ = (freed <= total_bytes_) ? (total_bytes_ - freed) : 0;
-                    if (db != dir_bytes_.end()) dir_bytes_.erase(db);
-                    stats_.evicted_dirs += 1;
-                    stats_.evicted_bytes += freed;
-                    std::fprintf(stderr, "strata serve: disk park stream: [容量] 淘汰目录 %s（%llu 项 / %.2f GiB），"
-                                         "余 %.2f GiB / 上限 %.2f GiB\n",
-                                 dir.c_str(), (unsigned long long) removed,
-                                 (double) freed / 1073741824.0,
-                                 (double) total_bytes_ / 1073741824.0,
-                                 (double) cfg_.max_bytes / 1073741824.0);
-                }
-                const auto o = open_.find(dir);
-                if (o != open_.end()) { open_.erase(o); ++stats_.closes; }
-            }
-            tracked_.erase(victim);
-        }
-    }
+    // ★★★ 2026-10-13（清理）：这里原来有一段【盘上总占用上限】（--disk-park-max-gib）：
+    //   超了按 LRU 把最久未用的会话目录【连文件一起删】。已删除。理由：
+    //   ① 位置不对：DiskParkLogs 看不见 checkpoints.bin，而 blob 常常占一半以上
+    //      （实测 9.7 GB blob / 52.8 GiB 合计），只掉会话目录会掉错。
+    //   ② 口径错过：第一版用 file_size 记账，把预分配的稀疏 kv.bin 高估 27 倍
+    //      （表观 2368.64 GiB vs 实际 87 GB），差一点删光所有会话目录。正确口径是 st_blocks×512。
+    //   ③ tools/park-gc 已经把它做好了：--max-gib 同时算会话目录 + blob、
+    //      用 st_blocks 记账、有 --keep-newer-hours 保护新数据、能压缩 blob，且由 cron/timer 调度。
+    //   所以流式层的字节预算【只】归 park-gc（见 tools/park-gc.cpp 头注释）。引擎这侧保留的
+    //   trim() 只做 max_tracked 的 LRU 淘汰 —— 淘汰记忆，不动盘上文件。
 }
 
 bool DiskParkLogs::commit_watermark(const DiskParkLogDigest& d, std::uint64_t tokens) {
