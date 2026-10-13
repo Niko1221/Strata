@@ -8969,6 +8969,7 @@ int main(int argc, char **argv) try {
                     sl.draft_ready = true;
                 }
             }
+            std::printf("PCIE %llu\n", (unsigned long long) drive.d.pcie_bytes);   // the running PCIe total, for the Monitor
             std::fflush(stdout);
             bt_emit += msd(w2, Clock::now());
             strata::core::progress().busy.store(was_busy);
@@ -9053,6 +9054,7 @@ int main(int argc, char **argv) try {
                         sl.p += 1;
                     }
                 }
+                std::printf("PCIE %llu\n", (unsigned long long) drive.d.pcie_bytes);   // the running PCIe total, for the Monitor
                 std::fflush(stdout);
                 ++bt_windows;
                 G.inflight = false;
@@ -10470,6 +10472,7 @@ int main(int argc, char **argv) try {
             const uint64_t file_bytes0 = src.file_read_bytes();
             const int64_t decode_look0 = drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused;
             const int64_t offload0 = drive.d.offload_entries;   // #588
+            const uint64_t pcie_bytes0 = drive.d.pcie_bytes;    // those same reads' bytes, for the Monitor's PCIe rate
             if (cancelled) finish = "cancel";
             // ======== --pipeline-windows 2: the decode windows with the two cards overlapped ========
             // Stage 0 (the first card) runs window K+1 while stage 1 verifies window K, on the guess that K is accepted
@@ -11040,6 +11043,8 @@ int main(int argc, char **argv) try {
                         if (o.suffix_draft > 0) sfx.append(outp[(size_t) i]);
                         eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outp[(size_t) i]) != o.eos_ids.end();
                     }
+                    // the running total of bytes read over PCIe, so the Monitor can show the traffic as it happens
+                    std::printf("PCIE %llu\n", (unsigned long long) drive.d.pcie_bytes);
                     std::fflush(stdout);
                     if (eos) finish = "stop";
                     else if (stop_req.load()) finish = "cancel";
@@ -11298,6 +11303,8 @@ int main(int argc, char **argv) try {
                     if (o.lookup_chain > 0) extra_sources_append(&outv[(size_t) i], 1);
                     eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outv[(size_t) i]) != o.eos_ids.end();
                 }
+                // the running total of bytes read over PCIe, so the Monitor can show the traffic as it happens
+                std::printf("PCIE %llu\n", (unsigned long long) drive.d.pcie_bytes);
                 std::fflush(stdout);
                 ++rounds;
                 const Clock::time_point tw2 = Clock::now();
@@ -11505,6 +11512,7 @@ int main(int argc, char **argv) try {
             //      [prompt tokens read]   (#471: fewer than <prompt> - <reused> when a cancel stopped the read)
             //      [offloaded]   (#588: the decode's routed experts the GPU read over PCIe or another GPU computed;
             //                    not in [lookups])
+            //      [offloaded MB]  (the bytes those PCIe reads moved across the link, as MB; 0.0 for another GPU's)
             //      [lookup-chain accepted] [lookup-chain offered] [suffix accepted] [suffix offered] [windows]
             //      (only with --lookup-chain)
             char chain_txt[128] = "";
@@ -11512,13 +11520,13 @@ int main(int argc, char **argv) try {
                 std::snprintf(chain_txt, sizeof(chain_txt), " %lld %lld %lld %lld %lld", (long long) chain_ok,
                               (long long) chain_drafts, (long long) sfx_ok, (long long) sfx_drafts, (long long) dec_windows);
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
-            std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s\n",
+            std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld %.1f%s\n",
                         (long long) produced_n,
                         (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,
                         (long long) resume, (long long) req_hits, (long long) req_look,
                         (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
-                        (long long) req_offload, chain_txt);
+                        (long long) req_offload, (double) (drive.d.pcie_bytes - pcie_bytes0) / 1e6, chain_txt);
             std::fflush(stdout);
             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&

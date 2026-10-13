@@ -23,6 +23,10 @@ HISTORY = 60
 
 # ------------------------------------------------------------------------------------------------ NVML
 class _Nvml:
+    # Whether this reader sees the PCIe traffic itself.  NVML does (nvmlDeviceGetPcieThroughput, in read() below);
+    # the AMD paths do not, and the server then fills gpu_pcie_rx_mb from the bytes the engine moved over the link.
+    has_pcie_throughput = True
+
     class Util(ctypes.Structure):
         _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
 
@@ -137,6 +141,8 @@ class _Amd:
     """#301: an AMD card's readings from the amdgpu driver's sysfs files (Linux; no ROCm library needed), with _Nvml's
     interface: load (gpu_busy_percent), VRAM (mem_info_vram_used / _total), and from its hwmon folder the temperature
     (temp1_input, the edge sensor, m°C), power (power1_average or power1_input, µW) and its cap (power1_cap)."""
+
+    has_pcie_throughput = False          # sysfs has no PCIe byte counter: the link files are link state, not traffic
 
     def __init__(self, index=0, sysfs=None):
         self.dev = amd_device_dir(index, sysfs)

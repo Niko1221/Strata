@@ -2667,6 +2667,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 }
             ++d.pcie_experts;
         }
+        d.pcie_bytes += (uint64_t) fetches * bb;   // the bytes across the link: one blob per staged expert
         P.start2[fetches] = entries;
         P.counts[0] = groups;
         P.counts[1] = entries;

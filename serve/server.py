@@ -431,6 +431,25 @@ def start_log_tail(log: str | None, offset: int, n: int = 20) -> str:
     return "\nthe engine log's last lines:\n" + "\n".join("  " + x for x in lines)
 
 
+def pcie_probe_gbps(log: str | None, offset: int) -> float | None:
+    """The host->device bandwidth the engine measured at its own start (its "PCIe probe: N GB/s host->device" line,
+    on stderr, which the server owns as the log).  None when this start did not probe: --pcie-frac was given, or the
+    build has no GPU.  The Monitor's PCIe tile shows the traffic against this measured number - Windows gives no
+    link speed for the AMD card's host-facing hop, and a bandwidth does not name a generation (Gen4 x8 and Gen3 x16
+    measure the same), so nothing here turns a GB/s into a Gen."""
+    if not log:
+        return None
+    try:
+        with open(log, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(offset, f.tell() - 64 * 1024))     # this start's lines, never an earlier start's
+            text = f.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return None
+    found = re.findall(r"PCIe probe: ([0-9.]+) GB/s", text)
+    return float(found[-1]) if found else None
+
+
 def echo_requests(log_path: str, offset: int) -> None:
     """STRATA_REQUEST_LINES=1: one stdout line per finished request, from the engine's own summary in its log.
 
@@ -662,6 +681,11 @@ class StrataEngine:
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
         self.progress_ms = 0             # PP's own milliseconds since the prompt started (its third field)
+        # the engine's "PCIE <bytes>" lines (0.1.43+): the running total of expert bytes it read across the link.
+        # (time, bytes) samples for the Monitor's live MB/s, and the GB/s its own startup probe measured.  An AMD
+        # card on Windows has no other way to show this traffic: NVML reports it directly, PDH and ADLX do not.
+        self.pcie_rate: collections.deque = collections.deque(maxlen=64)
+        self.pcie_link_gbps = None
         self.reused = 0                  # RESUME: prompt tokens not read again (a client takes them out of the work)
         self.silent_note = None
         self.last_err = None
@@ -749,6 +773,9 @@ class StrataEngine:
         # report their own version (INFO engine=, 0.1.8+) win, the manifest stays the fallback for older ones
         if self.info.get("engine"):
             self.info["version"] = str(self.info["engine"])
+        # the bandwidth this engine measured for itself at startup (its stderr, which we own as the log).  The
+        # Monitor's PCIe tile shows the traffic against this number; nothing turns it into a link generation.
+        self.pcie_link_gbps = pcie_probe_gbps(log, log_start)
         self.ended = False                              # READY: alive from here (restart() set it True, #344)
         # the engine's stdout on a thread, so a request can wait with a timeout (heartbeats, cancel checks)
         self.lines: queue.Queue = queue.Queue()
@@ -808,6 +835,7 @@ class StrataEngine:
     def _pump(self):
         proc, lines = self.proc, self.lines             # this process's: a restart replaces both (#344)
         slot_q = self.slot_q
+        rate = self.pcie_rate                           # this process's byte totals, likewise
         line = None
         for line in proc.stdout:
             # checked before batch routing: a fatal line is never a slot's own
@@ -822,6 +850,12 @@ class StrataEngine:
                 except OSError:
                     pass
                 break                           # publish EOF, never the trailing DONE
+            if line.startswith("PCIE "):        # 0.1.43+: the running total of bytes it read across the link.  It
+                try:                            # is timed here, where it is read, and never queued: the Monitor wants
+                    rate.append((time.monotonic(), int(line.split()[1])))   # the rate of a run in flight, and a long
+                except (IndexError, ValueError):                            # batch would otherwise fill the queue
+                    pass
+                continue
             if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch: a batch slot's own lines
                 try:
                     slot_q[int(line.split()[1])].put(line)
@@ -952,6 +986,8 @@ class StrataEngine:
             self.last.update(prompt_read=int(f[14]))
         if len(f) >= 16:                                  # #588 (engine 0.1.39+): routed experts read over PCIe
             self.last.update(offloaded=int(f[15]))
+        if len(f) >= 17:                                  # engine 0.1.43+: the bytes those PCIe reads moved, as MB
+            self.last.update(offloaded_mb=float(f[16]))
 
     def vram(self, reserve_mib: int | None, timeout: float = 120.0) -> dict:
         """#533: `VRAM <reserve_mib>` between requests (the caller holds the service's FIFO): the engine shrinks its
@@ -3313,8 +3349,25 @@ class Service:
         """The hardware sampler behind GET /metrics (serve/telemetry.py), recording this server's tok/s too."""
         if getattr(self, "telemetry", None) is None:
             from serve.telemetry import Telemetry
-            self.telemetry = Telemetry(extra=lambda: {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean(),
-                                                    "prefill_tok_s_mean": self._prefill_tok_s_mean()},
+
+            def extra():
+                out = {"tok_s": self._tok_s(), "tok_s_mean": self._tok_s_mean(),
+                       "prefill_tok_s_mean": self._prefill_tok_s_mean()}
+                # PCIe traffic the sampler cannot see itself: an AMD card on Windows has no PCIe counter (PDH has no
+                # such counter set, ADLX reports no bus metric, and the card's own PCIe properties describe the
+                # switch inside it, not the host's link).  The engine's byte totals are the only way to that number
+                # there, so they go in as the same key NVML's reader fills.  Where the reader has the figure (NVIDIA),
+                # its own reading is left alone.  A model split across an NVIDIA and an AMD card keeps NVML's.
+                if getattr(self.telemetry.gpu, "has_pcie_throughput", False):
+                    return out
+                mb = self._pcie_mb_s()
+                if mb is not None:
+                    out["gpu_pcie_rx_mb"] = mb
+                link = getattr(self.engine, "pcie_link_gbps", None)
+                if link:
+                    out["gpu_pcie_link_gbps"] = link     # the bandwidth the engine measured, for the tile's percent
+                return out
+            self.telemetry = Telemetry(extra=extra,
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
                                        gpu_indices=getattr(self, "gpu_indices", None),
                                        amd=getattr(self, "backend", None) == "hip")
@@ -3358,6 +3411,23 @@ class Service:
         with self.status_lock:
             reading = self.status.get("busy") and self.status.get("first_token") is None
         return getattr(self.engine, "prefill_tok_s_mean", None) if reading else 0.0
+
+    def _pcie_mb_s(self):
+        """The bytes the engine read across the PCIe link, as MB/s, while a request runs: the slope over the last
+        RATE_WINDOW_S of its "PCIE" lines, else over all of this run's.  None when it has reported none - a CPU
+        build, or a decode that needed no experts from outside the card - so the tile shows no rate rather than the
+        last request's.  The engine counts one expert blob per staged expert, which is what crosses the link in
+        every --pcie-mode; its offload count is routed (token, expert) entries, which is not."""
+        with self.status_lock:
+            busy = bool(self.status.get("busy"))
+        rate = list(getattr(getattr(self, "engine", None), "pcie_rate", ()) or ())
+        if not busy or len(rate) < 2:
+            return None
+        now = rate[-1][0]
+        old = next(((t, b) for t, b in rate if now - t <= RATE_WINDOW_S), rate[0])
+        if now - old[0] < RATE_MIN_SPAN_S:
+            return None
+        return max(0.0, (rate[-1][1] - old[1]) / 1e6 / (now - old[0]))
 
     def begin_request(self, path, req):
         """#332: a monitor record for this request, or None when the monitor is off (nothing is kept then)."""
@@ -4192,7 +4262,10 @@ class Service:
                                 "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
                                 "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
                                 if n and last.get("generated") and last.get("decode_ms") else None,
-                                "hit_rate": hit_rate, "pcie_share": pcie_share, "ram_blobs": last.get("ram_blobs"),
+                                "hit_rate": hit_rate, "pcie_share": pcie_share,
+                                # the bytes those PCIe reads moved across the link (None: an older engine)
+                                "pcie_mb": last.get("offloaded_mb"),
+                                "ram_blobs": last.get("ram_blobs"),
                                 "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
                                 # #457: the speculative drafts from the DONE line (None: the engine did not say)
                                 "drafts_offered": last.get("drafts_offered"),
@@ -4326,7 +4399,7 @@ def request_stats(segments: list[dict]) -> dict:
         else:
             result.pop(key, None)
     for key in ("prompt_ms", "decode_ms", "generated", "drafts_offered", "drafts_accepted",
-                "hits", "lookups", "offloaded", "ram_blobs", "file_blobs", "file_mb"):
+                "hits", "lookups", "offloaded", "offloaded_mb", "ram_blobs", "file_blobs", "file_mb"):
         if any(segment.get(key) is not None for segment in segments):
             result[key] = sum(segment.get(key) or 0 for segment in segments)
     return result
