@@ -835,12 +835,15 @@ int main() {
     check_data(real_cache, e_k2v1t < e_k2v1c, e_k2v1t >= e_k2v1c,
                "SYNTHETIC: 1-bit V wants a per-token scale (KIVI's V finding)",
                "REAL CACHE: 1-bit V wants the per-channel scale (V's channel outliers survive the rotation)");
+    // The condition is "K4 + V2c beats K2c + V4" (synthetic) / "K2c + V4 beats K4 + V2c" (real): whichever
+    // tensor's coarse arm costs MORE is the sensitive one. On the synthetic cache that is K; on the real
+    // rotated cache it is V - the ranking --kv q2k is built on.
     check_data(real_cache, e_k4v2 < e_k2v4, e_k4v2 >= e_k2v4,
-               "SYNTHETIC: the V side is the sensitive one (coarse V costs less than coarse K)",
-               "REAL CACHE: the K side is the sensitive one (coarse K costs more than coarse V) - KIVI's premise, confirmed on real data");
+               "SYNTHETIC: the K side is the sensitive one (coarse K costs more than coarse V: K4+V2c beats K2c+V4)",
+               "REAL CACHE: the V side is the sensitive one (coarse V costs more than coarse K: K2c+V4 beats K4+V2c) - the reverse of the synthetic ranking");
     std::printf("  asymmetry: KIVI's split %.3f%% vs symmetric per-channel %.3f%% (%.2fx, same 160 B); "
                 "the best 224 B arm is %.3f%% against q4_0's %.3f%% - asymmetry narrows the gap, it does not close it\n",
-                100 * e_k2c2t, 100 * e_lm4, e_lm4 / e_k2c2t, 100 * e_k4v2, 100 * e_q4);
+                100 * e_k2c2t, 100 * e_lm4, e_lm4 / e_k2c2t, 100 * std::min(e_k4v2, e_k2v4), 100 * e_q4);
     // The probe's own limit, stated where it can be seen: the gap between 1-bit both and 2-bit both is small
     // on the synthetic cache and large on a real one, because a diffuse softmax averaging over N cells washes
     // coarse quantization away. This table RANKS schemes against each other; it is not an absolute quality
@@ -892,6 +895,97 @@ int main() {
     check(k::kv_block_bytes(s, k::kKvQ2K) ==
               (uint64_t) (s.n_head_kv * s.page_size) * (k::kv_q2_bytes_per_head(D) + k::kv_q4_bytes_per_head(D)),
           "the q2k block mover moves K's q2 run and V's q4_0 run (224 B per cell and head)");
+
+    // 5. A FRESH PARTIAL GROUP'S SCALE. A group whose first cells arrive in a batch shorter than 32 has no
+    //    stored scale to keep, so the kernel takes the RMS of the cells the call has - of the 12 it has, not of
+    //    32. Dividing a 12-cell sum by 32 under-scales the group by sqrt(32/12) = 1.63x, and every code in it
+    //    is then quantized against a scale 1.63x too small. This is the real prompt-path append (use_prev = 0,
+    //    a zeroed pool, so the group is fresh and the kernel writes its own scale), read back as stored bits;
+    //    the expected bits are the host sum in cell order with the multiply and the add kept separate, for the
+    //    reason quant_kivi states - an ulp in the scale is a different code at a threshold.
+    if (N >= 12) {
+        const int n12 = 12;
+        const size_t pool12 = (size_t) H * D * sizeof(k::block_q2c_0);   // group 0's slots, every head and dim
+        uint8_t* kq2_12 = dalloc<uint8_t>(pool12);                       // zeroed: a scale of 0 bits = no scale
+        std::vector<int32_t> tab12(P);                                    // cells 0..11 = pages 0..2, identity
+        for (int i = 0; i < P; ++i) tab12[i] = i;
+        int32_t* d_tab12 = dalloc<int32_t>(P);
+        ck(cudaMemcpy(d_tab12, tab12.data(), P * 4, cudaMemcpyHostToDevice), "12-cell table");
+        k::kv_append_q2(kq2_12, kq2_12, d_tab12, 0, n12, dK, dK, s, nullptr, nullptr, nullptr, /*v3level*/ false);
+        ck(cudaDeviceSynchronize(), "12-cell append");
+        std::vector<uint8_t> h12(pool12);
+        ck(cudaMemcpy(h12.data(), kq2_12, pool12, cudaMemcpyDeviceToHost), "12-cell pool");
+        bool scale_ok = true;
+        for (int h = 0; h < H && scale_ok; ++h)
+            for (int d = 0; d < D && scale_ok; ++d) {
+                float ss = 0.0f;
+                for (int i = 0; i < n12; ++i) {
+                    const float v = Kref[(size_t) i * H * D + (size_t) h * D + d];
+                    ss += v * v;
+                }
+                if (k::q2c_slot(h12.data(), 0, h, d, H, D)->d !=
+                    k::f16_from_f32(sqrtf(ss * (1.0f / (float) n12))))
+                    scale_ok = false;
+            }
+        check(scale_ok, "fresh partial group scale: a 12-cell append into an empty group stores the RMS of the 12 "
+                        "cells the call has, bit for bit (not of 32)");
+    } else {
+        std::printf("  fresh partial group scale: NOT RUN - the probe cache has %d cells, fewer than the 12 the\n"
+                    "  check appends\n", N);
+    }
+
+    // 6. STAGING MOVES WHOLE GROUPS. A q2 group's bytes are group-major (one slot per (group, head, dim)), so a
+    //    PAGE is not a byte range: 3 of a group's 8 pages are spread over every dim slot of that group. Staging a
+    //    block count that stops mid-group must copy the whole group (else most of its dim slots stay stale in the
+    //    staging pool the prompt attention reads), and nothing past it; unstaging [b0, b1) inside a group must
+    //    write the whole group back. Pinned on q2k, the format whose unit is set by its q2 K half.
+    {
+        const int64_t unit = k::kv_stream_unit_blocks(s, k::kKvQ2K);       // pages per 32-cell group
+        const size_t kb = (size_t) (2 * unit) * s.n_head_kv * s.page_size * k::kv_q2_bytes_per_head(D);
+        const size_t vb = (size_t) (2 * unit) * s.n_head_kv * s.page_size * k::kv_q4_bytes_per_head(D);
+        uint8_t* hk = dalloc<uint8_t>(kb);
+        uint8_t* hv = dalloc<uint8_t>(vb);
+        uint8_t* sk = dalloc<uint8_t>(kb);
+        uint8_t* sv = dalloc<uint8_t>(vb);
+        std::vector<uint8_t> pk(kb), pv(vb), gk(kb), gv(vb);
+        for (size_t i = 0; i < kb; ++i) pk[i] = (uint8_t) (i * 131u + 7u);
+        for (size_t i = 0; i < vb; ++i) pv[i] = (uint8_t) (i * 197u + 3u);
+        const auto zero_from = [](const std::vector<uint8_t>& b, size_t at) {
+            return std::all_of(b.begin() + (std::ptrdiff_t) at, b.end(), [](uint8_t x) { return x == 0; });
+        };
+        k::KvHostPools host{};
+        host.k_q2 = hk;
+        host.v_q4 = hv;
+        k::QsaAttnPools stage{};
+        stage.k_q2 = sk;
+        stage.v_q4 = sv;
+        // stage 3 pages (mid-group) from a host copy holding a pattern; the staging pool starts zeroed
+        ck(cudaMemcpy(hk, pk.data(), kb, cudaMemcpyHostToDevice), "stage: host K");
+        ck(cudaMemcpy(hv, pv.data(), vb, cudaMemcpyHostToDevice), "stage: host V");
+        k::kv_stage_from_host(stage, host, k::kKvQ2K, 3, s, nullptr);
+        ck(cudaDeviceSynchronize(), "stage");
+        ck(cudaMemcpy(gk.data(), sk, kb, cudaMemcpyDeviceToHost), "stage: read K");
+        ck(cudaMemcpy(gv.data(), sv, vb, cudaMemcpyDeviceToHost), "stage: read V");
+        const bool staged = std::memcmp(gk.data(), pk.data(), kb / 2) == 0 &&
+                            std::memcmp(gv.data(), pv.data(), vb / 2) == 0 && zero_from(gk, kb / 2) &&
+                            zero_from(gv, vb / 2);
+        check(staged, "staging 3 of a group's 8 pages copies the WHOLE q2k group (every dim slot, K and V) and "
+                      "nothing past it");
+        // unstage pages [3, 5) - inside group 0 - from a staging pool holding the pattern into a zeroed host copy
+        ck(cudaMemset(hk, 0, kb), "unstage: zero host K");
+        ck(cudaMemset(hv, 0, vb), "unstage: zero host V");
+        ck(cudaMemcpy(sk, pk.data(), kb, cudaMemcpyHostToDevice), "unstage: stage K");
+        ck(cudaMemcpy(sv, pv.data(), vb, cudaMemcpyHostToDevice), "unstage: stage V");
+        k::kv_unstage_to_host(stage, host, k::kKvQ2K, 3, 5, s, nullptr);
+        ck(cudaDeviceSynchronize(), "unstage");
+        ck(cudaMemcpy(gk.data(), hk, kb, cudaMemcpyDeviceToHost), "unstage: read K");
+        ck(cudaMemcpy(gv.data(), hv, vb, cudaMemcpyDeviceToHost), "unstage: read V");
+        const bool unstaged = std::memcmp(gk.data(), pk.data(), kb / 2) == 0 &&
+                              std::memcmp(gv.data(), pv.data(), vb / 2) == 0 && zero_from(gk, kb / 2) &&
+                              zero_from(gv, vb / 2);
+        check(unstaged, "unstaging pages [3, 5) writes the WHOLE q2k group back to the host copy and nothing past "
+                        "it");
+    }
 
     std::printf("\n%s\n", g_fail == 0 ? "kv_q2_parity: all checks passed" : "kv_q2_parity: FAILURES");
     return g_fail == 0 ? 0 : 1;
