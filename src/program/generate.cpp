@@ -12820,7 +12820,10 @@ int main(int argc, char** argv) {
             pp_reached = read_from;
             pp_exact = true;   // a restore, a checkpoint mount or a zeroed session: the state is exactly at read_from
             pp_t0 = r0;
-            pp_next_check = reread_to > 0 || !req_ckpt ? INT64_MAX : resume + o.prompt_cache_every;   // ckpt=0: none
+            pp_next_check = reread_to > 0 || !req_ckpt ? INT64_MAX :
+                (o.prompt_cache_dense_tail > 0
+                     ? suffix::dense_tail_next_check(resume, n, o.prompt_cache_every, o.prompt_cache_dense_tail)
+                     : resume + o.prompt_cache_every);   // ckpt=0: none
             pp_tail_saved = reread_to > 0 || !req_ckpt;   // ckpt=0 (#861): no tail checkpoint either
             {
                 std::lock_guard<std::mutex> lk(part_mu);
@@ -13626,9 +13629,19 @@ int main(int argc, char** argv) {
                     }
                 }
                 int64_t piece = piece_now();
-                if (piece <= 0) return run(a0, b0);
+                if (piece <= 0 && o.prompt_cache_dense_tail <= 0) return run(a0, b0);   // FW-1: dense-tail cadence falls through to the chunk loop below
                 for (int64_t q = a0; q < b0;) {
-                    const int64_t r = std::min(b0, q + piece);
+                    // FW-1 dynamic sizing: with --prompt-cache-dense-tail the pieces are
+                    // laid out so chunk boundaries land at dense-tail cadence (big head
+                    // chunk ending exactly at the zone start, `every`-sized zone chunks).
+                    // Checkpoints only fire at boundaries (the periodic block runs per
+                    // chunk), so the boundaries ARE the anchors.  Off: the original piece
+                    // arithmetic, byte-identical.
+                    const int64_t step = o.prompt_cache_dense_tail > 0
+                        ? suffix::dense_tail_chunk_size(q, n, piece > 0 ? piece : (b0 - a0),
+                                                        o.prompt_cache_every, o.prompt_cache_dense_tail)
+                        : piece;
+                    const int64_t r = std::min(b0, q + std::max<int64_t>(step, 1));
                     const auto tq = Clock::now();
                     if (!run(q, r)) return false;
                     const double piece_ms = std::chrono::duration<double, std::milli>(Clock::now() - tq).count();
