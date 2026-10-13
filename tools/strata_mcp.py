@@ -49,13 +49,13 @@ STATE_DIR = ".strata-mcp"                             # in the Strata folder (gi
 # What setup.py offers, used only when setup.py cannot be imported (the numbers are setup's MODELS / FAMILIES /
 # CONTEXTS; tools/test_strata_mcp.py checks they still match).
 FALLBACK_MODELS = {
-    "Q2_0": {"about": "2-bit, the fastest", "download_gb": 66.4, "ram_gb": 48, "arena_gb": 34.0, "families": ("qwen",)},
+    "Q2_0": {"about": "2-bit, the fastest", "download_gb": 66.4, "ram_gb": 48, "arena_gb": 34.0, "families": ("qwen", "abliterated")},
     "IQ2_XS": {"about": "2-bit i-quant, a little better quality, close in speed", "download_gb": 68.0, "ram_gb": 48,
-               "arena_gb": 35.5},
+               "arena_gb": 35.5, "families": ("qwen", "swift", "abliterated")},
     "IQ3_XXS": {"about": "3-bit i-quant, better quality, slower (more CPU work per token)", "download_gb": 75.8,
-                "ram_gb": 60, "arena_gb": 42.9},
+                "ram_gb": 60, "arena_gb": 42.9, "families": ("qwen", "swift", "abliterated")},
     "IQ3_S": {"about": "3.5-bit i-quant, the best quality (matches the full model), the slowest; needs a 64 GB PC "
-                       "with little else running", "download_gb": 83.6, "ram_gb": 62, "arena_gb": 50.3},
+                       "with little else running", "download_gb": 83.6, "ram_gb": 62, "arena_gb": 50.3, "families": ("qwen", "swift", "abliterated")},
     "IQ1_M": {"about": "the Coder's only size: half the experts, stored like IQ3_S (3.5 bits)", "download_gb": 58.4,
               "ram_gb": 32, "arena_gb": 23.4, "families": ("coder",)},
     "UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic), EXPERIMENTAL: the best quality, but most experts come from the "
@@ -77,6 +77,12 @@ FALLBACK_FAMILIES = {
                                                                   "of RAM part of its experts are read from the SSD "
                                                                   "(UD-Q4_K_XL, 111 GB: experimental)",
                 "tag": "unsloth-", "vision": False},
+    "abliterated": {"title": "Qwen3.8-Flash-Next Abliterated",
+                   "about": "SC117's abliterated variant; Q2_0, IQ2_XS, IQ3_XXS and IQ3_S",
+                   "tag": "abliterated-",
+                   "download_gb": {'Q2_0': 66.821518304, 'IQ2_XS': 68.465153504, 'IQ3_XXS': 76.142283328, 'IQ3_S': 83.863586496},
+                   "model_about": {q: f"{q} GSQ-RCO weights; speed and response quality not measured here"
+                                   for q in ("Q2_0", "IQ2_XS", "IQ3_XXS", "IQ3_S")}},
 }
 FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 BENCH_PROMPT = ("Write a short story (about 300 words) about a lighthouse keeper who finds a message in a bottle. "
@@ -706,7 +712,8 @@ class Strata:
         for f, fd in families.items():
             sizes = []
             for m in self.sizes_of(models, f):
-                d = models[m]
+                d = dict(models[m], download_gb=fd.get("download_gb", {}).get(m, models[m]["download_gb"]),
+                         about=fd.get("model_about", {}).get(m, models[m]["about"]))
                 tag = (fd.get("tag", "") + m).lower()
                 verdict = None
                 if ram is not None:
@@ -943,7 +950,7 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
          "annotations": ro},
         {"name": "strata_models", "title": "Strata models",
          "description": "The models and sizes Strata's setup offers (families: qwen = Qwen3.8-Flash-Next, swift = "
-                        "Swift 1.5, coder = the Coder, unsloth = Unsloth's ~4-bit), with download size, RAM needed, "
+                        "Swift 1.5, coder = the Coder, unsloth = Unsloth's ~4-bit, abliterated = SC117 GSQ-RCO), with download size, RAM needed, "
                         "whether each fits this PC, which are installed, the context lengths, and the recommendation. "
                         "Read-only.",
          "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
@@ -961,7 +968,8 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
                         "description": "qwen = Qwen3.8-Flash-Next (the original), swift = Swift 1.5 (thinks "
                                        "shorter), coder = the Coder (half the experts, ~32 GB RAM, for code), "
                                        "unsloth = Unsloth's ~4-bit (UD-IQ4_XS; UD-Q4_K_XL is "
-                                       "experimental), part of the experts read from the SSD"},
+                                       "experimental), part of the experts read from the SSD; "
+                                       "abliterated = SC117's GSQ-RCO variant"},
              "model": {"type": "string", "enum": list(models),
                        "description": "the size (quantization): see strata_models"},
              "context": {"type": "integer", "enum": contexts,
@@ -1249,7 +1257,8 @@ class Tools:
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag
         partly = have_dir.is_dir() and any(have_dir.glob("*.gguf*"))
-        need = (8 if partly else models[model]["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)
+        download_gb = families[family].get("download_gb", {}).get(model, models[model]["download_gb"])
+        need = (8 if partly else download_gb + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)
         free = s.disk_free(target)
         short = None
         if free is not None and free < need:
@@ -1272,7 +1281,7 @@ class Tools:
             fit = "fits" if ram >= need_ram else f"needs ~{need_ram} GB of RAM, this PC has {ram:.0f} GB"
         installed = (s.root / f"strata-{tag.lower()}.json").exists()
         plan = {"title": f"{families[family]['title']} {model}", "family": family, "model": model,
-                "context": context, "images": vision or "no", "download_gb": models[model]["download_gb"],
+                "context": context, "images": vision or "no", "download_gb": download_gb,
                 "partly_downloaded": partly, "ram": fit, "data_folder": str(target), "disk_free_gb": free,
                 "disk_needed_gb": round(need), "disk_short": short, "already_installed": installed,
                 "setup_command": ("START-HERE.bat " if WIN else "./setup.sh ") + " ".join(args),

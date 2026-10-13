@@ -42,6 +42,10 @@ KNOWN = [
     ("coder", "IQ1_M", "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF", "IQ1_M/"),
     ("unsloth", "UD-IQ4_XS", "unsloth/Qwen3.8-Flash-Next-GGUF", "UD-IQ4_XS/"),
     ("unsloth", "UD-Q4_K_XL", "unsloth/Qwen3.8-Flash-Next-GGUF", "UD-Q4_K_XL/"),
+    ("abliterated", "Q2_0", "hf:SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF", "Q2_0/"),
+    ("abliterated", "IQ2_XS", "hf:SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF", "IQ2_XS/"),
+    ("abliterated", "IQ3_XXS", "hf:SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF", "IQ3_XXS/"),
+    ("abliterated", "IQ3_S", "hf:SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF", "IQ3_S/"),
 ]
 
 
@@ -123,8 +127,10 @@ def verdict(fp: dict, table: dict) -> tuple[str, str]:
 def make_fingerprints(out: Path) -> None:
     listing, table = {}, {}
     for fam, model, repo, prefix in KNOWN:
+        kind = "hf" if repo.startswith("hf:") else "ms"
+        repo = repo.removeprefix("hf:")
         if repo not in listing:
-            listing[repo] = qs.list_hub("ms", repo)
+            listing[repo] = qs.list_hub(kind, repo)
         files = sorted((f for f in listing[repo] if f.name.startswith(prefix) and f.name.endswith(".gguf")),
                        key=lambda f: f.name)
         table[f"{fam}/{model}"] = {**fingerprint(*read_headers(files)), "files": [f.name for f in files], "repo": repo}

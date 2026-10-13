@@ -150,6 +150,32 @@ machines run it without a RAM budget. Manual workflow: [UD-Q6_K_XL](UNSLOTH_Q6.m
 For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](ORCA.md). It needs an
 explicit packing conversion and is not an installer menu option.
 
+### SC117 GSQ-RCO Abliterated
+
+[SC117's abliterated variant](https://huggingface.co/SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF)
+is available as `--family abliterated`, with Q2_0, IQ2_XS, IQ3_XXS and IQ3_S. It changes the main model's
+weights; the MTP draft head remains the stock base model's. The installer pins the repository revision and
+checks both shards against their published sizes and SHA-256 hashes. Downloads use Hugging Face
+(`--source huggingface`); no ModelScope mirror is configured for this family.
+
+| Size | Both GGUF shards (GB, decimal) |
+| --- | ---: |
+| Q2_0 | 66.82 |
+| IQ2_XS | 68.47 |
+| IQ3_XXS | 76.14 |
+| IQ3_S | 83.86 |
+
+These sizes are from the pinned Hub file metadata on 2026-10-13. RAM guidance uses the original GSQ-RCO
+estimates; this variant has not been benchmarked here. No speed or response-quality equivalence is claimed.
+
+```bat
+START-HERE.bat --setup --family abliterated --model IQ2_XS
+```
+
+Its configs, logs, launch scripts and packs use the `abliterated-` prefix. The pack and tokenizer are built
+from SC117's own first shard; an original Qwen pack must not be reused for its changed weights. Images use
+the Qwen BF16 projector. The original model remains the default, and existing installations stay separate.
+
 ## Adding or switching models
 
 You can add another model any time with `SETUP.bat` (the same as `START-HERE.bat --setup`; on Linux
