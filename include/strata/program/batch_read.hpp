@@ -33,7 +33,8 @@ struct ConcurrentReadSetup {
     bool split_mtp_batch = false;   ///< STRATA_SPLIT_MTP_BATCH: the batched draft K/V frees there (a free waits)
     bool fs_slots = false;          ///< STRATA_FS_SLOTS (Foresight swap space): serving a doorbell makes a CUDA call
     bool pcie_dma = false;          ///< --pcie-mode dma: the same (its copies)
-    bool helper_caches = false;     ///< --expert-cache-device1..3, a remote expert source, a prompt source of its own
+    bool helper_caches = false;     ///< --expert-cache-device1..3 (and --remote-expert-opt on them), a prompt source of
+                                    ///< its own; --remote-expert-opt alone is inert on a plain layer split
     bool staged_source = false;     ///< the GGUF source stages its blobs (in place, unbuffered, STRATA_IO_PREFETCH):
                                     ///< it recycles the buffers it hands out, one thread at a time
     bool other_source = false;      ///< an expert source that is neither the GGUF source nor the arena

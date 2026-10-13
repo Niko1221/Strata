@@ -11664,7 +11664,8 @@ int main(int argc, char** argv) {
                     s.split_mtp_batch = env_on("STRATA_SPLIT_MTP_BATCH");
                     s.fs_slots = env_on("STRATA_FS_SLOTS");
                     s.pcie_dma = o.pcie_mode == "dma";
-                    s.helper_caches = o.remote_expert_opt || prefill_src != srcp;
+                    // (--remote-expert-opt works only through a helper cache, so without one it does not count)
+                    s.helper_caches = prefill_src != srcp;
                     for (int r = 0; r < 3; ++r) s.helper_caches |= o.expert_cache_remote[(size_t) r] > 0;
                     s.staged_source = srcp == &src && src.stages_blobs();
                     s.other_source = srcp != &src && srcp != &arena_src;
