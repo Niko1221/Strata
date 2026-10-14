@@ -77,13 +77,18 @@ def confidence(p):
 
 
 class DecisionEngine(MockEngine):
-    """MockEngine plus a scripted final-row logits table keyed by the prompt's last token id.
-    In the real engine this row comes from Verifier::head_logits_ (the window_logprobs path);
-    here the table stands in for it, so the endpoint's readout math is exercised exactly."""
+    """MockEngine plus a scripted final-row logits table {label_token: logit}.  In the real
+    engine the row is the final position's full-vocab logits (Verifier::head_logits_, the
+    window_logprobs path, served by BROW); here a dict over the label tokens stands in, so
+    the endpoint's readout math is exercised exactly.  ByteTokenizer: id = byte value, so
+    "No"->[78], "Yes"->[89], "A"->[65], "0"->[48]."""
 
-    def __init__(self, tokenizer, script, logits_table, max_context=32768):
+    ROW = {78: 0.0, 89: 4.0,          # noul: No, Yes
+           65: 0.0, 66: 4.0, 67: -1.0,   # choice: A, B, C
+           48: 0.0, 49: 4.0, 50: -1.0}   # score: 0, 1, 2
+
+    def __init__(self, tokenizer, script, max_context=32768):
         super().__init__(tokenizer, script, max_context=max_context)
-        self.logits_table = logits_table      # {last_token_id: {variant_token: logit}}
         self.prompts: list[list[int]] = []
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
@@ -91,14 +96,12 @@ class DecisionEngine(MockEngine):
         yield from super().generate(ids, max_new, sampling, cancel, embeddings)
 
     def final_row_logits(self, prompt):
-        row = self.logits_table.get(prompt[-1])
-        assert row is not None, f"no logits scripted for terminal token {prompt[-1]}"
-        return row
+        return dict(self.ROW)
 
 
 def start_server():
     tok = ByteTokenizer()
-    engine = DecisionEngine(tok, "A", {65: {0: 0.0, 1: 4.0, 2: -1.0}})
+    engine = DecisionEngine(tok, "A")
     svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
     httpd = serve(svc, port=0)
     return engine, httpd, f"http://127.0.0.1:{httpd.server_address[1]}"
