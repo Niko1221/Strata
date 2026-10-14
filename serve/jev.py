@@ -334,16 +334,23 @@ def handle_then(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     cancel = threading.Event()
     out = []
     finish = "stop"
+    from serve.server import Detokenizer              # late import: server.py loads jev first
+    detok = Detokenizer(svc.tok)                      # the server's incremental decoder
+    text_parts = []
     with svc.fifo:
         for tok in svc.engine.generate(ids, max_tokens, sampling, cancel):
-            text = svc.tok.decode([tok])
+            if tok is None or tok < 0:              # engine sentinel ids (verification artifacts)
+                continue
             out.append(tok)
-            if any(st and st in svc.tok.decode(out[-8:]) for st in stops):
-                finish = "stop"
-                break
+            piece = detok.push(tok)
+            if piece:
+                text_parts.append(piece)
+                tail = "".join(text_parts[-8:])
+                if any(st and st in tail for st in stops):
+                    break
             if len(out) >= max_tokens:
                 finish = "length"
-    text = svc.tok.decode(out).strip()
+    text = "".join(text_parts).strip()
     for st in stops:
         if st in text:
             text = text.split(st)[0]
