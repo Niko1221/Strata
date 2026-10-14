@@ -9,7 +9,6 @@
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/conversation_file.hpp"
 
-#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -26,7 +25,6 @@ namespace strata::core {
 struct ConversationDiskOptions {
     std::string dir;                 ///< empty: the tier is off
     uint64_t budget_bytes = 0;       ///< at most this many bytes of files; 0: off
-    int64_t ttl_s = 30 * 60;         ///< a file older than this is removed (<= 0: kept until the budget evicts it)
     uint64_t min_free_bytes = 0;     ///< a write needs the file plus this much free on the disk (session preflight)
     bool persist = false;            ///< keep the files for later runs, bound to `identity`
     SessionFileIdentity identity;    ///< persist: the session files' identity (model and settings fingerprints)
@@ -39,7 +37,7 @@ struct ConversationDiskOptions {
 /// What the tier did since it started (diagnostics).
 struct ConversationDiskStats {
     size_t queued = 0, written = 0, write_failed = 0, ram_hits = 0, disk_hits = 0, read_failed = 0;
-    size_t expired = 0, evicted = 0, waits = 0;
+    size_t evicted = 0, waits = 0;
     uint64_t bytes_written = 0, bytes_read = 0;
     uint64_t tokens_back = 0;                 ///< prompt tokens given back (not read again) by ram or disk hits
     double write_ms = 0, read_ms = 0, wait_ms = 0;
@@ -47,9 +45,7 @@ struct ConversationDiskStats {
 
 class ConversationDiskTier {
 public:
-    using Clock = std::chrono::steady_clock;
-
-    explicit ConversationDiskTier(ConversationDiskOptions options, std::function<Clock::time_point()> now = Clock::now);
+    explicit ConversationDiskTier(ConversationDiskOptions options);
     ~ConversationDiskTier();
     ConversationDiskTier(const ConversationDiskTier&) = delete;
     ConversationDiskTier& operator=(const ConversationDiskTier&) = delete;
@@ -120,9 +116,6 @@ public:
     /// #879: every conversation goes - queued, being written (waited for) and on the disk, files too.  Returns how many.
     size_t clear();
 
-    /// Removes the entries older than the time limit; returns how many.
-    size_t expire();
-
     size_t size() const;                    ///< entries on the disk
     uint64_t bytes() const;                 ///< their files' bytes
     ConversationDiskStats stats() const;
@@ -139,7 +132,6 @@ private:
         std::vector<ConversationCheckpoint> checkpoints;
         bool cvec = true;
         uint64_t bytes = 0;                      ///< the files' bytes (queued: the image's estimate)
-        Clock::time_point at;
         std::string index;                       ///< persist: the index file
         int64_t written_s = 0;                   ///< persist: when it was written (seconds since the epoch)
     };
@@ -153,7 +145,6 @@ private:
     bool store(Entry e, size_t images, const WriteFile& write_file, const char* how);   // writes e's files, keeps e
     SessionWriteOptions write_options() const;
     void remove_locked(size_t index, bool delete_files);     // m_ held
-    size_t expire_locked();                                  // m_ held
     void log(const std::string& line) const;
     SessionFileIdentity file_identity() const;
     bool write_index(Entry& e, std::string& error) const;
@@ -161,7 +152,6 @@ private:
     std::string scan_folder(size_t& stale, std::error_code& ec);   // open(): take in or remove; its log part
 
     ConversationDiskOptions options_;
-    std::function<Clock::time_point()> now_;
     bool open_ = false;
     uint64_t nonce_ = 0, next_id_ = 0, bytes_ = 0;
     mutable std::mutex m_;

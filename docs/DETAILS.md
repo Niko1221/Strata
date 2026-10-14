@@ -1061,8 +1061,7 @@ when the disk holds a longer prefix than the session, a `--batch` slot or the RA
 - a background thread (CPU nice 10 on Linux) writes them, so a switch never waits for the disk; a conversation asked
   for again before its write started comes back from RAM, one being written is waited for, then read. A queued image
   holds its RAM until it is written: parking, and a read back, wait for the queue before they evict more;
-- `--conversation-disk-ttl-min N` (default 30): a conversation stays on the disk N minutes after it was written;
-  `--conversation-disk-mib N` (default 32768): the files' total, oldest out first;
+- `--conversation-disk-mib N` (default 32768): the files' total, oldest out first;
 - a read back removes it from the disk (the session holds it again, and it is parked again on the next switch);
 - the engine's log has a line for every queue, write, hit (from RAM or from the disk) and wait, with MiB, ms and MB/s,
   and a totals line after every hit (`strata serve: conversation disk: ...`).
@@ -1090,7 +1089,6 @@ seconds, paid for with disk space within `--conversation-disk-mib`.
   conversation (its token ids and write time, published by rename after its images) lets the next start take them in
   without reading the images; files of another model, engine version or settings, a damaged index and leftovers of an
   interrupted write are removed at start;
-- no time limit: the budget alone decides, the least recently written conversation goes first;
 - on QUIT (the server's stop, Ctrl+C, SIGTERM) the engine parks the current conversation, moves every parked one to
   the disk and waits for the writes before it ends; the server waits up to 300 s for that (20 s otherwise). Ctrl+C in
   the server's terminal no longer ends the engine directly (it is in the server's process group): the server's QUIT

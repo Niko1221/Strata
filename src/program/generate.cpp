@@ -646,7 +646,6 @@ struct Options {
     /// is written to this folder instead of dropped, and read back when a request continues it.  Empty = off.
     std::string conversation_disk_dir;
     int64_t conversation_disk_mib = 32768;    ///< --conversation-disk-mib: at most this many MiB of files
-    int64_t conversation_disk_ttl_min = 30;   ///< --conversation-disk-ttl-min: a file older than this is removed
     /// --conversation-disk-persist: off = the files end with the engine; on = they outlive it (budget only) and QUIT
     /// writes the current and the parked conversations; exit-only = the same, but nothing is written while the engine runs
     std::string conversation_disk_persist = "off";
@@ -806,8 +805,6 @@ void usage() {
                  "  --conversation-disk-dir DIR  --serve: a conversation the RAM cache evicts is written to DIR and read\n"
                  "                       back when a request continues it (needs --conversation-cache-mib; default off)\n"
                  "  --conversation-disk-mib N  --serve: at most N MiB of such files (default 32768)\n"
-                 "  --conversation-disk-ttl-min N  --serve: a conversation stays on the disk N minutes (default 30; 0 =\n"
-                 "                       until the budget evicts it)\n"
                  "  --conversation-disk-persist off|on|exit-only  --serve: keep the disk's conversations for the next start:\n"
                  "                       off (default) removes them at the end; on keeps them (budget only, no time\n"
                  "                       limit) and QUIT writes the current and the parked ones there first; exit-only\n"
@@ -2128,8 +2125,7 @@ int main(int argc, char** argv) {
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
         else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
                  a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-min-tokens" ||
-                 a == "--session-min-free-mib" || a == "--memory-limit-mib" || a == "--conversation-disk-mib" ||
-                 a == "--conversation-disk-ttl-min") {
+                 a == "--session-min-free-mib" || a == "--memory-limit-mib" || a == "--conversation-disk-mib") {
             const std::string value = next(a.c_str());
             int64_t number = 0;
             const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
@@ -2145,7 +2141,6 @@ int main(int argc, char** argv) {
             else if (a == "--session-min-free-mib") o.session_min_free_mib = number;
             else if (a == "--memory-limit-mib") o.memory_limit_mib = number;
             else if (a == "--conversation-disk-mib") o.conversation_disk_mib = number;
-            else if (a == "--conversation-disk-ttl-min") o.conversation_disk_ttl_min = number;
             else o.conversation_cache_slots = (int) number;
         }
         else if (a == "--conversation-disk-dir") o.conversation_disk_dir = next("--conversation-disk-dir");
@@ -8247,14 +8242,12 @@ int main(int argc, char** argv) {
         strata::core::ConversationDiskOptions disk_opts;
         disk_opts.dir = conversations.enabled() ? o.conversation_disk_dir : std::string();
         disk_opts.budget_bytes = (uint64_t) o.conversation_disk_mib << 20;
-        disk_opts.ttl_s = o.conversation_disk_ttl_min * 60;
         disk_opts.min_free_bytes = (uint64_t) o.session_min_free_mib << 20;
         if (o.conversation_disk_persist != "off" && !disk_opts.dir.empty()) {
             // the session files' identity: a later start with the same model and settings takes the files in
             std::string id_err;
             disk_opts.persist = session_identity(disk_opts.identity, id_err, {});
             if (disk_opts.persist) {
-                disk_opts.ttl_s = 0;   // the budget alone
                 std::signal(SIGINT, SIG_IGN);   // Ctrl+C reaches the engine too: the server's QUIT ends it, after the save
             } else {
                 std::fprintf(stderr, "strata serve: conversation disk: not persistent (%s)\n", id_err.c_str());
@@ -11104,7 +11097,6 @@ int main(int argc, char** argv) {
             bool incoming_streamed = false;                      // incoming's K/V is already in the GPUs
             // the disk tier holds a longer prefix than the session, a --batch slot or the RAM cache: restore that one
             if (conv_disk.enabled()) {
-                conv_disk.expire();
                 const auto on_disk = conv_disk.best(ids, req_imgs, want_cvec);
                 if (on_disk.tokens > std::max({resume, slot_tokens, parked.tokens})) {
                     const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;

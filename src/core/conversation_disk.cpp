@@ -128,8 +128,7 @@ std::string fmt(const char* f, ...) {
 
 }  // namespace
 
-ConversationDiskTier::ConversationDiskTier(ConversationDiskOptions options, std::function<Clock::time_point()> now)
-    : options_(std::move(options)), now_(std::move(now)) {
+ConversationDiskTier::ConversationDiskTier(ConversationDiskOptions options) : options_(std::move(options)) {
     std::random_device rd;
     nonce_ = ((uint64_t) rd() << 32) ^ rd() ^ (uint64_t) std::chrono::system_clock::now().time_since_epoch().count();
 }
@@ -248,7 +247,6 @@ std::string ConversationDiskTier::scan_folder(size_t& stale, std::error_code& ec
     std::sort(found.begin(), found.end(), [](const Entry& a, const Entry& b) { return a.written_s < b.written_s; });
     for (auto& e : found) {
         e.id = ++next_id_;
-        e.at = now_();
         bytes_ += e.bytes;
         entries_.push_back(std::move(e));
     }
@@ -288,7 +286,7 @@ bool ConversationDiskTier::open(std::string& error) {
     }
     open_ = true;
     thread_ = std::thread([this] { writer(); });
-    const std::string kept = options_.persist ? taken_in : fmt("%lld min per conversation", (long long) (options_.ttl_s / 60));
+    const std::string kept = options_.persist ? taken_in : "removed at the end";
     log(fmt("on: %s, budget %.0f MiB, %s; %zu stale files removed", options_.dir.c_str(), mib(options_.budget_bytes),
             kept.c_str(), stale));
     return true;
@@ -301,30 +299,6 @@ void ConversationDiskTier::remove_locked(size_t index, bool delete_files) {
         for (const auto& f : e.files) remove_file(f);
     bytes_ -= e.bytes;
     entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
-}
-
-size_t ConversationDiskTier::expire_locked() {
-    if (!open_ || options_.ttl_s <= 0) return 0;
-    const auto now = now_();
-    const auto ttl = std::chrono::seconds(options_.ttl_s);
-    size_t n = 0;
-    while (!entries_.empty() && now - entries_.front().at >= ttl) {   // oldest first: the rest are younger
-        remove_locked(0, true);
-        ++n;
-    }
-    stats_.expired += n;
-    return n;
-}
-
-size_t ConversationDiskTier::expire() {
-    size_t n = 0;
-    {
-        std::lock_guard<std::mutex> lock(m_);
-        n = expire_locked();
-    }
-    if (n) log(fmt("removed %zu conversation%s older than %lld min", n, n == 1 ? "" : "s",
-                   (long long) (options_.ttl_s / 60)));
-    return n;
 }
 
 bool ConversationDiskTier::put(SavedConversation&& image) {
@@ -439,10 +413,9 @@ SessionWriteOptions ConversationDiskTier::write_options() const {
 
 bool ConversationDiskTier::store(Entry e, size_t images, const WriteFile& write_file, const char* how) {
     const size_t tokens = e.live.ids.size();
-    size_t made_room = 0, expired = 0;
+    size_t made_room = 0;
     {
         std::lock_guard<std::mutex> lock(m_);
-        expired = expire_locked();
         while (!entries_.empty() && bytes_ + e.bytes > options_.budget_bytes) {
             remove_locked(0, true);
             ++made_room;
@@ -478,7 +451,6 @@ bool ConversationDiskTier::store(Entry e, size_t images, const WriteFile& write_
         log(fmt("dropped %zu tokens: the write failed after %.0f ms (%s)", tokens, ms, error.c_str()));
         return false;
     }
-    e.at = now_();
     const uint64_t b = e.bytes;
     const size_t nfiles = e.files.size();
     size_t on_disk = 0;
@@ -494,8 +466,8 @@ bool ConversationDiskTier::store(Entry e, size_t images, const WriteFile& write_
         disk_bytes = bytes_;
     }
     log(fmt("wrote %zu tokens%s: %.0f MiB in %zu file%s, %.0f ms (%.0f MB/s); on disk %zu, %.0f MiB; %zu removed for "
-            "the budget, %zu expired", tokens, how, mib(b), nfiles, nfiles == 1 ? "" : "s", ms, mbps(b, ms), on_disk,
-            mib(disk_bytes), made_room, expired));
+            "the budget", tokens, how, mib(b), nfiles, nfiles == 1 ? "" : "s", ms, mbps(b, ms), on_disk,
+            mib(disk_bytes), made_room));
     return true;
 }
 
@@ -533,7 +505,7 @@ bool ConversationDiskTier::take(uint64_t id, int64_t tokens, SavedConversation& 
         if (entries_[i].id == id) index = i;
     if (index == entries_.size()) {
         ++stats_.read_failed;
-        error = "the entry is gone (its write failed, or it expired)";
+        error = "the entry is gone (its write failed, or the budget removed it)";
         return false;
     }
     const Entry want = entries_[index];
@@ -635,11 +607,11 @@ std::string ConversationDiskTier::summary() const {
     std::lock_guard<std::mutex> lock(m_);
     const auto& s = stats_;
     return fmt("totals: %zu queued, %zu written (%.0f MiB, %.0f MB/s), %zu RAM hits, %zu disk hits (%.0f MiB, "
-               "%.0f MB/s), %llu prompt tokens given back, %zu waits for RAM (%.0f ms), %zu expired, "
+               "%.0f MB/s), %llu prompt tokens given back, %zu waits for RAM (%.0f ms), "
                "%zu removed for the budget, %zu/%zu writes/reads failed; on disk %zu (%.0f MiB), queue %zu",
                s.queued, s.written, mib(s.bytes_written), mbps(s.bytes_written, s.write_ms), s.ram_hits, s.disk_hits,
                mib(s.bytes_read), mbps(s.bytes_read, s.read_ms), (unsigned long long) s.tokens_back, s.waits,
-               s.wait_ms, s.expired, s.evicted, s.write_failed, s.read_failed, entries_.size(), mib(bytes_),
+               s.wait_ms, s.evicted, s.write_failed, s.read_failed, entries_.size(), mib(bytes_),
                queue_.size() + (writing_ ? 1 : 0));
 }
 
