@@ -23,7 +23,7 @@ PCIe 3.0 x8 slot (the card trains at Gen3 x8 there; it can do Gen5 x16).
 | decode, Coder IQ1_M | 44-51 tok/s on an RTX 5070 | **78.2 tok/s** (19-token prompt, 256 greedy tokens), **75.7** after a 2,184-token prompt, 69 after 40K, 66.6 after 128K, 55.9 after 256K; 48-72 through the API | 23-25 tok/s |
 | prompt reading | ~1,870 tok/s | **790 tok/s** at 2,184 tokens, 1,117 at 40K, 888 at 128K, 757 at 256K | ~150 tok/s (424 at 105K) |
 | speculative decoding (MTP) | yes | yes (the base checkpoint's draft layer; 70-85% of drafts accepted on code) | no |
-| images | yes | not yet | not yet |
+| images | yes | yes: CPU encoder, `--vision cpu` | not yet |
 | context | up to 262K | 256K measured, 56 tok/s decode there (`--kv-resident`: the KV in pinned host memory, the attended window in VRAM) | 131K measured ceiling |
 
 Decode speed with speculative decoding depends on the text: code drafts well, prose less so (see "Speed depends
@@ -58,7 +58,7 @@ setup.py itself is unchanged). The model choice, download, pack, tokenizer, MTP 
 questions are setup's own. What changes:
 
 - **GPU check:** the Arc is found in sysfs (vendor 8086 under `xe` or `i915`) and offered through setup's AMD
-  path. That is the path that builds locally and has no images.
+  path. That is the path that builds locally; its images run on the CPU encoder (`--vision cpu`, "Images" below).
 - **Engine step:** it uses the SYCL build (`build-sycl-aot/strata` or `build-sycl/strata`, run in the `strata-sycl-dev`
   image by `sycl/serve/strata-sycl.sh`) instead of compiling CUDA or HIP.
 - **RAM rule:** this does not apply on an `xe` card. The CUDA engine keeps every expert in RAM; the port streams them from
@@ -68,6 +68,8 @@ questions are setup's own. What changes:
   `--vram-reserve-mib N` you give is kept as given. KV streaming (`--kv-resident 32768`) is on from
   64K up when the RAM holds the KV. A `model_switcher` or `sampling` block from an earlier config is kept.
   `run-<model>.sh` starts `sycl/serve/server_intel.py`.
+- **Images:** off unless `--vision cpu` is given (`yes` and `gpu` are read on the CPU too, with a warning). The
+  encoder has to be built first, in the order under "Images" below.
 - **Arc A-series (`i915`, e.g. the A750 with 8 GB):** a different config, see "Arc A750 and the other Alchemist cards" below.
 - **Engine settings:** the config's `"env"` block reaches the engine. `strata-sycl.sh` forwards every variable starting with
   `STRATA_`, `ONEAPI_`, `UR_`, `IGC_`, `SYCL_` or `ZES_` into the container and sets `STRATA_VERIFY_DEVICE_PLAN=1`,
@@ -109,6 +111,86 @@ The build takes about 3 minutes and ends with `BUILD EXIT 0` and `errors: 0`. Th
 (B-series) or `build-sycl/strata` (A-series); setup finds either one. Run the `docker build` again after pulling a
 Strata update that changes `sycl/tools/Dockerfile`, and the `docker run` after every update of the engine (setup
 says when the engine is older than it needs).
+
+## Images (SYCL port)
+
+Images are read by Strata's CPU encoder, `strata-vision` (`tools/vision`, built without CUDA). The encoder is built in
+the `strata-sycl-dev` image and runs on the host beside the server, so the engine stays in the container. The host's
+glibc must be at least as new as the image's: `build-vision.sh` prints the image's version (`image glibc: ...`) at the
+start of its build, and a host with an older glibc cannot run the encoder.
+
+The order, the first time (images off until step 3):
+
+1. `./setup.sh --backend sycl`: the usual setup, images off. Its engine step fetches llama.cpp's sources into
+   `third_party/llama.cpp`, which the encoder is built against.
+2. Build the encoder once, in the dev image. From the folder above the checkout (`H=Strata` if the checkout is called Strata):
+
+        docker run --rm -u $(id -u):$(id -g) -v "$PWD:/work" -e REPO=/work/$H strata-sycl-dev \
+            "cd /work/$H && bash sycl/tools/build-vision.sh"
+
+   It ends with `BUILD EXIT 0` and `errors: 0`. It writes `build-vision/bin/strata-vision`,
+   `build-vision/lib/libgomp.so.1` (the image's OpenMP runtime; the host has none) and the launcher
+   `build-vision/strata-vision.sh`, which setup writes into the config. Without llama.cpp it ends with `BUILD EXIT 1`
+   and says what to run.
+3. `./setup.sh --backend sycl --vision cpu`. Setup stops before it changes anything if the encoder is not built, and
+   says these three steps. Without `--vision`, images stay off.
+
+How it works:
+
+- `serve/server.py`'s `Vision` class (the resident encoder, shared with the CUDA engine) runs `strata-vision` as a
+  resident process on the host and writes each request's pictures to an embeddings file. `sycl/serve/server_intel.py`
+  only redirects where that file and the encoder's temporary files go (below). The engine reads the file by its host
+  path, named in a `GENI` line.
+- The engine runs in the container, so the file has to be visible there. `sycl/serve/strata-sycl.sh` mounts the two
+  directories the server writes to, read-only, at the same paths: `/dev/shm/strata-sycl-vision` (RAM, when there is room
+  for the file) and `<data root>/vision-tmp` (the fallback). Both are created with mode 0700, so only this user reads
+  the pictures; the container runs as root and reads them regardless. They are mounted only when `--vision` is in the
+  config's args.
+- The config's `"vision"` section (written by setup, with the SYCL port's changes) names the launcher as its `exe`, the
+  projector (`mmproj`), the text model it opens vocab-only, `"gpu": false` and the thread count. Its paths are host
+  paths, because the encoder runs on the host.
+
+RAM: the resident encoder holds the model's memory in RAM, and that memory grows with the pictures:
+
+- right after start, about 1.1 GB resident (the same machine, 4 threads, BF16 projector);
+- after it has encoded large pictures (1920x1080, 1024x1024) at 4 threads with the BF16 projector, about 4.3 GB,
+  nearly all anonymous memory (measured 2026-10-14 on the Arc Pro B60 and Xeon W-2155 listed below; 4.3-5.5 GB in the uncapped
+  runs). It has not been seen to shrink back while the encoder runs.
+- with the image-token cap at 1024 (below), the same 1920x1080 screenshot peaked at about 2.1 GB resident.
+
+That is why images are off unless asked for.
+
+The image-token cap: the config's `vision.max_tokens` is the most image tokens a picture becomes. Setup writes it
+from `--vision-tokens N`. Without that flag it keeps the value an earlier config of this model chose for the CPU
+encoder, and otherwise uses setup's CPU default of **300** (`VISION` in setup.py). That 300 default was not measured
+on this port. On the Arc Pro B60 measurement below, a 1920x1080 screenshot with `max_tokens` 1024 became 1,071 prompt
+tokens, read correctly (the banner, the three buttons and their colours, the value), took 4.0 s (1.4 s when repeated),
+and the encoder peaked at about 2.1 GB resident. Uncapped, the same picture was 2,103 prompt tokens and 5.2 s, and the
+encoder grew to 4.3-5.5 GB. For screenshots:
+
+        ./setup.sh --backend sycl --vision cpu --vision-tokens 1024
+
+Setup notes that a picture takes longer to encode the more tokens it gets (several seconds more at 1,024 than at 300).
+
+Measured (2026-10-14, Arc Pro B60 24 GB on xe, Xeon W-2155, Coder IQ1_M, `--resident-experts`, encoder on 4
+threads; through the API, greedy, thinking off; every row uncapped, i.e. no `max_tokens` limit, see above for the cap):
+
+| picture | image tokens | request time | read |
+|---|---|---|---|
+| 640x240 text card | 187 | 1.6-4.4 s | the text (see below for digits) |
+| 3 text cards in one message | 521 (all) | 2.3 s | all three, in order, with their background colours |
+| 1920x1080 dashboard screenshot | 2,103 prompt | 5.2 s | the error banner, three buttons with their colours, a value |
+| 1100x760 code screenshot (22 lines) | 872 prompt | 42 s (a long answer) | a constant, a default argument, the exception type, a return |
+| 24x24, 2400x120, 200x1600 | 32 / 327 / 327 | 1-8 s | colour / banner text / text |
+
+PNG, JPEG and WebP; OpenAI `image_url` and Anthropic `image` blocks; streamed and not; a follow-up turn about an
+earlier picture; a picture and a text request at once; a broken picture is refused with a 400 and the next one reads.
+Text-only requests decode as before (29-48 tok/s).
+
+Digits: the IQ1_M model misreads some repeated-digit strings in pictures ("BRAVO 2222" -> "BRAVO 22", "STREAM 8080" ->
+"STREAM 880", "3030" -> "3930" at 1024x1024). llama.cpp's own `llama-mtmd-cli` (the pinned third_party tree, SYCL,
+the same GGUF and mmproj) gives exactly the same four answers, so this is the model at this quant, not the port; the
+same strings typed as text are repeated correctly.
 
 ## Things that matter on this GPU
 
@@ -743,8 +825,8 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
 
 ## Not done
 
-- Images, on both Intel engines. Strata's vision path encodes with `strata-vision` into embeddings the CUDA
-  engine reads; neither the SYCL port nor the llama.cpp config wires it yet.
+- Images on the llama.cpp path. Strata's vision path encodes with `strata-vision` into embeddings the CUDA
+  engine reads; the llama.cpp config does not wire it yet. (The SYCL port has images: "Images" below.)
 - Speculative decoding on the llama.cpp path (the GGUF carries no draft layer llama.cpp can use). The SYCL
   port has it (MTP draft layer, `--mtp`).
 

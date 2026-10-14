@@ -7,8 +7,10 @@ it and replaces the few steps that are NVIDIA/AMD-specific, then runs setup's ow
 model choice, the download, the pack, the tokenizer, the MTP draft layer, the context and KV questions - is
 setup.py's, unchanged.  What is replaced:
 
-  - the GPU check: the Intel Arc is offered through setup's AMD path (the one that compiles locally and has no
-    images), named and sized from sysfs;
+  - the GPU check: the Intel Arc is offered through setup's AMD path (the one that compiles locally), named and
+    sized from sysfs;
+  - images (--vision cpu): the CPU encoder, strata-vision, built by sycl/tools/build-vision.sh beside the engine
+    (docs/INTEL.md, "Images"); the port has no GPU encoder, so the images are read on the CPU (intel_vision());
   - the engine step: the SYCL build (build-sycl-aot/strata, run in the strata-sycl-dev image by
     sycl/serve/strata-sycl.sh; docs/INTEL.md) instead of a CUDA/HIP build;
   - the RAM rule: the CUDA engine keeps every expert in RAM, the SYCL port streams them from the GGUF into VRAM
@@ -37,6 +39,8 @@ import setup as S  # noqa: E402
 SYCL_WRAPPER = ROOT / "sycl" / "serve" / "strata-sycl.sh"
 SYCL_IMAGE = "strata-sycl-dev"
 SERVER = ROOT / "sycl" / "serve" / "server_intel.py"
+# the CPU image encoder (sycl/tools/build-vision.sh): the host runs its launcher, not the container
+VISION_LAUNCHER = ROOT / "build-vision" / "strata-vision.sh"
 MOUNT = Path(os.environ.get("STRATA_SYCL_ROOT") or ROOT.parent)   # what strata-sycl.sh mounts at /work
 
 # Battlemage / Alchemist PCI device ids -> (name, VRAM GB). lspci's database lags new cards (an Arc Pro B70 reads
@@ -94,6 +98,17 @@ def sycl_engine():
     if exe is None:
         return None, "it is not built (docs/INTEL.md, \"How to build it\": Docker, then sycl/tools/build.sh in the image)"
     return exe, None
+
+
+def intel_vision(asked) -> str:
+    """The image encoder on the SYCL port (setup's hip_vision, which its AMD path calls): the CPU encoder when asked for
+    (sycl/tools/build-vision.sh).  The port has no GPU encoder, so yes/gpu read the images on the CPU too, and say so;
+    any other answer leaves images off (the resident encoder holds about 1-5 GB of RAM, docs/INTEL.md "Images", so they are
+    off unless asked for)."""
+    if asked in ("yes", "gpu"):
+        S.warn("the SYCL port has no GPU image encoder: the images are read on the CPU (--vision cpu)")
+        return "cpu"
+    return "cpu" if asked == "cpu" else "none"
 
 
 def sycl_path(path) -> str:
@@ -202,8 +217,18 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
         args += ["--prefill", "4096"]                   # over PCIe once per chunk, so fewer, bigger chunks read the prompt
                                                         # faster (Arc Pro B70, IQ3_S, a 4,095-token prompt: 2,048-token
                                                         # chunks 618 tok/s, 4,096: 1,002; docs/INTEL.md); it costs ~700 cache slots
+    # images (setup writes --vision with its section, and the section only when images are on): the encoder is the host's
+    # CPU launcher, its model and projector are host paths (server_intel.py and serve/ run on the host, not in the
+    # container), and the flag is kept exactly once
+    drop(args, "--vision")
+    vis = cfg.get("vision")
+    if isinstance(vis, dict):
+        args.append("--vision")
+        vis = {**{k: v for k, v in vis.items() if k != "gpu"}, "exe": str(VISION_LAUNCHER), "gpu": False}
     out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "vision", "gpus")}
     out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER), "args": args, "sycl_root": str(MOUNT)})
+    if isinstance(vis, dict):
+        out["vision"] = vis
     env = {}
     if alchemist:
         if driver == "i915":
@@ -224,13 +249,37 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
     return out
 
 
+def typed(argv, name) -> bool:
+    """True when the user typed the flag, as `--name N` or `--name=N`."""
+    return any(a == name or a.startswith(name + "=") for a in argv)
+
+
+def typed_value(argv, name):
+    """The value the user gave the flag (either form), or None."""
+    for i, a in enumerate(argv):
+        if a == name and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith(name + "="):
+            return a.split("=", 1)[1]
+    return None
+
+
 def install(argv) -> None:
+    user_argv = list(argv)                              # what the user typed (setup's own additions below are not)
     intel = [] if S.WIN else intel_gpus()
     if not intel:
         S.fail("no Intel Arc found (an xe or i915 card in /sys/class/drm)", "on an NVIDIA or AMD card, run ./setup.sh")
     exe, why = sycl_engine()
     if exe is None:
         S.fail(f"Strata's SYCL engine cannot be used: {why}", "docs/INTEL.md: build it, then run this again")
+    asked_vision = typed_value(user_argv, "--vision")
+    if asked_vision in ("cpu", "yes", "gpu") and not VISION_LAUNCHER.is_file():
+        h = ROOT.name                                   # the checkout's folder: the container mounts its parent at /work
+        S.fail("images need the CPU image encoder, which is not built (build-vision/strata-vision.sh)",
+               "the order: 1) ./setup.sh --backend sycl (images off; it fetches third_party/llama.cpp); "
+               "2) build the encoder from the folder above the checkout (docs/INTEL.md, \"Images\"): docker run --rm "
+               f"-u $(id -u):$(id -g) -v \"$PWD:/work\" -e REPO=/work/{h} strata-sycl-dev "
+               f"\"cd /work/{h} && bash sycl/tools/build-vision.sh\"; 3) ./setup.sh --backend sycl --vision cpu")
     for name in ("gpus", "amd_gpus", "amd_problem", "hip_vision", "build_engine_hip", "hipblaslt_table", "ram_gb",
                  "write_run_script", "start", "say", "main"):
         if not callable(getattr(S, name, None)):
@@ -274,7 +323,7 @@ def install(argv) -> None:
     S.gpus = lambda *a, **k: []
     S.amd_gpus = lambda *a, **k: intel
     S.amd_problem = lambda g: None
-    S.hip_vision = lambda asked: "none"                 # images are not wired on the SYCL port yet
+    S.hip_vision = intel_vision                         # the CPU encoder (images off unless --vision cpu/yes/gpu)
     S.build_engine_hip = lambda *a, **k: stub
     S.hipblaslt_table = lambda *a, **k: None
     S.ram_gb = lambda: fake_ram                         # the experts are in VRAM: setup's RAM rule does not apply
@@ -291,6 +340,12 @@ def install(argv) -> None:
 
     def write_run_script(model, cfg_path, port, open_browser=True):   # setup.write_run_script's signature (#870)
         cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
+        if (isinstance(cfg.get("vision"), dict) and not typed(user_argv, "--vram-reserve-mib")
+                and flag(cfg["args"], "--vram-reserve-mib") == str(S.VISION["cpu"]["reserve_mib"])):
+            # setup writes its GPU encoder's reserve (S.VISION's cpu reserve, 700 MiB) beside --vision, and to_sycl would
+            # keep it as if asked; the CPU encoder takes no VRAM, so the port's own reserve applies. A reserve the user
+            # typed, or one adopted from an earlier config (another value), is kept
+            drop(cfg["args"], "--vram-reserve-mib", True)
         # the card setup selected (--gpu / the first usable), not intel[0]: on a PC with two Arcs the config must match
         # the chosen one (docs/INTEL.md, "Two cards"). intel_gpus() lists them in sysfs card order and cfg["gpu"] is
         # that index (setup.py's amd path); a layer split writes a list, and then every listed card is used.
@@ -346,12 +401,12 @@ def install(argv) -> None:
     if small_card(intel[0]["vram_gb"], intel[0]["driver"]):   # the engine's own advice for a card this size
         if "--draft-vocab" not in argv:
             argv += ["--draft-vocab", "en"]             # ~110 MiB less VRAM than the default CJK subset
-        if "--vram-reserve-mib" not in argv:
+        if not typed(argv, "--vram-reserve-mib"):
             argv += ["--vram-reserve-mib", str(SMALL_RESERVE_MIB)]
     sys.argv = [str(ROOT / "setup.py"), *argv]
     if "--backend" not in argv:
         sys.argv += ["--backend", "hip"]
-    if "--vision" not in argv:
+    if not typed(argv, "--vision"):
         sys.argv += ["--vision", "none"]
     if "--low-ram" not in argv:
         sys.argv += ["--low-ram", "off"]

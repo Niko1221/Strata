@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import collections
 import json
+import os
 import sys
 import time
 import urllib.parse
@@ -294,6 +295,57 @@ def install_narrator():
     S.narrate_start = narrate_start
 
 
+VISION_SHM = Path("/dev/shm/strata-sycl-vision")     # the RAM directory for the embeddings (install_vision_paths)
+
+
+def private_dir(path: Path) -> None:
+    """A directory for the encoder's files, mode 0700: only this user reads the pictures' embeddings. The container runs
+    as root, which reads it regardless. A directory that already exists is set to 0700 when this user owns it."""
+    path.mkdir(mode=0o700, exist_ok=True)
+    if path.stat().st_uid == os.getuid():
+        os.chmod(path, 0o700)
+
+
+def install_vision_paths(argv: list) -> None:
+    """Images on the SYCL port: the engine runs in a container (strata-sycl.sh) and reads the embeddings file named in
+    a GENI line by its host path.  serve/server.py writes that file to /dev/shm (else the encoder's temp directory),
+    neither of which the container sees.  With a "vision" section in the config this puts both under directories the
+    wrapper mounts read-only at the same paths: /dev/shm/strata-sycl-vision (RAM) and <data root>/vision-tmp (the
+    temp directory, the fallback when /dev/shm is short).  Without a "vision" section nothing changes."""
+    try:
+        cfg_path = argv[argv.index("--config") + 1]
+        cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
+    except (ValueError, IndexError, OSError):
+        return
+    if not isinstance(cfg.get("vision"), dict):
+        return
+    import shutil
+    import tempfile
+    import uuid
+    root = Path(cfg.get("sycl_root") or ROOT.parent)
+    tmp = root / "vision-tmp"
+    shm = VISION_SHM
+    private_dir(tmp)
+    try:
+        private_dir(shm)
+    except OSError:
+        shm = None
+    os.environ["TMPDIR"] = str(tmp)                     # work_dir()'s mkdtemp, and anything else that asks
+    tempfile.tempdir = str(tmp)
+    os.environ["STRATA_SYCL_VISION_DIRS"] = ":".join(str(d) for d in (shm, tmp) if d)   # read by strata-sycl.sh
+
+    def combined_embeddings_path(vision_dir: Path, nbytes: int) -> Path:
+        name = f"req-{uuid.uuid4().hex[:12]}.sve"
+        if shm is not None:
+            try:
+                if shutil.disk_usage(shm).free > 2 * nbytes + (16 << 20):
+                    return shm / f"strata-vision-{os.getpid()}-{name}"
+            except OSError:
+                pass
+        return Path(vision_dir) / name                   # under vision-tmp, also mounted
+    S.combined_embeddings_path = combined_embeddings_path
+
+
 def top_logprobs(req: dict):
     """The K for the engine's logprobs=K, or None when the request did not ask (OpenAI: logprobs=true, top_logprobs
     0..20; the legacy completions form, logprobs=N, is taken as N)."""
@@ -311,4 +363,5 @@ if __name__ == "__main__":
     install_narrator()
     install_switcher(sys.argv[1:])
     install_logprobs()
+    install_vision_paths(sys.argv[1:])
     sys.exit(S.main())

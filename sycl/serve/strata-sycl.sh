@@ -34,9 +34,19 @@ for k in "${!setting[@]}"; do
     # the engine tests the switches by presence: a value of 0 (or empty) means "not set", so it is not passed on
     case "${setting[$k]}" in 0|"") ;; *) envs+=(-e "$k=${setting[$k]}") ;; esac
 done
+# images (--vision): the engine opens the embeddings file of a GENI line by its host path; server_intel.py writes it
+# only under these directories (STRATA_SYCL_VISION_DIRS, ':'-separated), mounted read-only at the same paths
+mounts=()
+case " $* " in
+    *" --vision "*)
+        IFS=: read -r -a vdirs <<< "${STRATA_SYCL_VISION_DIRS:-}"
+        for d in "${vdirs[@]}"; do [ -d "$d" ] && mounts+=(-v "$d:$d:ro"); done
+        [ ${#mounts[@]} -gt 0 ] || echo "strata-sycl.sh: --vision without STRATA_SYCL_VISION_DIRS: image requests will fail" >&2 ;;
+esac
 exec docker run --rm -i --name "$name" --device /dev/dri --oom-score-adj 1000 --stop-timeout 30 --no-healthcheck \
     --ulimit memlock=-1 \
     -v "$root:/work" \
+    ${mounts[@]+"${mounts[@]}"} \
     "${envs[@]}" \
     "${STRATA_SYCL_IMAGE:-strata-sycl-dev}" \
     "cd $repo_in && exec ${STRATA_SYCL_BIN:-build-sycl-aot/strata}$args"
