@@ -73,7 +73,7 @@ def window():        # one batch window: every active slot one token
         if t == 257 or produced >= max_new:
             fin = 'stop' if t == 257 else 'cancel' if b in stopped else 'length'
             stopped.discard(b)
-            print(f"BDONE {b} {produced} {fin} 1.0", flush=True)
+            print(f"BDONE {b} {produced} {fin} 1.0" + (" 3 5" if "--slot-drafts" in args else ""), flush=True)
             del active[b]
         else:
             active[b] = [left, max_new, produced]
@@ -709,6 +709,19 @@ class ParallelService(unittest.TestCase):
         self.assertGreaterEqual(u["input_tokens"], 1, u)
         self.assertEqual(u["input_tokens"] + u["cache_read_input_tokens"], prompt, u)
         self.assertEqual(u["cache_read_input_tokens"], 3, u)    # the first read's reuse, not the continuation's
+
+    def test_slot_drafts_reach_http_and_metrics(self):
+        import serve.server as server
+        self.start(2, slot_cache=True, more=("--slot-drafts",))
+        res = {}
+        with mock.patch.object(server, "EOS_IDS", {257}):
+            a = threading.Thread(target=lambda: res.setdefault("a", self.chat("List three primes please", 200)))
+            b = threading.Thread(target=lambda: res.setdefault("b", self.chat("Name two rivers in Germany", 200)))
+            a.start(); b.start(); a.join(30); b.join(30)
+        self.assertEqual(len(res), 2)
+        for row in res.values():
+            self.assertEqual((row["timings"]["draft_n_accepted"], row["timings"]["draft_n"]), (3, 5))
+        self.assertEqual((self.svc.totals["drafts_accepted"], self.svc.totals["drafts_offered"]), (6, 10))
 
     def test_a_slot_request_ended_by_its_stop_token_reports_the_slot_leg(self):
         """#1869: the consumer leaves at the stop token, before the BDONE: the request kept the admission's one token and
