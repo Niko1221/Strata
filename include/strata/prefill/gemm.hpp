@@ -89,6 +89,12 @@ private:
     void f16_inplace(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy);
 };
 
+/// Pascal, opt-in: Gemm::f16's large dense shapes as cublasSgemm on FP32 copies (gemm.cu; bitwise the FP16 call's
+/// result at the sizes it takes with the cuBLAS it was measured on).  0 off, 1 on (any card), -1 the default
+/// (STRATA_DENSE_F32=1 on compute capability 6.x, else off).  For gemm_f32_parity; a no-op outside the experimental
+/// CUDA 12 build.
+void gemm_set_dense_f32(int mode);
+
 /// HIP on gfx103x (RDNA2), for the current device: rocBLAS's tuned GEMMs there are FP16 in -> FP16 out only (FP16 or
 /// BF16 in -> FP32 out runs ~6x slower), so the prompt path's 16-bit GEMMs run in FP16 (Gemm::set_f16_io,
 /// set_act_f16).  Cached per device (a layer split can mix cards).  STRATA_HIP_PROMPT_F16=0/1 overrides.

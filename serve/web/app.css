@@ -188,3 +188,11 @@ main { flex: 1; min-height: 0; display: flex; }
   .facts { grid-template-columns: 1fr; gap: 2px; }
   .facts dd { margin-bottom: var(--st-s-2); }
 }
+/* Images tab (POST /v1/images/generations) */
+.img-form{display:flex;flex-direction:column;gap:12px}
+.img-prompt{height:auto;padding:10px 14px;resize:vertical}
+.img-row{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+.img-results{display:flex;flex-direction:column;gap:12px}
+.img-results figure{margin:0}
+.img-results img{max-width:100%;border-radius:var(--st-r-lg);display:block}
+.img-results figcaption{font-size:var(--st-fs-sm, 13px);color:var(--st-ink-2, inherit);margin-top:4px}

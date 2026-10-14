@@ -74,6 +74,19 @@ size_t device_free_bytes() try {
     You may need to adjust the code.
     */
     dpct::get_current_device().get_memory_info(free_b, total_b);
+    // An Arc on the xe driver whose Level Zero has no ext_intel_free_memory reports 0 free (Arc A770 16 GB, xe, #1545):
+    // --expert-cache auto then sized its caches from 0 bytes.  0 with a known total means "the driver does not know", so on
+    // Linux (xe is Linux-only) the card's total less what this process holds (the DRM fdinfo, as for the A750/i915 below)
+    // is used instead.  Like that figure it does not see other processes' memory.  Elsewhere the 0 stands.
+#if defined(__linux__)
+    if (free_b == 0 && total_b > 0)
+        if (const unsigned long long own = own_drm_local_bytes(); own < total_b) {
+            static std::atomic<bool> said{false};
+            if (!said.exchange(true))
+                std::fprintf(stderr, "strata: the driver reports no free card memory (xe without ext_intel_free_memory); sizing from the DRM fdinfo (this process holds %.2f GiB)\n", (double) own / 1073741824.0);
+            free_b = (size_t) (total_b - own);
+        }
+#endif
     // #1440: own_drm_local_bytes() sums every DRM fd of the process, i.e. both cards on a layer split, and would charge the
     // first card's cache to the second. With more than one GPU it runs only where the driver reports the whole card as
     // free (Arc A750/i915); a one-GPU run keeps the figure it always had.

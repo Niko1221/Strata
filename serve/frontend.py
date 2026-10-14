@@ -245,7 +245,11 @@ VISION_TAGS = {"<|vision_start|>": "\U000F0E03", "<|image_pad|>": "\U000F0E04", 
 # #2026: `</tool_call>` the same way.  A user asking for the string verbatim handed the model the real end-of-call token
 # (type 4, matched everywhere); it copied that token into its answer and the reply came back empty.  An assistant
 # message keeps its own: a client replaying the model's raw call text sends the tokens the model wrote.
-TOOL_LITERAL_TAGS = {"</tool_call>": "\U000F0E07"}
+# 0.1.44: `<tool_call>`, `<tool_response>` and `</tool_response>` are type 4 too (ids 248058, 248066, 248070), so a quoted
+# one handed the model the real call / tool-result marker in the same way (found by 47Hunter47 in #2026).  The template
+# writes the tool-result markers around a tool message itself; only the text inside a message is marked.
+TOOL_LITERAL_TAGS = {"</tool_call>": "\U000F0E07", "<tool_call>": "\U000F0E08", "<tool_response>": "\U000F0E09",
+                     "</tool_response>": "\U000F0E0A"}
 LITERAL_TAGS = {**THINK_TAGS, **VISION_TAGS, **TOOL_LITERAL_TAGS}
 THINK_MARKS = {v: k for k, v in LITERAL_TAGS.items()}
 CONTROL_MARK0 = 0xF0E10      # the control tokens' marks start here, clear of the two sets above
@@ -287,6 +291,44 @@ def _has_tag(v, tags: dict[str, str] = LITERAL_TAGS) -> bool:
     return False
 
 
+_TOOL_RESULT_OPEN, _TOOL_RESULT_CLOSE = "<tool_response>", "</tool_response>"
+
+
+def _keep_tool_result_wrap(content, tags: dict[str, str]):
+    """A user message whose whole text is <tool_response>...</tool_response> (a client that formats a tool result the way
+    the template does for a tool message) keeps that outer pair as the markers - the template tells such a turn from a
+    real question by exactly that pair - and only the text inside is marked.  None: not such a message."""
+    o, c = _TOOL_RESULT_OPEN, _TOOL_RESULT_CLOSE
+
+    def wrap(text: str, first: bool, last: bool) -> str:
+        i = text.index(o) + len(o) if first else 0
+        j = text.rindex(c) if last else len(text)
+        head = _mark(text[:i - len(o)], tags) + o if first else ""
+        tail = c + _mark(text[j + len(c):], tags) if last else ""
+        return head + _mark(text[i:j], tags) + tail
+
+    if isinstance(content, str):
+        body = content.strip()
+        if len(body) >= len(o) + len(c) and body.startswith(o) and body.endswith(c):
+            return wrap(content, True, True)
+        return None
+    if not (isinstance(content, list) and content and all(isinstance(x, dict) and "text" in x for x in content)):
+        return None
+    texts = [x["text"] for x in content]
+    if not all(isinstance(t, str) for t in texts):
+        return None
+    body = "".join(texts).strip()
+    if not (len(body) >= len(o) + len(c) and body.startswith(o) and body.endswith(c)):
+        return None
+    if not (texts[0].lstrip().startswith(o) and texts[-1].rstrip().endswith(c)):
+        return None          # the pair is split across parts: mark it all, as before
+    if len(content) == 1:
+        return [{**content[0], "text": wrap(texts[0], True, True)}]
+    return ([{**content[0], "text": wrap(texts[0], True, False)}] +
+            [_mark_deep(x, tags) for x in content[1:-1]] +
+            [{**content[-1], "text": wrap(texts[-1], False, True)}])
+
+
 def mark_think_literals(messages: list[dict], tools: list[dict] | None, tags: dict[str, str] = LITERAL_TAGS):
     """#537: (messages, tools) with every literal <think> / </think> (#554: and vision marker) in their text swapped for
     LITERAL_TAGS' marks (or `tags`': literal_tags() adds the control tokens' texts), and
@@ -304,6 +346,10 @@ def mark_think_literals(messages: list[dict], tools: list[dict] | None, tags: di
         for k, v in m.items():
             if k != "role":
                 m[k] = _mark_deep(v, mine)
+        if m.get("role") == "user":
+            kept = _keep_tool_result_wrap(content, tags)
+            if kept is not None:
+                m["content"] = kept
         if m.get("role") == "assistant" and isinstance(content, str) and content.lstrip().startswith("<think>") \
                 and "</think>" in content:
             i, j = content.index("<think>") + len("<think>"), content.index("</think>")
@@ -332,6 +378,42 @@ def unmark_think_literals(prompt: str, tags: dict[str, str] = LITERAL_TAGS) -> t
         pos = m.end()
     out.append(prompt[pos:])
     return "".join(out), spans
+
+
+# Config "env_to_user" (opt-in): opencode writes its <env> block (working directory, today's date) near the START of
+# the system message, before ~40K characters of instructions and tool definitions that are the same in every session.
+# The prefix cache only reuses a prompt's start, so a new folder or a new day read all of it again (~14K tokens, 8-11 s).
+# Moved to the front of the first user message, the system turn (and the tools the template writes into it) is the same
+# for every session and the disk prefix cache restores it.  The model still sees the same lines, one turn later.
+ENV_TO_USER = False
+_ENV_BLOCK = re.compile(r"(?:[^\n]*environment you are running in:\n)?<env>\n.*?\n</env>\n?", re.S)
+
+
+def _env_to_user(messages: list[dict]) -> list[dict]:
+    if not ENV_TO_USER or not messages or messages[0].get("role") != "system":
+        return messages
+    sys_text = messages[0].get("content")
+    if not isinstance(sys_text, str):
+        return messages
+    m = _ENV_BLOCK.search(sys_text)
+    if m is None:
+        return messages
+    for i in range(1, len(messages)):
+        if messages[i].get("role") != "user":
+            continue
+        block = m.group(0).rstrip("\n")
+        c = messages[i].get("content")
+        if isinstance(c, str):
+            nc = block + "\n\n" + c
+        elif isinstance(c, list):
+            nc = [{"type": "text", "text": block + "\n\n"}] + c
+        else:
+            return messages
+        out = list(messages)
+        out[0] = dict(messages[0], content=sys_text[:m.start()] + sys_text[m.end():])
+        out[i] = dict(messages[i], content=nc)
+        return out
+    return messages
 
 
 def _late_system_to_user(messages: list[dict]) -> list[dict]:
@@ -464,14 +546,16 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
     kwargs = {}
     # OpenAI Chat Completions: "reasoning_effort"; Responses style: "reasoning": {"effort": ...}
     reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
-    kwargs.update(effort_kwargs(req.get("reasoning_effort") or reasoning.get("effort")))
+    given = req.get("reasoning_effort")
+    # `false` is a level (thinking off, effort_kwargs): an `or` between the two fields dropped it
+    kwargs.update(effort_kwargs(given if given is not None and given != "" else reasoning.get("effort")))
     # the vLLM / llama.cpp convention: {"chat_template_kwargs": {"enable_thinking": false, "reasoning_effort": "low"}}
     for k, v in (req.get("chat_template_kwargs") or {}).items():
         if k == "enable_thinking" and not v:
             kwargs = {"enable_thinking": False}
         elif k == "reasoning_effort" and "enable_thinking" not in kwargs:
             kwargs.update(effort_kwargs(v))
-    return _late_system_to_user(messages), tools, kwargs
+    return _env_to_user(_late_system_to_user(messages)), tools, kwargs
 
 
 BILLING_HEADER = "x-anthropic-billing-header:"
@@ -567,7 +651,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
         # A config's reasoning_effort still applies: Service.with_shared sets output_config before this runs.  A
         # request that gives its own reasoning_budget_tokens (#123) asks for thinking, so it thinks as before.
         kwargs["enable_thinking"] = False
-    return _late_system_to_user(messages), tools, kwargs
+    return _env_to_user(_late_system_to_user(messages)), tools, kwargs
 
 
 # ------------------------------------------------------------------------------------------------ output parser
