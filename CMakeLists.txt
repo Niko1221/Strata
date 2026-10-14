@@ -518,6 +518,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/qsa_pattn.cu
                           src/kernels/cuda/verify_kernels.cu
                           src/kernels/cuda/dflash2.cu
+                          src/kernels/cuda/ep_kernels.cu
                           src/kernels/cuda/iq_kernels.cu
                           src/kernels/ngram.cpp
                           src/ngram/ple_reader.cpp
@@ -1597,6 +1598,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(resident_plan_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(resident_plan_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME resident_plan_parity COMMAND resident_plan_parity)
+  # expert parallelism (--expert-parallel-device): the two cards' plans of one window and the mapped row/flag
+  # exchange round trip, bit-exact (GPU, synthetic, no model)
+  add_executable(ep_parity src/kernels/ep_parity.cu)
+  target_include_directories(ep_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(ep_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME ep_parity COMMAND ep_parity)
   # #783 PR-g: the multi-token hyper-connection read/write (exact-T projections under them) against the single-token calls
   add_executable(gr_multi_parity src/kernels/gr_multi_parity.cpp)
   target_include_directories(gr_multi_parity PRIVATE ${_strata_gpu_include_directories})
