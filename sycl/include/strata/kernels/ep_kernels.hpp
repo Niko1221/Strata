@@ -30,6 +30,15 @@ void ep_send_rows(float* peer_rows, const float* rows, const int32_t* ids, const
 /// multiple of 4; both pointers are 4-byte aligned.
 void ep_copy_uncached(void* dst, const void* src, size_t bytes, void* stream);
 
+/// Opt-in prompt-only reduction: sum the peer-owned routed contributions into one row per token.
+/// slot maps original router order to grouped rows; peer rows start at local_rows. Changes FP32 addition order.
+void ep_prefill_reduce(const float* rows, const int32_t* slot, const float* weights, float* sum,
+                       int64_t tokens, int64_t local_rows, int64_t width, int k, void* stream);
+/// Add the primary contributions and shared expert. `out` initially holds the peer sum, then is replaced in place.
+void ep_prefill_finish(const float* rows, const int32_t* slot, const float* weights,
+                       const float* shared, const float* gate, float* out,
+                       int64_t tokens, int64_t local_rows, int64_t width, int k, void* stream);
+
 /// STRATA_EP_VERIFY=1: add to *mismatch (host) the peer-owned rows where peer_rows (read past the caches, as
 /// ep_copy_uncached) differs from this card's parts.
 void ep_compare(const float* parts, const float* peer_rows, const int32_t* ids, const int32_t* res0, int n, int64_t row,

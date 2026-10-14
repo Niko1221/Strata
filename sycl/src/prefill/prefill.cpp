@@ -603,6 +603,12 @@ struct PeerPrefill {
     // (dpct gives each card its own context, so there is no P2P copy between them)
     core::ExpertCache* ep = nullptr;
     core::EpRegion x_reg, rows_reg;
+    bool reduce_rows = false;
+    core::EpRegion sum_reg;
+    int32_t* reduce_slot = nullptr;
+    float* reduce_weight = nullptr;
+    std::vector<int32_t> reduce_slot_host;
+    std::vector<float> reduce_weight_host;
     std::vector<int32_t> src_ipc;   // src_h may be the primary's mapped memory
     // ipc: the primary's FP16 expert path (no MMQ in this build)
     uint16_t *mixed_h = nullptr, *Xs = nullptr, *Hh = nullptr, *dq_gu = nullptr, *dq_d = nullptr;
@@ -695,6 +701,7 @@ struct PeerPrefill {
         gemm.reset();
         core::ep_region_free(x_reg);
         core::ep_region_free(rows_reg);
+        core::ep_region_free(sum_reg);
         for (void *p : owned)
             DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));
         if (ev_done) dpct::destroy_event(ev_done);
@@ -2126,8 +2133,12 @@ bool Prefill::set_ep_peer(int device, core::ExpertCache* cache, std::string& err
     pp->T_max = m.T_max;
     pp->cap_rows = m.T_max * K;
     const int primary = dpct::get_current_device_id();
+    const char* reduce = std::getenv("STRATA_EP_PREFILL_REDUCE");
+    pp->reduce_rows = reduce && reduce[0] == '1';
     bool ok = core::ep_region_alloc(device, primary, (size_t) m.T_max * N * 2, pp->x_reg, err) &&
               core::ep_region_alloc(device, primary, (size_t) m.T_max * K * N * 4, pp->rows_reg, err);
+    if (ok && pp->reduce_rows)
+        ok = core::ep_region_alloc(device, primary, (size_t) m.T_max * N * 4, pp->sum_reg, err);
     if (!ok) return false;
     const core::OnDevice on(device);
     ok = DPCT_CHECK_ERROR(pp->s = dpct::get_current_device().create_queue(true)) == 0 &&
@@ -2150,6 +2161,14 @@ bool Prefill::set_ep_peer(int device, core::ExpertCache* cache, std::string& err
     pp->dq_gu = (uint16_t*) take((size_t) 1280 * N * 2);
     pp->dq_d = (uint16_t*) take((size_t) N * 640 * 2);
     pp->src = (int32_t*) take((size_t) pp->cap_rows * 4);
+    if (pp->reduce_rows) {
+        pp->reduce_slot = (int32_t*) take((size_t) pp->cap_rows * 4);
+        pp->reduce_weight = (float*) take((size_t) pp->cap_rows * 4);
+        pp->reduce_slot_host.resize((size_t) pp->cap_rows);
+        pp->reduce_weight_host.resize((size_t) pp->cap_rows);
+        std::fprintf(stderr, "strata prefill: EP row reduction enabled: one FP32 row per token returns; "
+                             "FP32 addition order changes (STRATA_EP_PREFILL_REDUCE=1)\n");
+    }
     if (ok) {
         pp->gemm = std::make_unique<Gemm>();
         ok = pp->gemm->init(pp->s, 1 << 20, err);
@@ -3659,6 +3678,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                           (size_t)T * K * 4);
                         // before the wait below, which covers it; a kernel, as the region is not USM of this context
                         if (m.pp && m.pp->ipc()) copy_f32_wide((float*) m.pp->x_reg.remote, (const float*) m.mixed_h, T * N / 2, m.cs);   // FP16 bits
+                        if (m.pp && m.pp->reduce_rows)
+                            m.cs->memcpy(m.pp->reduce_weight_host.data(), m.w, (size_t) T * K * 4);
                         // #579: a stall here is the GPU (this layer's attention and router, or the previous layer's
                         // work), not the host: the watchdog's report says so (only its text changes)
                         core::progress_at("reading the prompt (batched): waiting for the GPU (attention, router) at layer",
@@ -3852,6 +3873,11 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             if (P.ipc()) {
                                 P.src_ipc.assign(src_h + rows_local, src_h + rows_local + rows_peer);
                                 ps->memcpy(P.src, P.src_ipc.data(), (size_t) rows_peer * 4);
+                                if (P.reduce_rows) {
+                                    std::copy_n(slot_h, (size_t) T * K, P.reduce_slot_host.begin());
+                                    ps->memcpy(P.reduce_slot, P.reduce_slot_host.data(), (size_t) T * K * 4);
+                                    ps->memcpy(P.reduce_weight, P.reduce_weight_host.data(), (size_t) T * K * 4);
+                                }
                             } else if (P.p2p) {
                                 /*
                                 DPCT1124: cudaMemcpyAsync is migrated to
@@ -3888,6 +3914,9 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                     swiglu_interleaved(P.GUf, P.Hh, ne, ps);
                                     P.gemm->f16(P.Hh, P.dq_d, rows + o * N, ne, N, 640);
                                 }
+                                if (P.reduce_rows)
+                                    strata::kernels::ep_prefill_reduce(rows, P.reduce_slot, P.reduce_weight,
+                                        (float*) P.sum_reg.local, T, rows_local, N, (int) K, ps);
                             } else if (P.compact) {
                                 // groups of up to MMQ_GROUP experts and at most G rows, each computed from its own rows
                                 P.groups.clear();
@@ -4684,14 +4713,21 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             const core::OnDevice d(m.pp->dev);
                             m.pp->s->wait();
                         }
-                        strata::kernels::ep_copy_uncached(m.Dm + (size_t) m.pp->back_at * N, m.pp->rows_reg.remote,
-                                                          (size_t) m.pp->back_rows * N * 4, m.cs);
+                        if (m.pp->reduce_rows)
+                            strata::kernels::ep_copy_uncached(m.bo, m.pp->sum_reg.remote, (size_t) T * N * 4, m.cs);
+                        else
+                            strata::kernels::ep_copy_uncached(m.Dm + (size_t) m.pp->back_at * N, m.pp->rows_reg.remote,
+                                                              (size_t) m.pp->back_rows * N * 4, m.cs);
                     } else if (peer_now) {   // multi-GPU: the peer's rows are in Dm (or, without P2P, in host memory)
                         (m.cs)->ext_oneapi_submit_barrier({*m.pp->ev_done});
                         if (!m.pp->p2p)
                             copy_f32_wide(m.Dm + (size_t) m.pp->back_at * N, m.pp->host_rows, m.pp->back_rows * N, m.cs);
                     }
-                    moe_combine(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.bo, T, m.cs);
+                    if (peer_now && m.pp->reduce_rows)
+                        strata::kernels::ep_prefill_finish(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.bo,
+                                                         T, m.pp->back_at, N, (int) K, m.cs);
+                    else
+                        moe_combine(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.bo, T, m.cs);
                     // debug: STRATA_DBG_NAN=1 reports the first layer of a chunk whose MoE produced non-finite values
                     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {
                         m.cs->wait();

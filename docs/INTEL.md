@@ -163,6 +163,29 @@ SYCL build (`sycl/CMakeLists.txt`) takes every other source from the original lo
 is edited. `sycl/include/dpct/` is the vendored SYCLomatic helper library, so the port builds without the
 migration tool.
 
+**Expert-parallel prompt row reduction (opt-in).** `STRATA_EP_PREFILL_REDUCE=1` combines
+peer-owned routed experts on the peer before returning one FP32 row per token. The primary
+adds its own routed sum and shared expert. Decode is unchanged; unset retains individual
+expert rows and the original combine. This changes FP32 addition order and can change generated
+text. On two B70s with IQ3_XXS, two200k slots, INT8 KV and spec4, matched fresh-prompt medians
+with timing enabled improve from570/576 to1037/1106 tok/s at4K/32K. An8192 prefill chunk
+reaches1265 at32K, with all24576 experts resident. These are bounded screens, not a stability
+or full-context qualification. Normal teardown and per-card/compiled collective health pass.
+
+`sycl/probe/ep_prefill_reduce.cpp` checks two-card IPC updates against an independent original
+router-order FP32 FMA oracle, including all-primary/all-peer/mixed ownership and4096 tokens.
+26 cases pass with maximum absolute error9.54e-7 (tolerance scaled by contribution magnitude).
+Build inside the oneAPI development image, then run with access to both cards; Docker needs
+`--cap-add SYS_PTRACE` for Level Zero IPC import with its default seccomp profile:
+
+```sh
+icpx -O2 -fsycl -fsycl-targets=spir64_gen \
+  -Xsycl-target-backend=spir64_gen "-device bmg-g31 -options -cl-fp32-correctly-rounded-divide-sqrt" \
+  -I sycl/include -I include sycl/probe/ep_prefill_reduce.cpp \
+  sycl/src/kernels/cuda/ep_kernels.dp.cpp -lze_loader -o ep-prefill-reduce-probe
+ONEAPI_DEVICE_SELECTOR='level_zero:*' SYCL_CACHE_PERSISTENT=0 ./ep-prefill-reduce-probe
+```
+
 **How it was made, so it can be redone.**
 
 1. `sycl/tools/Dockerfile` - the dev image: the llama.cpp SYCL image plus SYCLomatic (`dpct` 2025.3),
