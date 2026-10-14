@@ -40,5 +40,10 @@ this PC only. The details and every setting are in [docs/DETAILS.md](docs/DETAIL
   that ask for them. They run with your user's rights, and the model decides when to call them.
 - **The request monitor** (`/api-monitor`, which keeps the last prompts and answers in memory) is off unless
   `"api_monitor": true` is set.
+- **Tracing** (`--trace-otlp`, `"trace_otlp"`, `$STRATA_TRACE_OTLP`) sends OpenTelemetry spans of each `/v1` request -
+  timings and token counts - to an OTLP endpoint you name. It is off by default; with no endpoint nothing runs. With
+  the request monitor off, no prompt or answer text is recorded, so a trace carries no conversation text. The endpoint
+  is yours to set; the value `default` points at this PC (`http://localhost:4318/v1/traces`). Details:
+  [docs/DETAILS.md](docs/DETAILS.md#opentelemetry-traces-of-every-request).
 
 Strata has not had an outside security audit yet.
