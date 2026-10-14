@@ -206,6 +206,23 @@ exactly where it always was, and the run is the old one. Only the plain path res
 and `STRATA_ARENA_MMAP` all reserve where they did. `STRATA_ARENA_FIRST=0` restores the old order without recompiling.
 The startup log says which order it took (`expert arena reserved first, before the PLE and the model's GGUF: ...`).
 Not yet measured on a live start (the order and the mechanism are; the effect on the 1450 refusal is the pending A/B).
+**Windows chunked large pages (`STRATA_ARENA_LP_CHUNKS=1`, opt-in; `STRATA_ARENA_LP_CHUNK_MIB=8192`).** The one-piece
+`VirtualAlloc(MEM_LARGE_PAGES)` above fails with `1450` not because the arena is too big but because the pool cannot
+give it **contiguously**: on this box the pool gives **48 GiB in one piece**, and in chunks **7×8 = 56 GiB**, 3×16 =
+48, 2×24 = 48 (those totals are alternatives of the same pool - they do **not** add up). The chunked path retries the
+arena as one `VirtualAlloc(MEM_RESERVE|MEM_COMMIT|MEM_LARGE_PAGES)` per chunk at an explicit 2 MiB-aligned, contiguous
+base - the arena stays one virtual block, and a chunk that cannot get large pages is halved, then falls back to 4 KB
+in its own slot. Result on this machine: **9/9 chunks = 71.73 GiB in 2 MiB (100%)**, obtained by bringing the engine
+down and back up (engine death frees ~97 GiB and the pool is fresh) - **no Windows reboot**. With the pool churned the
+same run gives 8/9 = 62.88 GiB. The one-piece naive recipes are refuted in the comment on `reserve_chunked`
+(`src/core/pinned.cu`): committing over a range reserved earlier **returns success but yields 4 KB** (the kernel
+silently ignores `MEM_LARGE_PAGES`), and `MEM_RESERVE|MEM_LARGE_PAGES` alone is refused with 87.
+**A/B 2 MiB vs. 4 KB (`STRATA_NO_LARGEPAGES=1`, same machine, same boot).** Prefill **+18%** (9150 ms / 182 tok/s vs.
+10815 ms / 154 tok/s, non-overlapping ranges); decode shows **no** difference; the working-set lock is ~4.6-5.1 GiB
+with 2 MiB against **63 753 MiB** with 4 KB (the whole arena has to be locked to stay resident). Model load to
+`serving` shows **no** difference (101.5 / 105.4 / 98.1 s): the arena fill is 43 s at 6.03 GiB/s (disk bandwidth) and
+the VRAM expert cache ~21 s. `--vision` is unaffected and stays (it is not retired). Not claimed: absolute PCIe bytes
+(no DCGM on this box) and a second machine or model - one machine, one pass per cell.
 - `STRATA_EXCHANGE_ROTATE=1` (opt-in): an adaptive swap hands buffer ownership over instead of copying the evicted
   blob into the RAM copy (equal-size blobs, fully page-locked copy). Same tokens, fewer host copies; it works with
   `--adapt-async 1` too. Details and the measurement: [EXCHANGE_ROTATION.md](EXCHANGE_ROTATION.md).

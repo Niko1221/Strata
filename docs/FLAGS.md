@@ -178,7 +178,9 @@ matches.
 `.sess` tier. With every flag absent the tree behaves exactly as the ported layer, byte for byte (D-7). It is now a
 **writer and a reader**: at the point the disk tier writes a conversation (the eviction, and the park mirror) the
 parked image is split into its phase segments by `segment_plan_split()` (a `sys` segment at the first `--turn-token`,
-a prefix/`Other` segment, and the `effort+answer` tail at the last `--tail-role-token`), and `store_image()` writes
+a prefix/`Other` segment, and the `effort+answer` tail at the `<|im_start|>` opener of the last `--tail-role-token`
+turn - the frontier is anchored at the opener, not the role token, because the engine checkpoints at the opener
+(measured: opener `248045`, role `system` `8678` at opener + 1)), and `store_image()` writes
 each NEW segment as its own content-addressed `<seg_id>.seg` and the manifest `strata-conv-<serial>.segs` last. The
 restore path consults `best()`/`load()` exactly as the `.sess` tier does and reads only the segments `0..k`. The
 writer slices **one segment at a time** and skips any segment already on disk (idempotent), so a growing chat pays
@@ -189,3 +191,31 @@ only for its new tail and a shared systemprompt is written once; the whole K/V i
 | `--conversation-cache-segments MODE` | `off` | Turns the per-segment tier on for a spill directory. `off` (default) is the ported layer byte for byte; `on` reads and writes the content-addressed `<seg_id>.seg` files and the manifests `<stem>.segs` beside the `.sess` copies. | `--serve`, inside the disk tier. Needs `--conversation-cache-spill-dir`; an unknown mode is refused at start. | **Off by default (D-7).** With `on` the engine splits each parked image into phase segments and writes them (`store_image`), replacing the conversation's manifest in place. A segment file is an ordinary session file: the identity rules that guard the `.sess` tier guard it too. The phase cuts are a heuristic over the token ids (`--turn-token`/`--tail-role-token`); with neither, one whole-prompt segment is written. | `layer/prod2-0441` / `layer/segwriter-t3` |
 | `--conversation-cache-segment-budget-mib N` | 0 | The segment tier's **own** byte budget (MiB), separate from `--conversation-cache-disk-mib`. `0` = no own budget. The GC removes a segment only when its refcount is ≤ 1 (orphan first, then `think`/`answer`/`tool` before `read`/`write`); a shared segment is never removed. It runs at shutdown. | inside the segment tier. | A **separate** budget and GC: it never touches the `.sess` tier's `bytes_` or `disk_evictions_`, and it does not bound the `.sess` copies. It is not a disk reservation. With `0` nothing is ever removed by this GC. | `layer/prod2-0441` |
 | `--conversation-cache-segment-min-tokens N` | 0 | The materialization threshold: a non-system segment shorter than N tokens is fused with the one before it (as an `Other` segment), so a short chat does not pay one file per message. | inside the segment tier, on the **write** path (`store`/`store_image`). `0` = materialize every segment. | A **policy**, not a correctness lever: it only decides how many files the chain is cut into. | `layer/prod2-0441` |
+
+## H. The restore ladder (`STRATA_RESTORE_LADDER`, opt-in)
+
+An **env knob, not a CLI flag** (the engine reads the environment, so an older config never carries an unknown
+argument). Off by default: with the variable unset the reject path is the one that shipped - a parked image that does
+not validate is discarded and the slot's own prefix is the fallback. With it on, the engine descends the image's own
+running-state checkpoints largest first and restores the largest one that validates, re-reading only the tokens after
+it; if none validates it falls back to the parked RAM copy. The leaf is the same validation and transfer as the
+whole-image restore, so a chosen rung cannot fail later. See [SPILL_AND_PROMPT_CACHE.md](SPILL_AND_PROMPT_CACHE.md),
+"The restore ladder".
+
+| Knob | Default | What it does | Scope (when it applies and when it does NOT) | Limit or non-claim | Since |
+| --- | --- | --- | --- | --- | --- |
+| `STRATA_RESTORE_LADDER` | unset / `0` (**off**) | Enables the prefix restore ladder: when the parked image the serve loop picked fails validation, restore the largest of the image's own checkpoints that validates (whole K/V, the checkpoint's running state, `resume` at its length) instead of discarding the image. | `--serve`, on the restore path. Inert when the image validates (no rung is needed). | Off by default. It salvages a **prefix**, never a different carve: a stage-count mismatch is logged and falls through to the RAM copy (restoring some stages and re-reading others is refused). It does **not** fix the root cause that produced the bad image. | `layer/ladder-t3` |
+
+## I. Windows chunked large pages (`STRATA_ARENA_LP_CHUNKS`, `STRATA_ARENA_LP_CHUNK_MIB`, `STRATA_NO_LARGEPAGES`)
+
+**Env knobs, not CLI flags.** The expert arena is reserved as **one** `VirtualAlloc(MEM_LARGE_PAGES)` of the packed
+layout; on Windows that single contiguous request fails with `1450` (`ERROR_NO_SYSTEM_RESOURCES`) once the
+large-page pool cannot give one piece (the pool fragments), even though the same total fits in several pieces. These
+knobs change only the Windows reserve path in `src/core/pinned.cu`; nothing changes when they are unset. See
+[DETAILS.md](DETAILS.md) (the "arena reserved first" note) for the numbers.
+
+| Knob | Default | What it does | Scope (when it applies and when it does NOT) | Limit or non-claim | Since |
+| --- | --- | --- | --- | --- | --- |
+| `STRATA_ARENA_LP_CHUNKS` | unset / `0` (**off**) | After the one-piece `MEM_LARGE_PAGES` attempt is refused with `1450` (contiguity, not the privilege `1314`), retry the arena as **chunks**: one `VirtualAlloc(MEM_RESERVE\|MEM_COMMIT\|MEM_LARGE_PAGES)` per chunk at an explicit 2 MiB-aligned, contiguous base. The arena stays one contiguous virtual block; a chunk that cannot get large pages is halved, then falls back to 4 KB in its own slot. | Windows only (`#ifdef _WIN32`). Only after the one-piece attempt fails with `1450`; never when the privilege is missing. | Off by default: unset is byte-for-byte the old path. It is a Windows-only mechanism - Linux uses `mmap(MAP_HUGETLB)`, and the shared expert arena (#2271) is a separate `#ifdef`. The result is reported (`all N chunks … are 2 MiB`, or `partial: M/N chunks … rest 4 KB`); a chunked reserve that gets no large page at all releases and falls back to 4 KB. | `layer/arenachunks-t3` |
+| `STRATA_ARENA_LP_CHUNK_MIB` | `8192` | The chunk size (MiB) the chunked reserve splits the arena into. | With `STRATA_ARENA_LP_CHUNKS` on. `0` or unset = 8192. | A sizing hint, not a correctness lever: finer chunks fit a fragmented pool (measured 8 GiB × 7 = 56 GiB beats 24 GiB × 2 = 48 GiB), but the pieces do **not** add up - 48/56 GiB are alternative totals of the same pool. | `layer/arenachunks-t3` |
+| `STRATA_NO_LARGEPAGES` | unset (**off**) | Skips the large-page attempt entirely and reserves 4 KB pages, for a same-run A/B (`STRATA_NO_LARGEPAGES=1`). | Windows and Linux. | A measurement arm, not a feature: it reproduces the pre-large-pages behaviour on one machine so the 2 MiB vs. 4 KB difference can be measured without a rebuild. | `layer/arenachunks-t3` |

@@ -313,6 +313,13 @@ the **ordered list of references** to those files - the state is the **sum of th
   exact prefix of the prompt is the reusable prefix; a divergence, a hole, or a missing segment file cuts the run
   there (and everything after is re-prefilled). `load()` reads **only** the segments `0..k` (the sum) and never
   opens the later ones.
+- **The effort frontier is anchored at the `<|im_start|>` opener, not the role token.** `segment_plan_split` cuts the
+  effort turn at the `<|im_start|>` that opens it (the engine's `turn_at`), one token **before** the
+  `--tail-role-token` (measured on the pack's real tokenizer: opener `248045`, role `system` `8678` at opener + 1).
+  The engine checkpoints at the opener, so a frontier cut at the role token landed one token past every checkpoint:
+  its running state never travelled and the chain broke exactly at the effort turn. A role token that does **not**
+  immediately follow an opener keeps the old frontier (declared, not fixed): the engine's own `#458` requires the
+  same adjacency.
 - **The sum is of the attention K/V, not of the recurrence.** The attention K/V of the prefix is the concatenation
   of the segments' slices; the recurrent state is **the last segment's snapshot** (a running summary, not a sum),
   valid only under its exact chain.
@@ -342,6 +349,74 @@ host-only test (174 checks) covers the effort and systemprompt invariants red/gr
 image from the sum, idempotency and the incremental write. The recurrent snapshot travels with its own frontier: the
 last segment carries the captured live state and a segment whose end is a checkpoint of the image carries that
 checkpoint, so the effort frontier restores with state.
+
+## The restore ladder (`STRATA_RESTORE_LADDER=1`, opt-in)
+
+When the parked image the serve loop picked does **not** validate as a whole, the shipped path throws the whole prefix
+away and falls back to the slot's own prefix (empty on a new request, so a long context is re-prefilled from zero).
+With the flag on the engine no longer discards the whole image: it descends the image's **own** running-state
+checkpoints (the turn-boundary prefixes the sidecar already carries) largest first, and restores the largest one that
+validates, re-reading only the tokens after it. If no checkpoint of the image validates, it falls back to the parked
+RAM copy the tiers above may have beaten - still a usable shorter prefix.
+
+Why a shorter checkpoint is usable at all: attention is causal, so the K/V the image holds for `[0, N)` is
+byte-for-byte the K/V of every shorter prefix. The restore keeps the image's K/V **whole** and puts the checkpoint's
+running state (GDN/QSA/PLE) in place of the image's live state; the caller sets its resume point to the checkpoint's
+length, so the request rewrites every cell from there on and never reads the stale tail. Under `--layer-split` every
+stage part must validate for the same checkpoint (matched by ids); a stage-count mismatch is logged with both numbers
+and falls through to the RAM copy - restoring some stages and re-reading others is refused, never attempted.
+
+The ladder's pure half (`include/strata/core/conversation_restore_ladder.hpp`) is host-tested (ordering, the `floor`,
+strict prefix, stable ties, and the flag-off decision). The leaf reuses the **same** validation and transfer as the
+whole-image restore (`conversation_snapshot_validate_at` / `conversation_snapshot_restore_at`), so a chosen rung
+cannot fail later - there is no second validation path to drift. With the flag off nothing is called: the reject path
+is the one that shipped. The discard messages carry the numbers (reason and the two counts) whether or not the flag is
+on, so a failed restore is readable from the log without reconstructing it by hand.
+
+## Measured on this machine (2026-10-14)
+
+One machine, one model (`qwen3.8-flash-next-unsloth-ud-q4_k_xl`, ctx 196608, `parallel=4`), one pass per cell unless
+noted. Hardware: RTX 4080 SUPER (×16) + RTX 3090 (×4 of the chipset), 119 GiB usable. These are live `--serve`
+measurements, not a benchmark suite.
+
+**Reload after eviction (disk tier vs. re-reading the prompt).** The same large prompt is sent, the engine is
+restarted so the RAM cache is empty, and the prompt is sent again.
+
+| size | cold prefill | reload (disk/checkpoint) | factor |
+| --- | ---: | ---: | ---: |
+| 171.5k tokens | 158 649 ms | **6 589 ms** (`restored 171516 tokens … in 656.9 ms`) | **24×** |
+| 100k tokens | 118 297 ms | **5 384 ms** (`restored 99715 tokens … in 438.9 ms`) | **22×** |
+
+The **official release 0.1.44.1** (sha256 `DC676A68…`) keeps the conversation in RAM only - its park does not write to
+disk - so after a restart it re-prefills the whole prompt (156.7 s / 104.8 s). Reload factor main vs. this branch:
+**23.8×** (171k) and **19.5×** (100k).
+
+**Restore by stage when the effort changes (`effort_position: end`).** `reused` is the engine's own counter.
+
+| case | prompt tokens | reused | read | % reused |
+| --- | ---: | ---: | ---: | ---: |
+| same prompt, warm | 5858 | 5853 | 5 | 99.91% |
+| `xhigh` → `low` | 5888 | 5853 | 35 | 99.41% |
+| stop → continue, same effort | 5900 | 5886 | 14 | 99.76% |
+| stop → continue → `low` | 5930 | 5895 | 35 | 99.41% |
+| revisit an evicted conversation | 5858 | 5853 | 5 | 99.91% (disk, `restored … in 84.2 ms`) |
+
+**Slots 1→4.** With a **stable** topic decode holds ~28-29 tok/s (peak 40.2); with **distinct** topics it falls
+27.1 → 19.9 tok/s as slots are added. The segment tier deduplicates the `Sys` between conversations (the same
+`head = H(model‖config)`), so a shared system prompt is stored once.
+
+## Declared limitations
+
+1. **`--layer-split auto` is non-deterministic between starts.** In the 100k reload the first attempt **failed**
+   (`unreadable chain … saved with another layer range`) and re-prefilled; the retry with a stable split restored
+   99 715/99 722. A reload is not guaranteed when the auto-split picks a different partition; pinning the split is
+   the mitigation.
+2. **The park writes on the next turn or on clean shutdown, not at the end of the request.** A force-kill loses that
+   copy (the mirror is queued at the park, which fires when the *next* request arrives).
+3. **The effort frontier is not page-aligned.** If the cut lands on a position that is not a multiple of `page_size`,
+   the live restoration of that frontier can be rejected.
+4. **The segment plan cuts three pieces today** (`Sys`, `Other`, `Answer`). The `Think`/`Read`/`Write`/`ToolCall`/
+   `ToolResult` kinds exist in the enum but are not materialized (the cutter is missing).
 
 ## Non-claims
 
@@ -409,6 +484,18 @@ checkpoint, so the effort frontier restores with state.
 - **The two tiers are independent copies.** The segment tier never removes, counts or bounds a `.sess` file, and the
   `.sess` GC never touches a `.seg`/`.segs` file (the `.sess` scan reads only `strata-conv-*` names it understands).
   A `.sess`+`.meta` pair with no manifest is read by the `.sess` tier unchanged - the compatibility path.
+
+**What we do not claim (2026-10-14, one machine).**
+
+- The tables above are **one machine, one model, one pass per cell** - not a benchmark and not a throughput promise.
+  There is no second machine, no second model, no run with the layer off to compare against.
+- The `tok/s` figures are **contaminated by concurrent traffic** on the live server, so they measure the session, not
+  the engine's capacity.
+- The shared-`Sys` deduplication is **not conclusively measured**: the `.seg` counts moved as expected but the pass
+  was not isolated from concurrent traffic, so no dedup rate is claimed.
+- No **absolute** PCIe bytes were measured (no DCGM on this box; the engine's own per-request proxies were used).
+- The restore ladder's `restore ladder: image rejected` branch did **not** fire in this session's live matrix: the
+  reject path is host-tested, the in-serve effect of that specific branch is not a measured number.
 
 ## Credits
 
