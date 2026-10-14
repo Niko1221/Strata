@@ -161,19 +161,6 @@ Things that matter on an Arc (details in INTEL.md):
   `STRATA_*`, `ONEAPI_*`, `UR_*`, `IGC_*`, `SYCL_*` or `ZES_*` variable of the server's environment reach the engine
   through `strata-sycl.sh` (for example `STRATA_MIRROR_MIB`, `IGC_EnableDPEmulation`).
 
-## Optional INT8 QSA decode path
-
-```sh
-export STRATA_SYCL_QSA_CHUNK_DOWN=1
-export STRATA_SYCL_QSA_VALUE8_K8_VEC=1
-```
-
-The chunk path changes the INT8 KV attention work distribution. Its vector
-specialization handles selection capacity 2051 with 1, 2, 3, 4 or 32 queries,
-and capacity 32768 with one query. Other shapes use the chunk fallback; other KV
-formats retain the existing dispatch. The vector switch requires the chunk
-switch. Both default to off.
-
 ## Windows
 
 There is no Windows path yet. `setup --backend sycl` on Windows stops and points here. oneAPI exists for Windows,

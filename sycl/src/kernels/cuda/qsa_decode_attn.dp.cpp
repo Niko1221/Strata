@@ -5,6 +5,7 @@
 #include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/b70.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_q4.hpp"
@@ -583,9 +584,10 @@ bool pre75_attn() {
 
 static void launch_qsa_chunk_down(int,const float*,const QsaAttnPools&,const int32_t*,const int32_t*,int64_t,
                            const QsaShapes&,float*,float*,int64_t,void*);
-bool qsa_chunk_down_enabled(){
-    static const bool value=[](){const char* e=std::getenv("STRATA_SYCL_QSA_CHUNK_DOWN");return e&&e[0]=='1';}();
-    return value;
+bool qsa_chunk_down_supported(int64_t cap, int64_t n_q, const QsaShapes& s, void* stream) {
+    const bool batch = n_q >= 1 && n_q <= 6;
+    const bool shape = (cap == 2051 && (batch || n_q == 32)) || (cap == 32768 && batch);
+    return shape && s.n_head == 24 && s.n_head_kv == 2 && s.page_size == 4 && strata::is_b70(stream);
 }
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
@@ -597,7 +599,7 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     }
     const int kv_mode = pools.k_q4 != nullptr ? 2 : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3
                         : (pools.k_q != nullptr ? 1 : 0));
-    if (qsa_chunk_down_enabled() && kv_mode == 1 && pools.v_q) {
+    if (qsa_chunk_down_supported(cap, n_q, s, stream) && kv_mode == 1 && pools.v_q) {
         launch_qsa_chunk_down(1, q, pools, ids, steps, cap, s, scratch, attn, n_q, stream);
         return;
     }
@@ -763,7 +765,7 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
         std::fprintf(stderr, "qsa_decode_attn: incomplete KV pools\n");
         std::exit(1);
     }
-    if(qsa_chunk_down_enabled()&&kv_mode==1){
+    if(qsa_chunk_down_supported(cap, 1, s, stream)&&kv_mode==1){
         launch_qsa_chunk_down(1,q,pools,ids,step,cap,s,scratch,attn,1,stream);return;
     }
     const int n_chunks = (int) ((cap + CHUNK - 1) / CHUNK);
@@ -1289,9 +1291,8 @@ static void launch_qsa_chunk_down(int mode,const float* q,const QsaAttnPools& po
         qsa_decode_attn_batch(q,pools,ids,steps,cap,s,scratch,attn,nq,stream);return;
     }
     if(nq<=0)return;
-    static const bool vector_enabled=[](){const char* e=std::getenv("STRATA_SYCL_QSA_VALUE8_K8_VEC");return e&&e[0]=='1';}();
     const bool vector_shape=(cap==2051&&(nq==1||nq==2||nq==3||nq==4||nq==32))||(cap==32768&&nq==1);
-    if(vector_enabled&&vector_shape){launch_normal_qsa_vector(1,q,pools,ids,steps,cap,s,scratch,attn,nq,stream);return;}
+    if(vector_shape){launch_normal_qsa_vector(1,q,pools,ids,steps,cap,s,scratch,attn,nq,stream);return;}
     const int chunks=int((cap+CHUNK-1)/CHUNK);
     const long long stride=qsa_decode_attn_scratch_floats(cap,s);
     auto* part_m=scratch+size_t(chunks)*s.n_head*HD;
