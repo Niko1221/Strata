@@ -1,0 +1,2 @@
+# Preserve published byte hashes on Windows and Linux.
+* -text whitespace=cr-at-eol

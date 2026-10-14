@@ -1,0 +1,73 @@
+{
+  "date_utc": "2026-10-14T11:45:49.435560+00:00",
+  "engine": {
+    "version": "0.1.44.1",
+    "source": "release",
+    "archs": [
+      75,
+      86,
+      89,
+      120
+    ],
+    "ptx": true,
+    "cuda": "13.0",
+    "vision": "gpu",
+    "portable": true
+  },
+  "engine_sha256": "bd18453f65b4d03b15de6100b1a9226426266560779b51b9265de176ae8f34d4",
+  "runtime_source_commit": "296b59d2f73c8f04a805df29c2fa97655adace78",
+  "normal_config_sha256": "9f55f2578bd5a146531b00710d389dd53fbd39df0b4a4adbce56f6296aa638c2",
+  "sampling": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0
+  },
+  "reasoning_effort": "xhigh",
+  "speed_output_cap": 512,
+  "needle_output_cap": 2048,
+  "conversation_output_cap": 1024,
+  "repetitions": 3,
+  "target_lengths_128k": [
+    4096,
+    32768,
+    120000
+  ],
+  "target_lengths_262k": [
+    260000
+  ],
+  "placements": {
+    "q2_0": "full native arena",
+    "iq2_xs": "full native arena",
+    "iq3_xxs": "resident 16 GiB; buffered reads; 1 GiB resident headroom"
+  },
+  "kv": "int8",
+  "kv_resident": 32768,
+  "no_request_deadline": true,
+  "memory_guard": {
+    "commit_fraction": 0.95,
+    "commit_seconds": 30,
+    "available_ram_gib": 1,
+    "available_ram_seconds": 15
+  },
+  "soak_seconds": 900,
+  "speed_cache": "fresh prompts, zero reused tokens; retained expert cache",
+  "order": [
+    "q2_0-131072",
+    "q2_0-262144",
+    "iq2_xs-131072",
+    "iq2_xs-262144",
+    "iq3_xxs-131072",
+    "iq3_xxs-262144"
+  ],
+  "recall": "one 260K case at 50% depth per model",
+  "conversation": "IQ2_XS 128K only, four turns",
+  "warmup": "each session: short 128-token output, then 4K 128-token output; excluded",
+  "session_policy": "one server per configuration; target order ascending, descending, ascending",
+  "prompt_generator": "same synthetic Python functions and labels as 0.1.43; counts within 20 tokens",
+  "telemetry": "whole-machine RAM/commit/GPU/system-wide disk I/O about every second; owned tree RSS",
+  "old_engine_run": false,
+  "calibration_reused": true
+}

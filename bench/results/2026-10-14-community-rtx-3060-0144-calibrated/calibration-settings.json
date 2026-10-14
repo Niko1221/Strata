@@ -1,0 +1,17 @@
+{
+  "q2_0": {
+    "--pcie-frac": "0.00",
+    "--spec-min-p": "0.70",
+    "--adapt-every": "1",
+    "--adapt-swaps": "80",
+    "--adapt-decay": "0.97"
+  },
+  "iq2_xs": {
+    "--pcie-frac": "0.20",
+    "--spec-min-p": "0.70"
+  },
+  "iq3_xxs": {
+    "--pcie-frac": "0.35",
+    "--spec-min-p": "0.70"
+  }
+}
