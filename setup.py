@@ -2077,7 +2077,8 @@ ROCM_INDEXES = {"gfx1100": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",   
                 "gfx1030": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
                 "gfx1031": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
                 "gfx1151": "https://rocm.nightlies.amd.com/v2/gfx1151/",       # Strix Halo (docs/STRIX_HALO.md)
-                "gfx1103": "https://rocm.nightlies.amd.com/v2/gfx110X-all/"}   # Radeon 780M: only with STRATA_EXPERIMENTAL_GFX1103=1
+                "gfx1103": "https://rocm.nightlies.amd.com/v2/gfx110X-all/",   # Radeon 780M: only with STRATA_EXPERIMENTAL_GFX1103=1
+                "gfx1010": "https://rocm.nightlies.amd.com/v2/gfx101X-dgpu/"}  # RX 5700 XT: only with STRATA_EXPERIMENTAL_GFX1010=1
 # The TheRock nightly indexes are pruned and move on, and each GPU family's index holds its own range (#1103: gfx103X-all
 # starts at 7.13.0a20260422 and has no 7.10; #1267: the 7.10 wheel segfaults on a Strix Halo with kernel 7.2.8), so one
 # version for every card cannot work.  The wheel is chosen per index (the family): a preferred version, tried first; when
@@ -2093,7 +2094,11 @@ ROCM_SYSTEM_MIN = (7, 0)       # an older system ROCm is passed over for the whe
 # STRATA_EXPERIMENTAL_GFX1103=1 (opt-in, unsupported): the Radeon 780M / 760M / 740M iGPU (Ryzen 7040 / 8040, gfx1103) is taken
 # as a unified-memory AMD card like Strix Halo, with the portable kernels (no WMMA) (measured on one machine: Ryzen 7 255).  Unset: unchanged.
 GFX1103_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1103") == "1"
-AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151") + (("gfx1103",) if GFX1103_OPT_IN else ())
+# STRATA_EXPERIMENTAL_GFX1010=1 (opt-in, unsupported): RX 5700 XT / 5700 / 5600 (RDNA1, gfx1010). Setup does not
+# install this by default; cmake already builds it as unvalidated. Docs: OLDER_GPUS.md. Needs ROCR_VISIBLE_DEVICES=0
+# when the PC also has an AMD iGPU. Unset: unchanged.
+GFX1010_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1010") == "1"
+AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151") + (("gfx1103",) if GFX1103_OPT_IN else ()) + (("gfx1010",) if GFX1010_OPT_IN else ())
 AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs has no product name
              "gfx1101": "AMD Radeon RX 7800 XT / 7700 XT (gfx1101)",
              "gfx1102": "AMD Radeon RX 7600 / 7600 XT (gfx1102)",
@@ -2105,7 +2110,8 @@ AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs ha
              # integrated Radeons of other Ryzen families: named so they are not taken for Strix Halo (not supported)
              "gfx1150": "AMD Radeon 890M / 880M (Ryzen AI 300, Strix Point, gfx1150)",
              "gfx1152": "AMD Radeon 860M / 840M (Ryzen AI 300, Krackan Point, gfx1152)",
-             "gfx1103": "AMD Radeon 780M / 760M / 740M (Ryzen 7040 / 8040, Phoenix / Hawk Point, gfx1103)"}
+             "gfx1103": "AMD Radeon 780M / 760M / 740M (Ryzen 7040 / 8040, Phoenix / Hawk Point, gfx1103)",
+             "gfx1010": "AMD Radeon RX 5700 XT / 5700 / 5600 (gfx1010)"}
 AMD_CARDS = ("the RX 7900 XT / XTX (gfx1100), RX 7800 XT / 7700 XT (gfx1101), RX 9060 XT (gfx1200) and "
              "RX 9070 / 9070 XT / Radeon AI PRO R9700 (gfx1201), and the RX 6800 / 6900 series (gfx1030) and RX 6700 XT "
              "(gfx1031, #524), and the RX 7600 / 7600 XT (gfx1102, one run reported, #942), all unvalidated, and the Ryzen AI Max \"Strix Halo\" APU (Radeon 8060S / 8050S / 8040S, "
@@ -6743,6 +6749,9 @@ def main() -> int:
         if GFX1103_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1103") and not WIN:
             # the 780M's KFD queues are evicted (a GPU reset) while transparent huge pages move the pinned expert arena
             cfg.setdefault("env", {})["STRATA_NO_ARENA_THP"] = "1"
+        if GFX1010_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1010") and not WIN:
+            # HIP would otherwise pick the Renoir iGPU as another device (docs/OLDER_GPUS.md)
+            cfg.setdefault("env", {})["ROCR_VISIBLE_DEVICES"] = "0"
         if resident:   # ROCm: large page-locked host allocations can fail or be slow for the CPU; keep the copy pageable
             cfg.setdefault("env", {})["STRATA_RESIDENT_PIN"] = "0"
     if gpu["count"] > 1 or a.gpu is not None:
