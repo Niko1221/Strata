@@ -46,6 +46,7 @@ function makeIdb(hooks, seed) {
       const req = {result: null, error: null, transaction: current, onsuccess: null, onerror: null};
       queueMicrotask(() => {
         if (hooks.quota) { req.error = {name: "QuotaExceededError"}; req.onerror && req.onerror(); return; }
+        if (hooks.abort) return;                       // the transaction aborts, the request says nothing
         data[value.id] = value; req.result = value; req.onsuccess && req.onsuccess();
       });
       return req;
@@ -54,13 +55,17 @@ function makeIdb(hooks, seed) {
       const req = {result: null, error: null, transaction: current, onsuccess: null, onerror: null};
       queueMicrotask(() => {
         if (hooks.quota) { req.error = {name: "QuotaExceededError"}; req.onerror && req.onerror(); return; }
+        if (hooks.abort) return;                       // the transaction aborts, the request says nothing
         delete data[key]; req.result = true; req.onsuccess && req.onsuccess();
       });
       return req;
     },
     getAll() {
       const req = {result: null, error: null, transaction: current, onsuccess: null, onerror: null};
-      queueMicrotask(() => { req.result = Object.values(data); req.onsuccess && req.onsuccess(); });
+      queueMicrotask(() => {
+        if (hooks.abort) return;                       // the transaction aborts, the request says nothing
+        req.result = Object.values(data); req.onsuccess && req.onsuccess();
+      });
       return req;
     },
   };
@@ -69,7 +74,7 @@ function makeIdb(hooks, seed) {
     current = t;
     store.transaction = t;
     queueMicrotask(() => {
-      if (hooks.quota) { t.error = {name: "QuotaExceededError"}; t.onabort && t.onabort(); }
+      if (hooks.quota || hooks.abort) { t.error = {name: hooks.quota ? "QuotaExceededError" : hooks.abort}; t.onabort && t.onabort(); }
       else if (t.oncomplete) t.oncomplete();
     });
     return t;
@@ -115,7 +120,10 @@ function run(hooks, stored, seed) {
 const wait = () => new Promise((r) => setTimeout(r, 30));
 const rows = (s) => s.el("sidebar-list").children.filter((c) => c.className.split(" ").includes("chat-item")).length;
 const groups = (s) => s.el("sidebar-list").children.filter((c) => c.className.split(" ").includes("sidebar-group")).map((c) => c.textContent);
-const warnings = (s) => s.el("toasts").children.map((t) => t.querySelector(".t-text").textContent).join(" | ");
+// the warning is a promise to the user, so its kind and its title are part of what is checked here
+const warns = (s) => s.el("toasts").children.filter((t) => t.className.split(" ").includes("st-toast--warn"));
+const warnTitle = (s) => warns(s).map((t) => t.querySelector(".st-toast__title").textContent).join(" | ");
+const warnText = (s) => warns(s).map((t) => t.querySelector(".t-text").textContent).join(" | ");
 const firstText = (c) => (c.messages[0] || {}).text || "(empty)";
 const msg = (text) => ({role: "user", text, time: Date.now()});
 
@@ -184,7 +192,9 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   const mem = run({throws: true}, {"strata.history": "true"});
   await wait();
   assert.strictEqual(mem.s.db, null, "the store is not available");
-  assert.ok(warnings(mem.s).includes("memory"), "the user is told the list lives in memory");
+  assert.strictEqual(warns(mem.s).length, 1, "one warning");
+  assert.ok(warnTitle(mem.s).includes("Chat list not saved"), "the warning is about the list");
+  assert.ok(warnText(mem.s).includes("memory"), "the user is told the list lives in memory");
   mem.s.chats.push({id: "x1", title: "a", time: Date.now(), messages: [msg("hi")]});
   mem.s.chats.push({id: "x2", title: "b", time: Date.now(), messages: [msg("yo")]});
   mem.s.renderSidebar();
@@ -192,7 +202,15 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   mem.s.deleteChat(mem.s.chats[1]);
   await wait();
   assert.strictEqual(rows(mem.s), 2, "the row goes away, so the list re-rendered");
-  done.push("memory only: a delete still updates the list");
+  const memRow = mem.s.el("sidebar-list").children.find((c) => c.className.split(" ").includes("chat-item"));
+  mem.s.renameChat(memRow, mem.s.chats[0]);
+  const memField = memRow.children.find((c) => c.className.split(" ").includes("chat-item__input"));
+  memField.value = "renamed in memory";
+  memField._l["keydown"]({key: "Enter", preventDefault() {}});
+  await wait();
+  assert.ok(mem.s.el("sidebar-list").children.some((c) => (c.innerHTML || "").includes("renamed in memory")),
+            "the rename shows in memory-only mode too");
+  done.push("memory only: a rename and a delete still update the list");
 
   // 7. a fresh database: the store exists because app.js made it in the upgrade handler
   const fresh = run({}, {"strata.history": "true"});
@@ -213,7 +231,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   const blocked = run({blocked: true}, {"strata.history": "true"});
   await wait();
   assert.strictEqual(blocked.s.db, null, "the blocked open resolves to the memory-only path");
-  assert.ok(warnings(blocked.s).includes("memory"), "the user is told the list lives in memory");
+  assert.ok(warnText(blocked.s).includes("memory"), "the user is told the list lives in memory");
   done.push("blocked open: it resolves to memory only instead of hanging");
 
   // 10. a write the browser refuses warns on the event that actually fires
@@ -222,7 +240,10 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   full.s.messages.push(msg("a three megabyte answer"));
   full.s.saveChat();
   await wait();
-  assert.ok(warnings(full.s).includes("cannot keep more"), "the quota warning is shown on abort");
+  assert.ok(warnText(full.s).includes("cannot keep more"), "the quota warning is shown on abort");
+  full.s.saveChat();
+  await wait();
+  assert.strictEqual(warns(full.s).length, 1, "it warns once, not on every write");
   done.push("quota: the warning fires on the abort event");
 
   // 11. flipping the switch off stores the chat you were in, so a reload shows it
@@ -312,6 +333,36 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   await wait();
   assert.strictEqual(undo.s.chats.length, 2, "the second Undo does not put it in twice");
   done.push("delete with Undo: the record comes back, twice does not double");
+
+  // 17. a read transaction that aborts still answers, so the page does not hang
+  const aborted = run({abort: "DataError"}, {"strata.history": "true"},
+                      {a: {id: "a", title: "the one", time: Date.now(), messages: [msg("hi")]}});
+  await wait();
+  assert.strictEqual(rows(aborted.s), 1, "the read answered empty instead of never resolving");
+  assert.ok(!aborted.s.chats.some((c) => c.id === "a"), "so the record is not in the list");
+  assert.ok(aborted.s.chat, "and the page still rendered a chat");
+  done.push("read that aborts: it answers empty instead of never resolving");
+
+  // 18. a transaction that aborts for another reason does not say the storage is full
+  const bad = run({abort: "DataError"}, {"strata.history": "true"});
+  await wait();
+  bad.s.messages.push(msg("a chat that cannot be stored"));
+  bad.s.saveChat();
+  await wait();
+  assert.ok(warnText(bad.s).includes("could not be saved"), "the message fits the error");
+  assert.ok(!warnText(bad.s).includes("cannot keep more"), "and not the quota message");
+  done.push("abort for another reason: the message is not the quota one");
+
+  // 19. a chat that is not in the list is not the last one
+  const stray = run({}, {"strata.history": "true"}, {
+    a: {id: "a", title: "first", time: Date.now(), messages: [msg("one")]},
+    b: {id: "b", title: "second", time: Date.now(), messages: [msg("two")]}});
+  await wait();
+  stray.s.deleteChat({id: "z", title: "not in the list", time: Date.now(), messages: [msg("x")]});
+  await wait();
+  assert.strictEqual(stray.s.chats.length, 2, "nothing was removed");
+  assert.ok("a" in stray.records && "b" in stray.records, "both records are still there");
+  done.push("delete: a chat the list does not hold removes nothing");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

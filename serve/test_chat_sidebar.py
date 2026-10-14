@@ -1,10 +1,10 @@
 """The chat sidebar: the conversations kept in this browser, the open one on the screen.
 The feature is opt-in; with the switch off the page is the page from the last release.
 
-The checks read the page and the script as text, like test_monitor.py's page check, but on a function body
-rather than one line, so they say what the code does and not how it is written. What the storage path does is
-run against app.js in test_chat_sidebar.js, with a stub DOM and a stub IndexedDB; that one is skipped on a
-machine without node.
+The checks read the page and the script as text, like test_monitor.py's page check: a function body where the
+check is about what a function does, and a string where the check is about a storage key or a message the user
+sees. What the storage path does is run against app.js in test_chat_sidebar.js, with a stub DOM and a stub
+IndexedDB; that one is skipped on a machine without node.
 """
 import json
 import re
@@ -59,6 +59,7 @@ class ChatSidebar(unittest.TestCase):
         # oncomplete is the transaction's event, and the store has no result: reading there gives nothing
         read = self.body("allChats")
         self.assertIn("req.onsuccess", read)
+        self.assertIn("req.transaction.onabort", read)                 # an aborted read fires abort, not error
         self.assertNotIn("store.result", read)
         self.assertNotIn(".oncomplete", read)
 
@@ -74,11 +75,20 @@ class ChatSidebar(unittest.TestCase):
 
     def test_a_write_the_browser_refuses_still_shows_the_change(self):
         for name in ("putChat", "dropChat"):
-            body = self.body(name)
-            self.assertIn("if (!db) { renderSidebar(); return; }", body)  # memory only: the list has to update
-            # a request that fails because the storage is full aborts the transaction, so it fires abort, not error
-            self.assertIn("t.onerror = warn; t.onabort = warn;", self.body("onQuota"))
-            self.assertIn("onQuota(t)", body)
+            self.assertIn("renderSidebar()", self.body(name))            # memory only: the list has to update
+        # a request that fails because the storage is full aborts the transaction, so it fires abort, not error
+        quota = self.body("onQuota")
+        self.assertIn("t.onerror = warn; t.onabort = warn;", quota)
+        self.assertIn('t.error.name === "QuotaExceededError"', quota)    # the message is about a full storage
+        for name in ("writeChat", "dropRecord"):
+            self.assertIn("onQuota(t)", self.body(name))
+
+    def test_the_list_is_rendered_once_per_change(self):
+        # the record helpers write without rendering, so a caller that renders does not render twice
+        self.assertIn("writeChat", self.body("showChat"))
+        self.assertNotIn("putChat", self.body("showChat"))
+        self.assertIn("dropRecord", self.body("deleteChat"))
+        self.assertNotIn("dropChat", self.body("deleteChat"))
 
     def test_a_new_chat_stays_empty_after_a_reload(self):
         # the bug reported on #1787: the single chat from before the switch must not be copied into an empty chat

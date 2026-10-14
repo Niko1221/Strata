@@ -613,29 +613,32 @@ function allChats() {
     const req = db.transaction("chats", "readonly").objectStore("chats").getAll();
     req.onsuccess = () => resolve(req.result || []);
     req.onerror = () => resolve([]);
+    req.transaction.onabort = () => resolve([]);
   });
 }
 // a request that fails because the storage is full aborts the transaction, so it fires abort rather than error
 function onQuota(t) {
-  const warn = () => warnStorage("This browser cannot keep more; the chats on the screen are still there.");
+  const warn = () => warnStorage(t.error && t.error.name === "QuotaExceededError"
+    ? "This browser cannot keep more; the chats on the screen are still there."
+    : "The chat list could not be saved; the chats on the screen are still there.");   // a transaction also aborts on a bad record or an I/O error
   t.onerror = warn; t.onabort = warn;
 }
 // one record per chat: rewriting the whole list for one message is wasteful when a chat is megabytes.
 // Another tab's writes do not show up here until that page is reloaded - there is no event for them.
-function putChat(c) {
-  if (!db) { renderSidebar(); return; }           // memory only: the change still has to show
+function writeChat(c) {                           // the record only; the caller renders the list once
+  if (!db) return;
   const t = db.transaction("chats", "readwrite");
   t.objectStore("chats").put(cleanChat(c));
   onQuota(t);
-  renderSidebar();
 }
-function dropChat(c) {
-  if (!db) { renderSidebar(); return; }
+function dropRecord(c) {
+  if (!db) return;
   const t = db.transaction("chats", "readwrite");
   t.objectStore("chats").delete(c.id);
   onQuota(t);
-  renderSidebar();
 }
+function putChat(c) { writeChat(c); renderSidebar(); }   // memory only: the change still has to show
+function dropChat(c) { dropRecord(c); renderSidebar(); }
 
 // turning the switch on: the chat on the screen becomes the first record. Only when the switch is flipped in
 // this session: on a page load the list is the list, so a fresh chat stays empty and "strata.chat" is read once,
@@ -708,8 +711,8 @@ function renderSidebar() {
 function showChat(c) {
   chat = c; chatId = c.id; messages = c.messages;
   store.set("chatId", chatId);
+  writeChat(chat);            // renderChat renders the list, so the write here does not render it again
   renderChat();
-  putChat(chat);
 }
 function openChat(id) {
   if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
@@ -729,18 +732,18 @@ function startChat() {
 function deleteChat(c) {
   if (busy && c.id === chatId) { toast("warn", "Still writing", "Stop the answer first."); return; }
   const i = chats.indexOf(c), wasOpen = c.id === chatId;
+  if (i < 0) return;                                // the list only ever passes a chat it holds
   chats.splice(i, 1);
-  dropChat(c);                                     // the record; the Undo puts it back
+  dropRecord(c);                                    // the record; the Undo puts it back
   if (wasOpen) {
     const next = chats[0] || newChat();
     if (!chats.includes(next)) chats.push(next);
     showChat(next);
-  }
+  } else renderSidebar();
   toast("info", "Chat deleted", chatTitle(c), 6000, {label: "Undo", run: () => {
     if (chats.includes(c)) return;                  // already put back
     chats.splice(Math.min(i, chats.length), 0, c);  // the display is sorted by time, so only the index matters
-    putChat(c);
-    if (wasOpen) showChat(c); else renderSidebar();
+    if (wasOpen) showChat(c); else { writeChat(c); renderSidebar(); }
   }});
 }
 // rename: the row turns into a field; Enter or a click outside keeps the name, Escape gives it up
