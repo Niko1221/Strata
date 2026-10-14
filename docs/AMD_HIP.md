@@ -137,7 +137,11 @@ cmake --build build-hip --target strata -j2
 ```
 
 `CMAKE_HIP_ARCHITECTURES` is `gfx1100`, `gfx1101`, `gfx1200`, `gfx1201`, or a list such as `"gfx1100;gfx1201"`
-(one binary for both). gfx1102 (the same wave32, 64 KiB LDS and dot4 instruction) builds with a warning: it passed
+(one binary for both). Without it, ROCm's `-DGPU_TARGETS=...` (or the older `-DAMDGPU_TARGETS=...`) chooses the
+architectures, else the build is for `gfx1100`; the configure prints the list it builds and where it came from
+(`Strata: HIP enabled, arch gfx1201 (from GPU_TARGETS)`), and warns when `CMAKE_HIP_ARCHITECTURES` and `GPU_TARGETS`
+disagree (`CMAKE_HIP_ARCHITECTURES` wins). Configuring the same build folder again without flags keeps what was given;
+`-UCMAKE_HIP_ARCHITECTURES` or `-UGPU_TARGETS` drops it. In a build folder from 0.1.43 or older, a `CMAKE_HIP_ARCHITECTURES` changed by hand (cmake-gui, ccmake) stays; `-UCMAKE_HIP_ARCHITECTURES` resets it. gfx1102 (the same wave32, 64 KiB LDS and dot4 instruction) builds with a warning: it passed
 ctest (#192), and one RX 7600 XT (16 GB, i7-13700K, 64 GB) ran Swift IQ3_XXS over 146 requests up to 51K context at about 43 tok/s decode (28-50) and 250-300 tok/s prompt (#942); setup accepts it (unvalidated, #938); so does gfx1030 (RDNA2: the older `v_dot4_i32_i8`, a community run in #311). At startup the engine and `strata-device` compare each GPU they use
 (`gcnArchName` up to the `:` feature suffix) with the architectures the binary was compiled for, and require
 wave32. A binary carried to another card stops with the card's name, its architecture and the build's list,

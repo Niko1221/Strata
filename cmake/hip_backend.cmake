@@ -1,9 +1,10 @@
 # Opt-in HIP configuration. Strata's CUDA-shaped kernels target wave32 RDNA2 / RDNA3 / RDNA4 (64 KiB LDS per
 # workgroup, a signed dot4 instruction). CMake/compiler discovery stays machine-independent; pass CMAKE_HIP_COMPILER when it
 # is not on PATH.
-if(NOT DEFINED CMAKE_HIP_ARCHITECTURES OR CMAKE_HIP_ARCHITECTURES STREQUAL "")
-  set(CMAKE_HIP_ARCHITECTURES gfx1100 CACHE STRING "Strata HIP target architecture(s), e.g. gfx1100 or gfx1100;gfx1201")
-endif()
+# The architectures: CMAKE_HIP_ARCHITECTURES, else ROCm's GPU_TARGETS, else AMDGPU_TARGETS, else gfx1100; how a
+# configure tells the user's values from the ones ROCm caches is in hip_arch_select.cmake.
+include("${CMAKE_CURRENT_LIST_DIR}/hip_arch_select.cmake")
+strata_hip_arch_select()
 # Validated on real cards: gfx1100 (RX 7900 XT / XTX) and gfx1201 (RX 9070 / 9070 XT, Radeon AI PRO R9700) by the
 # maintainers; gfx1101 (RX 7800 XT, #254) and gfx1200 (RX 9060 XT, #256) by their owners. gfx1102 (RX 7600) has the
 # same LDS limit and dot4 instruction and passed ctest (#192), but no model run has been reported yet. RDNA2 gfx1030 (RX 6800 / 6900) has the
@@ -56,6 +57,7 @@ foreach(_cfg IN ITEMS DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
   endif()
 endforeach()
 find_package(hip CONFIG REQUIRED)
+strata_hip_arch_record()
 find_package(hipblas CONFIG REQUIRED)
 # Older distro hipBLAS has no workspace API. The compatibility shim uses
 # rocBLAS directly for that version; newer hipBLAS keeps its existing path.
@@ -125,4 +127,4 @@ foreach(_source IN ITEMS tests/hip/intrinsics.cpp tests/hip/native_qsa_score.cpp
   endif()
 endforeach()
 
-message(STATUS "Strata: HIP enabled, arch ${STRATA_HIP_ARCHS}")
+message(STATUS "Strata: HIP enabled, arch ${STRATA_HIP_ARCHS} (from ${STRATA_HIP_ARCH_FROM})")

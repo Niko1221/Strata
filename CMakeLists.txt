@@ -275,6 +275,14 @@ if(STRATA_BUILD_TESTS)
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
   target_include_directories(host_limits_test PRIVATE include)
   add_test(NAME host_limits_test COMMAND host_limits_test)
+
+  # which architectures a HIP build compiles for (cmake/hip_arch_select.cmake): -D flags, reconfigures and ROCm
+  # 5.7 / 6.2 / 7.2's own cache entries, through configures of a small project (no HIP compiler, no GPU)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/hip_arch_select_test.cmake")
+    add_test(NAME hip_arch_select_test COMMAND "${CMAKE_COMMAND}" "-DGENERATOR=${CMAKE_GENERATOR}"
+             "-DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}" "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/hip_arch_select_test"
+             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/hip_arch_select_test.cmake")
+  endif()
 endif()
 
 # ---- strata_plan ----------------------------------------------------------
