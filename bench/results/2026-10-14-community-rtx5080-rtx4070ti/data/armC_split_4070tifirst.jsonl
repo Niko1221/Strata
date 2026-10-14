@@ -1,0 +1,11 @@
+{"label": "8K_tok", "run": 1, "prompt_tokens": 8701, "wall_s": 6.83, "prefill_tps": 1274.7}
+{"label": "8K_tok", "run": 2, "prompt_tokens": 8701, "wall_s": 6.36, "prefill_tps": 1367.1}
+{"label": "8K_tok", "run": 3, "prompt_tokens": 8701, "wall_s": 6.32, "prefill_tps": 1376.6}
+{"label": "70K_tok", "run": 1, "prompt_tokens": 70702, "wall_s": 25.56, "prefill_tps": 2765.8}
+{"label": "70K_tok", "run": 2, "prompt_tokens": 70702, "wall_s": 25.48, "prefill_tps": 2774.7}
+{"label": "70K_tok", "run": 3, "prompt_tokens": 70702, "wall_s": 25.38, "prefill_tps": 2785.9}
+{"label": "decode512", "run": 1, "completion_tokens": 512, "wall_s": 7.33, "decode_tps": 69.9}
+{"label": "decode512", "run": 2, "completion_tokens": 512, "wall_s": 7.0, "decode_tps": 73.2}
+{"label": "decode512", "run": 3, "completion_tokens": 512, "wall_s": 6.79, "decode_tps": 75.4}
+{"label": "decode512", "run": 4, "completion_tokens": 485, "wall_s": 6.58, "decode_tps": 73.7}
+{"label": "decode512", "run": 5, "completion_tokens": 502, "wall_s": 6.67, "decode_tps": 75.3}
