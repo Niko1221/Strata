@@ -18,7 +18,7 @@ include/strata/plan/plan.hpp:77-78
 //   conv history  (d_conv-1, C) fp32 =     3 * 10240 * 4 =   122,880 B per layer
 ```
 
-Derived from `conversation_state_sizes` (`src/core/conversation_state.cpp:107-129`) at this model's geometry
+Derived from `conversation_state_sizes` (`src/core/conversation_state.cpp:155-177`) at this model's geometry
 (36 GDN layers, 12 QSA layers, `ssm_state_size` 128, `ssm_v_heads` 48, `ssm_conv_channels` 10240, `ssm_d_conv` 4,
 `idx_key_dim` 128, `idx_block` 4, `NG_HIST` 9, `NG_HC_DIM` 10240):
 
@@ -43,12 +43,12 @@ Against the session-file example in `docs/DETAILS.md:1115` (63,025 tokens, 1,198
 | its K/V part (includes the indexer's pooled rows) | 962,565,092 | 15,273 |
 | **expected with bf16** | **1,080,628,292** | **17,146** (−9.8%) |
 
-A parked image carries the whole checkpoint chain, not one checkpoint (`generate.cpp:7980` passes `checks`, while the
+A parked image carries the whole checkpoint chain, not one checkpoint (`generate.cpp:7992` passes `checks`, while the
 SAVE path passes only the deepest), so the saving scales with the chain: a parked conversation holding four
 checkpoints plus the live state stores 590,315,760 B of state today and would store 295,158,000 B — **281.5 MiB back
 per parked conversation**, in RAM as well as on disk.
 
-And the reason the spacing is 16,384 in the first place: `checkpoint_save` (`generate.cpp:1508`) copies the whole
+And the reason the spacing is 16,384 in the first place: `checkpoint_save` (`generate.cpp:1513`) copies the whole
 fp32 state, so a checkpoint costs 118 MB of RAM. Halving a stored state is what makes a finer spacing affordable.
 
 ## Why bfloat16 and not int8 or fp8
@@ -148,7 +148,7 @@ value in a v2 header is refused as `invalid`, before the payload is parsed.
 `conversation_session_read_limits` runs before the file's codec is known, and
 `SessionReadLimits::max_state_bytes` is a ceiling. A coded file is smaller, so the fp32 ceiling is a valid superset —
 leave it. The exact per-array size check belongs in `conversation_checkpoint_validate`
-(`src/core/conversation_state.cpp:143-153`), which knows the codec:
+(`src/core/conversation_state.cpp:138-152`), which knows the codec:
 
 ```cpp
 if (c.gdn.size() != state_codec_size(z.gdn, c.state_codec) || ...)   // today: != z.gdn
@@ -156,22 +156,26 @@ if (c.gdn.size() != state_codec_size(z.gdn, c.state_codec) || ...)   // today: !
 
 ### 4. Where encode and decode happen
 
-**Encode** — `conversation_checkpoint_save` (`conversation_state.cpp:209`) resizes the five vectors to the codec the
-engine is configured with and copies the device buffers into them. Under a codec the destination is half-size, so the
-state does not cross the device boundary as one fp32 block: `copy_state_out` (`conversation_state.cpp:55-67`) moves it
-in slices of at most `kStateCodecChunkFloats` floats (4 MiB), each read into a reused scratch and coded straight into
-the destination. **The transient is that 4 MiB scratch, not a staging copy of the whole state** - the only full-size
+**Encode** — `conversation_checkpoint_save` (`conversation_state.cpp:209`) builds the five arrays beside the
+checkpoint at the codec the caller names and moves them in once every one of them has been copied, so a capture
+that cannot allocate refuses with the checkpoint exactly as it was instead of publishing a truncated one
+(`conversation_capture_codec_test`). One call serves three things: since `3f04cc72` the serve loop names the codec
+on the checkpoint it is capturing into its retained chain, so that copy is coded when it is taken and not only when
+the conversation is later parked or SAVE'd. Under a codec the destination is half-size, so the state does not cross
+the device boundary as one fp32 block: `copy_state_out` (`conversation_state.cpp:55-67`) moves it in slices of at
+most `kStateCodecChunkFloats` floats (4 MiB), each read into a reused scratch and coded straight into the
+destination. **The transient is that 4 MiB scratch, not a staging copy of the whole state** - the only full-size
 allocation is the destination vector, which the image or the file has to hold either way. The preflight that admits a
-park is `conversation_snapshot_bytes` (`conversation_state.cpp:312-343`), which charges every state at the write codec
+park is `conversation_snapshot_bytes` (`conversation_state.cpp:330-369`), which charges every state at the write codec
 and adds `min(gdn, 4 MiB)` for the slice when the codec is not fp32. `session_save_peak_bytes`
 (`conversation_file.cpp:1184-1199`) is the SAVE's own bound: the deepest checkpoint twice over, plus the widening on
 top when the file will hold it wider than the chain does, plus the 16 MiB write buffer.
 
-An array already under the target codec is copied, never coded twice: `convert_state` (`conversation_copy.hpp:89-108`)
+An array already under the target codec is copied, never coded twice: `convert_state` (`conversation_copy.hpp:89-110`)
 takes the plain beating copy when `from == to`, so a chain that is already coded is not widened and re-coded on its
 way into an image written in the same codec.
 
-**Decode** — `conversation_checkpoint_restore` (`conversation_state.cpp:232`) writes into the session's own fp32
+**Decode** — `conversation_checkpoint_restore` (`conversation_state.cpp:250`) writes into the session's own fp32
 buffers (`ss.gdn_state`, `ss.ple_hist`, each owned QSA layer's `idx_tail` / `idx_dead` / `idx_block_pos`), so the
 running state needs no destination temporary: `copy_state_in` (`conversation_state.cpp:69-81`) widens it a slice at a
 time into the same 4 MiB scratch. The two indexer arrays are the exception - `tails` and `dead` are widened into fp32
@@ -295,7 +299,7 @@ Added after the first measurements, from the parked-resume numbers above (sectio
                              (default fp32; bf16 halves the state, restores widen it back)
 ```
 
-`o.session_state_codec` beside `o.session_min_free_mib` (`generate.cpp:633`), parsed beside line 2107, help text beside
+`o.session_state_codec` beside `o.session_min_free_mib` (`generate.cpp:633`), parsed beside line 2119, help text beside
 line 785, config key `session_state_codec` in the same style as `slot_save_path`. An unrecognised name is a start-up
 error, not a silent default. Default `fp32` keeps every written byte identical to today.
 
@@ -343,8 +347,9 @@ Added with lazy restoration (`conversation_snapshot_test`, `conversation_cache_t
 
 18. park a chain of three coded checkpoints, mount it the way the resume path does (move the image's checkpoints into
     the active chain, no widen): every snapshot keeps its bytes, its size and its `state_codec`.
-19. an append-only continuation captures its own fp32 checkpoint and leaves every older retained snapshot byte-for-byte
-    as it was, same codec, same `bytes()`.
+19. an append-only continuation captures its own checkpoint and leaves every older retained snapshot byte-for-byte
+    as it was, same codec, same `bytes()`. Left at the API default the capture is fp32 and only then; the serve loop
+    asks for its own coding by setting `state_codec` first, which `fresh_capture()` then checks under both codecs.
 20. selecting an older coded checkpoint puts values within 2^-8 of the fp32 originals into the session's buffers
     (`block_pos` bit-exact) and leaves the retained snapshot coded — restoring does not permanently widen it.
 21. a chain holding fp32 and coded snapshots together is estimable, parks under either codec, validates as a mixed
@@ -516,12 +521,15 @@ session's own fp32 buffers and leaves the stored snapshot untouched, so the same
 re-parked, or written to a file in a third codec. `conversation_checkpoints_widen()` is kept — it is still the way to
 put a whole chain in fp32 up front, and it is still tested — but the resume path no longer calls it.
 
-Nothing else moved. Newly captured checkpoints are still fp32; the configured `--session-state-codec` still decides
-only how the *next* parked image or session file is written, and every existing snapshot is still read by the codec it
-names for itself; the file formats and the fingerprints are unchanged (an all-fp32 write of a mixed chain is still a
-version 1 file — `any_coded()` looks at what the image actually holds); layer-stage split and merge already carried a
-checkpoint's own coding and each stage part's separately, and still do; no kernel, no new flag, no new worker, and the
-checkpoint interval is untouched.
+Nothing else moved. At this commit a newly captured checkpoint was still fp32 — `3f04cc72` changed
+that afterwards, so a retained checkpoint now takes the configured codec at the moment it is
+captured rather than when the conversation is parked, and §4 above says what that did to the capture
+path. What did not move in either commit is that every existing snapshot is still read by the codec
+it names for itself, and that the configured option decides only how a *new* copy is written. The
+file formats and the fingerprints are unchanged (an all-fp32 write of a mixed chain is still a
+version 1 file — `any_coded()` looks at what the image actually holds); layer-stage split and merge
+already carried a checkpoint's own coding and each stage part's separately, and still do; no kernel,
+no new flag, no new worker, and the checkpoint interval is untouched.
 
 **What it costs the reader.** The deferred decode allocates host memory the eager path did not: the widened
 `tails`/`dead` arrays (18 KiB + 6 KiB at this geometry) and one fp32 slice of `gdn`/`ple` crossing the device
@@ -557,6 +565,18 @@ only when the chain actually holds coded snapshots, so the default fp32 path is 
 No backend file is touched, and the only change outside a header or a test is host C++ in `generate.cpp`.
 
 ### Measured: eager (`2274c1c`) against lazy, both `bf16`
+
+> **These engine numbers predate `3f04cc72`.** Every millisecond and byte in this subsection and in the
+> FP32-against-BF16 table further down was taken on the build at `e2983e98`, when a retained checkpoint was captured
+> fp32 and coded only when the conversation was parked. Coding at capture changes three of the things recorded here:
+> a conversation that never parks now holds a coded chain too, so the retained-checkpoint bytes and the `VmRSS` steps
+> are lower than written for the whole life of a chat and not only after a park; a park no longer converts anything,
+> so the `park` column falls again; and capture itself now codes, which is work no column here charges for. What it
+> leaves alone: the one deferred decode of the selected snapshot, the image and session-file bytes, and that only the
+> selected snapshot is widened. Capture and prefill latency at `--prompt-cache-every` 16384 and 8192, retained bytes
+> before the first park, repeated-turn latency, needle recall after a restore with checkpoints captured in bf16, and
+> a memory-tight conversation that used to refuse and now fits are **not measured**. HIP is unbuilt, and
+> `conversation_state.cpp` and `generate.cpp` are shared with it.
 
 Same box and configuration as the tables above (Tesla V100 32 GB model GPU, RTX 2080 Ti idle, 93 GB RAM, Linux, CUDA
 12.8 build, IQ3_S, `--kv int8`, 262144 context, `--conversation-cache-mib 16384 --conversation-cache-slots 12
@@ -684,15 +704,19 @@ What bf16 gives back on the same requests, all from this run:
 | client wall, rewind turn, `s` | 0.330 → **0.282** | 0.346 → **0.290** | 0.433 → **0.332** |
 | parked image, rewind turn | 1,518,609,848 → **1,282,483,636** (−15.5 %) | 2,354,017,928 → **1,999,828,616** (−15.0 %) | 3,421,128,424 → **3,007,907,560** (−12.1 %) |
 | parked image, continuing turn | 615,533,092 → **438,438,436** (−28.8 %) | 615,539,244 → **438,444,588** (−28.8 %) | 615,594,168 → **438,499,512** (−28.8 %) |
-| retained chain in RAM, 3 / 5 / 6 checkpoints | 354.5 MB → **177,414,796 B** | 591.2 MB → **296,055,504 B** | 710.6 MB → **356,406,176 B** |
+| retained chain in RAM after a park, 3 / 5 / 6 checkpoints | 354.5 MB → **177,414,796 B** | 591.2 MB → **296,055,504 B** | 710.6 MB → **356,406,176 B** |
 | observed `VmRSS` step, rewind turn | 449.0 → **224.8 MiB** | 449.7 → **224.2 MiB** | 561.0 → **138.1 MiB** |
 
-The `VmRSS` column is an observed lower bound and not a high-water mark — see the note at the head of **Measured**. The
-fp32 chain figure is arithmetic on the engine's own count (`n × 118,063,152 B` plus the token and image lists); the
-bf16 one is the `retained=` line the build prints. Answers and recall on these runs were 20/20 in every cell of both
-arms except one: the 32K append-only cell scored 0/20 on `fp32` and 20/20 on `bf16`, which is the free-form-sentence
-artifact recorded under the quality gate and not a codec effect — that turn asks for the code word in prose and the
-check looks for the word in the answer, so it depends on how the sentence happens to land.
+The retained-chain row is the chain a resumed conversation holds *after* a park, on the build before
+capture-time coding; since `3f04cc72` that chain is coded from the moment its first checkpoint is
+taken, so a conversation that never parks is covered too. The `VmRSS` column is an observed lower
+bound and not a high-water mark — see the note at the head of **Measured**. The fp32 chain figure is
+arithmetic on the engine's own count (`n × 118,063,152 B` plus the token and image lists); the bf16
+one is the `retained=` line the build prints. Answers and recall on these runs were 20/20 in every
+cell of both arms except one: the 32K append-only cell scored 0/20 on `fp32` and 20/20 on `bf16`,
+which is the free-form-sentence artifact recorded under the quality gate and not a codec effect —
+that turn asks for the code word in prose and the check looks for the word in the answer, so it
+depends on how the sentence happens to land.
 
 One correction, because an earlier draft of this section carried a wrong number: a partial pass interrupted mid-run
 logged fp32 rewind resume at 29.8 / 30.55 / 38.95 ms. That round carried another load on the box. The matched fp32
