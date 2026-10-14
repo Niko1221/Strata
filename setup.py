@@ -1576,20 +1576,22 @@ def find_vcvars(cuda_v=None):
 
 
 def find_tool(name):
-    """A tool on PATH, or the one pip installed next to this Python (cmake, ninja).  A PATH copy that does not run
-    (a pip launcher whose Python is gone) is skipped for the one next to this Python."""
-    p = shutil.which(name)
-    if p:
+    """The tool pip installed next to this Python (cmake, ninja), else one on PATH.  The copy next to this Python
+    comes first so an older cmake already on PATH (CMakeLists.txt needs 3.24) cannot win over the one setup installed.
+    A copy that does not run (a pip launcher whose Python is gone) is skipped for the next one."""
+    exe = name + (".exe" if WIN else "")
+    own = [str(d / exe) for d in (Path(sys.executable).parent / "Scripts", Path(sys.executable).parent)
+           if (d / exe).exists()]
+    on_path = shutil.which(name)
+    fallback = Path.home() / ".local" / "bin" / exe
+    for p in (*own, on_path, str(fallback) if fallback.exists() else None):
+        if not p:
+            continue
         try:
             if subprocess.run([p, "--version"], capture_output=True, timeout=30).returncode == 0:
                 return p
         except (OSError, subprocess.SubprocessError):
             pass
-    for d in (Path(sys.executable).parent / "Scripts", Path(sys.executable).parent,
-              Path.home() / ".local" / "bin"):
-        c = d / (name + (".exe" if WIN else ""))
-        if c.exists():
-            return str(c)
     return None
 
 
