@@ -367,6 +367,15 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     prompt's top token was the same one, so that check says little); 4 of 4 long-context retrieval checks passed.
     0.1.42 re-check on an R9700 (Linux, ROCm 7.14), 12 prompts of 1.5K-24K tokens, first-token KL against the FP16 prompt path (MMQ / fused): IQ3_S 0.00332 / 0.00284, top-1 12 of 12 for both; IQ3_XXS 0.00335 / 0.00452 on one sample and 0.00344 / 0.00323 on a second (24 prompts pooled: 0.00340 / 0.00388, top-1 24 of 24 for both); the Q2_0 pack does not take these kernels on gfx12 (output bit-identical to MMQ). Because the IQ3_XXS pool is not at or below MMQ's, the flag stays opt-in. Measured on Linux only.
     gfx1200 builds the same kernels and was not run; Windows and K-quant packs (`STRATA_PF_FUSED_KQ=1`) were not measured.
+  - Decode matvecs past the full-die fill stall (gfx12, on by default, the same bits): on a full RDNA4 die (32 WGPs,
+    2,048 wave slots) a launch whose waves land at, or just below, a multiple of 2,048 runs 8-14 us longer
+    (ROCm/legacy-rocm-build#6689). `native_small_mmvq`, `native_mmvq_multi` (with the LFUSE pair) and
+    `bf16_f32_mmvf` launch a few more blocks that return at once (`grid_pad`, `include/strata/kernels/grid_pad.hpp`).
+    R9700, ROCm 7.14.1, one launch in a graph: 6144 -> 2560 at one column 41.3 -> 30.2 us, 2560 -> 512 16.5 -> 5.0 us,
+    the BF16 router 19.7 -> 7.2 us; with UD-IQ4_XS, `--spec 4` and MTP the verify window took 0.55-0.65 ms less. The
+    outputs are bit-identical with and without it (every padded launch on random inputs). `STRATA_GRID_PAD=0` turns it
+    off, `=1` applies it on any HIP card. The 56-CU RX 9070 did not show the stall in that report; there the padding
+    costs a few empty blocks.
 - **Known:** rarely (about 1 start in 10) a HIP run's greedy output differs from another start's at some token, on
   one card or two and on engine 0.1.29 as well; not yet explained.
 - **Not validated:** images, long contexts beyond 16K, answer-quality benchmarks.
