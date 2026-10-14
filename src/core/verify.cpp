@@ -69,6 +69,7 @@
 #if defined(STRATA_HAVE_DFLASH2)
 #include "strata/kernels/dflash2.hpp"
 #endif
+#include "strata/kernels/ep_kernels.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -709,6 +710,7 @@ Verifier::~Verifier() {
         Verifier* me = this;
         slot.compare_exchange_strong(me, nullptr);
     }
+    ep_free();   // expert parallelism: the peer's graph, stream and regions before the rest of this card's teardown
     if (cs_) cudaStreamSynchronize(cs_);
     if (sh_cs_) cudaStreamSynchronize(sh_cs_);
     for (auto& row : exec_)
@@ -1266,8 +1268,9 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
             bool all_ok = true;
             for (int64_t l = lb_; l < le_ && all_ok; ++l) {
                 for (int64_t e = 0; e < g.n_expert; ++e) {
-                    if (hits.h_res[l * g.n_expert + e] < 0) {
-                        all_ok = false;
+                    const int64_t i = l * g.n_expert + e;
+                    if (hits.h_res[i] < 0 && !(ep_on() && ep_cfg_.h_res1 != nullptr && ep_cfg_.h_res1[i] >= 0)) {
+                        all_ok = false;   // with a peer, the table holds what the PEER keeps as well
                         break;
                     }
                 }
@@ -1315,9 +1318,14 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         }
         if (!ok2) { cudaGetLastError(); all_resident_ = false; device_plan_ = false; }
     }
+    if (ep_on() && !ep_init(err)) return false;
     std::fprintf(stderr, "strata verify: window up to %d tokens, %.1f MiB of device buffers%s\n", max_t,
                  (double) count.used / 1048576.0,
                  all_resident_ ? " (100% VRAM resident: zero-doorbell graph)" : "");
+    if (ep_on())
+        std::fprintf(stderr, "strata verify: expert parallel with card %d: the peer computes the experts this card "
+                             "does not hold (inbox %.1f KiB per group, spin bound %u)\n",
+                     ep_cfg_.device, ep_slot_bytes_ / 1024.0, ep_spin_);
     return true;
 }
 
@@ -1414,6 +1422,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     // STRATA_BATCH_SELF_COMMIT: the window keeps its rows (no commit graph, nothing to snapshot for one)
     const bool keep_rows = batch_rec_ && batch_self_commits(brow_, T);
 
+    // expert parallelism: both cards' first node advances their window epoch (the flags of this window carry it)
+    if (ep_on()) {
+        ep_bump(ep_ctr0_, cs);
+        ep_bump(ep_ctr1_, ep_q_);
+    }
     // ---- the window's inputs, from mapped staging.  With branches the steps and positions (first read by the first
     // layer's mixer) cross PCIe on side 1 beside the embedding and the first hyper-connection read.
     copy_i32_from_mapped(tok_, m_tok_, T, cs);
@@ -2240,7 +2253,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         if (rs_on_ && G == 1 && n <= 8 && T <= 8)
             strata::kernels::route_marginal_stats(ids_ + tb * K, n, (int) K, rs_dev_ + ((size_t) T * (size_t) g.n_layers + (size_t) l) * 8, cs);
-        if (ar_on()) {
+        if (ar_on() && ep_on()) {   // expert parallelism: this card's entries only, the peer's are its own plan
+            resident_plan_ep(ids_ + tb * K, n * (int) K, (int) K, hits_.d_res + l * g.n_expert,
+                             ep_cfg_.res1_on0 + l * g.n_expert, 1, (int) g.n_expert, hits_.cache_base, slot_off_d_,
+                             (long long) hits_.blob, plan_ + (size_t) grp * (size_t) (plan_i32_ + 16),
+                             (long long) max_t_ * K, cs, m_plan_err_);
+        } else if (ar_on()) {
             resident_plan(ids_ + tb * K, n * (int) K, (int) K, hits_.d_res + l * g.n_expert, (int) g.n_expert,
                           hits_.cache_base, slot_off_d_, (long long) hits_.blob,
                           plan_ + (size_t) grp * (size_t) (plan_i32_ + 16), (long long) max_t_ * K, nullptr, 0, cs, m_plan_err_);
@@ -2324,6 +2342,35 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
         } else
             quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32), (int64_t) n * N, cs);
+        if (ar_on() && ep_on()) {
+            // expert parallelism: the ids and q8_1 rows go to the peer's inbox (host-mapped); the peer's graph waits
+            // for them, plans and computes its own entries and sends their rows with this ring's return flag, which
+            // post() waits for before the copy into parts_.
+            const uint32_t ring = (uint32_t) ((l - lb_) * G + grp + 1);
+            const size_t xq_bytes = (size_t) n * (N / 32) * 36;
+            uint8_t* slot0 = (uint8_t*) ep_inbox_d0_ + (size_t) grp * ep_slot_bytes_;
+            uint8_t* slot1 = ep_in1_ + (size_t) grp * ep_slot_bytes_;
+            ep_push(ids_ + tb * K, n * (int) K, nat_xq_ + (size_t) tb * (N / 32) * 36, xq_bytes, (int32_t*) slot0,
+                    slot0 + ep_xq_off_, (uint32_t*) ep_inflag_d0_ + (size_t) ring * 16, ep_ctr0_, cs);
+            const OnDevice on_peer(ep_cfg_.device);   // the peer's stream, its kernels
+            ep_wait((const uint32_t*) ep_inflag_d1_ + (size_t) ring * 16, ep_ctr1_, ep_spin_, ep_err1_, ring, ep_q_);
+            ep_copy_uncached(slot1, (const uint8_t*) ep_inbox_d1_ + (size_t) grp * ep_slot_bytes_, ep_xq_off_ + xq_bytes,
+                             ep_q_);
+            const int64_t capx = (int64_t) max_t_ * K, cap = (int64_t) n * K;
+            int32_t* pl1 = ep_plan1_ + (size_t) grp * (size_t) (plan_i32_ + 16);
+            resident_plan_ep((const int32_t*) slot1, (int) cap, (int) K, ep_cfg_.res0_on1 + l * g.n_expert,
+                             ep_cfg_.res1 + l * g.n_expert, 2, (int) g.n_expert, ep_cfg_.cache_base1, ep_cfg_.slot_off1,
+                             (long long) ep_cfg_.blob1, pl1, (long long) capx, ep_q_, ep_plan_err1_);
+            const int64_t ptr_off = ((4 + (capx + 1) + 2 * capx) + 1) & ~1ll;
+            const auto& f = strata::kernels::cpu::expert_layout().fmt[(size_t) l];
+            const NativeExpertLayout L = native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
+            native_expert_grouped(L, (const unsigned long long*) (pl1 + ptr_off), pl1 + 4, pl1, pl1 + 4 + capx + 1,
+                                  pl1 + 4 + capx + 1 + capx, cap, cap, slot1 + ep_xq_off_, ep_scratch1_,
+                                  ep_rows1_ + (size_t) tb * K * N, ep_q_, 0);
+            ep_send_rows((float*) ep_rows_d1_ + (size_t) tb * K * N, ep_rows1_ + (size_t) tb * K * N,
+                         (const int32_t*) slot1, ep_cfg_.res0_on1 + l * g.n_expert, (int) cap, N, ep_done1_,
+                         (uint32_t*) ep_ret_d1_ + (size_t) ring * 16, ep_ctr1_, ep_q_);
+        }
         stamp(l, 18, grp);
         return true;
     };
@@ -2382,6 +2429,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             stamp(l, 19, grp);
             grouped(p_ptr, p_start, p_counts, 0, parts_out, true);
             stamp(l, 20, grp);
+            if (ep_on()) {   // the peer's rows are in the mapped region once its flag is up
+                ep_wait((const uint32_t*) ep_ret_d0_ + (size_t) ring * 16, ep_ctr0_, ep_spin_, ep_err0_, ring, cs);
+                ep_copy_peer_rows(parts_out, (const float*) ep_rows_d0_ + (size_t) tb * K * N, ids_ + tb * K,
+                                  hits_.d_res + l * g.n_expert, (int) cap, N, cs);
+            }
         } else {
             strata::dispatch::notef("experts layer: partial residency, plan from %ld (1 = device plan, 0 = host pool), pcie_mode=%ld, remote_opt=%ld", (long) device_plan_, (long) sink_.pcie_mode, (long) (remote_opt_ != nullptr));
             if (device_plan_) {   // E-6: skipped when the device planned this group (all its experts resident)
@@ -2735,7 +2787,8 @@ void Verifier::refresh_ar() {
     const int32_t* r = h_res_ + lb_ * ne;
     const int64_t n = (le_ < 0 ? g_->n_layers : le_) * ne - lb_ * ne;
     int32_t lo = 0;
-    for (int64_t i = 0; i < n; ++i) lo = std::min(lo, r[i]);
+    const int32_t* r1 = ep_on() && ep_cfg_.h_res1 != nullptr ? ep_cfg_.h_res1 + lb_ * ne : nullptr;
+    for (int64_t i = 0; i < n; ++i) lo = std::min(lo, r1 != nullptr && r[i] < 0 ? r1[i] : r[i]);   // the peer's count
     const bool off = lo < 0;
     if (off != ar_off_) {
         ar_off_ = off;
@@ -2744,6 +2797,134 @@ void Verifier::refresh_ar() {
                          : "are 100% VRAM resident again: the zero-doorbell graph");
     }
 }
+
+// ---- expert parallelism (ep_kernels.hpp) -------------------------------------------------------------------------
+//
+// Every region the two cards exchange through is ONE host allocation with a device alias per card (HIP IPC between
+// the two 7900 XT fails: "invalid device context").  The flags live in mapped host memory, carry the raising card's
+// window epoch, and are read with the engine's volatile-load spin idiom (wait_flag_ge); each writer fences at system
+// scope first.  The engine's own mapped staging (mapped()) already allocates with cudaHostAllocPortable when
+// peer_portable() is on - generate.cpp turns it on for --expert-parallel-device.
+bool Verifier::ep_init(std::string& err) {
+    const ModelGeometry& g = *g_;
+    const int64_t N = g.n_embd, K = ss_->k, MT = max_t_;
+    const int d0 = device_, d1 = ep_cfg_.device;
+    if (!strata::kernels::cpu::expert_layout().native) {
+        err = "verify: expert parallel needs a native pack";
+        return false;
+    }
+    if (!all_resident_) {
+        err = "verify: expert parallel: some experts are on neither card (every expert must be in one card's VRAM)";
+        return false;
+    }
+    if (d1 < 0 || d1 == d0 || ext_stream_ != nullptr) {   // not with pipelined windows
+        err = "verify: expert parallel needs a second card and no pipelined windows";
+        return false;
+    }
+    if (const char* v = std::getenv("STRATA_EP_SPIN_MAX")) ep_spin_ = (uint32_t) std::strtoul(v, nullptr, 10);
+    auto align = [](size_t b) { return (b + 255) / 256 * 256; };
+    ep_xq_off_ = align((size_t) MT * K * 4);
+    ep_slot_bytes_ = ep_xq_off_ + align((size_t) MT * (N / 32) * 36);
+    const size_t flag_bytes = (size_t) (g.n_layers * 2 + 2) * 64;   // a 64-byte line per ring (G <= 2)
+
+    int prev_dev = 0;
+    cudaGetDevice(&prev_dev);
+    bool ok = true;
+    // one host-mapped region, both cards' aliases
+    auto region = [&](size_t bytes, void** h, void** a0, void** a1) {
+        cudaSetDevice(d0);
+        if (!mapped(bytes, h, a0)) { ok = false; return; }
+        cudaSetDevice(d1);
+        if (cudaHostGetDevicePointer(a1, *h, 0) != cudaSuccess) { (void) cudaGetLastError(); ok = false; }
+    };
+    region(2 * ep_slot_bytes_, &ep_inbox_, &ep_inbox_d0_, &ep_inbox_d1_);
+    region(flag_bytes, &ep_inflag_, &ep_inflag_d0_, &ep_inflag_d1_);
+    region((size_t) MT * K * N * 4, &ep_rows_, &ep_rows_d0_, &ep_rows_d1_);
+    region(flag_bytes, &ep_ret_, &ep_ret_d0_, &ep_ret_d1_);
+    if (!ok) { cudaSetDevice(prev_dev); err = "verify: expert parallel: the mapped regions failed"; return false; }
+    // the mapped error words: a timed-out wait writes its ring, the plan a 1; the host reads them after the window
+    cudaSetDevice(d0);
+    ok = mapped(64, (void**) &h_ep_err0_, (void**) &ep_err0_);
+    cudaSetDevice(d1);
+    ok = ok && mapped(64, (void**) &h_ep_err1_, (void**) &ep_err1_) &&
+         mapped(64, (void**) &h_ep_plan_err1_, (void**) &ep_plan_err1_);
+    if (!ok) { cudaSetDevice(prev_dev); err = "verify: expert parallel: the mapped error words failed"; return false; }
+    // this card's epoch (device memory of card 0)
+    cudaSetDevice(d0);
+    ok = cudaMalloc((void**) &ep_ctr0_, 64) == cudaSuccess && cudaMemset(ep_ctr0_, 0, 64) == cudaSuccess;
+    // the peer's stream, epoch and working buffers (device memory of card 1)
+    cudaSetDevice(d1);
+    cudaStream_t q1 = nullptr;
+    ok = ok && cudaStreamCreateWithFlags(&q1, cudaStreamNonBlocking) == cudaSuccess;
+    if (ok) {
+        ep_q_ = q1;
+        ok = cudaMalloc((void**) &ep_ctr1_, 64) == cudaSuccess && cudaMemset(ep_ctr1_, 0, 64) == cudaSuccess &&
+             cudaMalloc((void**) &ep_plan1_, (size_t) 2 * ((size_t) plan_i32_ + 16) * 4) == cudaSuccess &&
+             cudaMalloc((void**) &ep_in1_, 2 * ep_slot_bytes_) == cudaSuccess &&
+             cudaMalloc((void**) &ep_rows1_, (size_t) MT * K * N * 4) == cudaSuccess &&
+             cudaMalloc((void**) &ep_done1_, 64) == cudaSuccess && cudaMemset(ep_done1_, 0, 64) == cudaSuccess &&
+             cudaMalloc((void**) &ep_scratch1_, strata::kernels::native_expert_scratch_bytes(MT * K, g.n_ff)) == cudaSuccess;
+    }
+    cudaSetDevice(prev_dev);
+    if (!ok) { err = "verify: expert parallel: device buffers failed"; return false; }
+    return true;
+}
+
+void Verifier::ep_free() {
+    if (!ep_on()) return;
+    try {
+        int prev_dev = 0;
+        cudaGetDevice(&prev_dev);
+        for (int T = 0; T < 9; ++T)
+            if (ep_exec_[T] != nullptr) { cudaGraphExecDestroy(ep_exec_[T]); ep_exec_[T] = nullptr; }
+        if (ep_q_ != nullptr) {
+            cudaSetDevice(ep_cfg_.device);
+            cudaStreamSynchronize(ep_q_);
+            for (void* p : {(void*) ep_ctr1_, (void*) ep_plan1_, (void*) ep_in1_, (void*) ep_rows1_, (void*) ep_done1_,
+                            (void*) ep_scratch1_})
+                if (p != nullptr) cudaFree(p);
+            cudaStreamDestroy(ep_q_);
+            ep_q_ = nullptr;
+        }
+        if (ep_ctr0_ != nullptr) {
+            cudaSetDevice(device_);
+            cudaFree(ep_ctr0_);
+        }
+        cudaSetDevice(prev_dev);
+    } catch (...) {}   // at process exit the context can already be gone (see ~Verifier)
+    for (void** h : {&ep_inbox_, &ep_inflag_, &ep_rows_, &ep_ret_})
+        if (*h != nullptr) { cudaFreeHost(*h); *h = nullptr; }
+    for (uint32_t** h : {&h_ep_err0_, &h_ep_err1_, &h_ep_plan_err1_})
+        if (*h != nullptr) { cudaFreeHost(*h); *h = nullptr; }
+    ep_ctr0_ = ep_ctr1_ = nullptr;
+    ep_plan1_ = nullptr; ep_in1_ = nullptr; ep_rows1_ = nullptr; ep_done1_ = nullptr; ep_scratch1_ = nullptr;
+    ep_err0_ = ep_err1_ = ep_plan_err1_ = nullptr;
+    ep_inbox_d0_ = ep_inbox_d1_ = nullptr;
+    ep_inflag_d0_ = ep_inflag_d1_ = nullptr;
+    ep_rows_d0_ = ep_rows_d1_ = nullptr;
+    ep_ret_d0_ = ep_ret_d1_ = nullptr;
+}
+
+bool Verifier::ep_check(std::string& err) {
+    // the peer's last node (a flag store) may still be in flight when this card's window is done: it is the only
+    // thing left on the peer's queue, so this wait is short
+    {
+        const OnDevice on_peer(ep_cfg_.device);
+        cudaStreamSynchronize(ep_q_);
+    }
+    const uint32_t e0 = *(volatile uint32_t*) h_ep_err0_, e1 = *(volatile uint32_t*) h_ep_err1_,
+                   pe = *(volatile uint32_t*) h_ep_plan_err1_;
+    if (e0 == 0 && e1 == 0 && pe == 0) return true;
+    *(volatile uint32_t*) h_ep_err0_ = 0;
+    *(volatile uint32_t*) h_ep_err1_ = 0;
+    *(volatile uint32_t*) h_ep_plan_err1_ = 0;
+    char b[256];
+    std::snprintf(b, sizeof b, "verify: expert parallel: %s (ring %u / %u, plan error %u)",
+                  pe ? "the peer met an expert on neither card" : "a wait for the other card ran to its bound", e0, e1, pe);
+    err = b;
+    return false;
+}
+
 
 bool Verifier::capture(int T, std::string& err) {
     const auto cap_t0 = std::chrono::steady_clock::now();
@@ -2756,6 +2937,10 @@ bool Verifier::capture(int T, std::string& err) {
         else
             (void) cudaGetLastError();
     }
+    if (ep_on() && ar_off_) {
+        err = "verify: expert parallel: an expert is on neither card (a prompt loan, a shrink or a swap)";
+        return false;
+    }
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
         err = "verify: begin capture failed";
         return false;
@@ -2764,18 +2949,52 @@ bool Verifier::capture(int T, std::string& err) {
     prio_forks_.clear();
     prio_tails_.clear();
 #endif
+    // expert parallelism: the peer's half of the window records into a graph of its own on its stream
+    bool ep_recording = false;
+    if (ep_on()) {
+        const OnDevice on_peer(ep_cfg_.device);
+        ep_recording = cudaStreamBeginCapture(ep_q_, cudaStreamCaptureModeThreadLocal) == cudaSuccess;
+    }
+    if (ep_on() && !ep_recording) {
+        cudaGraph_t drop = nullptr;
+        cudaStreamEndCapture(cs_, &drop);
+        if (drop) cudaGraphDestroy(drop);
+        err = "verify: expert parallel: begin capture on the peer failed";
+        return false;
+    }
     std::string rerr;
     const bool ok = record_window(T, cs_, rerr);
     cudaGraph_t graph = nullptr;
     const cudaError_t ce = cudaStreamEndCapture(cs_, &graph);
-    if (!ok) {
+    cudaGraph_t graph1 = nullptr;
+    cudaError_t ce1 = cudaSuccess;
+    if (ep_recording) {
+        const OnDevice on_peer(ep_cfg_.device);
+        ce1 = cudaStreamEndCapture(ep_q_, &graph1);
+    }
+    if (!ok || ce1 != cudaSuccess) {
         if (graph) cudaGraphDestroy(graph);
-        err = rerr;
+        if (graph1) cudaGraphDestroy(graph1);
+        err = !ok ? rerr : "verify: expert parallel: end capture on the peer failed";
         return false;
     }
     if (ce != cudaSuccess) {
         err = std::string("verify: end capture: ") + cudaGetErrorString(ce);
         return false;
+    }
+    if (graph1 != nullptr) {
+        cudaGraphExec_t e1 = nullptr;
+        cudaError_t ie = cudaSuccess;
+        {
+            const OnDevice on_peer(ep_cfg_.device);
+            ie = cudaGraphInstantiate(&e1, graph1, nullptr, nullptr, 0);
+        }
+        cudaGraphDestroy(graph1);
+        if (ie != cudaSuccess) {
+            err = std::string("verify: expert parallel: instantiate the peer's window: ") + cudaGetErrorString(ie);
+            return false;
+        }
+        ep_exec_[T] = e1;
     }
 #if defined(STRATA_USE_HIP)   // 143-amdk: the same listing on HIP (kernel names by hipKernelNameRefByPtr); STRATA_VERIFY_NODES=2 also lists the first nodes in graph order
     if (std::getenv("STRATA_VERIFY_NODES") != nullptr) {
@@ -3208,6 +3427,8 @@ bool Verifier::prelaunch(int T, const int32_t* tokens, int64_t pos0, std::string
     // 0.1.43: the same gate run() applies before it launches (the adaptive tier's copies land first)
     if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && ar_on() &&
         !adapt_gate_wait((int32_t) g_->n_layers, err)) return false;
+    // expert parallelism: the peer's graph first - its first wait is for this card's layer 0
+    if (ep_on() && ep_exec_[T] != nullptr) cudaGraphLaunch(ep_exec_[T], ep_q_);
     strata::dispatch::Stats::get().graph_launch(T, ar_on() ? 0 : 1);
     const cudaError_t le = cudaGraphLaunch(exec_t, cs_);
     trace_ev("LAUNCHED", -1, -1, (int64_t) le);
@@ -3323,6 +3544,8 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         // 0.1.43: with the all-resident graph the host serves no layer, so nothing can hold a layer back: every copy first
         if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && ar_on() &&
             !adapt_gate_wait((int32_t) g.n_layers, err)) return false;
+        // expert parallelism: the peer's graph first - its first wait is for this card's layer 0
+        if (ep_on() && ep_exec_[T] != nullptr) cudaGraphLaunch(ep_exec_[T], ep_q_);
 #if defined(STRATA_VERIFY_HGL)
         // A blocking instrumented launch cannot also serve the graph's CPU doorbells.
         static const bool threaded_launch = [] {
@@ -3573,6 +3796,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         err = "verify: the all-resident plan met an expert that is not in VRAM (the residency table changed during the window)";
         return false;
     }
+    if (ep_on() && !ep_check(err)) return false;
     commit_pending_ = false;
     progress_at("verify window: waiting for the expert copies", (int64_t) T);
     if (copy_used_) {
@@ -3981,6 +4205,10 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
 bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err) {
     cudaGraphExec_t& ex = exec_bm_[bkey(rows, S, hbase)];
     if (ex != nullptr) return true;
+    if (ep_on()) {   // expert parallelism: the peer's ring/epoch layout is per window size, batch rows are its own
+        err = "verify: expert parallel does not run batch windows";
+        return false;
+    }
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
         err = "verify: begin batch capture failed";
         return false;
