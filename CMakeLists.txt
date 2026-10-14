@@ -125,6 +125,10 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
                                            src/core/state_codec.cpp)
   target_include_directories(session_save_reclaim_test PRIVATE include)
   add_test(NAME session_save_reclaim_test COMMAND session_save_reclaim_test)
+  # the report of a failed running-state restore, tested with the allocator armed to fail: host-only, header-only
+  add_executable(conversation_report_test src/core/conversation_report_test.cpp)
+  target_include_directories(conversation_report_test PRIVATE include)
+  add_test(NAME conversation_report_test COMMAND conversation_report_test)
 endif()
 
 if(STRATA_HIP_GFX906)

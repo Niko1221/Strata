@@ -23,6 +23,7 @@
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
+#include "strata/core/conversation_report.hpp"
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/session_save_reclaim.hpp"
 #include "strata/core/conversation_memory.hpp"
@@ -1517,21 +1518,34 @@ bool checkpoint_save(ConvCheckpoint& c, const strata::core::SessionState& ss, co
 /// for the fp32 slice the state crosses the device boundary in. Neither the serve loop nor the batch slot path has
 /// a handler around this call, so an allocation failure is reported here as a refusal, never thrown past it. The
 /// stored snapshot is not modified: what it holds, and the codec it says it holds, are unchanged by a restore.
+/// The handlers report with a literal or with what() read while the exception is still alive, and never build a
+/// message (strata/core/conversation_report.hpp): assembling an error string is the one thing that can fail on this
+/// path, and a bad_alloc leaving the handler would end the engine instead of refusing one rewind.
 bool checkpoint_restore(const ConvCheckpoint& c, strata::core::SessionState& ss, const strata::core::ModelGeometry& g,
                         std::string& why) {
     why.clear();
+    const char* why_message = nullptr;   // set by the handler that caught it, read by refuse() while still valid
+    auto refuse = [&]() {
+        std::fprintf(stderr, "strata serve: checkpoint restore: %s\n",
+                     strata::core::conversation_detail::report_restore(
+                         why, why_message, "checkpoint restore failed"));   // the caller's ERR has no reason otherwise
+        return false;
+    };
     std::string error;
     try {
         if (strata::core::conversation_checkpoint_restore(c, ss, g, error)) return true;
     } catch (const std::bad_alloc&) {
-        error = "not enough RAM to widen the checkpoint's running state";
+        why_message = "not enough RAM to widen the checkpoint's running state";
+        return refuse();
     } catch (const std::exception& e) {
-        error = std::string("checkpoint restore failed: ") + e.what();
+        why_message = e.what();   // read here: the exception object is gone once this handler is left
+        return refuse();
+    } catch (...) {
+        why_message = "checkpoint restore failed";
+        return refuse();
     }
-    // the report wants a heap block too, and this is the path where there may be none: never let the report throw
-    try { why = error; } catch (...) {}
-    std::fprintf(stderr, "strata serve: checkpoint restore: %s\n", error.c_str());   // the caller's ERR has no reason
-    return false;
+    why_message = error.empty() ? nullptr : error.c_str();   // refused without throwing: its own reason
+    return refuse();
 }
 
 // --control-vector-scaled: llama.cpp's `common_control_vector_load` (every file's `direction.<l>` times its scale,
@@ -9451,19 +9465,31 @@ int main(int argc, char** argv) {
                     // The slot's checkpoint may belong to a conversation that was parked with its running state
                     // coded (--session-state-codec bf16), so restoring it decodes, and decoding allocates host
                     // memory. This path's failure is not fatal - the caller reads the prompt from token 0 - but it
-                    // has to be a reported refusal, not a bad_alloc escaping the batch loop.
+                    // has to be a reported refusal, not a bad_alloc escaping the batch loop. Reporting is guarded
+                    // the same way as the serve path's: the message is a literal or what(), never one assembled
+                    // here, because assembling it is what fails when there is no RAM left (strata/core/
+                    // conversation_report.hpp).
                     const strata::core::ConversationCheckpoint& src = k == 0 ? *at : at->stage_parts[k - 1];
+                    const char* why_message = nullptr;
                     bool ok = false;
                     try {
                         ok = strata::core::conversation_checkpoint_restore(src, to, g, e);
                     } catch (const std::bad_alloc&) {
-                        try { e = "not enough RAM to widen the slot checkpoint's running state"; } catch (...) {}
-                        std::fprintf(stderr, "strata batch: %s\n", e.c_str());
+                        why_message = "not enough RAM to widen the slot checkpoint's running state";
                     } catch (const std::exception& ex) {
-                        try { e = std::string("slot checkpoint restore: ") + ex.what(); } catch (...) {}
-                        std::fprintf(stderr, "strata batch: %s\n", e.c_str());
+                        why_message = ex.what();   // read here: the exception object is gone once this handler is left
+                    } catch (...) {
+                        why_message = "slot checkpoint restore failed";
                     }
-                    if (!ok) return false;
+                    if (!ok) {
+                        if (why_message != nullptr)   // it threw: `e` may hold a partial reason, the throw's is better
+                            why_message = strata::core::conversation_detail::report_restore(
+                                e, why_message, "slot checkpoint restore failed");
+                        else
+                            why_message = e.empty() ? "slot checkpoint restore failed" : e.c_str();
+                        std::fprintf(stderr, "strata batch: %s\n", why_message);
+                        return false;
+                    }
                 } else {
                     strata::core::ConversationCheckpoint ck;
                     ck.ids = bs[(size_t) b].ids;
