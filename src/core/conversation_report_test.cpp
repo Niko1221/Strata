@@ -191,28 +191,39 @@ void what_is_reported_inside_the_handler() {
     check(why == captured, "and the same text in the caller's string");
 }
 
-// The same, with the allocator failing while what() is being reported: the exception's text is used as it stands.
+// The same, with the allocator failing while what() is being reported. Two things make this the sharpest of these
+// checks. The message is longer than a std::string's small-string buffer - 15 bytes on libstdc++, 22 on libc++ - so
+// constructing the exception took a heap block and what() hands out storage the exception owns, not a literal the
+// test could read whenever it likes. And the allocator is armed only after that construction: what is being tested
+// is that reporting the failure does not need the block that is being withheld.
+//
+// what() does not outlive the handler, so the text the report returned is compared HERE, while `e` is alive. Nothing
+// is copied out to keep it alive: a std::string built for the purpose would itself want the heap this test refuses,
+// and would then be measuring its own allocation rather than the report's. Only booleans leave the handler.
 void what_survives_a_failing_allocator() {
+    const char* const words = "the pooled indexer state could not be widened: there is no RAM left for the state";
+    check(std::strlen(words) > 22, "the message is past every implementation's small-string buffer");
     std::string why;
-    const char* logged = nullptr;
-    bool threw = false;
+    bool threw = false, refused_one = false, own_pointer = false, text_ok = false;
     try {
+        throw std::runtime_error(words);   // its text is heap storage, taken before the allocator was armed
+    } catch (const std::exception& e) {
+        // 16: the first request a std::string makes once the text no longer fits its 15-byte inline buffer
+        failing = true; fail_from_bytes = 16; refused = 0;
         try {
-            throw std::runtime_error("out of memory");
-        } catch (const std::exception& e) {
-            failing = true; fail_from_bytes = 16; refused = 0;
-            try {
-                logged = report_restore(why, e.what(), fallback);
-            } catch (...) {
-                threw = true;
-            }
-            disarm();
+            const char* logged = report_restore(why, e.what(), fallback);
+            own_pointer = (logged == e.what());          // the exception's own text, not a copy of it
+            text_ok = (std::strcmp(logged, words) == 0);  // read while the exception that owns it is still alive
+        } catch (...) {
+            threw = true;
         }
-    } catch (...) {
-        threw = true;
+        refused_one = (refused > 0);   // read here, with everything else that belongs to the handler
+        disarm();                      // before any assertion: check() prints, and printing may allocate
     }
     check(!threw, "a restore failure is reported without throwing even when the copy cannot allocate");
-    check(logged != nullptr && std::strcmp(logged, "out of memory") == 0, "with the exception's text returned");
+    check(refused_one, "and the copy really was refused, so the pressure was actually applied");
+    check(own_pointer, "the pointer returned is the exception's own text");
+    check(text_ok, "and that text is the exception's words, compared while the exception was still alive");
 }
 }  // namespace
 

@@ -17,7 +17,9 @@
 //   4. a capture left at the API default writes the fp32 bytes it always wrote, bit for bit;
 //   5. a capture that cannot allocate - the stored arrays, or the bounded staging slice a coded copy crosses the
 //      device boundary in - is a refusal to its caller. It does not throw, it publishes no partially captured
-//      checkpoint, the snapshots that were already valid stay valid, and the working state is untouched.
+//      checkpoint, the snapshots that were already valid stay valid, and the working state is untouched. Those two
+//      allocations are different failures and a check that only counts refusals cannot tell them apart, so the
+//      armed allocator also records the sizes it saw and each check names the one it expects to have failed.
 //
 // Host-only, and deliberately so: making this fail on a real device means either a fork whose address-space limit
 // may or may not bite, or a model large enough to exhaust RAM. Here the device copies are link-wrapped to memcpy
@@ -27,6 +29,7 @@
 
 #include "strata/core/conversation_snapshot.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
@@ -62,22 +65,43 @@ namespace {
 bool failing = false;
 std::size_t fail_from_bytes = 0;
 std::size_t refused = 0;
+// What the armed window saw, so a check can say WHICH allocation was refused and not merely that one was: a
+// capture sizes five stored arrays before it reaches the staging slice, and a test that only counts refusals cannot
+// tell those two apart. Fixed-size and allocation-free - recording a refusal must not itself want the heap that is
+// being refused, which with `fail_from_bytes = 1` would mean recording nothing at all.
+std::size_t refused_at[8] = {0};
+std::size_t refused_n = 0;
+std::size_t served_max = 0;   // the largest request the armed allocator said YES to
+void arm(std::size_t from) { failing = true; fail_from_bytes = from; refused = 0; refused_n = 0; served_max = 0; }
+void disarm() { failing = false; fail_from_bytes = 0; }
 void* allocate(std::size_t n) {
-    if (failing && n >= fail_from_bytes) { ++refused; throw std::bad_alloc(); }
+    if (failing && n >= fail_from_bytes) {
+        ++refused;
+        if (refused_n < sizeof(refused_at) / sizeof(refused_at[0])) refused_at[refused_n] = n;
+        ++refused_n;
+        throw std::bad_alloc();
+    }
     void* p = std::malloc(n == 0 ? 1 : n);
     if (p == nullptr) std::abort();
+    if (failing && n > served_max) served_max = n;
     return p;
 }
 } // namespace
 void* operator new(std::size_t n) { return allocate(n); }
 void* operator new[](std::size_t n) { return allocate(n); }
 void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
-    if (failing && n >= fail_from_bytes) { ++refused; return nullptr; }
-    return std::malloc(n == 0 ? 1 : n);
+    if (failing && n >= fail_from_bytes) {
+        ++refused;
+        if (refused_n < sizeof(refused_at) / sizeof(refused_at[0])) refused_at[refused_n] = n;
+        ++refused_n;
+        return nullptr;
+    }
+    void* p = std::malloc(n == 0 ? 1 : n);
+    if (failing && n > served_max) served_max = n;
+    return p;
 }
 void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
-    if (failing && n >= fail_from_bytes) { ++refused; return nullptr; }
-    return std::malloc(n == 0 ? 1 : n);   // every replaceable form allocates here, so every delete form frees here
+    return operator new(n, std::nothrow);   // every replaceable form allocates here, so every delete form frees here
 }
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
@@ -116,6 +140,13 @@ bool within_codec(const std::vector<uint8_t>& want, const std::vector<uint8_t>& 
 
 // One session's running state, in host memory, at a geometry the sizing code accepts. Every value is a real float
 // in a range the model's own state occupies, so the widened numbers mean something.
+//
+// `ssm_state_size` is the one setting a pressure check is allowed to move, because it is the one that moves z.gdn -
+// the fp32 bytes of recurrent state a capture crosses the device boundary in - and nothing else the test reads. At 2
+// the whole running state is small enough that a capture's five stored arrays are all smaller than its staging
+// slice, which is what a check about output-array allocation needs; at 256 z.gdn is 3,146,304 bytes, bigger than
+// any of those arrays and still under the 4 MiB staging limit, which is what a check about the staging slice needs.
+// The checks that pin down what a capture WRITES use the default and stay cheap.
 struct State {
     ModelGeometry g;
     ConversationStateSizes z;
@@ -124,9 +155,9 @@ struct State {
     std::vector<uint8_t> gdn, ple;
     SessionState ss;
 
-    State() {
+    explicit State(int64_t ssm_state_size = 2) {
         g.n_layers = 8;              // qsa_interval 4: two QSA layers, six GDN ones
-        g.ssm_state_size = 2; g.ssm_v_heads = 2; g.ssm_conv_channels = 8;
+        g.ssm_state_size = ssm_state_size; g.ssm_v_heads = 2; g.ssm_conv_channels = 8;
         g.n_head_kv = 1; g.head_dim = 64; g.idx_key_dim = 8;
         std::string e;
         if (!conversation_state_sizes(g, z, e)) { std::fprintf(stderr, "sizing: %s\n", e.c_str()); std::exit(1); }
@@ -248,40 +279,100 @@ int main() {
           bf16.dead == held_dead && bf16.block_pos == held_pos,
           "capture: and repeated restoration does not change one byte of it");
 
-    // ---- 5: a capture that cannot allocate. `conversation_checkpoint_save` sizes the stored arrays first and then
-    // crosses the device boundary one bounded slice at a time; both want a heap block. The refusal is what the
-    // caller acts on, the checkpoint it was handed keeps its bytes, and nothing is thrown past it.
+    // ---- 5: a capture that cannot allocate. `conversation_checkpoint_save` sizes the five stored arrays first and
+    // then crosses the device boundary one bounded slice at a time. Both want a heap block, and a check about one of
+    // them has to prove WHICH one it refused: counting refusals cannot tell those two apart, and this file used to
+    // call an output-array refusal a staging-buffer one. Every block below therefore records the sizes the armed
+    // allocator saw and names the allocation it expects to have failed. The refusal is what the caller acts on, the
+    // checkpoint it was handed keeps its bytes and its codec, and nothing is thrown past it.
     const std::vector<uint8_t> live = st.bytes();
+
     {
-        // a checkpoint that already holds a whole snapshot: the arrays are the right size already, so what fails is
-        // the capture's own bounded staging buffer - the allocation this patch puts on the capture path
+        // An OUTPUT array, on a checkpoint that already holds a whole snapshot. At this geometry every stored array
+        // is smaller than the capture's staging slice, so with the bar at z.gdn (768 bytes) the bf16 GDN array - half
+        // of that, 384 bytes - is served and the bf16 PLE array after it, half of a 368,640-byte fp32 PLE history,
+        // is what the allocator says no to.
         ConversationCheckpoint keep = checkpoint_of(ids, StateCodec::Bf16);
         check(conversation_checkpoint_save(keep, st.ss, st.g, err), "capture: the snapshot the next call is given");
         const std::vector<uint8_t> was_gdn = keep.gdn, was_ple = keep.ple, was_tails = keep.tails,
                                    was_dead = keep.dead, was_pos = keep.block_pos;
-        refused = 0;
-        failing = true; fail_from_bytes = st.z.gdn;   // the fp32 slice a coded copy stages through
+        const std::size_t gdn_out = state_codec_size(st.z.gdn, StateCodec::Bf16);
+        const std::size_t ple_out = state_codec_size(st.z.ple, StateCodec::Bf16);
+        check(gdn_out < st.z.gdn && st.z.gdn <= ple_out,
+              "fixture: the bar falls between the GDN and PLE output arrays, so one of THOSE is what fails here");
+        err.clear();
+        arm(st.z.gdn);
         bool ok = true, threw = false;
         try { ok = conversation_checkpoint_save(keep, st.ss, st.g, err); } catch (...) { threw = true; }
-        failing = false; fail_from_bytes = 0;
-        check(!threw, "capture: a capture that cannot allocate is not thrown past its caller");
+        disarm();
+        check(!threw, "capture: a capture that cannot allocate its stored arrays is not thrown past its caller");
         check(!ok, "capture: and it is refused");
         check(refused > 0, "capture: the refusal really was the allocator saying no");
+        check(refused_n >= 1 && refused_at[0] == ple_out && served_max == gdn_out,
+              "capture: it failed at the PLE output array, the GDN one having already been served");
         check(!err.empty(), "capture: and it reports a reason");
         check(keep.gdn == was_gdn && keep.ple == was_ple && keep.tails == was_tails &&
               keep.dead == was_dead && keep.block_pos == was_pos &&
               keep.state_codec == (uint8_t) StateCodec::Bf16,
-              "capture: a refused capture publishes nothing - the checkpoint holds what it held");
+              "capture: a refused capture publishes nothing - the checkpoint holds what it held, in its own codec");
         check(st.bytes() == live, "capture: and the working state is untouched by the refusal");
+        check(conversation_checkpoint_save(keep, st.ss, st.g, err) && keep.gdn == was_gdn && keep.ple == was_ple &&
+              keep.tails == was_tails && keep.dead == was_dead && keep.block_pos == was_pos,
+              "capture: with the RAM back the next capture works, and writes the snapshot the refused one did not");
     }
+
+    {
+        // The STAGING slice, which is the allocation this patch puts on the capture path: a coded copy crosses the
+        // device boundary in slices of at most kStateCodecChunkFloats floats, so a bf16 capture wants one of those
+        // on top of the stored arrays. It cannot be reached at the geometry the checks above use - there the PLE
+        // array is refused first, as that block now says - so this is a separate fixture that moves only
+        // ssm_state_size. At 256 the fp32 GDN state is 3,146,304 bytes: bigger than any array this capture sizes,
+        // and under the 4 MiB limit, so the first slice is the whole state and the bar at z.gdn lands on it and on
+        // nothing before it.
+        State big(256);
+        const std::size_t staging = std::min(kStateCodecChunkFloats, big.z.gdn / 4) * 4;
+        const std::size_t largest_out =
+            std::max({state_codec_size(big.z.gdn, StateCodec::Bf16), state_codec_size(big.z.ple, StateCodec::Bf16),
+                      state_codec_size(2 * big.z.tail, StateCodec::Bf16),
+                      state_codec_size(2 * big.z.dead, StateCodec::Bf16), (std::size_t) 2 * big.z.block_pos});
+        check(big.z.gdn == 3146304, "fixture: the larger session's fp32 GDN state is the size this check is sized on");
+        check(largest_out < big.z.gdn && staging == big.z.gdn && staging < kStateCodecChunkFloats * 4,
+              "fixture: the bar is above every stored array and lands exactly on the staging slice");
+        ConversationCheckpoint keep = checkpoint_of(ids, StateCodec::Bf16);
+        check(conversation_checkpoint_save(keep, big.ss, big.g, err), "capture: the larger snapshot to be refused");
+        const std::vector<uint8_t> was_gdn = keep.gdn, was_ple = keep.ple, was_tails = keep.tails,
+                                   was_dead = keep.dead, was_pos = keep.block_pos;
+        const std::vector<uint8_t> live_big = big.bytes();
+        err.clear();
+        arm(big.z.gdn);
+        bool ok = true, threw = false;
+        try { ok = conversation_checkpoint_save(keep, big.ss, big.g, err); } catch (...) { threw = true; }
+        disarm();
+        check(!threw, "capture: a capture that cannot allocate its staging slice is not thrown past its caller");
+        check(!ok, "capture: and it is refused");
+        check(refused_n == 1 && refused_at[0] == staging,
+              "capture: the one refusal was the staging slice, at exactly its own size");
+        check(served_max == state_codec_size(big.z.gdn, StateCodec::Bf16),
+              "capture: every stored array had been served by then, so no output allocation failed instead");
+        check(!err.empty(), "capture: and it reports a reason");
+        check(keep.gdn == was_gdn && keep.ple == was_ple && keep.tails == was_tails &&
+              keep.dead == was_dead && keep.block_pos == was_pos &&
+              keep.state_codec == (uint8_t) StateCodec::Bf16,
+              "capture: a refused capture publishes nothing - the checkpoint holds what it held, in its own codec");
+        check(big.bytes() == live_big, "capture: and the working state is untouched by the refusal");
+        check(conversation_checkpoint_save(keep, big.ss, big.g, err) && keep.gdn == was_gdn &&
+              keep.ple == was_ple && keep.tails == was_tails && keep.dead == was_dead &&
+              keep.block_pos == was_pos,
+              "capture: with the staging slice allocatable again the next capture works, byte for byte");
+    }
+
     {
         // the same on the first checkpoint this session would ever capture, with nothing allocatable at all
         ConversationCheckpoint fresh = checkpoint_of(ids, StateCodec::Bf16);
-        refused = 0;
-        failing = true; fail_from_bytes = 1;
+        arm(1);
         bool ok = true, threw = false;
         try { ok = conversation_checkpoint_save(fresh, st.ss, st.g, err); } catch (...) { threw = true; }
-        failing = false; fail_from_bytes = 0;
+        disarm();
         check(!threw && !ok && fresh.gdn.empty() && fresh.ple.empty() && fresh.tails.empty() &&
               fresh.dead.empty() && fresh.block_pos.empty(),
               "capture: with nothing allocatable the checkpoint is left empty, not half captured");
@@ -292,17 +383,20 @@ int main() {
           "capture: the checkpoints that were already in the chain still restore after a refused one");
     }
     {
-        // the default path under the same pressure: refused, and the fp32 bytes it already had are not disturbed
+        // the default path under the same pressure: refused at its first stored array, and the fp32 bytes it already
+        // had are not disturbed. Fp32 has no staging slice at all - it is the single copy it has always been.
         ConversationCheckpoint a = checkpoint_of(ids, StateCodec::Fp32);
         check(conversation_checkpoint_save(a, st.ss, st.g, err), "capture: an fp32 checkpoint to compare against");
         ConversationCheckpoint b = checkpoint_of(ids, StateCodec::Fp32);
-        refused = 0;
-        failing = true; fail_from_bytes = st.z.gdn;   // the fp32 array it would have to size
+        err.clear();
+        arm(st.z.gdn);   // the fp32 GDN array it would have to size, which is the first thing it asks for
         bool ok = true, threw = false;
         try { ok = conversation_checkpoint_save(b, st.ss, st.g, err); } catch (...) { threw = true; }
-        failing = false; fail_from_bytes = 0;
+        disarm();
         check(!threw && !ok && b.gdn.empty() && b.state_codec == 0,
               "capture: a refused fp32 capture publishes nothing either");
+        check(refused_n >= 1 && refused_at[0] == st.z.gdn && served_max == 0,
+              "capture: and it failed at the fp32 GDN output array, having been served nothing");
         check(a.gdn == st.gdn && a.state_codec == 0, "capture: and the fp32 snapshot it did not touch is intact");
         // the fp32 capture is still, and still only, the bytes it has always been
         check(conversation_checkpoint_save(b, st.ss, st.g, err) && b.state_codec == 0 && b.gdn == a.gdn &&
