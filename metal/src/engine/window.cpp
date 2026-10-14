@@ -125,7 +125,7 @@ public:
     int64_t vocab() const { return n_vocab_; }
     bool ready() const { return cx_ != nullptr; }
     bool streaming() const { return stream_; }
-    bool kv_q4() const { return kv_q4_; }   // the prompt path choice (kv_format.h's prompt_fast_path)
+    bool kv_q4() const { return kv_q4_; }   // kv_format.h's prompt_fast_path reads this (no format diverts the prompt since M2-b)
     // --serve's conversation checkpoints: the window's running state (the GDN recurrences and conv histories, the
     // PLE history, each QSA layer's indexer tail and tail-block key); the KV and pooled keys are positional
     bool checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err);
@@ -1215,10 +1215,10 @@ bool Window::stream_arena(std::string& err) {
                                                      "a Mac that runs short of memory can freeze (watchdog panics seen at 90+ GB "
                                                      "resident of 128)" : "");
     }
+    // the prompt-GEMM stand-by slots in EVERY format (M2-b: prompt_fast_path runs q4 prompts on the matrix-unit
+    // chains too); STRATA_METAL_PROMPT_GEMM=0 opts out, and the arena is then planned without them (576 -> 64)
     const char* epg = std::getenv("STRATA_METAL_PROMPT_GEMM");
-    // q4 prompts take the window path (kv_format.h's prompt_fast_path): no prompt-GEMM buffers are made, and the
-    // arena is planned without the prompt chunk's stand-by slots (576 -> the plain 64)
-    const bool pg_on = !(epg && std::string(epg) == "0") && prompt_fast_path(kv_q4_);
+    const bool pg_on = !(epg && std::string(epg) == "0");
     bool minimal = false;   // the arena's least layout (the min slots) is not shrunk further: it goes ahead, filled in steps
     for (int tries = 0;; ++tries) {
         const double planned = budget;
@@ -2150,11 +2150,6 @@ bool Window::prompt_gemm_init(std::string& err) {
 }
 
 bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::string& err) {
-    if (kv_q4_) {   // defense in depth beside prompt_run_rows' guard (the only caller): this chain's kernels are
-                    // int8-only; the fused q4 prompt is M2's
-        err = "metal prompt: the prompt fast path is int8-only; --kv q4_0 runs prompts on the window path (M2)";
-        return false;
-    }
     PromptGemm& p = *pg_;
     p.meta.as<uint32_t>()[2] = p.gu_v3 ? NFF / (32 * 4) : NFF / 64;
     p.meta.as<uint32_t>()[5] = p.dn_v3 ? N / (64 * 2) : N / 64;
@@ -2312,7 +2307,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
             if (p.flash) {
                 const uint32_t nq = (uint32_t) T * 24 * 256;
                 D(PP(p.lqsa, "qsa_q_f16"), {mtl::Arg::B(p.qcur), mtl::Arg::B(p.qcurh), mtl::Arg::V(nq)}, (nq + 255) / 256, 1, 256);
-                D(PP(p.lqsa, "qsa_flash", mtl::Constants().b(7, p.k4), "qsa_flash"),
+                D(PP(p.lqsa, "qsa_flash", qsa_prompt_mm_constants(p.k4, kv_q4_), qsa_prompt_mm_key("qsa_flash", kv_q4_)),
                   {mtl::Arg::B(p.qcurh), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]),
                    mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(p.qids), mtl::Arg::B(p.qfull), mtl::Arg::B(p.xqh), mtl::Arg::V(a)},
                   2, T, 128);
@@ -2321,11 +2316,13 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
                 for (int t0 = 0; t0 < T; t0 += p.QS) {
                     const int ns = std::min(p.QS, T - t0);
                     QsaArgs as{(uint32_t) (pos0 + t0), 0, (uint32_t) max_cells_, (uint32_t) ns, eps_};
-                    D(PP(p.lqsa, "qsa_attn"), {mtl::Arg::B(p.qcur, (size_t) t0 * 24 * 256 * 4), mtl::Arg::B(kq_[(size_t) qi]),
+                    D(PP(p.lqsa, "qsa_attn", qsa_q4_c(), qsa_q4_k("qsa_attn")),
+                      {mtl::Arg::B(p.qcur, (size_t) t0 * 24 * 256 * 4), mtl::Arg::B(kq_[(size_t) qi]),
                                                mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]),
                                                mtl::Arg::B(p.qids, (size_t) t0 * 2051 * 4), mtl::Arg::B(p.part), mtl::Arg::V(as)},
                       33, 2, 256, (uint32_t) ns);
-                    D(PP(p.lqsa, "qsa_merge"), {mtl::Arg::B(p.part), mtl::Arg::B(p.qfull, (size_t) t0 * 12288 * 4),
+                    D(PP(p.lqsa, "qsa_merge", qsa_q4_c(), qsa_q4_k("qsa_merge")),
+                      {mtl::Arg::B(p.part), mtl::Arg::B(p.qfull, (size_t) t0 * 12288 * 4),
                                                 mtl::Arg::B(p.XQ, (size_t) t0 * 6144 * 4), mtl::Arg::V(as)}, 24, ns, 256);
                 }
                 act16(p.XQ, p.xqh, (size_t) T * 6144);
@@ -2606,18 +2603,9 @@ bool prompt_run_rows(const int64_t* tokens, int64_t n, int64_t pos0,
     if (g_window == nullptr) { err = "metal prompt: the decode window is not up yet"; return false; }
     static const bool windows = std::getenv("STRATA_METAL_PROMPT") && std::string(std::getenv("STRATA_METAL_PROMPT")) == "window";
     static const int64_t min_rows = std::getenv("STRATA_METAL_PROMPT_MIN") ? std::atoll(std::getenv("STRATA_METAL_PROMPT_MIN")) : 32;
-    // q4 prompts take the window slow path below (kv_format.h's prompt_fast_path): the fast prompt kernels
-    // (qsa_attn_mm / qsa_flash) read the int8 pool layout and would misread the q4 pools' bytes.  Correct but
-    // slow, never silent int8; the fused fast q4 prompt variants are M2.  One line, the first time it happens.
+    // every format takes the fast chains (M2-b: their dispatches are format-aware); the env hatches below (window,
+    // the GEMM opt-outs, the row minimum) still divert to the decode window's path as before
     const bool fast = prompt_fast_path(g_window->kv_q4());
-    if (!fast) {
-        static bool said = false;
-        if (!said) {
-            said = true;
-            std::fprintf(stderr, "strata metal: --kv q4_0: prompts run on the decode window's path (the matrix-unit "
-                                 "prompt kernels are int8-only; the q4 ones are M2)\n");
-        }
-    }
     if (fast && !windows && !g_window->streaming() && n >= min_rows) return g_window->prompt(tokens, n, pos0, on_chunk, err);
     if (fast && !windows && g_window->streaming()) {
         const char* e = std::getenv("STRATA_METAL_PROMPT_GEMM");

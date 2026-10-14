@@ -10,14 +10,14 @@
 // follow prompt_chain's defaults: matrix-unit register operands where the GPU has the M5's right-input layout
 // (COOP_K4, function constant 7), else the older expert and attention kernels (the M4).
 //
-// --kv q4_0 NEVER reaches this file's chain (nor prompt_gemm's): prompt_run_rows (window.cpp) keeps every q4
-// prompt on the decode window's slow path (kv_format.h's prompt_fast_path; the one-line notice is logged there),
-// and that entry guard is the ONLY protection - this chain is int8-only.  qsa_attn_mm / qsa_flash read the
-// int8 pool layout, and qsa_attn / qsa_merge below dispatch under plain keys with EMPTY Constants while
-// qsa_prep alone goes through qsa_c()/qsa_k(): if this chain ever ran under q4, prep would write q4-format
-// cells that the attention kernels would then read as int8 codes.  The plain keys are deliberate (the path is
-// dead under q4; making it half format-aware would only hide the mismatch) - the real fix, fast q4 prompt
-// kernels that are format-aware throughout, is milestone M2's.
+// --kv q4_0 runs this chain format-aware END TO END (M2-b): qsa_prep through qsa_c()/qsa_k() as before, and the
+// attention kernels (qsa_attn_mm / qsa_attn / qsa_merge) through kv_format.h's qsa_prompt_mm_* / qsa_q4_* - the
+// format in the pipeline key AND the Constants both (Window::P() looks the key up first: a key without it would
+// hand back the cached int8 specialization over the q4 pools), the fc-25 kernel arms reading the q4 pool rows.
+// The ksc_[qi]/vsc_[qi] slots below bind the window's own members, which under q4 hold the 16-byte no_scale
+// placeholder init pushed (the same members the decode window's attn/merge bind; the fc-25 arms never read them).
+// With q4 off every key, Constants set and binding order is today's int8 one, byte for byte.
+// STRATA_METAL_PROMPT=window still forces the decode window's path for any format.
 
 namespace {
 constexpr int PC_QB = 2051, PC_QCHUNKS = 33, PC_TM = 16;
@@ -260,17 +260,19 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
             if (b.k4) {
                 const uint32_t nq = (uint32_t) nT * 24 * 256;
                 D(P_(b.lqsa, "qsa_q_f16"), {mtl::Arg::B(b.qcur), mtl::Arg::B(b.qcurh), mtl::Arg::V(nq)}, (nq + 255) / 256, 1, 256);
-                D(P_(b.lqsa, "qsa_attn_mm", mtl::Constants().b(7, true), "qsa_attn_mm#k4"),
+                D(P_(b.lqsa, "qsa_attn_mm", qsa_prompt_mm_constants(true, kv_q4_), qsa_prompt_mm_key("qsa_attn_mm#k4", kv_q4_)),
                   {mtl::Arg::B(b.qcurh), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]),
                    mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(b.qids), mtl::Arg::B(b.part), mtl::Arg::V(a)},
                   PC_QCHUNKS, 2, 32, nT);
             } else {
-                D(P_(b.lqsa, "qsa_attn"), {mtl::Arg::B(b.qcur), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]),
+                D(P_(b.lqsa, "qsa_attn", qsa_q4_c(), qsa_q4_k("qsa_attn")),
+                  {mtl::Arg::B(b.qcur), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]),
                                           mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(b.qids),
                                           mtl::Arg::B(b.part), mtl::Arg::V(a)},
                   PC_QCHUNKS, 2, 256, nT);
             }
-            D(P_(b.lqsa, "qsa_merge"), {mtl::Arg::B(b.part), mtl::Arg::B(b.qfull), mtl::Arg::B(b.XQ), mtl::Arg::V(a)}, 24, nT, 256);
+            D(P_(b.lqsa, "qsa_merge", qsa_q4_c(), qsa_q4_k("qsa_merge")),
+              {mtl::Arg::B(b.part), mtl::Arg::B(b.qfull), mtl::Arg::B(b.XQ), mtl::Arg::V(a)}, 24, nT, 256);
             act16(b.XQ, b.xqh, (size_t) nT * 6144);
             gemm(b.xqh, b.Wout, b.bo, nT, N, 6144);
             ++qi;
@@ -404,11 +406,6 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
 
 bool Window::prompt(const int64_t* tokens, int64_t n, int64_t pos0,
                     const std::function<bool(const float*, int64_t, int64_t, std::string&)>& on_chunk, std::string& err) {
-    if (kv_q4_) {   // defense in depth beside prompt_run_rows' guard (the only caller): this chain's kernels are
-                    // int8-only; the fused q4 prompt is M2's
-        err = "metal prompt: the prompt fast path is int8-only; --kv q4_0 runs prompts on the window path (M2)";
-        return false;
-    }
     static const int C = [] {
         const char* e = std::getenv("STRATA_METAL_PROMPT_CHUNK");
         return std::max(64, std::min(8192, e ? std::atoi(e) : 2048));

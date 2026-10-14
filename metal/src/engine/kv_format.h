@@ -56,7 +56,7 @@ inline std::string qsa_prep_key(bool mrope, bool q4) {
     return k;
 }
 
-// qsa_attn and qsa_merge (decode and MTP alike): their only format-sensitive arm is q4 (fc 25).
+// qsa_attn and qsa_merge (decode, MTP and both prompt chains alike): their only format-sensitive arm is q4 (fc 25).
 inline mtl::Constants qsa_q4_constants(bool q4) { return q4 ? mtl::Constants().b(25, true) : mtl::Constants(); }
 inline std::string qsa_q4_key(const char* fn, bool q4) {
     std::string k = fn;
@@ -64,9 +64,28 @@ inline std::string qsa_q4_key(const char* fn, bool q4) {
     return k;
 }
 
-// a q4 prompt takes the window slow path (8 rows at a time through the decode window, M1-b): the fast prompt
-// kernels (qsa_prompt.metal's qsa_attn_mm / qsa_flash) read the int8 pool layout and would misread the q4 pools'
-// bytes as codes.  Slow but correct q4, never silent int8; the fused fast q4 prompt variants are milestone M2.
-inline bool prompt_fast_path(bool q4) { return !q4; }
+// the prompt chains' matrix-unit attention (qsa_prompt.metal's qsa_attn_mm / qsa_flash, M2-b): fc 7 is the M5's
+// right-input layout, the SITE's own choice (attn_mm's arm is the k4 one, flash as probed) - bound unconditionally,
+// for is_function_constant_defined defaults it to true when left out; fc 25 is the KV format.  One Constants set,
+// and the key is the site's today-literal plus "#q4" (fc 7 stays out of flash's key as today: one process probes
+// one layout, so that constant cannot go stale in the cache - the format can, which is what the #q4 tag fixes).
+inline mtl::Constants qsa_prompt_mm_constants(bool fc7, bool q4) {
+    mtl::Constants c;
+    c.b(7, fc7);
+    if (q4) c.b(25, true);
+    return c;
+}
+inline std::string qsa_prompt_mm_key(const char* today, bool q4) {
+    return q4 ? std::string(today) + "#q4" : std::string(today);
+}
+
+// the prompt fast path runs in EVERY format (M2-b): the chains' prep / attn / attn_mm / flash / merge dispatches
+// are format-aware through this file (the format in the key and the Constants both), over the fc-25 kernel arms.
+// Kept as the one switch point the arena and prompt_run_rows read; STRATA_METAL_PROMPT=window still forces the
+// decode window's path for any format.
+inline bool prompt_fast_path(bool q4) {
+    (void) q4;
+    return true;
+}
 
 }  // namespace strata::metal_engine

@@ -1,6 +1,7 @@
 // metal/tests/kv_format_test.cpp - the engine's K/V format wiring (src/engine/kv_format.h, M1-b: --kv q4_0 real on
-// Metal) pinned at dispatch level: the pool sizes by format, the startup format check (k8v4's explicit error), the
-// qsa pipeline key / Constants composition, the prompt-path choice - and, with a real context, the STALE-KEY TRAP
+// Metal; M2-b: the prompt chains format-aware) pinned at dispatch level: the pool sizes by format, the startup
+// format check (k8v4's explicit error), the qsa pipeline key / Constants composition (decode, MTP and both prompt
+// chains), the prompt-path choice - and, with a real context, the STALE-KEY TRAP
 // behaviorally: Window::P() looks the key up first, so a key that left the format out would hand back the cached
 // int8 specialization of the same function to run over q4 pools.  The engine's own pools cannot be allocated in
 // tree (Window::init needs the model), so this drives the one source both use - kv_format.h - under the engine's
@@ -70,12 +71,27 @@ int main() {
                   qsa_q4_key("qsa_merge", true) == "qsa_merge#q4", "attn/merge keys carry #q4 when on");
         check(qsa_q4_constants(false).vals.empty() && has(qsa_q4_constants(true), 25, 1, 1) &&
                   qsa_q4_constants(true).vals.size() == 1, "attn/merge constants: fc 25 when on, empty when off");
+        // the prompt chains' mm sites (M2-b): today's literals plus #q4, the layout's fc 7 always bound (its MSL
+        // default is TRUE when left out, so a !k4 flash must set it false, not drop it)
+        check(qsa_prompt_mm_key("qsa_attn_mm#k4", false) == "qsa_attn_mm#k4" && qsa_prompt_mm_key("qsa_flash", false) == "qsa_flash",
+              "the mm keys without q4 are today's literals (both chains' caches unchanged)");
+        check(qsa_prompt_mm_key("qsa_attn_mm#k4", true) == "qsa_attn_mm#k4#q4" && qsa_prompt_mm_key("qsa_flash", true) == "qsa_flash#q4",
+              "the mm keys carry #q4 when on");
+        check(has(qsa_prompt_mm_constants(true, false), 7, 1, 1) && qsa_prompt_mm_constants(true, false).vals.size() == 1,
+              "attn_mm's constants without q4: fc 7 true only (today's call)");
+        check(has(qsa_prompt_mm_constants(false, false), 7, 1, 0) && qsa_prompt_mm_constants(false, false).vals.size() == 1,
+              "flash without the k4 layout or q4: fc 7 FALSE, still bound (today's b(7, p.k4) call)");
+        check(has(qsa_prompt_mm_constants(true, true), 7, 1, 1) && has(qsa_prompt_mm_constants(true, true), 25, 1, 1) &&
+                  qsa_prompt_mm_constants(true, true).vals.size() == 2, "attn_mm + q4: fc 7 and fc 25 in one set");
+        check(has(qsa_prompt_mm_constants(false, true), 7, 1, 0) && has(qsa_prompt_mm_constants(false, true), 25, 1, 1) &&
+                  qsa_prompt_mm_constants(false, true).vals.size() == 2, "flash + q4 without the k4 layout: fc 7 false and fc 25");
     }
 
-    // ---- 4. the prompt-path choice: q4 prompts stay on the decode window (the fast kernels are int8-only)
+    // ---- 4. the prompt-path choice (M2-b): every format runs the fast prompt chains (format-aware keys), the env
+    //         hatches (STRATA_METAL_PROMPT=window and friends) still divert to the decode window
     {
         check(prompt_fast_path(false), "int8/fp16: the fast prompt paths as today");
-        check(!prompt_fast_path(true), "q4: the window slow path (qsa_attn_mm / qsa_flash must not see q4 pools)");
+        check(prompt_fast_path(true), "q4: the fast prompt paths too (the chains' dispatches carry the format)");
     }
 
     // ---- 5. the stale-key trap, behaviorally: the engine's lookup discipline over the real library
@@ -167,6 +183,33 @@ int main() {
         std::memset(vq4.ptr, 0xAA, (size_t) MAXC * q4b.pool);
         run(pmq, kq4, vq4, sc_none, sc_none, mtab);
         check(q4_zero_bits(vq4) == 0, "the mrope+q4 pipeline compiles and writes the same q4 pool bits");
+
+        // the PROMPT chains' own library and keys (M2-b): the same trap one file later.  The chains dispatch
+        // qsa_attn / qsa_merge (both) and qsa_attn_mm / qsa_flash (the matrix-unit sites) through these helpers,
+        // and a key without #q4 would hand them the cached int8 specialization over q4 pools.  Each pipeline
+        // creation compiles the exact constant set an engine site now binds; the fc-25 arms' NUMERICS over a full
+        // prompt geometry are qsa_prompt_parity's q4 cases (dispatched there, not here).
+        const int plib = cx.compile({"kv_q4.metal", "qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+        std::map<std::string, mtl::Pipeline> ppc;
+        auto PP = [&](const std::string& fn, const mtl::Constants& c, const std::string& key) -> const mtl::Pipeline* {
+            auto it = ppc.find(key);
+            if (it == ppc.end()) it = ppc.emplace(key, cx.pipeline(plib, fn, c)).first;
+            return &it->second;
+        };
+        const mtl::Pipeline* ca8 = PP("qsa_attn", qsa_q4_constants(false), qsa_q4_key("qsa_attn", false));
+        const mtl::Pipeline* ca4 = PP("qsa_attn", qsa_q4_constants(true), qsa_q4_key("qsa_attn", true));
+        check(ca4 != ca8 && ca4->handle != ca8->handle && ppc.size() == 2,
+              "a prompt chain's q4 attn key misses the cached int8 pipeline: a second specialization");
+        check(PP("qsa_attn", qsa_q4_constants(true), qsa_q4_key("qsa_attn", false)) == ca8,
+              "counterfactual: a prompt key without the format hands back the int8 pipeline (why every prompt key carries q4)");
+        const mtl::Pipeline* cm8 = PP("qsa_attn_mm", qsa_prompt_mm_constants(true, false), qsa_prompt_mm_key("qsa_attn_mm#k4", false));
+        const mtl::Pipeline* cm4 = PP("qsa_attn_mm", qsa_prompt_mm_constants(true, true), qsa_prompt_mm_key("qsa_attn_mm#k4", true));
+        check(cm4 != cm8 && cm4 != ca4 && cm4 != ca8 && ppc.size() == 4,
+              "attn_mm: the k4 key and the k4#q4 key are two specializations of the one function");
+        const mtl::Pipeline* cf4 = PP("qsa_flash", qsa_prompt_mm_constants(false, true), qsa_prompt_mm_key("qsa_flash", true));
+        check(cf4 != cm4 && ppc.size() == 5, "flash: its q4 key compiles the !k4 layout's constant set (fc 7 false) as its own");
+        const mtl::Pipeline* cg4 = PP("qsa_merge", qsa_q4_constants(true), qsa_q4_key("qsa_merge", true));
+        check(cg4 != ca4 && ppc.size() == 6, "merge: its q4 key is its own specialization");
     }
 
     std::printf("%s\n", fails ? "SOME FAILED" : "ALL PASS");
