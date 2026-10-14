@@ -968,8 +968,11 @@ live session, or one of the checkpoints it keeps in RAM (up to 6, ~118 MB each, 
 assistant turn and every 16K prompt tokens). A checkpoint is used only when the prompt starts with exactly its tokens
 and pictures. The oldest checkpoint - in practice the end of the system prompt, which every chat of the same client
 shares - is kept for good while the rest rotates by least recent use, so a NEW chat that shares that prefix starts
-reading after it instead of from token 0. A prompt read from the start is also checkpointed at the end of its system
-prompt when that is 2,048 tokens or more (engine 0.1.20; PR #62 + #65), so that root exists for agent clients with long
+reading after it instead of from token 0. "For good" holds only against prompts that share it: a prompt that shares
+none of it (for example another client's short request with its own system prompt) is read from token 0 over the
+same K/V, which drops every checkpoint, the root too, and the interrupted conversation comes back without a re-read
+only from a parked copy (the RAM cache or the disk tier below). A prompt read from the start is also checkpointed at
+the end of its system prompt when that is 2,048 tokens or more (engine 0.1.20; PR #62 + #65), so that root exists for agent clients with long
 system prompts and tool lists. Claude Code stamps its system prompt with a billing header that changes on every
 request (`cch=...`) and every session (the 4th part of `cc_version=`); the server pins both stamps (to `f`s, as
 llama.cpp does), so the system prompt and the tool list in front of it are the same prompt on every turn. Engine options: `--prompt-cache N` (0 = off), `--prompt-cache-every N`,
