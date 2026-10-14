@@ -281,6 +281,22 @@ the same experts again.  Measured on the same machine, same prompt, third run of
 | 0 | 5.5 tok/s | 4.9 tok/s |
 | auto (315 slots/layer, 26.3 GiB) | 11.9 tok/s | 9.0 tok/s |
 
+**Where a token's time goes, and why the first tokens are not the steady state.**  A conversation's routing
+starts by exploring and saturates: measured on the W7800, a 220-token run's per-token cache hit rate went
+**82% -> 90% -> 92.5% -> 98.8% -> 99.0%**, and the uploads per token fell from 400+ ms to **20-37 ms**.  In that
+state a token measures ~76-100 ms (~10-12 tok/s): the dense work 29 ms (Q8_0), the routed experts' FFN ~17 ms,
+the host's wait on that FFN ~19 ms, the hyper-connections ~7 ms, the trickle of first-time experts 20-37 ms,
+and the smaller kernels ~10 ms.  With the reads priced at zero the same parts sum to ~46 ms (~21 tok/s), so the
+remaining first-time experts are what stands between this machine and 16 tok/s.
+
+**The prefill is the same reads, all of them at once.**  A prompt's tokens route to experts the VRAM cache has
+never seen, and those are compulsory: measured, a 15-token prompt took 14-22 s (0.6-1.0 tok/s) with the pool's
+uploads at 113-2121 ms per token and its FFN at 1.8-3.6 ms.  The distinct experts of a 15-token prompt are
+~85% of the sum of its tokens' routes, so batching the prompt's experts would save that ~15% and nothing more;
+what makes the same model's prefill 447-966 tok/s on a 64 GB machine (docs/AMD_HIP_PERFORMANCE.md) is that its
+whole expert set is resident in RAM, not the batch size.  This model's experts are 45 GB and the machine has
+24.5 GiB of free VRAM plus ~20 GB of usable RAM, so they do not fit and the reads are structural.
+
 Two more passes after the cache:
 
 - **the dense GEMV** (`gemv_kernel`) recomputed each weight's window geometry (3 multiplies and two integer
@@ -328,6 +344,12 @@ not in the schedule.
   and the expert reads then come off the SATA SSD - measured 1132 MiB of disk reads for 8 tokens and
   ~500 ms/token of uploads against 14-27 ms.  `STRATA_EXL3_QUANT_THREADS` sets the quantizer's thread count and
   `STRATA_EXL3_DENSE=exl3` keeps the trellis.
+
+  **The bytes are also a cost on a machine whose reads are the bottleneck.**  The Q8_0 dense weights are 1.5 GiB
+  more than the trellis, and the expert cache is sized from what is free after them: 17 fewer slots per layer,
+  about 4.6% of the miss rate, which on a cold machine is ~41 MB/token of extra reads, ~130 ms at the SATA
+  SSD's 300 MB/s, against the 18 ms the faster GEMV saves.  `STRATA_EXL3_DENSE=exl3` is the arm for that
+  machine; the measured A/B is below.
 
   The bytes are the price and they land in the batched prefill, which reads the weights once per batch: the dense
   work of a 14-token prompt measures **20.5 ms against 31.6 ms** with Q8_0 (683.8 against 442.5 tok/s), the same
