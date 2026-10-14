@@ -70,6 +70,7 @@ from strata_control import vision_reader  # noqa: E402
 from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
+from serve import usage  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve import lifeline  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
@@ -3415,6 +3416,7 @@ class Service:
         from serve.prometheus import Latencies
         self.latencies = Latencies()                     # GET /metrics in Prometheus text: the latency histograms
         self.last_request_at = None                      # when a request last started or finished
+        self.usage = usage.Usage(None)                    # lifetime token statistics (off unless --usage-stats)
         self.started_at = time.time()
         self.instance_id = uuid.uuid4().hex
         self.status_lock = threading.Lock()
@@ -4087,7 +4089,7 @@ class Service:
                     | {"wallclock_s": r.get("wallclock_s", round(time.perf_counter() - r["_clock"], 3))}
                     for r in reversed(records)]
 
-    def metrics(self, all_requests=False) -> dict:
+    def metrics(self, all_requests=False, custom_from=None, custom_to=None) -> dict:
         """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, and
         the hardware (with a minute of history per series)."""
         with self.status_lock:
@@ -4137,8 +4139,10 @@ class Service:
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
-                "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
-                "hardware_static":
+                "requests_kept": len(hist), "totals": totals,
+                "usage": self.usage.view(now, (custom_from, custom_to)
+                                         if custom_from is not None and custom_to is not None else None),
+                "hardware": tel["now"], "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
 
     def prometheus(self) -> str:
@@ -4991,6 +4995,12 @@ class Service:
                             t["decode_ms"] += last.get("decode_ms") or 0.0
                             t["drafts_offered"] += last.get("drafts_offered") or 0
                             t["drafts_accepted"] += last.get("drafts_accepted") or 0
+                            # lifetime token statistics across restarts (off by default, --usage-stats)
+                            self.usage.record(prompt_tokens=seen, reused=last.get("reused") or 0,
+                                              output_tokens=n, prompt_ms=last.get("prompt_ms") or 0.0,
+                                              decode_ms=last.get("decode_ms") or 0.0,
+                                              drafts_offered=last.get("drafts_offered") or 0,
+                                              drafts_accepted=last.get("drafts_accepted") or 0)
                             ft0 = st.get("first_token")             # this request's own (#465: one per request)
                             self.latencies.observe(ft0 - started if ft0 else None, n,
                                                    (last.get("decode_ms") or 0.0) / 1000, time.time() - started)
@@ -5858,8 +5868,18 @@ def make_handler(svc: Service):
                         self.wfile.write(body)
                     return
                 if self._authorized():
-                    # the last 12 requests; `?requests=all` every one kept (the Monitor's "Show all", issue #35)
-                    self._json(200, svc.metrics(all_requests="requests=all" in self.path))
+                    # the last 12 requests; `?requests=all` every one kept (the Monitor's "Show all", issue #35);
+                    # `?from_ts=&to_ts=` (epoch seconds) add the Usage panel's custom date range (serve/usage.py)
+                    qs = parse_qs(urlsplit(self.path).query)
+                    cf, ct = (qs.get("from_ts") or [None])[0], (qs.get("to_ts") or [None])[0]
+                    try:
+                        cf, ct = float(cf), float(ct)
+                        custom = (cf, ct) if ct >= cf else None
+                    except (TypeError, ValueError):
+                        custom = None
+                    self._json(200, svc.metrics(all_requests="requests=all" in self.path,
+                                               custom_from=custom[0] if custom else None,
+                                               custom_to=custom[1] if custom else None))
                 return
             if path == "/v1/telemetry":
                 if self._authorized_telemetry():
@@ -7581,6 +7601,10 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
+    ap.add_argument("--usage-stats", action="store_true",
+                    help="keep lifetime request/token statistics in a JSON file beside the run config, so the "
+                         "Monitor can show lifetime and 1 day / 7 day / 30 day token counts across restarts "
+                         "(also \"usage_stats\": true in the config; off by default; counters only, no prompts)")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -7957,6 +7981,14 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     svc.backend = cfg.get("backend")                    # "hip": the AMD cards' readings come from sysfs (#301)
     if a.config:
         svc.config_path = a.config                      # #564: the web page's Settings view
+    if a.usage_stats or cfg.get("usage_stats") is True:
+        path = (Path(svc.config_path).with_suffix(".usage.json") if svc.config_path
+                else Path(os.environ.get("STRATA_USAGE_STATS", "strata-usage.json")))
+        svc.usage = usage.Usage(path)
+        if svc.usage.enabled:
+            usage.install_atexit(svc.usage)             # flush the counters on a normal exit
+            print(f"[strata] lifetime usage statistics on: counters only (no prompts or answers) kept in "
+                  f"{svc.usage.path.name}", flush=True)
     if a.config:                                        # the Chat settings shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
         try:
