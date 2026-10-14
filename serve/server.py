@@ -3552,7 +3552,7 @@ class Service:
         if effort:
             if api == "openai":
                 ctk = req.get("chat_template_kwargs") if isinstance(req.get("chat_template_kwargs"), dict) else {}
-                if not req.get("reasoning_effort") and not req.get("reasoning") and \
+                if req.get("reasoning_effort") in (None, "") and not req.get("reasoning") and \
                         "enable_thinking" not in ctk and "reasoning_effort" not in ctk:
                     req["reasoning_effort"] = effort
             elif not req.get("thinking") and not req.get("output_config"):
