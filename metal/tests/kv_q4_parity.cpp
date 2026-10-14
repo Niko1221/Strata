@@ -221,11 +221,12 @@ int main() {
         cmp_blocks("kv_append_q4_kernel host copy V", hpool_v, hv);
     }
 
-    // ---- 3. a 3-step append (grid.z), then the gather over that pool; the identity table the engine passes
+    // ---- 3. a 3-step append (grid.z), then the gather over that pool; a PERMUTED table, so the gather's
+    // page-table lookup is exercised too (the engine passes the identity on a Mac)
     {
         const int pages = 4, cells = pages * P, n_steps = 3;
         std::vector<int32_t> table(pages);
-        for (int i = 0; i < pages; ++i) table[i] = i;
+        for (int i = 0; i < pages; ++i) table[i] = (i * 3 + 1) % pages;   // a permutation
         mtl::Buffer table_b = cx.alloc(4 * pages), step_b = cx.alloc(4 * 4 * n_steps),
                     kcur = cx.alloc(4 * (size_t) n_steps * H * D), vcur = cx.alloc(4 * (size_t) n_steps * H * D),
                     kpool = cx.alloc((size_t) cells * H * ROW_BYTES), vpool = cx.alloc((size_t) cells * H * ROW_BYTES);
@@ -284,7 +285,7 @@ int main() {
         for (int i = 0; i < max_ids; ++i)
             for (int h = 0; h < H; ++h)
                 for (int t = 0; t < D; ++t) {
-                    const int64_t row = ((int64_t) idsv[i] / P * H + h) * P + idsv[i] % P;
+                    const int64_t row = ((int64_t) table[idsv[i] / P] * H + h) * P + idsv[i] % P;   // through the table
                     const block_q4_0* kb = (const block_q4_0*) (rk.data() + row * ROW_BYTES) + t / 32;
                     const block_q4_0* vb = (const block_q4_0*) (rv.data() + row * ROW_BYTES) + t / 32;
                     const int j = t % 32;
@@ -301,7 +302,7 @@ int main() {
 
     // ---- 4. the prompt batch kernel: T cells from pos0, into the pool, the host copy and the stage pool
     {
-        const int pages = 8, cells = pages * P, T = 17, pos0 = 5;
+        const int pages = 8, cells = pages * P, T = 17, pos0 = P - 8;   // crosses page 0 -> 1 inside one batch
         std::vector<int32_t> table(pages);
         for (int i = 0; i < pages; ++i) table[i] = (i * 3 + 5) % pages;
         mtl::Buffer table_b = cx.alloc(4 * pages), K = cx.alloc(4 * (size_t) T * H * D),

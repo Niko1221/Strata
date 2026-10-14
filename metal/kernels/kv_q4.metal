@@ -268,11 +268,6 @@ kernel void kv_gather_q4_kernel(device const uchar* k_q4 [[buffer(0)]], device c
 
 // ---- the engine twins: one argument struct at buffer 0 (strata/gpu/metal.hpp's dispatch(); the pointer fields
 // carry gpuAddress values).  Mirrored in metal/src/engine/kv_q4_host.cpp - keep field order and types in step.
-struct KvQ4Pools {
-    device uchar* k_q4;
-    device uchar* v_q4;
-};
-
 struct Fwht256Args {
     device const float* src;
     device float* dst;

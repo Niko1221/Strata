@@ -1,14 +1,16 @@
 // metal/src/engine/kv_q4_host.cpp - the include/strata/kernels/kv_q4.hpp entry points on Metal: the standalone
 // kernels of metal/kernels/kv_q4.metal, dispatched by name through the device runtime (strata/gpu/metal.hpp) on
 // the caller's stream.  The *_e twins of that file read one argument struct from buffer 0; the structs are
-// mirrored below - keep the field order and types in step (the static_asserts pin the sizes both sides compute).
-// Mac has no paging (unified memory): the engine passes the identity page table the caller hands us unchanged.
+// mirrored below - keep the field order and types in step (the static_asserts pin every field's offset and the
+// total size).  Mac has no paging (unified memory): the engine passes the identity page table the caller hands
+// us unchanged.
 #include "strata/gpu/metal.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/kv_stream.hpp"
 
 #include "mtl_rt.h"
 
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -16,7 +18,8 @@
 namespace strata::kernels {
 namespace {
 
-// metal/kernels/kv_q4.metal's engine-side argument structs, field for field.
+// the host-pool pair the kernels take (a null k_q4 means "no host copy"); the engine-side argument structs of
+// kv_q4.metal's *_e twins follow, field for field
 struct KvQ4Pools {
     uint8_t* k_q4;
     uint8_t* v_q4;
@@ -70,6 +73,33 @@ struct KvGatherArgs {
     int head_dim;
     int page_size;
 };
+// every field's offset, as MSL lays the same standard-layout declaration out: a reorder that keeps the total
+// size would otherwise dispatch garbage silently
+static_assert(offsetof(Fwht256Args, src) == 0 && offsetof(Fwht256Args, dst) == 8 &&
+                  offsetof(Fwht256Args, n_rows) == 16 && offsetof(Fwht256Args, scale) == 24,
+              "Fwht256Args no longer mirrors kv_q4.metal's Fwht256Args");
+static_assert(offsetof(KvAppendArgs, k_q4) == 0 && offsetof(KvAppendArgs, v_q4) == 8 &&
+                  offsetof(KvAppendArgs, table) == 16 && offsetof(KvAppendArgs, step) == 24 &&
+                  offsetof(KvAppendArgs, kcur) == 32 && offsetof(KvAppendArgs, vcur) == 40 &&
+                  offsetof(KvAppendArgs, host_k) == 48 && offsetof(KvAppendArgs, host_v) == 56 &&
+                  offsetof(KvAppendArgs, step_stride) == 64 && offsetof(KvAppendArgs, planes) == 68 &&
+                  offsetof(KvAppendArgs, kv_heads) == 72 && offsetof(KvAppendArgs, head_dim) == 76 &&
+                  offsetof(KvAppendArgs, page_size) == 80,
+              "KvAppendArgs no longer mirrors kv_q4.metal's KvAppendArgs");
+static_assert(offsetof(KvAppendBatchArgs, k_q4) == 0 && offsetof(KvAppendBatchArgs, v_q4) == 8 &&
+                  offsetof(KvAppendBatchArgs, table) == 16 && offsetof(KvAppendBatchArgs, K) == 24 &&
+                  offsetof(KvAppendBatchArgs, V) == 32 && offsetof(KvAppendBatchArgs, host_k) == 40 &&
+                  offsetof(KvAppendBatchArgs, host_v) == 48 && offsetof(KvAppendBatchArgs, stage_k) == 56 &&
+                  offsetof(KvAppendBatchArgs, stage_v) == 64 && offsetof(KvAppendBatchArgs, pos0) == 72 &&
+                  offsetof(KvAppendBatchArgs, kv_heads) == 80 && offsetof(KvAppendBatchArgs, head_dim) == 84 &&
+                  offsetof(KvAppendBatchArgs, page_size) == 88 && offsetof(KvAppendBatchArgs, is_v_grid) == 92,
+              "KvAppendBatchArgs no longer mirrors kv_q4.metal's KvAppendBatchArgs");
+static_assert(offsetof(KvGatherArgs, k_q4) == 0 && offsetof(KvGatherArgs, v_q4) == 8 &&
+                  offsetof(KvGatherArgs, table) == 16 && offsetof(KvGatherArgs, ids) == 24 &&
+                  offsetof(KvGatherArgs, step) == 32 && offsetof(KvGatherArgs, k_scratch) == 40 &&
+                  offsetof(KvGatherArgs, v_scratch) == 48 && offsetof(KvGatherArgs, kv_heads) == 56 &&
+                  offsetof(KvGatherArgs, head_dim) == 60 && offsetof(KvGatherArgs, page_size) == 64,
+              "KvGatherArgs no longer mirrors kv_q4.metal's KvGatherArgs");
 static_assert(sizeof(Fwht256Args) == 32 && sizeof(KvAppendArgs) == 88 && sizeof(KvAppendBatchArgs) == 96 &&
                   sizeof(KvGatherArgs) == 72,
               "the mirrored MSL argument structs of kv_q4.metal moved");
