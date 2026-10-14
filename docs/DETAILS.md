@@ -910,12 +910,26 @@ print(r.choices[0].message.content)
   `max_tokens` would run past the context is refused too (400); agents that always ask for their full output cap
   can instead get it shortened to the room left: add `"fit_max_tokens": true` to `strata-<model>.json` (or pass
   `--fit-max-tokens` to `serve/server.py`). A prompt that leaves no room at all is still refused.
+- **No fixed output cap.** An omitted output limit uses the remaining context. To keep a client (or shared Chat
+  settings) from imposing its own cap, set `"unlimited_output": true` in `strata-<model>.json` and restart the
+  server. This opt-in ignores `max_tokens`, `max_completion_tokens` and Responses' `max_output_tokens`, including
+  caps on MCP continuations. When the context fills, the server starts another native generation inside the
+  same response: it retains the original prompt, a small output opening and the newest output, and drops older
+  generated text from model memory to make room. The response stream and parser continue without restarting;
+  token accounting counts the original input once. This removes the total output-token cap, not the finite
+  context or hardware limits. Long continuations can lose earlier output details and require another prefill.
+  Generation ends when the model finishes, a stop string matches or the client cancels. Thinking budgets and
+  repetition protection still apply. `/metrics` shows the current context size and rollover count, separately
+  from total output. `/props` reports
+  `unlimited_output: true` and `n_predict: -1`; Responses reports no fixed `max_output_tokens`. Set it to false
+  (or remove it) and restart to respect client caps again. The terminal `chat.py` keeps its 4096-token default;
+  pass `--max-tokens 0` to use remaining context when this server setting is off.
 - **Model aliases** (0.1.32). `"aliases": ["qwen", "local-model"]` in `strata-<model>.json` lists the model under
   those names too in `/v1/models` (each with its own `id`, and in the model's `aliases`), like llama-server's
   `--alias`; a request naming one is answered under that name. Any other name is still served, as before.
 - **Model settings in the web page (0.1.39, #564).** The About tab's Model settings card shows and changes a few of
   the keys above in `strata-<model>.json`: the `sampling` defaults (temperature, top_p, top_k, min_p),
-  `reasoning_budget_tokens`, `fit_max_tokens`, `anthropic_thinking`, `effort_position`, `aliases`, `idle_unload_s`,
+  `reasoning_budget_tokens`, `fit_max_tokens`, `unlimited_output`, `anthropic_thinking`, `effort_position`, `aliases`, `idle_unload_s`,
   `lazy_load`, `engine_silence_s`, `api_monitor`, `open_browser` and `--vram-reserve-mib`. An empty field removes the
   key (its default). Every other key of the file stays as it is, the earlier file is kept as
   `strata-<model>.json.bak`, and the model uses the change from its next start. Only Strata's own page can save
@@ -2045,3 +2059,40 @@ under `compute-sanitizer --tool memcheck --error-exitcode 86`. Build with
 signal, early cleanup and `--errors` error-propagation checks. Its `--synchronous`
 mode is the negative control under memcheck: an eight-second watchdog releases
 the original launch/service deadlock and the test fails.
+
+## Persistent usage and GPU energy tracker
+
+Set `"usage_tracker": true` in the model run config to show the shared tracker beside the app-bar status and theme controls. It aggregates OpenAI chat, Anthropic messages and Responses requests reaching this Strata server, even when the web page is closed. Click the figures to edit input, output and cached-input prices in USD per million tokens, your electricity price per kWh, and its three-letter currency code (default USD). Saving prices revalues the accumulated totals; it does not retain a historical billing tariff for each request.
+
+Regular API value is `(input * input_rate + output * output_rate) / 1,000,000`. Cached input is part of input, not extra tokens. The separate cache-adjusted value substitutes the cached-input rate for the cached portion. Output includes reasoning and generated control tokens; rejected speculative drafts are not added. The default benchmark is [OpenRouter Qwen3.8 Flash pricing](https://openrouter.ai/qwen/qwen3.8-flash), checked 2026-10-13: $0.15 input, $0.47 output and $0.016 cache read per million. The local quantized Next Coder model is identified separately. This is an API-equivalent comparison, not a bill for local tokens.
+
+Active time measures the union of native inference and GPU image encoding intervals. Idle, FIFO queue, model loading and MCP tool execution are excluded. Cache-only image reuse incurs no GPU work. Energy uses NVML cumulative millijoules at interval boundaries where supported: `delta_mJ / 3,600,000,000 = kWh`. Otherwise, the tracker integrates sampled GPU watts over the active intervals: `mean_W * seconds / 3,600,000 = kWh`. Electricity cost is `kWh * your_tariff`. A missing configured GPU reading leaves that interval unmeasured; unavailable data is not reported as measured zero. This measures whole GPU-board energy during the active model interval; it does not measure CPU/RAM/PSU energy or separate another program using the same GPU at that instant.
+
+Counts, active time, measured energy and prices live in `<config stem>.usage.json`, saved atomically on request completion, rate edits, orderly close, and every five seconds of active work. Normal restarts preserve settled totals. An abrupt process kill may lose the unfinished request's tokens and the most recent work checkpoint. Existing session token and prompt/decode-time totals are imported once. Historical energy cannot be reconstructed; the panel shows measured coverage separately. Input counts displayed during generation are provisional until the engine settles the request, including partially read canceled prompts.
+
+Energy sampling runs on the server, independent of browser polling. No prompts or API keys are stored in the usage ledger, and the tracker makes no external requests to update prices automatically. Use the linked source and edit prices when needed.
+
+
+### Daily Usage screen, CPU runtime and profit
+
+Open the **Usage** tab for Today, a selected server-local date, or All time. The left app-bar **Total profit** button opens the all-time view. The screen shows token totals and their input/output/cache breakdown, regular API value, cache-adjusted value, CPU runtime, active model time, GPU energy, electricity cost and profit after energy. Daily history rows select that day. Edit prices opens the same shared editor as the right app-bar tracker.
+
+Profit in USD is `regular API value - electricity cost converted to USD`. It represents estimated API spending avoided, not payments earned. GPU energy gaps make this a partial estimate, labeled in the screen. Missing tariff, unavailable energy, or missing exchange rate leaves profit unavailable instead of fabricating a value. With USD electricity, no conversion is needed. With a different currency, set **Local currency per USD**; USD power cost is `local cost / units per USD`. Negative profit is supported. Changing rates revalues both daily and all-time history.
+
+CPU runtime is the increase in user + kernel CPU time for the model engine processes and vision encoder while inference is active, summed across cores. It can exceed elapsed model time. Host-wide CPU percentage, browser time, MCP tool processes, idle time and model loading are not CPU runtime. The optional psutil reader marks unavailable/restarted process counters as unmeasured; process lifetime identifiers prevent subtracting the previous engine's counters after a restart. Coverage is displayed alongside energy coverage.
+
+The ledger format is version 2. Version 1 totals are preserved in All time and an undated historical bucket; daily usage and CPU history are not invented for old work. Daily tracking starts with this update. Tokens belong to the local calendar day when the model call completes. Active time, CPU time and energy between samples are divided proportionally if an interval crosses local midnight. Server-local time and UTC offset are shown in the screen. A clock correction cannot invent elapsed work, which uses the monotonic clock. Normal restarts preserve dates, totals, manual rates and measurement coverage.
+
+The Usage cards also show prompt, output and cached token counts, cache hit percentage, average decode speed,
+live/last decode speed, and average GPU board power in watts. Average power divides measured energy by measured
+active time, excluding older intervals whose energy was not recorded. Decode averages likewise use only timed
+output, not all historical tokens. Zero measurement coverage is unavailable, not a fabricated zero rate.
+
+### Opt-in public API on Windows
+
+For authenticated HTTPS access from other devices, install Node.js and Tailscale, enable Tailscale Funnel, then
+set `"remote_access": true` in the run config and restart Strata on loopback port 8080. The local model server
+remains private; a separate API-key-protected gateway publishes only model and inference routes. A watchdog
+repairs owned gateway/tunnel failures and holds an app-scoped sleep guard while access is enabled. This setting
+is off by default. See [remote-access/README.md](../remote-access/README.md) for prerequisites, generated editor
+settings, stopping, key rotation and recovery limits. Do not commit the generated credentials or usage ledger.

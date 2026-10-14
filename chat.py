@@ -39,7 +39,8 @@ def main() -> int:
     ap.add_argument("--think", default="medium", choices=["none", "low", "medium", "high"],
                     help="how long the model thinks before answering (none = answer directly)")
     ap.add_argument("--no-think", action="store_true", help="same as --think none")
-    ap.add_argument("--max-tokens", type=int, default=4096)
+    ap.add_argument("--max-tokens", type=int, default=4096,
+                    help="output cap (default: 4096; 0 = use the remaining context until the model finishes)")
     a = ap.parse_args()
     url = f"http://{a.host}:{a.port}/v1/chat/completions"
     gray, reset = ("\033[90m", "\033[0m") if sys.stdout.isatty() else ("", "")
