@@ -1997,8 +1997,11 @@ server says so once.
 This is **schema prompting followed by server validation**, not grammar-constrained decoding. One generation
 is made per request, with no hidden retry. Successful responses contain a validated JSON object. Malformed JSON,
 duplicate keys, non-finite numbers, schema violations and incomplete generations return **502** with
-`error.code: structured_output_failed`; invalid request schemas return **400**. JSON formats combined with
-tools/MCP are refused explicitly. Without `response_format`, ordinary text and tool behavior stays the same.
+`error.code: structured_output_failed`; invalid request schemas return **400**. With `tools`, the schema is for
+the final answer only, as on `/v1/responses`: a turn that calls a tool streams as it does without the format
+(words written before the call go out ahead of it), and the turn that ends in text is validated as above. JSON
+formats combined with MCP are refused explicitly. Without `response_format`, ordinary text and tool behavior stays
+the same.
 
 Structured SSE buffers the answer while sending keep-alive comments. It emits content only after validation,
 then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without invalid content deltas.
