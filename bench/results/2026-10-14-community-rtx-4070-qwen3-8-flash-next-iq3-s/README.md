@@ -1,10 +1,11 @@
-# Community benchmark on NVIDIA GeForce RTX 4070
+# Community benchmark — RTX 4070 in Thunderbolt 4 eGPU — 2026-10-14
 
 Measured on 2026-10-14 with `tools/strata_bench.py` (suite 1, 3 runs per test, medians with ranges). Speeds are the engine's own timings; first-token times are measured by the client over HTTP. Speed only: no correctness check was run.
 
 ## Hardware and software
 
 - GPU and VRAM: NVIDIA GeForce RTX 4070, 12 GiB VRAM
+- PCIe link to GPU: Thunderbolt 4 eGPU enclosure (~PCIe 4.0 x4 equivalent); the card is not in a motherboard slot
 - CPU: 12th Gen Intel(R) Core(TM) i9-12950HX (16 cores, 24 threads); installed RAM: 62.5 GiB; storage: not measured
 - OS: Linux 7.2.9-2-cachyos; GPU driver: 580.178.04; CUDA: 13.0
 - Strata: project 0.1.44.1, commit 296b59d2; engine 0.1.44.1
@@ -58,3 +59,5 @@ Per-request data: `results.json`. Engine log lines from the start: `engine-log-e
 ## Correctness and limitations
 
 Not measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; background load and power limits are not recorded. Total time of the suite: 543 s.
+
+The GPU hangs off a Thunderbolt 4 link (~PCIe 4.0 x4), so the host-to-device path is much narrower than a desktop slot. For this run the engine's own calibration kept the PCIe share small (`pcie_frac` 0.08 in `results.json`), i.e. little expert traffic crosses the link; Strata's expert cache mostly reads what already sits in the 12 GiB of VRAM. What fraction of the prompt rate a wider slot would give was not measured.
