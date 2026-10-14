@@ -4083,6 +4083,17 @@ class Service:
                                 hit_msg += f" (+{pcie_share*100:.1f}% of the routed experts over PCIe)"
                             print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
+                            if cancel.is_set():      # ★ P27：取消归因（谁 / 等了多久 / 读到哪）
+                                _arr = getattr(self, "req_arrive", None)
+                                _st = st.get("started")
+                                _w = (_st - _arr) if (_arr and _st) else None
+                                _rd = st.get("prompt_tokens") or st.get("read") or st.get("prompt_read")
+                                _tot = st.get("prompt_total") or st.get("total") or st.get("prompt")
+                                print("[strata] cancelled: %s waited=%s served=%.1fs read=%s of=%s" % (
+                                    getattr(self, "req_who", "?") ,
+                                    ("%.1fs" % _w) if _w is not None else "?",
+                                    el, _rd if _rd is not None else "?", _tot if _tot is not None else "?"),
+                                    flush=True)
                             if finish == "length" and parser.state in ("reasoning", "rcall"):   # #530
                                 print("[strata] the reply reached max tokens while still thinking, so it has no "
                                       "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
@@ -4651,6 +4662,16 @@ def make_handler(svc: Service):
                     raise BadBody(400, "malformed chunked request body")
 
         def _body(self) -> bytes:
+            # ★ P27（2026-10-14）：记下"到达"时刻与调用方标识，供取消时归因
+            try:
+                self.req_arrive = time.time()
+                self.req_who = "ip=%s host=%s origin=%s ua=%s" % (
+                    (self.client_address[0] if getattr(self, "client_address", None) else "-"),
+                    self.headers.get("Host", "-"), self.headers.get("Origin", "-"),
+                    (self.headers.get("User-Agent", "-") or "-")[:48])
+            except Exception:
+                self.req_arrive = None
+                self.req_who = "?"
             self.body_read = True
             limit = body_limit()
             if self._chunked():
