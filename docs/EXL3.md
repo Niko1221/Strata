@@ -304,6 +304,14 @@ measured, **18.52 GiB free -> 216 slots/layer before, 25.28 GiB -> 297 after**. 
 200-token run, the last 30 tokens) went from a 97.4 ms pool to 83.1 ms (the expert uploads 76.2 -> 62.0 ms),
 and a 15-token prompt from 14.0 s to 12.2 s.
 
+**Four kernels fewer, folded into their neighbours.**  The three `cudaMemsetAsync` that zero the GEMV's
+accumulator now ride along in the prescale that already runs immediately before it on the same stream (one
+strided store per thread), and the accumulator's f32 buffer, which nothing else read, is written as the f16
+output in the same kernel.  Measured with `strata-exl3-moe` on layer 0: at k=1, 0.108 -> 0.093 ms/layer
+(-14%); at k=10 the runs overlap (0.297-0.346 against 0.308-0.332), so it is kept for the small-k calls the
+engine's split actually makes (k=3 and k=7 per layer) and for the four fewer launches.  Parity unchanged
+(`layer 0 MoE (10 experts): rel=1.003e-03 max=7.021e-06 OK`).
+
 **What the expert FFN's time is made of, and two things that did not work.**  `strata-exl3-moe` on layer 0 at
 k = 1, 2, 5, 10 measures 0.108, 0.130, 0.214, 0.332 ms/layer, so the marginal cost is 0.0249 ms per expert and
 the **fixed part is 0.083 ms/layer, 25% of it**: the memsets, the silu and the accumulators are ~6 small

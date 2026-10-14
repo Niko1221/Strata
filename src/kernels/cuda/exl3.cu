@@ -375,9 +375,19 @@ __global__ void f16_to_f32_kernel(const uint16_t* __restrict__ h, float* __restr
 // concurrently inside one kernel and cuts the launch count from 14/expert to ~14/layer.
 
 __global__ void prescale_batched_kernel(const uint16_t* __restrict__ x, long x_stride,
-                                        const Exl3Mat* __restrict__ mats, float* __restrict__ xh, int k) {
+                                        const Exl3Mat* __restrict__ mats, float* __restrict__ xh, int k,
+                                        float* __restrict__ zero, long nz) {
     __shared__ float b[HAD];
     int e = blockIdx.y, t = threadIdx.x, idx = blockIdx.x * HAD + t;
+    // **THE ZEROING RIDES ALONG WITH THE PRESCALE.**  The GEMV accumulates with atomics, so its output must be
+    // zeroed first, and that was a `cudaMemsetAsync` of its own: a small kernel costs ~14 us of launch and
+    // execution, measured as part of the expert FFN's 0.083 ms/layer fixed cost (a quarter of the whole).
+    // The prescale already runs immediately before the GEMV on the same stream, so the zeroing is one more
+    // strided store here.
+    if (zero != nullptr) {
+        const long stride = (long) gridDim.x * gridDim.y * HAD;
+        for (long i = (long) (blockIdx.y * gridDim.x + blockIdx.x) * HAD + t; i < nz; i += stride) zero[i] = 0.0f;
+    }
     b[t] = dh2f(x[e * x_stride + idx]) * dh2f(mats[e].suh[idx]);
     __syncthreads();
     for (int step = 1; step < HAD; step <<= 1) {
@@ -475,13 +485,13 @@ __global__ void silu_batched_kernel(const uint16_t* __restrict__ g, const uint16
     h[i] = __half_as_ushort(__float2half_rn(s * __half2float(__ushort_as_half(u[i]))));
 }
 
-__global__ void accum_batched_kernel(const uint16_t* __restrict__ d, const float* __restrict__ weights,
-                                     int n_experts, int n, float* __restrict__ acc) {
+__global__ void accum_out_kernel(const uint16_t* __restrict__ d, const float* __restrict__ weights,
+                                 int n_experts, int n, uint16_t* __restrict__ out) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     float s = 0;
     for (int e = 0; e < n_experts; ++e) s += weights[e] * __half2float(__ushort_as_half(d[(long)e * n + i]));
-    acc[i] = s;
+    out[i] = __half_as_ushort(__float2half_rn(s));
 }
 
 }  // namespace
@@ -535,17 +545,14 @@ uint16_t* moe_run_experts(const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat*
     if (!d_pinv) { if (cudaMalloc((void**)&d_pinv, 256 * 4)) std::abort(); int pinv[256]; build_pinv(pinv); (void)cudaMemcpy(d_pinv, pinv, 256 * 4, cudaMemcpyHostToDevice); }
     int gy_g = (gate[0].ki + 15) / 16; if (gy_g < 1) gy_g = 1;
     int gy_d = (down[0].ki + 15) / 16; if (gy_d < 1) gy_d = 1;
-    prescale_batched_kernel<<<dim3(k / HAD, n_experts), HAD, 0, st>>>(x, 0, d_gate, d_xh, k);
-    (void)cudaMemsetAsync(d_z, 0, (size_t)n_experts * ff * 4, st);
+    prescale_batched_kernel<<<dim3(k / HAD, n_experts), HAD, 0, st>>>(x, 0, d_gate, d_xh, k, d_z, (long) n_experts * ff);
     gemv_batched_kernel<GEMV_T><<<dim3((ff / 16 + GEMV_T - 1) / GEMV_T, gy_g, n_experts), 256, 0, st>>>(d_xh, d_gate, d_pinv, d_z);
     postscale_batched_kernel<<<dim3(ff / HAD, n_experts), HAD, 0, st>>>(d_z, d_gate, d_g, ff);
-    prescale_batched_kernel<<<dim3(k / HAD, n_experts), HAD, 0, st>>>(x, 0, d_up, d_xh, k);
-    (void)cudaMemsetAsync(d_z, 0, (size_t)n_experts * ff * 4, st);
+    prescale_batched_kernel<<<dim3(k / HAD, n_experts), HAD, 0, st>>>(x, 0, d_up, d_xh, k, d_z, (long) n_experts * ff);
     gemv_batched_kernel<GEMV_T><<<dim3((ff / 16 + GEMV_T - 1) / GEMV_T, gy_g, n_experts), 256, 0, st>>>(d_xh, d_up, d_pinv, d_z);
     postscale_batched_kernel<<<dim3(ff / HAD, n_experts), HAD, 0, st>>>(d_z, d_up, d_u, ff);
     { long tot = (long)n_experts * ff; silu_batched_kernel<<<(unsigned)((tot + 255) / 256), 256, 0, st>>>(d_g, d_u, d_h, tot); }
-    prescale_batched_kernel<<<dim3(ff / HAD, n_experts), HAD, 0, st>>>(d_h, ff, d_down, d_xh, ff);
-    (void)cudaMemsetAsync(d_z, 0, (size_t)n_experts * n * 4, st);
+    prescale_batched_kernel<<<dim3(ff / HAD, n_experts), HAD, 0, st>>>(d_h, ff, d_down, d_xh, ff, d_z, (long) n_experts * n);
     gemv_batched_kernel<GEMV_T><<<dim3((n / 16 + GEMV_T - 1) / GEMV_T, gy_d, n_experts), 256, 0, st>>>(d_xh, d_down, d_pinv, d_z);
     postscale_batched_kernel<<<dim3(n / HAD, n_experts), HAD, 0, st>>>(d_z, d_down, d_d, n);
     return d_d;
@@ -563,8 +570,8 @@ void exl3_moe_ffn(const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat* down, c
     if (n > ca) { (void)cudaFree(d_acc); d_acc = nullptr; if (cudaMalloc((void**)&d_acc, (size_t)n * 4)) std::abort(); ca = n; }
     if (n_experts > cw) { (void)cudaFree(d_weights); d_weights = nullptr; if (cudaMalloc((void**)&d_weights, (size_t)n_experts * 4)) std::abort(); cw = n_experts; }
     (void)cudaMemcpyAsync(d_weights, weights, (size_t)n_experts * 4, cudaMemcpyHostToDevice, st);
-    accum_batched_kernel<<<(n + 255) / 256, 256, 0, st>>>(d_d, d_weights, n_experts, n, d_acc);
-    f32_to_f16_out_kernel<<<(n + 255) / 256, 256, 0, st>>>(d_acc, out, n);
+    // one kernel, not two: the accumulator's f32 buffer is never read by anything else
+    accum_out_kernel<<<(n + 255) / 256, 256, 0, st>>>(d_d, d_weights, n_experts, n, out);
 }
 
 void exl3_moe_rows_part(const Exl3Mat* gate, const Exl3Mat* up, const Exl3Mat* down, int k, const uint16_t* x,
