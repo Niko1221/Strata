@@ -1,20 +1,20 @@
-// metal/tests/kv_q4_parity.cpp - bit-level parity of the kv_q4.metal kernels (M0-p) against a CPU reference that
-// replicates the DEVICE arithmetic exactly: the same fwht register butterfly, the same group-maximum tie rule
-// (a tie in |x| resolves to the LARGER value in every lane - not the first strict maximum of
-// src/kernels/kv_q4_parity.cpp:68), the same int(fma(x, id, 8.5f)) contraction and the same software
-// round-to-nearest-even f32 -> f16 bits (include/strata/kernels/f16_bits.hpp, included here so both sides share
-// one definition of it).
+// metal/tests/kv_q4_parity.cpp - bit-level parity of the kv_q4.metal kernels (M0-p) against the CPU reference of
+// kv_q4_ref.h, which replicates the DEVICE arithmetic exactly (the same fwht register butterfly, the same
+// group-maximum tie rule, the same int(fma(x, id, 8.5f)) contraction and the same software round-to-nearest-even
+// f32 -> f16 bits).
 //
 // Cases: fwht256 (whole-buffer equality, plus the H * H = I sanity at 1e-5), the single-step append with tie
-// blocks in the rotated domain (x = {v, -v, ...} across and within lanes, one +v among -v, all equal) and a
-// permuted page table, a 3-step append (grid.z, K and V pools apart), the prompt batch kernel with the host and
-// stage pools, the composite raw -> device fwht -> device quantize chain (the input is NOT pre-rotated), and the
-// gather into fp16 scratch.  Fixed RNG (ref::Rng); this Mac is its own reference - nothing compares against
-// another machine's bytes.
+// blocks in the rotated domain (x = {v, -v, ...} across and within lanes, one +v among -v, all equal), an
+// all-zero group (d = -0.0 -> scale bits 0x8000, id = 0 -> q = trunc(8.5) = 8) and a permuted page table, a
+// 3-step append (grid.z, K and V pools apart) over the amplitude classes 1e-3 / 40 / 1 of
+// src/kernels/kv_steps_parity.cpp:80, the prompt batch kernel with the host and stage pools, the composite raw
+// -> device fwht -> device quantize chain (the input is NOT pre-rotated), and the gather into fp16 scratch.
+// Fixed RNG (ref::Rng); this Mac is its own reference - nothing compares against another machine's bytes.
 #include "mtl_rt.h"
 #include "ref_quant.h"
 
 #include "../../include/strata/kernels/f16_bits.hpp"
+#include "kv_q4_ref.h"
 
 #include <algorithm>
 #include <cmath>
@@ -24,113 +24,24 @@
 #include <vector>
 
 namespace k = strata::kernels;
+using namespace kvq4ref;
 
-namespace {
-
-// include/strata/kernels/kv_q4.hpp's block (18 packed bytes): the tests' include path has no repo include/, and
-// the MSL file carries its own copy too
-#pragma pack(push, 1)
-struct block_q4_0 {
-    uint16_t d;
-    uint8_t qs[16];
-};
-#pragma pack(pop)
-static_assert(sizeof(block_q4_0) == 18, "block_q4_0 must be 18 bytes");
-
-constexpr int H = 2, D = 256, P = 64, BPH = D / 32, ROW_BYTES = BPH * 18;  // kv heads, head dim, page size
 int g_fail = 0;
-
-// the device fwht, one row per (imaginary) simdgroup: 32 lanes x 8 registers, the low 5 index bits across lanes
-// (the xor exchange reads every lane's pre-step values), the high 3 within each lane's registers - the kernel's
-// exact order, so equal floats in give equal bits out.
-void fwht256_ref(const float* src, float* dst, int64_t n_rows) {
-    constexpr float scale = 1.0f / 16.0f;
-    for (int64_t r = 0; r < n_rows; ++r) {
-        float reg[32][8];
-        for (int lane = 0; lane < 32; ++lane)
-            for (int i = 0; i < 8; ++i) reg[lane][i] = src[r * 256 + i * 32 + lane] * scale;
-        for (int h = 1; h < 32; h *= 2) {
-            for (int j = 0; j < 8; ++j) {
-                float vals[32];
-                for (int lane = 0; lane < 32; ++lane) vals[lane] = reg[lane][j];   // what the shuffle reads
-                for (int lane = 0; lane < 32; ++lane) {
-                    const float val = vals[lane], val2 = vals[lane ^ h];
-                    reg[lane][j] = (lane & h) == 0 ? val + val2 : val2 - val;
-                }
-            }
-        }
-        for (int h = 32; h < 256; h *= 2) {
-            const int step = h / 32;
-            for (int j = 0; j < 8; j += 2 * step)
-                for (int kk = 0; kk < step; ++kk)
-                    for (int lane = 0; lane < 32; ++lane) {
-                        const float x = reg[lane][j + kk], y = reg[lane][j + kk + step];
-                        reg[lane][j + kk] = x + y;
-                        reg[lane][j + kk + step] = x - y;
-                    }
-        }
-        for (int lane = 0; lane < 32; ++lane)
-            for (int i = 0; i < 8; ++i) dst[r * 256 + i * 32 + lane] = reg[lane][i];
-    }
-}
-
-// one 32-value block, the device tie rule: butterflies over xor offsets 16, 8, 4, 2, 1 of (amax, mval), taking
-// the partner's pair when it is strictly larger in |x|, or equal in |x| and larger in value.
-void q4_block_ref(const float* x, block_q4_0& blk) {
-    float amax[32], mval[32];
-    for (int t = 0; t < 32; ++t) {
-        amax[t] = std::fabs(x[t]);
-        mval[t] = x[t];
-    }
-    for (int o = 16; o > 0; o >>= 1) {
-        float a2[32], v2[32];
-        for (int t = 0; t < 32; ++t) {
-            a2[t] = amax[t ^ o];
-            v2[t] = mval[t ^ o];
-        }
-        for (int t = 0; t < 32; ++t)
-            if (a2[t] > amax[t] || (a2[t] == amax[t] && v2[t] > mval[t])) {
-                amax[t] = a2[t];
-                mval[t] = v2[t];
-            }
-    }
-    const float d = mval[0] / -8.0f;   // every lane converged to the same pair
-    const float id = d != 0.0f ? 1.0f / d : 0.0f;
-    blk.d = k::f16_from_f32(d);
-    for (int t = 0; t < 16; ++t) {
-        const int q0 = (int) std::fma(x[t], id, 8.5f);
-        const int q1 = (int) std::fma(x[t + 16], id, 8.5f);
-        const uint8_t c0 = (uint8_t) (q0 < 0 ? 0 : (q0 > 15 ? 15 : q0));
-        const uint8_t c1 = (uint8_t) (q1 < 0 ? 0 : (q1 > 15 ? 15 : q1));
-        blk.qs[t] = (uint8_t) (c0 | (c1 << 4));
-    }
-}
-
-// one cell's K row and V row (H * D floats each, already rotated) into their pools at `pos`: through the page
-// table for the device pools, the identity layout for the host / stage copies.  A null row leaves its pool alone.
-void append_cell_ref(const float* kcell, const float* vcell, const std::vector<int32_t>& table,
-                     std::vector<uint8_t>& kpool, std::vector<uint8_t>& vpool, bool identity_rows, int64_t pos) {
-    for (int h = 0; h < H; ++h)
-        for (int b = 0; b < BPH; ++b) {
-            const int64_t page = table[pos / P];
-            const int64_t row = identity_rows ? ((pos / P) * H + h) * P + pos % P
-                                              : ((page * H + h) * P + pos % P);
-            if (kcell) q4_block_ref(kcell + (int64_t) h * D + b * 32, *(block_q4_0*) (kpool.data() + row * ROW_BYTES + b * 18));
-            if (vcell) q4_block_ref(vcell + (int64_t) h * D + b * 32, *(block_q4_0*) (vpool.data() + row * ROW_BYTES + b * 18));
-        }
-}
 
 void cmp_blocks(const char* what, const mtl::Buffer& got, const std::vector<uint8_t>& ref) {
     long bad = 0;
+    size_t first = (size_t) -1;
     const size_t n = std::min(got.bytes, ref.size());
     for (size_t off = 0; off + 18 <= n; off += 18)
-        if (std::memcmp((const uint8_t*) got.ptr + off, ref.data() + off, 18) != 0) ++bad;
+        if (std::memcmp((const uint8_t*) got.ptr + off, ref.data() + off, 18) != 0) {
+            if (first == (size_t) -1) first = off;
+            ++bad;
+        }
     if (got.bytes != ref.size()) ++bad;
     std::printf("  %-38s %6ld 18-byte blocks differ of %zu  %s\n", what, bad, n / 18, bad ? "FAIL" : "PASS");
+    if (first != (size_t) -1) std::printf("    first differing block %zu (byte offset %zu)\n", first / 18, first);
     g_fail += bad != 0;
 }
-
-}  // namespace
 
 int main() {
     mtl::Context cx;
@@ -174,7 +85,8 @@ int main() {
         g_fail += worst >= 1e-5;
     }
 
-    // ---- 2. the single-step append: tie blocks in the ROTATED domain, a permuted page table, the host copy
+    // ---- 2. the single-step append: tie blocks and an all-zero group in the ROTATED domain, a permuted page
+    // table, the host copy
     {
         const int pages = 8, cells = pages * P;
         std::vector<int32_t> table(pages);
@@ -194,6 +106,7 @@ int main() {
         // the tie fixtures, written into the rotated rows the quantizer actually sees
         for (int i = 0; i < 32; ++i) kk[i] = (i & 1) ? -1.5f : 1.5f;        // +/-v alternating: cross-lane ties
         for (int i = 32; i < 64; ++i) kk[i] = (i == 49) ? 0.75f : -0.75f;   // one +v among -v
+        for (int i = 64; i < 96; ++i) kk[i] = 0.0f;                         // an all-zero group (head 0, block 2)
         for (int i = 0; i < 32; ++i) vv[i] = -2.25f;                        // all equal (a negative winner)
         for (int i = 32; i < 64; ++i) vv[i] = 2.25f;                        // all equal, positive
         std::memcpy(kcur.as<float>(), kk.data(), kk.size() * 4);
@@ -219,10 +132,20 @@ int main() {
         cmp_blocks("kv_append_q4_kernel V (ties, table)", vpool, rv);
         cmp_blocks("kv_append_q4_kernel host copy K", hpool_k, hk);
         cmp_blocks("kv_append_q4_kernel host copy V", hpool_v, hv);
+        // the all-zero group's documented bits, off the device pool: d = 0 / -8 = -0.0 -> scale bits 0x8000,
+        // id = 0 -> q = trunc(8.5) = 8 -> every qs byte 0x88
+        const int64_t zrow = ((int64_t) table[pos / P] * H + 0) * P + pos % P;
+        const block_q4_0* zb = (const block_q4_0*) (kpool.as<const uint8_t>() + zrow * ROW_BYTES) + 2;
+        int zbad = zb->d != 0x8000;
+        for (int t = 0; t < 16; ++t) zbad += zb->qs[t] != 0x88;
+        std::printf("  %-38s d = 0x%04x, qs bytes 0x88           %s\n", "kv_append_q4 all-zero group", zb->d,
+                    zbad ? "FAIL" : "PASS");
+        g_fail += zbad != 0;
     }
 
-    // ---- 3. a 3-step append (grid.z), then the gather over that pool; a PERMUTED table, so the gather's
-    // page-table lookup is exercised too (the engine passes the identity on a Mac)
+    // ---- 3. a 3-step append (grid.z) over the amplitude classes 1e-3 / 40 / 1, then the gather over that pool;
+    // a PERMUTED table, so the gather's page-table lookup is exercised too (the engine passes the identity on a
+    // Mac)
     {
         const int pages = 4, cells = pages * P, n_steps = 3;
         std::vector<int32_t> table(pages);
@@ -234,9 +157,10 @@ int main() {
         std::vector<float> kk((size_t) n_steps * H * D), vv((size_t) n_steps * H * D);
         const std::vector<int32_t> poss{1 * P + 3, 2 * P + 33, 0 * P + 61};
         for (int s = 0; s < n_steps; ++s) {
+            const float scale = s == 0 ? 1e-3f : (s == 1 ? 40.0f : 1.0f);   // kv_steps_parity.cpp:80's classes
             for (size_t i = 0; i < (size_t) H * D; ++i) {
-                kk[s * H * D + i] = r.sym() * 2.0f;
-                vv[s * H * D + i] = r.sym();
+                kk[s * H * D + i] = r.sym() * 2.0f * scale;
+                vv[s * H * D + i] = r.sym() * scale;
             }
             fwht256_ref(kk.data() + s * H * D, kk.data() + s * H * D, H);
             fwht256_ref(vv.data() + s * H * D, vv.data() + s * H * D, H);
@@ -352,11 +276,12 @@ int main() {
         cmp_blocks("kv_append_q4_batch_kernel stage V", spool_v, sv);
     }
 
-    // ---- 5. the composite chain: raw (unrotated) K and V -> one device fwht -> device quantize -> compare
+    // ---- 5. the composite chain: raw (unrotated) K and V -> one device fwht -> device quantize -> compare,
+    // through a permuted table like the cases above
     {
         const int pages = 2, cells = pages * P;
         std::vector<int32_t> table(pages);
-        for (int i = 0; i < pages; ++i) table[i] = i;
+        for (int i = 0; i < pages; ++i) table[i] = (i * 3 + 1) % pages;   // a permutation (here: 1, 0)
         mtl::Buffer table_b = cx.alloc(4 * pages), step_b = cx.alloc(16), raw = cx.alloc(4 * 2 * H * D),
                     rot = cx.alloc(4 * 2 * H * D), kpool = cx.alloc((size_t) cells * H * ROW_BYTES),
                     vpool = cx.alloc((size_t) cells * H * ROW_BYTES);
