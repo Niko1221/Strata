@@ -46,6 +46,13 @@ void check(bool ok, const char* label) {
     ++checks;
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", label); std::exit(1); }
 }
+// The host transfer seam is a RUNTIME switch (conversation_copy.hpp): STRATA_TEST_HOST_TRANSFERS=1 makes the
+// engine's snapshot copies memcpy instead of CUDA, so the restore's SUCCESS path is exercised with no device - and
+// without the GNU `--wrap` linker seam, which MSVC lacks.  The "host transfers" ctest entry sets it.
+bool host_transfers() {
+    const char* v = std::getenv("STRATA_TEST_HOST_TRANSFERS");
+    return v != nullptr && std::atoi(v) != 0;
+}
 struct Pools {
     QsaState st;
     std::array<std::vector<uint8_t>, 8> data;
@@ -169,6 +176,36 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
         stage.qsa_alloc = 1; stage.gdn_alloc = 7;
         check(!conversation_session_sizes(g,stage,zs,error), "carve past the GDN rows rejected");
     }
+    // layer/ladder-t3: the leaf restore validates a checkpoint in place of image.live.  A checkpoint that is not
+    // this session's is rejected before any CUDA call, exactly as the whole-image restore is; the fixture runs with
+    // CUDA uninitialized, so only the rejection half is exercised here (the transfer run covers the valid one).
+    {
+        ConversationCheckpoint bad = image.live;
+        bad.gdn.pop_back();   // gdn is non-empty for every fixture (the reject() calls above pop it too)
+        check(conversation_snapshot_restore_at(image, ss, g, &draft.st, bad, error) == ConversationRestore::invalid,
+              "ladder restore rejects a checkpoint that is not this session's");
+        check(unchanged(), "ladder invalid restore did not touch any buffer");
+        // The prefix relation the ladder DEPENDS on is checked, not assumed: a checkpoint whose ids are not the
+        // image's live prefix, or whose pictures differ from that prefix, is rejected rather than restored.
+        ConversationCheckpoint not_prefix = image.checkpoints[0];
+        not_prefix.ids[0] = 99;
+        check(conversation_snapshot_restore_at(image, ss, g, &draft.st, not_prefix, error) ==
+              ConversationRestore::invalid,
+              "ladder restore rejects a checkpoint whose ids are not a prefix of the image's live tokens");
+        check(unchanged(), "ladder invalid restore (foreign ids) did not touch any buffer");
+        ConversationCheckpoint bad_picture = image.checkpoints[0];
+        bad_picture.imgs[0].hash++;
+        check(conversation_snapshot_restore_at(image, ss, g, &draft.st, bad_picture, error) ==
+              ConversationRestore::invalid,
+              "ladder restore rejects a checkpoint whose pictures are not the image's live prefix");
+        check(unchanged(), "ladder invalid restore (foreign picture) did not touch any buffer");
+        // The same validator the ladder's rung selection calls: it rejects those and accepts the image's own
+        // checkpoint (so a rung chosen with it cannot fail later - there is no second validation path).
+        check(!conversation_snapshot_validate_at(image, ss, g, &draft.st, bad_picture, error),
+              "conversation_snapshot_validate_at rejects the foreign-picture checkpoint");
+        check(conversation_snapshot_validate_at(image, ss, g, &draft.st, image.checkpoints[0], error),
+              "conversation_snapshot_validate_at accepts the image's own valid checkpoint");
+    }
     auto bad_geometry = g; bad_geometry.ssm_state_size = std::numeric_limits<int64_t>::max();
     check(!conversation_state_sizes(bad_geometry,z,error), "running-state arithmetic overflow rejected");
     bad_geometry = g; bad_geometry.qsa_interval = 0;
@@ -239,11 +276,45 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
     check(!conversation_snapshot_save(unpublished,view,ss,g,draft.st,error,std::move(reuse)), "incremental capture copy failure is reported");
     check(unpublished.kv.empty() && unpublished.live.ids.empty(), "failed incremental capture cannot publish a partial image");
 #endif
+    // layer/ladder-t3: the REAL success path of the ladder's leaf, on the host transfer backend
+    // (STRATA_TEST_HOST_TRANSFERS=1 makes the copies memcpy: no device, no linker wrapping, so it runs on MSVC too).
+    // The image's live state (9 tokens) is present but is the entry the ladder rejected; the restore takes the
+    // image's own 5-token checkpoint.  The running state must be the CHECKPOINT's and the K/V the image's whole
+    // payload at its 9-token extent - exactly what makes a caller that resumes at 5 (resume = the checkpoint
+    // length) re-read only the tail and never a stale cell.
+    if (host_transfers()) {
+        const ConversationCheckpoint& cp = image.checkpoints[0];
+        check(cp.ids.size() == 5, "the fixture's checkpoint is the shorter 5-token prefix");
+        check(conversation_snapshot_validate_at(image, ss, g, &draft.st, cp, error),
+              "ladder leaf validates the image's own checkpoint");
+        check(conversation_snapshot_restore_at(image, ss, g, &draft.st, cp, error) == ConversationRestore::restored,
+              "ladder leaf restores the image's own checkpoint");
+        check(gdn == cp.gdn && history == cp.ple,
+              "ladder restore: the running state is the CHECKPOINT's, not the image's live one");
+        check(ss.ple_prev[0] == 4 && ss.ple_prev[1] == 5,
+              "ladder restore: the PLE window is the 5-token checkpoint's");
+        uint64_t fingerprint = 0;
+        check(conversation_kv_verify(image.kv.back(), draft.st, g, 9, false, fingerprint, error),
+              "ladder restore: the K/V is the image's own payload, whole, at its 9-token extent");
+        // Degenerate case: the leaf with image.live IS the ordinary restore, so with the flag off (no checkpoint
+        // chosen) the restore is byte-for-byte today's.
+        check(conversation_snapshot_restore_at(image, ss, g, &draft.st, image.live, error) ==
+              ConversationRestore::restored, "ladder leaf with image.live is the ordinary whole-image restore");
+        check(gdn == image.live.gdn && history == image.live.ple,
+              "ladder leaf with image.live restores the live running state (today's behaviour)");
+        check(conversation_snapshot_restore(image, ss, g, draft.st, error) == ConversationRestore::restored,
+              "the ordinary restore still runs");
+        check(gdn == image.live.gdn && history == image.live.ple,
+              "the ordinary restore and the ladder leaf agree on the whole-image case");
+    }
 }
 }
 
 int main() {
     for (int format : {0,1,2}) for (int experts : {256,512})
         for (bool zero_qsa : {false,true}) for (bool ple : {false,true}) fixture(format,experts,zero_qsa,ple);
-    std::printf("conversation_validation_test: %d host-only checks passed\n", checks);
+    if (host_transfers())
+        std::printf("conversation_validation_test (host transfers): %d checks passed\n", checks);
+    else
+        std::printf("conversation_validation_test: %d host-only checks passed\n", checks);
 }

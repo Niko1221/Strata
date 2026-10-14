@@ -904,8 +904,10 @@ SegmentMatch SegmentStore::best_impl(const std::vector<int32_t>& prompt, bool cv
                                      int64_t n_min) const {
     std::lock_guard<std::mutex> lock(mu_);
     SegmentMatch best;
+    last_chain_ = SegmentChainStatus{};
     if (!enabled_ || prompt.empty() || similarity < 0.0 || similarity >= 1.0) return best;
     const std::string base = directory_.string();
+    int64_t diag_tokens = -1;   // the best candidate's run so far, for last_chain_
     for (const ManifestEntry& entry : manifests_) {
         const SegmentManifest& manifest = entry.manifest;
         if (manifest.cvec != cvec) continue;
@@ -914,15 +916,16 @@ SegmentMatch SegmentStore::best_impl(const std::vector<int32_t>& prompt, bool cv
         int64_t valid_tokens = 0;
         uint64_t valid_seg = 0;
         uint64_t valid_bytes = 0;
-        bool have = false, live = false;
+        bool have = false, live = false, whole = true;
+        std::string stop;   // why the chain stopped, for last_chain_ (empty when it reached the last ref)
         for (size_t k = 0; k < manifest.segments.size(); ++k) {
             const SegmentRef& ref = manifest.segments[k];
-            if (ref.token_begin != cursor) break;                          // a hole or overlap: the chain is broken
-            if ((uint64_t) prompt.size() < ref.token_end) break;           // the prompt does not reach this segment
+            if (ref.token_begin != cursor) { whole = false; stop = "a hole or overlap between segments"; break; }
+            if ((uint64_t) prompt.size() < ref.token_end) { whole = false; stop = "the prompt ends before this segment"; break; }
             const std::vector<int32_t> slice(prompt.begin() + (std::ptrdiff_t) ref.token_begin,
                                              prompt.begin() + (std::ptrdiff_t) ref.token_end);
             if (segment_hash(ref.kind, ref.domain, slice, ref.role_token, frontier, identity_.model, identity_.config)
-                    != ref.seg_id) break;                                  // the prompt diverges here
+                    != ref.seg_id) { whole = false; stop = "the prompt diverges here"; break; }
             bool present = true;
             for (size_t stage = 0; stage <= ref.stages; ++stage) {
                 std::error_code ec;
@@ -931,7 +934,7 @@ SegmentMatch SegmentStore::best_impl(const std::vector<int32_t>& prompt, bool cv
                     break;
                 }
             }
-            if (!present) break;                                           // a missing segment file breaks the run
+            if (!present) { whole = false; stop = "a segment file is missing"; break; }
             frontier = ref.seg_id;
             cursor = ref.token_end;
             valid_index = k;
@@ -940,6 +943,10 @@ SegmentMatch SegmentStore::best_impl(const std::vector<int32_t>& prompt, bool cv
             valid_bytes += ref.bytes;                     // the files of segments 0..k, for the restore preflight
             have = true;
             live = (k + 1 == manifest.segments.size());
+        }
+        if (valid_tokens > diag_tokens) {                 // the most promising candidate names the break
+            diag_tokens = valid_tokens;
+            last_chain_ = {true, whole, valid_tokens, whole ? std::string() : stop};
         }
         if (!have || valid_tokens < n_min) continue;
         if ((double) valid_tokens / (double) prompt.size() <= similarity) continue;

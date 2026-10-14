@@ -28,6 +28,7 @@
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/conversation_spill.hpp"
 #include "strata/core/conversation_segments.hpp"   // layer/segmentos-t3: the opt-in per-segment tier (N16 wiring)
+#include "strata/core/conversation_restore_ladder.hpp"   // layer/ladder-t3: the opt-in prefix-restore ladder
 #include "strata/core/conversation_prompt_cache.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
@@ -11512,6 +11513,7 @@ int main(int argc, char** argv) {
                                              o.conversation_cache_similarity, o.conversation_cache_n_min);
             std::optional<strata::core::SavedConversation> incoming;
             bool incoming_from_disk = false;
+            bool incoming_from_ram = false;   // the parked RAM image is the chosen candidate (the ladder never retries it)
             std::string incoming_disk_path;
             // R2: if the client rewrote this conversation's tail (a compaction or an edited history), the stored
             // copy describes nothing it will send. Detect it from the sidecar's own token ids (no K/V read) and
@@ -11605,6 +11607,12 @@ int main(int argc, char** argv) {
             if (!incoming && segment_store.enabled()) {
                 const strata::core::SegmentMatch segment_match = segment_store.best(
                         ids, want_cvec, o.conversation_cache_similarity, o.conversation_cache_n_min);
+                // Why the chain cut (layer/ladder-t3): a short hit used to read only "hit N tokens"; name the break
+                // and how far it matched, so the tail's re-read is readable from the log alone.
+                const strata::core::SegmentChainStatus chain = segment_store.last_chain();
+                if (chain.candidate && !chain.whole)
+                    std::fprintf(stderr, "strata serve: segment tier: miss (%s, matched=%lld tokens)\n",
+                                 chain.reason.c_str(), (long long) chain.matched);
                 if (segment_match && segment_match.tokens > std::max(resume, std::max(slot_tokens, parked.tokens))) {
                     constexpr uint64_t admission_extra = 1ull << 20;
                     const uint64_t estimate = segment_match.bytes > UINT64_MAX - segment_match.bytes / 8 - admission_extra
@@ -11751,36 +11759,125 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            if (!incoming && parked.tokens > std::max(resume, slot_tokens)) incoming.emplace(conversations.take(parked.index));
+            const bool parked_usable = parked.tokens > std::max(resume, slot_tokens) &&
+                                       parked.index < conversations.size();
+            if (!incoming && parked_usable) {
+                incoming.emplace(conversations.take(parked.index));
+                incoming_from_ram = true;
+            }
             if (incoming) slot_source = -1;
-            // Reject the entire image before parking/overwriting the outgoing
-            // state. Invalid entries can safely fall back to its existing prefix.
-            if (incoming && incoming->stage_images.size() != stages.size()) {
-                std::fprintf(stderr, "strata serve: conversation cache: discard snapshot (stage count)\n");
-                incoming.reset();
-            }
-            if (incoming) for (size_t i = 0; i < stages.size(); ++i) {
-                const strata::core::OnDevice on(stages[i]->dev);
-                if (!strata::core::conversation_snapshot_validate(incoming->stage_images[i], stages[i]->ss, g,
-                        use_mtp && !mtp_first && i + 1 == stages.size() ? &mtp.kv_state() : nullptr, err)) {   // the draft: the last stage's
-                    std::fprintf(stderr, "strata serve: conversation cache: discard invalid stage snapshot (%s)\n",
-                                 err.c_str());
-                    incoming.reset();
-                    err.clear();
-                    break;
+            // The restore ladder (layer/ladder-t3, opt-in: STRATA_RESTORE_LADDER=1).  The discard messages carry the
+            // numbers - the reason and the two counts - whether or not the ladder is on, so a failed restore is
+            // readable from the log without reconstructing it by hand.  With the flag off the behaviour is the one
+            // that shipped: the whole image is rejected and the slot's own prefix is the fallback.
+            const bool restore_ladder_on = strata::core::restore_ladder_enabled();
+            int64_t ladder_restore = -1;   // >= 0: restore only this prefix, from incoming->checkpoints[ladder_ckpt]
+            size_t ladder_ckpt = 0;
+            // Descend the image's own running-state checkpoints, largest first, and keep the largest one that
+            // validates.  The validation is the ENGINE's own (conversation_snapshot_validate_at, which runs
+            // view_validate and the whole K/V check), the very one the restore below makes, so a chosen rung cannot
+            // fail later and there is no second validation path to drift.  Under --layer-split the parked image
+            // keeps stage k's part beside the first, matched by ids - both must validate.
+            auto ladder_salvage = [&](const strata::core::SavedConversation& img, std::string& why) -> bool {
+                if (!restore_ladder_on) return false;
+                // A different carve is not a ladder case: with --layer-split every stage shares `resume` and the same
+                // sequence, so restoring some stages and re-reading others would be wrong (and indexing stage_images
+                // past its own size is out of bounds).  The stage-count line above already named both numbers.
+                if (img.stage_images.size() != stages.size()) return false;
+                strata::core::RestoreLadderRung rung;
+                const bool found = strata::core::restore_ladder_plan(
+                        restore_ladder_on, img.checkpoints, ids, req_imgs, std::max(resume, slot_tokens),
+                        [&](size_t index) -> bool {
+                            const strata::core::ConversationCheckpoint& c = img.checkpoints[index];
+                            if (!strata::core::conversation_snapshot_validate_at(
+                                    img, ss, g, use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr,
+                                    c, why))
+                                return false;
+                            for (size_t k = 0; k < stages.size(); ++k) {
+                                const strata::core::ConversationCheckpoint* part = nullptr;
+                                for (const auto& p : img.stage_images[k].checkpoints)
+                                    if (p.ids == c.ids) { part = &p; break; }
+                                if (part == nullptr) { why = "checkpoint without its stage parts"; return false; }
+                                if (!strata::core::conversation_snapshot_validate_at(
+                                        img.stage_images[k], stages[k]->ss, g,
+                                        use_mtp && !mtp_first && k + 1 == stages.size() ? &mtp.kv_state() : nullptr,
+                                        *part, why))
+                                    return false;
+                            }
+                            return true;
+                        }, rung);
+                if (!found) return false;
+                ladder_ckpt = rung.index;
+                ladder_restore = rung.tokens;
+                return true;
+            };
+            // Reject the entire image before parking/overwriting the outgoing state.  When the ladder is on, a
+            // rejection first descends the image's checkpoints and then - its candidate rung - the parked RAM copy
+            // the tiers above may have beaten, which is still a usable shorter prefix.
+            bool tried_parked = incoming_from_ram || !parked_usable;
+            for (int attempt = 0; incoming && attempt < 2; ++attempt) {
+                std::string why;
+                bool main_failed = false, ok = true;
+                if (incoming->stage_images.size() != stages.size()) {
+                    char b[96];
+                    std::snprintf(b, sizeof b, "stage count: saved=%zu current=%zu",
+                                  incoming->stage_images.size(), stages.size());
+                    why = b;
+                    ok = false;
                 }
-            }
-            if (incoming && !strata::core::conversation_snapshot_validate(*incoming, ss, g,
-                    use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr, err)) {
-                std::fprintf(stderr, "strata serve: conversation cache: discard invalid snapshot (%s)\n", err.c_str());
-                if (incoming_from_disk) {   // a disk conversation this engine cannot use: drop its files
+                if (ok) for (size_t i = 0, ns = stages.size(); i < ns; ++i) {
+                    const strata::core::OnDevice on(stages[i]->dev);
+                    if (!strata::core::conversation_snapshot_validate(incoming->stage_images[i], stages[i]->ss, g,
+                            use_mtp && !mtp_first && i + 1 == ns ? &mtp.kv_state() : nullptr, err)) {   // the draft: the last stage's
+                        char b[48];
+                        std::snprintf(b, sizeof b, "stage %zu snapshot: ", i);
+                        why = std::string(b) + err;
+                        ok = false;
+                        break;
+                    }
+                }
+                if (ok && !strata::core::conversation_snapshot_validate(*incoming, ss, g,
+                        use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr, err)) {
+                    why = std::string("snapshot: ") + err;
+                    main_failed = true;
+                    ok = false;
+                }
+                err.clear();
+                if (ok) break;
+                std::fprintf(stderr, "strata serve: conversation cache: discard %s (%s, %lld tokens)\n",
+                             incoming_from_disk ? "disk conversation" : "snapshot", why.c_str(),
+                             (long long) incoming->live.ids.size());
+                if (ladder_salvage(*incoming, why)) {
+                    parked = {0, ladder_restore, false};
+                    std::fprintf(stderr, "strata serve: restore ladder: image rejected (%s); checkpoint at %lld "
+                                 "tokens restored, %lld re-read\n", why.c_str(), (long long) ladder_restore,
+                                 (long long) (n - ladder_restore));
+                    break;   // keep `incoming`: it is restored up to the checkpoint below
+                }
+                if (incoming_from_disk && main_failed) {   // a disk conversation this engine cannot use: drop its files
                     std::string erase_error;
                     conversation_spill.erase(incoming_disk_path, erase_error);
                     conversation_spill.unpin(incoming_disk_path);
-                    incoming_from_disk = false;
+                } else if (incoming_from_disk && restore_ladder_on) {
+                    conversation_spill.unpin(incoming_disk_path);   // opt-in: release the pin on every rejection
                 }
                 incoming.reset();
-                err.clear();
+                incoming_from_disk = false;
+                if (restore_ladder_on && !tried_parked) {   // the ladder's candidate rung: the parked RAM copy
+                    tried_parked = true;
+                    const auto ram = conversations.best(ids, req_imgs, want_cvec,
+                                                        o.conversation_cache_similarity, o.conversation_cache_n_min);
+                    if (ram.tokens > std::max(resume, slot_tokens) && ram.index < conversations.size()) {
+                        incoming.emplace(conversations.take(ram.index));
+                        incoming_from_ram = true;
+                        slot_source = -1;
+                        parked = {0, (int64_t) incoming->live.ids.size(), true};
+                        std::fprintf(stderr, "strata serve: restore ladder: trying the parked RAM copy instead "
+                                     "(%lld tokens)\n", (long long) incoming->live.ids.size());
+                        continue;
+                    }
+                }
+                break;
             }
             // Preserve the outgoing branch before any checkpoint rewind, reset,
             // or incoming restore overwrites the positional state it requires.
@@ -11841,9 +11938,20 @@ int main(int argc, char** argv) {
             }
             if (incoming) {
                 const auto t0 = Clock::now();
-                if (strata::core::conversation_snapshot_restore(*incoming, ss, g,
-                        use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr, err) !=
-                    strata::core::ConversationRestore::restored) {
+                // The ladder's checkpoint (null when the image validated whole): its running state stands in for
+                // image.live and the request resumes at its length (parked.tokens, set when the rung was chosen), so
+                // only the tail is re-read.  Under --layer-split the same checkpoint's parts go into the stages.
+                const strata::core::ConversationCheckpoint* ladder0 =
+                        ladder_restore >= 0 ? &incoming->checkpoints[ladder_ckpt] : nullptr;
+                const auto restore_image = [&](const strata::core::SavedConversation& img,
+                                               strata::core::SessionState& sess, const strata::core::QsaState* dft,
+                                               const strata::core::ConversationCheckpoint* ck) {
+                    return ck != nullptr
+                               ? strata::core::conversation_snapshot_restore_at(img, sess, g, dft, *ck, err)
+                               : strata::core::conversation_snapshot_restore(img, sess, g, dft, err);
+                };
+                if (restore_image(*incoming, ss, use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr,
+                                  ladder0) != strata::core::ConversationRestore::restored) {
                     // Already prevalidated above: a failure here is fatal, never
                     // permission to decode from a partially restored session.
                     std::printf("ERR restoring parked conversation: %s\n", err.c_str());
@@ -11851,9 +11959,19 @@ int main(int argc, char** argv) {
                 }
                 for (size_t i = 0; i < stages.size(); ++i) {   // the later stages' parts
                     const strata::core::OnDevice on(stages[i]->dev);
-                    if (strata::core::conversation_snapshot_restore(incoming->stage_images[i], stages[i]->ss, g,
-                            use_mtp && !mtp_first && i + 1 == stages.size() ? &mtp.kv_state() : nullptr, err) !=
-                        strata::core::ConversationRestore::restored) {
+                    const strata::core::ConversationCheckpoint* ck = nullptr;
+                    if (ladder0 != nullptr) {
+                        for (const auto& p : incoming->stage_images[i].checkpoints)
+                            if (p.ids == ladder0->ids) { ck = &p; break; }
+                        if (ck == nullptr) {
+                            std::printf("ERR restore ladder: stage CUDA%d has no checkpoint for the chosen prefix\n",
+                                        stages[i]->dev);
+                            return 1;
+                        }
+                    }
+                    if (restore_image(incoming->stage_images[i], stages[i]->ss,
+                            use_mtp && !mtp_first && i + 1 == stages.size() ? &mtp.kv_state() : nullptr,
+                            ck) != strata::core::ConversationRestore::restored) {
                         std::printf("ERR restoring parked conversation (stage CUDA%d): %s\n", stages[i]->dev,
                                     err.c_str());
                         return 1;

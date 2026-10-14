@@ -131,6 +131,12 @@ bool refill_residency(const QsaState& st, const ModelGeometry& g, int64_t upto, 
         strata::kernels::kv_ring_restore(qsa_attn_pools(st), st.host, qsa_kv_format(st),
                                         std::max<int64_t>(0, end - st.n_slots), end, st.n_slots, shapes, nullptr);
     }
+    if (conversation_detail::host_transfers_enabled()) {
+        // Tests only (conversation_copy.hpp): no kernel ran (the fixtures are kv_mode 0), so there is no device
+        // error to read.  Nothing in the engine sets the switch.
+        (void) error;
+        return true;
+    }
     const auto status = cudaGetLastError();
     if (status == cudaSuccess) return true;
     error = std::string("conversation snapshot residency restore: ") + cudaGetErrorString(status);

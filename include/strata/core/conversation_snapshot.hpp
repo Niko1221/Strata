@@ -124,6 +124,28 @@ enum class ConversationRestore { restored, invalid, transfer_failed };
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
                                                    const ModelGeometry& g, const QsaState& draft,
                                                    std::string& error);
+// The restore ladder's leaf (opt-in, STRATA_RESTORE_LADDER): the SAME validation and the SAME transfer as
+// conversation_snapshot_restore, with `checkpoint` in place of image.live.  It validates, all of it in
+// snapshot_validate (the one path both entry points share):
+//   - the image's geometry, layer range, K/V layer count and every K/V layer at the image's own extent;
+//   - view_validate over the image's OWN view (image.live.ids/imgs and image.checkpoints), i.e. that every
+//     checkpoint the image keeps is a valid prefix of image.live - exactly what the whole-image path checks;
+//   - an explicit prefix test for `checkpoint` itself against image.live: its ids equal the first n of
+//     image.live.ids and its pictures are that prefix's.  (It does NOT need to be one of image.checkpoints, though
+//     the ladder only ever passes one that is);
+//   - `checkpoint`'s running state, via conversation_checkpoint_validate against the session.
+// What it does NOT validate is image.live's OWN running state: that is the entry the caller rejected, and it is
+// precisely the one the ladder replaces.  The K/V is restored WHOLE, at the image's own extent (attention is
+// causal, so that payload's prefix is the prefix of every shorter checkpoint); the caller sets its resume point to
+// checkpoint.ids.size(), so the request rewrites every cell from there on and never reads the stale tail.
+ConversationRestore conversation_snapshot_restore_at(const SavedConversation& image, SessionState& session,
+                                                     const ModelGeometry& g, const QsaState* draft,
+                                                     const ConversationCheckpoint& checkpoint, std::string& error);
+// The validation conversation_snapshot_restore_at performs, exposed so the ladder's rung selection can know a
+// chosen checkpoint is good BEFORE the outgoing state is parked (so the restore itself cannot fail on validation).
+bool conversation_snapshot_validate_at(const SavedConversation& image, const SessionState& session,
+                                       const ModelGeometry& g, const QsaState* draft,
+                                       const ConversationCheckpoint& checkpoint, std::string& error);
 // The streaming form of the same checks: the image's K/V is a set of headers (conversation_file.hpp), so every
 // layer is checked by conversation_kv_validate_meta.  As strict otherwise: geometry, layer range, the live state and
 // every checkpoint are validated without any CUDA call or device write.

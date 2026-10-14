@@ -134,6 +134,11 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(conversation_prompt_cache_test src/core/conversation_prompt_cache_test.cpp src/core/conversation_prompt_cache.cpp src/core/conversation_file.cpp)
   target_include_directories(conversation_prompt_cache_test PRIVATE include)
   add_test(NAME conversation_prompt_cache_test COMMAND conversation_prompt_cache_test)
+  # layer/ladder-t3: the restore ladder's pure half (the rung ordering and the prefix/image filtering).  Header-only,
+  # no CUDA and no model: it runs wherever the other host-only conversation tests do.
+  add_executable(conversation_restore_ladder_test src/core/conversation_restore_ladder_test.cpp)
+  target_include_directories(conversation_restore_ladder_test PRIVATE include)
+  add_test(NAME conversation_restore_ladder_test COMMAND conversation_restore_ladder_test)
 endif()
 
 if(STRATA_HIP_GFX906)
@@ -610,6 +615,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME conversation_transfer_test COMMAND conversation_transfer_test)
       set_tests_properties(conversation_transfer_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
     endif()
+    # layer/ladder-t3: the SAME binary, run a second time with the host transfer seam ON (STRATA_TEST_HOST_TRANSFERS=1
+    # makes the engine's snapshot copies memcpy instead of CUDA).  That runs the restore's SUCCESS path - and the
+    # ladder's leaf - with no device and no GNU `--wrap` linker seam, which is why it works on MSVC.
+    add_test(NAME conversation_restore_ladder_host_test COMMAND conversation_validation_test)
+    set_tests_properties(conversation_restore_ladder_host_test PROPERTIES
+      ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1;STRATA_TEST_HOST_TRANSFERS=1" TIMEOUT 120)
   endif()
 
   # `strata generate` (P2.S6).  The FIRST user-facing program: everything under it is a component, and this is

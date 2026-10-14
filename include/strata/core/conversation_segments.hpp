@@ -142,6 +142,17 @@ struct SegmentMatch {
     explicit operator bool() const { return tokens > 0; }
 };
 
+// The diagnostic of the most recent best(): the same-steering candidate whose chain ran furthest, how far it
+// matched, and why it stopped.  A short hit - the frontier stopped before the conversation's last segment, or the
+// manifest's one segment did not line up - otherwise says only "hit N tokens"; this names the break without reading
+// any file back.  `whole` is true when the chain reached its last ref (no short tail): then `reason` is empty.
+struct SegmentChainStatus {
+    bool candidate = false;                 // a manifest of this steering mode was tried
+    bool whole = false;                     // the best candidate's chain reached its last ref
+    int64_t matched = 0;                    // tokens of the best candidate's valid run
+    std::string reason;                     // why the run stopped (empty when `whole`)
+};
+
 // The segment tier's own settings, separate from the .sess tier's (P-1): its own budget and its own GC.
 struct SegmentStoreConfig {
     std::filesystem::path directory;        // where the manifests and the segment files live (empty = inert)
@@ -203,6 +214,8 @@ public:
         for (const Token& token : prompt) ids.push_back((int32_t) token);
         return best_impl(ids, cvec, similarity, n_min);
     }
+    // The diagnostic of that best(): why the most promising candidate's chain stopped and how far it matched.
+    SegmentChainStatus last_chain() const { std::lock_guard<std::mutex> lk(mu_); return last_chain_; }
 
     // Reads ONLY the segments 0..match.index (the sum) back into `image`: the attention K/V is the concatenation of
     // the segments' slices and the recurrent state is the LAST segment's snapshot (it is not a sum). The segments
@@ -272,6 +285,7 @@ private:
     std::map<uint64_t, size_t> segment_refs_;          // seg_id -> how many manifests list it
     std::map<uint64_t, SegmentFile> segment_files_;    // seg_id -> its files on disk
     mutable std::mutex mu_;                            // the park writer drains the same directory
+    mutable SegmentChainStatus last_chain_;            // the diagnostic of the most recent best() (best_impl, under mu_)
 };
 
 } // namespace strata::core

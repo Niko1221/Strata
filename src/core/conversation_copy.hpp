@@ -9,10 +9,20 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <thread>
 #include <vector>
 
 namespace strata::core::conversation_detail {
+
+/// Tests only, like STRATA_TEST_SLOW_COPY_US below (read per call, getenv is cheap): with STRATA_TEST_HOST_TRANSFERS=1
+/// the snapshot/checkpoint copies run host-to-host (memcpy) instead of through the device, so the restore's CONTROL
+/// FLOW can be exercised with no GPU and no GNU `--wrap` linker seam (which MSVC does not have).  Nothing in the
+/// engine or its config sets it; conversation_validation_test's "host transfers" ctest entry does.
+inline bool host_transfers_enabled() {
+    const char* v = std::getenv("STRATA_TEST_HOST_TRANSFERS");
+    return v != nullptr && std::atoi(v) != 0;
+}
 
 /// Conversation snapshot / checkpoint copies go through a private non-blocking stream of the current device
 /// instead of the legacy (null) stream.  A plain cudaMemcpy is ordered against every blocking stream of the
@@ -20,6 +30,10 @@ namespace strata::core::conversation_detail {
 /// "operation would make the legacy stream depend on a capturing blocking stream".  The caller's contract is
 /// unchanged: the device was synchronized before the copy (the copy itself is complete on return).
 inline cudaError_t copy_nonblocking(void* dst, const void* src, size_t bytes) {
+    if (host_transfers_enabled()) {   // tests only: the host transfer backend (see host_transfers_enabled)
+        std::memcpy(dst, src, bytes);
+        return cudaSuccess;
+    }
     int dev = 0;
     cudaError_t e = cudaGetDevice(&dev);
     if (e != cudaSuccess) return e;
