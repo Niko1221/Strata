@@ -91,8 +91,10 @@ static inline float f32_from_f16(ushort h) {
 // one butterfly step of the 256-point transform, the SHARED arithmetic unit: x is this thread's pre-step value,
 // y its xor partner's (simd_shuffle_xor within a simdgroup, or the staged threadgroup slot of the partner
 // simdgroup's same lane); the side whose index bit h is clear adds, the set side takes partner - self.
-// fwht256_lane below and qsa.metal's fused fwht_row256 both route every butterfly through here, so the
-// standalone and the fused rotation cannot drift.
+// Every butterfly qsa.metal's fused fwht_row256 applies - the lane stages AND the cross-simdgroup ones - goes
+// through here, and fwht256_lane below routes its low-5-bit lane stages through here (its high-3-bit register
+// butterflies are one-thread index arithmetic, x + y / x - y off both pre-step registers - no cross-thread
+// exchange, so nothing there can drift between the two files); the shared stages cannot.
 static inline float fwht_step(float x, float y, bool low) { return low ? x + y : y - x; }
 
 // ---- one 32-value group in one simdgroup (lane = element), ggml's q4_0: d = (the value of largest |x|) / -8,

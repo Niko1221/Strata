@@ -12,8 +12,11 @@
 //                           quantization tolerance (q4's code step is max|x|/8; qsa_parity's int8 check at 6e-3 is
 //                           the same derivation at max|x|/127).  K passes through norm/RoPE on the GPU in fp32, so
 //                           its block bytes are not end-to-end bit-comparable - V above is;
-//                         * qcur (the rotated q attention rows) at 1e-5, qidx / pooled / dead at 1e-5 - qidx and
-//                           the indexer keys must come out UNROTATED, and the scores/top-k exactly as int8's;
+//                         * qcur (the rotated q attention rows) at 1e-5 and qidx at 1e-5 - qidx must come out
+//                           UNROTATED (asserted directly).  pooled / dead are NOT directly asserted: they are
+//                           covered transitively, through the score check (its reference reads the GPU's
+//                           pooled/dead rows) and the tail's +1e9 bias assertion; the scores/top-k are exactly
+//                           int8's math on the unrotated indexer chain;
 //                         * attention + merge from the GPU's own qcur, ids and pool bytes: the reference dequantizes
 //                           both pools, softmaxes in double, rotates the 256-wide output back with fwht256_ref
 //                           BEFORE the sigmoid(gate) multiply (the placement layer.cpp uses; the wrong order -
