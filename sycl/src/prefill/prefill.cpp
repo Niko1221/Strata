@@ -61,12 +61,14 @@ bool supported(int) { return false; }
 bool fits(int, int64_t) { return false; }
 size_t matrix_bytes(int, int64_t, int64_t) { return 0; }
 size_t q8_bytes(int64_t, int64_t) { return 0; }
-void quantize(const float*, const int32_t*, void*, int, int64_t, int64_t, int64_t, void*) {}
+void quantize(const float*, const int32_t*, void*, int, int64_t, int64_t, int64_t, void*, float*) {}
+bool fp4_activations(int) { return false; }
 Context::Context() {}
 Context::~Context() {}
 void Context::run(const Product&, void*) {}
-void gather_native(const void*, const void*, size_t, const void*, size_t, void*, void*, void*) {}
-bool gather_native_group(const GatherGroup&, size_t, size_t, size_t, size_t, void*, size_t, void*, size_t, void*) { return false; }
+void gather_native(const void*, const void*, size_t, const void*, size_t, void*, void*, void*, const void*, void*, size_t) {}
+bool gather_native_group(const GatherGroup&, size_t, size_t, size_t, size_t, void*, size_t, void*, size_t, void*, size_t,
+                         void*, size_t) { return false; }
 void gather_strata_q2(const uint8_t*, void*, void*, void*) {}
 void swiglu(const float*, float*, int64_t, int64_t, bool, void*) {}
 void iota(int32_t*, int64_t, void*) {}
@@ -930,7 +932,11 @@ bool Prefill::init(const core::WeightTable &wt, const core::ModelGeometry &g,
                    core::SessionState &ss, core::ExpertSource *src,
                    const core::ExpertCache *cache, const int32_t *host_res,
                    int64_t chunk, void *stream, std::string &err, void *borrow,
-                   uint64_t borrow_bytes) try {
+                   uint64_t borrow_bytes, bool borrow_spill) try {
+    if (borrow_spill) {
+        err = "prefill: a hybrid borrowed/owned layout (--prefill-head-alias) is not in the SYCL port";
+        return false;
+    }
     Impl& m = *impl_;
     m.wt = &wt; m.g = &g; m.ss = &ss; m.src = src; m.cache = cache; m.host_res = host_res;
     m.T = chunk; m.cs = strata::q_of(stream); m.stats = &stats_;
@@ -1164,9 +1170,7 @@ bool Prefill::carve(size_t T, void* alloc) {
     if (bf16x2_hc(m.f16_io)) { m.xn16_lo = o.take<uint16_t>(T * D, ok); m.lo16_lo = o.take<uint16_t>(T * LR, ok); }
     if (bf16x2(m.f16_io)) m.mixed_bf_lo = o.take<uint16_t>(T * N, ok);
     m.steps_dev = o.take<int32_t>(T * strata::kernels::kStepCount, ok);
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
+    strata::kernels::QsaShapes s = core::qsa_shapes(g);
     m.cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
     m.max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     {
@@ -1384,9 +1388,7 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
     if (!mtp.idle(err)) return false;   // the drafter's own stream (its graph uploads) before this writes its K/V
     const double ms_idle = ms_since(ti0);
     const auto tl0 = Clock::now();
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
+    strata::kernels::QsaShapes s = core::qsa_shapes(g);
     std::vector<int32_t> tk((size_t) B);
     if (q8) {
         if (!m.mmq_ctx) m.mmq_ctx = std::make_unique<mmq::Context>();
@@ -1888,9 +1890,7 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
     if (bf16x2_hc(f16_io)) { o.take<uint16_t>(T * D, ok); o.take<uint16_t>(T * LR, ok); }
     if (bf16x2(f16_io)) o.take<uint16_t>(T * N, ok);
     o.take<int32_t>(T * strata::kernels::kStepCount, ok);
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
+    strata::kernels::QsaShapes s = core::qsa_shapes(g);
     const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
     const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
@@ -2111,9 +2111,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
     // stages therefore do not drain the complete remaining GPU chain here.
     double host_sync_ms = 0, host_chunk_ms = 0, host_setup_ms = 0;   // STRATA_PREFILL_TIMING: the host's share
     double grp_wait_ms = 0, grp_cpu_ms = 0;   // the per-layer grouping: the drain wait, the host's loops
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
+    strata::kernels::QsaShapes s = core::qsa_shapes(g);
     // read once (STRATA_KV_PREFETCH=1/0: the next streamed layer's KV prefix is staged on its own stream)
     static const bool kv_prefetch_on = [] {
         const char* e = std::getenv("STRATA_KV_PREFETCH");

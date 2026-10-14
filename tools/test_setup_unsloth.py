@@ -26,6 +26,12 @@ M = "UD-Q4_K_XL"
 REV = "38bb39ee97821de2c9009abb7e93950eec396e66"
 
 
+def budget_mode():
+    """The RAM-budget mode whatever the RAM (MODEL-UPDATE Phase 2 writes it only where the experts do not fit): for the
+    tests of the budget's own paths on PCs that would now keep every expert in RAM (as in sergqwer's fork)."""
+    return mock.patch.object(setup, "unsloth_budget", lambda *a, **k: True)
+
+
 class Pins(unittest.TestCase):
     def test_the_four_shards(self):
         fam = setup.FAMILIES["unsloth"]
@@ -37,7 +43,7 @@ class Pins(unittest.TestCase):
         self.assertEqual(fam["hf"].format(q=M),
                          f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/UD-Q4_K_XL/")
         self.assertEqual(setup.MODELS[M]["families"], ("unsloth",))   # no other family lists it
-        self.assertTrue(setup.MODELS[M]["experimental"])               # 0.1.39: per model, not the family
+        self.assertFalse(setup.MODELS[M].get("experimental"))         # MODEL-UPDATE Phase 2: official
         self.assertFalse(fam.get("experimental"))
         self.assertEqual(list(setup.FAMILIES)[0], "qwen")             # not the default choice
 
@@ -142,7 +148,7 @@ class Base(unittest.TestCase):
         self.tmp.cleanup()
 
     def main(self, argv, ram=63.7, version="0.1.32", n_gpus=1, model=True, amd=(), free=500.0, m=M, answers=None,
-             family=True):
+             family=True, vram=11.9):
         """answers: None = --yes; else {words of a question: its answer} (Enter for the others), and every question
         asked is kept in self.asked.  family=False: no --family (the first menu is shown)."""
         self.asked = []
@@ -156,7 +162,7 @@ class Base(unittest.TestCase):
         eng = self.t / "engine"
         eng.mkdir(exist_ok=True)
         (eng / "BUILD.json").write_text(json.dumps({"version": version, "source": "local"}))
-        found = [{"index": i, "name": "NVIDIA GeForce RTX 5070", "vram_gb": 11.9, "arch": "120", "driver": "580.97"}
+        found = [{"index": i, "name": "NVIDIA GeForce RTX 5070", "vram_gb": vram, "arch": "120", "driver": "580.97"}
                  for i in range(n_gpus)]
 
         def fake_download(url, dst, what=None):
@@ -213,7 +219,7 @@ class Main(Base):
     def test_install(self):
         code, out, cfg = self.main(["--context", "8192"])
         self.assertEqual(code, 0, out)
-        self.assertIn("EXPERIMENTAL", out)
+        self.assertNotIn("EXPERIMENTAL", out)
         base = f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/UD-Q4_K_XL/"
         self.assertEqual(self.downloads, [base + n for n in setup.UNSLOTH_SHARDS])   # no image encoder
         self.assertEqual([v[0] for v in self.verified], list(setup.UNSLOTH_SHARDS))
@@ -238,6 +244,7 @@ class Main(Base):
         self.assertEqual(code, 0, out)
         self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "8192")
 
+    @budget_mode()
     def test_more_ram_bigger_budget(self):
         code, out, cfg = self.main(["--context", "8192"], ram=95.8)
         self.assertEqual(code, 0, out)
@@ -265,18 +272,15 @@ class Main(Base):
         self.assertIn("--model UD-IQ4_XS --yes", out)       # the way to insist (0.1.39: the family's default size)
         self.assertEqual(self.downloads, [])
 
-    def test_amd_is_asked_before_the_download(self):
-        """#429: UD-Q4_K_XL has not run on AMD (CUDA-only prompt kernels): --yes alone stops before the 111 GB
-        download, saying why; it is not refused outright (the owner's rule: --model with --yes goes on)."""
+    def test_amd_is_not_asked(self):
+        """#429 is closed by MODEL-UPDATE Phase 2: UD-Q4_K_XL ran on an R9700 (quality yardstick, decode and prompt
+        numbers in docs/QUANTS.md), so AMD is no longer asked before the download."""
         r9700 = [{"index": 0, "name": "AMD Radeon AI PRO R9700", "vram_gb": 31.9, "arch": "gfx1201",
                   "driver": "amdgpu"}]
-        # chosen in the menu (2 = UD-Q4_K_XL, after the regular UD-IQ4_XS), not by --model: the answer is no
-        code, out, cfg = self.main(["--context", "8192", "--backend", "hip", "--vision", "no"], model=False,
-                                   amd=r9700, answers={"Which size": "2", "Try it anyway": "n"})
-        self.assertEqual(code, 1, out)
-        self.assertIn("has not been run on AMD cards yet", out)
-        self.assertIn("--model UD-Q4_K_XL --yes", out)
-        self.assertEqual(self.downloads, [])
+        with mock.patch.object(setup, "get_prebuilt_hip", lambda *a, **k: self.t / "engine"),                 mock.patch.object(setup, "build_engine_hip", lambda *a, **k: self.t / "engine"):
+            code, out, cfg = self.main(["--context", "8192", "--backend", "hip", "--vision", "no"], amd=r9700)
+        self.assertNotIn("has not been run on AMD cards yet", out)
+        self.assertIn("RAM budget: 40 GiB of UD-Q4_K_XL's experts", out)
 
     def test_resumed_download_needs_room_for_the_rest_only(self):
         """#425: the disk check counts the finished shards and .part files already there (sizes scaled down: a
@@ -332,13 +336,13 @@ class Main(Base):
         self.assertIsNone(cfg)
 
     def test_one_gpu_and_images_with_a_warning(self):
-        """#967: images are allowed with UD-Q4_K_XL, said to be untested."""
+        """#967: images are allowed with UD-Q4_K_XL (tested end to end since MODEL-UPDATE)."""
         code, out, cfg = self.main(["--context", "8192", "--vision", "yes", "--low-ram", "on"], n_gpus=2)
         self.assertEqual(code, 0, out)
         self.assertIn("(NVIDIA GeForce RTX 5070, 12 GB) only (--gpus 0,1 shares it across", out)
         self.assertNotIn("images are not available", out)
         self.assertIn("images: on", out)
-        self.assertIn("images with UD-Q4_K_XL are untested", out)
+        self.assertNotIn("are untested", out)                      # MODEL-UPDATE: run end to end (CUDA, HIP)
         self.assertIn("--low-ram on does not apply", out)
         self.assertNotIn("layer_split", cfg)
         self.assertIn("--vision", cfg["args"])
@@ -346,6 +350,7 @@ class Main(Base):
         self.assertNotIn("--mmap-experts", cfg["args"])
         self.assertFalse(any("--experts-bin" in r for r in self.runs))
 
+    @budget_mode()
     @mock.patch.object(setup, "MIN_ENGINE", (0, 1, 39))   # before RESIDENT_SPLIT_ENGINE: no budget on a split
     def test_split_when_the_ram_holds_it(self):
         # #498: 165 GiB and --gpus 0,1: the split without the RAM budget (the engine refuses the pair)
@@ -359,6 +364,7 @@ class Main(Base):
         self.assertIn("OS file cache", out)
         self.assertNotIn("RAM budget: ", out)
 
+    @budget_mode()
     @mock.patch.object(setup, "MIN_ENGINE", (0, 1, 39))   # before RESIDENT_SPLIT_ENGINE: no budget on a split
     def test_split_without_the_ram_is_a_warning_not_a_wall(self):
         # #737: below the worst-case estimate (a 128 GB PC ran it) the split is still the user's call
@@ -376,6 +382,7 @@ class Main(Base):
         self.assertEqual(cfg["gpu"], [0, 1])
         self.assertNotIn("--resident-budget-gib", cfg["args"])
 
+    @budget_mode()
     @mock.patch.object(setup, "MIN_ENGINE", (0, 1, 39))   # before RESIDENT_SPLIT_ENGINE: no budget on a split
     def test_an_explicit_budget_keeps_one_gpu(self):
         code, out, cfg = self.main(["--context", "8192", "--gpus", "0,1", "--resident-budget-gib", "60"], n_gpus=2,
@@ -417,6 +424,7 @@ class Main(Base):
             self.assertEqual(cfg["gpu"], [0, 1])
             self.assertIn("--resident-budget-gib", cfg["args"])
 
+    @budget_mode()
     def test_yes_alone_keeps_one_gpu(self):
         code, out, cfg = self.main(["--context", "8192"], n_gpus=2, ram=165.0)
         self.assertEqual(code, 0, out)
@@ -446,7 +454,8 @@ class IQ4XS(Base):
             self.assertEqual(fam["sha256"][n], setup.UNSLOTH_SHARDS[n])
         self.assertAlmostEqual(setup.MODELS[X]["download_gb"], 93682584224 / 1e9, places=1)
         self.assertEqual(setup.MODELS[X]["families"], ("unsloth",))
-        self.assertEqual([m for m in setup.MODELS if "unsloth" in setup.MODELS[m].get("families", ())], [M, X])
+        self.assertEqual([m for m in setup.MODELS if "unsloth" in setup.MODELS[m].get("families", ())],
+                         [X, M, "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"])
         self.assertIsNone(setup.gguf_unsupported(names[0]))                    # #444: a file setup runs now
         self.assertEqual(setup.gguf_choice(names[0]), ("unsloth", X))
         self.assertEqual(setup.budget_model({"args": ["--native", "/m/" + names[0]]}), X)
@@ -488,26 +497,26 @@ class IQ4XS(Base):
             self.assertEqual((ch["family"], ch["model"]), ("unsloth", X))
 
     def test_family_default_and_menus(self):
-        """The first menu lists the Unsloth family without [experimental]; its size menu puts UD-IQ4_XS first (the
-        default, Enter) and UD-Q4_K_XL second, still marked EXPERIMENTAL; --model names are unchanged."""
+        """The first menu lists the Unsloth family without [experimental]; its size menu lists the five files by size,
+        UD-IQ4_XS first (the default on 64 GB, Enter), none marked EXPERIMENTAL; --model names are unchanged."""
         code, out, cfg = self.main(["--context", "8192", "--vision", "no"], version="0.1.38", model=False,
-                                   family=False, answers={"Which model": "4"}, m=X)
+                                   family=False, answers={"Which model": "4"}, m=M)
         self.assertEqual(code, 0, out)
         fam_line = next(ln for ln in out.splitlines() if ln.startswith("  4) "))
         self.assertIn("Qwen3.8-Flash-Next (Unsloth)", fam_line)
-        self.assertIn("UD-IQ4_XS: a 94 GB download", fam_line)
+        self.assertIn("UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL or Q8_0 (94 to 188 GB downloads)", fam_line)
         self.assertNotIn("[experimental]", out)
-        size_lines = [ln for ln in out.splitlines() if ln.startswith(("  1) UD-", "  2) UD-"))]
-        self.assertEqual(len(size_lines), 2, out)
-        self.assertTrue(size_lines[0].startswith("  1) UD-IQ4_XS ~4-bit"), size_lines[0])
-        self.assertNotIn("EXPERIMENTAL", size_lines[0])
-        self.assertTrue(size_lines[1].startswith("  2) UD-Q4_K_XL 4-bit"), size_lines[1])
-        self.assertIn("EXPERIMENTAL", size_lines[1])
-        self.assertTrue(any("Which size" in q and "[1]" in q for q in self.asked), self.asked)
-        self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-iq4_xs")
-        code, out, cfg = self.main(["--context", "8192"], version="0.1.38", model=False, m=X)   # --yes: same default
+        size_lines = [ln for ln in out.splitlines()
+                      if any(ln.startswith(f"  {i}) {m} ") for i in range(1, 6) for m in setup.MODELS)]
+        self.assertEqual(len(size_lines), 5, out)
+        for i, (line, m) in enumerate(zip(size_lines, (X, M, "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0")), 1):
+            self.assertTrue(line.startswith(f"  {i}) {m} "), line)
+            self.assertNotIn("EXPERIMENTAL", line)
+        self.assertTrue(any("Which size" in q and "[2]" in q for q in self.asked), self.asked)
+        self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-q4_k_xl")
+        code, out, cfg = self.main(["--context", "8192"], version="0.1.38", model=False, m=M)   # --yes: same default
         self.assertEqual(code, 0, out)
-        self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-iq4_xs")
+        self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-q4_k_xl")
         for m, name in ((M, "qwen3.8-flash-next-unsloth-ud-q4_k_xl"), (X, "qwen3.8-flash-next-unsloth-ud-iq4_xs")):
             code, out, cfg = self.main(["--context", "8192"], version="0.1.38", m=m)        # --model by name
             self.assertEqual((code, cfg["model_name"]), (0, name), out)
@@ -530,7 +539,7 @@ class IQ4XS(Base):
         line = next(ln for ln in out.splitlines() if ln.strip().startswith(X))
         self.assertIn("fits with 40 GiB of its experts in RAM", line)
         self.assertNotIn("EXPERIMENTAL", line)
-        self.assertIn("EXPERIMENTAL", next(ln for ln in out.splitlines() if ln.strip().startswith(M)))
+        self.assertNotIn("EXPERIMENTAL", next(ln for ln in out.splitlines() if ln.strip().startswith(M)))
 
     def test_check_below_every_floor(self):
         # #977: 16 GB fits no size; the RAM line is not [ok] and the verdict says so
@@ -614,6 +623,7 @@ class LayerSplit(unittest.TestCase):
         from test_setup_golden import card
         self.found = [card(i, "NVIDIA GeForce RTX 3090", 24.0, "86") for i in range(2)]
 
+    @budget_mode()
     def test_asked_one_gpu_by_default(self):
         from test_setup_golden import install
         argv = ["--family", "unsloth", "--model", M, "--context", "32768", "--no-start"]
@@ -704,6 +714,141 @@ class LayerSplit(unittest.TestCase):
             code, out, cfg, _ = self.start(63.7, gpu=None, offered="y")
             self.assertEqual(cfg["gpu"], [0, 1])
             self.assertIn("--resident-budget-gib", cfg["args"])
+
+
+Q5, Q6, Q8 = "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"
+
+
+class Resident(Base):
+    """MODEL-UPDATE Phase 2 (sergqwer's fork, 0.1.42-nvfp4.2): every expert of an Unsloth file in RAM (a pinned arena, no
+    --resident-budget-gib) where they fit with UNSLOTH_RESIDENT_BESIDE_GB more; the budget below that, when asked for,
+    and on a unified-memory APU."""
+
+    def test_the_rule(self):
+        self.assertEqual(setup.UNSLOTH_RESIDENT_BESIDE_GB, 16)
+        need = {m: setup.MODELS[m]["arena_gb"] / 1.073741824 + 16 for m in (X, M, Q5, Q6, Q8)}
+        self.assertEqual({m: round(v, 1) for m, v in need.items()},
+                         {X: 71.4, M: 87.7, Q5: 107.6, Q6: 117.7, Q8: 135.5})
+        for m in (X, M, Q5, Q6, Q8):           # "ram_gb" of the bigger files is that need, so below it setup asks
+            if m in (Q5, Q6, Q8):
+                self.assertEqual(setup.MODELS[m]["ram_gb"], int(-(-need[m] // 1)))
+        for ram, budget in ((63.7, {X, M, Q5, Q6, Q8}), (80.0, {M, Q5, Q6, Q8}), (95.8, {Q5, Q6, Q8}),
+                            (127.8, {Q8}), (191.0, set())):
+            for m in (X, M, Q5, Q6, Q8):
+                self.assertEqual(setup.unsloth_budget(m, ram), m in budget, (m, ram))
+        self.assertTrue(setup.unsloth_budget(X, 124.0, {"uma": True}))       # #1715: measured on discrete cards only
+        self.assertTrue(setup.unsloth_budget(M, 127.2, None, 40))             # --resident-budget-gib: asked for
+        self.assertFalse(setup.unsloth_budget(M, 127.2, {"uma": False}))
+
+    def test_install_at_128_gb(self):
+        for m, ver in ((M, "0.1.32"), (X, "0.1.38"), (Q5, "0.1.44")):
+            with self.subTest(m):
+                code, out, cfg = self.main(["--context", "131072"], ram=127.8, version=ver, m=m)
+                self.assertEqual(code, 0, out)
+                args = cfg["args"]
+                for flag in ("--resident-budget-gib", "--mmap-experts", "--resident-experts", "--low-ram"):
+                    self.assertNotIn(flag, args)
+                self.assertIn(f"of {m}'s experts in RAM (they and 16 GiB more fit", out)
+                self.assertNotIn("RAM budget:", out)
+                self.assertEqual(args[args.index("--max-context") + 1], "131072")
+
+    def test_64_gb_keeps_the_budget(self):
+        for m, ver in ((M, "0.1.32"), (X, "0.1.38")):
+            with self.subTest(m):
+                code, out, cfg = self.main(["--context", "8192"], ram=63.7, version=ver, m=m)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(cfg["args"][cfg["args"].index("--resident-budget-gib") + 1], "40")
+                self.assertIn(f"RAM budget: 40 GiB of {m}'s experts in RAM", out)
+
+    def test_an_asked_budget_is_kept(self):
+        code, out, cfg = self.main(["--context", "8192", "--resident-budget-gib", "40"], ram=127.8)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--resident-budget-gib") + 1], "40")
+        self.assertNotIn(f"of {M}'s experts in RAM (they and", out)
+
+    def test_the_menu_and_check_say_so(self):
+        code, out, _ = self.main(["--check"], ram=127.8)
+        for m, verdict in ((X, "fits (all of its experts in RAM)"), (M, "fits (all of its experts in RAM)"),
+                           (Q5, "fits (all of its experts in RAM)"), (Q8, "slow here: 104 GiB of its 119 GiB")):
+            line = next(ln for ln in out.splitlines() if ln.strip().startswith(m + " "))
+            self.assertIn(verdict, line)
+
+    def test_default_is_ud_q4_k_xl_where_it_fits(self):
+        """0.1.44 (owner): UD-Q4_K_XL and UD-IQ4_XS are the recommended sizes; the default is UD-Q4_K_XL when the RAM fits
+        it (any PC from 48 GB), else UD-IQ4_XS.  A larger file stays a choice, never the default."""
+        for ram in (63.7, 95.8, 127.8, 191.0):
+            with self.subTest(ram):
+                code, out, cfg = self.main(["--context", "8192"], ram=ram, version="0.1.44", model=False, m=M)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-q4_k_xl")
+
+    def test_the_menu_marks_both_recommended_sizes(self):
+        names = [m for m in setup.MODELS if "unsloth" in setup.MODELS[m].get("families", ())]
+        self.assertEqual([m for m in names if setup.size_tag("unsloth", m)], ["UD-IQ4_XS", "UD-Q4_K_XL"])
+        self.assertEqual(setup.recommended_size("unsloth", names, 63.7), "UD-Q4_K_XL")
+        self.assertEqual(setup.recommended_size("unsloth", names, 191.0), "UD-Q4_K_XL")
+        self.assertEqual(setup.recommended_size("unsloth", names, 40.0), "UD-IQ4_XS")   # nothing fits: the 4-bit i-quant
+
+    def test_two_gpus_split_with_every_expert_in_ram(self):
+        """Where the experts fit, two cards are the GGUF models' layer split (no budget question, no #498 note)."""
+        code, out, cfg = self.main(["--context", "8192"], n_gpus=2, ram=127.8)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["gpu"], [0, 1])
+        self.assertEqual(cfg["layer_split"], "auto")
+        self.assertNotIn("--resident-budget-gib", cfg["args"])
+        self.assertNotIn("which GPUs?", out)
+
+
+class BigFiles(Base):
+    """MODEL-UPDATE: UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 - six pinned shards each (sizes and SHA-256 from the Hub), the same
+    GGUF-in-place setup as UD-Q4_K_XL (--compat-bf16 pack, every expert in RAM where it fits); below the all-in-RAM need
+    setup asks first (default no) and says how much is read from the SSD."""
+
+    def test_pins(self):
+        fam = setup.FAMILIES["unsloth"]
+        for m, total in ((Q5, 158286406650), (Q6, 169165382688), (Q8, 188225033248)):
+            names = [setup.model_file(fam, m, i) for i in range(1, setup.model_shards(fam, m) + 1)]
+            self.assertEqual(len(names), 6)
+            self.assertEqual(sum(setup.UNSLOTH_BIG_SHARDS[n][0] for n in names), total)
+            for n in names:
+                self.assertRegex(fam["sha256"][n][1], r"^[0-9a-f]{64}$")
+            self.assertIsNone(setup.gguf_unsupported(names[0]))
+            self.assertEqual(setup.gguf_choice(names[0]), ("unsloth", m))
+            self.assertEqual(setup.budget_model({"args": ["--native", "/m/" + names[0]]}), m)
+            self.assertAlmostEqual(setup.MODELS[m]["download_gb"], total / 1e9, places=1)
+        for i in (2, 3):                                   # the head and the PLE table: the same bytes in all three
+            self.assertEqual(len({setup.UNSLOTH_BIG_SHARDS[setup.model_file(fam, m, i)] for m in (Q5, Q6, Q8)}), 1)
+
+    def test_install_q8_at_192_gb(self):
+        code, out, cfg = self.main(["--context", "32768"], ram=191.0, version="0.1.44", m=Q8)
+        self.assertEqual(code, 0, out)
+        base = f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/Q8_0/"
+        names = [setup.model_file(setup.FAMILIES["unsloth"], Q8, i) for i in range(1, 7)]
+        self.assertEqual(self.downloads, [base + n for n in names])
+        self.assertEqual([v[0] for v in self.verified], names)
+        packs = [r for r in self.runs if r[1].endswith("iq_pack.py")]
+        self.assertIn("--compat-bf16", packs[0])
+        args = cfg["args"]
+        self.assertNotIn("--resident-budget-gib", args)
+        self.assertTrue(args[args.index("--native") + 1].endswith("Q8_0-00001-of-00006.gguf"))
+        self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-q8_0")
+
+    def test_q8_below_its_ram_is_asked(self):
+        code, out, cfg = self.main(["--context", "8192"], ram=127.8, version="0.1.44", m=Q8,
+                                   answers={"Install it anyway": "n"})
+        self.assertEqual(code, 1, out)
+        self.assertIn("Q8_0 needs 136 GB of RAM or more; this PC has 128 GB", out)
+        self.assertEqual(self.downloads, [])
+        code, out, cfg = self.main(["--context", "8192"], ram=127.8, version="0.1.44", m=Q8)   # --model + --yes
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--resident-budget-gib") + 1], "104")
+
+    def test_q5_q6_need_the_q6k_engine(self):
+        for m in (Q5, Q6):
+            code, out, cfg = self.main(["--context", "8192"], ram=191.0, version="0.1.43", m=m)
+            self.assertEqual(code, 1)
+            self.assertIn(f"{m} needs engine 0.1.44 or newer; this one is 0.1.43", out)
+            self.assertEqual(self.downloads, [])
 
 
 if __name__ == "__main__":

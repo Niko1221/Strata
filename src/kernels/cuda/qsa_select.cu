@@ -1,5 +1,6 @@
 // src/kernels/cuda/qsa_select.cu - see include/strata/kernels/qsa_select.hpp.
 #include "strata/core/emulate.hpp"
+#include "strata/core/geometry.hpp"
 #include <cstdlib>
 #include <cstring>
 #include "strata/kernels/qsa_select.hpp"
@@ -16,6 +17,8 @@ namespace strata::kernels {
 namespace {
 
 constexpr int IDX_DIM = 128, IDX_HEADS = 4, R = 4;
+static_assert(IDX_DIM == strata::core::kCompiledGeometry.idx_key_dim && IDX_HEADS == strata::core::kCompiledGeometry.idx_q_heads && R == strata::core::kCompiledGeometry.idx_block,
+              "qsa_select is compiled for core/geometry.hpp");
 constexpr int SCORE_WARPS = 8;
 constexpr int TOPK_T = 256;
 
@@ -298,7 +301,7 @@ __global__ void __launch_bounds__(128) block_scores_tc_kernel(const float* __res
 #if defined(__gfx1200__) || defined(__gfx1201__)
 #define STRATA_SEL_GFX12 1
 #define STRATA_SEL_GFX11 0
-#elif defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || \
+#elif defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || \
     defined(__gfx1151__)
 #define STRATA_SEL_GFX12 0
 #define STRATA_SEL_GFX11 1

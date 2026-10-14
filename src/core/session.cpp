@@ -137,7 +137,24 @@ void session_release(SessionState& s) {
         }
 }
 
+#if defined(STRATA_GPU_METAL)
+}  // namespace strata::core
+namespace strata::metal_engine {
+void window_reset();   // metal/src/engine/window.cpp: the decode window's running state back to a new sequence's
+}  // namespace strata::metal_engine
+namespace strata::core {
+#endif
+
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream) {
+#if defined(STRATA_GPU_METAL)
+    // the running state lives in the Metal decode window; the session's own device buffers are not read there
+    (void) g; (void) R_init; (void) stream;
+    strata::metal_engine::window_reset();
+    s.ple_prev[0] = -1;
+    s.ple_prev[1] = -1;
+    s.ple_token = -1;
+    return;
+#endif
     cudaStream_t cs = (cudaStream_t) stream;
     // the residual: `hc` copies of the one vector a caller hands in.  A real sequence's first token is the
     // embedding broadcast to every stream, which is the reference's own initial condition.
@@ -176,12 +193,7 @@ void gdn_point_at(const ModelGeometry& g, int64_t layer, SessionState& s) {
 /// The per-token staging every QSA layer's captured H2D reads FROM.  Must run before each replay: the graphs
 /// captured the SOURCE POINTER, not the value, and that is exactly why the buffers are pinned and fixed.
 void stage_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s) {
-    strata::kernels::QsaShapes sh = strata::kernels::qsa_real_shapes();
-    sh.n_head = g.n_head;
-    sh.n_head_kv = g.n_head_kv;
-    sh.head_dim = g.head_dim;
-    sh.idx_n_head = g.idx_q_heads;
-    sh.idx_dim = g.idx_key_dim;
+    const strata::kernels::QsaShapes sh = qsa_shapes(g);
     for (int64_t j = 0; j < s.qsa_alloc; ++j) {
         QsaState& q = s.qsa_states[s.qsa_ord0 + j];
         qsa_step_fill(q.host_step, pos, sh);

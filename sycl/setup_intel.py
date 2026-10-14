@@ -131,6 +131,20 @@ def small_card(vram_gb: float, driver: str) -> bool:
     return 0 < vram_gb < SMALL_CARD_GB or driver == "i915"
 
 
+# #1980: on a layer split the host mirror covers the first stage only, so with STRATA_VERIFY_NO_HOST=1 (strata-sycl.sh's
+# default) a later stage that cannot hold all of its layers' experts is REFUSED at the start.  Measured on 2x Arc Pro B60
+# 24 GB with the trim and a 1024 MiB reserve: IQ3_XXS (42.9 GB of experts, 89% of the 48 GB) stage 1 2230-3731 experts
+# short and refused; NO_HOST=0 runs it at 39-50 tok/s with 0 faults.  IQ2_XS (35.5 GB, 74%) loads 100% resident.
+SPLIT_SHORT_FRACTION = 0.80
+
+
+def split_likely_short(arena_gb: float, vram_gbs: list) -> bool:
+    """True when the model's experts take so much of the split cards' VRAM that a later stage will not hold all of its
+    layers' experts (the dense weights, the KV, the prompt buffers, the drafter and the reserve take the rest)."""
+    total = sum(v for v in vram_gbs if v and v > 0)
+    return arena_gb > 0 and total > 0 and arena_gb > SPLIT_SHORT_FRACTION * total
+
+
 def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, driver: str = "xe",
             devid: str = "") -> dict:
     """setup's config (written for its HIP path) -> the SYCL port's: the container's paths, experts streamed from the
@@ -291,6 +305,20 @@ def install(argv) -> None:
             # needs an explicit ONEAPI_DEVICE_SELECTOR (kept if the user set one)
             selector = "level_zero:*" if split else f"level_zero:{idx}"
             cfg.setdefault("env", {}).setdefault("ONEAPI_DEVICE_SELECTOR", selector)
+        if split:
+            # #1980: without it every card keeps a full copy of the dense weights (1.4 GiB each on Flash-Next IQ2_XS) and the
+            # load stops at 96-97% resident; the later stage's missing experts have no host mirror (STRATA_VERIFY_NO_HOST)
+            cfg.setdefault("env", {}).setdefault("STRATA_STAGE_TRIM", "1")
+            # #1980: a later stage short of VRAM is refused under NO_HOST=1; with the host path on it runs (the host
+            # computes those experts).  Only when the experts will likely not fit; a value the user set is kept.
+            cards = [intel[i]["vram_gb"] for i in gsel if isinstance(i, int) and 0 <= i < len(intel)]
+            arena = S.MODELS.get(model, {}).get("arena_gb", 0)
+            if split_likely_short(arena, cards) and "STRATA_VERIFY_NO_HOST" not in cfg["env"]:
+                cfg["env"]["STRATA_VERIFY_NO_HOST"] = "0"
+                S.say(f"  {model}'s {arena:.0f} GB of experts will likely not all fit the {len(cards)} cards' "
+                      f"{sum(cards):.0f} GB of VRAM: the config sets STRATA_VERIFY_NO_HOST=0, so the CPU computes the "
+                      "experts the later card does not hold instead of the start being refused (#1980). Set it to 1 "
+                      "in the config's env if your cards hold everything; a smaller model fits fully (docs/INTEL_ARC.md)")
         need = S.MODELS.get(model, {}).get("ram_gb", 0)
         sel_alch = sel["driver"] == "i915" or sel.get("devid") in ALCHEMIST_IDS
         if sel_alch and need and real_ram < need:
