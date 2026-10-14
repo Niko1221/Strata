@@ -22,6 +22,37 @@ from serve.keepawake import KeepAwake
 TAILSCALE = Path(r"C:\Program Files\Tailscale\tailscale.exe")
 
 
+def funnel_ownership(configuration, port):
+    """Funnel publishes the whole HTTPS port, so another path must never be exposed as a side effect."""
+    if configuration is None:
+        return "empty"
+    if not isinstance(configuration, dict):
+        return "other"
+    web = configuration.get("Web") if configuration.get("Web") is not None else {}
+    tcp_ports = configuration.get("TCP") if configuration.get("TCP") is not None else {}
+    if not isinstance(web, dict) or not isinstance(tcp_ports, dict):
+        return "other"
+    foreground = configuration.get("Foreground")
+    if foreground is not None and (
+        not isinstance(foreground, dict) or
+        any(funnel_ownership(child, port) != "empty" for child in foreground.values())
+    ):
+        return "other"
+    tcp = tcp_ports.get("443")
+    if tcp is not None and (not isinstance(tcp, dict) or not tcp.get("HTTPS") or tcp.get("TCPForward")):
+        return "other"
+    bindings = [value for host, value in web.items() if host.endswith(":443")]
+    if not bindings:
+        return "other" if tcp is not None else "empty"
+    target = "http://127.0.0.1:" + str(port)
+    for binding in bindings:
+        handlers = binding.get("Handlers") if isinstance(binding, dict) else None
+        if not isinstance(handlers, dict) or set(handlers) != {"/"} or \
+                not isinstance(handlers["/"], dict) or handlers["/"].get("Proxy") != target:
+            return "other"
+    return "owned"
+
+
 class RemoteMonitor:
     def __init__(self, runtime, health, public, repair, *, clock=time.monotonic, say=print):
         self.runtime = runtime
@@ -128,6 +159,8 @@ class RuntimeChecks:
         except (OSError, ValueError, KeyError, subprocess.SubprocessError):
             return False, "Tailscale status unavailable"
         endpoint = self.host + ":443"
+        if funnel_ownership(funnel, self.config.get("port", 8787)) != "owned":
+            return False, "Funnel configuration is missing or includes unrelated HTTPS handlers"
         handler = funnel.get("Web", {}).get(endpoint, {}).get("Handlers", {}).get("/", {})
         target = "http://127.0.0.1:" + str(self.config.get("port", 8787))
         if not funnel.get("AllowFunnel", {}).get(endpoint) or handler.get("Proxy") != target:

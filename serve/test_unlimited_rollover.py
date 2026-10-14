@@ -1,13 +1,14 @@
-"""Temporary regression coverage for output rollover; remove after verification."""
+"""Finite native windows preserve one unlimited API response and original-input accounting."""
 import json
 import tempfile
 import threading
 import unittest
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, CTX_SLACK, Service, serve
+from serve.server import HIGH_EFFORT, ByteTokenizer, CTX_SLACK, Service, serve
 from serve.usage import UsageLedger
 
 
@@ -51,6 +52,25 @@ class BoundedEngine:
 
 
 class UnlimitedRollover(unittest.TestCase):
+    def test_reasoning_recovery_after_rollover_does_not_pin_all_older_output(self):
+        tok = IncrementalByteTokenizer()
+        engine = BoundedEngine(tok, "reasoning " * 1000 + "</think>\nanswer")
+        engine.max_context = 512
+        svc = Service(engine, tok, ChatTemplate(Path(__file__).with_name("chat_template.jinja")),
+                      unlimited_output=True)
+        svc.repeat_stop_tokens = 0
+        svc.reasoning_loop_recovery = "recover"
+        ids = tok.encode("<|im_start|>system\n" + HIGH_EFFORT +
+                         "<|im_end|>\n<|im_start|>user\nSolve<|im_end|>\n" +
+                         "<|im_start|>assistant\n<think>\n", parse_special=True)
+        with mock.patch("serve.server.LOOP_CHECK_EVERY", 1024), \
+                mock.patch("serve.server.reasoning_repeat_coverage", return_value=1):
+            events = list(svc.run(ids, True, None, -1, {}, threading.Event()))
+        self.assertTrue(any(kind == "done" for kind, _ in events))
+        self.assertGreater(len(engine.calls), 8)
+        self.assertEqual(svc.history[0]["finish"], "stop")
+        self.assertEqual(svc.history[0]["reasoning_recoveries"], 1)
+
     def service(self, text="abcde " * 180, unlimited=True):
         tok = IncrementalByteTokenizer()
         engine = BoundedEngine(tok, text)

@@ -181,6 +181,7 @@ function setPill(state, text) {
 }
 
 function render(m) {
+  $("usage-tracker").closest(".st-header").classList.toggle("usage-enabled", !!m.usage);
   $("tab-btn-usage").hidden = !m.usage;
   if (!m.usage && tab === "usage") showTab("chat");
   window.StrataUsage.update(m.usage, m);

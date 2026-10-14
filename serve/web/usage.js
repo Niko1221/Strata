@@ -202,7 +202,7 @@ window.StrataUsage = (() => {
     screen.querySelector("#daily-decode-note").textContent = Number.isFinite(liveRate) ?
       `Live ${rateText(liveRate)}` : Number.isFinite(lastRate) ? `Last ${rateText(lastRate)}` : "No completed decode yet";
     screen.querySelector("#daily-decode").title = unavailable ? "Decode timing was not recorded for this date." :
-      `Time-weighted average for ${exactCount(row.decode_tokens)} recorded output tokens out of ${exactCount(row.output_tokens)}. Prefill and idle time are excluded.`;
+      `Time-weighted average for ${exactCount(row.decode_tokens)} recorded engine-decoded tokens. Untimed work, prefill and idle time are excluded.`;
     set("daily-cpu", cpuTime(row.cpu_s)); set("daily-active", duration(row.active_s));
     set("daily-energy", energyText(row.energy_kwh));
     set("daily-cost", row.electricity_cost == null ? data.rates.electricity_per_kwh == null ? "Set tariff" : "Not measured" : money(row.electricity_cost, data.rates.electricity_currency));

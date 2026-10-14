@@ -9,11 +9,13 @@ main { flex: 1; min-height: 0; display: flex; }
 .muted { color: var(--st-ink-muted); }
 .small { font-size: var(--st-fs-xs); }
 .card-title { font-weight: var(--st-fw-bold); font-size: var(--st-fs-base); color: var(--st-ink); }
-.st-header { position: relative; z-index: 2; flex: none; --st-appbar-card-height: 46px; }
+.st-header { position: relative; z-index: 2; flex: none; }
+.st-header.usage-enabled { --st-appbar-card-height: 46px; }
 .st-header .st-tabs { margin-left: var(--st-s-4); }
-.st-header .st-tabs, .st-header .profit-shortcut, .st-header .usage-summary, .st-header .st-pill {
+.st-header.usage-enabled .st-tabs, .st-header.usage-enabled .profit-shortcut,
+.st-header.usage-enabled .usage-summary, .st-header.usage-enabled .st-pill {
   height: var(--st-appbar-card-height); border-radius: var(--st-r-sm); }
-.st-header .st-tab { border-radius: calc(var(--st-r-sm) - 4px); }
+.st-header.usage-enabled .st-tab { border-radius: calc(var(--st-r-sm) - 4px); }
 #drawer-close .st-icon { transform: rotate(-90deg); }
 
 /* Shared app-bar usage component: quiet figures, with prices one click away. */
@@ -54,7 +56,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .usage-footer { margin-top: 18px; }
 #usage-save-message { color: var(--st-ink-muted); }
 @media (max-width: 1280px) {
-  .st-header { flex-wrap: wrap; height: auto; min-height: 60px; padding-top: 8px; padding-bottom: 8px; row-gap: 8px; }
+  .st-header.usage-enabled { flex-wrap: wrap; height: auto; min-height: 60px; padding-top: 8px; padding-bottom: 8px; row-gap: 8px; }
   .usage-bar { order: 5; width: 100%; align-items: flex-start; }
   .usage-tracker { flex: 1; min-width: 0; }
   .usage-summary { justify-content: space-between; padding: 5px 8px; gap: 8px; }
@@ -119,7 +121,7 @@ main { flex: 1; min-height: 0; display: flex; }
   .usage-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 640px) {
-  .st-header .st-tabs { order: 4; width: 100%; }
+  .st-header.usage-enabled .st-tabs { order: 4; width: 100%; }
   .usage-dashboard { padding: 24px 12px; }
   .usage-metric { padding: 16px; }
   .usage-metric strong { font-size: 21px; }

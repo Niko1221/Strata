@@ -226,7 +226,7 @@ class UsageLedger:
                 delta["cpu_unmeasured_s"] = dt
             self._add(self.state, delta)
             if dt:
-                start = self._wall if 0 < wall - self._wall and abs(wall - self._wall - dt) < 2 else wall - dt
+                start = self._wall if wall - self._wall > 0 and abs(wall - self._wall - dt) < 2 else wall - dt
                 self._distribute(delta, start, wall)
         self._at, self._wall, self._reading = now, wall, reading
 
@@ -243,14 +243,15 @@ class UsageLedger:
             self.active.discard(key)
             self._persist()
 
-    def record(self, input_tokens, cached_tokens, output_tokens, *, decode_ms=None):
+    def record(self, input_tokens, cached_tokens, output_tokens, *, decode_ms=None, decoded_tokens=None):
         with self.lock:
             inputs = max(0, int(input_tokens))
             delta = {"requests": 1, "input_tokens": inputs,
                      "cached_tokens": min(max(0, int(cached_tokens)), inputs),
                      "output_tokens": max(0, int(output_tokens))}
-            if number(decode_ms) and decode_ms > 0:
-                delta.update(decode_s=decode_ms / 1000, decode_tokens=delta["output_tokens"])
+            decoded = delta["output_tokens"] if decoded_tokens is None else decoded_tokens
+            if number(decode_ms) and decode_ms > 0 and number(decoded):
+                delta.update(decode_s=decode_ms / 1000, decode_tokens=int(decoded))
             self._add(self.state, delta)
             self._add(self._day(self.wall_clock()), delta)
             self.state["seeded"] = True

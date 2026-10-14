@@ -1,5 +1,6 @@
 param([switch]$SkipFunnel, [switch]$InstallStartup, [switch]$Recovery, [switch]$RefreshFunnel)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'RemoteCommon.ps1')
 
 function Test-StrataGatewayCredential {
     param([int]$Port, [string]$ApiKey)
@@ -37,6 +38,12 @@ function Start-StrataFunnel {
             throw 'Tailscale requires approval: sign in or approve this PC in Tailscale, then start Strata again.'
         }
         if ($status.BackendState -eq 'Running' -and $status.Self.DNSName) {
+            $funnelConfigOutput = & $TailscalePath funnel status --json 2>&1
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot verify existing Funnel configuration; refusing to publish.' }
+            $funnelConfig = ($funnelConfigOutput -join "`n") | ConvertFrom-Json
+            if ((Get-StrataFunnelOwnership -Configuration $funnelConfig -Port $Port) -eq 'other') {
+                throw 'HTTPS port 443 has another handler. Refusing to expose or replace unrelated Tailscale services.'
+            }
             try {
                 $funnelOutput = & $TailscalePath funnel --bg --yes ('http://127.0.0.1:' + $Port) 2>&1
                 if ($LASTEXITCODE -eq 0) {
@@ -81,7 +88,8 @@ $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
 $existing = Get-NetTCPConnection -LocalPort $config.port -State Listen -ErrorAction SilentlyContinue
 if ($existing) {
     $gatewayProcess = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $existing[0].OwningProcess)
-    if ($gatewayProcess.Name -ne 'node.exe' -or !$gatewayProcess.CommandLine.Contains($gatewayPath)) {
+    if ($gatewayProcess.Name -ne 'node.exe' -or !$gatewayProcess.CommandLine -or
+        !$gatewayProcess.CommandLine.Contains($gatewayPath) -or !$gatewayProcess.CommandLine.Contains($configPath)) {
         throw ('Port ' + $config.port + ' belongs to another service.')
     }
     if (!(Test-StrataGatewayCredential -Port $config.port -ApiKey $config.apiKey)) {
@@ -106,9 +114,12 @@ if (!$existing) {
 }
 if (!$SkipFunnel) {
     if ($RefreshFunnel) {
-        $currentFunnel = (& $tailscalePath funnel status --json | ConvertFrom-Json)
-        $ownedProxy = @($currentFunnel.Web.PSObject.Properties | Where-Object { $_.Name.EndsWith(':443') -and $_.Value.Handlers.'/'.Proxy -eq ('http://127.0.0.1:' + $config.port) })
-        if ($ownedProxy.Count -eq 1) {
+        $currentFunnelOutput = & $tailscalePath funnel status --json 2>&1
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot verify the Funnel endpoint before refresh.' }
+        $currentFunnel = ($currentFunnelOutput -join "`n") | ConvertFrom-Json
+        $ownership = Get-StrataFunnelOwnership -Configuration $currentFunnel -Port $config.port
+        if ($ownership -eq 'other') { throw 'Cannot refresh a port with unrelated Tailscale handlers.' }
+        if ($ownership -eq 'owned') {
             & $tailscalePath funnel --https=443 off
             if ($LASTEXITCODE -ne 0) { throw 'Could not refresh the owned Funnel endpoint.' }
         }

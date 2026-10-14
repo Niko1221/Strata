@@ -4303,7 +4303,7 @@ class Service:
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
                         gen = self.engine.generate(prompt, segment_max, sampling, cancel, embeddings=emb) if emb \
                             else self.engine.generate(prompt, segment_max, sampling, cancel)
-                        recover_prompt = None
+                        recover_prompt, recovery_anchor = None, None
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         nonfinite = False               # #879: the engine ended this pass on non-finite logits
                         opens = False                   # the thinking is over: write the forced call's opening
@@ -4369,7 +4369,12 @@ class Service:
                                             looped = True        # #728: end the reply here, as for a repeated token
                                             break
                                         if not emb:              # "recover": not for a request with pictures
-                                            recover_prompt = focused_recovery_prompt(self.tok, ids, raw_ids)
+                                            if unlimited:
+                                                recovery_anchor = focused_recovery_prompt(self.tok, ids, [])
+                                                recover_prompt = recovery_anchor + prompt[len(anchor):] + seg \
+                                                    if recovery_anchor is not None else None
+                                            else:
+                                                recover_prompt = focused_recovery_prompt(self.tok, ids, raw_ids)
                                             if recover_prompt is not None:
                                                 break
                                 if budget and parser.state == "reasoning":
@@ -4447,7 +4452,7 @@ class Service:
                                 sampling = {**(sampling or {}), "temperature": want[0], "presence_penalty": want[1]}
                             prompt = recover_prompt
                             if unlimited:
-                                anchor = recover_prompt
+                                anchor = recovery_anchor
                             with self.status_lock:
                                 st["reasoning_recoveries"] = recovery_count
                             if trace is not None:
@@ -4576,7 +4581,8 @@ class Service:
                             t["drafts_accepted"] += last.get("drafts_accepted") or 0
                             if self.usage:
                                 cache = (request_timings(seen, n, last) or {}).get("cache_n", last.get("reused") or 0)
-                                self.usage.record(seen, cache, n, decode_ms=last.get("decode_ms"))
+                                self.usage.record(seen, cache, n, decode_ms=last.get("decode_ms"),
+                                                  decoded_tokens=last.get("generated"))
                             ft0 = st.get("first_token")             # this request's own (#465: one per request)
                             self.latencies.observe(ft0 - started if ft0 else None, n,
                                                    (last.get("decode_ms") or 0.0) / 1000, time.time() - started)

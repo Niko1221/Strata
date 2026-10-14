@@ -22,6 +22,12 @@ Streaming responses pass through immediately. Prompts are limited to 32 MiB.
 The gateway does not log prompts or API keys. Credentials are outside the repo
 in a directory restricted to the current Windows user and SYSTEM.
 
+Treat the editor key as access to a trusted Strata API client. Configured MCP
+tools and local-file image inputs retain their upstream API capabilities; do
+not give this key to untrusted people or applications. The gateway checks the
+entire HTTPS port before enabling Funnel. It refuses additional path handlers
+or an unrelated proxy, and shutdown does not disable unrelated Tailscale services.
+
 ## Start and stop
 
 Add `"remote_access": true` to your model's `strata-<model>.json` to opt in to

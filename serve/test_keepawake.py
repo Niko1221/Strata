@@ -82,6 +82,13 @@ class KeepAwakeTests(unittest.TestCase):
         svc = Service(MockEngine(tok, "ok"), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
         rec = Recorder()
         svc.keep_awake = ka = KeepAwake(rec)
+        self.addCleanup(ka.close)
+        generate = svc.engine.generate
+        def held_generate(*args, **kwargs):
+            # An instant mock can finish before the asynchronous hold observes the request.
+            self.assertTrue(wait_for(lambda: rec.calls and rec.calls[-1] == ON))
+            yield from generate(*args, **kwargs)
+        svc.engine.generate = held_generate
         kinds = [k for k, _ in svc.run(tok.encode("hi"), False, None, 8, {}, threading.Event())]
         self.assertIn("done", kinds)
         self.assertTrue(wait_for(lambda: rec.calls == [ON, ES_CONTINUOUS]))
