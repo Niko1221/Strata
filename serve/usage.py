@@ -8,7 +8,8 @@ Off by default.  Turned on by --usage-stats or "usage_stats": true in the run co
 view lists it).  When on, one small JSON file is written beside the run config, e.g.
 strata-iq3_s.usage.json; it holds only counters and bucket start times - no prompts, no answers,
 no request bodies.  Writes are throttled and atomic, so a killed server loses at most the last
-minute.  Unreadable or corrupt statistics are started over rather than failing the boot.
+minute.  Unreadable, corrupt, or wrongly-typed statistics are read as zeros rather than failing the
+boot; a clock that steps backwards must not lose a bucket from a view.
 
 Counters, per bucket and for the whole lifetime:
   requests        finished requests
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import math
 import os
 import threading
 import time
@@ -44,6 +46,20 @@ WRITE_EVERY_S = 60.0                         # throttled writes: at most one per
 
 def _zero() -> dict:
     return {k: 0 for k in COUNTERS}
+
+
+def _as_int(value) -> int:
+    """A counter read from a file we do not trust: junk reads as 0, never as a failed boot."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return n if n > 0 else 0
+
+
+def _is_time(value) -> bool:
+    """A bucket start or a `since` is only usable if it is a finite number."""
+    return isinstance(value, (int, float)) and math.isfinite(float(value))
 
 
 def _align(t: float, segment: str) -> float:
@@ -81,20 +97,20 @@ class Usage:
             return
         life = data.get("lifetime")
         if isinstance(life, dict):
-            self.lifetime = {k: int(life.get(k) or 0) for k in COUNTERS}
-        if isinstance(data.get("since"), (int, float)):
+            self.lifetime = {k: _as_int(life.get(k)) for k in COUNTERS}
+        if _is_time(data.get("since")):
             self.since = float(data["since"])
         for segment in ("hour", "day"):
             rows = data.get(segment)
-            out = []
+            merged: dict[float, dict] = {}
             if isinstance(rows, list):
                 for r in rows:
-                    if not isinstance(r, dict) or not isinstance(r.get("t"), (int, float)):
+                    if not isinstance(r, dict) or not _is_time(r.get("t")):
                         continue
-                    bucket = {k: int(r.get(k) or 0) for k in COUNTERS}
-                    bucket["t"] = float(r["t"])
-                    out.append(bucket)
-            out.sort(key=lambda b: b["t"])
+                    bucket = merged.setdefault(float(r["t"]), {"t": float(r["t"]), **_zero()})
+                    for k in COUNTERS:                          # two rows for one bucket: sum them
+                        bucket[k] += _as_int(r.get(k))
+            out = sorted(merged.values(), key=lambda b: b["t"])
             self.buckets[segment] = out[-KEEP[segment]:]
 
     def _save(self) -> None:
@@ -147,6 +163,15 @@ class Usage:
         if rows and start - rows[-1]["t"] > SEGMENT_S[segment] * KEEP[segment]:
             rows.clear()                                    # the last entry is older than the array keeps
         rows.append({"t": start, **vals})
+        # a clock that steps backwards (an NTP step, a resume) can land on a bucket that is already
+        # in the array: keep one row per bucket, in time order, so trimming keeps the newest ones
+        if len(rows) > 1 and rows[-2]["t"] >= start:
+            rows.sort(key=lambda b: b["t"])
+            for i in range(len(rows) - 1, 0, -1):
+                if rows[i]["t"] == rows[i - 1]["t"]:
+                    for k in COUNTERS:
+                        rows[i - 1][k] += rows[i][k]
+                    del rows[i]
         del rows[:-KEEP[segment]]
 
     # -- reading -----------------------------------------------------------------------------------

@@ -141,5 +141,67 @@ class UsageTest(unittest.TestCase):
         self.assertEqual(sorted(views), sorted(buttons))
 
 
+    def test_the_date_picker_uses_the_browsers_own_day(self):
+        """A date input gets the browser's day, not UTC's, and an empty window says which kind it is."""
+        js = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
+        prefill = re.search(r"function prefillCustomRange\(\).*?\n\}", js, re.S)
+        self.assertIsNotNone(prefill, "the custom range needs a starting window")
+        body = prefill.group(0) if prefill else ""
+        self.assertIn("localDateStr(", body)
+        self.assertNotIn("toISOString", body)         # UTC's day is not the user's day
+        self.assertIn("function localDateStr(", js)
+        # a window the user did set, but that holds nothing, must not read as an unset one
+        self.assertIn("Nothing in that window.", js)
+        self.assertIn("Pick a start and end date above.", js)
+
+
+    def test_a_wrongly_typed_counter_does_not_break_the_boot(self):
+        """A hand-edited or half-written statistics file must not take the server down."""
+        for label, body in [("a string", '{"lifetime": {"requests": "abc"}}'),
+                            ("an infinity", '{"lifetime": {"requests": Infinity}}'),
+                            ("a list", '{"lifetime": {"requests": [1, 2]}}'),
+                            ("a bucket counter", '{"hour": [{"t": 1, "requests": "x"}]}'),
+                            ("a bad since", '{"since": "yesterday"}'),
+                            ("a negative count", '{"lifetime": {"output_tokens": -5}}')]:
+            path = Path(tempfile.mkdtemp()) / "u.json"
+            path.write_text(body, encoding="utf-8")
+            u = usage.Usage(path, now=1_000.0)                    # must not raise
+            self.assertTrue(u.enabled, label)
+            self.assertGreaterEqual(u.lifetime["output_tokens"], 0, label)
+            u.record(output_tokens=3, now=1_000.0)                # and it still counts from here
+            self.assertEqual(u.view(now=1_000.0)["views"]["1d"]["total"]["output_tokens"], 3, label)
+
+    def test_a_clock_that_steps_backwards_keeps_every_bucket(self):
+        """An NTP step, a resume, or a manual change must not lose counts from the 1 day view."""
+        u = usage.Usage(None)
+        u.path = Path(tempfile.mkdtemp()) / "u.json"
+        now = 1_700_000_000.0
+        u.since = now - 10 * usage.DAY
+        u.record(output_tokens=10, now=now)                       # this hour
+        u.record(output_tokens=7, now=now - 2 * usage.HOUR)       # the clock steps back
+        u.record(output_tokens=3, now=now)                        # and steps forward again
+        v = u.view(now=now)
+        self.assertEqual(v["views"]["1d"]["total"]["output_tokens"], 20)
+        self.assertEqual(v["lifetime"]["output_tokens"], 20)
+        r = u.view(now=now, custom=(now - 3 * usage.HOUR, now))   # the same window as a date range
+        self.assertEqual(r["views"]["custom"]["total"]["output_tokens"], 20)
+        u.flush()
+        starts = [b["t"] for b in json.loads(u.path.read_text(encoding="utf-8"))["hour"]]
+        self.assertEqual(starts, sorted(set(starts)))             # one row per bucket, in time order
+
+    def test_two_rows_for_one_bucket_are_merged_when_read(self):
+        """A file written by an older version may hold two rows for one bucket: they sum."""
+        path = Path(tempfile.mkdtemp()) / "u.json"
+        now = 1_700_000_000.0
+        hour = usage._align(now, "hour")
+        path.write_text(json.dumps(
+            {"since": now - 10 * usage.DAY, "lifetime": {"output_tokens": 17},
+             "hour": [{"t": hour, "output_tokens": 10}, {"t": hour, "output_tokens": 7}]}),
+            encoding="utf-8")
+        u = usage.Usage(path, now=now)
+        self.assertEqual(u.lifetime["output_tokens"], 17)
+        self.assertEqual(u.view(now=now)["views"]["1d"]["total"]["output_tokens"], 17)
+
+
 if __name__ == "__main__":
     unittest.main()
