@@ -642,14 +642,29 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
             hist[0][t] = s;
         }
         __syncthreads();
-        if (t == 0) {
-            int cum = above, d = 255;
-            for (; d > 0; --d) {
-                if (cum + hist[0][d] >= width) break;
-                cum += hist[0][d];
+        // the digit: the first bin from the top whose count, added to the count above it, reaches `width` (bin 0 when
+        // none of 255..1 does).  Threads 0-255 (warps 0-7) prefix-sum the 256 bins in descending order instead of one
+        // thread walking them: the same digit and count above.
+        int v = 0, x = 0;
+        if (t < 256) {
+            v = hist[0][255 - t];
+            x = v;
+#pragma unroll
+            for (int o = 1; o < 32; o <<= 1) {
+                const int y = __shfl_up_sync(0xffffffffu, x, o);
+                if (lane >= o) x += y;
             }
-            s_digit = d;
-            s_above = cum;
+            if (lane == 31) s_warp[warp] = x;
+        }
+        __syncthreads();
+        if (t < 256) {
+            int inc = x;
+            for (int w2 = 0; w2 < warp; ++w2) inc += s_warp[w2];
+            const int before = above + inc - v;
+            if (before < width && (above + inc >= width || t == 255)) {
+                s_digit = 255 - t;
+                s_above = before;
+            }
         }
         __syncthreads();
         prefix |= (uint32_t) s_digit << shift;
