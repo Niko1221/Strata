@@ -5,8 +5,9 @@ kernels are replaced by Metal ones (`metal/`), and the host code and the server 
 `START-HERE.bat` does on Windows. There is no ready-made Mac engine: setup builds it from source on your Mac
 (about 1-15 minutes). The NVIDIA, AMD and Intel engines are unchanged.
 
-**Status:** new. It is measured on two Macs: an M5 Max with 128 GB, where the model stays in memory, and an M4 Mac mini
-with 32 GB, where the experts stream from the SSD. Other chips and memory sizes are untested, and reports help
+**Status:** new. It is measured on three Macs: an M5 Max with 128 GB, where the model stays in memory; and an M4 Mac mini
+with 32 GB and an M1 Max with 34 GB, where the experts stream from the SSD (the M1 Max: 7.9 tok/s decode, 3.2 tok/s prompt,
+Q2_0, one 24-token request, the expert cache at 64 slots). Other chips are untested, and reports help
 ([COMMUNITY_BENCHMARKS.md](COMMUNITY_BENCHMARKS.md)).
 
 ## What you need
