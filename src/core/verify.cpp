@@ -2,6 +2,7 @@
 #include "strata/core/batch_rows.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/core/confidence.hpp"   // #2415's confidence monitor math (window_confidence)
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 #include "strata/core/host_graph_launch.hpp"
 #endif
@@ -2637,6 +2638,35 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
     }
     std::fflush(out);
     return true;
+}
+
+bool Verifier::window_confidence(int n_keep, std::vector<double>& out, std::string& err) {
+    if (next_ != nullptr) return next_->window_confidence(n_keep, out, err);
+    const OnDevice on_device(device_);
+#if defined(STRATA_GPU_METAL)
+    (void) n_keep;
+    (void) out;
+    err = "the confidence monitor has no Metal path";
+    return false;
+#else
+    if (head_logits_ == nullptr || n_vocab_ <= 0) {
+        err = "window_confidence: no head logits for this window";
+        return false;
+    }
+    if (n_keep < 1 || n_keep > last_t_) {
+        err = "verify: confidence row count out of range";
+        return false;
+    }
+    // run() synchronized cs_ before returning, so the head of this window is complete (as window_logprobs reads it)
+    std::vector<float> h((size_t) n_keep * (size_t) n_vocab_);
+    if (cudaMemcpy(h.data(), head_logits_, h.size() * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        err = "verify: the head logits copy failed (confidence)";
+        return false;
+    }
+    for (int t = 0; t < n_keep; ++t)
+        out.push_back(strata::core::token_confidence(h.data() + (size_t) t * (size_t) n_vocab_, n_vocab_));
+    return true;
+#endif
 }
 
 namespace { bool g_commit_async = false; }

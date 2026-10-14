@@ -34,6 +34,7 @@
 #include "strata/core/on_device.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/core/layer.hpp"
+#include "strata/core/confidence.hpp"   // #2415's CONF line (STRATA_CONFIDENCE=1)
 #include "strata/core/layout.hpp"
 #include "strata/core/session.hpp"
 #include "strata/core/weights.hpp"
@@ -11874,6 +11875,20 @@ int main(int argc, char** argv) {
             strata::spec::PromptLookupSource lookup_src(sfx);
             static const bool chain_fixed = std::getenv("STRATA_LOOKUP_CHAIN_FIXED") != nullptr;   // no policy gate
             int64_t draft_offered = 0, draft_accepted = 0;
+            // #2415's confidence monitor (STRATA_CONFIDENCE=1, measurement only): one token confidence per kept
+            // decode row, summarized into one CONF line at the request's end (ActKV's mean and pooled trend slope).
+            // The D2H copy of the head's logits costs time every window: use it to measure, not to time.
+            const bool conf_on = std::getenv("STRATA_CONFIDENCE") != nullptr;
+            bool conf_live = conf_on;
+            std::vector<double> conf_seq;
+            auto conf_take = [&](strata::core::Verifier& v, int n_keep) {
+                if (!conf_live) return;
+                std::string ce;
+                if (!v.window_confidence(n_keep, conf_seq, ce)) {
+                    conf_live = false;
+                    std::fprintf(stderr, "strata confidence: off for this engine: %s\n", ce.c_str());
+                }
+            };
             // what the session holds once this request is done: the prompt read so far, then every committed token
             std::vector<int32_t> consumed;
             consumed.reserve((size_t) (n + max_new + S));
@@ -12410,6 +12425,7 @@ int main(int argc, char** argv) {
                     for (int i = 0; i <= a; ++i) consumed.push_back(A.tok[i]);
                     draft_offered += A.T - 1;
                     draft_accepted += a;
+                    conf_take(V1(A), a + 1);   // #2415: the rows this window kept
                     ++rounds;
                     if (drive.d.fs) drive.d.fs->completed.fetch_add(1, std::memory_order_release);
                     ++dec_windows;
@@ -12707,6 +12723,7 @@ int main(int argc, char** argv) {
                 for (int i = 0; i <= a; ++i) consumed.push_back(window[(size_t) i]);
                 draft_offered += T - 1;
                 draft_accepted += a;
+                conf_take(ver, a + 1);   // #2415: the rows this window kept
                 first_window = false;
                 bool eos = false;
                 for (int i = 0; i <= a && produced_n < max_new && !eos; ++i) {
@@ -12933,6 +12950,12 @@ int main(int argc, char** argv) {
                 std::snprintf(chain_txt, sizeof(chain_txt), " %lld %lld %lld %lld %lld", (long long) chain_ok,
                               (long long) chain_drafts, (long long) sfx_ok, (long long) sfx_drafts, (long long) dec_windows);
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
+            if (conf_on) {
+                // #2415: CONF <tokens> <mean> <slope> - the request's confidence, just before its DONE.  The slope
+                // is ActKV's alpha over the pooled bottom of the sequence (confidence.hpp); negative is falling.
+                const strata::core::ConfidenceSummary cs = strata::core::confidence_summary(conf_seq);
+                std::printf("CONF %lld %.4f %.6f\n", (long long) cs.tokens, cs.mean, cs.slope);
+            }
             std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s\n",
                         (long long) produced_n,
                         (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,

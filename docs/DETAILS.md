@@ -326,6 +326,16 @@ outside the GPU cache, the recall and precision of the top-k / k+4 / k+10 guesse
 would cover, and the predictor thread's time per window. It costs CPU (the predictor is a thread beside the expert pool), so use it to measure, not to
 time. `tools/replay_cache_policy.py` replays a `--dump-routing` trace through the adaptive tier's swap policy offline.
 
+**The confidence monitor (measurement only, #2415):** `STRATA_CONFIDENCE=1` in the environment makes the engine
+report how confident the model is while it generates. Per kept decode row it computes ActKV's token confidence
+(arXiv:2609.31395): the negative mean log-probability of the top 20 predicted tokens, where a higher number is a
+sharper distribution; per request it reports the mean and ActKV's trend slope over the sliding-min-pooled bottom of
+the sequence (window 64, stride 8, bottom 10%; the slope is negative while confidence falls). The request's `CONF
+<tokens> <mean> <slope>` line precedes its `DONE`, `GET /metrics` carries the fields per request and a
+`"confidence"` summary, and `src/core/confidence_test.cpp` pins the math. The head's logits are copied from the GPU
+once per window, so the flag slows the decode: use it to compare (a lossy `--kv` format against `int8`, a tight
+`--kv-resident`), not to measure speed. It has no Metal path.
+
 Time to first token is prompt length / prompt speed: with Q2_0 about 4 s at 4K, 25 s at 32K, under 2 minutes at 128K
 and 4.5 minutes at 262K (engine 0.1.13 made long prompts about twice as fast, below).
 

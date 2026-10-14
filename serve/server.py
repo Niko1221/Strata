@@ -1082,6 +1082,14 @@ class StrataEngine:
                     self.slot_cv.notify_all()    # new engine, or (it did not start) end with a clean EngineDied
         self.info = {**info, **self.info}
 
+    def _parse_conf(self, line):
+        """#2415's CONF <tokens> <mean> <slope> (the confidence monitor, STRATA_CONFIDENCE=1); None: a bad line."""
+        f = line.split()
+        try:
+            return (int(f[1]), float(f[2]), float(f[3])) if len(f) >= 4 else None
+        except ValueError:
+            return None
+
     def _parse_done(self, line):
         f = line.split()
         self.last = {"generated": int(f[1]), "prompt_tokens": int(f[2]), "prompt_ms": float(f[3]),
@@ -1096,6 +1104,9 @@ class StrataEngine:
             self.last.update(prompt_read=int(f[14]))
         if len(f) >= 16:                                  # #588 (engine 0.1.39+): routed experts read over PCIe
             self.last.update(offloaded=int(f[15]))
+        conf, self._pending_conf = getattr(self, "_pending_conf", None), None   # #2415: the CONF line before this DONE
+        if conf:
+            self.last.update(conf_tokens=conf[0], confidence_mean=conf[1], confidence_slope=conf[2])
 
     def vram(self, reserve_mib: int | None, timeout: float = 120.0) -> dict:
         """#533: `VRAM <reserve_mib>` between requests (the caller holds the service's FIFO): the engine shrinks its
@@ -1258,6 +1269,8 @@ class StrataEngine:
                     self._send("STOP")
                     stopped = True
                 yield None
+            elif line.startswith("CONF "):               # #2415: <tokens> <mean> <slope>, just before this request's DONE
+                self._pending_conf = self._parse_conf(line)
             elif line.startswith("DONE"):
                 self._parse_done(line)
                 self._last_done = line
@@ -1936,6 +1949,8 @@ class StrataEngine:
                         read_to = self.reused = int(line.split()[1])
                     except (IndexError, ValueError):
                         pass
+                elif line.startswith("CONF "):           # #2415: this request's confidence, just before its DONE
+                    self._pending_conf = self._parse_conf(line)
                 elif line.startswith("DONE"):
                     self._parse_done(line)
                     done = True
@@ -3691,8 +3706,15 @@ class Service:
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
+        # #2415: the confidence monitor's summary over the requests that reported one (STRATA_CONFIDENCE=1)
+        conf_rows = [r for r in hist if r.get("confidence_mean") is not None]
+        confidence = {"requests": len(conf_rows),
+                      "mean": round(sum(r["confidence_mean"] for r in conf_rows) / len(conf_rows), 4) if conf_rows else None,
+                      "last_mean": conf_rows[-1]["confidence_mean"] if conf_rows else None,
+                      "last_slope": conf_rows[-1].get("confidence_slope") if conf_rows else None}
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
+                "confidence": confidence,
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
@@ -4461,8 +4483,13 @@ class Service:
                                 "hit_rate": hit_rate, "pcie_share": pcie_share, "ram_blobs": last.get("ram_blobs"),
                                 "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
                                 # #457: the speculative drafts from the DONE line (None: the engine did not say)
+                                # #457: the speculative drafts from the DONE line (None: the engine did not say)
                                 "drafts_offered": last.get("drafts_offered"),
-                                "drafts_accepted": last.get("drafts_accepted")})
+                                "drafts_accepted": last.get("drafts_accepted"),
+                                # #2415: the confidence monitor (STRATA_CONFIDENCE=1), its CONF line before DONE
+                                "conf_tokens": last.get("conf_tokens"),
+                                "confidence_mean": last.get("confidence_mean"),
+                                "confidence_slope": last.get("confidence_slope")})
                             t = self.totals
                             t["requests"] += 1
                             t["prompt_tokens"] += seen

@@ -1912,14 +1912,17 @@ class EngineDeath(unittest.TestCase):
 class DoneLineEngine(MockEngine):
     """The mock engine whose `last` comes from a DONE line, parsed as StrataEngine parses it."""
 
-    def __init__(self, *a, done_lines=(), **kw):
+    def __init__(self, *a, done_lines=(), conf_lines=(), **kw):
         super().__init__(*a, **kw)
         self.done_lines = list(done_lines)
+        self.conf_lines = list(conf_lines)               # #2415: one CONF <tokens> <mean> <slope> per request
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         try:
             yield from super().generate(ids, max_new, sampling, cancel, embeddings)
         finally:
+            if self.conf_lines:
+                self._pending_conf = StrataEngine._parse_conf(self, self.conf_lines.pop(0))
             StrataEngine._parse_done(self, self.done_lines.pop(0))
 
 
@@ -1952,6 +1955,53 @@ class DraftCounts(unittest.TestCase):
         rows = m["requests"]                                      # newest first
         self.assertEqual([(r["drafts_offered"], r["drafts_accepted"]) for r in rows], [(5, 3), (None, None), (12, 7)])
         self.assertEqual((m["totals"]["drafts_offered"], m["totals"]["drafts_accepted"]), (17, 10))
+
+
+class ConfidenceMonitor(unittest.TestCase):
+    """#2415: the engine's CONF <tokens> <mean> <slope> (STRATA_CONFIDENCE=1) reaches the request rows and /metrics'
+    confidence summary; the fields are None for a request whose engine sent no CONF line."""
+
+    def test_the_conf_line_feeds_the_next_done(self):
+        class E:
+            pass
+        e = E()
+        e._pending_conf = StrataEngine._parse_conf(e, "CONF 120 0.8123 -0.0045")
+        self.assertEqual(e._pending_conf, (120, 0.8123, -0.0045))
+        StrataEngine._parse_done(e, "DONE 4 20 40.0 30.0 stop 3 5 0")
+        self.assertEqual((e.last["conf_tokens"], e.last["confidence_mean"], e.last["confidence_slope"]),
+                         (120, 0.8123, -0.0045))
+        self.assertIsNone(e._pending_conf)                # taken by that DONE, not the next one
+        StrataEngine._parse_done(e, "DONE 4 20 40.0 30.0 stop 3 5 0")
+        self.assertIsNone(e.last.get("conf_tokens"))
+        self.assertIsNone(StrataEngine._parse_conf(e, "CONF nonsense"))
+        self.assertIsNone(StrataEngine._parse_conf(e, "CONF 1 2"))
+
+    def test_rows_and_metrics(self):
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX, done_lines=[
+            "DONE 4 20 40.0 30.0 stop 3 5 0", "DONE 4 20 40.0 30.0 stop 3 5 0"],
+            conf_lines=["CONF 100 0.9000 0.0100", "CONF 80 0.7000 -0.0200"])
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            for _ in range(2):
+                body = json.dumps({"model": "m", "max_tokens": 10, "messages": [{"role": "user", "content": "hi"}]})
+                with urllib.request.urlopen(urllib.request.Request(base + "/v1/chat/completions", data=body.encode(),
+                                                                   headers={"Content-Type": "application/json"}),
+                                            timeout=30) as r:
+                    self.assertEqual(r.status, 200)
+            with urllib.request.urlopen(base + "/metrics", timeout=10) as r:
+                m = json.loads(r.read())
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        rows = m["requests"]
+        self.assertEqual([(x["conf_tokens"], x["confidence_mean"], x["confidence_slope"]) for x in rows],
+                         [(80, 0.7, -0.02), (100, 0.9, 0.01)])     # newest first
+        self.assertEqual((m["confidence"]["requests"], m["confidence"]["last_mean"], m["confidence"]["last_slope"]),
+                         (2, 0.7, -0.02))
+        self.assertAlmostEqual(m["confidence"]["mean"], 0.8)
 
 
 class PrometheusMetrics(unittest.TestCase):

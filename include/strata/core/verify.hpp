@@ -292,6 +292,11 @@ public:
     bool window_logprobs(const int32_t* targets, int T, int64_t pos0, int32_t extra_id, std::FILE* out,
                          std::string& err);
 
+    /// #2415's confidence monitor (STRATA_CONFIDENCE, measurement only): after run(), append one token confidence
+    /// per kept row of the last window's head (rows 0..n_keep-1, the rows that produced tokens) to `out` - the
+    /// confidence.hpp math on each row's logits.  A layer split's earlier stage forwards to the head's stage.
+    bool window_confidence(int n_keep, std::vector<double>& out, std::string& err);
+
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
     const float* final_R_all() const { return next_ ? next_->final_R_all() : R_; }
