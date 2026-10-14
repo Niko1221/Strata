@@ -14,6 +14,7 @@ import collections
 import ctypes
 import os
 import platform
+import re
 import sys
 import threading
 import time
@@ -160,11 +161,25 @@ class _Amd:
             return None
 
     def name(self):
+        """The board's product name, with the capacity it claims checked against the memory the driver reads.
+
+        amdgpu's `product_name` is the board's FRU EEPROM string (the kernel documents it as "as returned from
+        the FRU"), and a board can carry one that disagrees with what is fitted - a re-badged card, or a FRU left
+        at the wrong SKU; both are common on second-hand Instinct parts.  The memory size comes from the card's
+        own configuration, so it wins for the capacity in the name.  A name without a capacity (`Radeon Pro VII`)
+        and a name that already agrees are returned untouched, so this is a consistency check and not a table of
+        known cards."""
         try:
             with open(os.path.join(self.dev, "product_name"), encoding="utf-8") as f:
-                return f.read().strip() or "AMD Radeon"
+                nm = f.read().strip() or "AMD Radeon"
         except (OSError, TypeError):
             return "AMD Radeon"
+        m = re.search(r"\b(\d+)\s?GB\b", nm, re.I)
+        total = self._int(os.path.join(self.dev, "mem_info_vram_total"))
+        if not m or not total:
+            return nm
+        want = int(round(total / float(1 << 30)))
+        return nm if int(m.group(1)) == want else nm[:m.start()] + "%dGB" % want + nm[m.end():]
 
     @staticmethod
     def _gen(text):
