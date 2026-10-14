@@ -18,7 +18,13 @@ repo_in=/work/$(basename "$here")
 name=${STRATA_SYCL_NAME:-strata-sycl-serve}
 docker rm -f "$name" >/dev/null 2>&1 || true              # a container left behind by a killed server
 args=""
-for a in "$@"; do args+=" $(printf '%q' "$a")"; done
+ipc_opts=()
+for a in "$@"; do
+    args+=" $(printf '%q' "$a")"
+    # Docker's default seccomp profile permits IPC import's syscalls with this capability.
+    # Layer splits need no added capability; retain the default seccomp profile for both paths.
+    if [[ "$a" == --expert-parallel-device ]]; then ipc_opts=(--cap-add SYS_PTRACE); fi
+done
 # the port's run-time switches: the device-built verify plan, and no host handshakes in it. NO_HOST is for a card on
 # the xe driver (the host<->GPU flag stores are not visible there); an i915 card (Arc A-series) runs without it
 # (docs/INTEL.md)
@@ -35,7 +41,7 @@ for k in "${!setting[@]}"; do
     case "${setting[$k]}" in 0|"") ;; *) envs+=(-e "$k=${setting[$k]}") ;; esac
 done
 exec docker run --rm -i --name "$name" --device /dev/dri --oom-score-adj 1000 --stop-timeout 30 --no-healthcheck \
-    --ulimit memlock=-1 \
+    "${ipc_opts[@]}" --ulimit memlock=-1 \
     -v "$root:/work" \
     "${envs[@]}" \
     "${STRATA_SYCL_IMAGE:-strata-sycl-dev}" \
