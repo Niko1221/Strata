@@ -616,8 +616,8 @@ the deferred restore on the active chain alone, with the park of the outgoing co
 Against the 121–153 ms the mount no longer spends, one 15 ms decode is what every resume pays — a rewind through an
 older snapshot and a plain continuation alike, because the newest checkpoint in a parked image is coded too and the
 turn that continues still restores it (`selected … 31821` on the append-only rows). What lazy restoration removes is
-the widen of every checkpoint the conversation never goes back to, not the decode of the one it does: that is the
-whole of the +11 ms the continuing turn is behind `fp32` at 32K in the parity table below. The deep-rewind rows are
+the widen of every checkpoint the conversation never goes back to, not the decode of the one it does: that is why the
+continuing turn runs a few milliseconds behind `fp32` in the parity table below. The deep-rewind rows are
 *faster* under lazy despite doing that decode, because the park in the same request copies a chain that is already
 bf16 instead of converting an fp32 one.
 
@@ -647,45 +647,57 @@ curve across tokens-since-resume is still not available through this build's API
 
 **The default path.** The same harness against this build configured `fp32` (`results/lazy_resume-fp32-default.json`,
 one arm, 1 warm-up + 3 measured, 32K): `reused: 16384` on the deep rewind, and **neither new log line printed** — both
-are gated on the chain actually holding coded snapshots, so a default park/resume logs what it logged before. That
-pass also printed resume figures (50.2 ms append-only, 52.2 ms rewind) which are **3 repetitions on one arm and are
-not the fp32 comparison**: the same fp32 rewind measured over 10 repetitions came out at 29.8 ms, so a 3-repetition
-number on a cold process reads ~20 ms high on this path. The fp32 numbers this document compares against are the ones
-in the table below.
+are gated on the chain actually holding coded snapshots, so a default park/resume logs what it logged before. The
+resume figures that pass printed (50.2 ms append-only, 52.2 ms rewind) are 3 repetitions on one arm and are not the
+comparison; the fp32 numbers this document compares against are the matched ones below.
 
-**FP32 against BF16: slightly slower, and only partly matched.** fp32 enters no codec in either build, so neither the
-one-pass conversion nor lazy restoration changes what that path does — but an unchanged code path is not a benchmark.
-These are the closest figures that exist. The `fp32` column is a pass whose arms were the same binary with only the
-config differing (`results/lazy_resume_codec_parity.json`, 2 warm-ups + 10 measured at each size, round 0 of a
-2-round plan that was interrupted); the `bf16` column is the eager-against-lazy pass above (`results/lazy_resume.json`,
-same harness, same prompts, same token counts, 2 warm-ups + 10 measured × 2 rounds), whose builds differ from the
-first by the restore-failure handler alone. Same workload and same engine behaviour — different process runs.
+**FP32 against BF16: one engine, two configs, 0–6.5 ms apart.** fp32 enters no codec in either build, so neither the
+one-pass conversion nor lazy restoration changes what that path does — but an unchanged code path is not a benchmark,
+and this is one. `engine-cuda12/strata.parity`, built from this tree, serves both arms; the two arm configs differ in
+`--session-state-codec` alone. Same prompts, same token counts, same order of workloads within a size, 2 warm-ups + 10
+measured repetitions per workload, **two rounds with the arm order reversed** (fp32 first in round 0, bf16 first in
+round 1), `--adapt-swaps 0 --pcie-frac 0` pinned. Figures are the median of the two rounds' medians; the last column
+is how far the *same* arm moved between its two rounds, which is this harness's noise floor on that path.
 
-| parked resume, ms | `fp32` | `bf16` | difference |
-| --- | --- | --- | ---: |
-| 32K, continuing turn | 41.9 (41.5–42.6) | 52.95 (51.5–55.8) | **+11.1** |
-| 32K, older checkpoint | 29.8 (29.4–30.2) | 40.15 (38.9–40.6) | **+10.4** |
-| 63K, continuing turn | 72.05 (71.1–74.8) | 76.8 | +4.8 |
-| 63K, older checkpoint | 30.55 (29.3–35.1) | 39.4 | +8.9 |
-| 121K, continuing turn | 124.05 (123.4–131.5) | 126.8 | +2.8 |
-| 121K, older checkpoint | 38.95 (32.1–42.2) | 37.4 | −1.6 |
+| parked resume, ms | `fp32` | `bf16` | difference | round-to-round spread |
+| --- | ---: | ---: | ---: | ---: |
+| 32K, continuing turn | 49.55 | 52.55 | **+3.0** | 0.4 / 0.4 |
+| 32K, older checkpoint | 39.8 | 39.8 | **+0.0** | 0.5 / 0.3 |
+| 63K, continuing turn | 71.15 | 77.68 | **+6.5** | 0.2 / 0.6 |
+| 63K, older checkpoint | 36.45 | 39.63 | **+3.2** | 0.3 / 0.4 |
+| 121K, continuing turn | 122.9 | 127.95 | **+5.1** | 0.9 / 1.0 |
+| 121K, older checkpoint | 41.3 | 37.38 | −3.9 | 3.2 / 1.3 |
 
-What that supports, and what it does not. Only the two 32K rows were measured against one binary inside one run, and
-they say **bf16 costs about 11 ms on a parked resume** — roughly a quarter on the continuing turn, a third on the
-rewind. The 63K and 121K rows come from two runs, and the same workload re-measured across two runs of this harness
-moved 0.6 ms (32K continuing: 53.5 then 52.95) and 2.7 ms (32K older checkpoint: 37.4 then 40.15), so those four
-deltas are the same size as the run-to-run movement and do not separate "slightly slower" from "equal". Byte columns
-are deliberately not restated here: the interrupted pass carried another load on the box, which shows in its
-`prompt_ms`, `park` and image-size columns and not in `resume_ms`; the byte tables above are matched and stand.
+Four of the five positive deltas are larger than that noise floor, so bf16 really does cost 3–6.5 ms on a parked
+resume — 2 % at 32K and 9 % at 63K on the continuing turn — and the fifth, the 121K rewind, is not separable: fp32's
+own two rounds there moved 3.2 ms (42.9 and 39.7) and its repetitions ranged 29.6–45.0. The cost is the one deferred
+decode, which the engine times at **14.7–16.2 ms** for the selected snapshot at every size and in both workloads; the
+mount that carries it is cheaper than fp32's by most of that, because the image's live running state arrives as
+59,031,600 B instead of 118,063,152 B, so what reaches the client is a few milliseconds and not fifteen.
 
-The mechanism is the one lazy restoration leaves behind: every resume out of a parked image restores one coded
-snapshot, and decoding it costs the 14.6–17.2 ms measured above — a rewind through an older snapshot and a plain
-continuation alike. What lazy restoration takes away is the widen of the other 2–5 snapshots, so the gap against
-`fp32` narrows as the conversation grows (11 ms at 32K, 2.8 ms at 121K) because the mount's own live-state restore
-dominates more of the total and, on the way back, it copies half the bytes. **What this document claims for `bf16` is half the bytes with
-the codec's whole-chain resume penalty gone, parked resume 3–11 ms slower than `fp32` — not millisecond-for-
-millisecond equality.** One clean pass with both arms on one binary and the two codecs alternating order is the run
-that would settle the last two rows; it has not completed yet.
+What bf16 gives back on the same requests, all from this run:
+
+| | 32K | 63K | 121K |
+| --- | ---: | ---: | ---: |
+| park, rewind turn, `ms` | 141.7 → **90.5** | 164.7 → **101.5** | 197.9 → **95.8** |
+| engine `prompt_ms`, rewind turn | 243.8 → **196.8** | 262.4 → **208.9** | 299.5 → **203.2** |
+| client wall, rewind turn, `s` | 0.330 → **0.282** | 0.346 → **0.290** | 0.433 → **0.332** |
+| parked image, rewind turn | 1,518,609,848 → **1,282,483,636** (−15.5 %) | 2,354,017,928 → **1,999,828,616** (−15.0 %) | 3,421,128,424 → **3,007,907,560** (−12.1 %) |
+| parked image, continuing turn | 615,533,092 → **438,438,436** (−28.8 %) | 615,539,244 → **438,444,588** (−28.8 %) | 615,594,168 → **438,499,512** (−28.8 %) |
+| retained chain in RAM, 3 / 5 / 6 checkpoints | 354.5 MB → **177,414,796 B** | 591.2 MB → **296,055,504 B** | 710.6 MB → **356,406,176 B** |
+| observed `VmRSS` step, rewind turn | 449.0 → **224.8 MiB** | 449.7 → **224.2 MiB** | 561.0 → **138.1 MiB** |
+
+The `VmRSS` column is an observed lower bound and not a high-water mark — see the note at the head of **Measured**. The
+fp32 chain figure is arithmetic on the engine's own count (`n × 118,063,152 B` plus the token and image lists); the
+bf16 one is the `retained=` line the build prints. Answers and recall on these runs were 20/20 in every cell of both
+arms except one: the 32K append-only cell scored 0/20 on `fp32` and 20/20 on `bf16`, which is the free-form-sentence
+artifact recorded under the quality gate and not a codec effect — that turn asks for the code word in prose and the
+check looks for the word in the answer, so it depends on how the sentence happens to land.
+
+One correction, because an earlier draft of this section carried a wrong number: a partial pass interrupted mid-run
+logged fp32 rewind resume at 29.8 / 30.55 / 38.95 ms. That round carried another load on the box. The matched fp32
+figures are 39.8 / 36.45 / 41.3, so the interrupted pass read the fp32 rewind about 10 ms fast and made bf16 look
+worse against it than it is.
 
 ## Quality gate
 
