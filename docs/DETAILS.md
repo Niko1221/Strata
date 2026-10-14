@@ -276,7 +276,9 @@ RTX 5070, against ~3 tokens/s before these changes.
 - `--kv-grow` (or `STRATA_KV_GROW=1`; `--no-kv-grow` turns it off): the K/V takes VRAM only for the cells the requests
   reach, and the expert cache holds the rest, giving slots back as the context grows. It needs one GPU, an expert
   profile, the whole K/V in VRAM (no KV streaming) and every expert in RAM (not the resident low-RAM mode); otherwise,
-  and with `--batch`, `--vram-elastic` or `--peer-device`, the engine says so and stays off.
+  and with `--batch`, `--vram-elastic` or `--peer-device`, the engine says so and stays off. It also needs the GPU's
+  virtual memory, on HIP only where the check at start passes ([VRAM_ELASTIC.md](VRAM_ELASTIC.md#what-it-is)); the
+  line then says why.
 - `--host-core last` (or `STRATA_HOST_CORE=last`, Windows): the host thread runs on the last physical core and the
   workers take the first. Windows sends a GPU's interrupts to the first core, where a host spinning on the GPU's flags
   waits for them (`--host-core first` is the default; the startup log names the cores).
@@ -589,7 +591,7 @@ the OS file cache, so loading again takes seconds while that RAM is not needed e
 16 GB with Q2_0 in the low-RAM mode: unloading takes ~0.3 s, and a request to an unloaded model answered after
 4.6 s (text) or 14.7 s (a picture, image encoder on the CPU).
 
-**Giving part of the VRAM back while it keeps serving (#533, opt-in, one NVIDIA GPU; every request and answer:
+**Giving part of the VRAM back while it keeps serving (#533, opt-in, one GPU; every request and answer:
 [VRAM_ELASTIC.md](VRAM_ELASTIC.md)).** With `"vram_elastic": true`
 in the config (the engine flag `--vram-elastic`), the expert cache is allocated in 512 MiB segments
 (`"vram_segment_mib"`), and `POST /v1/vram` with `{"reserve_mib": 8000}` shrinks it between requests until that much
@@ -600,7 +602,12 @@ cache, so answers keep coming, slower; growing back puts the same experts in the
 own. Not with a layer split, the helper caches, `--peer-device` or the resident low-RAM mode. Measured on an RTX 5070
 12 GB with Q2_0 (4.8 GiB cache): `{"reserve_mib": 6000}` took 78 ms and freed 4.3 GiB (the cache keeps 0.5 GiB for
 the prompt path), decode 44 -> 33 tok/s; growing back took 92 ms and the answers were token for token the ones before
-the shrink. Without the flag nothing changes (the same answers as without it).
+the shrink. Measured on an AMD Radeon AI PRO R9700 32 GB (gfx1201, ROCm 7.14.1, Linux) with Unsloth UD-IQ4_XS and
+every expert in RAM (24.2 GiB cache): reserves of 4000 / 8000 / 16000 MiB took 35 / 44 / 80 ms and gave the driver
+3.2 / 7.2 / 14.7 GiB, decode 120.7 -> 119 / 114 / 98 tok/s; growing back took 0.56 s. With the adaptive tier and
+`STRATA_ROUTE_RESIDENT` off (`--adapt-every 0`) the answers were token for token the ones before the shrink; with them
+on, two identical requests can already differ without any shrink. Without the flag nothing changes (the same answers
+as without it).
 
 **Keep what the expert cache learned across restarts (opt-in, engine 0.1.36, #477):** a start fills the GPU's expert
 cache from the shipped profile, and the adaptive tier (`--adapt-every`) then moves in the experts your requests use.

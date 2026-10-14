@@ -24,7 +24,7 @@ class VramEngine(ResidentEngine):
     def vram(self, reserve_mib, timeout=120.0):
         self.calls.append(reserve_mib)
         if not self.elastic:
-            raise ValueError("VRAM needs an engine started with --vram-elastic (one NVIDIA GPU, --serve)")
+            raise ValueError("VRAM needs an engine started with --vram-elastic (one GPU, --serve)")
         r = 700 if reserve_mib is None else reserve_mib
         out = {"reserve_mib": r, "expert_slots": max(100, 4000 - r), "expert_cache_mib": max(500, 6000 - r),
                "expert_cache_full_mib": 6000, "vram_free_mib": r, "prompt_chunk": 4096}

@@ -794,7 +794,7 @@ void usage() {
                  "                       short side requests do not take the slots a long one needs (default 0 = park any)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
                  "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE needs RAM (opt-in)\n"
-                 "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
+                 "  --vram-elastic       --serve (#533, opt-in): the expert cache in segments (--vram-segment-mib,\n"
                  "                       default 512), so the command `VRAM <reserve_mib>` (the server's POST /v1/vram) can\n"
                  "                       give VRAM back to other programs between requests and take it back later\n"
                  "  --batch N / --slots N  --serve (opt-in): up to N requests decode together in batch slots (2..8\n"
@@ -4400,9 +4400,12 @@ int main(int argc, char** argv) {
                             strata::core::vmm_available() &&
                             // the batch slots carve their own K/V and --vram-elastic's cache is not one VMM range
                             o.batch == 0 && !o.vram_elastic && o.peer_device < 0;
-            if (asked && !on)
+            if (asked && !on) {
+                const std::string vr = strata::core::vmm_off_reason();
                 std::fprintf(stderr, "strata generate: --kv-grow is off (one GPU, a profile, the whole K/V in VRAM, "
-                                     "every expert in RAM, no --batch, --vram-elastic or --peer-device)\n");
+                                     "every expert in RAM, no --batch, --vram-elastic or --peer-device%s%s)\n",
+                             vr.empty() ? "" : "; no GPU virtual memory: ", vr.c_str());
+            }
             const char* iv = std::getenv("STRATA_KV_GROW_INIT");
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
             strata::core::ExpertCache::set_vmm(on);
@@ -5311,9 +5314,11 @@ int main(int argc, char** argv) {
                         : std::any_of(o.expert_cache_remote.begin(), o.expert_cache_remote.end(),
                                       [](int n) { return n > 0; }) ? "the helper caches on other GPUs"
                         : o.vram_segment_mib < 64 ? "--vram-segment-mib is below 64" : nullptr;
-#if defined(STRATA_USE_HIP)
-        if (why == nullptr) why = "it is NVIDIA-only for now";
+#if defined(STRATA_USE_HIP) && defined(_WIN32)
+        if (why == nullptr) why = "HIP's virtual memory was measured on Linux only";
 #endif
+        const std::string vr = why == nullptr ? strata::core::vmm_off_reason() : std::string();
+        if (why == nullptr && !vr.empty()) why = vr.c_str();   // the cache keeps its one allocation
         if (why != nullptr) {
             std::fprintf(stderr, "strata generate: --vram-elastic is off: %s\n", why);
             o.vram_elastic = false;
@@ -9718,7 +9723,7 @@ int main(int argc, char** argv) {
             const long long reserve = bare ? (long long) o.vram_reserve_mib : std::strtoll(cmd.c_str() + 4, &end, 10);
             if (!bare && (end == cmd.c_str() + 4 || reserve < 0)) { e = "expected: VRAM [reserve_mib]"; return false; }
             if (!xcache.segmented()) {
-                e = "VRAM needs an engine started with --vram-elastic (one NVIDIA GPU, --serve)";
+                e = "VRAM needs an engine started with --vram-elastic (one GPU, --serve)";
                 return false;
             }
             if (src.complement_ready()) {
