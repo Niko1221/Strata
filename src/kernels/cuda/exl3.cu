@@ -306,6 +306,26 @@ struct GemvWs { float* xh = nullptr; float* z = nullptr; int* pinv = nullptr; ui
 GemvWs g_ws;
 }  // namespace
 
+// out[o][i] = in[i][o]: a 32x32 tiled transpose, both sides coalesced.  The reconstruct hands back the weight
+// in the original basis as [in][out] (the GEMV's `y[j] = sum_i x[i] W[i][j]`), while a ggml block quant - and
+// `native_mmvq` - stores a row of `n_in` per output, so the loader transposes before it quantizes.
+__global__ void transpose_f16_kernel(const uint16_t* __restrict__ in, uint16_t* __restrict__ out, int rows, int cols) {
+    __shared__ uint16_t tile[32][33];
+    const int x = blockIdx.x * 32 + threadIdx.x;      // column in `in` == row in `out`
+    const int y = blockIdx.y * 32 + threadIdx.y;      // row in `in` == column in `out`
+    if (x < cols && y < rows) tile[threadIdx.y][threadIdx.x] = in[(size_t) y * cols + x];
+    __syncthreads();
+    const int ox = blockIdx.y * 32 + threadIdx.x;     // column in `out` == row in `in`
+    const int oy = blockIdx.x * 32 + threadIdx.y;     // row in `out` == column in `in`
+    if (ox < rows && oy < cols) out[(size_t) oy * rows + ox] = tile[threadIdx.x][threadIdx.y];
+}
+
+void exl3_transpose_f16(const uint16_t* in, uint16_t* out, int rows, int cols, void* stream) {
+    dim3 block(32, 32);
+    dim3 grid((cols + 31) / 32, (rows + 31) / 32);
+    transpose_f16_kernel<<<grid, block, 0, (cudaStream_t) stream>>>(in, out, rows, cols);
+}
+
 void exl3_gemv_reserve(int max_k, int max_n) {
     if (max_k > g_ws.cxh) { (void) cudaFree(g_ws.xh); g_ws.xh = nullptr; if (cudaMalloc(&g_ws.xh, (size_t) max_k * 4) != cudaSuccess) std::abort(); g_ws.cxh = max_k; }
     if (max_n > g_ws.cz) { (void) cudaFree(g_ws.z); g_ws.z = nullptr; if (cudaMalloc(&g_ws.z, (size_t) max_n * 4) != cudaSuccess) std::abort(); g_ws.cz = max_n; }

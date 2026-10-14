@@ -13,6 +13,10 @@ namespace strata::kernels {
 void exl3_reconstruct_weight(const uint16_t* trellis, int ki, int nj, int bits, int cb,
                              const uint16_t* suh, const uint16_t* svh, uint16_t* out, void* stream);
 
+// out[o][i] = in[i][o] (fp16, 32x32 tiles): the loader's requantization path needs the reconstructed weight
+// in the [out][in] form a block quant stores.  stream may be null.
+void exl3_transpose_f16(const uint16_t* in, uint16_t* out, int rows, int cols, void* stream);
+
 // Fused decode-time GEMV: y = H(x . suh) @ W_hat . H . svh, without ever materializing W.
 // x: ki*16 fp16 (one token); y: nj*16 fp16.  stream may be null.
 void exl3_gemv(const uint16_t* x, const uint16_t* suh, const uint16_t* svh, const uint16_t* trellis,

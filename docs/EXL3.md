@@ -313,11 +313,26 @@ not in the schedule.
 **Why a GGUF pack of the same model decodes faster.**  Measured, not guessed:
 
 - **A trellis weight costs about two loads and eleven ALU ops to decode**; a ggml block quant's `vec_dot` costs
-  about one load per 4-5 weights and 1-2 ALU.  The dense GEMV is load-instruction-bound: 3.5 G dense weights x 2
-  loads per token, 23 ms.  Requantizing the dense linears to Q5_K at load and serving them through the engine's
-  native MMVQ was built and measured (`strata-exl3-native`, 2560x10240): **0.94x** on `in_proj_qkv`, **0.29x** on
-  the shared expert's 640-wide matrices (the MMVQ call has a ~110 us floor) and **2.6x** only on `lm_head`, with a
-  25 s load-time cost.  Rejected on the measurement.
+  about one load per 4-5 weights and 1-2 ALU.  The dense GEMV was load-instruction-bound: 3.5 G dense weights x 2
+  loads per token, 23 ms.  **The dense linears are therefore requantized to Q8_0 at load**
+  (`stage_exl3_requantized`) and served by the engine's native MMVQ, which is the path a GGUF pack's dense
+  projections already take.  Measured on the W7800, a 2560x10240 matrix: the decode-GEMV kernel **106.8 us**
+  against the native Q8_0 MMVQ kernel's **31.8 us**, 3.4x.  The first attempt used Q5_K and was rejected on the
+  measurement: a 5-bit block quant on top of the trellis decode's own 10-bit codes measures a **4%** round-trip
+  error, and the model then answers "surface表面的表面的" - Q8_0's round-trip error is **0.65%** and the model is
+  correct.  Q8_0 is 1.7x the bytes of the 5-bit trellis it replaces (3.7 GiB against 2117 MiB of dense linears),
+  which the expert cache pays for: measured 24.57 GiB free -> **289 slots/layer** against 311 before.  It costs
+  ~40 s of load time, streamed through small row-chunk buffers: holding a whole matrix on the host (7 GB of fp16
+  for the model) leaves that much anonymous dirty memory behind, the kernel evicts the model's page cache for it,
+  and the expert reads then come off the SATA SSD - measured 1132 MiB of disk reads for 8 tokens and
+  ~500 ms/token of uploads against 14-27 ms.  `STRATA_EXL3_QUANT_THREADS` sets the quantizer's thread count and
+  `STRATA_EXL3_DENSE=exl3` keeps the trellis.
+- **The v-head reorder is part of the weight, and a requantized copy has to carry it.**  The GDN's v projections
+  are staged with their v heads permuted (`Vr::OutV`/`Out`/`In`: `attn_qkv`, `attn_gate`, `ssm_out`) and the
+  activations are permuted to match; `stage_exl3` reorders the trellis and the scales, so the requantizer runs the
+  same host-side reorder before it reconstructs.  Skipping it leaves those rows in the wrong order and every one
+  of the three roles then answers nonsense - measured, and it is why the QSA roles (`Vr::None`) were correct in
+  the same build while the GDN roles were not.
 - **The experts cannot go on the CPU pool the way a GGUF pack's do.**  The engine overlaps a GGUF pack's CPU
   expert work with the GPU's dense work; the CPU's EXL3 folded GEMV measures **493 ms/layer** against the GPU's
   **0.36 ms/layer** (`strata-exl3-moe`, 10 experts), 1370x.  The trellis decode has to stay on the GPU, and its

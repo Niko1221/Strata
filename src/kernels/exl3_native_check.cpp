@@ -5,6 +5,7 @@
 #include "strata/artifact/exl3_model.hpp"
 #include "strata/kernels/exl3.hpp"
 #include "strata/kernels/native_mmvq.hpp"
+#include "strata/kernels/cpu/exl3.hpp"
 
 #include <ggml.h>
 
@@ -27,7 +28,7 @@ int main(int argc, char** argv) {
         Exl3Model m(argv[1]);
         Exl3Linear L = m.linear(argv[2]);
         const std::string kind = argc > 3 ? argv[3] : "q5k";
-        const ggml_type type = kind == "q4k" ? GGML_TYPE_Q4_K : GGML_TYPE_Q5_K;
+        const ggml_type type = kind == "q4k" ? GGML_TYPE_Q4_K : kind == "q8" ? GGML_TYPE_Q8_0 : GGML_TYPE_Q5_K;
         const int ki = L.ki, nj = L.nj;
         const int n_in = ki * 16, n_out = nj * 16;
         std::printf("%s: in=%d out=%d bits=%d cb=%d\n", argv[2], n_in, n_out, L.bits, L.cb);
@@ -45,8 +46,37 @@ int main(int argc, char** argv) {
         exl3_reconstruct_weight(d_tr, ki, nj, L.bits, L.cb, d_suh, d_svh, d_w, nullptr);
         const cudaError_t re = cudaDeviceSynchronize();
         if (re != cudaSuccess) { std::fprintf(stderr, "reconstruct failed: %s\n", cudaGetErrorString(re)); return 1; }
+        // the reconstruct is [in][out]; a block quant stores a row of n_in per output
+        uint16_t* d_wt = nullptr;
+        if (cudaMalloc(&d_wt, (size_t) n_in * n_out * 2) != cudaSuccess) { std::fprintf(stderr, "malloc\n"); return 1; }
+        exl3_transpose_f16(d_w, d_wt, n_in, n_out, nullptr);
         std::vector<uint16_t> h_w((size_t) n_in * n_out);
-        (void) cudaMemcpy(h_w.data(), d_w, h_w.size() * 2, cudaMemcpyDeviceToHost);
+        (void) cudaMemcpy(h_w.data(), d_wt, h_w.size() * 2, cudaMemcpyDeviceToHost);
+        // ---- 1b. orientation check against the CPU reconstruct
+        {
+            std::vector<uint16_t> cpu_w((size_t) n_in * n_out);
+            strata::kernels::cpu::exl3_reconstruct_weight(L.trellis, L.ki, L.nj, L.bits,
+                                                          (strata::kernels::cpu::Exl3Codebook) L.cb, L.suh, L.svh,
+                                                          cpu_w.data());
+            auto h2f = [](uint16_t h) {
+                unsigned sign = (unsigned) (h >> 15) << 31, exp = (h >> 10) & 0x1F, man = h & 0x3FF, f;
+                if (exp == 0) { if (!man) f = sign; else { unsigned e2 = 127 - 15 + 1; unsigned mm = man; while (!(mm & 0x400)) { mm <<= 1; --e2; } f = sign | (e2 << 23) | ((mm & 0x3FF) << 13); } }
+                else if (exp == 0x1F) f = sign | 0x7F800000u | (man << 13);
+                else f = sign | ((exp + 127 - 15) << 23) | (man << 13);
+                float o; std::memcpy(&o, &f, 4); return o;
+            };
+            double same = 0, transp = 0, den = 0;
+            for (int i = 0; i < n_in; ++i)
+                for (int j = 0; j < n_out; ++j) {
+                    const double c = h2f(cpu_w[(size_t) i * n_out + j]);
+                    const double a = h2f(h_w[(size_t) i * n_out + j]);
+                    const double b = h2f(h_w[(size_t) j * n_in + i]);
+                    same += (a - c) * (a - c);
+                    transp += (b - c) * (b - c);
+                    den += c * c;
+                }
+            std::printf("orientation: as-is rel %.3e, transposed rel %.3e\n", std::sqrt(same / den), std::sqrt(transp / den));
+        }
 
         // ---- 2. requantize on the CPU, one row at a time (ggml's own from_float)
         const size_t row_bytes = ggml_row_size(type, n_in);
@@ -80,7 +110,12 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "cudaMalloc failed\n"); return 1;
         }
         (void) cudaMemcpy(d_q, q.data(), q.size(), cudaMemcpyHostToDevice);
-        (void) cudaMemset(d_x, 0, (size_t) n_in * 4);
+        {
+            // a NONZERO input: a zeroed one makes both GEMVs output zero and their difference meaningless
+            std::vector<float> x((size_t) n_in);
+            for (int i = 0; i < n_in; ++i) x[(size_t) i] = std::sin(0.37f * (float) i) * 0.3f;
+            (void) cudaMemcpy(d_x, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
+        }
 
         cudaStream_t st = nullptr;
         if (cudaStreamCreate(&st) != cudaSuccess) { std::fprintf(stderr, "stream\n"); return 1; }

@@ -5842,7 +5842,9 @@ int main(int argc, char** argv) {
     // At `pos == 0` that is `session_zero`, which is the reference's own initial condition - the embedding
     // broadcast to all `hc` streams.  After that `session_zero` would also wipe the recurrence, so the
     // broadcast is done directly.  Getting this wrong is invisible for exactly one token.
-    void* token_stream = o.stream_token ? main_cs : nullptr;
+    // The EXL3 path's dense head is a native tensor (`native_mmvq` requires an explicit stream), so it runs
+    // on the session stream even without --stream-token; everything else keeps the opt-in behaviour.
+    void* token_stream = (o.stream_token || !o.exl3_dir.empty()) ? main_cs : nullptr;
     auto put_input = [&](int64_t tok, int64_t pos) -> bool {
         if (!strata::core::embed_row(wt, g, tok, d_emb, token_stream, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());

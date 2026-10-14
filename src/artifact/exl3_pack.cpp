@@ -6,10 +6,17 @@
 #include "strata/core/layout.hpp"
 #include "strata/kernels/exl3.hpp"
 #include "strata/kernels/cpu/exl3.hpp"
+#include "strata/kernels/native_mmvq.hpp"
+
+#include <ggml.h>
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <cstdlib>
+#include <thread>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -400,6 +407,156 @@ bool stage_exl3(Exl3Pack::Impl& im, const RoleSpec& r, const ModelGeometry& g, c
 
 }  // namespace
 
+// ================================ the dense linears: a ggml block quant, made at load ================================
+//
+// **A TRELLIS WEIGHT COSTS ABOUT TWO LOADS AND ELEVEN ALU OPS TO DECODE; A GGML BLOCK QUANT'S `vec_dot` COSTS
+// ABOUT ONE LOAD PER FOUR OR FIVE WEIGHTS.**  Measured on the W7800, a 2560x10240 dense linear: the EXL3
+// decode-GEMV kernel 106.8 us against the native Q8_0 MMVQ kernel's 31.8 us, 3.4x.  The dense linears are
+// 2117 MiB of the model; as Q8_0 they are ~3.7 GiB, which the expert cache pays for (measured: 24.57 GiB free
+// -> 289 slots/layer against 311 at 5 bits), and the dense GEMV is still ~3x faster.
+//
+// **Q8_0, NOT A 5-BIT BLOCK QUANT.**  The trellis decode's values are ALREADY quantized (a 10-bit code per
+// weight), and a 5-bit block quant on top of them measures a 4% round-trip error - enough to turn the model
+// into "surface表面的表面的" (measured).  Q8_0's round-trip error is 0.65% (measured, the same way).
+//
+// **THE REQUANTIZATION STREAMS THROUGH SMALL BUFFERS.**  Holding a whole matrix on the host (7 GB of fp16 for
+// the model, one tensor at a time) leaves that much anonymous dirty memory behind, and the kernel evicts the
+// model's page cache to make room for it: measured, the expert reads then came off the SATA SSD - 1132 MiB of
+// disk reads for 8 tokens, ~500 ms/token of uploads against 14-27 ms.  A row chunk per worker keeps the host
+// footprint at a couple of MiB per worker and leaves the cache alone.
+//
+// **THE V-HEAD REORDER IS PART OF THE WEIGHT.**  The GDN's v projections are staged with their v heads permuted
+// - `stage_exl3` reorders the trellis and the scales, and the activations are permuted to match.  A
+// requantized copy has to carry the SAME permutation or its rows are in the wrong order: measured, every GDN
+// v role (attn_qkv, attn_gate, ssm_out - `Vr::OutV`/`Out`/`In`) then answers nonsense ("surface表面的表面的"),
+// while the QSA roles (`Vr::None`) are correct.  The host copies below are the same code `stage_exl3` runs, so
+// the two paths cannot drift.
+//
+// The routed EXPERTS stay EXL3: 45 GB of trellis streamed per token, where the decode's cost is amortized
+// against the read and nothing else could hold them.
+bool stage_exl3_requantized(Exl3Pack::Impl& im, const RoleSpec& r, const ModelGeometry& g, const std::string& hf_base,
+                            const std::string& engine_name, WeightTable& wt, std::string& err, uint64_t& bytes_out,
+                            void* q8_scratch) {
+    Exl3Linear L;
+    try { L = im.model.linear(hf_base); } catch (const std::exception& e) { err = e.what(); return false; }
+    const int n_in = L.in(), n_out = L.out();
+    const int words = 256 * L.bits / 16;
+    auto fail = [&](const char* what, cudaError_t e) {
+        err = std::string("exl3: ") + engine_name + ": " + what + ": " + cudaGetErrorString(e);
+        return false;
+    };
+    uint16_t *d_tr = nullptr, *d_suh = nullptr, *d_svh = nullptr, *d_w = nullptr, *d_wt = nullptr, *d_q = nullptr;
+    auto alloc = [&](uint16_t** p, size_t bytes) {
+        try { *p = (uint16_t*) im.alloc(bytes); } catch (const std::exception& e) { err = e.what(); return false; }
+        return true;
+    };
+    if (!alloc(&d_tr, (size_t) L.ki * L.nj * words * 2) || !alloc(&d_suh, (size_t) n_in * 2) ||
+        !alloc(&d_svh, (size_t) n_out * 2) || !alloc(&d_w, (size_t) n_in * n_out * 2) ||
+        !alloc(&d_wt, (size_t) n_in * n_out * 2)) return false;
+    const uint16_t* up_trellis = L.trellis;
+    const uint16_t* up_suh = L.suh;
+    const uint16_t* up_svh = L.svh;
+    std::vector<uint16_t> h_trellis, h_suh, h_svh;
+    if (r.vr != Vr::None) {
+        h_trellis.assign(L.trellis, L.trellis + (size_t) L.ki * L.nj * words);
+        h_suh.assign(L.suh, L.suh + (size_t) n_in);
+        h_svh.assign(L.svh, L.svh + (size_t) n_out);
+        const int64_t n_k = g.ssm_k_heads, n_v = g.ssm_v_heads, v_per_k = n_v / n_k;
+        const int64_t tiles_per_head = g.ssm_state_size / 16;
+        if (r.vr == Vr::Out || r.vr == Vr::OutV) {
+            const int64_t j0 = r.vr == Vr::OutV ? (g.ssm_conv_channels - g.ssm_value_dim) / 16 : 0;
+            for (int i = 0; i < L.ki; ++i)
+                reorder_v_blocks(h_trellis.data() + (size_t) i * L.nj * words, j0 * words, n_v,
+                                 tiles_per_head * words, n_k, v_per_k);
+            reorder_v_blocks(h_svh.data(), j0 * 16, n_v, g.ssm_state_size, n_k, v_per_k);
+        } else if (r.vr == Vr::In) {
+            reorder_v_blocks(h_trellis.data(), 0, n_v, tiles_per_head * (int64_t) L.nj * words, n_k, v_per_k);
+            reorder_v_blocks(h_suh.data(), 0, n_v, g.ssm_state_size, n_k, v_per_k);
+        } else {
+            err = "exl3: " + engine_name + ": this role's v reorder is not implemented for a requantized linear";
+            return false;
+        }
+        up_trellis = h_trellis.data(); up_suh = h_suh.data(); up_svh = h_svh.data();
+    }
+    if (cudaMemcpy(d_tr, up_trellis, (size_t) L.ki * L.nj * words * 2, cudaMemcpyHostToDevice) != cudaSuccess)
+        return fail("trellis upload", cudaGetLastError());
+    if (cudaMemcpy(d_suh, up_suh, (size_t) n_in * 2, cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(d_svh, up_svh, (size_t) n_out * 2, cudaMemcpyHostToDevice) != cudaSuccess)
+        return fail("scale upload", cudaGetLastError());
+    strata::kernels::exl3_reconstruct_weight(d_tr, L.ki, L.nj, L.bits, L.cb, d_suh, d_svh, d_w, nullptr);
+    // **THE RECONSTRUCT HANDS BACK [in][out]; A BLOCK QUANT STORES A ROW OF `n_in` PER OUTPUT.**  So the
+    // weight is transposed on the GPU (a 32x32 tiled kernel) before it is downloaded and quantized.
+    strata::kernels::exl3_transpose_f16(d_w, d_wt, n_in, n_out, nullptr);
+    if (cudaDeviceSynchronize() != cudaSuccess) return fail("reconstruct", cudaGetLastError());
+    (void) cudaFree(d_tr); (void) cudaFree(d_suh); (void) cudaFree(d_svh);
+
+    const ggml_type qtype = GGML_TYPE_Q8_0;
+    const size_t row_bytes = ggml_row_size(qtype, n_in);
+    if (!alloc(&d_q, row_bytes * (size_t) n_out)) return false;
+    const int chunk = 32;
+    std::atomic<int> next_row{0};
+    const unsigned hw_threads = std::max(1u, std::thread::hardware_concurrency());
+    const char* nw_env = std::getenv("STRATA_EXL3_QUANT_THREADS");
+    const int n_workers = nw_env != nullptr ? std::max(1, std::atoi(nw_env)) : (int) std::min<unsigned>(hw_threads, 8u);
+    std::string werr;
+    auto worker = [&] {
+        std::vector<uint16_t> h16((size_t) chunk * (size_t) n_in);
+        std::vector<float> f32((size_t) chunk * (size_t) n_in);
+        std::vector<uint8_t> q((size_t) chunk * row_bytes);
+        for (;;) {
+            const int r0 = next_row.fetch_add(chunk);
+            if (r0 >= n_out) break;
+            const int nr = std::min(chunk, n_out - r0);
+            const size_t elems = (size_t) nr * (size_t) n_in;
+            if (cudaMemcpy(h16.data(), d_wt + (size_t) r0 * (size_t) n_in, elems * 2, cudaMemcpyDeviceToHost) != cudaSuccess) {
+                werr = "reconstruct download: " + std::string(cudaGetErrorString(cudaGetLastError()));
+                return;
+            }
+            for (size_t i = 0; i < elems; ++i) f32[i] = f16_to_f32(h16[i]);
+            // `ggml_quantize_chunk` offsets BOTH sides itself: `src + start` and `dst + start_row*row_size`.
+            // So both pointers are shifted back by `start` and the function lands on this chunk's buffers.
+            const float* src_base = f32.data() - (size_t) r0 * (size_t) n_in;
+            uint8_t* dst_base = q.data() - (size_t) r0 * row_bytes;
+            ggml_quantize_chunk(qtype, src_base, dst_base, (int64_t) r0 * n_in, nr, n_in, nullptr);
+            if (std::getenv("STRATA_EXL3_Q5_CHECK") != nullptr && r0 == 0) {
+                // round trip: dequantize what we just quantized and compare with the source
+                std::vector<float> back(elems);
+                ggml_get_type_traits(qtype)->to_float(q.data(), back.data(), (int64_t) elems);
+                double num = 0, den = 0;
+                for (size_t i = 0; i < elems; ++i) { const double d = (double) back[i] - f32[i]; num += d * d; den += (double) f32[i] * f32[i]; }
+                std::fprintf(stderr, "exl3 q8 check %s: rel %.3e (first row, %zu elems)\n", engine_name.c_str(),
+                             std::sqrt(num / (den + 1e-30)), elems);
+            }
+            if (cudaMemcpy((uint8_t*) d_q + (size_t) r0 * row_bytes, q.data(), (size_t) nr * row_bytes,
+                           cudaMemcpyHostToDevice) != cudaSuccess) {
+                werr = "quantized upload: " + std::string(cudaGetErrorString(cudaGetLastError()));
+                return;
+            }
+        }
+    };
+    {
+        std::vector<std::thread> pool;
+        pool.reserve((size_t) n_workers - 1);
+        for (int i = 0; i < n_workers - 1; ++i) pool.emplace_back(worker);
+        worker();
+        for (std::thread& t : pool) t.join();
+    }
+    if (!werr.empty()) { err = "exl3: " + engine_name + ": " + werr; return false; }
+    (void) cudaFree(d_wt);
+
+    WeightRef w;
+    w.native_data = d_q;
+    w.native_type = (int) qtype;
+    w.native_q8_1 = q8_scratch;
+    w.ne0 = n_in;
+    w.ne1 = n_out;
+    w.elements = (int64_t) n_in * (int64_t) n_out;
+    w.kind = WeightKind::Verbatim;
+    wt.set(engine_name, w);
+    bytes_out += row_bytes * (size_t) n_out;
+    return true;
+}
+
 bool Exl3Pack::build(WeightTable& wt, std::string& err, void* stream) {
     (void) stream;
     Impl& im = *impl_;
@@ -465,9 +622,43 @@ bool Exl3Pack::build(WeightTable& wt, std::string& err, void* stream) {
             wt.set(p.first, w);
         }
 
-        // ---- EXL3 linears (attached, not staged)
+        // ---- the dense linears: requantized to a block quant and served by native_mmvq (see above).
+        // STRATA_EXL3_DENSE=exl3 keeps the trellis decode instead; STRATA_EXL3_DENSE=only:<role>[,...]
+        // requantizes just those roles (a bisect aid).  Both are A/B arms, and the way back if a machine
+        // prefers the trellis.  The q8_1 scratch is shared: the projections are serialized, as in NativeDense.
+        const char* dense_env = std::getenv("STRATA_EXL3_DENSE");
+        const std::string dense_only = dense_env != nullptr && std::strncmp(dense_env, "only:", 5) == 0 ? dense_env + 5 : "";
+        const bool dense_q5 = !(dense_env != nullptr && std::strcmp(dense_env, "exl3") == 0);
+        auto use_q5 = [&](const RoleSpec& r) {
+            if (!dense_q5 || r.xf != Xf::Id) return false;   // the split (indexer) roles keep the trellis
+            if (dense_only.empty()) return true;
+            return dense_only.find(r.engine) != std::string::npos;
+        };
+        void* q8_scratch = nullptr;
+        {
+            int64_t max_in = 0;
+            for (const RoleSpec& r : kGlobal)
+                if (r.exl3) { try { max_in = std::max(max_in, (int64_t) im.model.linear(r.hf).in()); } catch (...) {} }
+            for (int layer = 0; layer < 48; ++layer) {
+                const bool qsa = (layer % 4) == 3;
+                auto scan = [&](const RoleSpec* arr, size_t n) {
+                    for (size_t i = 0; i < n; ++i) {
+                        const RoleSpec& r = arr[i];
+                        if (!r.exl3 || (r.qsa_only && !qsa) || (r.gdn_only && qsa)) continue;
+                        try { max_in = std::max(max_in, (int64_t) im.model.linear(kLayerPrefix + std::to_string(layer) + "." + r.hf).in()); } catch (...) {}
+                    }
+                };
+                scan(kCommon, sizeof kCommon / sizeof kCommon[0]);
+                scan(qsa ? kQsa : kGdn, qsa ? sizeof kQsa / sizeof kQsa[0] : sizeof kGdn / sizeof kGdn[0]);
+            }
+            q8_scratch = im.alloc((size_t) strata::kernels::native_q8_1_bytes((int) max_in));
+            if (std::getenv("STRATA_EXL3_DEBUG") != nullptr)
+                std::fprintf(stderr, "exl3 dense: q8_1 scratch for max_in=%lld (%zu bytes)\n", (long long) max_in,
+                             (size_t) strata::kernels::native_q8_1_bytes((int) max_in));
+        }
         for (const RoleSpec& r : kGlobal)
-            if (r.exl3 && !stage_exl3(im, r, g, r.hf, r.engine, wt, err, exl3_bytes_)) return false;
+            if (r.exl3 && !(use_q5(r) ? stage_exl3_requantized(im, r, g, r.hf, r.engine, wt, err, exl3_bytes_, q8_scratch)
+                                      : stage_exl3(im, r, g, r.hf, r.engine, wt, err, exl3_bytes_))) return false;
         for (int layer = 0; layer < 48; ++layer) {
             const bool qsa = (layer % 4) == 3;
             auto for_each = [&](const RoleSpec* arr, size_t n) -> bool {
@@ -477,7 +668,10 @@ bool Exl3Pack::build(WeightTable& wt, std::string& err, void* stream) {
                     if (r.qsa_only && !qsa) continue;
                     if (r.gdn_only && qsa) continue;
                     std::string eng = "blk." + std::to_string(layer) + "." + r.engine;
-                    if (!stage_exl3(im, r, g, kLayerPrefix + std::to_string(layer) + "." + r.hf, eng, wt, err, exl3_bytes_))
+                    if (!(use_q5(r) ? stage_exl3_requantized(im, r, g, kLayerPrefix + std::to_string(layer) + "." + r.hf,
+                                                             eng, wt, err, exl3_bytes_, q8_scratch)
+                                    : stage_exl3(im, r, g, kLayerPrefix + std::to_string(layer) + "." + r.hf, eng, wt,
+                                                 err, exl3_bytes_)))
                         return false;
                 }
                 return true;

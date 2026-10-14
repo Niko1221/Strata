@@ -54,6 +54,10 @@ uint64_t q8k_bytes(int64_t n) { return (uint64_t) (n / Q8K_ELEMS_PER_BLOCK) * Q8
 /// quantized has none.  Returns false and names the tensor rather than building a form out of zeroes - which
 /// would decode every code as `0 + bias` and produce a perfectly finite wrong answer.
 bool sform_of(const WeightRef& r, strata::kernels::SForm& f, const std::string& name, std::string& err) {    if (r.exl3) { f = strata::kernels::SForm{}; return true; }   // EXL3 carries no canonical S-form
+    // A NATIVE tensor with no S-form: the EXL3 loader requantizes the dense linears to a block quant at load,
+    // and `native_mmvq` reads those by `native_type`, not through the S-form contract.  The pack's own native
+    // tensors keep their forms (they have them); this is the combination that has none.
+    if (r.native_data != nullptr && !r.quantized()) { f = strata::kernels::SForm{}; return true; }
     if (!r.quantized()) {        err = name + " is not a quantized tensor, so it has no S-form";        return false;    }    f.code_bits = r.code_bits;    f.code_bias = r.code_bias;    f.group_elems = r.group_elems;    f.codebook = r.codebook_iq4nl ? strata::kernels::Codebook::Iq4Nl : strata::kernels::Codebook::Affine;    f.has_offset = r.has_offset;    f.act_kind = r.act_kind;
 // carried, not derived - see the note on `SForm::act_kind`
 return true;}
@@ -85,6 +89,7 @@ struct Planes {    const uint8_t* codes = nullptr;    const float* scales = null
 };
 bool plane_ptrs(const WeightRef& r, const std::string& name, Planes& out, std::string& err) {
     if (r.exl3) { out = Planes{}; return true; }   // EXL3 planes are the fused trellis, not canonical
+    if (r.native_data != nullptr && !r.quantized()) { out = Planes{}; return true; }   // see sform_of
 // S2, S4 AND S8 ALL SPLIT THE SAME WAY.  The plane LOCATION does not depend on the code width - the three
 // sizes come from the index and are checked against the tensor below - so the guard is here to catch a
 // tensor that is not quantized at all, not to pick a decoder.  WHICH KERNEL reads the planes is the
