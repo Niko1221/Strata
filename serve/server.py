@@ -14,6 +14,12 @@ Images (optional, when the config has a "vision" entry): OpenAI image_url parts 
 data, http(s) URLs or local file paths) go through `strata-vision` (the model's mmproj file) and reach the engine as
 embeddings (`GENI`).  JPEG/PNG/BMP/GIF go straight in; WebP, TIFF, AVIF, ... (agents like omp send WebP) are
 converted to PNG first with Pillow.
+Videos (the same "vision" entry, plus ffmpeg/ffprobe on PATH or its "ffmpeg_dir"): video_url parts become what the
+Qwen3-VL processor makes of a video - sampled frames, two per temporal patch, each pair after its "<t seconds>" -
+each frame pair an image record for the engine (`strata-vision` ENCV), sized from the video's length to a budget
+that follows the context.  "video_fps", "video_tokens", "video_total_tokens", "video_context_share",
+"video_min_tokens", "video_max_frames" and "video_max_side" in the vision entry set the defaults; a part's own "fps",
+"max_frames", "max_side", "tokens", "total_tokens" override them.
 Requests whose prompt plus max tokens exceed the engine's context are REJECTED with 400, never truncated.
 An unset (or 0, or -1) max tokens means "unlimited": whatever the prompt leaves of the context.
 
@@ -59,7 +65,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
 from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
-                            tool_choice_of, unmark_think_literals)
+                            tool_choice_of, unmark_think_literals, videos_of)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
@@ -71,6 +77,19 @@ from serve import images as images_api  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
+VIDEO_PAD = "<|video_pad|>"
+VISION_END = "<|vision_end|>"
+# a video's defaults (the vision entry's video_* keys override them): Qwen's 2 fps; frames sized to at most 768 tokens
+# per frame pair (qwen-vl-utils' VIDEO_MAX_TOKEN_NUM; 1152x640 at 16:9; 18-28 px text was readable at 448, lost at
+# ~100 tokens on a busy background); and a
+# whole-video budget, total_tokens 0 = automatic: context_share of the model's context, at most 224K (the
+# Qwen3.8-Flash-Next card's hour-scale setting), shared by the videos of one request.  A video longer than the budget
+# allows at 768 gets smaller frames, down to min_tokens per pair (Qwen3-VL's minimum), then a lower frame rate -
+# strata-vision plans it from the length.  max_frames 2,048 is the Qwen3-VL report's evaluation cap
+VIDEO_DEFAULTS = {"fps": 2.0, "max_frames": 2048, "max_side": 0, "tokens": 768, "total_tokens": 0,
+                  "min_tokens": 128, "context_share": 0.6}
+VIDEO_MAX_TOTAL = 229376                  # 224K video tokens
+VIDEO_FALLBACK_TOTAL = 12288              # the budget when the context is not known yet
 
 
 def popen(what: str, args: list, **kw):
@@ -265,6 +284,7 @@ def engine_frozen(base: tuple[float, int], now: tuple[float, int]) -> bool:
 
 VISION_READY_S = _timeout_env("STRATA_VISION_READY_S", 300.0)
 VISION_ENCODE_S = _timeout_env("STRATA_VISION_ENCODE_S", 300.0)
+VISION_VIDEO_S = _timeout_env("STRATA_VISION_VIDEO_S", 1800.0)    # ENCV answers once the whole video is encoded
 ENGINE_READY_S = _timeout_env("STRATA_ENGINE_READY_S", 900.0)
 
 
@@ -2166,6 +2186,11 @@ class StrataEngine:
 
 
 IMAGE_URL_MAX = 32 << 20        # an image URL is read up to this (the web app attaches pictures of up to 20 MB)
+VIDEO_URL_MAX = 1 << 30         # a video URL is read up to this
+
+
+class VideoCancelled(ValueError):
+    """A video request's client went away while preparation was waiting or encoding."""
 
 
 def network_path(path: str) -> bool:
@@ -2237,6 +2262,9 @@ class Vision:
             args += ["--max-tokens", str(cfg["max_tokens"])]
         if cfg.get("min_tokens"):                       # #767: mtmd's image_min_tokens (a hand-edited key)
             args += ["--min-tokens", str(cfg["min_tokens"])]
+        if cfg.get("ffmpeg_dir"):                       # videos: ffmpeg and ffprobe, when not on PATH
+            args += ["--ffmpeg-dir", os.path.abspath(str(cfg["ffmpeg_dir"]))]
+        self.video = {k: cfg.get("video_" + k, v) for k, v in VIDEO_DEFAULTS.items()}
         self.dir = self.work_dir()
         self.spawn = (args, log, env)                   # to start it again after an unload
         self.proc = None
@@ -2275,9 +2303,10 @@ class Vision:
             raise RuntimeError(vision_start_error(line, self.spawn[1]))
         self.stopped = False
 
-    def _readline(self, timeout: float, what: str) -> str:
+    def _readline(self, timeout: float | None, what: str, cancel=None) -> str:
         """One line from the encoder, waiting at most `timeout` s (#1317).  On a timeout the encoder is killed, so the
-        next request starts a fresh one, and the read raises RuntimeError instead of holding the request turn."""
+        next request starts a fresh one, and the read raises RuntimeError instead of holding the request turn.  A
+        cancellable video read polls the request event so a client that leaves does not hold the encoder turn."""
         proc = self.proc
         got: queue.Queue = queue.Queue()
 
@@ -2288,14 +2317,25 @@ class Vision:
                 got.put("")
 
         threading.Thread(target=read, daemon=True).start()
-        try:
-            return got.get(timeout=timeout)
-        except queue.Empty:
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        while True:
+            if cancel is not None and cancel.is_set():
+                raise VideoCancelled("video request cancelled")
+            if deadline is not None:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                    raise RuntimeError(f"{what}: it said nothing for {timeout:.0f} s") from None
+                wait = min(left, 0.05) if cancel is not None else left
+            else:
+                wait = 0.05 if cancel is not None else None
             try:
-                proc.kill()
-            except OSError:
-                pass
-            raise RuntimeError(f"{what}: it said nothing for {timeout:.0f} s") from None
+                return got.get(timeout=wait)
+            except queue.Empty:
+                continue
 
     def alive(self) -> bool:
         return self.proc is not None and not self.stopped and self.proc.poll() is None
@@ -2340,19 +2380,21 @@ class Vision:
         raise ValueError("an image must be a data: URL, an http(s) URL or a local file path")
 
     @staticmethod
-    def download(url: str) -> bytes:
+    def download(url: str, limit: int | None = None, what: str = "image") -> bytes:
         """An image URL's bytes, at most IMAGE_URL_MAX of them: the whole response was read, so a huge or endless one
-        filled the memory.  One that cannot be read is a ValueError (a 400 that says so), not a dropped connection."""
-        too_big = f"the image URL's file is over {IMAGE_URL_MAX >> 20} MiB"
+        filled the memory.  One that cannot be read is a ValueError (a 400 that says so), not a dropped connection.
+        A video's URL: limit VIDEO_URL_MAX."""
+        limit = IMAGE_URL_MAX if limit is None else limit
+        too_big = f"the {what} URL's file is over {limit >> 20} MiB"
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "strata"}), timeout=60) as r:
                 size = r.headers.get("Content-Length") or ""
-                if size.isdigit() and int(size) > IMAGE_URL_MAX:
+                if size.isdigit() and int(size) > limit:
                     raise ValueError(too_big)
-                data = r.read(IMAGE_URL_MAX + 1)
+                data = r.read(limit + 1)
         except (OSError, HTTPException) as e:
-            raise ValueError(f"the image URL could not be read: {e}") from None
-        if len(data) > IMAGE_URL_MAX:
+            raise ValueError(f"the {what} URL could not be read: {e}") from None
+        if len(data) > limit:
             raise ValueError(too_big)
         return data
 
@@ -2436,13 +2478,178 @@ class Vision:
                 raise ValueError("the image could not be read: " + (line[4:] if line.startswith("ERR") else
                                                                      "the vision encoder stopped"))
             self.cache[key] = (out, int(line.split()[1]))
-            held = {str(p) for p in keep} | {str(out)}
-            for old in list(self.cache):                               # oldest first, but never one still in use
-                if len(self.cache) <= 64:
-                    break
-                if str(self.cache[old][0]) not in held:
-                    self.cache.pop(old)[0].unlink(missing_ok=True)
+            self._trim({str(p) for p in keep} | {str(out)})
             return self.cache[key]
+
+    def _trim(self, held: set):
+        for old in list(self.cache):                                   # oldest first, but never one still in use
+            if len(self.cache) <= 64:
+                break
+            if str(self.cache[old][0]) not in held:
+                self.cache.pop(old)[0].unlink(missing_ok=True)
+
+    @staticmethod
+    def parse_layout(text: str) -> list:
+        """strata-vision's LAYOUT -> [list of text token ids | int image cells, ...] in prompt order."""
+        out = []
+        for item in filter(None, text.split(";")):
+            if item[0] == "I":
+                out.append(int(item[1:]))
+            elif item[0] == "T":
+                out.append([int(t) for t in item[1:].split(",") if t])
+            else:
+                raise ValueError("the vision encoder sent a bad video layout")
+        return out
+
+    def video_options(self, opts: dict) -> dict:
+        """The server's video defaults with a request's own fps / max_frames / max_side / tokens / total_tokens on
+        top (checked); "budget" is the whole video's token budget: total_tokens, or automatic from the model's context
+        (`self.context`), shared by the request's videos (`self.videos_in_request`)."""
+        o = dict(self.video)
+        limits = {"fps": 60, "max_frames": 8192, "max_side": 16384, "tokens": 4096, "total_tokens": 1 << 20}
+        for k in limits:
+            if k in (opts or {}):
+                try:
+                    v = float(opts[k]) if k == "fps" else int(opts[k])
+                except (TypeError, ValueError):
+                    raise ValueError(f"a video's {k} must be a number") from None
+                if v < 0 or v > limits[k]:
+                    raise ValueError(f"a video's {k} is out of range")
+                o[k] = v
+        ctx = int(getattr(self, "context", 0) or 0)
+        auto = min(VIDEO_MAX_TOTAL, int(ctx * float(o["context_share"]))) if ctx > 0 else VIDEO_FALLBACK_TOTAL
+        auto //= max(1, int(getattr(self, "videos_in_request", 1) or 1))
+        o["budget"] = int(o["total_tokens"]) if int(o["total_tokens"] or 0) > 0 else auto
+        return o
+
+    def _video_exchange(self, command: str, timeout: float | None, cancel=None, progress=None) -> str:
+        """Send one video command, accepting a bounded stream of validated VPROG lines before its final reply."""
+        proc = self.proc
+        result: queue.Queue = queue.Queue()
+
+        def reply():
+            try:
+                while True:
+                    line = proc.stdout.readline(4097)
+                    result.put(line)
+                    if not line or not line.startswith("VPROG "):
+                        return
+            except BaseException as e:                    # publish a reader failure to the request thread
+                result.put(e)
+
+        thread = None
+        try:
+            if not self.alive():
+                raise RuntimeError("the vision encoder stopped")
+            proc.stdin.write(command + "\n")
+            proc.stdin.flush()
+            thread = threading.Thread(target=reply, daemon=True, name="strata-video-reply")
+            thread.start()
+            last_done, expected_total, lines = 0, None, 0
+            deadline = time.monotonic() + timeout if timeout is not None else None
+            while True:
+                if cancel is not None and cancel.is_set():
+                    raise VideoCancelled("video request cancelled")
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise RuntimeError(f"the video encoder did not answer within {timeout:.0f} s")
+                try:
+                    line = result.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                if isinstance(line, BaseException):
+                    raise RuntimeError("the vision encoder reply failed: " + str(line)) from line
+                if not line or len(line) > 4096 or not line.endswith("\n"):
+                    raise RuntimeError("the vision encoder returned an incomplete/oversized reply")
+                if line.startswith("VPROG "):
+                    fields = line.split()
+                    lines += 1
+                    ok = command.startswith("ENCV ") and lines <= 4096 and len(fields) == 3 and \
+                        all(x.isdecimal() for x in fields[1:])
+                    if ok:
+                        done, total = map(int, fields[1:])
+                        ok = total >= 1 and last_done < done <= total and expected_total in (None, total)
+                    if not ok:
+                        raise RuntimeError("the vision encoder returned invalid video progress")
+                    last_done, expected_total = done, total
+                    if progress is not None:
+                        progress(done, total)
+                    continue
+                return line.strip()
+        except BaseException:
+            self.stopped = True
+            try:
+                proc.kill()
+            except (AttributeError, OSError):
+                pass
+            try:
+                proc.wait(timeout=5)
+            except (AttributeError, OSError, subprocess.TimeoutExpired):
+                pass
+            raise
+        finally:
+            if thread is not None:
+                thread.join(timeout=5)
+
+    def encode_video(self, source: str | bytes, opts: dict | None = None, keep=(), progress=None,
+                     cancel=None) -> tuple[Path, int, list]:
+        """-> (embeddings file: one SVE1 record per frame pair, number of image cells, layout).  The layout replaces
+        the template's <|vision_start|><|video_pad|><|vision_end|>: text token ids (each pair's "<t seconds>" and its
+        <|vision_start|> / <|vision_end|>) and image cell counts, in order.  `source`: what load() reads, or the
+        video's bytes (an http(s) URL is downloaded before, outside the FIFO).  `keep` as for encode()."""
+        if cancel is not None and cancel.is_set():
+            raise VideoCancelled("video request cancelled")
+        data = source if isinstance(source, bytes) else self.load(source)
+        if cancel is not None and cancel.is_set():
+            raise VideoCancelled("video request cancelled")
+        o = self.video_options(opts or {})
+        key = hashlib.sha256(data + json.dumps(o, sort_keys=True).encode()).hexdigest()[:32]
+        with self.lock:
+            if key in self.cache:
+                if cancel is not None and cancel.is_set():
+                    raise VideoCancelled("video request cancelled")
+                self.cache[key] = self.cache.pop(key)                  # most recently used last
+                return self.cache[key]
+            vid, out = self.dir / f"{key}.vid", self.dir / f"{key}.sve"
+            vid.write_bytes(data)
+            complete = False
+            try:
+                command = (f"ENCV {o['fps']:g} {int(o['max_frames'])} {int(o['max_side'])} "
+                           f"{int(o['tokens'])} {int(o['budget'])} {int(o['min_tokens'])} "
+                           f"{vid.name} {out.name}")
+                line = self._video_exchange(command, VISION_VIDEO_S, cancel=cancel,
+                                            progress=progress).strip()
+                layout = self._readline(VISION_ENCODE_S, "the video could not be read", cancel=cancel).strip() \
+                    if line.startswith("OK") else ""
+                if not line.startswith("OK") or not layout.startswith("LAYOUT "):
+                    raise ValueError("the video could not be read: " + (line[4:] if line.startswith("ERR") else
+                                                                         "the vision encoder stopped"))
+                value = (out, int(line.split()[1]), self.parse_layout(layout[7:]))
+                self.cache[key] = value
+                self._trim({str(p) for p in keep} | {str(out)})
+                complete = True
+                return value
+            except VideoCancelled:
+                self.stopped = True
+                try:
+                    self.proc.kill()
+                except (AttributeError, OSError):
+                    pass
+                try:
+                    self.proc.wait(timeout=5)
+                except (AttributeError, OSError, subprocess.TimeoutExpired):
+                    pass
+                raise
+            except RuntimeError as e:
+                self.stopped = True
+                try:
+                    self.proc.kill()
+                except (AttributeError, OSError):
+                    pass
+                raise ValueError(str(e)) from None
+            finally:                                                   # as for an image: also when the pipe is gone
+                vid.unlink(missing_ok=True)
+                if not complete:
+                    out.unlink(missing_ok=True)
 
     def close(self):
         proc, self.proc = self.proc, None
@@ -2864,7 +3071,8 @@ def vision_env(cfg: dict, env: dict) -> dict:
 
 class ByteTokenizer:
     """Tiny stand-in tokenizer for tests without the pack: one id per UTF-8 byte, specials as ids >= 256."""
-    SPECIALS = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|vision_start|>", "<|image_pad|>", "<|vision_end|>"]
+    SPECIALS = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|vision_start|>", "<|image_pad|>", "<|vision_end|>",
+                "<|video_pad|>"]
 
     ALWAYS = ()                                     # specials matched without parse_special (type 4, as <think>)
 
@@ -3080,6 +3288,10 @@ class Service:
         self.last_request_at = None                      # when a request last started or finished
         self.started_at = time.time()
         self.status_lock = threading.Lock()
+        self.video_preparing = 0
+        self.video_progress = {}
+        self.video_prep = None                          # preparation slots, sized from the engine on first use
+        self.video_prep_lock = threading.Lock()
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
         # sharing the GPU with other programs (all off by default): unload the engine after this many idle seconds,
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
@@ -3652,17 +3864,28 @@ class Service:
                 s = {**s, **dict(list(self.live_reqs.values())[-1][0]), "queued": s.get("queued", 0)}
             hist = list(self.history)
             totals = dict(self.totals)
+            video_preparing = self.video_preparing
+            progress_entries = list(self.video_progress.values())
+            video_progress = max(progress_entries, key=lambda p: p["updated_at"], default=None)
+            if video_progress is not None:
+                video_progress = {k: v for k, v in video_progress.items() if k != "updated_at"}
         now = time.time()
         progress = getattr(self.engine, "progress", None)
-        if s.get("busy") and s.get("first_token") is None:
+        if video_preparing:
+            state = "preparing_video"
+        elif s.get("busy") and s.get("first_token") is None:
             state = "reading"
         elif s.get("busy"):
             state = "generating"
+        elif s.get("queued"):
+            state = "queued"
         elif not self.loaded():
             state = "unloaded"
         else:
             state = "idle"
-        live = {"state": state, "queued": s.get("queued", 0), "phase": s.get("phase") if s.get("busy") else None,
+        live = {"state": state, "queued": s.get("queued", 0), "video_preparing": video_preparing,
+                "video_progress": video_progress,
+                "phase": s.get("phase") if s.get("busy") else None,
                 "prompt_tokens": s.get("prompt_tokens") if s.get("busy") else None,
                 "prompt_read": None, "prompt_total": None, "generated": s.get("generated") if s.get("busy") else None,
                 "max_tokens": s.get("max_tokens") if s.get("busy") else None,
@@ -3845,12 +4068,63 @@ class Service:
                     content[n] = {"type": "text", "text": f"[image omitted: {why}]"}
         return fetched
 
+    def _prep_slots(self):
+        """How many video preparations may run at once: one, or the engine's batch slots."""
+        with self.video_prep_lock:
+            if self.video_prep is None:
+                self.video_prep = threading.Semaphore(max(1, int(getattr(self.engine, "batch", 0) or 0)))
+            return self.video_prep
+
+    def _set_video_progress(self, request_id, event):
+        entry = {**event, "updated_at": time.monotonic()}
+        with self.status_lock:
+            self.video_progress[request_id] = entry
+
     def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None):
+        has_video = bool(videos_of(messages))
+        if not has_video:
+            return self._prepare_impl(messages, tools, kwargs, max_new, force, req, cancel, progress=None)
+        slots = self._prep_slots()
+        queued = True
+        acquired = False
+        with self.status_lock:
+            self.status["queued"] += 1
+        try:
+            while not acquired:
+                if cancel is not None and cancel.is_set():
+                    raise VideoCancelled("video request cancelled")
+                acquired = slots.acquire(timeout=0.05)
+            with self.status_lock:
+                self.status["queued"] -= 1
+            queued = False
+            request_id = object()
+            with self.status_lock:
+                self.video_preparing += 1
+                self.video_progress[request_id] = {"stage": "staging", "done": 0, "total": None,
+                                                   "unit": "bytes", "updated_at": time.monotonic()}
+            try:
+                return self._prepare_impl(messages, tools, kwargs, max_new, force, req, cancel,
+                                          progress=lambda event: self._set_video_progress(request_id, event))
+            finally:
+                with self.status_lock:
+                    self.video_preparing -= 1
+                    self.video_progress.pop(request_id, None)
+        finally:
+            if queued:
+                with self.status_lock:
+                    self.status["queued"] -= 1
+            if acquired:
+                slots.release()
+
+    def _prepare_impl(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None, progress=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
-        # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
-        # between pictures and raise ClientGone
+        progress = progress or (lambda event: None)
+        videos = videos_of(messages)
+        has_video = bool(videos)
+        if cancel is not None and cancel.is_set():
+            raise (VideoCancelled("video request cancelled") if has_video else ClientGone())
         fetched = self._note_unreadable_tool_images(messages, cancel)
         ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
@@ -3858,50 +4132,114 @@ class Service:
         self.embeddings.path = None
         self.embeddings.keys = None
         images = images_of(messages)
-        if images:
+        records = []                                    # the embeddings files, in prompt order
+        if images or videos:
             if self.vision is None:
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
-                                 "'vision'), so it cannot read images")
+                                 "'vision'), so it cannot read " + ("images" if images else "videos"))
             pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
+            vpad = self.tok.encode(VIDEO_PAD, parse_special=True)[0]
             start = self.tok.encode(VISION_START, parse_special=True)[0]
+            end = self.tok.encode(VISION_END, parse_special=True)[0]
             # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
             # for as long as urlopen waited.
             def fetch(src):
                 if cancel is not None and cancel.is_set():
-                    raise ClientGone()
+                    raise (VideoCancelled("video request cancelled") if has_video else ClientGone())
                 return fetched[src] if src in fetched else Vision.download(src) \
                     if src.startswith(("http://", "https://")) else src
             images = [fetch(src) for src in images]
+            videos = [(Vision.download(src, VIDEO_URL_MAX, "video") if src.startswith(("http://", "https://")) else src,
+                       opts) for src, opts in videos]
+            if cancel is not None and cancel.is_set():
+                raise (VideoCancelled("video request cancelled") if has_video else ClientGone())
+            if videos:                                  # a video's automatic budget: a share of the context, split
+                self.vision.context = self.reported_ctx()               # between the request's videos
+                self.vision.videos_in_request = len(videos)
             # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
             # same FIFO as the requests.
-            with self._turn(cancel):
-                self._vision_up()
+            progress({"stage": "waiting_for_encoder", "done": None, "total": None, "unit": None})
+            encoded_v = []                          # never evicting a file this request still needs (#1072)
+            if videos:
+                # Video preparation has its own cancellation class: a client that leaves while queued or while ENCV
+                # runs must not become a normal 400.  Image-only preparation keeps _turn(cancel)'s ClientGone path.
+                acquired = False
+                while not acquired:
+                    if cancel is not None and cancel.is_set():
+                        raise VideoCancelled("video request cancelled")
+                    acquired = self.fifo.acquire(timeout=0.05)
                 try:
-                    encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
-                               else [self.vision.encode(src) for src in images])
+                    self._vision_up()
+                    try:
+                        encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
+                                   else [self.vision.encode(src) for src in images])
+                        for src, opts in videos:
+                            if cancel is not None and cancel.is_set():
+                                raise VideoCancelled("video request cancelled")
+                            held = [p for p, _ in encoded] + [v[0] for v in encoded_v]
+                            progress({"stage": "encoding", "done": 0, "total": None, "unit": "frames"})
+                            def video_progress(done, total):
+                                progress({"stage": "encoding", "done": done, "total": total, "unit": "frames"})
+                            encoded_v.append(self.vision.encode_video(src, opts, keep=held, progress=video_progress,
+                                                                      cancel=cancel))
+                    finally:
+                        self.last_image_at = time.time()
                 finally:
-                    self.last_image_at = time.time()
+                    self.fifo.release()
+            else:
+                with self._turn(cancel):
+                    self._vision_up()
+                    try:
+                        encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
+                                   else [self.vision.encode(src) for src in images])
+                    finally:
+                        self.last_image_at = time.time()
             # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
             # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
             # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
+            # A video's <|vision_start|><|video_pad|><|vision_end|> is replaced whole by its layout: each frame pair's
+            # "<t seconds>" text and start/end markers, and one <|image_pad|> per cell - the engine places image rows
+            # at image pads (and its PLE reads the image id there, as llama.cpp does for any embedding input).
             literal = self.tok.encode(IMAGE_PAD, parse_special=False)
-            out, k = [], 0
-            for j, t in enumerate(ids):
+            vliteral = self.tok.encode(VIDEO_PAD, parse_special=False)
+            out, k, kv, j = [], 0, 0, 0
+            while j < len(ids):
+                t = ids[j]
                 if t == pad and j > 0 and ids[j - 1] == start:
                     # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
                     if k == len(encoded):
                         raise ValueError("the prompt and its images do not match")
                     out += [pad] * encoded[k][1]
+                    records.append(encoded[k][0])
                     k += 1
+                elif t == vpad and j > 0 and ids[j - 1] == start:
+                    if kv == len(encoded_v):
+                        raise ValueError("the prompt and its videos do not match")
+                    path, _, layout = encoded_v[kv]
+                    out.pop()                                          # the template's <|vision_start|>
+                    for item in layout:
+                        out += [pad] * item if isinstance(item, int) else item
+                    records.append(path)
+                    kv += 1
+                    if j + 1 < len(ids) and ids[j + 1] == end:         # and its <|vision_end|>
+                        j += 1
                 elif t == pad:
                     out += literal
+                elif t == vpad:
+                    out += vliteral
                 else:
                     out.append(t)
+                j += 1
             if k != len(encoded):
                 raise ValueError("the prompt and its images do not match")
+            if kv != len(encoded_v):
+                raise ValueError("the prompt and its videos do not match")
             ids = out
+            if cancel is not None and cancel.is_set():
+                raise (VideoCancelled("video request cancelled") if has_video else ClientGone())
+            progress({"stage": "assembling_prompt", "done": None, "total": None, "unit": None})
         ctx = self.engine.max_context
         if ctx <= 0:
             if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
@@ -3926,19 +4264,22 @@ class Service:
                                  f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
                                  "model's strata-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
-        if images:
+        if cancel is not None and cancel.is_set():
+            raise (VideoCancelled("video request cancelled") if has_video else ClientGone())
+        if records:
             # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
             # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
             # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
-            combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
+            combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p in records))
             self.embeddings.path = combined             # first, so a half-written one is found as well
             # #2228: each picture's key is its normalized bytes' hash (the encoder's file name), so the engine's
             # conversation cache matches a picture by what it is, not by its embedding floats: a picture encoded again
             # (an encoder restart, the cache's eviction) with other bits still matches its checkpoints
             self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
-            write_temporary(combined, [p for p, _ in encoded])
+            write_temporary(combined, records)
         if req is not None and req.get("strata_prefix") is not None:
-            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
+            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(records))
+        progress({"stage": "handoff", "done": None, "total": None, "unit": None})
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
 
     PREFIX_END = "\u0001strata-prefix-end\u0001"          # marks where a message's shared part ends in the rendered prompt
@@ -5336,7 +5677,8 @@ def make_handler(svc: Service):
                 self.wfile.write(body)
             elif path in ("/health", "/api/health"):
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
-                                 "images": svc.vision is not None, "api_key": bool(svc.api_key),
+                                 "images": svc.vision is not None,
+                                 "videos": hasattr(svc.vision, "encode_video"), "api_key": bool(svc.api_key),
                                  "image_generation": svc.images is not None,
                                  "loaded": svc.loaded(), "service": "strata"})
             elif path.startswith("/v1/images/files/"):
@@ -5357,7 +5699,14 @@ def make_handler(svc: Service):
                     return
                 with svc.status_lock:
                     s = dict(svc.status)
+                    s["video_preparing"] = svc.video_preparing
+                    entries = list(svc.video_progress.values())
+                    latest = max(entries, key=lambda p: p["updated_at"], default=None)
+                    if latest is not None:
+                        s["video_progress"] = {k: v for k, v in latest.items() if k != "updated_at"}
                 now = time.time()
+                if s.get("video_preparing"):
+                    s["phase"] = (s.get("video_progress") or {}).get("stage", "preparing video")
                 if s.get("busy"):
                     s["elapsed_s"] = round(now - s["started"], 1)
                     if s.get("first_token"):
@@ -5371,7 +5720,7 @@ def make_handler(svc: Service):
                     loaded = svc.loaded()
                     model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
                              "meta": {"n_ctx": svc.reported_ctx()},
-                             "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
+                             "architecture": {"input_modalities": (["text", "image"] + (["video"] if hasattr(svc.vision, "encode_video") else [])) if svc.vision is not None else ["text"],
                                               "output_modalities": ["text"]}}
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
                         model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
@@ -5731,7 +6080,7 @@ def make_handler(svc: Service):
             and http(s) images are the page's own to send; files come from Strata's own page, a trusted origin or a
             client that is no browser.  ValueError (a 400)."""
             if self._foreign_origin() and any(not src.startswith(("data:", "http://", "https://"))
-                                              for src in images_of(messages)):
+                                              for src in images_of(messages) + [s for s, _ in videos_of(messages)]):
                 raise ValueError("a web page of another origin cannot have a file on this computer read as an "
                                  "image: send it as a data: URL (or add the page's origin to the config's "
                                  "trusted_origins)")
@@ -5834,7 +6183,13 @@ def make_handler(svc: Service):
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
-            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
+            try:
+                ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req,
+                                                      cancel=cancel)
+            except VideoCancelled:
+                if cancel.is_set():
+                    return
+                raise
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
                                {t["name"] for t in extra}) if use_mcp else None
@@ -5900,6 +6255,10 @@ def make_handler(svc: Service):
             except ClientGone:
                 self._note(outcome="disconnected")
                 return
+            except VideoCancelled:
+                if cancel.is_set():
+                    return
+                raise
             except ResponsesError as e:
                 return self._json(e.status, e.body())
             except ModelBusy as e:
@@ -6018,12 +6377,16 @@ def make_handler(svc: Service):
                 try:
                     ids, thinking, max_new = svc.prepare(messages, shown, kw, req.get("max_output_tokens") or 0, req=req,
                                                           cancel=cancel)
+                except VideoCancelled:
+                    raise
                 except ValueError:
                     if shown is tools:
                         raise
                     shown = tools                            # too long with the kept tools: the request as sent
                     ids, thinking, max_new = svc.prepare(messages, shown, kw, req.get("max_output_tokens") or 0, req=req,
                                                           cancel=cancel)
+            except VideoCancelled:
+                raise
             except ResponsesError:
                 raise
             except ValueError as e:                          # too long for the context, an image without vision
@@ -6061,7 +6424,13 @@ def make_handler(svc: Service):
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
-            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
+            try:
+                ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req,
+                                                      cancel=cancel)
+            except VideoCancelled:
+                if cancel.is_set():
+                    return
+                raise
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
             events = anthropic_events(svc, req, ids, thinking, tools, max_new, cancel, force=force)
             events = self._capture(events, "anthropic")
