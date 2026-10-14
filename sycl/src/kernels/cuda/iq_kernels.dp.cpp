@@ -428,7 +428,11 @@ __dpct_inline__ float vec_dot_iq4_xs_q8_1(const void *__restrict__ vbq,
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
         const int aux_q4 = get_int_b4(bq4->qs, iqs + j);
+#if STRATA_IQ4NL_FAST   // the codebook in registers, as vec_dot_iq4_nl_q8_1 and Split<23>: the same ints
+        const sycl::int2 v = iq4nl_pair(aux_q4);
+#else
         const sycl::int2 v = get_int_from_table_16(aux_q4, kvalues_iq4nl);
+#endif
         const int u0 = get_int_b4(bq8_1[iqs / 4].qs, j + 0);
         const int u1 = get_int_b4(bq8_1[iqs / 4].qs, j + 4);
         sumi = ggml_cuda_dp4a(v.x(), u0, sumi);
