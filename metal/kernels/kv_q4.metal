@@ -19,6 +19,14 @@
 //
 // Mac has no paging (unified memory): the page table is the identity where the engine passes one.
 //
+// THE SHARED PRELUDE.  Everything between here and the "end of the shared prelude" banner is the single source of
+// the q4 numerics (the fp16 bits, the group tie rule, the FWHT butterfly step): qsa.metal's q4 mode (its function
+// constant 25) uses these definitions through metal/'s concatenation convention - every mtl_rt compile() list that
+// names qsa.metal prepends THIS file, as qsa2.metal and qsa_prompt.metal already lean on qsa.metal's.  There is
+// deliberately no separate kv_q4_shared.metalh to #include: metal/src/engine/kv_q4_host.cpp compiles this file
+// ALONE as a bare source string (gpu::metal::pipeline), where no include path exists, so this file must stay
+// textually self-contained.  Edit the prelude only with both consumers in mind.
+//
 // Two binding forms of every kernel, one body: the CUDA-shaped standalone kernels (each pointer/scalar its own
 // buffer - what tests/kv_q4_parity.cpp drives through mtl_rt) and the *_e twins that read ONE argument struct
 // from buffer 0 (the engine's dispatch: strata/gpu/metal.hpp's dispatch() binds one bytes blob at index 0, and
@@ -80,6 +88,13 @@ static inline float f32_from_f16(ushort h) {
     return as_type<float>(out);
 }
 
+// one butterfly step of the 256-point transform, the SHARED arithmetic unit: x is this thread's pre-step value,
+// y its xor partner's (simd_shuffle_xor within a simdgroup, or the staged threadgroup slot of the partner
+// simdgroup's same lane); the side whose index bit h is clear adds, the set side takes partner - self.
+// fwht256_lane below and qsa.metal's fused fwht_row256 both route every butterfly through here, so the
+// standalone and the fused rotation cannot drift.
+static inline float fwht_step(float x, float y, bool low) { return low ? x + y : y - x; }
+
 // ---- one 32-value group in one simdgroup (lane = element), ggml's q4_0: d = (the value of largest |x|) / -8,
 // q = clamp(trunc(fma(x, 1/d, 8.5)), 0, 15).  Returns the scale bits; `byte` is lane t's packed byte for t < 16
 // (element t in the low nibble, t + 16 in the high one).  The tie rule keeps every lane on the same scale.
@@ -99,14 +114,21 @@ static inline ushort q4_group(float x, ushort lane, thread uchar& byte) {
     return f16_from_f32(d);
 }
 
-// pool row = ((page * kv_heads + h) * page_size + cell), 8 blocks of head_dim 256 -> 144 B (see kv_q4.cu)
+// pool row = ((page * kv_heads + h) * page_size + cell), 8 blocks of head_dim 256 -> 144 B (see kv_q4.cu).
+// qsa.metal calls this with the fused pool's row cell * kv_heads + h (no paging on a Mac).
 static inline void q4_store(device uchar* pool, ulong row, int b, ushort lane, ushort d, uchar byte) {
     device kv_q4_blk* blk = (device kv_q4_blk*)(pool + row * sizeof(kv_q4_blk) * 8) + b;
     if (lane == 0) blk->d = d;
     if (lane < 16) blk->qs[lane] = byte;
 }
 
-// ---- fwht256: one row per simdgroup, 8 values per lane in registers (kv_q4.cu's fwht256_kernel)
+// ---- end of the shared prelude: nothing below is referenced by qsa.metal ----
+
+// ---- fwht256: one row per simdgroup, 8 values per lane in registers (kv_q4.cu's fwht256_kernel).  The fused
+// qsa.metal path cannot use this form (its rows are one value per thread over 8 simdgroups): its fwht_row256
+// walks the SAME stage order (the low 5 index bits across the lanes, then 32/64/128 across the simdgroups) and
+// the same fwht_step arithmetic, so the two forms agree bit for bit - tests/kv_q4_ref.h's fwht256_ref mirrors
+// this order and checks both.
 static inline void fwht256_lane(device const float* src, device float* dst, ulong n_rows, float scale,
                                 ulong r, ushort lane) {
     if (r >= n_rows) return;
@@ -118,11 +140,7 @@ static inline void fwht256_lane(device const float* src, device float* dst, ulon
     for (int i = 0; i < el_w; ++i) reg[i] = row_src[i * 32 + lane] * scale;
 
     for (ushort h = 1; h < 32; h *= 2) {   // the low 5 index bits live across lanes
-        for (int j = 0; j < el_w; ++j) {
-            const float val = reg[j];
-            const float val2 = simd_shuffle_xor(val, h);
-            reg[j] = (lane & h) == 0 ? val + val2 : val2 - val;
-        }
+        for (int j = 0; j < el_w; ++j) reg[j] = fwht_step(reg[j], simd_shuffle_xor(reg[j], h), (lane & h) == 0);
     }
     for (int h = 32; h < 256; h *= 2) {    // the high 3 bits across each lane's registers
         const int step = h / 32;
