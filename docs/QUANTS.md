@@ -129,7 +129,9 @@ tokens).
 
 **Dense Q8_0 GEMVs** (`q8_gemv_bench`, the engine's shapes, 2-4 columns): one row per block where it was measured
 faster, the same bits as two (R9700: 2560 -> 10240 / 6144 / 12288 at 76-86% of 644 GB/s instead of 51-80%; RTX A4000:
-+1-4%, and 6144 -> 2560 at 6 columns 70% -> 76%). UD-Q4_K_XL decode +1.0-2.7% on the R9700, the same text.
++1-4%, and 6144 -> 2560 at 6 columns 70% -> 76% - reverted on sm_86 to two rows since 0.1.44.1, the rule costs ~20-25%
+decode on an RTX A3000, #2441; `STRATA_NO_MMVQ_ROWS2=1` re-enables it there for a re-measure). UD-Q4_K_XL decode
++1.0-2.7% on the R9700, the same text.
 
 **NVIDIA with the RAM budget** (RTX A4000 16 GB, Xeon E5-2643 v3, 62 GB: UD-Q4_K_XL with 39 GiB of its experts in RAM,
 the rest read from an NVMe SSD at 2.1 GB/s): 14-20 tokens/s and a 4K prompt at 134-144 tokens/s, bound by the SSD;
