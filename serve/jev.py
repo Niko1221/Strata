@@ -221,6 +221,66 @@ def v_branch(qdef, key: str) -> str:
             f"Answer:")
 
 
+VISION_PROMPT_DEFAULT = "Describe this game screen:"
+
+
+def handle_image(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
+    """POST /v1/systemone with image_b64 — M3.8 two-call pattern, ONE request on the wire:
+    (1) the image is encoded and a bounded summary generated through Strata's existing
+    per-preset vision path (svc.prepare does the encode + image-pad expansion), then
+    (2) the summary becomes the decision STATE and the standard /v1/systemone readout
+    (L or V mode) answers the questions.  Donor contract (server.cpp:2419-2603):
+    image_b64 + optional vision_prompt (default 'Describe this game screen:') ->
+    image_summary + answers + stages_used ['vision', 'decision']."""
+    if not isinstance(req, dict) or "questions" not in req or not req.get("image_b64"):
+        return _err("image_b64", "required for the image decision path")
+    b64 = req["image_b64"]
+    if not isinstance(b64, str) or len(b64) < 64:
+        return _err("image_b64", "too short")
+    if svc.vision is None:
+        return 400, {"error": {"type": "invalid_request_error",
+                               "param": "image_b64",
+                               "message": "vision not loaded on this server (no vision entry in the config)"}}
+    qdefs, err_body = parse_questions(req["questions"])
+    if qdefs is None:
+        return err_body
+    vprompt = req.get("vision_prompt") or VISION_PROMPT_DEFAULT
+
+    # ---- stage 1: vision summary (Strata's existing path, engine FIFO held) ----
+    data_uri = "data:image/png;base64," + b64 if not b64.startswith("data:") else b64
+    messages = [{"role": "user",
+                 "content": [{"type": "image", "source": data_uri},
+                             {"type": "text", "text": vprompt}]}]
+    try:
+        ids, _, max_new = svc.prepare(messages, tools=None,
+                                      kwargs={"enable_thinking": False}, max_new=160)
+    except (ValueError, OSError) as e:
+        return 400, {"error": {"type": "invalid_request_error", "param": "image_b64",
+                               "message": f"vision: {e}"}}
+    cancel = threading.Event()
+    out = []
+    with svc.fifo:
+        for tok in svc.engine.generate(ids, min(max_new, 160), {}, cancel):
+            out.append(tok)
+            if len(out) >= 160:
+                break
+    summary = svc.tok.decode(out).split("<|im_end|>")[0].strip()
+
+    # ---- stage 2: decision on the summary state (the standard readout) ----
+    sub = {k: v for k, v in req.items() if k not in ("image_b64", "vision_prompt")}
+    sub["state"] = {"image_summary": summary} if summary else summary
+    if not summary:
+        return 502, {"error": {"type": "server_error",
+                               "message": "vision stage produced an empty summary; "
+                                          "the decision stage was not run (fail-closed)"}}
+    code, body = handle(svc, sub, mode)
+    if code != 200:
+        return code, body
+    body["image_summary"] = summary
+    body["stages_used"] = ["vision", "decision"]
+    return code, body
+
+
 def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     """POST /v1/systemone -> (HTTP status, body).  The whole inference holds the engine turn
     (svc.fifo), like every other engine-touching path."""
