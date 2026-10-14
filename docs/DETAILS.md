@@ -942,7 +942,9 @@ print(r.choices[0].message.content)
 
 **Conversation cache.** A request that continues a chat reads only the part after what the engine already holds: the
 live session, or one of the checkpoints it keeps in RAM (up to 6, ~118 MB each, taken at the start of each new
-assistant turn and every 16K prompt tokens). A checkpoint is used only when the prompt starts with exactly its tokens
+assistant turn and every 16K prompt tokens; checkpoints that came from a parked image written with
+`--session-state-codec bf16` stay coded in RAM at ~59 MB and are widened only if one is chosen for a rewind). A
+checkpoint is used only when the prompt starts with exactly its tokens
 and pictures. The oldest checkpoint - in practice the end of the system prompt, which every chat of the same client
 shares - is kept for good while the rest rotates by least recent use, so a NEW chat that shares that prefix starts
 reading after it instead of from token 0. A prompt read from the start is also checkpointed at the end of its system
@@ -1146,7 +1148,7 @@ those by name. Measured on a Tesla V100 32 GB with an RTX 2080 Ti, 93 GB RAM, Li
 262144 context, the same conversation both ways: 1,205,289,012 B becomes 1,087,225,924 B (-9.8%) at 63,459 tokens,
 734,789,228 B becomes 616,726,140 B (-16.1%) at 32,650, `save_ms` 546.4 -> 503.2 and `restore_ms` 759.5 -> 714.3. The
 saving is set by the checkpoint spacing and not by the length - one running state is 118,063,152 B fp32 and 59,031,600 B
-coded, and a file carries one for the live conversation plus one per 16,384 tokens - so a 37-token conversation's file
+coded, and a file carries one for the live conversation plus the deepest checkpoint the RAM chain holds - so a 37-token conversation's file
 drops from 236,738,756 B to 118.7 MB. Over the 29,417,472 floats of a 63K conversation's recurrent state the worst value
 moves 0.3891% and the typical one 0.166%; two separate fp32 runs of this engine move that same state 26 times more, and
 with `--adapt-swaps 0 --pcie-frac 0` pinned they move it not at all, in which case a coded and an uncoded restore of the
