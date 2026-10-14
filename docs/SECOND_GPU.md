@@ -147,6 +147,11 @@ alternative to the CUDA1-3 caches above, not a third tier beside them.
   the peer computes; -1 is half of chunk x top-k, 0 keeps prompt rows on the
   primary.
 
+Through the server, list both cards in the config's `"gpu"` (e.g. `[0, 1]`, numbered as nvidia-smi numbers them)
+and add `--peer-device 1` to its `"args"`; the number is the card's position in that list (with `"gpu": [2, 0]`,
+`--peer-device 1` is nvidia-smi's card 0). Several GPUs in `"gpu"` are otherwise a layer split: the server adds
+`--layer-split` only when `--peer-device` is not among the args.
+
 `--peer-device` requires `--expert-profile` and an enabled expert cache, and
 the device must be visible; it refuses otherwise. It also refuses
 `--layer-split` (a different second-GPU mode: use one or the other) and

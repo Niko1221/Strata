@@ -189,14 +189,14 @@ template <int TYPE, typename T>
 __dpct_inline__ void dequant_kernel(const uint8_t *__restrict__ blocks,
                                     int64_t row_bytes, int64_t row0,
                                     int64_t rows, int64_t groups_per_row,
-                                    T *__restrict__ out) {
+                                    int64_t ld, T *__restrict__ out) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int64_t g =
         (int64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
         item_ct1.get_local_id(2);
     if (g >= rows * groups_per_row) return;
     const int64_t r = g / groups_per_row, gi = g % groups_per_row;
-    group32<TYPE>(blocks + (row0 + r) * row_bytes, (int) gi, out + r * groups_per_row * 32 + gi * 32);
+    group32<TYPE>(blocks + (row0 + r) * row_bytes, (int) gi, out + r * ld + gi * 32);
 }
 
 bool geometry(int type, int& block_elems, int& block_bytes) {
@@ -217,7 +217,8 @@ bool geometry(int type, int& block_elems, int& block_bytes) {
 }
 
 template <typename T>
-void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t cols, T* out, void* stream) {
+void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t cols, T* out, void* stream,
+            int64_t ld = 0) {
     int be = 0, bb = 0;
     if (!geometry(type, be, bb) || cols % be != 0 || rows <= 0) {
         std::fprintf(stderr, "dequant: unsupported type %d or shape %lld x %lld\n", type, (long long) rows,
@@ -225,6 +226,7 @@ void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t co
         std::exit(1);
     }
     const int64_t row_bytes = cols / be * bb, gpr = cols / 32, total = rows * gpr;
+    if (ld <= 0) ld = cols;
     const unsigned grid = (unsigned) ((total + 255) / 256);
     const uint8_t* p = (const uint8_t*) blocks;
     dpct::queue_ptr st = strata::q_of(stream);
@@ -239,7 +241,8 @@ void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t co
             auto row0_ct2 = row0;                                              \
             auto rows_ct3 = rows;                                              \
             auto gpr_ct4 = gpr;                                                \
-            auto out_ct5 = out;                                                \
+            auto ld_ct5 = ld;                                                  \
+            auto out_ct6 = out;                                                \
                                                                                \
             cgh.parallel_for<dpct_kernel_name<class dequant_kernel_ec9311,     \
                                               dpct_kernel_scalar<TY>, T>>(     \
@@ -248,7 +251,7 @@ void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t co
                                   sycl::range(1, 1, 256)),                     \
                 exp_props, [=](sycl::nd_item<3> item_ct1) {                    \
                     dequant_kernel<TY, T>(p_ct0, row_bytes_ct1, row0_ct2,      \
-                                          rows_ct3, gpr_ct4, out_ct5);         \
+                                          rows_ct3, gpr_ct4, ld_ct5, out_ct6); \
                 });                                                            \
         });                                                                    \
     } break
@@ -304,6 +307,15 @@ void dequant_f16(int ggml_type, const void* blocks, int64_t row0, int64_t rows, 
         return;
     }
     launch<H16>(ggml_type, blocks, row0, rows, cols, reinterpret_cast<H16*>(out), stream);
+}
+
+bool dequant_f16_ld(int ggml_type, const void* blocks, int64_t row0, int64_t rows, int64_t cols, int64_t ld,
+                    uint16_t* out, void* stream) {
+    int be = 0, bb = 0;
+    if (iq_only(ggml_type) || !geometry(ggml_type, be, bb) || cols % be != 0 || rows <= 0 || ld < cols || ld % 8 != 0)
+        return false;
+    launch<H16>(ggml_type, blocks, row0, rows, cols, reinterpret_cast<H16*>(out), stream, ld);
+    return true;
 }
 
 void dequant_f32(int ggml_type, const void* blocks, int64_t row0, int64_t rows, int64_t cols, float* out, void* stream) {

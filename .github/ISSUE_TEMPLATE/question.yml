@@ -1,0 +1,22 @@
+name: Question
+description: Ask how to use Strata, or share a result
+title: "Question: "
+labels: ["question"]
+body:
+  - type: markdown
+    value: |
+      Not sure how to do something, or want to share numbers from your machine? Ask here.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What you're trying to do. Include your version, GPU, and OS if it affects the answer.
+    validations:
+      required: true
+  - type: textarea
+    id: numbers
+    attributes:
+      label: Results (optional)
+      description: Only if you ran a benchmark or measured speed. Model, quant, context, and the tok/s you get.
+    validations:
+      required: false

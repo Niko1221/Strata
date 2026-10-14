@@ -16,14 +16,19 @@ and the formats change often; the engine boundary is token ids in, text deltas o
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import threading
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import jinja2
 from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+LOGGER = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------------------------------------ template
@@ -47,6 +52,7 @@ class ChatTemplate:
         env.globals["raise_exception"] = raise_exception
         self.source = Path(path).read_text(encoding="utf-8")
         self.template = env.from_string(self.source)
+        self.caps = self._detect_caps()
 
     def render(self, messages: list[dict], tools: list[dict] | None = None, add_generation_prompt: bool = True,
                **kwargs) -> str:
@@ -59,15 +65,66 @@ class ChatTemplate:
         return self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
                                     **kwargs)
 
+    def _detect_caps(self) -> dict[str, bool]:
+        """llama.cpp's capability names, checked at load time against this template and Strata's tool-call format.
+        These are rendering hints, not a guarantee that the model will follow a request."""
+        def render(messages, tools=None):
+            try:
+                return self.render(messages, tools=tools)
+            except Exception as exc:                # noqa: BLE001 - a hint only: never stop the server for a probe
+                # A template may reject a role or feature (a custom one may fail in any way): the feature is off,
+                # discovery still answers for the others, and the start-up goes on.
+                LOGGER.debug("chat template capability probe failed: %s", exc, exc_info=True)
+                return ""
+
+        user = {"role": "user", "content": "strata_caps_user"}
+        tools = [{"name": f"strata_caps_call_{i}", "description": "strata_caps_description",
+                  "parameters": {"type": "object", "properties": {"arg": {"type": "string"}}}}
+                 for i in range(2)]
+        tool_prompt = render([user], tools)
+
+        def calls_supported(count):
+            calls = [{"name": f"strata_caps_call_{i}", "arguments": {"arg": f"strata_caps_arg_{i}"}}
+                     for i in range(count)]
+            messages = [user, {"role": "assistant", "content": "",
+                               "tool_calls": [{"function": call} for call in calls]}]
+            replies = [f"strata_caps_result_{i}" for i in range(count)]
+            messages += [{"role": "tool", "content": reply} for reply in replies] + [user]
+            prompt = render(messages, tools)
+            # Instructions include example XML and literal tag names, which are not model output. Parse only
+            # complete calls to our probe functions, using the same body parser as OutputParser.
+            bodies = re.findall(r"<tool_call>\s*(<function=strata_caps_call_\d+>.*?</function>)\s*</tool_call>",
+                                prompt, re.S)
+            try:
+                parsed = [parse_tool_call(body) for body in bodies]
+            except ValueError:
+                return False
+            return [{"name": call.name, "arguments": call.arguments} for call in parsed] == calls \
+                and all(reply in prompt for reply in replies)
+
+        history = [user, {"role": "assistant", "content": "strata_caps_answer",
+                          "reasoning_content": "strata_caps_reasoning"}, user]
+        return {"supports_tools": all(s in tool_prompt for s in
+                                      ("strata_caps_call_0", "strata_caps_description", "<tool_call>", "<function=")),
+                "supports_tool_calls": calls_supported(1),
+                "supports_system_role": "strata_caps_system" in render(
+                    [{"role": "system", "content": "strata_caps_system"}, user]),
+                "supports_parallel_tool_calls": calls_supported(2),
+                "supports_preserve_reasoning": "strata_caps_reasoning" in render(history)}
+
 
 # ------------------------------------------------------------------------------------------------ requests
+# The content-part types the readers take as text (a part with no type that has a "text" field reads as text too)
+TEXT_PARTS = ("text", "input_text", None)
+
+
 def _text_of(content) -> str:
     if content is None:
         return ""
     if isinstance(content, str):
         return content
     return "".join(part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") in
-                   ("text", "input_text", None))
+                   TEXT_PARTS)
 
 
 IMAGE_PARTS = ("image_url", "input_image", "image")
@@ -131,9 +188,41 @@ def _parts_of(content):
             continue
         if part.get("type") in IMAGE_PARTS:
             items.append({"type": "image", "source": _image_source(part)})
-        elif part.get("type") in ("text", "input_text", None) and "text" in part:
+        elif part.get("type") in TEXT_PARTS and "text" in part:
             items.append({"type": "text", "text": part.get("text", "")})
     return items
+
+
+# The blocks a messages request may carry: text, the image parts, thinking, tool_use and tool_result.
+# redacted_thinking is allowed only to be dropped without an error: another server's encrypted reasoning, which
+# carries nothing this server can read - the same reason responses.py's _reasoning_text gives for another server's
+# encrypted_content.
+ANTHROPIC_BLOCKS = ("text",) + IMAGE_PARTS + ("thinking", "tool_use", "tool_result", "redacted_thinking")
+
+
+def _check_parts(content, path: str, kinds):
+    """A request's content parts (on chat) or content blocks (on messages), looked at while the request is converted.
+    A part whose type this server does not read (a file, audio, a document, Anthropic's tool_reference,
+    search_result, server_tool_use / web_search_tool_result blocks, ...) is left out of the prompt exactly as it always
+    was, with a debug line: real clients (Claude Code, Codex, opencode, Cline, Continue, Open WebUI) send such parts
+    next to text the model can answer from, so refusing them would break requests that work.  A "refusal" part is read
+    as its text, as /v1/responses does.  Content that is not a list, and a part that is not an object, passes through
+    unchanged."""
+    if not isinstance(content, list):
+        return content
+    out = content
+    for j, part in enumerate(content):
+        if not isinstance(part, dict):
+            continue
+        kind = part.get("type")
+        if kind == "refusal":
+            if out is content:
+                out = list(content)
+            out[j] = {"type": "text", "text": part.get("refusal") or ""}
+        elif kind not in kinds:
+            LOGGER.debug("%s[%d].type: content part of type %r is not read by this server; left out of the prompt",
+                         path, j, kind)
+    return out
 
 
 def images_of(messages: list[dict]) -> list[str]:
@@ -153,7 +242,15 @@ THINK_TAGS = {"<think>": "\U000F0E01", "</think>": "\U000F0E02"}
 # the same special ids, so text with <|vision_start|><|image_pad|> before a picture took that picture's embeddings
 VISION_TAGS = {"<|vision_start|>": "\U000F0E03", "<|image_pad|>": "\U000F0E04", "<|vision_end|>": "\U000F0E05",
                "<|video_pad|>": "\U000F0E06"}
-LITERAL_TAGS = {**THINK_TAGS, **VISION_TAGS}
+# #2026: `</tool_call>` the same way.  A user asking for the string verbatim handed the model the real end-of-call token
+# (type 4, matched everywhere); it copied that token into its answer and the reply came back empty.  An assistant
+# message keeps its own: a client replaying the model's raw call text sends the tokens the model wrote.
+# 0.1.44: `<tool_call>`, `<tool_response>` and `</tool_response>` are type 4 too (ids 248058, 248066, 248070), so a quoted
+# one handed the model the real call / tool-result marker in the same way (found by 47Hunter47 in #2026).  The template
+# writes the tool-result markers around a tool message itself; only the text inside a message is marked.
+TOOL_LITERAL_TAGS = {"</tool_call>": "\U000F0E07", "<tool_call>": "\U000F0E08", "<tool_response>": "\U000F0E09",
+                     "</tool_response>": "\U000F0E0A"}
+LITERAL_TAGS = {**THINK_TAGS, **VISION_TAGS, **TOOL_LITERAL_TAGS}
 THINK_MARKS = {v: k for k, v in LITERAL_TAGS.items()}
 CONTROL_MARK0 = 0xF0E10      # the control tokens' marks start here, clear of the two sets above
 
@@ -194,6 +291,44 @@ def _has_tag(v, tags: dict[str, str] = LITERAL_TAGS) -> bool:
     return False
 
 
+_TOOL_RESULT_OPEN, _TOOL_RESULT_CLOSE = "<tool_response>", "</tool_response>"
+
+
+def _keep_tool_result_wrap(content, tags: dict[str, str]):
+    """A user message whose whole text is <tool_response>...</tool_response> (a client that formats a tool result the way
+    the template does for a tool message) keeps that outer pair as the markers - the template tells such a turn from a
+    real question by exactly that pair - and only the text inside is marked.  None: not such a message."""
+    o, c = _TOOL_RESULT_OPEN, _TOOL_RESULT_CLOSE
+
+    def wrap(text: str, first: bool, last: bool) -> str:
+        i = text.index(o) + len(o) if first else 0
+        j = text.rindex(c) if last else len(text)
+        head = _mark(text[:i - len(o)], tags) + o if first else ""
+        tail = c + _mark(text[j + len(c):], tags) if last else ""
+        return head + _mark(text[i:j], tags) + tail
+
+    if isinstance(content, str):
+        body = content.strip()
+        if len(body) >= len(o) + len(c) and body.startswith(o) and body.endswith(c):
+            return wrap(content, True, True)
+        return None
+    if not (isinstance(content, list) and content and all(isinstance(x, dict) and "text" in x for x in content)):
+        return None
+    texts = [x["text"] for x in content]
+    if not all(isinstance(t, str) for t in texts):
+        return None
+    body = "".join(texts).strip()
+    if not (len(body) >= len(o) + len(c) and body.startswith(o) and body.endswith(c)):
+        return None
+    if not (texts[0].lstrip().startswith(o) and texts[-1].rstrip().endswith(c)):
+        return None          # the pair is split across parts: mark it all, as before
+    if len(content) == 1:
+        return [{**content[0], "text": wrap(texts[0], True, True)}]
+    return ([{**content[0], "text": wrap(texts[0], True, False)}] +
+            [_mark_deep(x, tags) for x in content[1:-1]] +
+            [{**content[-1], "text": wrap(texts[-1], False, True)}])
+
+
 def mark_think_literals(messages: list[dict], tools: list[dict] | None, tags: dict[str, str] = LITERAL_TAGS):
     """#537: (messages, tools) with every literal <think> / </think> (#554: and vision marker) in their text swapped for
     LITERAL_TAGS' marks (or `tags`': literal_tags() adds the control tokens' texts), and
@@ -203,17 +338,23 @@ def mark_think_literals(messages: list[dict], tools: list[dict] | None, tags: di
     if not _has_tag(messages, tags) and not _has_tag(tools, tags):
         return messages, tools, False
     out = []
+    own = {t: v for t, v in tags.items() if t not in TOOL_LITERAL_TAGS}     # what an assistant message keeps as written
     for m in messages:
         m = dict(m)
         content = m.get("content")
+        mine = own if m.get("role") == "assistant" else tags
         for k, v in m.items():
             if k != "role":
-                m[k] = _mark_deep(v, tags)
+                m[k] = _mark_deep(v, mine)
+        if m.get("role") == "user":
+            kept = _keep_tool_result_wrap(content, tags)
+            if kept is not None:
+                m["content"] = kept
         if m.get("role") == "assistant" and isinstance(content, str) and content.lstrip().startswith("<think>") \
                 and "</think>" in content:
             i, j = content.index("<think>") + len("<think>"), content.index("</think>")
-            m["content"] = (content[:i] + _mark(content[i:j], tags) + "</think>" +
-                            _mark(content[j + len("</think>"):], tags))
+            m["content"] = (content[:i] + _mark(content[i:j], own) + "</think>" +
+                            _mark(content[j + len("</think>"):], own))
         out.append(m)
     return out, _mark_deep(tools, tags), True
 
@@ -237,6 +378,42 @@ def unmark_think_literals(prompt: str, tags: dict[str, str] = LITERAL_TAGS) -> t
         pos = m.end()
     out.append(prompt[pos:])
     return "".join(out), spans
+
+
+# Config "env_to_user" (opt-in): opencode writes its <env> block (working directory, today's date) near the START of
+# the system message, before ~40K characters of instructions and tool definitions that are the same in every session.
+# The prefix cache only reuses a prompt's start, so a new folder or a new day read all of it again (~14K tokens, 8-11 s).
+# Moved to the front of the first user message, the system turn (and the tools the template writes into it) is the same
+# for every session and the disk prefix cache restores it.  The model still sees the same lines, one turn later.
+ENV_TO_USER = False
+_ENV_BLOCK = re.compile(r"(?:[^\n]*environment you are running in:\n)?<env>\n.*?\n</env>\n?", re.S)
+
+
+def _env_to_user(messages: list[dict]) -> list[dict]:
+    if not ENV_TO_USER or not messages or messages[0].get("role") != "system":
+        return messages
+    sys_text = messages[0].get("content")
+    if not isinstance(sys_text, str):
+        return messages
+    m = _ENV_BLOCK.search(sys_text)
+    if m is None:
+        return messages
+    for i in range(1, len(messages)):
+        if messages[i].get("role") != "user":
+            continue
+        block = m.group(0).rstrip("\n")
+        c = messages[i].get("content")
+        if isinstance(c, str):
+            nc = block + "\n\n" + c
+        elif isinstance(c, list):
+            nc = [{"type": "text", "text": block + "\n\n"}] + c
+        else:
+            return messages
+        out = list(messages)
+        out[0] = dict(messages[0], content=sys_text[:m.start()] + sys_text[m.end():])
+        out[i] = dict(messages[i], content=nc)
+        return out
+    return messages
 
 
 def _late_system_to_user(messages: list[dict]) -> list[dict]:
@@ -264,12 +441,44 @@ def _object_list(value, name: str) -> list[dict]:
     return value
 
 
+_TOOL_ORDERS: "OrderedDict[frozenset, tuple]" = OrderedDict()   # a set of tool names -> the order it first came in
+_TOOL_ORDERS_LOCK = threading.Lock()
+_TOOL_ORDERS_MAX = 64
+
+
+def _stable_tool_order(tools: list[dict], name_of) -> list[dict]:
+    """The same set of tools comes back in the order it was first seen.  Clients send their tools in the order their
+    MCP servers finished registering, which can differ from one request (or one client restart) to the next, and the
+    template renders the tool list before the system prompt: one swap moves the shared prefix back thousands of
+    tokens and the whole conversation is read again (opencode issue 23571).  A request's first sight of a tool set
+    is untouched (so its prompt is byte for byte what the client sent); later requests with the same names in
+    another order are put back in that first order.  Duplicate names, or a single tool: left as sent."""
+    if len(tools) < 2:
+        return tools
+    names = [name_of(t) for t in tools]
+    if len(set(names)) != len(names):
+        return tools
+    key = frozenset(names)
+    with _TOOL_ORDERS_LOCK:
+        order = _TOOL_ORDERS.get(key)
+        if order is None:
+            _TOOL_ORDERS[key] = tuple(names)
+            while len(_TOOL_ORDERS) > _TOOL_ORDERS_MAX:
+                _TOOL_ORDERS.popitem(last=False)
+            return tools
+        _TOOL_ORDERS.move_to_end(key)
+    pos = {n: k for k, n in enumerate(order)}
+    return sorted(tools, key=lambda t: pos[name_of(t)])
+
+
 def _tool_list(value, wrapper: str | None) -> list[dict]:
     """#592: a request's "tools" as a list of tool objects, each with a name - in the OpenAI shape
     {"type": "function", "function": {"name": ...}} (`wrapper` "function"; a bare {"name": ...} is still taken), or
     in the Anthropic shape {"name": ...} (`wrapper` None).  A value that is not (a string such as "auto", a list of
     names, an object without a name) is a ValueError - a 400 naming the field - where it used to take the request
-    thread down with no reply at all.  No value (or an empty one) is no tools, as always."""
+    thread down with no reply at all.  No value (or an empty one) is no tools, as always.  A tool's schema -
+    "parameters" in the OpenAI shape, "input_schema" in the Anthropic one - is an object when it is there, for the
+    same reason: a string or a list passed and raised later instead, on the model's first call of that tool."""
     if not value:
         return []
     shape = ('{"type": "function", "function": {"name": ..., "parameters": {...}}}' if wrapper else
@@ -278,11 +487,18 @@ def _tool_list(value, wrapper: str | None) -> list[dict]:
         tools = _object_list(value, "tools")
     except ValueError:
         raise ValueError(f"tools must be a list of tool objects, each {shape}") from None
+    key = "parameters" if wrapper else "input_schema"
     for i, t in enumerate(tools):
         fn = t.get(wrapper, t) if wrapper and t.get("type") == wrapper else t
         if not isinstance(fn, dict) or not isinstance(fn.get("name"), str) or not fn["name"]:
             raise ValueError(f"tools[{i}] has no name: each tool must be {shape}")
-    return tools
+        schema = fn.get(key)
+        if schema is not None and not isinstance(schema, dict):
+            # it reached parse_tool_call and the stream parser as the tool's schema, whose .get("properties") raised
+            # AttributeError in the request thread - after the 200 and whatever the model had said before the call
+            raise ValueError(f'tools[{i}] ({fn["name"]}): "{key}" must be an object (the JSON schema of its '
+                             f"parameters), not {type(schema).__name__}")
+    return _stable_tool_order(tools, lambda t: (t.get(wrapper, t) if wrapper and t.get("type") == wrapper else t)["name"])
 
 
 def tool_arguments(raw) -> dict:
@@ -305,11 +521,15 @@ def tool_arguments(raw) -> dict:
 def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
     """OpenAI Chat Completions -> (template messages, template tools, template kwargs)."""
     messages = []
-    for m in _object_list(req.get("messages"), "messages"):
+    for i, m in enumerate(_object_list(req.get("messages"), "messages")):
         role = m.get("role")
         if role == "developer":
             role = "system"
-        out = {"role": role, "content": _parts_of(m.get("content")) if role in ("user", "tool", "assistant") else _text_of(m.get("content"))}
+        # an image is read in a user, tool or assistant message; the system prompt takes text only, as _text_of reads
+        images = role in ("user", "tool", "assistant")
+        content = _check_parts(m.get("content"), f"messages[{i}].content",
+                               TEXT_PARTS + IMAGE_PARTS if images else TEXT_PARTS)
+        out = {"role": role, "content": _parts_of(content) if images else _text_of(content)}
         if m.get("reasoning_content"):
             out["reasoning_content"] = m["reasoning_content"]
         if m.get("tool_calls"):
@@ -326,14 +546,16 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
     kwargs = {}
     # OpenAI Chat Completions: "reasoning_effort"; Responses style: "reasoning": {"effort": ...}
     reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
-    kwargs.update(effort_kwargs(req.get("reasoning_effort") or reasoning.get("effort")))
+    given = req.get("reasoning_effort")
+    # `false` is a level (thinking off, effort_kwargs): an `or` between the two fields dropped it
+    kwargs.update(effort_kwargs(given if given is not None and given != "" else reasoning.get("effort")))
     # the vLLM / llama.cpp convention: {"chat_template_kwargs": {"enable_thinking": false, "reasoning_effort": "low"}}
     for k, v in (req.get("chat_template_kwargs") or {}).items():
         if k == "enable_thinking" and not v:
             kwargs = {"enable_thinking": False}
         elif k == "reasoning_effort" and "enable_thinking" not in kwargs:
             kwargs.update(effort_kwargs(v))
-    return _late_system_to_user(messages), tools, kwargs
+    return _env_to_user(_late_system_to_user(messages)), tools, kwargs
 
 
 BILLING_HEADER = "x-anthropic-billing-header:"
@@ -372,9 +594,10 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
     messages = []
     system = req.get("system")
     if system:
-        messages.append({"role": "system", "content": pin_billing_stamp(_text_of(system))})
-    for m in _object_list(req.get("messages"), "messages"):
-        content = m.get("content")
+        messages.append({"role": "system",
+                         "content": pin_billing_stamp(_text_of(_check_parts(system, "system", TEXT_PARTS)))})
+    for i, m in enumerate(_object_list(req.get("messages"), "messages")):
+        content = _check_parts(m.get("content"), f"messages[{i}].content", ANTHROPIC_BLOCKS)
         if isinstance(content, str):
             messages.append({"role": m["role"], "content": content})
             continue
@@ -383,7 +606,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             messages.append({"role": "user", "content": _parts_of(content)})
             continue
         text, reasoning, calls, parts = [], [], [], []
-        for block in content or []:
+        for j, block in enumerate(content or []):
             kind = block.get("type")
             if kind == "text":
                 text.append(block.get("text", ""))
@@ -397,7 +620,8 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             elif kind == "tool_result":
                 # A tool's image (Claude Code's Read of a picture) reaches the encoder like a user's, as the OpenAI
                 # path's tool messages already do; a text-only result is one string, as before.
-                messages.append({"role": "tool", "content": _parts_of(block.get("content"))})
+                messages.append({"role": "tool", "content": _parts_of(_check_parts(
+                    block.get("content"), f"messages[{i}].content[{j}].content", TEXT_PARTS + IMAGE_PARTS))})
         if text or calls or reasoning or parts:
             # an image sent beside tool results stays in this turn instead of being dropped
             out = {"role": m["role"], "content": _parts_of(parts) if _has_image(parts) else "".join(text)}
@@ -427,7 +651,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
         # A config's reasoning_effort still applies: Service.with_shared sets output_config before this runs.  A
         # request that gives its own reasoning_budget_tokens (#123) asks for thinking, so it thinks as before.
         kwargs["enable_thinking"] = False
-    return _late_system_to_user(messages), tools, kwargs
+    return _env_to_user(_late_system_to_user(messages)), tools, kwargs
 
 
 # ------------------------------------------------------------------------------------------------ output parser
@@ -550,6 +774,66 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
     return None
 
 
+PARAM_START = "<parameter="
+
+
+def function_end(text: str) -> int:
+    """Where a `<function=NAME>...</function>` at the start of `text` ends (just past `</function>`), walking its
+    parameters with param_end like call_end does; -1: not complete (or not in the call format)."""
+    s = text.lstrip()
+    pos = len(text) - len(s)
+    if not s.startswith(FUNC_START):
+        return -1
+    gt = text.find(">", pos)
+    if gt < 0:
+        return -1
+    pos = gt + 1
+    while True:
+        rest = text[pos:]
+        s = rest.lstrip()
+        pos += len(rest) - len(s)
+        if s.startswith(PARAM_START):
+            gt = text.find(">", pos)
+            if gt < 0:
+                return -1
+            end = param_end(text[gt + 1:])
+            if end < 0:
+                return -1
+            pos = gt + 1 + end + len(PARAM_END)
+        elif s.startswith(FUNC_END):
+            return pos + len(FUNC_END)
+        else:
+            return -1
+
+
+_JSON_FENCE = re.compile(r"```[ \t]*(?:json)?[ \t]*\r?\n\s*", re.I)
+
+
+def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
+    """`{"name": N, "arguments": {...}}` (or "parameters", or the arguments as a JSON string) of a declared tool -> its
+    call; anything else -> None.  #2037: the object may sit in a Markdown fence (```json ... ```)."""
+    body = body.strip()
+    m = _JSON_FENCE.match(body)
+    if m:
+        body = body[m.end():].rstrip()
+        body = body[:-3] if body.endswith("```") else body
+    try:
+        obj = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict) or not isinstance(obj.get("name"), str) or obj["name"] not in schemas:
+        return None
+    args = obj.get("arguments", obj.get("parameters", {}))
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return None
+    if args is None:
+        args = {}
+    return ToolCall(name=obj["name"], arguments=args) if isinstance(args, dict) else None
+
+
 def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall. Values are JSON-decoded
     when the tool's schema says the parameter is not a string (or, without a schema, when they parse as JSON
@@ -557,7 +841,7 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     body = body.strip()
     if not body.startswith("<function=") or ">" not in body:
         raise ValueError("malformed tool call: " + body[:80])
-    name = body[len("<function="):body.index(">")]
+    name = body[len("<function="):body.index(">")].strip()      # `<function= capture>`: the model's stray space
     rest = body[body.index(">") + 1:]
     props = ((schema or {}).get("parameters") or {}).get("properties") or {}
     args = {}
@@ -590,7 +874,8 @@ class OutputParser:
     """Incremental parser of the model's text. Feed deltas; get events. A tag split across deltas is held back
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
-    def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False):
+    def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
+                 recover: bool = False):
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
         self.lead = False
@@ -607,15 +892,100 @@ class OutputParser:
         self.rescued = 0             # calls delivered from the reasoning
         self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
         self.fence, self.line, self.ticks = "", "", 0
+        # recover (opt-in, the config's "tool_call_recovery"): a declared tool's call written next to the template's
+        # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
+        # start of a line outside code, or a second call in the same <tool_call> (which otherwise merges into one).
+        self.recover = recover
+        self.bare = False            # the call being read opened with <function= alone (no <tool_call> around it)
+        self.batch = False           # the call being finished is followed by another in the same wrapper
         self._reset_scan()
+
+    def _ok_at(self, p: int) -> bool:
+        """self.buf[p] would open a call: at the start of a line, outside a code fence and inline code."""
+        snap = (self.fence, self.line, self.ticks)
+        self._track(self.buf[:p])
+        ok = self._opener_ok()
+        self.fence, self.line, self.ticks = snap
+        return ok
+
+    def _follower(self, after: str) -> str:
+        """recover: what a `<tool_call>` followed (after whitespace) by `after` opens: "call" (`<function=`), "param"
+        (a declared tool's name written as `<parameter=NAME>`), "json" (`{`), "wait" (not decided yet) or "text"."""
+        if after.startswith(FUNC_START):
+            return "call"
+        if after.startswith(PARAM_START):
+            gt = after.find(">")
+            if gt < 0:
+                return "wait" if "\n" not in after else "text"
+            return "param" if after[len(PARAM_START):gt] in self.schemas else "text"
+        if after.startswith("{"):
+            return "json" if self.schemas else "text"
+        if after.startswith("```") or (after and "```".startswith(after)):
+            # #2037: the JSON call inside a Markdown fence (```json ... ```) in the explicit wrapper
+            m = _JSON_FENCE.match(after)
+            if m:
+                rest = after[m.end():]
+                if rest.startswith("{"):
+                    return "json" if self.schemas else "text"
+                return "wait" if not rest else "text"
+            return "wait" if "\n" not in after else "text"
+        if not after or FUNC_START.startswith(after) or PARAM_START.startswith(after):
+            return "wait"
+        return "text"
+
+    def _bare_opener(self) -> tuple[int, bool]:
+        """recover: the first `<function=` in self.buf that opens a call without the wrapper (start of a line, outside
+        code, a declared tool) -> (position, decided); (-1, False) for none.  A name still arriving is undecided."""
+        p = self.buf.find(FUNC_START)
+        while p >= 0:
+            if self._ok_at(p):
+                gt = self.buf.find(">", p)
+                name = self.buf[p + len(FUNC_START):gt if gt >= 0 else len(self.buf)]
+                if gt < 0 and not any(c.isspace() for c in name):
+                    return p, False
+                if gt >= 0 and name in self.schemas:
+                    return p, True
+            p = self.buf.find(FUNC_START, p + 1)
+        return -1, False
+
+    @property
+    def line(self) -> str:
+        """Materialize the current line only for a decision, newline, or state snapshot."""
+        if self._line_blocks is not None:
+            self._line_blocks.extend(self._line_parts)
+            self._line_parts = ["".join(self._line_blocks)]
+            self._line_blocks = None
+        elif len(self._line_parts) > 1:
+            self._line_parts = ["".join(self._line_parts)]
+        return self._line_parts[0] if self._line_parts else ""
+
+    @line.setter
+    def line(self, text: str):
+        self._line_parts = [text] if text else []
+        self._line_blocks = None
 
     def _track(self, text: str) -> str:
         """Follow the reasoning text that has gone out: the open code fence, the current line, and the backticks of
         the current paragraph.  Returns the text."""
+        # Most token fragments stay on the current line. Fence and paragraph
+        # bookkeeping happens only when a newline completes that line.
+        if "\n" not in text:
+            if text:
+                self._line_parts.append(text)
+                if len(self._line_parts) == 64:
+                    # Release small fragment objects in bounded groups. Completed
+                    # blocks are never recopied until the full line is requested.
+                    if self._line_blocks is None:
+                        self._line_blocks = []
+                    self._line_blocks.append("".join(self._line_parts))
+                    self._line_parts.clear()
+            return text
         parts = text.split("\n")
         for k, part in enumerate(parts):
             if k < len(parts) - 1:
-                line, self.line = self.line + part, ""
+                line = self.line + part if self._line_parts or self._line_blocks else part
+                self._line_parts.clear()
+                self._line_blocks = None
                 s = line.lstrip()
                 if self.fence:
                     if s.startswith(self.fence * 3):
@@ -627,7 +997,8 @@ class OutputParser:
                 else:
                     self.ticks += line.count("`")
             else:
-                self.line += part
+                if part:
+                    self._line_parts.append(part)
         return text
 
     def _opener_ok(self) -> bool:
@@ -638,6 +1009,19 @@ class OutputParser:
     def _in_code(self) -> bool:
         """The text so far leaves the next character inside a code fence or inline code."""
         return bool(self.fence) or (self.ticks + self.line.count("`")) % 2 == 1
+
+    def _quoted_think_end(self, i: int) -> bool | None:
+        """#537: the `</think>` at self.buf[i] is the model quoting the tag while it thinks, not the end of the
+        thinking: written right after a quote or backtick and followed by anything but a line break, as in `</think>`
+        or "</think>...".  The end of the thinking is followed by a line break.  None while the character after the
+        tag has not arrived."""
+        before = self.buf[i - 1] if i else self.line[-1:]
+        if before not in ('"', "'", "`"):
+            return False
+        after = self.buf[i + len(THINK_END):]
+        if not after:
+            return None
+        return after[0] not in "\r\n"
 
     def _release(self, deliver: bool) -> list[Event]:
         """Settle the calls waiting in self.pending: events for real calls, or all of it back as reasoning text."""
@@ -786,7 +1170,7 @@ class OutputParser:
                 if end >= 0 and (think < 0 or think >= end):
                     call = None
                     try:
-                        name = body[:end].strip()[len("<function="):].split(">", 1)[0]
+                        name = body[:end].strip()[len("<function="):].split(">", 1)[0].strip()
                         if name in self.schemas:
                             call = parse_tool_call(body[:end], self.schemas.get(name))
                     except ValueError:
@@ -847,6 +1231,16 @@ class OutputParser:
                         out.append(Event("reasoning", self._track(self.buf[:len(self.buf) - keep])))
                         self.buf = self.buf[len(self.buf) - keep:]
                     return out
+                quoted = self._quoted_think_end(i)
+                if quoted is None:                   # held like a partial tag until the character after it is here
+                    if i:
+                        out.append(Event("reasoning", self._track(self.buf[:i])))
+                        self.buf = self.buf[i:]
+                    return out
+                if quoted:                           # #537: a quoted `</think>` is reasoning text
+                    out.append(Event("reasoning", self._track(self.buf[:i + len(THINK_END)])))
+                    self.buf = self.buf[i + len(THINK_END):]
+                    continue
                 if i:
                     out.append(Event("reasoning", self._track(self.buf[:i])))
                 self.buf = self.buf[i + len(THINK_END):]
@@ -860,10 +1254,30 @@ class OutputParser:
                         return out
                     self.buf, self.lead = stripped, False
                 i = self.buf.find(CALL_START)
+                b, decided = self._bare_opener() if self.recover and self.schemas else (-1, False)
+                if b >= 0 and (i < 0 or b < i):
+                    # recover: <function=NAME> alone at the start of a line - the call without its <tool_call>.
+                    # Until the name has arrived it is held.
+                    j = b
+                    while j > 0 and self.buf[j - 1] == "\n":
+                        j -= 1
+                    if j > 0 and self.buf[:j].strip():
+                        out.append(Event("content", self._track(self.buf[:j])))
+                    if not decided:
+                        self.buf = self.buf[j:]
+                        return out
+                    self.buf = self.buf[b:]
+                    self.state, self.bare = "call", True
+                    continue
                 if i < 0:
                     # Hold a partial tag AND the newlines before it: if a tool call follows, they are dropped,
                     # so emitting them early would make streamed and whole outputs differ.
                     j = len(self.buf) - self._hold(self.buf, (CALL_START,))
+                    if self.recover and self.schemas:            # a line that may be becoming a bare <function=
+                        k = self.buf.rfind("\n") + 1
+                        tail = self.buf[k:]
+                        if tail and FUNC_START.startswith(tail) and self._ok_at(k):
+                            j = min(j, k)
                     while j > 0 and self.buf[j - 1] == "\n":
                         j -= 1
                     if j > 0:
@@ -884,6 +1298,19 @@ class OutputParser:
                 # it is prose that names the format ("I'll use a <tool_call> block") - content, not a malformed call
                 # that ends the request.  Until its follower has arrived it is held, like a partial tag.
                 after = self.buf[i + len(CALL_START):].lstrip()
+                kind = self._follower(after) if self.recover else None
+                if kind in ("param", "json"):
+                    if i and self.buf[:i].strip():
+                        out.append(Event("content", self._track(self.buf[:i].rstrip("\n"))))
+                    rest = self.buf[i + len(CALL_START):]
+                    if kind == "param":                  # <parameter=NAME> as the opener: the call's <function=NAME>
+                        at = len(rest) - len(after)
+                        rest = rest[:at] + FUNC_START + after[len(PARAM_START):]
+                    self.buf = rest
+                    self.state = "call" if kind == "param" else "json"
+                    continue
+                if kind == "wait":
+                    after = ""
                 if after and not after.startswith(FUNC_START) and not FUNC_START.startswith(after):
                     out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                     self.buf = self.buf[i + len(CALL_START):]
@@ -900,8 +1327,42 @@ class OutputParser:
                     out.append(Event("content", self._track(self.buf[:i].rstrip("\n"))))
                 self.buf = self.buf[i + len(CALL_START):]
                 self.state = "call"
+            elif self.state == "json":
+                # recover: `{"name": ..., "arguments": {...}}` inside the wrapper is the call once its </tool_call> has
+                # arrived and it names a declared tool; anything else is the text it is
+                i = self.buf.find(CALL_END)
+                if i < 0:
+                    return out
+                call = json_tool_call(self.buf[:i].strip(), self.schemas)
+                if call is None:
+                    out.append(Event("content", self._track(CALL_START + self.buf[:i + len(CALL_END)])))
+                else:
+                    out.append(Event("tool_call", call=call))
+                self.buf = self.buf[i + len(CALL_END):]
+                self.state, self.lead = "content", call is not None
             else:
-                i = call_end(self.buf)
+                drop = None
+                if self.bare:                       # no wrapper: the call ends at its </function>; a stray
+                    i = function_end(self.buf)      # </tool_call> after it is the wrapper's closer, dropped
+                    if i >= 0:
+                        after = self.buf[i:].lstrip()
+                        if after.startswith(CALL_END):
+                            drop = len(self.buf[i:]) - len(after) + len(CALL_END)
+                        elif after and not CALL_END.startswith(after):
+                            drop = 0
+                else:
+                    i = call_end(self.buf)
+                    if i >= 0:
+                        drop = len(CALL_END)
+                    if self.recover:                # a batch in one wrapper: the next call follows this one's
+                        f = function_end(self.buf)  # </function> (or opens as <parameter=NAME>)
+                        nxt = self.buf[f:].lstrip() if f >= 0 else ""
+                        if nxt.startswith(PARAM_START) and self._follower(nxt) == "param":
+                            at = len(self.buf) - len(nxt)
+                            self.buf = self.buf[:at] + FUNC_START + nxt[len(PARAM_START):]
+                            nxt = self.buf[at:]
+                        if nxt.startswith(FUNC_START):
+                            i, drop, self.batch = f, 0, True
                 if self.stream_tools:
                     if i >= 0:
                         whole, self.buf = self.buf, self.buf[:i]     # scan only the body
@@ -910,17 +1371,14 @@ class OutputParser:
                         self.buf = whole
                     else:
                         out += self._scan()
-                if i < 0:
+                if i < 0 or drop is None:
                     return out
                 body = self.buf[:i]
-                self.buf = self.buf[i + len(CALL_END):]
-                name = body.strip()[len("<function="):].split(">", 1)[0]
-                call = parse_tool_call(body, self.schemas.get(name))
-                if self.scall is not None:
-                    call.id = self.scall.id
-                out.append(Event("tool_call", call=call))
-                self._reset_scan()
-                self.state, self.lead = "content", True
+                self.buf = self.buf[i + drop:]
+                batch, self.batch = self.batch, False
+                out += self._finish_call(body)
+                if batch and out[-1].kind == "tool_call":
+                    self.state, self.lead = "call", False
 
     def finish(self, reason: str | None = None) -> list[Event]:
         """End of generation: flush whatever is held (an unterminated tool call is returned as content; one that was
@@ -930,6 +1388,14 @@ class OutputParser:
         out = []
         if self.pending:
             out += self._release(reason in (None, "stop") and self.state == "reasoning" and not self.buf)
+        if self.state == "call" and self.bare and function_end(self.buf) >= 0:
+            i = function_end(self.buf)          # recover: a bare call is whole at its </function>
+            body, rest = self.buf[:i], self.buf[i:].strip()
+            self.buf = ""
+            out += self._finish_call(body)
+            if rest and not CALL_END.startswith(rest):
+                out.append(Event("content", self._track(rest)))
+            return out
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
             if self.ss == "done":               # only its </tool_call> is missing: the call itself is whole
@@ -937,10 +1403,31 @@ class OutputParser:
             self.buf = ""
             self._reset_scan()
             return out
+        if self.state == "reasoning" and self.buf == THINK_END:   # the output ends on a held `</think>`: its end
+            self.buf, self.state = "", "content"
         if self.buf:
             # an unfinished call inside the reasoning (#804) is reasoning text, never a call
             kind = {"reasoning": "reasoning", "rcall": "reasoning", "content": "content"}.get(self.state, "content")
-            text = self.buf if self.state != "call" else CALL_START + self.buf
+            text = CALL_START + self.buf if self.state in ("call", "json") and not self.bare else self.buf
             out.append(Event(kind, text))
             self.buf = ""
         return out
+
+    def _finish_call(self, body: str) -> list[Event]:
+        """A whole call body in the template's form -> its tool_call event.  With recover, one that still does not
+        parse is the text it is instead of an error that ends the request."""
+        name = body.strip()[len(FUNC_START):].split(">", 1)[0].strip()
+        bare, self.bare = self.bare, False
+        try:
+            call = parse_tool_call(body, self.schemas.get(name))
+        except ValueError:
+            if not self.recover:
+                raise
+            self._reset_scan()
+            self.state = "content"
+            return [Event("content", self._track(body if bare else CALL_START + body + CALL_END))]
+        if self.scall is not None:
+            call.id = self.scall.id
+        self._reset_scan()
+        self.state, self.lead = "content", True
+        return [Event("tool_call", call=call)]

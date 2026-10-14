@@ -186,6 +186,21 @@ class PackBuildOccupied(unittest.TestCase):
         with contextlib.redirect_stdout(buf), self.assertRaises(Stop):
             strata_pack.build(self.dir / "m-00001-of-00002.gguf", out, None, True, True)
 
+    def test_force_unmakes_the_old_pack_before_building(self):
+        # #634 follow-up: --force drops the old pack's markers before the build opens the GGUF, so a forced build
+        # that stops part-way is an unfinished build (made again next time), not the old index.txt and manifest.json
+        # over partly new experts; the data files are left to the build, which rewrites each one
+        out = self.dir / "forced-markers"
+        out.mkdir()
+        for name in strata_pack.PACK_MARKERS:
+            (out / name).write_text("the pack that was there", encoding="utf-8")
+        (out / "experts.bin").write_bytes(b"its experts")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), self.assertRaises(Stop):
+            strata_pack.build(self.dir / "m-00001-of-00002.gguf", out, None, True, True)
+        self.assertEqual([p.name for p in out.iterdir()], ["experts.bin"])
+        self.assertEqual((out / "experts.bin").read_bytes(), b"its experts")
+
     def test_unfinished_build_is_rebuilt(self):
         # experts.bin without manifest.json is a build that stopped before its last file: not a pack, rebuilt as before
         out = self.dir / "unfinished"

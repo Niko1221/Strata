@@ -33,6 +33,9 @@ void iq256_gu_rows_v(int variant, int ggml_type, const uint8_t* blob, size_t gu_
 void iq256_rows_v(int variant, int ggml_type, const uint8_t* w, size_t row_bytes, int n, const void* const* act,
                   int nt, float* const* out, int r0, int r1);
 
+/// ggml's quantize_row_q8_K (x86 runs the scalar reference), byte-identical, in AVX-2: n values -> n/256 block_q8_K.
+void q8k_quant_avx2(const float* x, void* y, int64_t n);
+
 /// out[t][r] = w_r . h[t] for IQ4_NL (type 20) rows against Q8_0 activations (ggml's block_q8_0).
 /// IQ4_NL is a 32-value-block format, so this does not go through iq256_rows (QK_K blocks, Q8_K acts).
 void iq4nl256_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt,

@@ -183,12 +183,7 @@ void gdn_point_at(const ModelGeometry& g, int64_t layer, SessionState& s) {
 /// The per-token staging every QSA layer's captured H2D reads FROM.  Must run before each replay: the graphs
 /// captured the SOURCE POINTER, not the value, and that is exactly why the buffers are pinned and fixed.
 void stage_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s) {
-    strata::kernels::QsaShapes sh = strata::kernels::qsa_real_shapes();
-    sh.n_head = g.n_head;
-    sh.n_head_kv = g.n_head_kv;
-    sh.head_dim = g.head_dim;
-    sh.idx_n_head = g.idx_q_heads;
-    sh.idx_dim = g.idx_key_dim;
+    const strata::kernels::QsaShapes sh = qsa_shapes(g);
     for (int64_t j = 0; j < s.qsa_alloc; ++j) {
         QsaState& q = s.qsa_states[s.qsa_ord0 + j];
         qsa_step_fill(q.host_step, pos, sh);
@@ -764,8 +759,8 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string &err) try {
     the migrated code and was removed or replaced with 0. You may need to check
     the migrated code.
     */
-    if (DPCT_CHECK_ERROR(y_miss = (float *)sycl::malloc_host(
-                             parts_bytes, dpct::get_in_order_queue())) != 0) {
+    if (DPCT_CHECK_ERROR(y_miss = (float *)strata::host_malloc_polled(
+                             parts_bytes, dpct::get_in_order_queue())) != 0 || y_miss == nullptr) {
         err = "SessionLoopScratch: cudaHostAlloc for the pool's staging failed";
         return false;
     }
@@ -781,10 +776,17 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string &err) try {
     // core or its SMT sibling.  The symptom is not an error: it is a CPU path at 26.9 GB/s where the same pool
     // runs at 36.32.  It was being done and undone on EVERY token, which is a syscall pair on the critical path
     // for a property that wants to hold for the whole session.
-    const std::vector<int> cores = strata::kernels::cpu::physical_cores(false);
-    if (!cores.empty()) {
-        pinned_core = strata::kernels::cpu::pin_current_thread(cores[0]);
+    // The host's core is the pool's reserved one: the first physical core, or the last with --host-core last (F12).
+    const int host_core = strata::kernels::cpu::planned_host_core();
+    if (host_core >= 0) {
+        pinned_core = strata::kernels::cpu::pin_current_thread(host_core);
         pinned = pinned_core.valid;
+    } else {
+        const std::vector<int> cores = strata::kernels::cpu::physical_cores(false);
+        if (!cores.empty()) {
+            pinned_core = strata::kernels::cpu::pin_current_thread(cores[0]);
+            pinned = pinned_core.valid;
+        }
     }
     return true;
 }
@@ -804,7 +806,7 @@ void SessionLoopScratch::free() {
     }
     if (probe != nullptr) { dpct::destroy_event(probe); probe = nullptr; }
     if (y_miss != nullptr) {
-        sycl::free(y_miss, dpct::get_in_order_queue()); y_miss = nullptr;
+        strata::host_free_polled(y_miss, dpct::get_in_order_queue()); y_miss = nullptr;
     }
     parts_bytes = 0;
 }
@@ -992,6 +994,14 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
             // The graph finished without the ring being observed.  `h_seq` is monotonic, so this is not a race
             // - it means the ring never happened, which is the failure round 199 found in a captured event.
             err = "session_loop: layer " + std::to_string(l) + " ended without ringing";
+            return false;
+        }
+
+        // the ring can arrive before its payload on some GPUs (elementwise.hpp): wait until it is whole, or the
+        // pool reads a partly stale payload and the answer is garbage (the A770's "!!!!")
+        if (!strata::kernels::doorbell_wait_payload(s.db->h_seq, s.db->h_x_f, g.n_embd, s.db->h_ids,
+                                                    s.db->h_weights, k, (uint32_t) want)) {
+            err = "session_loop: layer " + std::to_string(l) + " rang but its payload never arrived whole";
             return false;
         }
 
@@ -1375,8 +1385,8 @@ bool session_run_token(const ModelGeometry &g, int64_t pos, int32_t pos_base,
                     err = "session_run_token: layer " + std::to_string(l) +
                           " never rang (" +
                           /*
-                          DPCT1009: SYCL reports errors using exceptions
-                          and does not use error codes. Please replace the
+                          DPCT1009: SYCL reports errors using exceptions and
+                          does not use error codes. Please replace the
                           "get_error_string_dummy(...)" with a real
                           error-handling function.
                           */

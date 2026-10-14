@@ -13,6 +13,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <atomic>
+#include <chrono>
 
 namespace strata::kernels {
 namespace {
@@ -166,9 +168,9 @@ runtimes. You may need to adjust the code.
     float inv = 0.0f;
     if (lane == 0) inv = sycl::rsqrt(acc / (float)cols + eps);
     /*
-    DPCT1108: '__shfl_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
+    DPCT1108: '__shfl_sync' was migrated with the experimental feature masked
+    sub_group function which may not be supported by all compilers or runtimes.
+    You may need to adjust the code.
     */
     inv = dpct::experimental::select_from_sub_group(
         0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), inv,
@@ -375,12 +377,15 @@ __dpct_inline__ void doorbell_ring_kernel(uint32_t *seq) {
     */
     sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::system);
     strata::sys_store(seq, strata::sys_load(seq) + 1u);
+#if defined(__HIPCC__)  // #697: HIP only; on RDNA4 the volatile store alone can sit in L2 until the stream syncs
+    __threadfence_system();
+#endif
 }
 
 __dpct_inline__ void doorbell_wait_kernel(const volatile uint32_t *flag,
-                                          const volatile uint32_t *seq) {
+                                          const volatile uint32_t *seq, uint32_t spin_max) {
     const uint32_t want = strata::sys_load(seq);
-    for (uint32_t spin = 0; spin < strata::kSpinMax && strata::sys_load(flag) != want; ++spin) strata_spin_pause();
+    for (uint32_t spin = 0; spin < spin_max && strata::sys_load(flag) != want; ++spin) strata_spin_pause();
     /*
     DPCT1078: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -391,6 +396,7 @@ __dpct_inline__ void doorbell_wait_kernel(const volatile uint32_t *flag,
 
 void doorbell_wait(const uint32_t* d_flag, const uint32_t* d_seq, void* stream) {
     if (d_flag == nullptr || d_seq == nullptr) return;
+    const uint32_t spin_max = strata::spin_max(*strata::q_of(stream));
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -399,7 +405,7 @@ void doorbell_wait(const uint32_t* d_flag, const uint32_t* d_seq, void* stream) 
             ->parallel_for<dpct_kernel_name<class doorbell_wait_kernel_47b360>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 1), sycl::range(1, 1, 1)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    doorbell_wait_kernel(d_flag, d_seq);
+                    doorbell_wait_kernel(d_flag, d_seq, spin_max);
                 });
     }
     check_launch("doorbell_wait");
@@ -419,7 +425,7 @@ __dpct_inline__ void copy_from_mapped_kernel(sycl::float4 *__restrict__ dst,
              item_ct1.get_local_id(2);
          i < n4; i += (int64_t)item_ct1.get_group_range(2) *
                       item_ct1.get_local_range(2)) {
-        const sycl::float4 v = const_cast<const sycl::float4 *>(src)[i];
+        const sycl::float4 v = strata::load_mapped_float4(src + i);
         dst[i] = v;
     }
 }
@@ -462,7 +468,7 @@ __dpct_inline__ void copy_rows_from_mapped_kernel(
 #pragma unroll
         for (int64_t i = item_ct1.get_local_id(2); i < row4;
              i += item_ct1.get_local_range(2))
-            d[i] = const_cast<const sycl::float4 *>(sr)[i];
+            d[i] = strata::load_mapped_float4(sr + i);
     }
 }
 namespace {
@@ -562,41 +568,143 @@ void copy_from_mapped(float* dst, const float* src, int64_t n, void* stream) {
     check_launch("copy_from_mapped");
 }
 
+namespace {
+// The published payload's checksum: the wrapping sum of every 32-bit word mixed with its position (murmur3's
+// finalizer).  A plain sum of the words missed a reordering ([3, 7] -> [7, 3] in the expert ids) and cancelling
+// changes; mixed, a stale payload passes only with a chance near 2^-32 per read.  It detects; it does not order -
+// the host keeps reading until the payload it sees matches (doorbell_payload_ready).  Positions: x 0..n-1,
+// ids n..n+k-1, weights n+k..n+2k-1.
+inline uint32_t dbx_payload_mix(uint32_t word, uint32_t pos) {
+    uint32_t h = word ^ (pos * 0x9E3779B9u);
+    h ^= h >> 16; h *= 0x85EBCA6Bu; h ^= h >> 13; h *= 0xC2B2AE35u; h ^= h >> 16;
+    return h;
+}
+inline uint32_t dbx_payload_sum(const float* x, int64_t n, const int32_t* ids, const float* w, int64_t k,
+                                bool has_weights) {
+    uint32_t s = 0;
+    for (int64_t j = 0; j < n; ++j) s += dbx_payload_mix(sycl::bit_cast<uint32_t>(x[j]), (uint32_t) j);
+    for (int64_t j = 0; j < k; ++j) s += dbx_payload_mix((uint32_t) ids[j], (uint32_t) (n + j));
+    if (has_weights)
+        for (int64_t j = 0; j < k; ++j) s += dbx_payload_mix(sycl::bit_cast<uint32_t>(w[j]), (uint32_t) (n + k + j));
+    return s;
+}
+// STRATA_SYCL_A770_FAST=1 (opt-in): pair the activation stores without changing the checksum's word/position
+// order. Odd sizes or unaligned mapped pointers retain the scalar path.
+__dpct_inline__ uint32_t dbx_publish_x(const float* x, float* out, int n, int lane, int threads, bool pair, bool plain) {
+    uint32_t part = 0;
+    if (pair && !plain && ((uintptr_t)out & 7u) == 0) {
+        for (int j = 2 * lane; j + 1 < n; j += 2 * threads) {
+            const uint32_t a = sycl::bit_cast<uint32_t>(x[j]);
+            const uint32_t b = sycl::bit_cast<uint32_t>(x[j + 1]);
+            strata::sys_store_mapped(reinterpret_cast<uint64_t*>(out + j),
+                                     (uint64_t)a | ((uint64_t)b << 32));
+            part += dbx_payload_mix(a, (uint32_t)j) + dbx_payload_mix(b, (uint32_t)(j + 1));
+        }
+        if ((n & 1) && lane == 0) {
+            strata::sys_store_mapped(plain, out + n - 1, x[n - 1]);
+            part += dbx_payload_mix(sycl::bit_cast<uint32_t>(x[n - 1]), (uint32_t)(n - 1));
+        }
+    } else {
+        for (int j = lane; j < n; j += threads) {
+            strata::sys_store_mapped(plain, out + j, x[j]);
+            part += dbx_payload_mix(sycl::bit_cast<uint32_t>(x[j]), (uint32_t)j);
+        }
+    }
+    return part;
+}
+// The ring, its tag and its checksum, in slot r % 4 of the sequence word (elementwise.hpp).  Written last, after a
+// system fence over the uncached payload stores.
+__dpct_inline__ void dbx_ring_commit(uint32_t* seq, uint32_t part, bool group_ok, uint32_t ring) {
+#if defined(__HIPCC__)  // #697: HIP only; on RDNA4 the volatile store alone can sit in L2 until the stream syncs
+    (void) group_ok;
+#endif
+    if (group_ok) {
+        strata::sys_store(seq + 2 + 2 * (ring % 4), part);
+        strata::sys_store(seq + 1 + 2 * (ring % 4), ring);
+        sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
+        strata::sys_store(seq, ring);
+    }
+}
+// The payload store (strata::sys_store_mapped(plain, ...)): uncached (sycl_doorbell.hpp) so a host that polls the ring while the kernel still runs reads a
+// whole payload, or a plain store when every reader waits for the kernel to end (doorbell_plain_payload: the stepped
+// verify window reads a segment's payload only after the segment has drained, and the end of a kernel makes its
+// stores visible). The host checksum (doorbell_payload_ready) still guards every read.
+std::atomic<bool> g_plain_payload{false};
+}  // namespace
+
+void doorbell_plain_payload(bool on) { g_plain_payload.store(on, std::memory_order_relaxed); }
+
 __dpct_inline__ void doorbell_publish_kernel(const float *__restrict__ x,
                                              const int32_t *__restrict__ ids,
                                              const float *__restrict__ w, int n,
                                              int k, float *x_out,
                                              int32_t *ids_out, float *w_out,
-                                             uint32_t *seq) {
+                                             uint32_t *seq, bool plain, bool pair) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-#pragma unroll
-    for (int i = item_ct1.get_local_id(2); i < n;
-         i += item_ct1.get_local_range(2)) x_out[i] = x[i];
-    if ((int)item_ct1.get_local_id(2) < k) {
-        ids_out[item_ct1.get_local_id(2)] = ids[item_ct1.get_local_id(2)];
-        w_out[item_ct1.get_local_id(2)] = w[item_ct1.get_local_id(2)];
+    const int i = (int) item_ct1.get_local_id(2);
+    const int nt = (int) item_ct1.get_local_range(2);
+    uint32_t part = dbx_publish_x(x, x_out, n, i, nt, pair, plain);
+    if (i < k) {
+        const int32_t id = ids[i];
+        strata::sys_store_mapped(plain, ids_out + i, id);
+        part += dbx_payload_mix((uint32_t) id, (uint32_t) (n + i));
+        if (w_out != nullptr) {
+            const float wv = w[i];
+            strata::sys_store_mapped(plain, w_out + i, wv);
+            part += dbx_payload_mix(sycl::bit_cast<uint32_t>(wv), (uint32_t) (n + k + i));
+        }
     }
-    /*
-    DPCT1078: Consider replacing memory_order::acq_rel with
-    memory_order::seq_cst for correctness if strong memory order restrictions
-    are needed.
-    */
-    sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::system);
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
+    const uint32_t sum = sycl::reduce_over_group(item_ct1.get_group(), part, sycl::plus<uint32_t>());
+    sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
     item_ct1.barrier();
-    if (item_ct1.get_local_id(2) == 0) {
-        /*
-        DPCT1078: Consider replacing memory_order::acq_rel with
-        memory_order::seq_cst for correctness if strong memory order
-        restrictions are needed.
-        */
-        sycl::atomic_fence(sycl::memory_order::acq_rel,
-                           sycl::memory_scope::system);
-        strata::sys_store(seq, strata::sys_load(seq) + 1u);
+    if (i == 0) {
+        const uint32_t next = strata::sys_load(seq) + 1u;
+        dbx_ring_commit(seq, sum, true, next);
+    }
+}
+
+__dpct_inline__ void doorbell_publish_res_kernel(
+    const float *__restrict__ x, const int32_t *__restrict__ ids,
+    const int32_t *__restrict__ d_res, int n_expert, int n, int k, float *x_out,
+    int32_t *ids_out, uint32_t *seq, bool full, bool plain, bool pair) {
+    // full (STRATA_DOORBELL_CHECK=1): the payload is published whole and the checksum covers x and the ids (this
+    // variant publishes no weights). Otherwise d_res/n_expert decide whether x is copied, as before the checksum:
+    // when every routed expert is resident the host never reads x, and an uncached copy of it costs the A750 ~10%
+    // of decode.
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    if (!full) {
+        int any_miss = 0;
+        if ((int) item_ct1.get_local_id(2) < k) {
+            const int32_t id = ids[item_ct1.get_local_id(2)];
+            strata::sys_store_mapped(plain, ids_out + item_ct1.get_local_id(2), id);
+            if (d_res == nullptr || id < 0 || id >= n_expert || d_res[id] < 0) any_miss = 1;
+        }
+        if ((item_ct1.barrier(), sycl::any_of_group(sycl::ext::oneapi::this_work_item::get_work_group<3>(), any_miss))) {
+            for (int j = (int) item_ct1.get_local_id(2); j < n; j += (int) item_ct1.get_local_range(2))
+                strata::sys_store_mapped(plain, x_out + j, x[j]);
+        }
+        sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
+        item_ct1.barrier();
+        if (item_ct1.get_local_id(2) == 0) {
+            const uint32_t next = strata::sys_load(seq) + 1u;
+            dbx_ring_commit(seq, 0u, true, next);
+        }
+        return;
+    }
+    const int i = (int) item_ct1.get_local_id(2);
+    const int nt = (int) item_ct1.get_local_range(2);
+    uint32_t part = dbx_publish_x(x, x_out, n, i, nt, pair, plain);
+    if (i < k) {
+        const int32_t id = ids[i];
+        strata::sys_store_mapped(plain, ids_out + i, id);
+        part += dbx_payload_mix((uint32_t) id, (uint32_t) (n + i));
+    }
+    const uint32_t sum = sycl::reduce_over_group(item_ct1.get_group(), part, sycl::plus<uint32_t>());
+    sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
+    item_ct1.barrier();
+    if (i == 0) {
+        const uint32_t next = strata::sys_load(seq) + 1u;
+        dbx_ring_commit(seq, sum, true, next);
     }
 }
 
@@ -605,45 +713,31 @@ __dpct_inline__ void doorbell_publish_kernel(const float *__restrict__ x,
 __dpct_inline__ void doorbell_publish_value_kernel(
     const float *__restrict__ x, const int32_t *__restrict__ ids,
     const float *__restrict__ w, int n, int k, float *x_out, int32_t *ids_out,
-    float *w_out, uint32_t *seq, uint32_t value) {
+    float *w_out, uint32_t *seq, uint32_t value, bool plain, bool pair) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-#pragma unroll
-    for (int i = item_ct1.get_local_id(2); i < n;
-         i += item_ct1.get_local_range(2)) x_out[i] = x[i];
-    if ((int)item_ct1.get_local_id(2) < k) {
-        ids_out[item_ct1.get_local_id(2)] = ids[item_ct1.get_local_id(2)];
-        w_out[item_ct1.get_local_id(2)] = w[item_ct1.get_local_id(2)];
+    const int i = (int) item_ct1.get_local_id(2);
+    const int nt = (int) item_ct1.get_local_range(2);
+    uint32_t part = dbx_publish_x(x, x_out, n, i, nt, pair, plain);
+    if (i < k) {
+        const int32_t id = ids[i];
+        strata::sys_store_mapped(plain, ids_out + i, id);
+        part += dbx_payload_mix((uint32_t) id, (uint32_t) (n + i));
+        const float wv = w[i];
+        strata::sys_store_mapped(plain, w_out + i, wv);
+        part += dbx_payload_mix(sycl::bit_cast<uint32_t>(wv), (uint32_t) (n + k + i));
     }
-    /*
-    DPCT1078: Consider replacing memory_order::acq_rel with
-    memory_order::seq_cst for correctness if strong memory order restrictions
-    are needed.
-    */
-    sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::system);
-    item_ct1.barrier(sycl::access::fence_space::local_space);
-    if (item_ct1.get_local_id(2) == 0) {
-        /*
-        DPCT1078: Consider replacing memory_order::acq_rel with
-        memory_order::seq_cst for correctness if strong memory order
-        restrictions are needed.
-        */
-        sycl::atomic_fence(sycl::memory_order::acq_rel,
-                           sycl::memory_scope::system);
-        *(volatile uint32_t*) seq = value;
-        /*
-        DPCT1078: Consider replacing memory_order::acq_rel with
-        memory_order::seq_cst for correctness if strong memory order
-        restrictions are needed.
-        */
-        sycl::atomic_fence(sycl::memory_order::acq_rel,
-                           sycl::memory_scope::system);
-    }
+    const uint32_t sum = sycl::reduce_over_group(item_ct1.get_group(), part, sycl::plus<uint32_t>());
+    sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
+    item_ct1.barrier();
+    if (i == 0) dbx_ring_commit(seq, sum, true, value);
 }
 
 void doorbell_publish_value(const float* x, const int32_t* ids, const float* weights, int64_t n, int64_t k,
                             float* x_out, int32_t* ids_out, float* weights_out, uint32_t* d_seq, uint32_t value,
                             void* stream) {
     if (k > 1024) { std::fprintf(stderr, "doorbell_publish: k too large\n"); std::exit(1); }
+    const bool plain = strata::doorbell_plain_payload() || g_plain_payload.load(std::memory_order_relaxed);
+    const bool pair = strata::a770_fast();
     /*
     DPCT1049: The work-group size passed to the SYCL kernel may exceed the
     limit. To get the device limit, query info::device::max_work_group_size.
@@ -661,7 +755,7 @@ void doorbell_publish_value(const float* x, const int32_t* ids, const float* wei
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
                     doorbell_publish_value_kernel(x, ids, weights, (int)n,
                                                   (int)k, x_out, ids_out,
-                                                  weights_out, d_seq, value);
+                                                  weights_out, d_seq, value, plain, pair);
                 });
     }
 }
@@ -669,6 +763,8 @@ void doorbell_publish_value(const float* x, const int32_t* ids, const float* wei
 void doorbell_publish(const float* x, const int32_t* ids, const float* weights, int64_t n, int64_t k, float* x_out,
                       int32_t* ids_out, float* weights_out, uint32_t* d_seq, void* stream) {
     if (k > 1024) { std::fprintf(stderr, "doorbell_publish: k too large\n"); std::exit(1); }
+    const bool plain = strata::doorbell_plain_payload() || g_plain_payload.load(std::memory_order_relaxed);
+    const bool pair = strata::a770_fast();
     /*
     DPCT1049: The work-group size passed to the SYCL kernel may exceed the
     limit. To get the device limit, query info::device::max_work_group_size.
@@ -685,10 +781,65 @@ void doorbell_publish(const float* x, const int32_t* ids, const float* weights, 
                                   sycl::range(1, 1, 1024)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
                     doorbell_publish_kernel(x, ids, weights, (int)n, (int)k,
-                                            x_out, ids_out, weights_out, d_seq);
+                                            x_out, ids_out, weights_out, d_seq, plain, pair);
                 });
     }
     check_launch("doorbell_publish");
+}
+
+void doorbell_publish_res(const float* x, const int32_t* ids, const int32_t* d_res, int n_expert, int64_t n, int64_t k,
+                          float* x_out, int32_t* ids_out, uint32_t* d_seq, void* stream) {
+    if (k > 1024) { std::fprintf(stderr, "doorbell_publish_res: k too large\n"); std::exit(1); }
+    static const bool full = [] { const char* v = std::getenv("STRATA_DOORBELL_CHECK"); return v != nullptr && v[0] == '1'; }();
+    const bool fl = full;
+    const bool plain = strata::doorbell_plain_payload() || g_plain_payload.load(std::memory_order_relaxed);
+    const bool pair = strata::a770_fast();
+    /*
+    DPCT1049: The work-group size passed to the SYCL kernel may exceed the
+    limit. To get the device limit, query info::device::max_work_group_size.
+    Adjust the work-group size if needed.
+    */
+    {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+
+        strata::q_of(stream)
+            ->parallel_for<
+                dpct_kernel_name<class doorbell_publish_res_kernel_85b9b3>>(
+                sycl::nd_range<3>(sycl::range(1, 1, 1024),
+                                  sycl::range(1, 1, 1024)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) {
+                    doorbell_publish_res_kernel(x, ids, d_res, n_expert, (int)n,
+                                                (int)k, x_out, ids_out, d_seq, fl, plain, pair);
+                });
+    }
+    check_launch("doorbell_publish_res");
+}
+
+bool doorbell_payload_ready(const uint32_t* h_seq, const float* h_x, int64_t n, const int32_t* h_ids,
+                            const float* h_weights, int64_t k, uint32_t want) {
+    const volatile uint32_t* w = h_seq + 1 + 2 * (want % 4);   // this ring's tag and checksum (elementwise.hpp)
+    if (w[0] != want) return false;
+    std::atomic_thread_fence(std::memory_order_acquire);
+    // the two publish shapes: with the routing weights (doorbell_publish / _value) or without (doorbell_publish_res)
+    return dbx_payload_sum(h_x, n, h_ids, h_weights, k, true) == w[1] ||
+           dbx_payload_sum(h_x, n, h_ids, h_weights, k, false) == w[1];
+}
+
+bool doorbell_wait_payload(const uint32_t* h_seq, const float* h_x, int64_t n, const int32_t* h_ids,
+                           const float* h_weights, int64_t k, uint32_t want, int timeout_ms) {
+    // Opt-in (STRATA_DOORBELL_CHECK=1): on an Arc A750 (i915) the host-side checksum of the whole payload, read from
+    // uncached host memory twice per CPU-expert layer, cost 15-20% of decode (5 interleaved rounds), and the stale
+    // payload it guards against was not seen there. The ring tag is still published by the GPU.
+    static const bool check = [] { const char* v = std::getenv("STRATA_DOORBELL_CHECK"); return v != nullptr && v[0] == '1'; }();
+    if (!check) return true;
+    if (doorbell_payload_ready(h_seq, h_x, n, h_ids, h_weights, k, want)) return true;
+    const auto t0 = std::chrono::steady_clock::now();
+    while (!doorbell_payload_ready(h_seq, h_x, n, h_ids, h_weights, k, want)) {
+        for (int i = 0; i < 64; ++i) __builtin_ia32_pause();
+        if (std::chrono::steady_clock::now() - t0 > std::chrono::milliseconds(timeout_ms)) return false;
+    }
+    return true;
 }
 
 __dpct_inline__ void copy_i32_from_mapped_kernel(int32_t *__restrict__ dst,
@@ -699,6 +850,65 @@ __dpct_inline__ void copy_i32_from_mapped_kernel(int32_t *__restrict__ dst,
     for (int i = item_ct1.get_local_id(2); i < n;
          i += item_ct1.get_local_range(2)) dst[i] = src[i];
 }
+
+#if !defined(__HIPCC__)
+struct MappedCopies {
+    MappedCopy c[8];
+};
+
+__dpct_inline__ void copy_from_mapped_multi_kernel(MappedCopies a) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const MappedCopy c = a.c[item_ct1.get_group(1)];
+    const int64_t i0 = (int64_t)item_ct1.get_group(2) *
+                           item_ct1.get_local_range(2) +
+                       item_ct1.get_local_id(2),
+                  st = (int64_t)item_ct1.get_group_range(2) *
+                       item_ct1.get_local_range(2);
+    if ((c.words & 3) == 0 && ((uintptr_t) c.dst & 15) == 0 && ((uintptr_t) c.src & 15) == 0) {
+        /*
+        DPCT1052: SYCL does not support the member access for a volatile
+        qualified vector type. The volatile qualifier was removed. You may need
+        to rewrite the code.
+        */
+        const sycl::float4 *s = (const sycl::float4 *)c.src;
+#pragma unroll
+        for (int64_t i = i0; i < c.words / 4; i += st)(
+            (sycl::float4 *)c.dst)[i] = const_cast<const sycl::float4 *>(s)[i];
+    } else {
+        const volatile int32_t* s = (const volatile int32_t*) c.src;
+#pragma unroll
+        for (int64_t i = i0; i < c.words; i += st)((int32_t *)c.dst)[i] = s[i];
+    }
+}
+
+void copy_from_mapped_multi(const MappedCopy* copies, int n, void* stream) {
+    if (n <= 0) return;
+    if (n > 8) { std::fprintf(stderr, "copy_from_mapped_multi: at most 8 copies\n"); std::exit(1); }
+    MappedCopies a;
+    int64_t most = 0;
+    for (int i = 0; i < n; ++i) {
+        a.c[i] = copies[i];
+        most = copies[i].words > most ? copies[i].words : most;
+    }
+    const int64_t units = (most + 3) / 4;
+    const unsigned bx = (unsigned) ((units + 255) / 256 < 32 ? (units + 255) / 256 : 32);
+    {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+
+        strata::q_of(stream)
+            ->parallel_for<
+                dpct_kernel_name<class copy_from_mapped_multi_kernel_66c71e>>(
+                sycl::nd_range<3>(sycl::range(1, (unsigned)n, bx < 1 ? 1 : bx) *
+                                      sycl::range(1, 1, 256),
+                                  sycl::range(1, 1, 256)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) {
+                    copy_from_mapped_multi_kernel(a);
+                });
+    }
+    check_launch("copy_from_mapped_multi");
+}
+#endif
 
 void copy_i32_from_mapped(int32_t* dst, const int32_t* src, int64_t n, void* stream) {
     if (n <= 0) return;
@@ -718,6 +928,13 @@ void copy_i32_from_mapped(int32_t* dst, const int32_t* src, int64_t n, void* str
     }
     check_launch("copy_i32_from_mapped");
 }
+
+#if defined(__HIPCC__)   // AMD keeps one copy a launch
+void copy_from_mapped_multi(const MappedCopy* copies, int n, void* stream) {
+    for (int i = 0; i < n; ++i)
+        copy_i32_from_mapped((int32_t*) copies[i].dst, (const int32_t*) copies[i].src, copies[i].words, stream);
+}
+#endif
 
 void doorbell_ring(uint32_t* d_seq, void* stream) {
     if (d_seq == nullptr) return;

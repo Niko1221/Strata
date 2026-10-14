@@ -27,6 +27,11 @@ void native_gr_pre_gated_multi(const float* xn, float* gate, float* mixed,
 // output may equal residual exactly; all other overlaps are invalid.
 void native_gr_post(const float* residual, const float* block_out, const float* inject,
                     float* output, int n_embd, int hc, void* stream);
+/// native_gr_post for n_tok tokens in one launch, token t's operands at t times the given strides (floats): the same
+/// expression per element.  output may equal residual exactly.
+void native_gr_post_multi(const float* residual, const float* block_out, const float* inject, float* output,
+                          int n_embd, int hc, int n_tok, long long r_stride, long long b_stride, long long i_stride,
+                          void* stream);
 
 void native_gr_post_multi(const float* residual, const float* block_out, const float* inject,
                           float* output, int n_embd, int hc, int n_tok, void* stream);

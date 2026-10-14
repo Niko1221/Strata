@@ -4,6 +4,7 @@
 #include <hip/hip_fp16.h>
 
 #include "wmma_gemm.h"
+#include "strata/kernels/gfx_arch.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -269,6 +270,13 @@ int main() {
     HIP_CHECK(hipGetDeviceProperties(&properties, device));
     std::printf("Device %d: %s (arch %s, warpSize %d)\n",
                 device, properties.name, properties.gcnArchName, properties.warpSize);
+    // No matrix cores (RDNA2 and older, gfx906): the kernel declines every shape, so the suite has nothing to compare
+    // and reports that as a skip (exit 77, SKIP_RETURN_CODE in CMake), as hip_prompt_attn_wmma does, not a failure.
+    if (!strata::kernels::gfx_arch_is_gfx11_wmma(properties.gcnArchName)) {
+        std::printf("WMMA GEMM parity SKIPPED: %s has no WMMA matrix cores (the kernel declines every shape here)\n",
+                    properties.gcnArchName);
+        return 77;
+    }
 
     hipStream_t stream = nullptr;
     HIP_CHECK(hipStreamCreateWithFlags(&stream, hipStreamNonBlocking));

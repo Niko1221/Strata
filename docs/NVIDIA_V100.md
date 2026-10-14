@@ -35,6 +35,15 @@ select "old" kernels everywhere: which kernel runs is decided per architecture w
 | QSA prompt attention, Q4_0 KV | the decode kernel |
 | QSA block scores | the warp kernel (the tensor-core scorer needs sm_80) |
 
+| Part of a decode / verify window | On sm_70 |
+| --- | --- |
+| Routed experts in VRAM | gfx906's expert mode 8: the codebook grid and the group's activations in shared memory, SwiGLU fused (`STRATA_EXP_MODE=0`: the CUDA layout other cards run) |
+| Dense 2-4 column GEMVs and the head | the interleaved `native_mmvq_il` with a Volta rows table (`STRATA_MMVQ_IL=0`: `native_mmvq`) |
+| Hyper-connection read, up projection | gfx906's latency-hidden up kernel (`STRATA_GR_FAST=0`: the plain one) |
+
+All three are bitwise the kernels they replace; on a V100-SXM2 they take a verify window's GPU work from 22.8 to 21.2 ms
+([bench/results/2026-10-07-v100-decode-kernels](../bench/results/2026-10-07-v100-decode-kernels/README.md)).
+
 ## Measured
 
 One V100-PCIE-32GB, i9-7960X, Unsloth `UD-IQ4_XS` (not a setup model), int8 KV, MTP `--spec 2`; prompt read speed of random-word prompts, tokens/s,
@@ -49,7 +58,7 @@ with and without the Volta attention kernel (`STRATA_PROMPT_ATTN_OLD=1`):
 Decode was 38-51 tok/s in every run and is not affected. The profile, the parity numbers, the needle test and the limits are in
 [bench/results/2026-10-03-v100-prompt-attn](../bench/results/2026-10-03-v100-prompt-attn/README.md).
 
-What the kernel does and does not guarantee: against an FP64 reference its error is about 5e-6 (output scale 3.6; the FP32 kernel it replaces: 2e-6); 15 of 15
+What the kernel does and does not guarantee: against an FP64 reference its error is about 2-3e-6 (output scale 3.6; the FP32 kernel it replaces: 2e-6; 5e-6 before the hi and lo halves got separate accumulator chains); 15 of 15
 needles were found; greedy output was identical on the 28,650- and 114,338-token prompts and differed late in the answer on the 7,194-token one (another
 summation order).
 
@@ -66,6 +75,17 @@ sm_80.
 ## Limits
 
 - A layer split over two V100 was not measured with this kernel. The cards work in turn on a single request, so a split adds expert-cache room, not prompt speed.
-- sm_60 (Pascal) is covered by the same flag but was not measured here.
+- sm_60 (Pascal) is covered by the same flag, and community runs exist: two Tesla P40 with a layer split (#1028, bench
+  [2026-10-05-community-2x-p40](../bench/results/2026-10-05-community-2x-p40/README.md)), a Tesla P100 alone and with an RTX 2070 SUPER as
+  the expert-helper card (#1069: 30.5 tok/s alone, 35.8-38.4 with the helper), and a V100 + P100 pair (#1079: +6-11% decode from 0.1.39 to
+  0.1.40 with the P100 as helper cache). One reporter's numbers each; this page's own kernel measurements are V100 only.
 - Volta's tensor cores take FP16 only: a model's BF16 weights are converted, and a weight outside FP16's range would saturate (none did in
   the check above).
+
+## The decode kernels measured on a V100 (opt-in: `STRATA_SM70_TABLE=1`)
+
+The interleaved 2-4 column matvec with a Volta rows table, expert mode 8 and the latency-hidden norm/up (bitwise the default
+kernels' output, GPU work per verify window 22.8 -> 21.2 ms on a V100-SXM2 in the contributor's measurement) are used on
+sm_70 only when `STRATA_SM70_TABLE=1` is set. They become the default once the contributor has confirmed them on a V100 with
+the 0.1.41 code. Without the variable sm_70 runs what 0.1.40.3 ran. The single switches (`STRATA_EXP_MODE`, `STRATA_MMVQ_IL`,
+`STRATA_GR_FAST`) still apply on top.

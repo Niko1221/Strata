@@ -190,12 +190,15 @@ int scalar_activation_contract() {
     };
     check(cudaMemcpy(d_R, ones, sizeof(ones), cudaMemcpyHostToDevice), "scalar upload R");
     check(cudaMemcpy(d_weights, weights, sizeof(weights), cudaMemcpyHostToDevice), "scalar upload weights");
+    // the uploads run on the legacy stream from pageable memory, which the non-blocking `stream` does not wait for
+    check(cudaDeviceSynchronize(), "scalar setup");
     cudaStream_t stream;
     check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "scalar stream");
     int bad = 0;
     for (float gamma : {1.0f, 1.00390625f}) {
         const float gammas[] = {gamma, gamma};
         check(cudaMemcpy(d_norm, gammas, sizeof(gammas), cudaMemcpyHostToDevice), "scalar upload norm");
+        check(cudaDeviceSynchronize(), "scalar norm sync");
         float mixed_by_mode[3][2] = {}, inject_by_mode[3] = {};
         for (int mode = 0; mode < 3; ++mode) {
             select_activation_mode(mode);
@@ -243,6 +246,7 @@ int scalar_activation_contract() {
 
             const float sentinel = -73.25f;
             check(cudaMemcpy(d_inject, &sentinel, sizeof(float), cudaMemcpyHostToDevice), "scalar sentinel");
+            check(cudaDeviceSynchronize(), "scalar sentinel sync");   // a late sentinel would hide a write to d_inject
             select_activation_mode(mode);
             gr_read(d_R, d_norm, d_weights, d_weights + 4, nullptr, 0.0f,
                     sh, ws, d_mixed, d_inject, stream);
@@ -358,6 +362,8 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
 
     cudaStream_t stream = nullptr;
     check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "multi stream");
+    // the uploads above (and the caller's weights) run on the legacy stream, which the non-blocking `stream` does not wait for
+    check(cudaDeviceSynchronize(), "multi setup");
     // Max T forces the HIP kernel's full dynamic-LDS request: 8 * 1280 * sizeof(float) = 40 KiB.
     fused_gr_read_multi(args.data(), T, d_xn, stream);
     check(cudaStreamSynchronize(stream), "multi max-T sync");

@@ -83,9 +83,7 @@ enum error_code { success = 0, default_error = 999 };
 /// The migration tool user should replace it with a real error-handling function.
 /// SYCL reports errors using exceptions and does not use error codes.
 inline const char *get_error_string_dummy(int ec) {
-  (void)ec;
-  return "<FIXME: Placeholder>"; // Return the error string for the error code
-                                 // ec.
+  return ec == 0 ? "no error" : "error"; // SYCL has no error codes: DPCT_CHECK_ERROR yields 0 on success
 }
 } // namespace dpct
 

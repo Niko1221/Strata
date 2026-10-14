@@ -6,6 +6,7 @@
 #include "strata/artifact/dequant.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/ngram/ple_reader.hpp"
+#include "strata/platform/memory.hpp"
 
 #include <cerrno>
 #include <cmath>
@@ -327,7 +328,31 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         impl_->n_rows = n_rows;
     }
     if (io.mode == PleIo::Mmap && io.lock && impl_->data != nullptr) {
-#if !defined(_WIN32)
+#if defined(_WIN32)
+        // Windows has no mlock: the platform helper raises the process's minimum working set and
+        // VirtualLocks the mapped table instead (ordinary accounts hold the privilege). A failure
+        // falls back to touching the pages, i.e. plain mmap behaviour, with a warning - same as POSIX.
+        // A table that is more than half of the RAM leaves the rest of the process little (the locked pages cannot be
+        // paged out): say so, and go on (recommend, never force).
+        MEMORYSTATUSEX ms;
+        ms.dwLength = sizeof(ms);
+        if (GlobalMemoryStatusEx(&ms) && need > ms.ullTotalPhys / 2)
+            std::fprintf(stderr, "strata: warning: --ple-io ram locks %.1f GiB, more than half of this PC's %.1f GiB of RAM\n",
+                         (double) need / (1ull << 30), (double) ms.ullTotalPhys / (1ull << 30));
+        const strata::platform::LockResult lr =
+            strata::platform::lock_resident((void*) impl_->data, need);
+        if (lr.ok && lr.locked_bytes >= need) {
+            impl_->locked = true;
+        } else {
+            // a partial lock is not a lock: the unlocked rest would fault on the token path, so give it back
+            if (lr.locked_bytes > 0) strata::platform::unlock_resident((void*) impl_->data, lr.locked_bytes);
+            std::fprintf(stderr, "strata: PLE table lock failed (%s): touching its pages instead\n",
+                         lr.note.c_str());
+            volatile uint8_t sink = 0;
+            for (uint64_t off = 0; off < need; off += 4096) sink = sink + impl_->data[off];
+            (void) sink;
+        }
+#else
         const uint64_t page = 4096;
         const uintptr_t a0 = (uintptr_t) impl_->data & ~(uintptr_t) (page - 1);
         const uintptr_t a1 = (uintptr_t) impl_->data + (uintptr_t) need;
@@ -520,7 +545,39 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
         return true;
     }
     wait_prefetches();
-    for (size_t i = 0; i < n; ++i) read_row(rows[i], out + i * PLE_HEAD_DIM);
+    // #1984 #1971: a mapped table that is not in the file cache served this loop as serial demand faults, one random
+    // 4 KiB page at a time (16 rows a token, 16 x the chunk's tokens for a prompt), and the first chunk of a prompt has
+    // only layer 0 to hide it behind: a cold 27 GB table at ~0.2-1 ms a fault is minutes with no progress mark, which
+    // is what the stall watchdog stops.  Ask the OS for the next window's pages in one go (PrefetchVirtualMemory /
+    // MADV_WILLNEED, a hint that cannot change a value: an unfetched page is faulted by the read) while this window is read.
+    constexpr size_t kWin = 4096;   // rows a window
+    auto hint = [&](size_t a, size_t b) {
+        if (impl_->data == nullptr || !g_ple_prefetch) return;
+#if defined(_WIN32)
+        WIN32_MEMORY_RANGE_ENTRY ranges[kWin];
+        ULONG_PTR k = 0;
+        for (size_t i = a; i < b; ++i) {
+            if (rows[i] >= impl_->n_rows) continue;
+            ranges[k].VirtualAddress = (PVOID) (impl_->data + (size_t) rows[i] * impl_->rb);
+            ranges[k].NumberOfBytes = impl_->rb;
+            ++k;
+        }
+        if (k > 0) (void) PrefetchVirtualMemory(GetCurrentProcess(), k, ranges, 0);
+#else
+        for (size_t i = a; i < b; ++i) {
+            if (rows[i] >= impl_->n_rows) continue;
+            const uintptr_t r0 = (uintptr_t) (impl_->data + (size_t) rows[i] * impl_->rb);
+            const uintptr_t p0 = r0 & ~(uintptr_t) 4095;
+            (void) madvise((void*) p0, (size_t) (r0 + impl_->rb - p0), MADV_WILLNEED);
+        }
+#endif
+    };
+    hint(0, std::min(n, kWin));
+    for (size_t w = 0; w < n; w += kWin) {
+        if (w + kWin < n) hint(w + kWin, std::min(n, w + 2 * kWin));
+        const size_t e = std::min(n, w + kWin);
+        for (size_t i = w; i < e; ++i) read_row(rows[i], out + i * PLE_HEAD_DIM);
+    }
     return true;
 }
 

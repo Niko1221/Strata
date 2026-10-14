@@ -191,6 +191,8 @@ def input_messages(req: dict) -> list[dict]:
             messages.append({"role": "tool", "content": _tool_output(item, param), "_call_id": item.get("call_id")})
             open_turn = None
             thinking.clear()
+        elif kind == "additional_tools":
+            continue                                 # #782 (Codex): tools the client adds as an input item; see request_tools
         elif kind == "item_reference":
             raise ResponsesError("item references need stored responses, and this server keeps none: send the items "
                                  "themselves", param, "unsupported_parameter")
@@ -237,6 +239,12 @@ def request_tools(req: dict):
     given = req.get("tools") or []
     if not isinstance(given, list):
         raise ResponsesError("tools must be an array", "tools")
+    # #782 (Codex v0.160): `additional_tools` input items carry more tool definitions (a `tools` array, as the request
+    # has); they join the request's own, and an item without a usable array adds nothing
+    extra = [t for item in (req.get("input") if isinstance(req.get("input"), list) else [])
+             if isinstance(item, dict) and item.get("type") == "additional_tools" and isinstance(item.get("tools"), list)
+             for t in item["tools"]]
+    given = list(given) + extra
 
     def add(tool, param, namespace=None, ns_description=""):
         kind = tool.get("type")
@@ -283,6 +291,122 @@ def request_tools(req: dict):
     if choice == "none":
         return None, names, skipped
     return tools or None, names, skipped
+
+
+def _turn_body(req: dict):
+    meta = req.get("client_metadata")
+    raw = meta.get("x-codex-turn-metadata") if isinstance(meta, dict) else None
+    try:
+        turn = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+    return turn if isinstance(turn, dict) else None
+
+
+def _title_text(req: dict) -> str:
+    """The user line Codex asked to name, cut to the schema's 36 characters."""
+    parts = []
+    items = req.get("input")
+    if isinstance(items, str):
+        items = [{"role": "user", "content": items}]
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict) or item.get("role") != "user":
+                continue
+            content = item.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for piece in content:
+                    if isinstance(piece, dict) and isinstance(piece.get("text"), str):
+                        parts.append(piece["text"])
+    text = "\n".join(parts)
+    if "User prompt:" in text:
+        text = text.split("User prompt:", 1)[1]
+    line = next((x.strip() for x in text.splitlines() if x.strip()), "Untitled")
+    line = line.strip(" \"'`")
+    while line and line[-1] in ".。!！?？,，;；:：":
+        line = line[:-1].rstrip()
+    return line[:36].rstrip() or "Untitled"
+
+
+def thread_title_events(req: dict, model: str):
+    """Codex's thread-title turn, answered here. None when this request is not one.
+
+    Codex 0.160 sends this beside the user turn: another session, no tools, the full instructions. Running it on the
+    one prefix cache replaces the conversation.
+    """
+    if (_turn_body(req) or {}).get("thread_source") != "thread_title":
+        return None
+    check_request(req)
+    text = json.dumps({"title": _title_text(req)}, ensure_ascii=False)
+    asm = Assembler(req, model, 0, {}, False, json_mode=False)
+    events = asm.start()
+    events += asm._open({"id": new_id("msg"), "type": "message", "status": "in_progress", "role": "assistant",
+                         "content": []})
+    asm.item["content"][0]["text"] = text
+    events.append(asm.event("response.output_text.delta", item_id=asm.item["id"], output_index=asm.index,
+                            content_index=0, delta=text, logprobs=[]))
+    events += asm.close()
+    asm.response["usage"] = {
+        "input_tokens": 0, "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens": 0, "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": 0}
+    asm.response["status"] = "completed"
+    asm.response["completed_at"] = int(time.time())
+    events.append(asm.event("response.completed", response=asm.snapshot()))
+    return events
+
+
+# Codex's local compaction (the context is full, or /compact) sends its conversation again with `tools: []`
+# (codex-rs/core/src/compact.rs: `Prompt { input, base_instructions, ..Default::default() }`).  The template writes
+# the tools at the top of the prompt, so that prompt shares almost nothing with the one the engine holds and the whole
+# conversation is read again, at its longest.  So the tools a Codex conversation's last prompt was rendered with are
+# kept, and that conversation's compaction prompt is rendered with them.  Only the prompt: the parser and the response
+# get the request's own tools, which are none.  Codex says what a request is and whose it is in
+# client_metadata["x-codex-turn-metadata"] (a JSON string, Codex 0.140 and later): `request_kind` and the
+# conversation's `session_id` and `thread_id` (a sub-agent shares its parent's session, not its thread; a fork gets
+# its own).  `prompt_cache_key` is not used: it groups requests for caching, and Codex gives sub-agents and ephemeral
+# forks their parent's.  A request without that metadata is rendered as sent and changes nothing.  One entry, replaced
+# by each prompt of a Codex conversation: nothing grows, and a compaction of any other conversation finds a different
+# (session_id, thread_id) and renders its request as sent.  Lost (a restart): the prompt is read again, as without it.
+_kept_prompt_tools = (None, None)                    # ((session_id, thread_id), its prompt's tools as JSON or None)
+
+
+def _codex_turn(req: dict):
+    """-> (request_kind, (session_id, thread_id)) from Codex's turn metadata; the conversation is None without both."""
+    meta = req.get("client_metadata")
+    raw = meta.get("x-codex-turn-metadata") if isinstance(meta, dict) else None
+    try:
+        turn = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        turn = None
+    if not isinstance(turn, dict):
+        return None, None
+    conversation = (turn.get("session_id"), turn.get("thread_id"))
+    return turn.get("request_kind"), conversation if all(isinstance(x, str) and x for x in conversation) else None
+
+
+def prompt_tools(req: dict, tools):
+    """-> the tools the prompt is rendered with: request_tools' `tools`, or for a Codex compaction request without
+    tools the ones its own conversation's last prompt was rendered with (so its prompt starts as that one did)."""
+    kind, conversation = _codex_turn(req)
+    owner, kept = _kept_prompt_tools
+    if kind != "compaction" or conversation is None or owner != conversation or kept is None or req.get("tools"):
+        return tools
+    return json.loads(kept)                          # a fresh copy: the kept one is nobody's to change
+
+
+def prompt_made(req: dict, tools):
+    """The prompt of `req` was rendered with `tools` and goes to the engine: a Codex request that is not a compaction
+    leaves its conversation and those tools for that conversation's compaction. A thread-title turn is another
+    session Codex sends beside the real one, and it does not replace this entry."""
+    global _kept_prompt_tools
+    if (_turn_body(req) or {}).get("thread_source") == "thread_title":
+        return
+    kind, conversation = _codex_turn(req)
+    if conversation is not None and kind != "compaction":
+        _kept_prompt_tools = (conversation, json.dumps(tools) if tools else None)
 
 
 def text_format(req: dict):
@@ -352,6 +476,7 @@ class Assembler:
         self.seq = 0
         self.item = None                             # the open output item
         self.json_text = []                          # structured output: the answer, held until it is checked
+        self.called = False                          # a tool call was made: this turn is not the final answer
         reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
         self.response = {
             "id": new_id("resp"), "object": "response", "created_at": int(time.time()), "status": "in_progress",
@@ -455,6 +580,7 @@ class Assembler:
                                   content_index=0, delta=ev.text, logprobs=[]))
         elif kind == "tool_start":
             out += self.close()
+            out += self._call_started()
             out += self._open(self._call_item(ev))
         elif kind == "tool_args":
             item = self.item
@@ -468,6 +594,7 @@ class Assembler:
             item = self.item
             if item is None or item.get("call_id") != ev.call.id:     # a call that was not announced while written
                 out += self.close()
+                out += self._call_started()
                 out += self._open(self._call_item(ev))
                 item = self.item
                 if item["type"] == "function_call":
@@ -480,6 +607,28 @@ class Assembler:
                 out.append(self.event("response.custom_tool_call_input.delta", item_id=item["id"],
                                       output_index=self.index, delta=item["input"]))
             out += self.close()
+        return out
+
+    def _release(self, text: str) -> list[dict]:
+        """A held structured answer (or the words written beside a tool call) as one message item."""
+        if not text.strip():
+            return []
+        out = self._open({"id": new_id("msg"), "type": "message", "status": "in_progress", "role": "assistant",
+                          "content": []})
+        self.item["content"][0]["text"] = text
+        out.append(self.event("response.output_text.delta", item_id=self.item["id"], output_index=self.index,
+                              content_index=0, delta=text, logprobs=[]))
+        return out + self.close()
+
+    def _call_started(self) -> list[dict]:
+        """The first tool call of a JSON-format turn: this turn is not the final answer, so what the model wrote
+        before the call goes out as it is, ahead of the call, and the schema is checked on the turn that ends in
+        text (#782)."""
+        out = []
+        if self.json_mode and not self.called:
+            out = self._release("".join(self.json_text))
+            self.json_text = []
+        self.called = True
         return out
 
     def _call_item(self, ev: Event) -> dict:
@@ -502,13 +651,12 @@ class Assembler:
         unfinished = self.item is not None and self.item["type"] in ("function_call", "custom_tool_call")
         out = self.close("incomplete" if length or unfinished else "completed")
         if self.json_mode:
-            text = validate("".join(self.json_text), done.get("finish"))
-            out += self._open({"id": new_id("msg"), "type": "message", "status": "in_progress", "role": "assistant",
-                               "content": []})
-            self.item["content"][0]["text"] = text
-            out.append(self.event("response.output_text.delta", item_id=self.item["id"], output_index=self.index,
-                                  content_index=0, delta=text, logprobs=[]))
-            out += self.close()
+            text = "".join(self.json_text)
+            self.json_text = []
+            if self.called:
+                out += self._release(text)           # beside a tool call: as written (#782)
+            else:
+                out += self._release(validate(text, done.get("finish")))
         n = done.get("completion_tokens", 0)
         prompt = done.get("prompt_tokens", self.prompt_tokens)
         self.response["usage"] = {

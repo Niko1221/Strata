@@ -5,7 +5,7 @@
 Every argument is serve/server.py's.  Nothing in serve/ is edited (the SYCL port keeps out of the shared files so
 upstream merges stay clean); this wrapper adds, at run time:
 
-  - the Monitor tab's GPU readings on an Intel Arc (sycl/serve/xe_telemetry.py) when no NVIDIA card answers;
+  - the Monitor tab's GPU readings on an Intel Arc (sycl/serve/xe_telemetry.py) (also on a PC with an NVIDIA card: the engine runs on the Intel one);
   - a model menu in the web app's header, for a host that swaps models on one GPU: the config names the RPC that
     does the swap as "model_switcher" (it takes {"mode": m} and answers {"mode", "up", "starting", "choices",
     "urls"}); the menu offers the models served on this server's port.  Without that key nothing changes;
@@ -19,6 +19,7 @@ from __future__ import annotations
 import collections
 import json
 import sys
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -34,15 +35,14 @@ from xe_telemetry import _XeGpu  # noqa: E402
 
 
 def install_xe_reader():
-    """telemetry.gpu_reader -> the xe reader when NVML has no card and an Intel Arc is there."""
+    """telemetry.gpu_reader -> the xe reader whenever an Intel Arc is there.  #2001: this server runs the SYCL engine,
+    so the cards it reports are the Intel ones; before, an NVIDIA card in the same PC answered first and the Monitor
+    (and the benchmark report, which takes the card's name from it) showed the GeForce the engine never used."""
     orig = T.gpu_reader
 
     def gpu_reader(index=0, amd=False):
-        g = orig(index, amd)
-        if g.ok():
-            return g
         xe = _XeGpu(index)
-        return xe if xe.ok() else g
+        return xe if xe.ok() else orig(index, amd)
 
     T.gpu_reader = gpu_reader
 
@@ -137,9 +137,26 @@ def install_logprobs():
 
     def _pump(self):   # serve/server.py's StrataEngine._pump, plus: an LP line goes beside its token, not in the queue
         proc, lines = self.proc, self.lines
+        slot_q = self.slot_q
         lp = self.__dict__.setdefault("lp_lines", collections.deque())
         last_t = None
+        line = None
         for line in proc.stdout:
+            if line.startswith(S.FATAL_PREFIXES):   # as serve/server.py: never a slot's own line
+                if self.proc is proc:
+                    self.silent_note = "Unrecoverable native verification failure: " + line[4:].strip()
+                    self.ended = True
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+                break
+            if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch ("parallel"): a batch slot's own lines
+                try:
+                    slot_q[int(line.split()[1])].put(line)
+                    continue
+                except (IndexError, ValueError):
+                    pass
             if line.startswith("LP "):
                 lp.append((last_t, line))
                 continue
@@ -151,7 +168,11 @@ def install_logprobs():
             lines.put(line)
         if self.proc is proc:
             self.ended = True
+            if line and line.startswith("ERR"):
+                self.last_err = line[4:].strip()
         lines.put(None)
+        for q in slot_q:
+            q.put(None)
     Eng._pump = _pump
 
     keys = Eng.sampling_keys
@@ -223,6 +244,56 @@ def install_logprobs():
     S.openai_collect = openai_collect
 
 
+def install_narrator():
+    """The start narrator of serve/server.py says the CUDA engine's thing - tens of GB read into RAM, "YOUR PC CAN BE
+    SLOW OR STOP RESPONDING" - at the experts' step. With --stream-experts the SYCL port reads them from the GGUF
+    into VRAM (and a pinned mirror), which does not do that: say that instead. Without it (an i915 card) the experts
+    do go into a RAM arena and the original text stands."""
+    orig = S.narrate_start
+
+    def narrate_start(log_path, offset, args, done, heartbeat=20.0):
+        if "--stream-experts" not in args:
+            return orig(log_path, offset, args, done, heartbeat)
+        t0 = last = time.time()
+        said = set()
+
+        def say(key, text):
+            nonlocal last
+            if key not in said:
+                said.add(key)
+                last = time.time()
+                print(text, flush=True)
+
+        say("weights", "[strata] starting the engine: reading the model's weights ...")
+        pos = offset
+        while not done.wait(0.5):
+            try:
+                with open(log_path, "rb") as f:
+                    f.seek(pos)
+                    chunk = f.read()
+            except OSError:
+                chunk = b""
+            if chunk.count(b"\n"):
+                cut = chunk.rfind(b"\n") + 1
+                pos += cut
+                for line in chunk[:cut].decode("utf-8", "replace").splitlines():
+                    if "PLE on" in line or "expert arena:" in line:
+                        say("arena", "[strata] streaming the experts from the model files into the GPU's memory "
+                                     "(and a pinned RAM mirror for what does not fit); the first start takes a few minutes ...")
+                    elif " loaded " in line and "GiB at" in line:
+                        say("loaded", "[strata] experts loaded: " + line.split(" loaded ", 1)[1].strip() +
+                            f" ({time.time() - t0:.0f} s so far)")
+                    elif "expert cache " in line and " slots, " in line and "auto" not in line:
+                        n = line.split("expert cache ", 1)[1].split(";")[0].replace(" slots,", " experts,").strip()
+                        say("cache", f"[strata] filling the GPU's expert cache ({n}) ...")
+                    elif "session is up" in line:
+                        say("up", "[strata] almost ready ...")
+            if time.time() - last > heartbeat:
+                last = time.time()
+                print(f"[strata] still starting ({time.time() - t0:.0f} s) - please wait ...", flush=True)
+    S.narrate_start = narrate_start
+
+
 def top_logprobs(req: dict):
     """The K for the engine's logprobs=K, or None when the request did not ask (OpenAI: logprobs=true, top_logprobs
     0..20; the legacy completions form, logprobs=N, is taken as N)."""
@@ -237,6 +308,7 @@ def top_logprobs(req: dict):
 
 if __name__ == "__main__":
     install_xe_reader()
+    install_narrator()
     install_switcher(sys.argv[1:])
     install_logprobs()
     sys.exit(S.main())

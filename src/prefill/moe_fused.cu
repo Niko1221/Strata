@@ -18,6 +18,7 @@
 // for the k of a half-block: mma k index 16h + 4t + j stands for weight (and activation) 16h + t + 4j.  The
 // activations are stored in it (perm32), and a lane's two B registers (h = 0 and 1) are adjacent: one 8-byte load.
 #include "strata/prefill/moe_fused.hpp"
+#include "strata/kernels/gfx_arch.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -370,7 +371,7 @@ expert_kernel(const Batch b, const Tables tb, const uint8_t* __restrict__ act, c
 // No LDS staging: a wave reads its weight rows (16 B per row and 64-weight block) and its tile rows' activation
 // blocks (80 B) straight from global memory (L2: an expert's rows are read by every tile, a token's by every weight
 // block), one block ahead in registers; the work item's weight scales go to LDS once.
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
 #define STRATA_FUSED_W11 1
 #else
 #define STRATA_FUSED_W11 0
@@ -607,7 +608,7 @@ const DevInfo& dev_info() {
         cudaDeviceProp prop;
         cudaDeviceGetAttribute(&d.sms, cudaDevAttrMultiProcessorCount, dev);
         hipFuncAttributes fa{};
-        if (cudaGetDeviceProperties(&prop, dev) != cudaSuccess || std::strncmp(prop.gcnArchName, "gfx11", 5) != 0 ||
+        if (cudaGetDeviceProperties(&prop, dev) != cudaSuccess || !strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName) ||
             hipFuncGetAttributes(&fa, reinterpret_cast<const void*>(expert_w11_kernel<true>)) != hipSuccess) {
             cudaGetLastError();
             return d;

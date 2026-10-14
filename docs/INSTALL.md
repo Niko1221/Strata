@@ -17,7 +17,7 @@ this for you with [AI_SETUP.md](AI_SETUP.md).
 | **RAM** | Enough for the size you pick ([which model](MODELS.md#pick-by-ram)); **64 GB** runs every size. A big GPU makes up for less RAM - the [low-RAM mode](MODELS.md#a-big-graphics-card-and-little-ram). |
 | **CPU** | x86-64 with AVX2 (any Intel/AMD desktop CPU from the last ~8 years). AVX-512 (Ryzen 7000/9000) is a bit faster. Older CPUs without AVX2 are experimental and slow: [Older CPUs](#older-cpus-experimental). |
 | **Disk** | ~70-80 GB free for the model, ~6 GB for the MTP layer (+1 GB with images). **Q2_0 on an AVX-512 CPU** also writes a one-time ~40 GB copy of its experts for the fast CPU kernel. On Linux with an AMD card, ROCm takes ~10 GB more when setup installs it. An NVMe SSD is strongly recommended: it makes the first start much faster. |
-| **OS** | Windows 10/11, or Linux (Ubuntu 22.04/24.04 get everything installed automatically). |
+| **OS** | Windows 10/11, or Linux (Ubuntu 22.04/24.04 and Debian 12/13 get everything installed automatically). |
 | **Driver** | **NVIDIA:** a current driver, version 580 or newer ([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA App). **AMD:** on Linux the kernel's amdgpu driver (no ROCm install needed); on Windows a current AMD Software: Adrenalin Edition driver ([amd.com/support](https://www.amd.com/en/support)). |
 
 The driver is the only thing you install yourself. Everything else - Python, the engine, the model - is set up for
@@ -56,6 +56,12 @@ The same questions, the same automatic install (it uses `sudo apt` for Python an
 the build tools), and the same start: `http://127.0.0.1:8080`. Later runs of `./setup.sh` (or `./run-<model>.sh`)
 start the model directly; `./setup.sh --setup` installs another model or changes the settings. Other distributions,
 WSL and compiling: [details](DETAILS.md#linux).
+
+On Nix/NixOS, you can use the flake:
+
+```bash
+nix develop -c ./setup.sh
+```
 
 ## AMD cards
 
@@ -109,6 +115,12 @@ The same idea, in a container (NVIDIA cards).
    volume needs no setup pass: `-e MODEL=Q2_0 -e FAMILY=coder` picks that model's config. Add
    `-e REINSTALL=1` only to change settings for a model already set up (context, vision, KV, host,
    api_key, LOW_RAM), since those are recorded in its config.
+   `MODEL` (with `FAMILY`) selects `/data/config/strata-<model>.json` (the model name in lowercase), so
+   `-e MODEL=IQ3_S.1X4-BATCH9` starts `/data/config/strata-iq3_s.1x4-batch9.json`: that is the way to keep
+   several configs of one model on one volume. `-e CONFIG=/data/config/my.json` overrides it with any
+   config file. A link `/opt/strata/strata-<model>.json` that already points into `/data/config/` (made by
+   a pod command before the entrypoint runs) is kept. The entrypoint prints one `Config:` line naming the
+   file the server starts with.
    Strata loads 32-62 GB into RAM. `--gpus all` on a host with two usable cards takes both: the
    layer split is setup's recommended default ([MULTI_GPU.md](MULTI_GPU.md)), and a volume
    set up for one card switches to the pair on its first start there. Pin one card with `-e GPU=0`,
@@ -120,6 +132,15 @@ The same idea, in a container (NVIDIA cards).
    The server listens on `0.0.0.0:8080` by default; set `-e API_KEY=<secret>` before exposing the port
    to a network. The image has a `HEALTHCHECK` on `/health`, so `docker ps` shows the container
    healthy once the model is loaded, and `GET /v1/status` says what it is running.
+   Model files you already have (setup's `--gguf-dir`): mount their folder and name it, e.g.
+   `-v /models/UD-Q4_K_XL:/gguf -e GGUF_DIR=/gguf -e FAMILY=unsloth -e MODEL=UD-Q4_K_XL`.
+   Mount it writable for the first start: setup checks the Unsloth file's SHA-256 once and keeps the
+   result as `<shard>.done` next to each shard; later starts skip setup, so `:ro` is fine then.
+   `-e RESIDENT_BUDGET_GIB=N` and `-e KV_STREAMING=on|off|auto` pass setup's `--resident-budget-gib`
+   and `--kv-streaming` (with `REINSTALL=1` for a model already set up).
+   Stopping: the engine releases its page-locked RAM (tens of GB) on SIGTERM, which takes longer than
+   Docker's default 10 s; give it time, or `docker stop` kills it (exit 137):
+   `docker run --stop-timeout 60 ...`, `docker stop -t 60 <name>`, or `stop_grace_period: 60s` in Compose.
 
 ## Older CPUs (experimental)
 
@@ -207,9 +228,12 @@ With `--yes` setup takes the recommended answer to every question.
 ## Tuning for your PC
 
 Every PC is different: `START-HERE.bat --calibrate` (Linux: `./setup.sh --calibrate`) measures a few engine settings
-on yours and keeps the fastest (about 5-10 minutes; on an RTX 5070 with a Ryzen 5 7600 it made the Coder 7% faster).
+on yours and keeps the fastest (about 15-30 minutes, longer on a slow card; on an RTX 5070 with a Ryzen 5 7600 it made the Coder 7% faster).
 It keeps a setting only when it is more than 3% faster, and the result is remembered per PC and model, so updates
-keep it. NVIDIA cards for now. [What it measures](DETAILS.md#double-click-start-herebat).
+keep it. Measuring the CPU worker count needs a fresh engine, so the model is loaded more than once: the PC is
+busy, and can stop responding for a minute or two, once per restart. When it finishes it **starts the model**,
+so the server is already running when it returns - do not start it a second time.
+NVIDIA cards for now. [What it measures](DETAILS.md#double-click-start-herebat).
 
 ## Options without questions
 
@@ -218,6 +242,7 @@ START-HERE.bat --setup                          install another model, or change
 SETUP.bat                                       the same (double-click it)
 START-HERE.bat --model IQ2_XS --context 32768 --vision yes --yes     no questions
 START-HERE.bat --gguf-dir D:\models\IQ2_XS       use GGUF files you already have
+START-HERE.bat --inspect D:\models\some.gguf     what a GGUF really holds and whether Strata runs it (no download)
 START-HERE.bat --data-dir E:\Strata-data         keep the model files somewhere else
 START-HERE.bat --port 8081                      another port
 START-HERE.bat --gpu 1                          another GPU (setup picks the one with the most VRAM)
@@ -227,7 +252,7 @@ START-HERE.bat --no-browser                     do not open the chat page when t
                                                 --browser undoes it)
 START-HERE.bat --setup --backend hip            the AMD engine on a PC that also has an NVIDIA card
 START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>     reachable from other devices, with a key
-START-HERE.bat --calibrate                      tune the engine for this PC (about 5-10 minutes), then start
+START-HERE.bat --calibrate                      tune the engine for this PC (about 15-30 minutes, longer on a slow card), then start
 START-HERE.bat --check                          only check this PC
 ```
 
@@ -252,9 +277,24 @@ free the most.
 
 **Model files downloaded by hand, or from a mirror (#495):** setup's step 5 prints the folder it expects them in
 (`Strata-data\models\<SIZE>\`, e.g. `Strata-data\models\IQ3_XXS\`): put them there with their original names, or
-point setup at them with `--gguf-dir`. To let setup download from a Hugging Face mirror itself, set `HF_ENDPOINT`
+point setup at them with `--gguf-dir`. To see what a file really holds before using or downloading it, `--inspect`
+reads only its headers (a few MB, also over the network: a file, a folder, a URL, `ms:owner/repo` for ModelScope or
+`hf:owner/repo`): every weight group's real bits per weight and storage types, and whether it is one of the files setup
+installs (under any name), stored like one of them, or not one Strata runs (another architecture, or experts in a
+format no Strata kernel reads). A name says little: Unsloth's `UD-IQ3_XXS` stores its routed experts at 3.22 bits per
+weight, `UD-Q4_K_XL` at 5.10, the original `Q2_0` at 2.25 and `IQ3_S` at 3.33. To let setup download from a Hugging Face mirror itself, set `HF_ENDPOINT`
 first (Windows: `set HF_ENDPOINT=https://hf-mirror.com`, Linux: `export HF_ENDPOINT=https://hf-mirror.com`): the same
 pinned revisions and checks apply, and the MTP draft layer comes from there too.
+
+**From ModelScope (mainland China):** every repository setup downloads from (the GSQ-RCO models, Swift 1.5, the
+Coder, Unsloth's files, and the original checkpoint the MTP draft layer is taken from) is on
+[ModelScope](https://www.modelscope.cn) under the same name, with the same files. Setup never switches to it by
+itself (a download that fails says how): use `--source modelscope` (`STRATA_SOURCE=modelscope`). ModelScope serves a
+repository's current files (no pinned revision), so each file is checked against the SHA-256 ModelScope publishes for
+it (self-attested: a changed upstream repository would carry its own hash), and the MTP tensors against the
+pinned checkpoint's own hashes, as from Hugging Face; setup says so when you choose it. Measured on a PC in mainland
+China on 2026-10-05: 11-14 MB/s; the Q2_0 and IQ3_S files matched their published SHA-256, and Q2_0's shard 1 matched
+the copy from hf-mirror.com.
 
 On Linux the same options go to `./setup.sh`. `START-HERE.bat --help` lists them all. The server's own settings
 (sharing the GPU with games, MCP tools, CORS, API keys, the API itself) are in the [details](DETAILS.md#using-it).

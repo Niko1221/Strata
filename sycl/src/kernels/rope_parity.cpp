@@ -28,6 +28,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/kernels/rope.hpp"
+#include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_rope.hpp"
 
 #include <cmath>
@@ -605,6 +606,160 @@ int main(int argc, char** argv) {
         std::printf("  native path vs table path, none            %s (%lld of %d over 3e-3, worst rel %.3e)\n",
                     none_bad5 ? "*** WRONG ***" : "agrees", none_bad5, nrows * head_dim, worst5);
         bad += (int) none_bad5;
+
+        // ---- 6. FUSED RMSNorm + RoPE (`native_qsa_rms_norm_rope`) MUST BE BIT-IDENTICAL to
+        // `native_qsa_rms_norm_weighted` followed by `native_rope_apply` for both contiguous
+        // (`in_stride == head_dim`) and strided Q/gate split (`in_stride == 2 * head_dim`) inputs,
+        // across supported head_dims (128, 256) and both unscaled and YaRN scaling.
+        // The kernel is off by default on the HIP build until this check passes there (native_norm_rope_usable): the
+        // check then reports SKIPPED, and STRATA_NORM_ROPE=1 runs it (gfx1151, Aurora, 0.1.40: it does not pass).
+        const bool run6 = strata::kernels::native_norm_rope_usable(256, 64);
+        if (!run6)
+            std::printf("  native_qsa_rms_norm_rope                   SKIPPED (the fused kernel is not enabled on this build)\n");
+        for (int hd6 : {128, 256}) {
+            if (!run6) break;
+            const int nr6 = 64;
+            const int rows6 = 96;
+            std::vector<float> x6_strided((size_t) rows6 * 2 * hd6);
+            std::vector<float> gamma6((size_t) hd6);
+            std::vector<int> pos6((size_t) rows6);
+            for (auto& v : x6_strided) v = gauss2(rng2);
+            for (auto& g : gamma6) g = 0.5f + std::fabs(gauss2(rng2));
+            for (int r = 0; r < rows6; ++r) pos6[(size_t) r] = (r * 53 + 1) % npos;
+
+            float *d_xs6 = nullptr, *d_g6 = nullptr, *d_ref6 = nullptr, *d_fus6 = nullptr;
+            int* d_pos6 = nullptr;
+            check(DPCT_CHECK_ERROR(
+                      d_xs6 = sycl::malloc_device<float>(
+                          x6_strided.size(), dpct::get_in_order_queue())),
+                  "malloc xs6");
+            check(DPCT_CHECK_ERROR(
+                      d_g6 = sycl::malloc_device<float>(
+                          gamma6.size(), dpct::get_in_order_queue())),
+                  "malloc g6");
+            check(DPCT_CHECK_ERROR(
+                      d_ref6 = sycl::malloc_device<float>(
+                          (size_t)rows6 * hd6, dpct::get_in_order_queue())),
+                  "malloc ref6");
+            check(DPCT_CHECK_ERROR(
+                      d_fus6 = sycl::malloc_device<float>(
+                          (size_t)rows6 * hd6, dpct::get_in_order_queue())),
+                  "malloc fus6");
+            check(
+                DPCT_CHECK_ERROR(d_pos6 = sycl::malloc_device<int>(
+                                     pos6.size(), dpct::get_in_order_queue())),
+                "malloc pos6");
+            /*
+            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
+            assuming in the original code the source host memory is pageable
+            memory. If the memory is not pageable, call wait() on event return
+            by memcpy API to ensure synchronization behavior.
+            */
+            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
+                      d_xs6, x6_strided.data(),
+                      x6_strided.size() * sizeof(float)).wait()),
+                  "copy xs6");
+            /*
+            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
+            assuming in the original code the source host memory is pageable
+            memory. If the memory is not pageable, call wait() on event return
+            by memcpy API to ensure synchronization behavior.
+            */
+            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
+                      d_g6, gamma6.data(), gamma6.size() * sizeof(float)).wait()),
+                  "copy g6");
+            /*
+            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
+            assuming in the original code the source host memory is pageable
+            memory. If the memory is not pageable, call wait() on event return
+            by memcpy API to ensure synchronization behavior.
+            */
+            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
+                      d_pos6, pos6.data(), pos6.size() * sizeof(int)).wait()),
+                  "copy pos6");
+
+            long long fbad = 0;
+            for (const auto& sc6 : {none5, yarn}) {
+                // (a) strided Q/gate split (in_stride = 2 * hd6) vs cudaMemcpy2DAsync + norm + rope
+                /*
+                DPCT1124: cudaMemcpy2DAsync is migrated to asynchronous
+                memcpy API. While the origin API might be synchronous, it
+                depends on the type of operand memory, so you may need to call
+                wait() on event return by memcpy API to ensure synchronization
+                behavior.
+                */
+                check(DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
+                          d_ref6, (size_t)hd6 * sizeof(float), d_xs6,
+                          (size_t)2 * hd6 * sizeof(float),
+                          (size_t)hd6 * sizeof(float), (size_t)rows6,
+                          dpct::device_to_device, *cs5)),
+                      "split6");
+                strata::kernels::native_qsa_rms_norm_weighted(d_ref6, d_g6, d_ref6, hd6, rows6, 1e-6f, cs5);
+                strata::kernels::native_rope_apply(d_ref6, d_ref6, rows6, hd6, nr6, sc6, d_pos6, cs5);
+
+                strata::kernels::native_qsa_rms_norm_rope(d_xs6, 2 * hd6, d_g6, d_fus6, rows6, hd6, nr6, 1e-6f, sc6,
+                                                          d_pos6, cs5);
+                check(DPCT_CHECK_ERROR(cs5->wait()), "sync6a");
+                std::vector<float> href((size_t) rows6 * hd6), hfus((size_t) rows6 * hd6);
+                check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                           .memcpy(href.data(), d_ref6,
+                                                   href.size() * sizeof(float))
+                                           .wait()),
+                      "back ref6a");
+                check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                           .memcpy(hfus.data(), d_fus6,
+                                                   hfus.size() * sizeof(float))
+                                           .wait()),
+                      "back fus6a");
+                for (size_t i = 0; i < href.size(); ++i) {
+                    if (std::memcmp(&href[i], &hfus[i], 4) != 0) ++fbad;
+                }
+
+                // (b) contiguous in-place (in_stride = hd6, output == input)
+                /*
+                DPCT1124: cudaMemcpy2DAsync is migrated to asynchronous
+                memcpy API. While the origin API might be synchronous, it
+                depends on the type of operand memory, so you may need to call
+                wait() on event return by memcpy API to ensure synchronization
+                behavior.
+                */
+                check(DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
+                          d_ref6, (size_t)hd6 * sizeof(float), d_xs6,
+                          (size_t)2 * hd6 * sizeof(float),
+                          (size_t)hd6 * sizeof(float), (size_t)rows6,
+                          dpct::device_to_device, *cs5)),
+                      "contig6_ref");
+                check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
+                          d_fus6, d_ref6, (size_t)rows6 * hd6 * sizeof(float)).wait()),
+                      "contig6_fus");
+                strata::kernels::native_qsa_rms_norm_weighted(d_ref6, d_g6, d_ref6, hd6, rows6, 1e-6f, cs5);
+                strata::kernels::native_rope_apply(d_ref6, d_ref6, rows6, hd6, nr6, sc6, d_pos6, cs5);
+                strata::kernels::native_qsa_rms_norm_rope(d_fus6, hd6, d_g6, d_fus6, rows6, hd6, nr6, 1e-6f, sc6,
+                                                          d_pos6, cs5);
+                check(DPCT_CHECK_ERROR(cs5->wait()), "sync6b");
+                check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                           .memcpy(href.data(), d_ref6,
+                                                   href.size() * sizeof(float))
+                                           .wait()),
+                      "back ref6b");
+                check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                           .memcpy(hfus.data(), d_fus6,
+                                                   hfus.size() * sizeof(float))
+                                           .wait()),
+                      "back fus6b");
+                for (size_t i = 0; i < href.size(); ++i) {
+                    if (std::memcmp(&href[i], &hfus[i], 4) != 0) ++fbad;
+                }
+            }
+            std::printf("  native_qsa_rms_norm_rope hd=%3d nr=%2d      %s (%lld of %d elements differ)\n",
+                        hd6, nr6, fbad ? "*** WRONG ***" : "bit-identical", fbad, rows6 * hd6 * 4);
+            bad += (int) fbad;
+            sycl::free(d_xs6, dpct::get_in_order_queue());
+            sycl::free(d_g6, dpct::get_in_order_queue());
+            sycl::free(d_ref6, dpct::get_in_order_queue());
+            sycl::free(d_fus6, dpct::get_in_order_queue());
+            sycl::free(d_pos6, dpct::get_in_order_queue());
+        }
     }
 
     std::printf("\nrope: %d failures\n", bad);

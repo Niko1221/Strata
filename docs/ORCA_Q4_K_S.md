@@ -31,6 +31,6 @@ Pass the same first shard to `--native` and `--ple-gguf`; Strata discovers the o
 --pack packs/orca-q4_k_s --native /models/Qwen3.8-Flash-Next-Uncensored-Q4_K_S-00001-of-00003.gguf --ple-gguf /models/Qwen3.8-Flash-Next-Uncensored-Q4_K_S-00001-of-00003.gguf --ple-io mmap --expert-profile data/expert-profile.bin --expert-cache auto --prefill 512 --spec 4 --mtp /path/to/mtp/rt --max-context 32768 --kv int8
 ```
 
-For two GPUs in persistent server mode, add `--layer-split auto --split-device 1` (with CUDA0 and CUDA1 visible). The usual Strata MTP runtime is built from the original model's draft layer; draft acceptance on the Uncensored fine-tune must be measured. Keep this model's own tokenizer from the pack. Do not combine `--expert-cache-per-layer` with a variable-size native cache: that policy's slot ordering is independent of the pack's per-layer blob sizes.
+For two GPUs in persistent server mode, add `--layer-split auto --split-device 1` (with CUDA0 and CUDA1 visible). The usual Strata MTP runtime is built from the original model's draft layer; draft acceptance on the Uncensored fine-tune must be measured. Keep this model's own tokenizer from the pack. `--expert-cache-per-layer` on a native pack gives every layer the same number of slots, each the size of that layer's own blob. `--expert-cache N` is still the budget of N largest blobs.
 
 This port does not claim that Q4_K_S beats llama.cpp on a given computer. Compare the same model bytes, prompt, context, output length and GPU load; report prefill and decode separately.

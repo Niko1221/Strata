@@ -135,7 +135,7 @@ class BuildTools(unittest.TestCase):
             seen.append(below)
             return nvcc(below)
 
-        with mock.patch.object(setup, "find_nvcc", find), mock.patch.object(setup, "find_vcvars", lambda: "vcvars"), \
+        with mock.patch.object(setup, "find_nvcc", find), mock.patch.object(setup, "find_vcvars", lambda cuda_v=None: "vcvars"), \
                 mock.patch.object(setup.shutil, "which", lambda n: "/usr/bin/" + n):
             got, text = quiet(setup.install_build_tools, gpu, True)
         return got, seen, text

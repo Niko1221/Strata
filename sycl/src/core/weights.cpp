@@ -5,6 +5,7 @@
 #include "strata/core/weights.hpp"
 
 #include "strata/kernels/f16_bits.hpp"
+#include "strata/platform/memory.hpp"
 
 #include <chrono>
 #include <algorithm>
@@ -225,15 +226,15 @@ bool WeightTable::load(const std::string &pack_dir, void *arena_base,
     void* stage_in = nullptr;
     void* stage_out = nullptr;
     /*
-    DPCT1048: The original value cudaHostAllocDefault is not meaningful in
-    the migrated code and was removed or replaced with 0. You may need to check
-    the migrated code.
+    DPCT1048: The original value cudaHostAllocDefault is not meaningful in the
+    migrated code and was removed or replaced with 0. You may need to check the
+    migrated code.
     */
     if (DPCT_CHECK_ERROR(stage_in = (void *)sycl::malloc_host(
                              CHUNK, dpct::get_in_order_queue())) != 0 ||
         /*
-        DPCT1048: The original value cudaHostAllocDefault is not meaningful
-        in the migrated code and was removed or replaced with 0. You may need to
+        DPCT1048: The original value cudaHostAllocDefault is not meaningful in
+        the migrated code and was removed or replaced with 0. You may need to
         check the migrated code.
         */
         DPCT_CHECK_ERROR(stage_out = (void *)sycl::malloc_host(
@@ -299,6 +300,12 @@ bool WeightTable::load(const std::string &pack_dir, void *arena_base,
                 return false;
             }
             cur_file = r.file;
+#if !defined(_WIN32)
+            // ask for this file's remaining rows up front so their reads overlap
+            for (size_t j = row_i; j < rows.size(); ++j)
+                if (rows[j].file == r.file && !skipped[j])
+                    strata::platform::advise_willneed(fileno(cur), rows[j].src_off, rows[j].src_bytes);
+#endif
         }
 
         // ---- the segment list: what this tensor's bytes are, plane by plane, in both forms

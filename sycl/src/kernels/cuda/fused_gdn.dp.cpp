@@ -1,6 +1,7 @@
 // src/kernels/cuda/fused_gdn.cu - see include/strata/kernels/fused_gdn.hpp.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/fused_gdn.hpp"
@@ -12,6 +13,7 @@ namespace strata::kernels {
 namespace {
 
 constexpr int S = 128;          // state size (rows = cols = 128)
+static_assert(S == strata::core::kCompiledGeometry.ssm_state_size, "fused_gdn is compiled for core/geometry.hpp");
 constexpr int RG = 4;           // row groups
 constexpr int RPG = S / RG;     // 32 rows per thread
 
@@ -32,7 +34,10 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
     sycl::ext::oneapi::this_work_item::get_work_group<3>());
     auto &sq = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sycl::ext::oneapi::this_work_item::get_work_group<3>());
-    auto &red =
+    auto &red_kv =
+        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[RG][S]>(
+            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto &red_o =
         *sycl::ext::oneapi::group_local_memory_for_overwrite<float[RG][S]>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
     auto &wsum = *sycl::ext::oneapi::group_local_memory_for_overwrite<
@@ -59,14 +64,14 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
     float kv = 0.0f;
 #pragma unroll
     for (int r = 0; r < RPG; ++r) kv = sycl::fma(s[r], sk[rg * RPG + r], kv);
-    red[rg][col] = kv;
+    red_kv[rg][col] = kv;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    const float kv_col = red[0][col] + red[1][col] + red[2][col] + red[3][col];
+    const float kv_col = red_kv[0][col] + red_kv[1][col] + red_kv[2][col] + red_kv[3][col];
     const float delta = (v[head * S + col] - g * kv_col) * beta[head];
     float o = 0.0f;
 #pragma unroll
@@ -75,13 +80,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         o = sycl::fma(s[r], sq[rg * RPG + r], o);
         base[r * row_stride] = s[r];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier(); // every thread has read red[] for kv_col
-    red[rg][col] = o;
+    red_o[rg][col] = o;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -90,15 +89,15 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
     item_ct1.barrier();
     float oc = 0.0f, sq_part = 0.0f;
     if (rg == 0) {
-        oc = (red[0][col] + red[1][col] + red[2][col] + red[3][col]) *
+        oc = (red_o[0][col] + red_o[1][col] + red_o[2][col] + red_o[3][col]) *
              sycl::rsqrt((float)S);
         sq_part = oc * oc;
     }
     // RMS over the head's 128 outputs: warps of row group 0 are threads 0..127.
     /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
+DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature masked
+sub_group function which may not be supported by all compilers or runtimes. You
+may need to adjust the code.
 */
 #pragma unroll
     for (int o2 = 16; o2 > 0; o2 >>= 1) sq_part +=
@@ -140,9 +139,9 @@ auto &part =
     if ((int)item_ct1.get_group(2) < qk_heads) {
         float sq = y * y;
         /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
+DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature masked
+sub_group function which may not be supported by all compilers or runtimes. You
+may need to adjust the code.
 */
 #pragma unroll
         for (int o = 16; o > 0; o >>= 1) sq +=
@@ -210,9 +209,9 @@ gdn_ab_kernel(const float *__restrict__ x, const uint16_t *__restrict__ wa,
                             (float)(xb.w()), acc);
     }
     /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
+DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature masked
+sub_group function which may not be supported by all compilers or runtimes. You
+may need to adjust the code.
 */
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) acc +=

@@ -24,6 +24,10 @@
 #include <cstdint>
 #include <time.h>
 
+#if defined(STRATA_HIP_GFX906)
+#include <cuda_runtime.h>   // gfx906: the compat layer (__forceinline__, __nanosleep, __dp4a)
+#endif
+
 #if defined(DPCT_COMPATIBILITY_TEMP) && DPCT_COMPATIBILITY_TEMP < 610
 __device__ __forceinline__ int strata_dp4a(const int a, const int b, const int c) {
     const int8_t* a8 = (const int8_t*) &a;

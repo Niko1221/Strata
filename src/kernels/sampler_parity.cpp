@@ -157,6 +157,18 @@ float host_philox_uniform(uint64_t seed, uint64_t counter) {
     return (float) (c0 >> 8) * (1.0f / 16777216.0f);
 }
 
+// The Gumbel-max noise, host side - a transcription of the kernel's `gumbel_exp` (STRATA_SPEC_GUMBEL): Exp(1) from
+// a splitmix64 hash of (seed, counter, token id).  The pick is argmax_i p_i / E_i, an exact sample of p.
+double host_gumbel_exp(uint64_t seed, uint64_t counter, uint32_t token) {
+    uint64_t z = seed ^ (counter * 0x9E3779B97F4A7C15ull) ^ ((uint64_t) token * 0xD1B54A32D192ED03ull);
+    z += 0x9E3779B97F4A7C15ull;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    z ^= z >> 31;
+    const double u = ((double) (z >> 11) + 0.5) * (1.0 / 9007199254740992.0);
+    return -std::log(u);
+}
+
 // The full SAMPLED chain, host side - the kernel's `sampler_kernel` in serial form, in llama.cpp's order:
 // penalties on the raw logits during the top_k selection (ties to the lowest index), top_p's cut in double over
 // the top_k list, the min_p prefix cut on its survivors, the temperature, and one Philox draw at
@@ -212,9 +224,18 @@ int sampled_reference(const std::vector<float>& l, const std::vector<int>& hist,
     for (int i = 1; i < n_keep; ++i) smx = std::fmax(smx, scaled(i));
     double sum = 0.0;
     for (int i = 0; i < n_keep; ++i) sum += std::exp((double) scaled(i) - (double) smx);
+    int pick = sel_ids[(size_t) (n_keep - 1)];
+    if (p.gumbel) {
+        double best = -1.0;
+        for (int i = 0; i < n_keep; ++i) {
+            const double r = std::exp((double) scaled(i) - (double) smx) / sum /
+                             host_gumbel_exp(p.seed, p.counter + (uint64_t) row, (uint32_t) sel_ids[(size_t) i]);
+            if (r > best) { best = r; pick = sel_ids[(size_t) i]; }
+        }
+        return pick;
+    }
     const float u = host_philox_uniform(p.seed, p.counter + (uint64_t) row);
     double cum = 0.0;
-    int pick = sel_ids[(size_t) (n_keep - 1)];
     for (int i = 0; i < n_keep; ++i) {
         cum += std::exp((double) scaled(i) - (double) smx) / sum;
         if ((double) u < cum) { pick = sel_ids[(size_t) i]; break; }
@@ -333,9 +354,18 @@ int mirror_pick(const SelList& sel, int k, const strata::kernels::SamplerParams&
     for (int i = 1; i < n_keep; ++i) smx = std::fmax(smx, scaled(i));
     double sum = 0.0;
     for (int i = 0; i < n_keep; ++i) sum += std::exp((double) scaled(i) - (double) smx);
+    int pick = sel.ids[(size_t) (n_keep > 0 ? n_keep - 1 : 0)];
+    if (p.gumbel) {
+        double best = -1.0;
+        for (int i = 0; i < n_keep; ++i) {
+            const double r = std::exp((double) scaled(i) - (double) smx) / sum /
+                             host_gumbel_exp(p.seed, p.counter + (uint64_t) row, (uint32_t) sel.ids[(size_t) i]);
+            if (r > best) { best = r; pick = sel.ids[(size_t) i]; }
+        }
+        return pick;
+    }
     const float u = host_philox_uniform(p.seed, p.counter + (uint64_t) row);
     double cum = 0.0;
-    int pick = sel.ids[(size_t) (n_keep > 0 ? n_keep - 1 : 0)];
     for (int i = 0; i < n_keep; ++i) {
         cum += std::exp((double) scaled(i) - (double) smx) / sum;
         if ((double) u < cum) { pick = sel.ids[(size_t) i]; break; }
@@ -453,6 +483,54 @@ int main(int argc, char** argv) {
     }
     int bad = 0;
     const int NV = 512, NT = 4;
+
+    // Request bias affects every target row, including greedy; omission leaves logits and the default pick intact.
+    // Compare against an independently pre-biased input through each ctest sampler implementation.
+    {
+        std::vector<float> l(NV * NT), bias(NV, 0.0f), adjusted;
+        for (int t = 0; t < NT; ++t)
+            for (int v = 0; v < NV; ++v) l[t * NV + v] = float(v % 17) / 4;
+        l[0] = 50;
+        bias[0] = -std::numeric_limits<float>::infinity();
+        bias[7] = 20;
+        bias[16] = -9;
+        adjusted = l;
+        for (int t = 0; t < NT; ++t)
+            for (int v = 0; v < NV; ++v) adjusted[t * NV + v] += bias[v];
+        float* db = nullptr;
+        check(cudaMalloc(&db, NV * sizeof(float)), "bias malloc");
+        check(cudaMemcpy(db, bias.data(), NV * sizeof(float), cudaMemcpyHostToDevice), "bias upload");
+        std::vector<int> hist(NT * 4, 7);
+        DeviceRows raw(l, NT, hist, 4), expected(adjusted, NT, hist, 4);
+        for (bool greedy : {true, false}) for (bool penalty : {false, true}) {
+            strata::kernels::SamplerParams p;
+            p.greedy = greedy; p.temperature = greedy ? 0 : 0.8f; p.seed = 71; p.top_k = 16;
+            if (penalty) { p.penalty_last_n = 4; p.penalty_freq = 3; p.penalty_repeat = 1.1f; }
+            const auto want = expected.sample(p, nullptr);
+            p.logit_bias = db;
+            const auto got = raw.sample(p, nullptr);
+            if (got != want || std::find(got.begin(), got.end(), 0) != got.end()) ++bad;
+            p.logit_bias = nullptr;
+            DeviceRows plain(l, NT, hist, 4);
+            if (raw.sample(p, nullptr) != plain.sample(p, nullptr)) ++bad;
+        }
+        std::vector<float> unchanged(l.size());
+        check(cudaMemcpy(unchanged.data(), raw.l, l.size() * sizeof(float), cudaMemcpyDeviceToHost), "raw logits");
+        if (unchanged != l) ++bad;
+        // The reporter's vocabulary scale, with only one permitted token: masked entries cannot win top-k tails.
+        const int vocab = 248320;
+        std::vector<float> large(vocab, 100), bans(vocab, -std::numeric_limits<float>::infinity());
+        bans[109266] = 0; large[109266] = -50;
+        cudaFree(db);
+        check(cudaMalloc(&db, vocab * sizeof(float)), "large bias malloc");
+        check(cudaMemcpy(db, bans.data(), bans.size() * sizeof(float), cudaMemcpyHostToDevice), "large bias upload");
+        DeviceRows many(large, 1, {}, 0);
+        for (bool greedy : {true, false}) {
+            strata::kernels::SamplerParams p; p.greedy = greedy; p.logit_bias = db;
+            if (many.sample(p, nullptr) != std::vector<int>{109266}) ++bad;
+        }
+        cudaFree(db);
+    }
 
     // ---- fixture 1: plain greedy.  top_k = 0 (disabled), top_p = 1 (disabled), T = 1 -> argmax.
     {
@@ -1275,6 +1353,75 @@ int main(int argc, char** argv) {
         std::printf("  %-34s %s (%d of %d draws differ)\n", "fallbacks: graph capture, row cap",
                     wrong ? "*** WRONG ***" : "matches", wrong, draws);
         bad += wrong;
+    }
+
+    // ---- GUMBEL-MAX (STRATA_SPEC_GUMBEL, p.gumbel).  (a) The kernel's pick equals the host reference's, draw for draw,
+    // under the chains the server uses (top_k / top_p / min_p / temperature).  (b) It is an exact sample: over many
+    // counters the picks' frequencies match the softmax of the surviving logits.  (c) It is a different stream from
+    // the inverse-CDF draw (the flag is really read), and greedy rows ignore it.
+    {
+        int wrong = 0, draws = 0;
+        const int nv = 512, T = 16;
+        std::vector<float> l((size_t) nv * T);
+        std::vector<int> hist;
+        {
+            std::mt19937 rng(4242u);
+            std::normal_distribution<float> gd(0.0f, 2.0f);
+            for (auto& v : l) v = gd(rng);
+        }
+        struct Chain { int top_k; float top_p, min_p, temp; };
+        for (const Chain c : {Chain{20, 0.95f, 0.0f, 1.0f}, Chain{0, 1.0f, 0.0f, 0.7f}, Chain{40, 0.9f, 0.05f, 1.3f}}) {
+            strata::kernels::SamplerParams p;
+            p.top_k = c.top_k; p.top_p = c.top_p; p.min_p = c.min_p; p.temperature = c.temp;
+            p.seed = 77; p.counter = 1000; p.gumbel = true;
+            std::vector<int> want((size_t) T);
+            for (int t = 0; t < T; ++t)
+                want[(size_t) t] = sampled_reference({l.begin() + (size_t) t * nv, l.begin() + (size_t) (t + 1) * nv}, {}, p, t);
+            DeviceRows rows(l, T, hist, 0);
+            const std::vector<int> got = rows.sample(p, nullptr);
+            for (int t = 0; t < T; ++t) wrong += got[(size_t) t] != want[(size_t) t];
+            draws += T;
+        }
+        std::printf("  %-34s %s (%d of %d draws differ)\n", "gumbel: kernel vs reference", wrong ? "*** WRONG ***" : "matches",
+                    wrong, draws);
+        bad += wrong;
+
+        // (b) frequencies: one 12-logit row, every row of a launch the same logits at its own counter
+        const int nv2 = 12, R = 64, launches = 160;          // 10,240 draws
+        std::vector<float> row = {2.0f, 1.5f, 1.2f, 1.0f, 0.5f, 0.3f, 0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f};
+        std::vector<float> lr;
+        for (int r = 0; r < R; ++r) lr.insert(lr.end(), row.begin(), row.end());
+        strata::kernels::SamplerParams g;
+        g.top_k = 0; g.top_p = 1.0f; g.temperature = 1.0f; g.seed = 5; g.gumbel = true;
+        std::vector<double> freq((size_t) nv2, 0.0);
+        DeviceRows rr(lr, R, {}, 0);
+        for (int k2 = 0; k2 < launches; ++k2) {
+            g.counter = (uint64_t) k2 * R;
+            for (int id : rr.sample(g, nullptr)) freq[(size_t) id] += 1.0;
+        }
+        double z = 0.0, tv = 0.0;
+        for (float v : row) z += std::exp((double) v);
+        for (int i = 0; i < nv2; ++i) tv += std::fabs(freq[(size_t) i] / (R * launches) - std::exp((double) row[(size_t) i]) / z);
+        tv *= 0.5;
+        const bool freq_bad = tv > 0.02;                     // 10,240 draws: total variation ~0.01 by chance
+        std::printf("  %-34s %s (total variation %.4f over %d draws)\n", "gumbel: frequencies = softmax",
+                    freq_bad ? "*** WRONG ***" : "matches", tv, R * launches);
+        bad += freq_bad;
+
+        // (c) the flag is read (a different stream than the inverse-CDF draw), and greedy ignores it
+        strata::kernels::SamplerParams a; a.top_k = 20; a.top_p = 0.95f; a.temperature = 1.0f; a.seed = 9; a.counter = 3;
+        strata::kernels::SamplerParams b = a; b.gumbel = true;
+        DeviceRows rows(l, T, hist, 0);
+        const std::vector<int> ga = rows.sample(a, nullptr), gb = rows.sample(b, nullptr);
+        int same = 0;
+        for (int t = 0; t < T; ++t) same += ga[(size_t) t] == gb[(size_t) t];
+        strata::kernels::SamplerParams ga2; ga2.greedy = true; ga2.temperature = 0.0f;
+        strata::kernels::SamplerParams gb2 = ga2; gb2.gumbel = true;
+        const bool greedy_same = rows.sample(ga2, nullptr) == rows.sample(gb2, nullptr);
+        const bool flag_bad = same == T || !greedy_same;
+        std::printf("  %-34s %s (%d of %d sampled picks equal the inverse-CDF ones; greedy %s)\n", "gumbel: flag read, greedy unchanged",
+                    flag_bad ? "*** WRONG ***" : "matches", same, T, greedy_same ? "unchanged" : "CHANGED");
+        bad += flag_bad;
     }
 
     std::printf("\nsampler: %d failures\n", bad);

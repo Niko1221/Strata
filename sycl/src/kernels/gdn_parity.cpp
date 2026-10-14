@@ -22,7 +22,13 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/kernels/gdn.hpp"
+#include "strata/kernels/fused_gdn.hpp"
+#include "strata/kernels/verify_kernels.hpp"
 
+#include "strata/prefill/kernels.hpp"
+
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -89,19 +95,155 @@ double rel_l1(const std::vector<float>& a, const std::vector<float>& b) {
     return d / (m > 1e-30 ? m : 1e-30);
 }
 
+// Compare every state element and every token/head output, including FP16 bits.
+// Fixtures have nonzero initial state, modulo-paired heads, signed q/k/v, and
+// both shallow and deep decay. A tolerance is diagnostic only, never a pass.
+int prefill_case(int T, int seed, int repeats) {
+    constexpr int S = 128, HK = 16, HV = 48, C = 10240;
+    sycl::queue q(dpct::get_in_order_queue().get_device(),
+                  sycl::property_list{sycl::property::queue::in_order{}});
+    // Variant 6 runs on Intel GPUs only (the engine throws elsewhere): skip, not fail, on any other device.
+    const auto dev = q.get_device();
+    const auto sizes = dev.get_info<sycl::info::device::sub_group_sizes>();
+    if (!dev.is_gpu() || dev.get_info<sycl::info::device::vendor_id>() != 0x8086 ||
+        std::find(sizes.begin(), sizes.end(), size_t(32)) == sizes.end() ||
+        std::find(sizes.begin(), sizes.end(), size_t(16)) == sizes.end()) {
+        static bool said = false;
+        if (!said) std::printf("prefill gdn: skipped (needs an Intel GPU with sub-groups 16 and 32)\n");
+        said = true;
+        return 0;
+    }
+    std::mt19937 rng(seed);
+    std::normal_distribution<float> gauss(0.0f, 1.0f);
+    std::vector<float> st(size_t(S) * HV * S), h(size_t(T) * C),
+        gate(size_t(T) * HV), beta(gate.size()), z(size_t(T) * HV * S), gamma(S);
+    for (auto& x : st) x = gauss(rng) * 0.03f;
+    for (int t = 0; t < T; ++t) {
+        for (int j = 0; j < C; ++j) h[size_t(t) * C + j] = gauss(rng) * (j < 2 * HK * S ? 0.08f : 0.7f);
+    }
+    for (auto& x : gate) x = -(seed % 2 ? 0.02f : 2.0f) * (1.0f + std::fabs(gauss(rng)));
+    for (auto& x : beta) x = 0.1f + float(rng() % 800) / 1000.0f;
+    for (auto& x : z) x = gauss(rng);
+    for (auto& x : gamma) x = 1.0f + 0.2f * gauss(rng);
+    auto copy = [&](const std::vector<float>& src) {
+        auto* ptr = sycl::malloc_device<float>(src.size(), q);
+        if (!ptr) throw std::bad_alloc();
+        q.memcpy(ptr, src.data(), src.size() * sizeof(float)).wait_and_throw();
+        return ptr;
+    };
+    float *dst = copy(st), *dh = copy(h), *dg = copy(gate), *db = copy(beta), *dz = copy(z), *dgm = copy(gamma);
+    float* dy = sycl::malloc_device<float>(z.size(), q);
+    uint16_t* dy16 = sycl::malloc_device<uint16_t>(z.size(), q);
+    if (!dy || !dy16) throw std::bad_alloc();
+    std::vector<float> refst(st.size()), refy(z.size()), gotst(st.size()), goty(z.size());
+    std::vector<uint16_t> ref16(z.size()), got16(z.size());
+    auto run = [&](int variant, std::vector<float>& ost, std::vector<float>& oy, std::vector<uint16_t>& o16) {
+        // Warm up the compiled kernel before measuring; every run resets state.
+        q.memcpy(dst, st.data(), st.size() * sizeof(float)).wait_and_throw();
+        if (variant == -1)
+            strata::prefill::gdn_recurrence(dst, dh, dg, db, dz, dgm, 1e-6f, dy, dy16, T, &q);
+        else
+            strata::prefill::gdn_recurrence_variant(variant, dst, dh, dg, db, dz, dgm,
+                                                   1e-6f, dy, dy16, T, &q);
+        q.wait_and_throw();
+        double elapsed = 0;
+        for (int i = 0; i < repeats; ++i) {
+            q.memcpy(dst, st.data(), st.size() * sizeof(float)).wait_and_throw();
+            const auto start = std::chrono::steady_clock::now();
+            if (variant == -1)
+                strata::prefill::gdn_recurrence(dst, dh, dg, db, dz, dgm, 1e-6f, dy, dy16, T, &q);
+            else
+                strata::prefill::gdn_recurrence_variant(variant, dst, dh, dg, db, dz, dgm,
+                                                       1e-6f, dy, dy16, T, &q);
+            q.wait_and_throw();
+            elapsed += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        }
+        q.memcpy(ost.data(), dst, ost.size() * sizeof(float)).wait_and_throw();
+        q.memcpy(oy.data(), dy, oy.size() * sizeof(float)).wait_and_throw();
+        q.memcpy(o16.data(), dy16, o16.size() * sizeof(uint16_t)).wait_and_throw();
+        return elapsed / repeats;
+    };
+    const double base_ms = run(0, refst, refy, ref16);
+    const double xe_ms = run(6, gotst, goty, got16);
+    size_t state_bad = 0, y_bad = 0, half_bad = 0;
+    double max_abs = 0, max_rel = 0;
+    auto compare = [&](const std::vector<float>& a, const std::vector<float>& b, size_t& mismatches) {
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (!std::isfinite(a[i]) || !std::isfinite(b[i]) ||
+                std::memcmp(&a[i], &b[i], sizeof(float)) != 0) ++mismatches;
+            const double diff = std::fabs(double(a[i]) - b[i]);
+            max_abs = std::max(max_abs, diff);
+            max_rel = std::max(max_rel, diff / std::max(std::fabs(double(a[i])), 1e-20));
+        }
+    };
+    compare(refst, gotst, state_bad);
+    compare(refy, goty, y_bad);
+    for (size_t i = 0; i < ref16.size(); ++i) half_bad += ref16[i] != got16[i];
+    std::printf("prefill T=%d seed=%d heads=%d: state=%zu y=%zu fp16=%zu mismatches; max_abs=%.9g max_rel=%.9g; baseline=%.3f ms xe=%.3f ms\n",
+                T, seed, HV, state_bad, y_bad, half_bad, max_abs, max_rel, base_ms, xe_ms);
+    // T=7 additionally checks the production entry point (variant 6 on Alchemist or under STRATA_GDN_XE=1,
+    // else variant 0) and T=0's no-op contract.
+    int extra_bad = 0;
+    if (T == 7) {
+        run(-1, gotst, goty, got16);
+        // Both variants must match anyway; compare production to baseline.
+        extra_bad += std::memcmp(refst.data(), gotst.data(), refst.size() * sizeof(float)) != 0;
+        extra_bad += std::memcmp(refy.data(), goty.data(), refy.size() * sizeof(float)) != 0;
+        extra_bad += ref16 != got16;
+        q.memcpy(dst, st.data(), st.size() * sizeof(float)).wait_and_throw();
+        strata::prefill::gdn_recurrence_variant(6, dst, dh, dg, db, dz, dgm,
+                                               1e-6f, dy, dy16, 0, &q);
+        q.memcpy(gotst.data(), dst, st.size() * sizeof(float)).wait_and_throw();
+        extra_bad += gotst != st;
+        const auto saved_y = goty;
+        const auto saved16 = got16;
+        q.memcpy(goty.data(), dy, goty.size() * sizeof(float)).wait_and_throw();
+        q.memcpy(got16.data(), dy16, got16.size() * sizeof(uint16_t)).wait_and_throw();
+        extra_bad += goty != saved_y || got16 != saved16;
+        std::printf("prefill production + T=0: %s\n", extra_bad ? "FAIL" : "OK");
+    }
+    for (auto ptr : {dst, dh, dg, db, dz, dgm, dy}) sycl::free(ptr, q);
+    sycl::free(dy16, q);
+    return state_bad || y_bad || half_bad || extra_bad ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    bool selftest = false;
+    bool selftest = false, prefill_only = false;
+    int prefill_tokens = 0, prefill_repeat = 1;
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--selftest") selftest = true;
-        else { std::fprintf(stderr, "usage: gdn_parity [--selftest]\n"); return 2; }
+        const std::string arg(argv[i]);
+        if (arg == "--selftest") selftest = true;
+        else if (arg == "--prefill-only") prefill_only = true;
+        else if ((arg == "--prefill-tokens" || arg == "--prefill-repeat") && i + 1 < argc) {
+            char* end = nullptr;
+            const long n = std::strtol(argv[++i], &end, 10);
+            if (!end || *end || n < 1 || n > (arg == "--prefill-tokens" ? 32768 : 1000)) return 2;
+            (arg == "--prefill-tokens" ? prefill_tokens : prefill_repeat) = int(n);
+        } else {
+            std::fprintf(stderr, "usage: gdn_parity [--selftest] [--prefill-only] [--prefill-tokens N] [--prefill-repeat N]\n");
+            return 2;
+        }
+    }
+    const auto device = dpct::get_in_order_queue().get_device();
+    std::printf("device: %s (%s), sub-groups:", device.get_info<sycl::info::device::name>().c_str(),
+                device.is_cpu() ? "CPU" : device.is_gpu() ? "GPU" : "other");
+    for (auto n : device.get_info<sycl::info::device::sub_group_sizes>()) std::printf(" %zu", n);
+    std::printf("\n");
+    int prefill_bad = 0;
+    for (int t : prefill_tokens ? std::vector<int>{prefill_tokens} : std::vector<int>{1, 7, 256, 1000})
+        for (int seed : {2025, 2026}) prefill_bad += prefill_case(t, seed, prefill_repeat);
+    std::printf("prefill gdn: %d failures\n", prefill_bad);
+    if (prefill_only) {
+        if (selftest && !prefill_bad) std::printf("gdn_parity OK\n");
+        return prefill_bad ? 1 : 0;
     }
 
     const int S = 128, h_k = 16, h_v = 48;      // the artifact's real geometry
     std::mt19937 rng(2024);
     std::normal_distribution<float> gauss(0.0f, 1.0f);
-    int bad = 0;
+    int bad = prefill_bad;
 
     // ================= 1. the recurrence =================
     {
@@ -585,6 +727,216 @@ int main(int argc, char** argv) {
             sycl::free(d_z, dpct::get_in_order_queue());
             sycl::free(d_sn, dpct::get_in_order_queue());
             sycl::free(d_y, dpct::get_in_order_queue());
+    }
+
+    // ================= 5. the verify-window kernels, T = 1..8, bitwise against the single-token kernels =================
+    // gdn_ab_multi and gdn_step_norm_multi are documented as bitwise `fused_gdn_ab` / `fused_gdn_step_norm` per
+    // token (verify_kernels.hpp). Every T from 1 to kVerifyMaxT is its own exact-T instantiation, so each is run,
+    // and every output and the state are compared with memcmp (not a tolerance).
+    {
+        const int n_embd = 2560, qk = S * h_k, C = 2 * qk + S * h_v, vd = S * h_v;
+        const float eps = 1e-6f;
+        auto bf16_of = [](float f) {
+            uint32_t u;
+            std::memcpy(&u, &f, 4);
+            return (uint16_t) (u >> 16);
+        };
+        std::vector<uint16_t> wa((size_t) h_v * n_embd), wb((size_t) h_v * n_embd);
+        for (auto& w : wa) w = bf16_of(gauss(rng) * 0.05f);
+        for (auto& w : wb) w = bf16_of(gauss(rng) * 0.05f);
+        std::vector<float> dt((size_t) h_v), ssm_a((size_t) h_v), gamma((size_t) S);
+        for (auto& x : dt) x = gauss(rng);
+        for (auto& x : ssm_a) x = -(0.1f + (float) (rng() % 100) / 50.0f);
+        for (auto& x : gamma) x = 1.0f + 0.1f * gauss(rng);
+        std::vector<float> st0((size_t) S * h_v * S);
+        for (auto& x : st0) x = gauss(rng) * 0.1f;
+
+        auto dev = [&](size_t bytes) {
+            try {
+        void *p = nullptr;
+            check(DPCT_CHECK_ERROR(p = (void *)sycl::malloc_device(
+                                       bytes, dpct::get_in_order_queue())),
+                  "m5");
+            return p;
+        }
+        catch (sycl::exception const &exc) {
+          std::cerr << exc.what() << "Exception caught at file:" << __FILE__
+                    << ", line:" << __LINE__ << std::endl;
+          std::exit(1);
+        }
+        };
+        auto up = [&](const void *h, size_t bytes) {
+            try {
+        void *p = dev(bytes);
+            /*
+            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
+            assuming in the original code the source host memory is pageable
+            memory. If the memory is not pageable, call wait() on event return
+            by memcpy API to ensure synchronization behavior.
+            */
+            check(DPCT_CHECK_ERROR(
+                      (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(p, h, bytes).wait()),
+                  "u5");
+            return p;
+        }
+        catch (sycl::exception const &exc) {
+          std::cerr << exc.what() << "Exception caught at file:" << __FILE__
+                    << ", line:" << __LINE__ << std::endl;
+          std::exit(1);
+        }
+        };
+        auto down = [&](std::vector<float> &h, const void *d) {
+            try {
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(h.data(), d, h.size() * 4)
+                                   .wait()),
+              "d5");
+        }
+        catch (sycl::exception const &exc) {
+          std::cerr << exc.what() << "Exception caught at file:" << __FILE__
+                    << ", line:" << __LINE__ << std::endl;
+          std::exit(1);
+        }
+        };
+        auto d_wa = (uint16_t*) up(wa.data(), wa.size() * 2);
+        auto d_wb = (uint16_t*) up(wb.data(), wb.size() * 2);
+        auto d_dt = (float*) up(dt.data(), dt.size() * 4);
+        auto d_sa = (float*) up(ssm_a.data(), ssm_a.size() * 4);
+        auto d_gm = (float*) up(gamma.data(), gamma.size() * 4);
+        int ab_bad = 0, sn_bad = 0, ab_n = 0, sn_n = 0;
+        for (int T = 1; T <= strata::kernels::kVerifyMaxT; ++T) {
+            // --- alpha/beta
+            std::vector<float> x((size_t) T * n_embd);
+            for (auto& v : x) v = gauss(rng);
+            auto d_x = (float*) up(x.data(), x.size() * 4);
+            auto d_g = (float*) dev((size_t) T * h_v * 4), d_b = (float*) dev((size_t) T * h_v * 4);
+            auto d_gr = (float*) dev((size_t) T * h_v * 4), d_br = (float*) dev((size_t) T * h_v * 4);
+            strata::kernels::gdn_ab_multi(d_x, d_wa, d_wb, d_dt, d_sa, d_g, d_b, n_embd, h_v, T, nullptr);
+            for (int t = 0; t < T; ++t)
+                strata::kernels::fused_gdn_ab(d_x + (size_t) t * n_embd, d_wa, d_wb, d_dt, d_sa, d_gr + (size_t) t * h_v,
+                                              d_br + (size_t) t * h_v, n_embd, h_v, nullptr);
+            std::vector<float> g((size_t) T * h_v), b(g.size()), gr(g.size()), br(g.size());
+            down(g, d_g); down(b, d_b); down(gr, d_gr); down(br, d_br);
+            ++ab_n;
+            if (std::memcmp(g.data(), gr.data(), g.size() * 4) != 0 || std::memcmp(b.data(), br.data(), b.size() * 4) != 0) {
+                std::printf("    *** gdn_ab_multi T=%d differs from fused_gdn_ab (memcmp) ***\n", T);
+                ++ab_bad;
+            }
+            sycl::free(d_x, dpct::get_in_order_queue());
+                sycl::free(d_g, dpct::get_in_order_queue());
+                sycl::free(d_b, dpct::get_in_order_queue());
+                sycl::free(d_gr, dpct::get_in_order_queue());
+                sycl::free(d_br, dpct::get_in_order_queue());
+
+            // --- the recurrence + output norm
+            std::vector<float> h((size_t) T * C), gate((size_t) T * h_v), beta((size_t) T * h_v), z((size_t) T * vd);
+            for (auto& v : h) v = gauss(rng) * 0.1f;
+            for (auto& v : gate) v = -(0.5f + 3.0f * (float) (rng() % 100) / 100.0f);
+            for (auto& v : beta) v = (float) (rng() % 100) / 100.0f;
+            for (auto& v : z) v = gauss(rng);
+            auto d_h = (float*) up(h.data(), h.size() * 4);
+            auto d_gate = (float*) up(gate.data(), gate.size() * 4);
+            auto d_beta = (float*) up(beta.data(), beta.size() * 4);
+            auto d_z = (float*) up(z.data(), z.size() * 4);
+            auto d_y = (float*) dev((size_t) T * vd * 4);
+            auto d_yr = (float*) dev((size_t) T * vd * 4);
+            auto d_st = (float*) dev(st0.size() * 4);
+            auto d_sr = (float*) dev(st0.size() * 4);
+            int32_t* d_nk = (int32_t*) dev(4);
+            // the reference chain (the single-token kernel), n tokens, into d_sr / d_yr
+            auto run_ref = [&](int n) {
+                /*
+                DPCT1114: cudaMemcpy is migrated to asynchronization
+                memcpy, assuming in the original code the source host memory is
+                pageable memory. If the memory is not pageable, call wait() on
+                event return by memcpy API to ensure synchronization behavior.
+                */
+                try {
+            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
+                      d_sr, st0.data(), st0.size() * 4).wait()),
+                  "r0");
+                for (int t = 0; t < n; ++t)
+                    strata::kernels::fused_gdn_step_norm(d_sr, d_h + (size_t) t * C, d_h + (size_t) t * C + qk,
+                                                         d_h + (size_t) t * C + 2 * qk, d_gate + (size_t) t * h_v,
+                                                         d_beta + (size_t) t * h_v, d_z + (size_t) t * vd, d_gm, eps,
+                                                         d_yr + (size_t) t * vd, h_k, h_v, nullptr);
+            }
+            catch (sycl::exception const &exc) {
+              std::cerr << exc.what() << "Exception caught at file:" << __FILE__
+                        << ", line:" << __LINE__ << std::endl;
+              std::exit(1);
+            }
+            };
+            std::vector<float> y((size_t) T * vd), yr(y.size()), st(st0.size()), sr(st0.size());
+            // (name, n_keep tokens or -1 = verify half, t_out_begin)
+            struct Case { const char* name; int n_keep; int tb; };
+            std::vector<Case> cases = {{"verify", -1, 0}, {"verify tb", -1, T > 1 ? T / 2 : 0}, {"commit", T, 0},
+                                       {"commit tb", T, T / 2}, {"commit state only", T, T}};
+            if (T > 1) cases.push_back({"commit n-1", T - 1, T - 1});
+            for (const Case& c : cases) {
+                /*
+                DPCT1114: cudaMemcpy is migrated to asynchronization
+                memcpy, assuming in the original code the source host memory is
+                pageable memory. If the memory is not pageable, call wait() on
+                event return by memcpy API to ensure synchronization behavior.
+                */
+                check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
+                          d_st, st0.data(), st0.size() * 4).wait()),
+                      "s0");
+                check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                           .memset(d_y, 0, (size_t)T * vd * 4)
+                                           .wait()),
+                      "y0");
+                check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                           .memset(d_yr, 0, (size_t)T * vd * 4)
+                                           .wait()),
+                      "yr0");
+                const int n = c.n_keep < 0 ? T : c.n_keep;
+                if (c.n_keep >= 0)
+                    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                               .memcpy(d_nk, &c.n_keep, 4)
+                                               .wait()),
+                          "nk");
+                strata::kernels::gdn_step_norm_multi(d_st, d_h, C, d_gate, d_beta, d_z, d_gm, eps, d_y, h_k, h_v, T,
+                                                     c.n_keep >= 0 ? d_nk : nullptr, nullptr, c.tb);
+                run_ref(n);
+                down(y, d_y); down(yr, d_yr); down(st, d_st); down(sr, d_sr);
+                bool ok = true;
+                size_t y_bad = 0, y_all = 0;
+                for (int t = c.tb; t < n; ++t) {
+                    for (int i = 0; i < vd; ++i, ++y_all)
+                        if (std::memcmp(&y[(size_t) t * vd + i], &yr[(size_t) t * vd + i], 4) != 0) ++y_bad;
+                }
+                if (y_bad) ok = false;
+                // the verify half leaves the state untouched; the commit half writes the state after n tokens
+                const std::vector<float>& want_st = c.n_keep < 0 ? st0 : sr;
+                if (std::memcmp(st.data(), want_st.data(), st.size() * 4) != 0) ok = false;
+                ++sn_n;
+                if (!ok) {
+                    std::printf("    *** gdn_step_norm_multi T=%d '%s' differs from fused_gdn_step_norm (memcmp): %zu of %zu y words%s ***\n",
+                                T, c.name, y_bad, y_all,
+                                std::memcmp(st.data(), (c.n_keep < 0 ? st0 : sr).data(), st.size() * 4) != 0 ? ", state too" : "");
+                    ++sn_bad;
+                }
+            }
+            sycl::free(d_h, dpct::get_in_order_queue());
+                sycl::free(d_gate, dpct::get_in_order_queue());
+                sycl::free(d_beta, dpct::get_in_order_queue());
+                sycl::free(d_z, dpct::get_in_order_queue());
+                sycl::free(d_y, dpct::get_in_order_queue());
+                sycl::free(d_yr, dpct::get_in_order_queue());
+                sycl::free(d_st, dpct::get_in_order_queue());
+            sycl::free(d_sr, dpct::get_in_order_queue());
+                sycl::free(d_nk, dpct::get_in_order_queue());
+        }
+        sycl::free(d_wa, dpct::get_in_order_queue());
+            sycl::free(d_wb, dpct::get_in_order_queue());
+            sycl::free(d_dt, dpct::get_in_order_queue());
+            sycl::free(d_sa, dpct::get_in_order_queue());
+            sycl::free(d_gm, dpct::get_in_order_queue());
+        std::printf("\n  %-42s %s (%d cases)\n", "gdn_ab_multi T=1..8 == fused_gdn_ab", ab_bad ? "*** NO ***" : "bitwise", ab_n);
+        std::printf("  %-42s %s (%d cases)\n", "gdn_step_norm_multi T=1..8 == single-token", sn_bad ? "*** NO ***" : "bitwise", sn_n);
+        bad += ab_bad + sn_bad;
     }
 
     std::printf("\ngdn: %d failures\n", bad);

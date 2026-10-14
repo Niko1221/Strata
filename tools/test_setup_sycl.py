@@ -10,6 +10,7 @@ import contextlib
 import io
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -34,14 +35,14 @@ class SyclBackend(unittest.TestCase):
     def test_windows_stops_with_the_docs_pointer(self):
         rc, out, call = run(["--backend", "sycl"], win=True)
         self.assertEqual(rc, ("exit", 1))
-        self.assertIn("EXPERIMENTAL", out)
+        self.assertIn("supported since 0.1.40.2", out)
         self.assertIn("docs/INTEL_ARC.md", out)
         call.assert_not_called()
 
     def test_linux_hands_over_to_setup_intel_without_the_backend_flag(self):
         rc, out, call = run(["--model", "IQ2_XS", "--backend", "sycl", "--port", "8085"], win=False)
         self.assertEqual(rc, 0)
-        self.assertIn("EXPERIMENTAL", out)
+        self.assertIn("supported since 0.1.40.2", out)
         self.assertIn("built from source", out)
         cmd = call.call_args[0][0]
         self.assertTrue(cmd[1].endswith(str(Path("sycl") / "setup_intel.py")))
@@ -106,6 +107,32 @@ class CMakeOption(unittest.TestCase):
         self.assertIn("add_subdirectory(sycl)", src)
 
 
+class SyclVersion(unittest.TestCase):
+    def setUp(self):
+        from sycl import setup_intel
+        self.mod = setup_intel
+
+    def test_version_matches_the_source_and_satisfies_native_models(self):
+        version = self.mod.sycl_version()
+        self.assertNotEqual(version, "0")
+        self.assertEqual(version, setup.source_version())
+        numbers = tuple(int(x) for x in version.split("."))
+        for model in ("UD-IQ4_XS", "UD-Q4_K_XL"):
+            with self.subTest(model=model):
+                self.assertGreaterEqual(numbers, setup.MODELS[model].get("engine", setup.UNSLOTH_ENGINE))
+
+    def test_version_follows_a_source_hotfix_with_a_variable_sycl_project(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CMakeLists.txt").write_text("project(strata VERSION 0.1.41.2 LANGUAGES CXX)\n", encoding="utf-8")
+            (root / "sycl").mkdir()
+            (root / "sycl" / "CMakeLists.txt").write_text(
+                "set(STRATA_SYCL_VERSION 0.1.40.2)\n"
+                "project(strata_sycl VERSION ${STRATA_SYCL_VERSION} LANGUAGES C CXX)\n", encoding="utf-8")
+            with mock.patch.object(self.mod, "ROOT", root), mock.patch.object(setup, "ROOT", root):
+                self.assertEqual(self.mod.sycl_version(), "0.1.41.2")
+
+
 class IntelIds(unittest.TestCase):
     """sycl/setup_intel.py names a card by its PCI device id. The Arc Pro B60s measured on 2x B60 (`lspci -nn` 8086:e211,
     bmg-g21) must not fall through to "Intel GPU e211 (xe)" with a guessed VRAM size."""
@@ -125,6 +152,76 @@ class IntelIds(unittest.TestCase):
         t = self.table()
         self.assertEqual(t["e223"][0], "Arc Pro B70")
         self.assertEqual(t["e221"][0], "Arc Pro B60")
+
+
+class ToSycl(unittest.TestCase):
+    """The config sycl/setup_intel.py writes: an explicit --vram-reserve-mib is kept, the B-series streams its experts,
+    the A-series (i915) cannot (a single pinned host allocation above a few GB fails there) and loads them into RAM."""
+
+    @staticmethod
+    def mod():
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("setup_intel", ROOT / "sycl" / "setup_intel.py")
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def cfg(self, m, extra=()):
+        base = m.MOUNT
+        return {"exe": "x", "cwd": "y", "args": ["--pack", str(base / "d" / "pack"), "--native", str(base / "d" / "a.gguf"),
+                                                 "--expert-cache", "auto", "--prefill", "auto", "--max-context", "32768",
+                                                 "--kv", "int8", *extra]}
+
+    def test_b_series_streams_and_defaults_the_reserve(self):
+        m = self.mod()
+        c = m.to_sycl(self.cfg(m), m.ROOT / "build-sycl-aot" / "strata", 64.0, {}, 32.0, "xe")
+        self.assertIn("--stream-experts", c["args"])
+        self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "1024")
+        self.assertNotIn("STRATA_VERIFY_NO_HOST", c.get("env", {}))
+
+    def test_xe_ranks_the_experts_with_the_sycl_profile_and_i915_keeps_the_shipped_one(self):
+        m = self.mod()
+        shipped = str(m.MOUNT / "data" / "expert-profile.bin")
+        other = str(m.MOUNT / "mine" / "learned.bin")
+        c = m.to_sycl(self.cfg(m, ["--expert-profile", shipped]), m.ROOT / "build-sycl-aot" / "strata", 64.0, {}, 32.0, "xe")
+        self.assertTrue(c["args"][c["args"].index("--expert-profile") + 1].endswith("expert-profile-sycl.bin"))
+        c = m.to_sycl(self.cfg(m, ["--expert-profile", other]), m.ROOT / "build-sycl-aot" / "strata", 64.0, {}, 32.0, "xe")
+        self.assertTrue(c["args"][c["args"].index("--expert-profile") + 1].endswith("learned.bin"))   # the user's own file stays
+        c = m.to_sycl(self.cfg(m, ["--expert-profile", shipped]), m.ROOT / "build-sycl" / "strata", 64.0, {}, 8.0, "i915")
+        self.assertTrue(c["args"][c["args"].index("--expert-profile") + 1].endswith("expert-profile.bin"))   # the CPU computes the misses there
+
+    def test_an_explicit_reserve_is_kept_on_both_drivers(self):
+        m = self.mod()
+        for vram, drv in ((32.0, "xe"), (8.0, "i915")):
+            c = m.to_sycl(self.cfg(m, ["--vram-reserve-mib", "500"]), m.ROOT / "build-sycl-aot" / "strata", 64.0, {}, vram, drv)
+            self.assertEqual(c["args"].count("--vram-reserve-mib"), 1)
+            self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "500")
+
+    def test_a_series_loads_experts_into_ram_and_leaves_no_host_off(self):
+        m = self.mod()
+        c = m.to_sycl(self.cfg(m), m.ROOT / "build-sycl" / "strata", 64.0, {}, 8.0, "i915")
+        self.assertNotIn("--stream-experts", c["args"])
+        self.assertEqual(c["args"][c["args"].index("--ple-io") + 1], "ram")
+        self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "300")
+        self.assertEqual(c["env"]["STRATA_VERIFY_NO_HOST"], "0")
+        self.assertEqual(c["env"]["STRATA_SYCL_BIN"], "build-sycl/strata")
+
+    def test_split_short_rule(self):
+        # #1980: 2x B60 24 GB - IQ3_XXS (42.9 GB) was refused under NO_HOST=1, IQ2_XS (35.5 GB) loads fully
+        m = self.mod()
+        self.assertTrue(m.split_likely_short(42.9, [24.0, 24.0]))
+        self.assertFalse(m.split_likely_short(35.5, [24.0, 24.0]))
+        self.assertFalse(m.split_likely_short(50.3, [32.0, 32.0]))   # IQ3_S on 2x B70: 79%
+        self.assertTrue(m.split_likely_short(77.0, [32.0, 32.0]))
+        self.assertFalse(m.split_likely_short(0, [24.0]))
+        self.assertFalse(m.split_likely_short(40.0, []))
+
+    def test_small_card_rule(self):
+        m = self.mod()
+        self.assertTrue(m.small_card(8.0, "i915"))
+        self.assertTrue(m.small_card(24.0, "i915"))
+        self.assertTrue(m.small_card(10.0, "xe"))
+        self.assertFalse(m.small_card(32.0, "xe"))
 
 
 if __name__ == "__main__":

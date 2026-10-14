@@ -4,6 +4,7 @@
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/platform/memory.hpp"
 
+#include <cinttypes>
 #include <cuda_runtime.h>
 
 #include <chrono>
@@ -142,6 +143,34 @@ bool WeightTable::index_code_bits(const std::string& pack_dir, const std::string
     return true;
 }
 
+bool WeightTable::read_bf16_host(const std::string& name, std::vector<uint16_t>& out, std::string& err) const {
+    const auto it = table_.find(name);
+    if (it == table_.end()) { err = name + ": no such tensor"; return false; }
+    const WeightRef& r = it->second;
+    const char* fn = file_name(r.file_id);
+    if (fn == nullptr || r.kind != WeightKind::Bf16InF32) { err = name + ": not a bf16 row of a pack file"; return false; }
+    const uint64_t elems = (uint64_t) r.elements;
+    const bool raw16 = r.src_bytes == elems * 2;
+    if (!raw16 && r.src_bytes != elems * 4) { err = name + ": unexpected source size"; return false; }
+    std::FILE* f = std::fopen((pack_dir_ + "/" + fn).c_str(), "rb");
+    if (!f) { err = "cannot open " + pack_dir_ + "/" + fn; return false; }
+    out.resize((size_t) elems);
+    bool ok = true;
+    if (raw16) {
+        ok = read_at(f, r.src_off, out.data(), (size_t) (elems * 2), err, name.c_str());
+    } else {
+        std::vector<uint32_t> tmp((size_t) std::min<uint64_t>(elems, 1u << 22));
+        for (uint64_t done = 0; ok && done < elems;) {
+            const uint64_t n = std::min<uint64_t>(tmp.size(), elems - done);
+            ok = read_at(f, r.src_off + done * 4, tmp.data(), (size_t) (n * 4), err, name.c_str());
+            for (uint64_t i = 0; ok && i < n; ++i) out[(size_t) (done + i)] = (uint16_t) (tmp[(size_t) i] >> 16);
+            done += n;
+        }
+    }
+    std::fclose(f);
+    return ok;
+}
+
 bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
                        const std::set<std::string>* skip) {
     const std::string path = pack_dir + "/index.txt";
@@ -165,7 +194,7 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
         // The format is written by tools/pack_index.py and is space-separated with no quoting; a name with a
         // space in it would break the parse, which is why the parser REFUSES rather than taking what it got.
         const int n = std::sscanf(line,
-                                  "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+                                  "%255s %d %d %" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNd64 " %" SCNd64 " %d %d %d %d %d %" SCNu64 " %" SCNu64 " %" SCNu64 " %d %d",
                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
                                   &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
@@ -236,6 +265,7 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
     int cur_file = -1;
     table_.clear();
     report_ = LoadReport{};
+    pack_dir_ = pack_dir;
 
     const double t_read0 = now_ms();
     double upload_ms = 0;

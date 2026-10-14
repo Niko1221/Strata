@@ -37,6 +37,8 @@ void gr_set_fp32_activations(bool enabled);
 /// Layer reads use fused HC pre; the final mixer (null w_inject) retains its unfused graph order.
 /// Subsequent gr_write calls select pinned sigmoid/scatter arithmetic under the same setting.
 void gr_set_native_mmvf(bool enabled);
+/// Whether gr_write currently uses the native write (native_gr_post).
+bool gr_native_mmvf_enabled();
 
 /// Geometry of the hyper-connection.  The real model: n_embd = 2560, hc = 4, hc_lr = 320.
 struct GrShapes {

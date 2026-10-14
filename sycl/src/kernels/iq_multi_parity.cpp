@@ -269,6 +269,7 @@ struct Grouped {
     uint8_t *dxq = nullptr, *dscr = nullptr;
     float* dout = nullptr;
     size_t out_floats = 0;
+    std::vector<int32_t> h_start, h_tok, h_dst;   // the host copies, for reference()
 
     Grouped(int gu, int dt, int64_t H, int64_t FF, const std::vector<int>& counts, int tokens, std::mt19937& rng) {
         L = k::native_expert_layout(gu, dt, H, FF);
@@ -279,11 +280,14 @@ struct Grouped {
         for (int c : counts) start.push_back(start.back() + c);
         n_ent = start.back();
         cap_ent = n_ent + 3;
+        h_start = start;
         std::uniform_int_distribution<int> tk(0, tokens - 1);
         for (int e = 0; e < n_ent; ++e) tok.push_back(tk(rng));
         dst.resize(n_ent);
         std::iota(dst.begin(), dst.end(), 0);
         std::shuffle(dst.begin(), dst.end(), rng);
+        h_tok = tok;
+        h_dst = dst;
         std::vector<unsigned long long> ptr;
         for (int g = 0; g < n_groups; ++g) {
             // one blob per group: gate rows | up rows (format gu, H values) | down rows (format dt, FF values)
@@ -385,6 +389,34 @@ struct Grouped {
         k::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, cap_groups, cap_ent, dxq, dscr, dout, s);
         k::iq_set_old_kernels(false);
     }
+    // An independent reference: every entry through iq_mmvq (itself checked against a double-precision CPU reference
+    // above), one column at a time - gate and up rows against the token's q8_1 activations, SwiGLU into q8_1, the down
+    // rows against that.  Not bitwise the grouped path (accumulation order), so it is compared with a tolerance.
+    std::vector<float> reference(dpct::queue_ptr s) {
+        const int64_t H = L.n_embd, FF = L.n_ff;
+        float *g = dalloc<float>(FF), *u = dalloc<float>(FF), *y = dalloc<float>(H);
+        uint8_t* hq = dalloc<uint8_t>((size_t) (FF / 32) * 36 + 64);
+        std::vector<float> out(out_floats, 0.0f);
+        std::vector<unsigned long long> ptr(n_groups);
+        ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                .memcpy(ptr.data(), dptr, ptr.size() * 8).wait()), "ptr");
+        for (int gi = 0; gi < n_groups; ++gi) {
+            const uint8_t* blob = (const uint8_t*) ptr[gi];
+            for (int e = h_start[gi]; e < h_start[gi + 1]; ++e) {
+                const uint8_t* xq = dxq + (size_t) h_tok[e] * (H / 32) * 36;
+                k::iq_mmvq(L.gu_type, blob, xq, g, (int) H, (int) FF, 1, s);
+                k::iq_mmvq(L.gu_type, blob + L.up_off, xq, u, (int) H, (int) FF, 1, s);
+                k::native_swiglu_quantize_q8_1(g, u, hq, (int) FF, 1, s);
+                k::iq_mmvq(L.d_type, blob + L.down_off, hq, y, (int) FF, (int) H, 1, s);
+                ck(DPCT_CHECK_ERROR(s->wait()), "ref sync");
+                ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                        .memcpy(out.data() + (size_t) h_dst[e] * H, y, (size_t) H * 4).wait()), "ref out");
+            }
+        }
+        sycl::free(g, dpct::get_in_order_queue()); sycl::free(u, dpct::get_in_order_queue());
+        sycl::free(y, dpct::get_in_order_queue()); sycl::free(hq, dpct::get_in_order_queue());
+        return out;
+    }
     std::vector<float> result(bool old, dpct::queue_ptr s) {
         ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                 .memset(dout, 0xFF, out_floats * 4)
@@ -417,6 +449,22 @@ void check_grouped(int gu, int dt, int64_t H, int64_t FF, dpct::queue_ptr s,
     for (size_t i = 0; i < a.size(); ++i) {
         diff += std::memcmp(&a[i], &b[i], 4) != 0;
         if (i < (size_t) G.n_ent * H) { ++written; finite = finite && std::isfinite(b[i]); }
+    }
+    // against the independent reference: the lane kernels (the default) and the other path, rows that are written
+    {
+        const auto r = G.reference(s);
+        auto bad = [&](const std::vector<float>& v) {
+            float mx = 0;
+            for (size_t i = 0; i < (size_t) G.n_ent * H; ++i) mx = std::max(mx, std::fabs(r[i]));
+            size_t n = 0;
+            for (size_t i = 0; i < (size_t) G.n_ent * H; ++i) n += !(std::fabs(v[i] - r[i]) <= 0.05f * mx);
+            return n;
+        };
+        const size_t ba = bad(a), bb = bad(b);
+        std::printf("%-8s/%-7s %5lld x %4lld  vs the mmvq reference: lane kernels %zu, other path %zu of %zu rows-values "
+                    "outside 5%% of the max%s\n", name_of(gu), name_of(dt), (long long) H, (long long) FF, ba, bb,
+                    (size_t) G.n_ent * H, ba || bb ? "  <== FAIL" : "");
+        if (ba) ++g_fail;
     }
     const bool ok = diff == 0 && finite;
     std::printf("%-8s/%-7s %5lld x %4lld  native_expert_grouped, %d groups, %d entries: %s\n", name_of(gu),
@@ -507,9 +555,10 @@ void bench(dpct::queue_ptr s, std::mt19937 &rng) {
     }
 }
 
-// #606: both q8_1 activation quantizers (quantize_q8_1_rows and native_quantize_q8_1) against a host transcription
-// of the 0.1.38 formula: every finite block bit for bit; a block whose sum (or scale) overflowed fp16 is now stored
-// finite (the largest half, its sign), with its values in the int8 range.
+// #606: the q8_1 activation quantizers (quantize_q8_1_rows, native_quantize_q8_1 and the shared expert's fused
+// native_swiglu_quantize_q8_1) against a host transcription of the 0.1.38 formula: every finite block bit for bit; a
+// block whose sum (or scale) overflowed fp16 is now stored finite (the largest half, its sign), with its values in the
+// int8 range.  The fused one gets gate = 32 and up = x / 32: silu(32) is 32 in float, so its activations are x exactly.
 void check_q8_1_finite(dpct::queue_ptr s, std::mt19937 &rng) {
     const int n = 2560, rows = 3, nb = n / 32;
     std::vector<float> x = random_x((size_t) rows * n, rng);
@@ -527,10 +576,33 @@ void check_q8_1_finite(dpct::queue_ptr s, std::mt19937 &rng) {
     ck(DPCT_CHECK_ERROR(
            (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(dx, x.data(), x.size() * 4).wait()),
        "x");
+    std::vector<float> gate(x.size(), 32.0f), up(x.size());
+    for (size_t i = 0; i < x.size(); ++i) up[i] = x[i] / 32.0f;
+    float* dg = dalloc<float>(x.size());
+    float* du = dalloc<float>(x.size());
+    /*
+    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
+    in the original code the source host memory is pageable memory. If the
+    memory is not pageable, call wait() on event return by memcpy API to ensure
+    synchronization behavior.
+    */
+    ck(DPCT_CHECK_ERROR(
+           (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(dg, gate.data(), x.size() * 4).wait()),
+       "gate");
+    /*
+    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
+    in the original code the source host memory is pageable memory. If the
+    memory is not pageable, call wait() on event return by memcpy API to ensure
+    synchronization behavior.
+    */
+    ck(DPCT_CHECK_ERROR(
+           (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(du, up.data(), x.size() * 4).wait()),
+       "up");
     uint8_t* dq = dalloc<uint8_t>((size_t) rows * nb * 36);
-    for (int path = 0; path < 2; ++path) {
+    for (int path = 0; path < 3; ++path) {
         if (path == 0) k::quantize_q8_1_rows(dx, rows, n, dq, s);
-        else k::native_quantize_q8_1(dx, dq, n, rows, s);
+        else if (path == 1) k::native_quantize_q8_1(dx, dq, n, rows, s);
+        else k::native_swiglu_quantize_q8_1(dg, du, dq, n, rows, s);
         ck(DPCT_CHECK_ERROR(s->wait()), "quantize");
         std::vector<uint8_t> got((size_t) rows * nb * 36);
         ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
@@ -562,7 +634,7 @@ void check_q8_1_finite(dpct::queue_ptr s, std::mt19937 &rng) {
                     want[4 + i] = (uint8_t) (int8_t) (amax == 0.0f ? 0.0f : std::round(v[i] / d));
                 // native_mmvq.cu is built with --use_fast_math (its divisions are approximate): there the sum must be
                 // the same bits, the scale within one fp16 step and each value within one step
-                bool near = path == 1 && gs == os && std::abs((int) gd - (int) od) <= 1;
+                bool near = path >= 1 && gs == os && std::abs((int) gd - (int) od) <= 1;
                 for (int i = 0; near && i < 32; ++i) near = std::abs((int) (int8_t) g[4 + i] - (int) (int8_t) want[4 + i]) <= 1;
                 if (std::memcmp(want, g, 36) == 0 || near) ++same;
                 else { ++bad; std::printf("  q8_1 path %d block %d: changed although it was finite\n", path, b); }
@@ -576,10 +648,13 @@ void check_q8_1_finite(dpct::queue_ptr s, std::mt19937 &rng) {
             }
         }
         std::printf("q8_1 finite (%s): %d finite blocks as before, %d overflowed blocks clamped finite%s\n",
-                    path == 0 ? "quantize_q8_1_rows" : "native_quantize_q8_1", same, clamped, bad ? "  FAIL" : "");
+                    path == 0 ? "quantize_q8_1_rows" : path == 1 ? "native_quantize_q8_1" : "native_swiglu_quantize_q8_1",
+                    same, clamped, bad ? "  FAIL" : "");
         g_fail += bad + (clamped != 3);
     }
     sycl::free(dx, dpct::get_in_order_queue());
+    sycl::free(dg, dpct::get_in_order_queue());
+    sycl::free(du, dpct::get_in_order_queue());
     sycl::free(dq, dpct::get_in_order_queue());
 }
 

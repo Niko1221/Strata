@@ -129,8 +129,29 @@ def gr_kernel_names(s):
     return pat.sub(lambda m: (">>(" if m.group(2) == "gr_down_staged_kernel" else f", dpct_kernel_scalar<{m.group(3)}>>>(")
                    + m.group(1) + m.group(2) + "(", s)
 edit("src/kernels/cuda/fused_gr.dp.cpp", gr_kernel_names)
-edit("src/kernels/cuda/elementwise.dp.cpp", doorbell)
-edit("src/kernels/cuda/verify_kernels.dp.cpp", doorbell)
+# 7c'. #1397: the bound of those spins is chosen per device at run time (strata::spin_max(queue), sycl_doorbell.hpp), not the
+#      build's constant kSpinMax: each waiting kernel takes it as a `uint32_t spin_max` argument and its launcher passes
+#      strata::spin_max(*strata::q_of(stream)). Idempotent: a file that already has the argument is left alone.
+def spin_bound_at_run_time(s):
+    for kernel, launcher in (("doorbell_wait_kernel", "doorbell_wait"), ("wait_flag_ge_or_kernel", "wait_flag_ge_or"),
+                             ("wait_flag_ge_kernel", "wait_flag_ge")):
+        sig = re.compile(r"(__dpct_inline__ void " + kernel + r"\([^)]*?)\)(\s*\{)")
+        m = sig.search(s)
+        if m and "spin_max" not in m.group(1):
+            s = s[:m.start()] + m.group(1) + ", uint32_t spin_max)" + m.group(2) + s[m.end():]
+        call = re.compile(r"(\b" + kernel + r"\((?:[^()]|\([^()]*\))*?)\);")
+        s = call.sub(lambda c: c.group(0) if "spin_max" in c.group(1) else c.group(1) + ", spin_max);", s)
+        head = re.compile(r"^(void " + launcher + r"\([^)]*\)(?: try)? \{\n)", re.M)
+        h = head.search(s)
+        if h and "strata::spin_max(" not in s[h.end():h.end() + 200]:
+            at = h.end()
+            guard = re.match(r"    if \([^\n]*\) return;\n", s[at:])   # a null-argument guard stays first
+            if guard:
+                at += guard.end()
+            s = s[:at] + "    const uint32_t spin_max = strata::spin_max(*strata::q_of(stream));\n" + s[at:]
+    return s.replace("strata::kSpinMax", "spin_max")
+edit("src/kernels/cuda/elementwise.dp.cpp", lambda s: spin_bound_at_run_time(doorbell(s)))
+edit("src/kernels/cuda/verify_kernels.dp.cpp", lambda s: spin_bound_at_run_time(doorbell(s)))
 
 # 7d. cudaMemcpy / cudaMemset are synchronous; dpct emitted `get_in_order_queue().memcpy(...)` with no wait where
 #     the source was pageable ("call wait() if needed"). The streaming expert source hands out ring-buffer blobs,
@@ -307,3 +328,15 @@ for p in sorted((root / "src" / "kernels").glob("*_parity.cpp")):
 edit("src/program/generate.cpp", sub(
     r"(    const strata::core::OnDevice on\(dev\);\n        size_t fb = 0, tb = 0;\n)(?!        dpct::get_current_device)",
     r"\1        dpct::get_current_device().get_memory_info(fb, tb);   // #423 (tmking01): dpct dropped cudaMemGetInfo here\n"))
+
+# A770: only subgroup row zero reaches the native router's synchronization.
+# CUDA's early-exit block pattern must not become a divergent SYCL work-group barrier.
+edit("src/kernels/cuda/native_router.dp.cpp", lambda s: s.replace(
+    "    item_ct1.barrier(sycl::access::fence_space::local_space);",
+    "    sycl::group_barrier(item_ct1.get_sub_group());  // only subgroup row zero participates"))
+
+# MtpDrafter: CUDA's `cudaStream_t cs_ = nullptr` came out as the device's default in-order queue. A drafter that never
+# loads (no --mtp) kept it, and its destructor waited on and destroyed that queue: exit 139 after the output.
+edit("include/strata/core/mtp.hpp", lambda s: s.replace(
+    "    dpct::queue_ptr cs_ = &dpct::get_in_order_queue();\n",
+    "    dpct::queue_ptr cs_ = nullptr;   // load() creates it; not the device's queue, which ~MtpDrafter would destroy\n"))
