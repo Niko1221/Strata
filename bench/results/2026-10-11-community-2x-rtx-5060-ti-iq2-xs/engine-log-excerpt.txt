@@ -1,0 +1,26 @@
+[strata] 2026-10-11 14:12:28 engine started: <strata checkout>/engine/strata --serve --pack <data root>/packs/iq2_xs --native <data root>/models/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --ple-gguf <data root>/models/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf --expert-profile <strata checkout>/data/expert-profile.bin --prefill auto:32768 --spec 4 --spec-min-p 0.55 --mtp <data root>/mtp/rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 700 --control-vector-scaled <strata checkout>/data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1 --control-vector-layer-range 4 44 --cvec-mode project --cvec-dir per-layer --pool-workers 8 --conversation-cache-mib 4096 --conversation-cache-slots 8 --conversation-cache-min-free-mib 2560 --pipeline-windows 2 --adapt-every 1 --adapt-swaps 160 --adapt-decay 0.97 --layer-split 27
+strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split 27)
+strata generate: PCIe probe: 6.7 GB/s host->device (best of 6.7 6.7 6.7 6.7) -> pcie_frac 0.18 (default 0.55)
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: layer split: CUDA0 loads the dense weights of layers 0-26 only
+strata generate: control vector mode = project, dir = per-layer, layers 4..44 (41 steered)
+strata generate: layer split: CUDA1 loads the dense weights of layers 27-47 only
+strata generate: layer split: CUDA1 PCIe probe 3.1 GB/s (best of 3.1 3.1 3.1 3.1) -> pcie_frac 0.09
+strata generate: layer split: CUDA1 holds its weights; 13.82 GiB free (its session follows the split search)
+strata generate: layer split: CUDA1 holds its weights, session [27, 48) and the head; 13.00 GiB free
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 16907 2 MiB pages, vm.nr_hugepages=0); transparent huge pages requested (MADV_HUGEPAGE)
+strata generate: --pipeline-windows 2: 290 MiB of CUDA0 kept out of the expert cache (the second verifier, the GDN snapshots)
+strata generate: expert cache auto: 11.50 GiB free, 700 MiB reserved (+0 MiB for the draft head) -> 7486 slots
+strata generate: expert cache 7941 slots, 10.53 GiB of VRAM; policy is
+strata generate: layer split, CUDA1: 12.11 GiB free of 15.48, room for experts 11.18 GiB
+strata generate: layer split: CUDA1 runs layers 27-47, expert cache 8195 slots (11.18 GiB), 8195 of its 10752 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-26
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: session is up (engine 0.1.43)
+strata serve: prompt chunk auto: 19968 tokens, a 384-slot ring
+strata serve: the prompt path borrows 7136 CUDA0 cache slots (9.46 GiB)
+strata serve:   CUDA1 prompt path borrows 6938 of its 8195 slots (9.46 GiB)
+strata serve: layer split: layers 0-26 (CUDA0), 27-47 (CUDA1), one hand-off per window
+strata serve: --pipeline-windows 2: two verifiers per stage, 2 stages overlap across windows (decode too; the GDN snapshots beside the window)
+strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON (default): a missed expert that every token of a verify window routes at rank 7 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); STRATA_ROUTE_TAIL_SKIP=0 turns it off

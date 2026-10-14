@@ -64,6 +64,11 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-11: 2x RTX 5060 Ti 16 GB (layer split), Ryzen 5 4500, 62.7 GiB RAM](../bench/results/2026-10-11-community-2x-rtx-5060-ti-iq2-xs/README.md):
+  Strata 0.1.43 source build, original Flash-Next IQ2_XS, 262,144-token context, `--layer-split 27`, the adaptive expert
+  tier (`1 / 160 / 0.97`) and `--spec-min-p 0.55`; three fresh prompts each at 4,019 / 16,058 / 32,049 tokens (0 reused)
+  and three agent sessions. Prompt 733 / 1,140 / 1,367 tok/s, decode 85.3 (short chat, n=9) and 92.8 (agent turns, n=15);
+  PCIe gen 3 x8/x4, the engine's own probes read 6.7 and 3.1 GB/s host->device.
 
 ## Run the benchmark
 
