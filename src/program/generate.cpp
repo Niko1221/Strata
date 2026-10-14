@@ -40,6 +40,8 @@
 #include "strata/core/layer.hpp"
 #include "strata/core/layout.hpp"
 #include "strata/core/session.hpp"
+#include "strata/core/agenda.hpp"       // delta 4 / D4-7: the continuous agenda, host-tested
+
 #include "strata/core/weights.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/cpu/expert.hpp"
@@ -10371,6 +10373,8 @@ int main(int argc, char** argv) {
         int admit_slot = -1;               ///< the slot the request being read will continue in (BGEN)
         long long admit_max_new = 0;
         auto batch_on = [&] { for (const BSlot& b : bs) if (b.active) return true; return false; };
+        // DELTA 4 / D4-7: how many slots are active this turn (the decode rows of the agenda's step budget).
+        auto active_n = [&] { int n = 0; for (const BSlot& b : bs) if (b.active) ++n; return n; };
         auto try_next_line = [&](std::string& out) -> bool {
             std::lock_guard<std::mutex> lk(in_mu);
             if (in_lines.empty()) return false;
@@ -12494,6 +12498,31 @@ int main(int argc, char** argv) {
                 const char* v = std::getenv("STRATA_BATCH_DECODE_SHARE");
                 return v != nullptr ? std::max(0.0, std::atof(v)) : 0.5;
             }();
+            // DELTA 4 / node D4-7 (opt-in): the continuous agenda.  STRATA_BATCH_AGENDA=1 makes the admission read
+            // advance one FINE chunk per turn (C_adm), the decode window of the slots already active go FIRST, and
+            // the step budget count TOKENS instead of the time share above.  With it off none of this runs and the
+            // read is the base tag's, byte for byte.  See docs/FLAGS.md ("The continuous agenda").
+            static const bool agenda_on = [] {
+                const char* v = std::getenv("STRATA_BATCH_AGENDA");
+                return v != nullptr && std::atoi(v) != 0;
+            }();
+            // The time share stays the compatibility path: when STRATA_BATCH_DECODE_SHARE is set explicitly the
+            // engine keeps the base tag's reparto even with the agenda on (the plan's "conservá el env").
+            static const bool agenda_share_explicit = std::getenv("STRATA_BATCH_DECODE_SHARE") != nullptr;
+            static const bool agenda_tokens = agenda_on && !agenda_share_explicit;
+            static const int64_t agenda_c_adm = [] {   // the admission chunk (tokens) the read advances per turn
+                const char* v = std::getenv("STRATA_BATCH_AGENDA_CHUNK");
+                return v != nullptr ? std::max<int64_t>(1, std::atoll(v)) : 512;
+            }();
+            static const int64_t agenda_step_tokens = [] {   // the per-step token budget: decode rows + prefill
+                const char* v = std::getenv("STRATA_BATCH_AGENDA_BUDGET");
+                return v != nullptr ? std::max<int64_t>(1, std::atoll(v))
+                                    : (int64_t) 512 + (int64_t) strata::kernels::kVerifyMaxT;
+            }();
+            static const int64_t agenda_age = [] {   // aging: starved turns before the read is granted its chunk
+                const char* v = std::getenv("STRATA_BATCH_AGENDA_AGE");
+                return v != nullptr ? std::max<int64_t>(0, std::atoll(v)) : 4;
+            }();
             bool batch_fatal = false;
             int64_t il_parts = 0;   // the slots' windows run between this prompt's chunks
             double il_ms = 0;
@@ -12510,14 +12539,45 @@ int main(int argc, char** argv) {
                     const char* v = std::getenv("STRATA_BATCH_YIELD_CHUNKS");
                     return v != nullptr ? (int64_t) std::max(0, std::atoi(v)) : (int64_t) 8;
                 }();
-                const int64_t C = std::max<int64_t>(sp.chunk(), 1);
-                const int64_t piece = strata::program::batch_read_piece(o.batch > 0, piped, !stages.empty(), batch_on(), C, yield_chunks);
+                const int64_t C0 = std::max<int64_t>(sp.chunk(), 1);
+                const int64_t piece = strata::program::batch_read_piece(o.batch > 0, piped, !stages.empty(), batch_on(), C0, yield_chunks);
                 if (piece <= 0) return sp.run(ids.data() + a0, b0 - a0, a0, e);
+                // DELTA 4 / node D4-7 (opt-in, STRATA_BATCH_AGENDA=1): the admission advances ONE fine chunk
+                // (C_adm) per turn and the decode window of the slots already active goes FIRST.  With the agenda
+                // off `C` is the full prefill chunk and the loop below is the base tag's, byte for byte.
+                const int64_t C = agenda_on
+                                      ? strata::core::agenda_adm_chunk(C0, agenda_c_adm)
+                                      : C0;
+                strata::core::Admission adm;   // WAIT_SLOT -> READING -> READY, host-tested (agenda.hpp)
+                if (agenda_on) { adm.slot = admit_slot; adm.total = b0 - a0; adm.begin(); }
+                int64_t adm_starved = 0;
                 for (int64_t q = a0; q < b0;) {
-                    const int64_t r = std::min(b0, q + piece);
+                    // the decode window of the active slots, on a TOKEN budget, before the read's own turn
+                    if (agenda_tokens) {
+                        const int na = active_n();
+                        const strata::core::AgendaStep st = strata::core::agenda_step(
+                            na > 0, na, batch_mtp, C, agenda_step_tokens, (int) strata::kernels::kVerifyMaxT);
+                        const strata::core::AgendaTurn at = strata::core::agenda_turn(st, C, adm_starved, agenda_age);
+                        adm_starved = at.starved_after;
+                        if (at.decode_first)
+                            for (int w = 0; w < st.decode_windows; ++w) {
+                                if (!batch_step()) { batch_fatal = true; e = "a batch window failed"; return false; }
+                                ++il_parts;
+                            }
+                    }
+                    const int64_t r = std::min(b0, q + (agenda_on ? C : piece));
+
                     const auto tq = Clock::now();
                     if (!sp.run(ids.data() + q, r - q, q, e)) return false;
+                    const int64_t adv = r - q;
                     q = r;
+                    if (agenda_on) {
+                        adm.advance_chunk(adv);   // READING advances exactly one admission chunk
+                        if (admit_slot >= 0)       // the admission's state (stderr; the wire BADM below is unchanged)
+                            std::fprintf(stderr, "strata batch: BADM %d %s %lld of %lld\n", admit_slot,
+                                         strata::core::adm_state_name(adm.state), (long long) adm.read_to,
+                                         (long long) adm.total);
+                    }
                     if (q >= b0) continue;
                     int ys = -1;
                     {   // a BSTOP that came meanwhile ends its slot at its next window; a BYIELD is for this read
@@ -12568,6 +12628,10 @@ int main(int argc, char** argv) {
                         std::fprintf(stderr, "strata batch: BYIELD %d not taken at %lld of %lld%s%s\n", ys, (long long) q,
                                      (long long) n, ye.empty() ? "" : ": ", ye.c_str());
                     }
+                    // With the agenda's token budget on, this turn's windows already ran above (decode FIRST):
+                    // the time share, the base tag's reparto, only applies when the agenda is off or when
+                    // STRATA_BATCH_DECODE_SHARE was set explicitly (the compatibility path).
+                    if (agenda_tokens) continue;
                     if (decode_share <= 0.0 || !batch_on()) continue;
                     const double budget = decode_share * std::chrono::duration<double, std::milli>(Clock::now() - tq).count();
                     const auto td = Clock::now();

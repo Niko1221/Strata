@@ -139,6 +139,13 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(conversation_restore_ladder_test src/core/conversation_restore_ladder_test.cpp)
   target_include_directories(conversation_restore_ladder_test PRIVATE include)
   add_test(NAME conversation_restore_ladder_test COMMAND conversation_restore_ladder_test)
+  # delta 4 (layer): node D4-7 phase 1 - the continuous agenda (the admission state machine, the decode-first
+  # token budget, the fine STOP and aging).  Header-only, no CUDA and no model: it runs anywhere the host-only
+  # build does.
+  add_executable(agenda_test tests/core/agenda_test.cpp)
+  target_include_directories(agenda_test PRIVATE include)
+  add_test(NAME agenda_test COMMAND agenda_test)
+
 endif()
 
 if(STRATA_HIP_GFX906)
