@@ -25,9 +25,12 @@ struct ConversationCheckpoint {
     std::vector<ConversationImageKey> imgs;
     std::vector<uint8_t> gdn, ple, tails, dead, block_pos;
     // How gdn/ple/tails/dead are stored (strata/core/state_codec.hpp): 0 = fp32, the bytes the engine computes.
-    // A checkpoint the engine holds live is always 0; a stored copy (a parked image, a session file) may say
-    // otherwise, and every size check, estimate and restore reads it from here. block_pos is int32 positions and is
-    // never coded. A target codec is asked for by setting this before conversation_checkpoint_save.
+    // A checkpoint captured by the running session is always 0; one imported from a parked image or a session file
+    // keeps the codec that image was written with, and stays in it while the active chain retains it. Every size
+    // check, estimate, copy and restore reads it from here - never from the engine's configured option, which only
+    // says what a NEW stored copy is to be written as. A restore decodes this checkpoint into the session's fp32
+    // buffers and leaves these bytes alone, so a chain may hold fp32 and coded snapshots side by side. block_pos is
+    // int32 positions and is never coded. A target codec is asked for by setting this before save/store.
     uint8_t state_codec = 0;
     uint64_t used = 0; // upstream root-pinned/LRU checkpoint retention
     // A shared-prefix pin (the request key pin=N): this checkpoint is the read-only prefix many suffix queries branch

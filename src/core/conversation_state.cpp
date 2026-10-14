@@ -284,10 +284,12 @@ bool conversation_checkpoints_store(const std::vector<ConversationCheckpoint>& c
 }
 
 bool conversation_checkpoints_widen(std::vector<ConversationCheckpoint>& chain, std::string& error) {
+    // Resuming a parked conversation no longer calls this: the chain is handed to the engine in the codecs its
+    // snapshots were stored in, and conversation_checkpoint_restore widens the one a rewind selects. This stays for
+    // callers that want a whole chain in fp32 up front, and is tested for it.
     // Widening allocates the fp32 array beside the coded one, so the same allocation failure as above can happen
-    // here - and the caller's choice on `false` is to drop the older resume points, which is not a fatal error.
-    // convert_state builds beside and swaps in, so a chain left half-widened still says per checkpoint how each
-    // array is held; the caller clears it either way.
+    // here, and a caller that cannot admit it has a `false` to act on rather than an exception. convert_state
+    // builds beside and swaps in, so a chain left half-widened still says per checkpoint how each array is held.
     try {
         for (auto& c : chain) {
             StateCodec codec = StateCodec::Fp32;

@@ -85,7 +85,7 @@ inline ConversationCheckpoint copy_checkpoint_beating(const ConversationCheckpoi
 /// The same fp32 values `src` holds under `from`, held instead under `to`. Sliced and beaten like every other copy
 /// of parked state, because a coded conversion of the running state is tens of megabytes of pageable memory. An
 /// array that is already under `to` is copied, never converted: coding an already-coded array would mean widening
-/// it first, which is what a mount does and not what a park does.
+/// it first, which is what a whole-chain widen does and not what a park does.
 inline bool convert_state(const std::vector<uint8_t>& src, StateCodec from, std::vector<uint8_t>& dst, StateCodec to,
                           std::string& error) {
     if (from == to) { dst = copy_beating(src); return true; }
@@ -93,7 +93,7 @@ inline bool convert_state(const std::vector<uint8_t>& src, StateCodec from, std:
     if (!fp32 && !src.empty()) { error = "state codec: an array that is not a whole number of values"; return false; }
     const size_t floats = fp32 / 4;
     // built beside the source and swapped in: widening an array inside its own buffer would free it while reading it,
-    // and this is called with one vector on both sides when a mount widens a checkpoint in place
+    // and this is called with one vector on both sides when conversation_checkpoints_widen converts in place
     std::vector<uint8_t> out(state_codec_size(fp32, to), 0);
     // one pass, source bytes to destination bytes: an fp32 scratch in between would be a full-size copy in and a
     // full-size copy out of a conversion that is a round to eight significant bits one way and a shift the other

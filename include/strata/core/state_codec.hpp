@@ -1,8 +1,11 @@
 // The running state of a conversation (the GDN recurrence and conv history, the PLE history, the indexer's tail and
 // spare row) is fp32 where the engine computes it. Where a conversation is STORED - a parked conversation-cache
-// image, a session file - that state can be coded to fewer bytes. Nothing here touches the live state or the live
-// checkpoint chain: a codec is a property of a stored copy, and every coded array is widened back to fp32 before a
-// kernel can read it.
+// image, a session file - that state can be coded to fewer bytes. Nothing here touches the state the kernels read:
+// a codec is a property of a stored copy of it. A conversation resumed from a coded image keeps its retained
+// checkpoints in the codec they were stored in, so an active chain can hold fp32 and coded snapshots at once, and
+// the configured option only decides how the NEXT stored copy is written. A coded array is widened back to fp32
+// when the one snapshot holding it is the snapshot a restore selects, into the session's own fp32 buffers; the
+// stored bytes behind it are not rewritten.
 //
 // bfloat16 is the top half of a float32, so it keeps fp32's exponent range: no scale to choose, no value that can
 // overflow into another value, no subnormal cliff. Encode rounds to nearest even and bounds the error at 2^-8
@@ -44,7 +47,8 @@ bool state_decode(const uint8_t* src, size_t floats, StateCodec codec, float* ds
 
 // The same `floats` values, held under `from` in `src` and written under `to` in `dst`, without going through fp32
 // in between. `dst` holds state_codec_size(floats * 4, to) bytes and must not overlap `src`; a `from` that is already
-// `to` copies the bytes that array occupies. This is the host-to-host conversion a park and a mount do on stored
+// `to` copies the bytes that array occupies. This is the host-to-host conversion a park, a SAVE and a whole-chain
+// widen do on stored
 // state: state_encode/state_decode move values to or from fp32 arrays, which for these two codecs means one extra
 // full-size pass over the data (a memcpy into scratch on the way in, a memcpy out on the way back). The rounding,
 // NaN, signed-zero, subnormal and overflow behaviour is the same code both paths use.

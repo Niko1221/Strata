@@ -428,6 +428,219 @@ void full_session(int fmt, int mode, int experts) {
     cuda_check(cudaMemcpy(spare.data(),main.state.idx_pooled,sizes.dead,cudaMemcpyDeviceToHost));
     check(spare==a.checkpoints[0].dead,"checkpoint rebuilds spare row over a later completed block");
     check(ss.ple_prev[0]==2 && ss.ple_prev[1]==3,"checkpoint PLE token window");
+    // ---- lazy restoration of the retained chain. Resuming a parked conversation no longer widens the whole chain:
+    // its snapshots join the active chain in the codec they were parked in, an append-only continuation leaves them
+    // there, and the ONE snapshot a rewind selects is decoded into the session's fp32 buffers while its stored bytes
+    // stay exactly as they were. Every value check below is against `plain`, the same points captured as fp32.
+    {
+        auto f32=[](const std::vector<uint8_t>& fp32){
+            std::vector<float> f(fp32.size()/4);
+            std::memcpy(f.data(),fp32.data(),f.size()*sizeof(float));
+            return f;
+        };
+        auto close=[](const std::vector<uint8_t>& want_fp32,const std::vector<float>& got){
+            const float* want=(const float*) want_fp32.data();
+            if(got.size()!=want_fp32.size()/4) return false;
+            for(size_t i=0;i<got.size();++i){
+                const double x=want[i],y=got[i];
+                if(x==0.0f){ if(y!=0.0f) return false; continue; }
+                if(std::fabs((y-x)/x)>1.0/256) return false;
+            }
+            return true;
+        };
+        std::vector<int32_t> tok(65);
+        for(size_t i=0;i<tok.size();++i) tok[i]=(int32_t)i+1;
+        std::vector<ConversationImageKey> none;
+        const std::vector<int64_t> at{16,32,48};
+        std::vector<ConversationCheckpoint> plain,coded;
+        for(size_t i=0;i<at.size();++i){
+            fill((uint8_t)(21+i*61));   // a different running state behind every checkpoint
+            ConversationCheckpoint p;
+            p.ids.assign(tok.begin(),tok.begin()+at[i]);
+            check(conversation_checkpoint_save(p,ss,g,err),"lazy: capture an fp32 checkpoint");
+            plain.push_back(std::move(p));
+            ConversationCheckpoint q;
+            q.ids=plain.back().ids;
+            q.state_codec=(uint8_t) StateCodec::Bf16;
+            check(conversation_checkpoint_save(q,ss,g,err),"lazy: capture the same point coded");
+            check(q.state_codec==(uint8_t) StateCodec::Bf16 && q.gdn.size()*2==plain.back().gdn.size() &&
+                  q.ple.size()*2==plain.back().ple.size() && q.tails.size()*2==plain.back().tails.size() &&
+                  q.dead.size()*2==plain.back().dead.size() && q.block_pos==plain.back().block_pos,
+                  "lazy: the coded checkpoint holds half the fp32 one, and block_pos is not coded");
+            coded.push_back(std::move(q));
+        }
+        // the parked image a conversation cache would hand back, and the mount that hands its chain to the engine
+        const ConversationView parked_view{tok,none,coded,true,StateCodec::Bf16};
+        SavedConversation parked;
+        check(conversation_snapshot_save(parked,parked_view,ss,g,draft.state,err),"lazy: park a coded chain");
+        check(parked.checkpoints.size()==coded.size(),"lazy: the parked image holds the whole retained chain");
+        std::vector<std::vector<uint8_t>> kept;
+        for(const auto& c:parked.checkpoints) kept.push_back(c.gdn);
+        std::vector<ConversationCheckpoint> chain=std::move(parked.checkpoints);
+        for(size_t i=0;i<chain.size();++i)
+            check(chain[i].state_codec==(uint8_t) StateCodec::Bf16 && chain[i].gdn==kept[i] &&
+                  chain[i].gdn.size()*2==plain[i].gdn.size() && chain[i].block_pos==plain[i].block_pos &&
+                  chain[i].ids==plain[i].ids,
+                  "lazy: a resumed chain keeps every imported snapshot's bytes and its codec, unwidened");
+        // an append-only continuation: the conversation keeps generating and captures its own checkpoints. Nothing
+        // here touches the older, coded ones.
+        fill(91);
+        ConversationCheckpoint fresh;
+        fresh.ids=tok;
+        check(conversation_checkpoint_save(fresh,ss,g,err),"lazy: the continuing conversation captures a checkpoint");
+        check(fresh.state_codec==0,"lazy: a newly captured checkpoint is fp32 whatever the option says");
+        const auto before=chain;
+        chain.push_back(std::move(fresh));
+        bool older_untouched=chain.size()==before.size()+1;
+        for(size_t i=0;i<before.size();++i)
+            older_untouched=older_untouched && chain[i].state_codec==(uint8_t) StateCodec::Bf16 &&
+                            chain[i].gdn==before[i].gdn && chain[i].ple==before[i].ple &&
+                            chain[i].tails==before[i].tails && chain[i].dead==before[i].dead &&
+                            chain[i].bytes()==before[i].bytes();
+        check(older_untouched,"lazy: continuing on does not widen the older retained checkpoints");
+        size_t mixed_bytes=0;
+        const ConversationView mixed_view{tok,none,chain,true};
+        check(conversation_snapshot_bytes(mixed_view,ss,g,draft.state,mixed_bytes,err) && mixed_bytes>0,
+              "lazy: a chain holding fp32 and coded snapshots together is estimable");
+        // select an older coded checkpoint: the session's fp32 buffers get the widened values, the snapshot does not
+        fill(200);
+        check(conversation_checkpoint_restore(chain[0],ss,g,err),"lazy: restore a retained coded checkpoint");
+        ConversationCheckpoint widened;
+        widened.ids=plain[0].ids;
+        check(conversation_checkpoint_save(widened,ss,g,err),"lazy: capture what the restore put in the session");
+        check(widened.state_codec==0 && close(plain[0].gdn,f32(widened.gdn)) &&
+              close(plain[0].dead,f32(widened.dead)) && close(plain[0].tails,f32(widened.tails)) &&
+              close(plain[0].ple,f32(widened.ple)) && widened.block_pos==plain[0].block_pos,
+              "lazy: the selected snapshot restores the correctly widened fp32 values");
+        check(chain[0].state_codec==(uint8_t) StateCodec::Bf16 && chain[0].gdn==kept[0] &&
+              chain[0].bytes()==before[0].bytes(),
+              "lazy: restoring a checkpoint leaves the retained snapshot coded, not permanently widened");
+        // the mixed chain, re-parked and saved both ways, and restored again
+        {
+            const ConversationView fp32_view{tok,none,chain,true};
+            const ConversationView bf16_view{tok,none,chain,true,StateCodec::Bf16};
+            SavedConversation as_fp32,as_bf16;
+            check(conversation_snapshot_save(as_fp32,fp32_view,ss,g,draft.state,err),
+                  "lazy: park a mixed chain with the engine configured fp32");
+            check(conversation_snapshot_save(as_bf16,bf16_view,ss,g,draft.state,err),
+                  "lazy: and with it configured bf16");
+            bool all_fp32=true,all_bf16=true;
+            for(const auto& c:as_fp32.checkpoints)
+                all_fp32=all_fp32 && c.state_codec==0 && c.gdn.size()==plain[0].gdn.size();
+            for(size_t i=0;i<as_bf16.checkpoints.size();++i)
+                all_bf16=all_bf16 && as_bf16.checkpoints[i].state_codec==(uint8_t) StateCodec::Bf16 &&
+                         as_bf16.checkpoints[i].gdn.size()==plain[0].gdn.size()/2;
+            check(all_fp32,"lazy: an fp32 write expands the coded snapshots it is given");
+            check(all_bf16 && as_bf16.checkpoints[0].gdn==kept[0],
+                  "lazy: a bf16 write copies a snapshot that is already bf16, byte for byte");
+            // a chain that really is mixed once stored: one coded snapshot among fp32 ones
+            SavedConversation mix=as_fp32;
+            mix.checkpoints[0]=as_bf16.checkpoints[0];
+            check(conversation_snapshot_validate(mix,ss,g,draft.state,err),
+                  "lazy: an image holding both fp32 and coded snapshots validates, checkpoint by checkpoint");
+            check(conversation_snapshot_restore(mix,ss,g,draft.state,err)==ConversationRestore::restored,
+                  "lazy: and restores");
+            ConversationCheckpoint again; again.ids=plain[0].ids;
+            check(conversation_checkpoint_save(again,ss,g,err),"lazy: capture the state a mixed image restored");
+            check(close(plain[0].gdn,f32(again.gdn)) && again.block_pos==plain[0].block_pos,
+                  "lazy: its coded snapshot came back widened and its fp32 ones came back exactly");
+            // SAVE: the file's own representation is the configured one, whichever checkpoint it selects
+            chain[0].pinned=true;   // so the SAVE selects a coded checkpoint out of the mixed chain
+            SessionSaveLive sl; sl.state_bytes=sizes.gdn+sizes.ple; sl.tokens=(uint64_t) tok.size();
+            sl.images=0; sl.kv_layers=1;
+            std::vector<ConversationCheckpoint> disk; std::string why;
+            const auto agree=[&](uint64_t,std::string&){ return true; };
+            check(session_save_checkpoints(chain,sl,StateCodec::Fp32,agree,disk,why) && disk.size()==1 &&
+                  disk[0].state_codec==(uint8_t) StateCodec::Bf16,
+                  "lazy: the SAVE's checkpoint list keeps the selected snapshot as the chain holds it");
+            check(session_save_peak_bytes(&disk[0],sl,StateCodec::Fp32)>2*(uint64_t) disk[0].bytes(),
+                  "lazy: and its preflight prices the widening an fp32 file still has to do");
+            const ConversationView disk_view{tok,none,disk,true,StateCodec::Fp32};
+            SavedConversation dmeta; std::vector<SessionKvSource> dsrc;
+            check(conversation_snapshot_sources(dmeta,dsrc,disk_view,ss,g,draft.state,err) &&
+                  dmeta.checkpoints[0].state_codec==0 && dmeta.checkpoints[0].gdn.size()==plain[0].gdn.size(),
+                  "lazy: an fp32 SAVE of a coded retained snapshot writes fp32 bytes");
+            chain[0].pinned=false;
+            // and on disk: the mixed image says, per checkpoint, how each one is held
+            namespace fs=std::filesystem;
+            const fs::path dir=fs::temp_directory_path()/("strata-lazy-"+std::to_string(experts)+"-"+
+                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+            fs::create_directories(dir);
+            const SessionFileIdentity id{1,2};
+            auto version_of=[](const std::string& p){ std::ifstream f(p,std::ios::binary);
+                std::vector<char> b(12); f.read(b.data(),12); return (uint8_t) b[8]; };
+            size_t n1=0,n2=0,n3=0;
+            const std::string p1=(dir/"all-fp32.bin").string(),p2=(dir/"all-bf16.bin").string(),
+                            p3=(dir/"mixed.bin").string();
+            SavedConversation m3; std::vector<SessionKvSource> s3;
+            check(conversation_snapshot_sources(m3,s3,fp32_view,ss,g,draft.state,err) &&
+                  session_file_write(p1,m3,s3,id,n1,err),"lazy: a SAVE of the mixed chain configured fp32 writes");
+            check(version_of(p1)==1,"lazy: an all-fp32 SAVE of a mixed chain is still a version 1 file");
+            check(session_file_write(p2,as_bf16,id,n2,err) && version_of(p2)==2,
+                  "lazy: and configured bf16 it is a version 2 file");
+            check(session_file_write(p3,mix,id,n3,err) && version_of(p3)==2,
+                  "lazy: a mixed image on disk is version 2 and says so per checkpoint");
+            SavedConversation r3;
+            size_t n4=0;
+            check(session_file_read(p3,id,r3,n4,err) && r3.checkpoints[0].state_codec==(uint8_t) StateCodec::Bf16 &&
+                  r3.checkpoints[0].gdn==kept[0] && r3.checkpoints[1].state_codec==0 &&
+                  r3.checkpoints[1].gdn==as_fp32.checkpoints[1].gdn,
+                  "lazy: and it reads back with each checkpoint's own coding");
+            check(conversation_snapshot_restore(r3,ss,g,draft.state,err)==ConversationRestore::restored,
+                  "lazy: a chain read back mixed restores");
+            std::error_code ec; fs::remove_all(dir,ec);
+        }
+        // the deferred restore's refusals: a snapshot that lies about its coding is refused before anything is written
+        fill(57);
+        ConversationCheckpoint probe; probe.ids=plain[1].ids;
+        check(conversation_checkpoint_save(probe,ss,g,err),"lazy: reference state before the refused restores");
+        auto untouched=[&](){
+            ConversationCheckpoint now; now.ids=plain[1].ids;
+            return conversation_checkpoint_save(now,ss,g,err) && now.gdn==probe.gdn && now.dead==probe.dead &&
+                   now.tails==probe.tails && now.block_pos==probe.block_pos;
+        };
+        auto bad=chain[1];
+        bad.state_codec=7;   // a codec this build does not know
+        err.clear();
+        check(!conversation_checkpoint_restore(bad,ss,g,err) && !err.empty(),
+              "lazy: a retained snapshot naming an unknown codec is refused, not read as fp32");
+        check(untouched(),"lazy: and the refusal happens before any state write");
+        bad=chain[1]; bad.gdn.pop_back();
+        err.clear();
+        check(!conversation_checkpoint_restore(bad,ss,g,err) && !err.empty(),
+              "lazy: a coded snapshot whose arrays are not its codec's size is refused");
+        check(untouched(),"lazy: the session still holds the state the last capture saw");
+        // a layer split: a checkpoint's own coding and each stage part's travel through the split and the merge
+        {
+            fill(73);
+            ConversationCheckpoint cp;
+            cp.ids=plain[2].ids;
+            cp.state_codec=(uint8_t) StateCodec::Bf16;   // stage 0's running state coded
+            check(conversation_checkpoint_save(cp,ss,g,err),"lazy: capture a split checkpoint's first stage");
+            std::vector<uint8_t> first=cp.gdn;
+            for(size_t k=0;k<2;++k){
+                ConversationCheckpoint part;
+                part.ids=cp.ids;
+                part.state_codec=(uint8_t)(k==1?StateCodec::Bf16:StateCodec::Fp32);
+                check(conversation_checkpoint_save(part,ss,g,err),"lazy: capture one stage's part");
+                cp.stage_parts.push_back(std::move(part));
+            }
+            std::vector<ConversationCheckpoint> in; in.push_back(std::move(cp));
+            auto split=conversation_checkpoints_split(std::move(in),2);
+            check(split.stage0.size()==1 && split.parts[0].size()==1 && split.parts[1].size()==1 &&
+                  split.stage0[0].state_codec==(uint8_t) StateCodec::Bf16 && split.stage0[0].gdn==first &&
+                  split.parts[0][0].state_codec==0 && split.parts[1][0].state_codec==(uint8_t) StateCodec::Bf16,
+              "lazy: a split keeps a checkpoint's own coding and each stage part's separately");
+            std::vector<ConversationCheckpoint> joined;
+            check(conversation_checkpoints_merge(std::move(split),joined) && joined.size()==1 &&
+                  joined[0].state_codec==(uint8_t) StateCodec::Bf16 && joined[0].gdn==first &&
+                  joined[0].stage_parts.size()==2 && joined[0].stage_parts[0].state_codec==0 &&
+                  joined[0].stage_parts[1].state_codec==(uint8_t) StateCodec::Bf16,
+                  "lazy: and merging them back does too");
+            check(conversation_checkpoint_restore(joined[0].stage_parts[1],ss,g,err),
+                  "lazy: a coded stage part restores into its stage's fp32 buffers");
+        }
+    }
 }
 }
 
@@ -561,6 +774,37 @@ int main() {
         int status = 0;
         check(pid > 0 && ::waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "a widen that cannot allocate is refused to its caller, not thrown past it");
+    }
+    // ---- re-parking a MIXED chain under memory pressure. A resumed conversation now keeps the snapshots it
+    // imported in the codec they were parked in, beside the fp32 ones it captured itself, so the next park converts
+    // every one of them to the codec this engine writes: the copy allocates the whole stored image again. That is
+    // the allocation the lazy chain puts on the park path, and it is a refusal, not a throw, with the chain the
+    // engine is still running on left exactly as it was.
+    {
+        constexpr size_t kFp32 = 256u << 20;              // an fp32 snapshot this session captured
+        ConversationCheckpoint fp, coded;
+        fp.ids.assign(64, 5); fp.gdn.assign(kFp32, 0x31);
+        coded.ids.assign(64, 5); coded.gdn.assign(kFp32 / 2, 0x41);   // one imported from a parked image
+        coded.state_codec = (uint8_t) StateCodec::Bf16;
+        std::vector<ConversationCheckpoint> chain; chain.push_back(std::move(fp)); chain.push_back(std::move(coded));
+        const pid_t pid = ::fork();
+        if (pid == 0) {
+            long pages = 0, rss = 0;
+            if (FILE* f = std::fopen("/proc/self/statm", "r")) { if (std::fscanf(f, "%ld %ld", &pages, &rss) != 2) pages = 0; std::fclose(f); }
+            rlimit rl {};
+            rl.rlim_cur = rl.rlim_max = (rlim_t) pages * (rlim_t) ::sysconf(_SC_PAGESIZE) + (64u << 20);
+            if (pages <= 0 || ::setrlimit(RLIMIT_AS, &rl) != 0) ::_exit(10);
+            std::vector<ConversationCheckpoint> out;
+            std::string err; bool ok = false;
+            try { ok = conversation_checkpoints_store(chain, StateCodec::Bf16, out, err); } catch (...) { ::_exit(11); }
+            if (ok) ::_exit(12);                                    // the limit did not bite: proves nothing
+            ::_exit(chain[0].gdn.size() == kFp32 && chain[0].state_codec == 0 &&
+                    chain[1].gdn.size() == kFp32 / 2 && chain[1].state_codec == (uint8_t) StateCodec::Bf16 &&
+                    !err.empty() ? 0 : 13);
+        }
+        int status = 0;
+        check(pid > 0 && ::waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "a park of a mixed chain that cannot allocate is refused, and leaves the active chain as it was");
     }
 #endif
     std::printf("conversation_snapshot_test: %d checks passed\n",checks);

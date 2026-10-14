@@ -61,15 +61,23 @@ bool conversation_checkpoint_validate(const ConversationCheckpoint& checkpoint, 
 // caller set otherwise, which is what a stored copy asks for). The device is synchronized before the call.
 bool conversation_checkpoint_save(ConversationCheckpoint& checkpoint, const SessionState& session,
                                   const ModelGeometry& g, std::string& error);
+// Puts `checkpoint`'s running state back into the session's own fp32 buffers, decoding it the way the checkpoint's
+// own `state_codec` says - not the way the engine is configured to write. `checkpoint` is not modified: a restored
+// snapshot stays in the codec it was stored in, so the same one can be restored again, re-parked, or written to a
+// file in a third codec. Under a codec this allocates host memory (the widened indexer arrays, and one fp32 slice
+// of the rest); a caller with no exception handler around it must expect that.
 bool conversation_checkpoint_restore(const ConversationCheckpoint& checkpoint, SessionState& session,
                                      const ModelGeometry& g, std::string& error);
 // A stored copy of a checkpoint chain under `codec`: ids and images as they are, every running-state array coded the
-// way `codec` says, and `state_codec` set to say so. A chain already under `codec` is copied, not coded twice.
-// `Fp32` is the plain beating copy it has always been. Host code: the chain is already in host memory.
+// way `codec` says, and `state_codec` set to say so. A chain already under `codec` is copied, not coded twice, and
+// a chain holding both fp32 and coded snapshots is converted checkpoint by checkpoint. `Fp32` is the plain beating
+// copy it has always been. Host code: the chain is already in host memory.
 bool conversation_checkpoints_store(const std::vector<ConversationCheckpoint>& chain, StateCodec codec,
                                     std::vector<ConversationCheckpoint>& out, std::string& error);
-// The inverse, in place: every coded array back to fp32. What a mount does to the checkpoints it is about to hand
-// back to the engine's live chain, so the live chain is never coded. Fp32 checkpoints are left exactly as they are.
+// The inverse, in place: every coded array of every checkpoint back to fp32. NOT what resuming a parked conversation
+// does - that hands the chain over in the codecs its snapshots were stored in and lets
+// conversation_checkpoint_restore widen the one a rewind selects. Kept for callers that want a whole chain in fp32
+// up front (and tested for it); a mount no longer needs it. Fp32 checkpoints are left exactly as they are.
 bool conversation_checkpoints_widen(std::vector<ConversationCheckpoint>& chain, std::string& error);
 
 struct ConversationView {
@@ -80,7 +88,9 @@ struct ConversationView {
     // How the stored copy is to hold the running state (strata/core/state_codec.hpp). Fp32 - the default every
     // caller leaves in place - stores the bytes the engine computes, exactly as before. A capture asked for with
     // another codec writes coded bytes and says so on every checkpoint it produces; nothing it produces is read
-    // as fp32 by anything else.
+    // as fp32 by anything else. This says only what the copy is to be written as: `checkpoints` may already hold a
+    // mix of fp32 and coded snapshots (a chain resumed from a parked image does), and each one is converted from
+    // the codec it names, never from this one.
     StateCodec codec = StateCodec::Fp32;
 };
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& session,

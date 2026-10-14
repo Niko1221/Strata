@@ -84,8 +84,10 @@ flag, if the bf16 quality numbers leave headroom and 4,096-token spacing is want
 
 **Out, and left alone:**
 
-- the engine's own live checkpoint chain in RAM (`checks` in `generate.cpp`) stays fp32. This PR codes only what goes
-  into an image or a file. Denser checkpoints is a separate change with a different risk (it is on every turn).
+- the state the engine computes on is never coded, and no kernel is touched. What **is** coded is every stored copy
+  of it: the image a parked conversation holds, the file a `SAVE` writes, and - since the lazy-restoration change
+  below - the retained checkpoints of a resumed conversation, which keep the codec they were parked in instead of
+  being widened at the mount. Denser checkpoints is a separate change with a different risk (it is on every turn).
 - no kernel, no CUDA/HIP/SYCL code, no device-side encode. The touched files are host code; build CUDA and HIP
   anyway.
 - **the SYCL port does not implement the flag.** `sycl/` keeps hand-ported copies of `conversation_state.cpp` and
@@ -319,6 +321,26 @@ End to end, on the box:
 17. 63K prompt → `action=save` with the flag off and on; record `n_written`, `save_ms`, `restore_ms`; restore both and
     compare the generated continuation token-for-token against the fp32 file.
 
+Added with lazy restoration (`conversation_snapshot_test`, `conversation_cache_test`):
+
+18. park a chain of three coded checkpoints, mount it the way the resume path does (move the image's checkpoints into
+    the active chain, no widen): every snapshot keeps its bytes, its size and its `state_codec`.
+19. an append-only continuation captures its own fp32 checkpoint and leaves every older retained snapshot byte-for-byte
+    as it was, same codec, same `bytes()`.
+20. selecting an older coded checkpoint puts values within 2^-8 of the fp32 originals into the session's buffers
+    (`block_pos` bit-exact) and leaves the retained snapshot coded — restoring does not permanently widen it.
+21. a chain holding fp32 and coded snapshots together is estimable, parks under either codec, validates as a mixed
+    image, restores, and is written to disk both ways: an all-fp32 write of it is still a **version 1** file, a coded
+    write is version 2, and a mixed image on disk comes back with each checkpoint's own coding.
+22. `session_save_checkpoints` keeps the checkpoint it selects as the chain holds it and `session_save_peak_bytes`
+    prices the widening an fp32 file still has to do; `conversation_snapshot_sources` then writes fp32 bytes.
+23. layer-stage split and merge carry a checkpoint's own coding and each stage part's separately, and a coded stage
+    part restores into its stage's fp32 buffers (`conversation_cache_test` does the same split/merge host-only).
+24. a retained snapshot naming an unknown codec, or whose arrays are not its codec's size, is refused before any
+    state write — the session still holds what the last capture saw.
+25. re-parking a mixed chain under a real `RLIMIT_AS` is refused with an error and not thrown, and leaves the active
+    chain exactly as it was. (`conversation_checkpoints_widen` keeps its own pressure test.)
+
 ## Measured
 
 One Tesla V100 32 GB (model) plus one RTX 2080 Ti (ComfyUI idle), 93 GB system RAM, Linux, CUDA 12.8, engine built
@@ -439,10 +461,12 @@ cache drop, no other file's pages touched), then one restore, 3 repetitions: 721
 
 The saving is the state arrays and nothing else, and the count comes out of the bytes: divided by one state's saving
 (59,031,552 B) the three deltas are 4, 6 and 7 coded states, which is the image's live state plus its retained
-checkpoint chain of 3, 5 and 6 — the last one being the `--prompt-cache 6` cap. Predicted and measured bytes agree to
-8 bytes. This is also where the cost is: a resume widens every state in the chain back to fp32, so resume went
-52 → 186 ms at 32K and the first turn's `prompt_ms` 253 → 381 ms. Under a fifth of a second, but it grows with the
-chain. At long context K/V (15,271 B/token here) is 79% of an image, so the byte saving flattens toward −16%.
+checkpoint chain of 3, 5 and 6 - the last one being the `--prompt-cache 6` cap. Predicted and measured bytes agree to
+8 bytes. This is also where the cost was, on that build (`2274c1c`, eager restoration): a resume widened every state
+in the chain back to fp32, so resume went 52 → 186 ms at 32K and the first turn's `prompt_ms` 253 → 381 ms. Under a
+fifth of a second, but it grew with the chain. **These two columns are superseded for the resume side by
+"Lazy restoration" below**; the parked-image bytes and `park_ms` are unchanged by that change. At long context K/V
+(15,271 B/token here) is 79% of an image, so the byte saving flattens toward −16%.
 
 **RAM.** `VmRSS` sampled at 20 ms from outside the process, on a fresh engine, median of 3: `SAVE` +353.2 MiB
 configured `fp32` against +240.8 MiB configured `bf16` at 32K (+353.8 against +240.8 at 63K). A bf16 `RESTORE` at 32K
@@ -458,6 +482,130 @@ zero, because the allocator already owns the blocks — which is why this runs o
 (7.3 GB/s of fp32 read), decode 10.0 ms (11.9 GB/s of fp32 written), 6 repetitions, encode 16.1-17.4 ms and decode
 9.7-10.6 ms, worst relative error against the file's own values 0.3891% — inside the 2^-8 bound, and every value the
 decoder produced was checked back against the input.
+
+## Lazy restoration of the retained chain
+
+**What changed.** Up to and including `2274c1c` the parked-resume path called `conversation_checkpoints_widen()` on
+the whole checkpoint chain the moment a parked conversation was resumed: every retained snapshot was allocated an
+fp32 array and converted, whether or not the conversation ever went back to it. That made the active chain uniform
+fp32 — which is what this document said until it was rewritten — and it made the resume cost grow with the chain.
+
+Now the mount moves the parked image's checkpoints into the active chain **as they are**, buffers and `state_codec`
+bytes included. The chain is mixed from that point on: coded snapshots imported from parking beside the fp32 ones the
+session captures itself. `conversation_checkpoint_restore()` decodes the **one** snapshot a rewind selects into the
+session's own fp32 buffers and leaves the stored snapshot untouched, so the same checkpoint can be restored again,
+re-parked, or written to a file in a third codec. `conversation_checkpoints_widen()` is kept — it is still the way to
+put a whole chain in fp32 up front, and it is still tested — but the resume path no longer calls it.
+
+Nothing else moved. Newly captured checkpoints are still fp32; the configured `--session-state-codec` still decides
+only how the *next* parked image or session file is written, and every existing snapshot is still read by the codec it
+names for itself; the file formats and the fingerprints are unchanged (an all-fp32 write of a mixed chain is still a
+version 1 file — `any_coded()` looks at what the image actually holds); layer-stage split and merge already carried a
+checkpoint's own coding and each stage part's separately, and still do; no kernel, no new flag, no new worker, and the
+checkpoint interval is untouched.
+
+**What it costs the reader.** The deferred decode allocates host memory the eager path did not: the widened
+`tails`/`dead` arrays (18 KiB + 6 KiB at this geometry) and one fp32 slice of `gdn`/`ple` crossing the device
+boundary, bounded by `kStateCodecChunkFloats` — 4 MiB. The serve loop has no handler around the restore, so
+`checkpoint_restore()` in `generate.cpp` turns a `bad_alloc` there into the reported `ERR restoring a conversation
+checkpoint failed: not enough RAM to widen the checkpoint's running state` the same way it reports any other restore
+failure (the session may be half written, so the engine ends and the server starts it again), and the batch slot path
+`copy_from_slot()` reports a refusal and lets the caller read the prompt from token 0 as it already did. Re-parking a
+mixed chain is the unbounded allocation and it was already refused rather than thrown; that is tested under a real
+address-space limit.
+
+**Engine lines added.** `retained N checkpoints beside the live state, B bytes … (C coded, X bytes of it)` on the
+mount, and `resumed through the checkpoint at T tokens (widened into the session's fp32 buffers; its stored bytes are
+kept as they are) in M ms; the other K retained checkpoints were not touched` at the restore. The second is printed
+only when the chain actually holds coded snapshots, so the default fp32 path is as quiet as it was.
+
+### Measured: eager (`2274c1c`) against lazy, both `bf16`
+
+Same box and configuration as the tables above (Tesla V100 32 GB model GPU, RTX 2080 Ti idle, 93 GB RAM, Linux, CUDA
+12.8 build, IQ3_S, `--kv int8`, 262144 context, `--conversation-cache-mib 16384 --conversation-cache-slots 12
+--conversation-cache-min-free-mib 8192`, `--prompt-cache 6 --prompt-cache-every 16384`), with
+`--adapt-swaps 0 --pcie-frac 0` pinned (`docs/DETAILS.md:108`). Two engine binaries from the same tree — HEAD
+(`engine-cuda12/strata.eager-2274c1c`) and this change (`engine-cuda12/strata.lazy`) — each its own server process,
+because both the codec and the executable are read once at start-up. **Two rounds, the arms alternating which goes
+first; 2 warm-ups then 10 measured repetitions of each operation in every arm-session.** Every figure is the median of
+the 20 measured operations, with the low and high of the two rounds' medians after it. `engine prompt_ms` is the
+engine's own number for the prompt phase; `client wall` is the client's own clock around the HTTP request and includes
+the queue, the park, the prompt and the decode — they are not the same measurement and are never mixed.
+`bench-state-codec/bench_lazy_resume.py`, raw JSON in `bench-state-codec/results/lazy_resume.json`.
+
+Actual token counts, identical in both arms: prefill **31,801 / 63,029 / 121,441** tokens; the continuing prompt
+**31,821 / 63,050 / 121,462**; the edited prompt **19,090 / 19,091**. Retained checkpoints after the continuation:
+**3 / 5 / 6**.
+
+**Append-only continuation** — the conversation simply carries on, so the mount is the whole cost and no checkpoint is
+ever used:
+
+| tokens | resume `ms` | engine `prompt_ms` | client wall `s` | retained checkpoint bytes | parked image |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 31,821 | 174.3 (173.8–174.8) → **53.5** (53.0–53.9) | 411.4 → **284.9** | 0.64 → **0.52** | 354.5 MB → **177.4 MB** | 0.41 GiB both |
+| 63,050 | 229.6 (229.0–230.2) → **76.8** (76.8–77.0) | 415.5 → **257.9** | 0.61 → **0.45** | 591.2 MB → **296.1 MB** | 0.41 GiB both |
+| 121,462 | 266.4 (257.2–275.6) → **126.8** (126.3–127.3) | 420.4 → **276.5** | 0.67 → **0.52** | 710.6 MB → **356.4 MB** | 0.41 GiB both |
+
+The lazy column is not zero because the mount still restores the image's *live* running state, which it always has:
+53 ms at 32K, 77 at 63K, 127 at 121K is that restore plus the K/V. What went away is one conversion per retained
+checkpoint. The eager byte figures are arithmetic on the engine's own count — `n × 118,063,152 B` plus the token and
+image lists — the lazy ones are the `retained=` line the build prints.
+
+**Older-checkpoint resume** — the prompt is an edit that ends at 19,090 tokens, well behind the conversation's live
+state, so the mount and one checkpoint restore both happen (the engine's own line names the checkpoint: `resumed
+through the checkpoint at 19083 tokens`, `reused: 19083`):
+
+| tokens | resume `ms` | engine `prompt_ms` | client wall `s` | retained checkpoint bytes | parked image |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 31,821 | 124.2 (123.7–124.8) → **40.2** (40.2–40.3) | 305.8 → **197.4** | 0.39 → **0.28** | 225.3 MB → **118.2 MB** | 1.19 GiB both |
+| 63,029 | 75.0 (74.5–75.6) → **39.4** (39.1–39.6) | 310.6 → **208.2** | 0.39 → **0.29** | 225.3 MB → **118.2 MB** | 1.86 GiB both |
+| 121,441 | 71.5 (70.5–72.5) → **37.4** (37.2–37.5) | 318.5 → **201.4** | 0.44 → **0.33** | 225.3 MB → **118.2 MB** | 2.80 GiB both |
+
+**Deep rewind** — the prompt ends at ~18,000 tokens and asks a different question every repetition, so no parked
+copy's near-tail checkpoint matches it and the engine mounts through the periodic checkpoint at **16,384** tokens
+every time. No parked image is mounted at all (`reused: 16384` in both arms, `resume` reported by neither): this is
+the deferred restore on the active chain alone, with the park of the outgoing conversation in the same request.
+
+| tokens | engine `prompt_ms` | `park_ms` | selected checkpoint |
+| --- | ---: | ---: | ---: |
+| 31,801 | 1372.5 (1371.8–1373.2) → **1353.3** (1350.3–1356.2) | 93.0 → **73.7** | 16,384 both arms |
+| 63,029 | 1314.9 (1314.1–1315.8) → **1302.7** (1301.8–1303.7) | 59.7 → **39.5** | 16,384 both arms |
+| 121,441 | 1312.2 (1311.5–1312.9) → **1296.0** (1292.9–1299.0) | 59.3 → **39.0** | 16,384 both arms |
+
+**What the one deferred decode costs.** The engine times it: **14.6–17.2 ms** for the selected snapshot, the same at
+32K, 63K and 121K and in all three workloads (the state is one running state whatever the conversation's length).
+Against the 121–153 ms the mount no longer spends, one 15 ms decode is what a rewind pays and nothing is paid at all
+when the conversation only continues. The deep-rewind rows are *faster* under lazy despite doing that decode, because
+the park in the same request copies a chain that is already bf16 instead of converting an fp32 one.
+
+**Quality on the same runs.** With `--adapt-swaps 0 --pcie-frac 0` pinned, the two builds answered **byte-identically
+in every size and every workload**: the same single answer string per workload across all 20 measured repetitions of
+each arm (`ember` / `velvet` / `tundra` for the two rewinds, and the same one-sentence continuation for the
+append-only turn). Needle recall — the code word placed at 10% of each document — was **20/20 in every arm, every
+size and every workload**, 120 measured continuations and rewinds. Two notes on that column: the append-only turn asks
+for "one short sentence about it", so its check only bites when the sentence happens to name the word (on a separate
+run of this same build configured `fp32` the same prompt produced a sentence that described the document instead, and
+`ok` read 0/3 there while both explicit "what is the code word?" turns stayed 3/3) — the two rewind columns are the
+recall checks, the append-only column is an answer-identity check. The resumed prompts came back with the same byte
+counts in both arms.
+
+**Sampled memory.** `VmRSS` polled at 20 ms from outside the process, increment above the steady baseline (median of
+the last 5 samples), median of 10: append-only at 32K +529.8 MiB eager against +529.9 lazy, at 63K +261.7 against
++167.6, at 121K +0.0 against +0.0. Two limits, stated as they are in the RAM section above: `VmRSS` misses pages the
+kernel has already written out and most parked state is pageable, and once the conversation cache is at its budget the
+allocator owns the blocks, so several windows read 0 and some read negative. These are observed lower bounds, not
+high-water marks; the retained-bytes columns above are the trustworthy figure for what the chain holds.
+
+**What was not measured.** No HIP build (no `hipcc` on this box) and no SYCL build (no oneAPI): the header changes
+here are comments and the only code change outside a header is in `src/program/generate.cpp`, which is plain host C++
+shared by the CUDA and HIP builds and not used by the SYCL port, but neither backend was compiled. The layer-split
+park/restore path is covered by unit tests and not by these engine runs, which are single-GPU. The KL / top-1-flip
+curve across tokens-since-resume is still not available through this build's API, as recorded in the quality gate.
+
+**The default path.** The same harness against this build configured `fp32` (`results/lazy_resume-fp32-default.json`,
+one arm, 1 warm-up + 3 measured): resume 50.2 ms on the append-only turn and 52.2 ms on the rewind, `reused: 16384`
+on the deep rewind, and **neither new log line printed** — both are gated on the chain actually holding coded
+snapshots, so a default park/resume logs what it logged before.
 
 ## Quality gate
 
@@ -521,8 +669,9 @@ State the machine (CPU, GPU, RAM, OS, engine version, model, flags) next to ever
   state, and the byte deltas agreeing with the arithmetic to 8 bytes.
 - encode and decode wall time per running state, and their effect on the request that triggers them. **Both sides
   done:** inside `save_ms` / `restore_ms` as above, and measured on their own host-only — 16.2 ms to code one running
-  state, 10.0 ms to widen it. On the request path the cost is visible in the parked resume: 52 → 186 ms at 32K,
-  86 → 300 ms at 63K, because a resume widens the whole chain.
+  state, 10.0 ms to widen it. On the request path the cost was visible in the parked resume of the eager build
+  (`2274c1c`): 52 → 186 ms at 32K, 86 → 300 ms at 63K, because a resume widened the whole chain. Lazy restoration
+  removes that per-chain multiplication; see **Lazy restoration** below.
 - decode tok/s and prefill tok/s before and after, to show the codec does not land on the token path. **Done for
   prefill:** the same 63,455-token prompt read in 44.8 s configured `fp32`, 44.6 s configured `bf16`, 44.7 s on the
   previous engine build — the same rate — and `tools/ab_engine.py` medians matching to within 2.8 tok/s on decode over
