@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, Service, StrataEngine, engine_args, parallel_args, serve
+from serve.server import ByteTokenizer, Service, StrataEngine, engine_args, parallel_args, request_priority, serve
 
 # The fake engine: one token every STEP seconds per active slot (a "window" serves every active slot at once);
 # GEN (solo) streams T lines; BGEN reads the prompt (one T line, DONE), answers BADM and continues in the slot.
@@ -222,6 +222,25 @@ class ParallelArgs(unittest.TestCase):
         self.assertEqual(args[-2:], ["--batch", "2"])
 
 
+class Priority(unittest.TestCase):
+    def test_request_priority(self):
+        self.assertEqual(request_priority({"priority": 7}), 7)
+        self.assertEqual(request_priority({"priority": -3}), -3)
+        for body in ({}, None, {"priority": True}, {"priority": "7"}, {"priority": 1.5}, {"priority": None}):
+            self.assertEqual(request_priority(body), 0, body)
+
+    def test_outranked_skips_a_request_letting_others_go_first(self):
+        e = StrataEngine("missing-executable", [], lazy=True)
+        e.ctl_epoch = 4
+        e.wait_lens = [[100, 5, None]]
+        self.assertTrue(e._outranked(0))
+        self.assertFalse(e._outranked(5))
+        e.wait_lens = [[100, 5, 4]]             # it gave way at epoch 4 and nobody has taken the lines since
+        self.assertFalse(e._outranked(0))
+        e.ctl_epoch = 5
+        self.assertTrue(e._outranked(0))
+
+
 class PickSlot(unittest.TestCase):
     def engine(self, n):
         e = StrataEngine("missing-executable", [], lazy=True)
@@ -307,8 +326,9 @@ class ParallelService(unittest.TestCase):
         if getattr(self, "tmp", None):
             self.tmp.cleanup()
 
-    def chat(self, text, max_tokens=64):
-        body = {"messages": [{"role": "user", "content": text}], "max_tokens": max_tokens, "reasoning_effort": "none"}
+    def chat(self, text, max_tokens=64, **extra):
+        body = {"messages": [{"role": "user", "content": text}], "max_tokens": max_tokens, "reasoning_effort": "none",
+                **extra}
         req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=60) as r:
@@ -469,13 +489,14 @@ class ParallelService(unittest.TestCase):
         active = [int(x.split()[3]) for x in self.log.read_text().splitlines() if x.startswith("BGEN")]
         self.assertTrue(all(a <= 1 for a in active), active)
 
-    def race(self, first, second, delay=0.15, max_tokens=64):
-        """`first` sent, `second` after `delay` seconds; -> {text: (reply, seconds it took)}"""
+    def race(self, first, second, delay=0.15, max_tokens=64, priority=None):
+        """`first` sent, `second` after `delay` seconds; -> {text: (reply, seconds it took)}.  `priority`: {text: it}"""
         res = {}
 
         def go(t):
             t0 = time.time()
-            r = self.chat(t, max_tokens=max_tokens)
+            extra = {"priority": priority[t]} if priority and t in priority else {}
+            r = self.chat(t, max_tokens=max_tokens, **extra)
             res[t] = (r["choices"][0]["message"]["content"], time.time() - t0)
         a = threading.Thread(target=go, args=(first,))
         a.start()
@@ -588,6 +609,61 @@ class ParallelService(unittest.TestCase):
         """The ask between PP lines keeps the rule: a waiting request about as long gets no BYIELD there either."""
         self.start(2, more=["--pp-every", "80"])
         res = self.race("long " * 600, "lung " * 600)
+        self.assertEqual(sorted(r[0] for r in res.values()), ["ok, done."] * 2)
+        self.assertFalse(any(x.startswith("YIELD ") for x in self.log.read_text().splitlines()))
+
+    def test_a_long_read_gives_way_to_a_higher_priority(self):
+        """A higher priority is worth giving way to whatever its length; a lower one only when much shorter (#656)."""
+        self.start(2)
+        long_q, lung_q = "long " * 600, "lung " * 600
+        res = self.race(long_q, lung_q, priority={lung_q: 5})
+        self.assertEqual(sorted(r[0] for r in res.values()), ["ok, done."] * 2)
+        self.assertLess(res[lung_q][1], res[long_q][1] - 0.5, res)
+        self.assertTrue(any(x.startswith("YIELD ") for x in self.log.read_text().splitlines()))
+
+    def test_no_way_given_to_a_lower_priority(self):
+        self.start(2)
+        long_q = "long " * 600
+        res = self.race(long_q, "short", priority={long_q: 5})
+        self.assertEqual(sorted(r[0] for r in res.values()), ["ok, done."] * 2)
+        self.assertFalse(any(x.startswith("YIELD ") for x in self.log.read_text().splitlines()))
+
+    def test_a_free_slot_goes_to_the_highest_priority_waiting(self):
+        """Both slots decode; a request without a priority waits, then one with a higher priority: the first slot that
+        frees goes to the later, higher one.  Every request is answered."""
+        self.start(2)
+        texts = ["first LONGREPLY", "second LONGREPLY", "low", "high priority " * 10]
+        prios = {texts[3]: 5}
+        res, errors = {}, []
+
+        def go(t):
+            try:
+                extra = {"priority": prios[t]} if t in prios else {}
+                res[t] = self.chat(t, max_tokens=200, **extra)["choices"][0]["message"]["content"]
+            except Exception as e:      # noqa: BLE001 - reported below
+                errors.append((t[:6], repr(e)))
+        threads = []
+        for t in texts:
+            th = threading.Thread(target=go, args=(t,))
+            th.start()
+            threads.append(th)
+            time.sleep(0.1)
+        for th in threads:
+            th.join(45)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(res), 4)
+        # the fake logs each admission's prompt length: the high one (the longer prompt) was admitted before the low one
+        sizes = [int(x.split()[2]) for x in self.log.read_text().splitlines() if x.startswith("BGEN")]
+        self.assertGreater(sizes[-2], sizes[-1], sizes)
+        self.assertFalse(any(self.engine.slot_busy))
+        self.assertEqual(self.engine.admit_prios, [])
+
+    def test_no_way_given_to_a_lower_priority_between_far_apart_progress_lines(self):
+        """The ask between PP lines (#2170) keeps the priority rule: a much shorter request of a lower priority gets no
+        BYIELD there either."""
+        self.start(2, more=["--pp-every", "80"])
+        long_q = "long " * 600
+        res = self.race(long_q, "short", priority={long_q: 5})
         self.assertEqual(sorted(r[0] for r in res.values()), ["ok, done."] * 2)
         self.assertFalse(any(x.startswith("YIELD ") for x in self.log.read_text().splitlines()))
 
