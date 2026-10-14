@@ -4,8 +4,8 @@
   "files": [
     {
       "path": "PR-BODY.md",
-      "bytes": 10144,
-      "sha256": "91c00cd071dae0f54eb5801e64e807629ecbc18e17e787780fb4a73bb41b5f67"
+      "bytes": 10277,
+      "sha256": "0b92b8bb2592b105c80da20cd43cfd5a97340583042ba0c9b7763dbbcf2ef712"
     },
     {
       "path": "PR-TITLE.txt",
@@ -440,7 +440,7 @@
     {
       "path": "data/independent-audit.json",
       "bytes": 33290,
-      "sha256": "cbe86aaf4dfd1c1d07e1bd1dbe269e90c7741e6c1793256bed8c0f51dd3188a5"
+      "sha256": "5d208a58295a9d7c3eb2c52159166bd2eb48ba395b9e0f2bcc81c25b179cd1c9"
     },
     {
       "path": "data/knowledge-needle/2026-10-08T17-33-06.977212Z_c8df5388--rebase-iq3_s-gsm8k.md",
@@ -705,7 +705,7 @@
     {
       "path": "qa/AUDIT.json",
       "bytes": 32678,
-      "sha256": "1029dd770b32f65a438bd003a52ad785735a49b0522bc21ff7e4db6a08b460a4"
+      "sha256": "f675b1b215102e9d340cf42a2da3582fc9913a4976808a9057addc68f1f7af8c"
     },
     {
       "path": "qa/REDACTION.json",
@@ -799,13 +799,13 @@
     },
     {
       "path": "scripts/write_public_docs.py",
-      "bytes": 34275,
-      "sha256": "71378678b85ede68878cc84c29ab9e0ce147bd5d126b9857e1d21ff0a0bc603c"
+      "bytes": 34457,
+      "sha256": "2fad4e2c66786cd5cd2924d15ef6d7ad27f31bf7f960fc8f4424c9d3b53b7b1a"
     },
     {
       "path": "strata-community.pdf",
       "bytes": 2207672,
-      "sha256": "d1fbd620a2030ac445734bf2dc53cff4d9924315cab37eb598409e7235b31698"
+      "sha256": "5e0faa9d92769bfa35535cc85470cf3d919595e27d9fe61c8e158d57d4c57769"
     }
   ]
 }

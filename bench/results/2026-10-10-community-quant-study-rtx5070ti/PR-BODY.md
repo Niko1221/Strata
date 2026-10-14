@@ -23,7 +23,7 @@ Updated community quality battery requested via Xavier: **10 local files, 3 quan
 - Matched hosted decode performance is unavailable; all hosted speed rates are withheld. SOL has no GPU/throughput/latency measurements. Luna’s provider-reported HE+ 42.0 tok/s includes hidden reasoning and is neither visible-text throughput nor a local decode measurement.
 - Gyro-M HE+: 156/164 low (95.1%), 157/164 xhigh (95.7%). Two xhigh length-limited blank finals remain failures.
 - Same pinned TEB cohort: mean 86.0 +/- 1.4 low / 87.8 +/- 1.1 xhigh; floor 78.3 / 71.7. Hard Mode improves while empirical reliability falls; no model-only causal conclusion.
-- Gyro-S rc2 HE+: 157/164 at both efforts; TEB mean 88.6 / 89.0, Pass^5 79.3 / 76.1. The overall battery status is `aborted_or_invalid` because auxiliary `plugin-mmlu` is invalid; HE+/TEB and valid rc2 math/IFEval/Five Bugs/Needle slices are included individually; no algebra score is inferred.
+- Gyro-S rc2 HE+: 157/164 at both efforts; TEB mean 88.6 / 89.0, Pass^5 79.3 / 76.1. The overall battery status is `aborted_or_invalid` (auxiliary `plugin-mmlu` hit HTTP 429 in the original run); HE+/TEB and valid rc2 math/IFEval/Five Bugs/Needle slices are included individually, and a guarded offline algebra-only rerun on the pinned rc2 model/engine scored 79% (first 100 abstract-algebra, 5-shot), imported with provenance.
 - The highest stock floor remains S-Q2_0 (UkisAI) low (78.3); Gyro-M low ties the observed floor on an experimental fork, not a stock-composite rank.
 - Minimum 205 MiB free VRAM, peak 78 C. This 16 GB Gyro-M result is experimental, not a supported daily-driver recommendation.
 
