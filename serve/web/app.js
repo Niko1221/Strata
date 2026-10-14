@@ -609,10 +609,10 @@ function openDb() {
 }
 function allChats() {
   return new Promise((resolve) => {
-    const s = db.transaction("chats", "readonly").objectStore("chats");
-    s.getAll();
-    s.transaction.oncomplete = () => resolve(s.result || []);
-    s.transaction.onerror = () => resolve([]);
+    // the result is on the request, not on the store: reading it at oncomplete gives nothing
+    const req = db.transaction("chats", "readonly").objectStore("chats").getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => resolve([]);
   });
 }
 // one record per chat: rewriting the whole list for one message is wasteful when a chat is megabytes
