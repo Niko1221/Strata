@@ -11684,6 +11684,56 @@ int main(int argc, char** argv) {
                     if (!sp.reserve_uploads(C))
                         std::fprintf(stderr, "strata batch: the prompt path's pinned upload slots could not be "
                                              "reserved (they grow at first use)\n");
+                    // where the read's thread and the doorbell thread run: on Linux a thread inherits its creator's
+                    // CPUs, and the host thread is pinned to the one core the pool leaves it, so both would share that
+                    // core with the host thread that pumps the windows - every window then waits its turn there for
+                    // the doorbell of each layer (4x RTX 5080, 4 stages: 6 rows/s during a read).  They move off the
+                    // host's core and the pool workers' CPUs instead (--aux-cpus places them, when it is on).
+                    // STRATA_PIPED_CONCURRENT_UNPIN=0 keeps the inherited CPUs (an A/B); STRATA_TEST_CONC_ON_HOST_CPU=1
+                    // (Windows, a test) puts them on the host thread's CPUs first, as Linux does.
+                    static const bool conc_unpin = [] {
+                        const char* v = std::getenv("STRATA_PIPED_CONCURRENT_UNPIN");
+                        return v == nullptr || std::atoi(v) != 0;
+                    }();
+#if defined(_WIN32)
+                    static const bool conc_on_host = std::getenv("STRATA_TEST_CONC_ON_HOST_CPU") != nullptr;
+                    std::vector<ULONG> host_cpu_sets;
+                    if (conc_on_host) {
+                        const HANDLE self = GetCurrentThread();
+                        ULONG count = 0;
+                        if (GetThreadSelectedCpuSets(self, nullptr, 0, &count) ||
+                            GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
+                            host_cpu_sets.resize(count);
+                            if (count && !GetThreadSelectedCpuSets(self, host_cpu_sets.data(), count, &count))
+                                host_cpu_sets.clear();
+                        }
+                        static bool said = false;
+                        if (!said) {
+                            said = true;
+                            std::fprintf(stderr, "strata batch: test: the read's and the doorbell threads start on the "
+                                                 "host thread's %zu CPU set(s)%s\n", host_cpu_sets.size(),
+                                         conc_unpin ? ", then leave them (the fix)"
+                                                    : " and stay there (as on Linux)");
+                        }
+                    }
+#endif
+                    // the threads that already inherited the host's core (the prompt path's copy threads, started by
+                    // the first prompt on the host thread) work during the read too: off that core as well (Linux)
+                    if (conc_unpin && !strata::aux_cpus::enabled())
+                        if (const int moved = strata::aux_cpus::release_host_inheritors(); moved > 0)
+                            std::fprintf(stderr, "strata batch: %d threads that ran on the host thread's core moved off "
+                                                 "it, for reads beside the slots\n", moved);
+                    auto conc_thread_cpus = [&] {
+                        strata::aux_cpus::pin_current_thread();
+#if defined(_WIN32)
+                        const HANDLE self = GetCurrentThread();
+                        if (conc_on_host && !host_cpu_sets.empty())
+                            SetThreadSelectedCpuSets(self, host_cpu_sets.data(), (ULONG) host_cpu_sets.size());
+                        if (conc_unpin && conc_on_host) SetThreadSelectedCpuSets(self, nullptr, 0);
+#else
+                        if (conc_unpin && !strata::aux_cpus::enabled()) (void) strata::aux_cpus::place_off_host();
+#endif
+                    };
                     // the slots' doorbells are served on a thread of their own for the read, which makes no CUDA
                     // call: a call here or on the read's threads can wait for the driver's lock while its holder
                     // waits for the GPU (a free; a module the first kernel of a shape loads), and a window on that
@@ -11710,7 +11760,7 @@ int main(int argc, char** argv) {
                         bell_cv.notify_one();
                     };
                     bells.th = std::thread([&] {
-                        strata::aux_cpus::pin_current_thread();
+                        conc_thread_cpus();
                         auto any_busy = [&] {
                             for (int k = 0; k < n_pipe; ++k)
                                 if (stage_verifier(k).batch_busy()) return true;
@@ -11762,7 +11812,7 @@ int main(int argc, char** argv) {
                         in_prompt_read = true;
                         sp.stop_at_chunk = [&] { return want_yield.load(std::memory_order_acquire) >= 0; };
                         std::thread reader([&] {
-                            strata::aux_cpus::pin_current_thread();
+                            conc_thread_cpus();
                             try {   // (an exception leaving a std::thread ends the process: a failed read instead)
                                 read_ok = sp.run(ids.data() + q0, b0 - q0, q0, read_err);
                             } catch (const std::exception& x) {
