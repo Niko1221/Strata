@@ -1,0 +1,136 @@
+# power_limit_w=170 pipeline_windows=2 start=a run=decode
+strata serve: prompt 37 tokens = 0 reused + 37 read in 341 ms (108.4 tok/s), 400 generated in 3869 ms (103.4 tok/s), drafts accepted 227 of 350, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 241 ms (149.5 tok/s), 600 generated in 5040 ms (119.1 tok/s), drafts accepted 369 of 519, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 289 ms (173.2 tok/s), 400 generated in 2816 ms (142.0 tok/s), drafts accepted 273 of 344, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 223 ms (166.1 tok/s), 400 generated in 3770 ms (106.1 tok/s), drafts accepted 227 of 348, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 219 ms (164.3 tok/s), 600 generated in 4974 ms (120.6 tok/s), drafts accepted 370 of 525, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 269 ms (186.0 tok/s), 400 generated in 2764 ms (144.7 tok/s), drafts accepted 273 of 341, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 222 ms (166.3 tok/s), 400 generated in 3771 ms (106.1 tok/s), drafts accepted 227 of 348, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 220 ms (163.4 tok/s), 600 generated in 4970 ms (120.7 tok/s), drafts accepted 370 of 525, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 268 ms (186.6 tok/s), 400 generated in 2760 ms (144.9 tok/s), drafts accepted 273 of 341, 1 checkpoints
+# power_limit_w=170 pipeline_windows=0 start=a run=decode
+strata serve: prompt 37 tokens = 0 reused + 37 read in 444 ms (83.4 tok/s), 400 generated in 4163 ms (96.1 tok/s), drafts accepted 237 of 338, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 310 ms (116.2 tok/s), 600 generated in 5410 ms (110.9 tok/s), drafts accepted 386 of 486, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 383 ms (130.6 tok/s), 400 generated in 3260 ms (122.7 tok/s), drafts accepted 281 of 329, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 287 ms (129.0 tok/s), 400 generated in 3976 ms (100.6 tok/s), drafts accepted 237 of 336, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 282 ms (127.6 tok/s), 600 generated in 5367 ms (111.8 tok/s), drafts accepted 386 of 483, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 374 ms (133.6 tok/s), 400 generated in 3258 ms (122.8 tok/s), drafts accepted 281 of 329, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 288 ms (128.4 tok/s), 400 generated in 3977 ms (100.6 tok/s), drafts accepted 237 of 336, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 283 ms (127.2 tok/s), 600 generated in 5366 ms (111.8 tok/s), drafts accepted 386 of 483, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 372 ms (134.3 tok/s), 400 generated in 3254 ms (122.9 tok/s), drafts accepted 281 of 328, 1 checkpoints
+# power_limit_w=170 pipeline_windows=0 start=b run=decode
+strata serve: prompt 37 tokens = 0 reused + 37 read in 322 ms (115.0 tok/s), 400 generated in 4042 ms (99.0 tok/s), drafts accepted 237 of 338, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 297 ms (121.4 tok/s), 600 generated in 5384 ms (111.4 tok/s), drafts accepted 386 of 486, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 383 ms (130.5 tok/s), 400 generated in 3253 ms (123.0 tok/s), drafts accepted 281 of 329, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 287 ms (128.9 tok/s), 400 generated in 3970 ms (100.7 tok/s), drafts accepted 237 of 336, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 281 ms (127.9 tok/s), 600 generated in 5363 ms (111.9 tok/s), drafts accepted 386 of 483, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 382 ms (130.8 tok/s), 400 generated in 3257 ms (122.8 tok/s), drafts accepted 281 of 329, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 288 ms (128.5 tok/s), 400 generated in 3977 ms (100.6 tok/s), drafts accepted 237 of 336, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 282 ms (127.8 tok/s), 600 generated in 5363 ms (111.9 tok/s), drafts accepted 386 of 483, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 372 ms (134.6 tok/s), 400 generated in 3249 ms (123.1 tok/s), drafts accepted 281 of 328, 1 checkpoints
+# power_limit_w=170 pipeline_windows=2 start=b run=decode
+strata serve: prompt 37 tokens = 0 reused + 37 read in 356 ms (104.0 tok/s), 400 generated in 3867 ms (103.4 tok/s), drafts accepted 227 of 350, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 229 ms (157.3 tok/s), 600 generated in 5037 ms (119.1 tok/s), drafts accepted 369 of 519, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 285 ms (175.7 tok/s), 400 generated in 2814 ms (142.1 tok/s), drafts accepted 273 of 344, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 225 ms (164.7 tok/s), 400 generated in 3769 ms (106.1 tok/s), drafts accepted 227 of 348, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 220 ms (163.7 tok/s), 600 generated in 4972 ms (120.7 tok/s), drafts accepted 370 of 525, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 269 ms (185.8 tok/s), 400 generated in 2764 ms (144.7 tok/s), drafts accepted 273 of 341, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 224 ms (165.4 tok/s), 400 generated in 3769 ms (106.1 tok/s), drafts accepted 227 of 348, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 220 ms (163.9 tok/s), 600 generated in 4974 ms (120.6 tok/s), drafts accepted 370 of 525, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 280 ms (178.7 tok/s), 400 generated in 2760 ms (144.9 tok/s), drafts accepted 273 of 341, 1 checkpoints
+# power_limit_w=170 pipeline_windows=2 start=a run=prompt
+strata serve: prompt 26694 tokens = 0 reused + 26694 read in 15948 ms (1673.8 tok/s), 40 generated in 368 ms (108.8 tok/s), drafts accepted 26 of 34, 2 checkpoints
+strata serve: prompt 52020 tokens = 0 reused + 52020 read in 25062 ms (2075.6 tok/s), 40 generated in 344 ms (116.3 tok/s), drafts accepted 28 of 37, 4 checkpoints
+strata serve: prompt 103870 tokens = 0 reused + 103870 read in 48438 ms (2144.4 tok/s), 40 generated in 437 ms (91.6 tok/s), drafts accepted 25 of 39, 6 checkpoints
+strata serve: prompt 26693 tokens = 0 reused + 26693 read in 14731 ms (1812.0 tok/s), 40 generated in 349 ms (114.6 tok/s), drafts accepted 26 of 36, 2 checkpoints
+strata serve: prompt 52021 tokens = 0 reused + 52021 read in 25146 ms (2068.7 tok/s), 40 generated in 353 ms (113.4 tok/s), drafts accepted 28 of 37, 4 checkpoints
+strata serve: prompt 59 tokens = 0 reused + 59 read in 326 ms (181.0 tok/s), 512 generated in 4542 ms (112.7 tok/s), drafts accepted 319 of 469, 1 checkpoints
+# power_limit_w=170 pipeline_windows=0 start=a run=prompt
+strata serve: prompt 26694 tokens = 0 reused + 26694 read in 16108 ms (1657.1 tok/s), 40 generated in 465 ms (86.0 tok/s), drafts accepted 26 of 38, 2 checkpoints
+strata serve: prompt 52020 tokens = 0 reused + 52020 read in 25183 ms (2065.7 tok/s), 40 generated in 402 ms (99.5 tok/s), drafts accepted 28 of 35, 4 checkpoints
+strata serve: prompt 103870 tokens = 0 reused + 103870 read in 48539 ms (2139.9 tok/s), 40 generated in 462 ms (86.6 tok/s), drafts accepted 26 of 36, 6 checkpoints
+strata serve: prompt 26693 tokens = 0 reused + 26693 read in 14864 ms (1795.8 tok/s), 40 generated in 416 ms (96.3 tok/s), drafts accepted 26 of 36, 2 checkpoints
+strata serve: prompt 52021 tokens = 0 reused + 52021 read in 25235 ms (2061.5 tok/s), 40 generated in 440 ms (90.9 tok/s), drafts accepted 27 of 39, 4 checkpoints
+strata serve: prompt 59 tokens = 0 reused + 59 read in 445 ms (132.4 tok/s), 512 generated in 4776 ms (107.2 tok/s), drafts accepted 330 of 468, 1 checkpoints
+# power_limit_w=170 pipeline_windows=0 start=b run=prompt
+strata serve: prompt 26694 tokens = 0 reused + 26694 read in 15912 ms (1677.6 tok/s), 40 generated in 458 ms (87.3 tok/s), drafts accepted 26 of 36, 2 checkpoints
+strata serve: prompt 52020 tokens = 0 reused + 52020 read in 25143 ms (2069.0 tok/s), 40 generated in 409 ms (97.9 tok/s), drafts accepted 28 of 37, 4 checkpoints
+strata serve: prompt 103870 tokens = 0 reused + 103870 read in 48498 ms (2141.7 tok/s), 40 generated in 421 ms (95.0 tok/s), drafts accepted 26 of 31, 6 checkpoints
+strata serve: prompt 26693 tokens = 0 reused + 26693 read in 14830 ms (1799.9 tok/s), 40 generated in 416 ms (96.3 tok/s), drafts accepted 26 of 36, 2 checkpoints
+strata serve: prompt 52021 tokens = 0 reused + 52021 read in 25205 ms (2063.9 tok/s), 40 generated in 402 ms (99.6 tok/s), drafts accepted 28 of 35, 4 checkpoints
+strata serve: prompt 59 tokens = 0 reused + 59 read in 444 ms (132.8 tok/s), 512 generated in 4835 ms (105.9 tok/s), drafts accepted 328 of 466, 1 checkpoints
+# power_limit_w=170 pipeline_windows=2 start=b run=prompt
+strata serve: prompt 26694 tokens = 0 reused + 26694 read in 15929 ms (1675.8 tok/s), 40 generated in 380 ms (105.4 tok/s), drafts accepted 26 of 37, 2 checkpoints
+strata serve: prompt 52020 tokens = 0 reused + 52020 read in 25063 ms (2075.6 tok/s), 40 generated in 344 ms (116.3 tok/s), drafts accepted 28 of 37, 4 checkpoints
+strata serve: prompt 103870 tokens = 0 reused + 103870 read in 48383 ms (2146.8 tok/s), 40 generated in 443 ms (90.3 tok/s), drafts accepted 26 of 43, 6 checkpoints
+strata serve: prompt 26693 tokens = 0 reused + 26693 read in 14775 ms (1806.6 tok/s), 40 generated in 397 ms (100.8 tok/s), drafts accepted 26 of 40, 2 checkpoints
+strata serve: prompt 52021 tokens = 0 reused + 52021 read in 25109 ms (2071.8 tok/s), 40 generated in 344 ms (116.4 tok/s), drafts accepted 28 of 36, 4 checkpoints
+strata serve: prompt 59 tokens = 0 reused + 59 read in 325 ms (181.6 tok/s), 512 generated in 4765 ms (107.4 tok/s), drafts accepted 311 of 477, 1 checkpoints
+# power_limit_w=250 pipeline_windows=2 start=a run=decode
+strata serve: prompt 37 tokens = 0 reused + 37 read in 346 ms (106.8 tok/s), 400 generated in 3866 ms (103.5 tok/s), drafts accepted 227 of 350, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 235 ms (153.2 tok/s), 600 generated in 5035 ms (119.2 tok/s), drafts accepted 369 of 519, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 284 ms (175.9 tok/s), 400 generated in 2814 ms (142.1 tok/s), drafts accepted 273 of 344, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 225 ms (164.5 tok/s), 400 generated in 3769 ms (106.1 tok/s), drafts accepted 227 of 348, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 221 ms (162.9 tok/s), 600 generated in 4967 ms (120.8 tok/s), drafts accepted 370 of 525, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 270 ms (185.1 tok/s), 400 generated in 2752 ms (145.3 tok/s), drafts accepted 273 of 341, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 225 ms (164.5 tok/s), 400 generated in 3768 ms (106.2 tok/s), drafts accepted 227 of 348, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 221 ms (162.9 tok/s), 600 generated in 4965 ms (120.8 tok/s), drafts accepted 370 of 525, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 270 ms (185.1 tok/s), 400 generated in 2753 ms (145.3 tok/s), drafts accepted 273 of 341, 1 checkpoints
+# power_limit_w=250 pipeline_windows=0 start=a run=decode
+strata serve: prompt 37 tokens = 0 reused + 37 read in 319 ms (116.1 tok/s), 400 generated in 4047 ms (98.8 tok/s), drafts accepted 237 of 338, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 295 ms (121.9 tok/s), 600 generated in 5393 ms (111.3 tok/s), drafts accepted 386 of 486, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 383 ms (130.6 tok/s), 400 generated in 3255 ms (122.9 tok/s), drafts accepted 281 of 329, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 286 ms (129.5 tok/s), 400 generated in 3970 ms (100.7 tok/s), drafts accepted 237 of 336, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 280 ms (128.5 tok/s), 600 generated in 5356 ms (112.0 tok/s), drafts accepted 386 of 483, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 370 ms (135.0 tok/s), 400 generated in 3248 ms (123.1 tok/s), drafts accepted 281 of 329, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 286 ms (129.4 tok/s), 400 generated in 3970 ms (100.7 tok/s), drafts accepted 237 of 336, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 281 ms (128.2 tok/s), 600 generated in 5355 ms (112.1 tok/s), drafts accepted 386 of 483, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 371 ms (134.8 tok/s), 400 generated in 3245 ms (123.3 tok/s), drafts accepted 281 of 328, 1 checkpoints
+# power_limit_w=250 pipeline_windows=0 start=b run=decode
+strata serve: prompt 37 tokens = 0 reused + 37 read in 439 ms (84.3 tok/s), 400 generated in 4153 ms (96.3 tok/s), drafts accepted 237 of 338, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 312 ms (115.2 tok/s), 600 generated in 5378 ms (111.6 tok/s), drafts accepted 386 of 486, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 383 ms (130.6 tok/s), 400 generated in 3252 ms (123.0 tok/s), drafts accepted 281 of 330, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 287 ms (129.0 tok/s), 400 generated in 3968 ms (100.8 tok/s), drafts accepted 237 of 336, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 280 ms (128.6 tok/s), 600 generated in 5351 ms (112.1 tok/s), drafts accepted 386 of 483, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 370 ms (135.2 tok/s), 400 generated in 3244 ms (123.3 tok/s), drafts accepted 281 of 329, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 286 ms (129.4 tok/s), 400 generated in 3968 ms (100.8 tok/s), drafts accepted 237 of 336, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 282 ms (127.7 tok/s), 600 generated in 5351 ms (112.1 tok/s), drafts accepted 386 of 483, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 371 ms (134.8 tok/s), 400 generated in 3245 ms (123.3 tok/s), drafts accepted 281 of 329, 1 checkpoints
+# power_limit_w=250 pipeline_windows=2 start=b run=decode
+strata serve: prompt 37 tokens = 0 reused + 37 read in 349 ms (106.1 tok/s), 400 generated in 3877 ms (103.2 tok/s), drafts accepted 227 of 350, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 230 ms (156.2 tok/s), 600 generated in 5043 ms (119.0 tok/s), drafts accepted 369 of 519, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 285 ms (175.7 tok/s), 400 generated in 2812 ms (142.2 tok/s), drafts accepted 273 of 344, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 227 ms (162.9 tok/s), 400 generated in 3771 ms (106.1 tok/s), drafts accepted 227 of 348, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 221 ms (162.8 tok/s), 600 generated in 4971 ms (120.7 tok/s), drafts accepted 370 of 525, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 271 ms (184.2 tok/s), 400 generated in 2755 ms (145.2 tok/s), drafts accepted 273 of 341, 1 checkpoints
+strata serve: prompt 37 tokens = 0 reused + 37 read in 225 ms (164.5 tok/s), 400 generated in 3771 ms (106.1 tok/s), drafts accepted 227 of 348, 1 checkpoints
+strata serve: prompt 36 tokens = 0 reused + 36 read in 223 ms (161.6 tok/s), 600 generated in 4970 ms (120.7 tok/s), drafts accepted 370 of 525, 1 checkpoints
+strata serve: prompt 50 tokens = 0 reused + 50 read in 270 ms (184.9 tok/s), 400 generated in 2754 ms (145.2 tok/s), drafts accepted 273 of 341, 1 checkpoints
+# power_limit_w=250 pipeline_windows=2 start=a run=prompt
+strata serve: prompt 26694 tokens = 0 reused + 26694 read in 14949 ms (1785.7 tok/s), 40 generated in 371 ms (107.9 tok/s), drafts accepted 26 of 34, 2 checkpoints
+strata serve: prompt 52020 tokens = 0 reused + 52020 read in 23116 ms (2250.4 tok/s), 40 generated in 349 ms (114.7 tok/s), drafts accepted 28 of 39, 4 checkpoints
+strata serve: prompt 103870 tokens = 0 reused + 103870 read in 44349 ms (2342.1 tok/s), 40 generated in 441 ms (90.6 tok/s), drafts accepted 26 of 39, 6 checkpoints
+strata serve: prompt 26693 tokens = 0 reused + 26693 read in 13683 ms (1950.8 tok/s), 40 generated in 362 ms (110.6 tok/s), drafts accepted 26 of 37, 2 checkpoints
+strata serve: prompt 52021 tokens = 0 reused + 52021 read in 23126 ms (2249.4 tok/s), 40 generated in 354 ms (112.8 tok/s), drafts accepted 28 of 38, 4 checkpoints
+strata serve: prompt 59 tokens = 0 reused + 59 read in 340 ms (173.4 tok/s), 512 generated in 4593 ms (111.5 tok/s), drafts accepted 313 of 470, 1 checkpoints
+# power_limit_w=250 pipeline_windows=0 start=a run=prompt
+strata serve: prompt 26694 tokens = 0 reused + 26694 read in 14935 ms (1787.3 tok/s), 40 generated in 456 ms (87.7 tok/s), drafts accepted 26 of 34, 2 checkpoints
+strata serve: prompt 52020 tokens = 0 reused + 52020 read in 23216 ms (2240.7 tok/s), 40 generated in 409 ms (97.9 tok/s), drafts accepted 28 of 37, 4 checkpoints
+strata serve: prompt 103870 tokens = 0 reused + 103870 read in 44476 ms (2335.4 tok/s), 40 generated in 439 ms (91.1 tok/s), drafts accepted 27 of 36, 6 checkpoints
+strata serve: prompt 26693 tokens = 0 reused + 26693 read in 13737 ms (1943.1 tok/s), 40 generated in 406 ms (98.5 tok/s), drafts accepted 26 of 34, 2 checkpoints
+strata serve: prompt 52021 tokens = 0 reused + 52021 read in 23234 ms (2239.0 tok/s), 40 generated in 427 ms (93.8 tok/s), drafts accepted 27 of 37, 4 checkpoints
+strata serve: prompt 59 tokens = 0 reused + 59 read in 445 ms (132.5 tok/s), 512 generated in 4891 ms (104.7 tok/s), drafts accepted 323 of 469, 1 checkpoints
+# power_limit_w=250 pipeline_windows=0 start=b run=prompt
+strata serve: prompt 26694 tokens = 0 reused + 26694 read in 14921 ms (1789.0 tok/s), 40 generated in 461 ms (86.7 tok/s), drafts accepted 26 of 36, 2 checkpoints
+strata serve: prompt 52020 tokens = 0 reused + 52020 read in 23209 ms (2241.4 tok/s), 40 generated in 413 ms (96.9 tok/s), drafts accepted 28 of 38, 4 checkpoints
+strata serve: prompt 103870 tokens = 0 reused + 103870 read in 44509 ms (2333.7 tok/s), 40 generated in 455 ms (87.9 tok/s), drafts accepted 26 of 36, 6 checkpoints
+strata serve: prompt 26693 tokens = 0 reused + 26693 read in 13742 ms (1942.5 tok/s), 40 generated in 414 ms (96.6 tok/s), drafts accepted 26 of 36, 2 checkpoints
+strata serve: prompt 52021 tokens = 0 reused + 52021 read in 23206 ms (2241.7 tok/s), 40 generated in 400 ms (99.9 tok/s), drafts accepted 28 of 35, 4 checkpoints
+strata serve: prompt 59 tokens = 0 reused + 59 read in 461 ms (127.9 tok/s), 512 generated in 4808 ms (106.5 tok/s), drafts accepted 329 of 466, 1 checkpoints
+# power_limit_w=250 pipeline_windows=2 start=b run=prompt
+strata serve: prompt 26694 tokens = 0 reused + 26694 read in 14908 ms (1790.6 tok/s), 40 generated in 381 ms (105.1 tok/s), drafts accepted 26 of 37, 2 checkpoints
+strata serve: prompt 52020 tokens = 0 reused + 52020 read in 23147 ms (2247.4 tok/s), 40 generated in 344 ms (116.2 tok/s), drafts accepted 28 of 38, 4 checkpoints
+strata serve: prompt 103870 tokens = 0 reused + 103870 read in 44335 ms (2342.9 tok/s), 40 generated in 443 ms (90.3 tok/s), drafts accepted 26 of 44, 6 checkpoints
+strata serve: prompt 26693 tokens = 0 reused + 26693 read in 13655 ms (1954.8 tok/s), 40 generated in 390 ms (102.7 tok/s), drafts accepted 26 of 39, 2 checkpoints
+strata serve: prompt 52021 tokens = 0 reused + 52021 read in 23185 ms (2243.7 tok/s), 40 generated in 345 ms (115.8 tok/s), drafts accepted 29 of 36, 4 checkpoints
+strata serve: prompt 59 tokens = 0 reused + 59 read in 327 ms (180.3 tok/s), 512 generated in 4466 ms (114.6 tok/s), drafts accepted 314 of 460, 1 checkpoints

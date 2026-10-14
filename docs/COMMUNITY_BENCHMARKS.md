@@ -64,6 +64,9 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-14: Tesla V100-PCIE-32GB + Tesla PG500-216 (2 x sm_70), Ryzen 7 5700X3D, 30 GiB RAM](../bench/results/2026-10-14-community-v100-pg500-pipeline-windows/README.md):
+  Strata `296b59d` (v0.1.44.1) source build, Flash-Next GSQ-RCO IQ3_XXS, 262,144-token context, layer split 24; `--pipeline-windows 2` against off in ABBA
+  at 170 W and 250 W: decode +5.3% to +17.9% (short en / ja / code, medians), prompt +0.0% to +0.6% at 26.7K-104K, replies bit-identical in all 72; the draft layer on the first card (`STRATA_MTP_STAGE0=1`) 2.9-6.7% slower.
 
 ## Run the benchmark
 
