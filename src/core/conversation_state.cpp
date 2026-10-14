@@ -214,18 +214,36 @@ bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState&
     StateCodec codec = StateCodec::Fp32;
     if (!codec_of(c, codec, error)) return false;
     const size_t layers = owned_qsa(ss);
-    c.gdn.resize(state_codec_size(z.gdn, codec)); c.ple.resize(state_codec_size(ss.ple_hist ? z.ple : 0, codec));
-    c.tails.resize(state_codec_size(layers * z.tail, codec));
-    c.dead.resize(state_codec_size(layers * z.dead, codec));
-    c.block_pos.resize(layers * z.block_pos);
-    if (!copy_state_out(c.gdn.data(), ss.gdn_state, z.gdn, codec, error) ||
-        !copy_state_out(c.ple.data(), ss.ple_hist, ss.ple_hist ? z.ple : 0, codec, error)) return false;
-    for (size_t j = 0; j < layers; ++j) {
-        const auto& st = owned(ss, j);
-        if (!copy_state_out(c.tails.data() + state_codec_size(j * z.tail, codec), st.idx_tail, z.tail, codec, error) ||
-            !copy_state_out(c.dead.data() + state_codec_size(j * z.dead, codec), st.idx_dead, z.dead, codec, error) ||
-            !copy(c.block_pos.data() + j * z.block_pos, st.idx_block_pos, z.block_pos, error)) return false;
+    // Built beside the checkpoint and moved in only once every array has been copied. A coded capture allocates the
+    // stored arrays plus one bounded staging slice (kStateCodecChunkFloats floats, 4 MiB) per array, so the capture
+    // that cannot allocate is a refusal with `c` exactly as it was: no half-written snapshot reaches the caller, and
+    // nothing here writes the session - the running state is only ever read. Fp32 resizes to the bytes it always
+    // sized and writes the same bytes in the same order.
+    std::vector<uint8_t> gdn, ple, tails, dead, block_pos;
+    try {
+        gdn.resize(state_codec_size(z.gdn, codec));
+        ple.resize(state_codec_size(ss.ple_hist ? z.ple : 0, codec));
+        tails.resize(state_codec_size(layers * z.tail, codec));
+        dead.resize(state_codec_size(layers * z.dead, codec));
+        block_pos.resize(layers * z.block_pos);
+        if (!copy_state_out(gdn.data(), ss.gdn_state, z.gdn, codec, error) ||
+            !copy_state_out(ple.data(), ss.ple_hist, ss.ple_hist ? z.ple : 0, codec, error)) return false;
+        for (size_t j = 0; j < layers; ++j) {
+            const auto& st = owned(ss, j);
+            if (!copy_state_out(tails.data() + state_codec_size(j * z.tail, codec), st.idx_tail, z.tail, codec,
+                                error) ||
+                !copy_state_out(dead.data() + state_codec_size(j * z.dead, codec), st.idx_dead, z.dead, codec,
+                                error) ||
+                !copy(block_pos.data() + j * z.block_pos, st.idx_block_pos, z.block_pos, error)) return false;
+        }
+    } catch (const std::exception&) {
+        // the refusal is what a memory-tight capture can still afford, and this is the path where it cannot: a
+        // throw past here ends the engine instead of refusing one checkpoint (strata/core/conversation_report.hpp)
+        try { error = "not enough memory to capture the running state"; } catch (...) {}
+        return false;
     }
+    c.gdn = std::move(gdn); c.ple = std::move(ple);
+    c.tails = std::move(tails); c.dead = std::move(dead); c.block_pos = std::move(block_pos);
     return true;
 }
 

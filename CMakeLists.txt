@@ -578,6 +578,19 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(conversation_validation_test PRIVATE strata_engine)
     add_test(NAME conversation_validation_test COMMAND conversation_validation_test)
     set_tests_properties(conversation_validation_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
+    # The capture of a retained conversation checkpoint under --session-state-codec: the codec it names, the bytes
+    # it writes, and what a capture that cannot allocate does instead. Host-only, over link-wrapped device copies
+    # and an allocator armed to refuse a given size (the same fault injection conversation_transfer_test uses).
+    if(NOT STRATA_ENABLE_HIP AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      add_executable(conversation_capture_codec_test src/core/conversation_capture_codec_test.cpp)
+      target_link_options(conversation_capture_codec_test PRIVATE
+        -Wl,--wrap=cudaMemcpy -Wl,--wrap=cudaMemcpyAsync -Wl,--wrap=cudaStreamSynchronize
+        -Wl,--wrap=cudaGetDevice -Wl,--wrap=cudaStreamCreateWithFlags
+        -Wl,--wrap=cudaDeviceSynchronize -Wl,--wrap=cudaGetLastError)
+      target_link_libraries(conversation_capture_codec_test PRIVATE strata_engine)
+      add_test(NAME conversation_capture_codec_test COMMAND conversation_capture_codec_test)
+      set_tests_properties(conversation_capture_codec_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
+    endif()
     if(NOT STRATA_ENABLE_HIP AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
       add_executable(conversation_transfer_test src/core/conversation_validation_test.cpp)
       target_compile_definitions(conversation_transfer_test PRIVATE CONVERSATION_TEST_TRANSFERS)

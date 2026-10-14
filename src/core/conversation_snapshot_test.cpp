@@ -488,7 +488,9 @@ void full_session(int fmt, int mode, int experts) {
         ConversationCheckpoint fresh;
         fresh.ids=tok;
         check(conversation_checkpoint_save(fresh,ss,g,err),"lazy: the continuing conversation captures a checkpoint");
-        check(fresh.state_codec==0,"lazy: a newly captured checkpoint is fp32 whatever the option says");
+        // the core API keeps the bytes the caller asked for: left at 0 the capture is fp32. The serve loop asks
+        // for its own coding by setting `state_codec` first, which is what fresh_capture() below checks.
+        check(fresh.state_codec==0,"lazy: a capture left at the API default is fp32, and only then");
         const auto before=chain;
         chain.push_back(std::move(fresh));
         bool older_untouched=chain.size()==before.size()+1;
@@ -644,6 +646,250 @@ void full_session(int fmt, int mode, int experts) {
 }
 }
 
+// ---- capture-time coding of RETAINED conversation checkpoints. `--session-state-codec bf16` decides how a stored
+// copy of a conversation's running state is held, and a checkpoint the serve loop keeps in its chain IS a stored
+// copy: the engine sets the checkpoint's own `state_codec` before capturing it, so the snapshot is coded the moment
+// it is taken and not only when the conversation is later parked. Everything below is what that has to guarantee,
+// checked before anything in this file parks or saves: the live buffers stay fp32 and untouched, `block_pos` is
+// int32 positions and stays exact, a restore widens the ONE snapshot it selects and leaves the snapshot itself
+// coded, and a capture that cannot allocate refuses with the checkpoints and the working state exactly as they were.
+void fresh_capture(int experts) {
+    Fixture main(kKvInt8,0), draft(kKvInt8,2);
+    auto& g=main.g;
+    g.n_layers=4; g.n_expert=experts;
+    g.ssm_state_size=2; g.ssm_v_heads=2; g.ssm_conv_channels=8;
+    SessionState ss;
+    ss.max_cells=96; ss.qsa_states=&main.state;
+    ss.layer_hi=g.n_layers; ss.gdn_alloc=g.n_gdn_layers(); ss.qsa_alloc=g.n_qsa_layers();
+    std::string err;
+    ConversationStateSizes sizes;
+    check(conversation_state_sizes(g,sizes,err),"capture: geometry sizes");
+    main.alloc(ss.gdn_state,sizes.gdn); main.alloc(ss.ple_hist,sizes.ple);
+    main.alloc(main.state.idx_tail,sizes.tail); main.alloc(main.state.idx_dead,sizes.dead);
+    main.alloc(main.state.idx_block_pos,sizes.block_pos);
+    std::vector<int32_t> ids(65);
+    for(size_t i=0;i<ids.size();++i) ids[i]=(int32_t)i+1;
+    std::vector<ConversationImageKey> images;
+    auto fill=[&](uint8_t salt) {
+        main.fill(salt); draft.fill(salt);
+        for (const auto& [p,n] : std::vector<std::pair<void*,size_t>>{
+                 {ss.gdn_state,sizes.gdn},{ss.ple_hist,sizes.ple},{main.state.idx_tail,sizes.tail},
+                 {main.state.idx_dead,sizes.dead},{main.state.idx_block_pos,sizes.block_pos}})
+            cuda_check(cudaMemset(p,salt,n));
+        cuda_check(cudaMemcpy(main.state.idx_pooled+(ids.size()/4)*g.idx_key_dim,
+                              main.state.idx_dead,sizes.dead,cudaMemcpyDeviceToDevice));
+        cuda_check(cudaDeviceSynchronize());
+    };
+    // the session's own fp32 buffers, read back: a capture reads them and never writes them
+    auto live=[&](void* p, size_t n) {
+        std::vector<uint8_t> b(n); cuda_check(cudaMemcpy(b.data(),p,n,cudaMemcpyDeviceToHost)); return b;
+    };
+    auto f32=[](const std::vector<uint8_t>& coded){
+        std::vector<float> f(coded.size()/4);
+        std::memcpy(f.data(),coded.data(),f.size()*sizeof(float));
+        return f;
+    };
+    auto close=[](const std::vector<uint8_t>& want_fp32,const std::vector<float>& got){
+        const float* want=(const float*) want_fp32.data();
+        if(got.size()!=want_fp32.size()/4) return false;
+        for(size_t i=0;i<got.size();++i){
+            const double x=want[i],y=got[i];
+            if(x==0.0f){ if(y!=0.0f) return false; continue; }
+            if(std::fabs((y-x)/x)>1.0/256) return false;
+        }
+        return true;
+    };
+    // ---- 1. a freshly captured checkpoint under the option has the codec it was asked for and half the bytes,
+    // and 2. the int32 positions in it are exact. No parking has happened anywhere in this function yet.
+    fill(11);
+    ConversationCheckpoint ref;
+    ref.ids=ids;
+    check(conversation_checkpoint_save(ref,ss,g,err),"capture: the same point as fp32 (the reference)");
+    ConversationCheckpoint bf;
+    bf.ids=ids;
+    bf.state_codec=(uint8_t) StateCodec::Bf16;   // what the serve loop sets from --session-state-codec bf16
+    const std::vector<uint8_t> gdn_before=live(ss.gdn_state,sizes.gdn);
+    const std::vector<uint8_t> dead_before=live(main.state.idx_dead,sizes.dead);
+    const std::vector<uint8_t> pos_before=live(main.state.idx_block_pos,sizes.block_pos);
+    check(conversation_checkpoint_save(bf,ss,g,err),"capture: a retained checkpoint captured under bf16");
+    check(bf.state_codec==(uint8_t) StateCodec::Bf16,
+          "capture: a newly captured retained checkpoint names the codec it was captured in");
+    check(bf.gdn.size()*2==ref.gdn.size() && bf.ple.size()*2==ref.ple.size() &&
+          bf.tails.size()*2==ref.tails.size() && bf.dead.size()*2==ref.dead.size(),
+          "capture: every coded array is the size that codec makes");
+    check(bf.block_pos==ref.block_pos && bf.block_pos==pos_before && !bf.block_pos.empty(),
+          "capture: block_pos is int32 positions and stays exact, byte for byte, under a coded capture");
+    // ---- 3. the capture left the working state exactly as it found it
+    check(live(ss.gdn_state,sizes.gdn)==gdn_before && live(main.state.idx_dead,sizes.dead)==dead_before &&
+          live(main.state.idx_block_pos,sizes.block_pos)==pos_before,
+          "capture: a coded capture writes the snapshot and not the session");
+    // ---- 4. restoring it widens correctly and leaves the snapshot compressed, as many times as it is restored
+    fill(199);   // the conversation moves on: a restore has to put the older values back
+    const std::vector<uint8_t> kept_gdn=bf.gdn, kept_ple=bf.ple, kept_tails=bf.tails, kept_dead=bf.dead;
+    check(conversation_checkpoint_restore(bf,ss,g,err),"capture: restore a freshly captured bf16 checkpoint");
+    ConversationCheckpoint widened;
+    widened.ids=ids;
+    check(conversation_checkpoint_save(widened,ss,g,err),"capture: what that restore put in the session");
+    check(widened.state_codec==0 && close(ref.gdn,f32(widened.gdn)) && close(ref.ple,f32(widened.ple)) &&
+          close(ref.tails,f32(widened.tails)) && close(ref.dead,f32(widened.dead)) &&
+          widened.block_pos==ref.block_pos,
+          "capture: the freshly captured snapshot restores the correctly widened fp32 values");
+    check(bf.state_codec==(uint8_t) StateCodec::Bf16 && bf.gdn==kept_gdn && bf.ple==kept_ple &&
+          bf.tails==kept_tails && bf.dead==kept_dead,
+          "capture: restoring it left the snapshot coded, not widened in place");
+    fill(57);
+    check(conversation_checkpoint_restore(bf,ss,g,err) && conversation_checkpoint_restore(bf,ss,g,err),
+          "capture: the same coded snapshot restores again");
+    check(bf.gdn==kept_gdn && bf.ple==kept_ple && bf.tails==kept_tails && bf.dead==kept_dead &&
+          bf.block_pos==ref.block_pos,
+          "capture: and repeated restoration does not change its stored bytes");
+    // ---- 5. the chain this leaves: an imported coded snapshot beside one captured under the option beside one
+    // captured with the option off. Branching, retention, a park and a SAVE all read each one as itself.
+    fill(123);
+    ConversationCheckpoint plain;
+    plain.ids=ids;   // left at 0: what a capture with --session-state-codec fp32 (the default) produces
+    check(conversation_checkpoint_save(plain,ss,g,err),"capture: a retained checkpoint with the option off");
+    check(plain.state_codec==0 && plain.gdn.size()==ref.gdn.size(),
+          "capture: with the option off a new checkpoint is the fp32 bytes it always was");
+    std::vector<ConversationCheckpoint> chain;
+    chain.push_back(bf);      // imported from a parked image, or captured under the option
+    chain.push_back(std::move(plain));
+    chain[0].used=1; chain[1].used=2;
+    chain[0].pinned=true;     // the shared prefix every branch of this conversation mounts through
+    {
+        // a branch: the request resumes at the shorter checkpoint, the older ones stay in the chain, and
+        // retention then rotates the chain down to its cap. Every survivor keeps the codec it was held in.
+        std::vector<ConversationCheckpoint> branched;
+        for (const auto& c:chain) if (c.ids.size()<=ids.size()) branched.push_back(c);
+        check(branched.size()==2 && branched[0].state_codec==(uint8_t) StateCodec::Bf16 &&
+              branched[1].state_codec==0 && branched[0].gdn==kept_gdn,
+              "capture: branching off a chain keeps each checkpoint's own coding and its own bytes");
+        branched.erase(branched.begin()+1);   // retention's victim: the cap is one, the pin stays
+        check(branched.size()==1 && branched[0].pinned && branched[0].gdn==kept_gdn &&
+              conversation_checkpoint_restore(branched[0],ss,g,err),
+              "capture: the retained pin still restores after the rotation");
+        ConversationCheckpoint split_cp=branched[0];
+        ConversationCheckpoint part;
+        part.ids=ids;
+        part.state_codec=(uint8_t) StateCodec::Bf16;   // a second stage's part, captured the same way
+        check(conversation_checkpoint_save(part,ss,g,err),"capture: a second stage's part under the option");
+        const std::vector<uint8_t> part_gdn=part.gdn;
+        split_cp.stage_parts.push_back(std::move(part));
+        auto apart=conversation_checkpoints_split(std::vector<ConversationCheckpoint>{split_cp},1);
+        std::vector<ConversationCheckpoint> back;
+        check(apart.parts[0].size()==1 && apart.parts[0][0].state_codec==(uint8_t) StateCodec::Bf16 &&
+              apart.parts[0][0].gdn==part_gdn &&
+              conversation_checkpoints_merge(std::move(apart),back) && back.size()==1 &&
+              back[0].stage_parts[0].state_codec==(uint8_t) StateCodec::Bf16 &&
+              back[0].stage_parts[0].gdn==part_gdn && back[0].gdn==kept_gdn,
+              "capture: a stage part captured under the option keeps its own codec through a split and a merge");
+        check(conversation_checkpoint_restore(back[0].stage_parts[0],ss,g,err),
+              "capture: and it restores into its stage's fp32 buffers");
+    }
+    {
+        // re-parked and saved, both write codecs, with the chain holding a coded and an fp32 snapshot at once
+        const ConversationView fp32_view{ids,images,chain,true};
+        const ConversationView bf16_view{ids,images,chain,true,StateCodec::Bf16};
+        SavedConversation as_fp32,as_bf16;
+        check(conversation_snapshot_save(as_fp32,fp32_view,ss,g,draft.state,err),
+              "capture: re-parking the chain with the engine configured fp32");
+        check(conversation_snapshot_save(as_bf16,bf16_view,ss,g,draft.state,err),
+              "capture: and with it configured bf16");
+        check(as_fp32.checkpoints[0].state_codec==0 && as_fp32.checkpoints[0].gdn.size()==ref.gdn.size() &&
+              as_fp32.checkpoints[1].state_codec==0,
+              "capture: an fp32 write widens the coded snapshot it is given and leaves the fp32 one alone");
+        check(as_bf16.checkpoints[0].state_codec==(uint8_t) StateCodec::Bf16 &&
+              as_bf16.checkpoints[0].gdn==kept_gdn &&      // copied, never coded twice
+              as_bf16.checkpoints[1].state_codec==(uint8_t) StateCodec::Bf16 &&
+              as_bf16.checkpoints[1].gdn.size()==ref.gdn.size()/2,
+              "capture: a bf16 write copies what is already bf16 byte for byte and codes what is not");
+        check(conversation_snapshot_restore(as_bf16,ss,g,draft.state,err)==ConversationRestore::restored,
+              "capture: and the re-parked chain restores");
+        // the SAVE: the file's own representation is the configured one, whichever checkpoint it selects
+        SessionSaveLive sl; sl.state_bytes=sizes.gdn+sizes.ple; sl.tokens=(uint64_t) ids.size();
+        sl.images=0; sl.kv_layers=1;
+        std::vector<ConversationCheckpoint> disk; std::string why;
+        const auto agree=[&](uint64_t,std::string&){ return true; };
+        check(session_save_checkpoints(chain,sl,StateCodec::Bf16,agree,disk,why) && disk.size()==1 &&
+              disk[0].state_codec==(uint8_t) StateCodec::Bf16 && disk[0].gdn==kept_gdn,
+              "capture: the SAVE's checkpoint list carries the selected snapshot as the chain holds it");
+        check(session_save_peak_bytes(&disk[0],sl,StateCodec::Bf16) <=
+                  session_save_peak_bytes(&disk[0],sl,StateCodec::Fp32) &&
+              session_save_peak_bytes(&disk[0],sl,StateCodec::Bf16) <
+                  session_save_peak_bytes(&disk[0],sl,StateCodec::Fp32),
+              "capture: its preflight prices a coded file at the coded size and an fp32 one at the widening too");
+        const ConversationView disk_view{ids,images,disk,true,StateCodec::Bf16};
+        SavedConversation dmeta; std::vector<SessionKvSource> dsrc;
+        check(conversation_snapshot_sources(dmeta,dsrc,disk_view,ss,g,draft.state,err) &&
+              dmeta.checkpoints[0].state_codec==(uint8_t) StateCodec::Bf16 &&
+              dmeta.checkpoints[0].gdn==kept_gdn && dmeta.live.state_codec==(uint8_t) StateCodec::Bf16,
+              "capture: a bf16 SAVE writes the coded bytes the chain already holds");
+        namespace fs=std::filesystem;
+        const fs::path dir=fs::temp_directory_path()/("strata-capture-"+std::to_string(experts)+"-"+
+            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(dir);
+        const SessionFileIdentity id{1,2};
+        auto version_of=[](const std::string& p){ std::ifstream f(p,std::ios::binary);
+            std::vector<char> b(12); f.read(b.data(),12); return (uint8_t) b[8]; };
+        size_t n1=0,n2=0,n3=0;
+        const std::string p1=(dir/"old.bin").string(),p2=(dir/"new.bin").string(),p3=(dir/"coded.bin").string();
+        SavedConversation old_meta,new_meta; std::vector<SessionKvSource> old_src,new_src;
+        check(conversation_snapshot_sources(old_meta,old_src,fp32_view,ss,g,draft.state,err) &&
+              session_file_write(p1,old_meta,old_src,id,n1,err) && version_of(p1)==1,
+              "capture: a chain captured with the option off still writes a version 1 file");
+        check(conversation_snapshot_sources(new_meta,new_src,fp32_view,ss,g,draft.state,err) &&
+              session_file_write(p2,new_meta,new_src,id,n2,err) && n2==n1 && version_of(p2)==1,
+              "capture: and it is byte-for-byte the same size, written twice from the same chain");
+        std::ifstream f1(p1,std::ios::binary), f2(p2,std::ios::binary);
+        const std::vector<uint8_t> b1((std::istreambuf_iterator<char>(f1)),std::istreambuf_iterator<char>()),
+                               b2((std::istreambuf_iterator<char>(f2)),std::istreambuf_iterator<char>());
+        check(b1==b2,"capture: the default path is byte-identical, twice over");
+        check(session_file_write(p3,as_bf16,id,n3,err) && version_of(p3)==2 && n3<n1,
+              "capture: a chain captured under the option writes a smaller version 2 file");
+        SavedConversation r;
+        size_t n4=0;
+        check(session_file_read(p3,id,r,n4,err) && r.checkpoints[0].state_codec==(uint8_t) StateCodec::Bf16 &&
+              r.checkpoints[0].gdn==kept_gdn && r.checkpoints[1].state_codec==(uint8_t) StateCodec::Bf16 &&
+              conversation_snapshot_restore(r,ss,g,draft.state,err)==ConversationRestore::restored,
+              "capture: and it reads back coded and restores");
+        std::error_code ec; fs::remove_all(dir,ec);
+    }
+    // ---- 6. a capture that cannot allocate. `conversation_checkpoint_save` builds beside the checkpoint and
+    // reports a refusal, so the checkpoint it was given and the session keep their bytes; the refusal itself is
+    // built without allocating, because this is the path where there is nothing to allocate. The deterministic
+    // version of that (an allocator armed to refuse a given size, over host-backed state) is in
+    // conversation_capture_codec_test.cpp; what is checked here is that a chain holding a freshly captured coded
+    // snapshot re-parks under a real address-space limit as a refusal and not a throw, with the chain intact.
+#if defined(__linux__)
+    {
+        std::vector<ConversationCheckpoint> fat;
+        fat.push_back(bf);                       // the snapshot this session captured under the option
+        fat.push_back(ref);                      // and one it captured with the option off
+        fat[0].gdn.assign(256u<<20, 0x51);       // big enough that converting the pair cannot fit in the child
+        fat[0].state_codec=(uint8_t) StateCodec::Bf16;
+        fat[1].gdn.assign(256u<<20, 0x61);
+        const std::vector<uint8_t> was0=fat[0].gdn, was1=fat[1].gdn;
+        const pid_t pid=::fork();
+        if (pid==0) {
+            long pages=0, rss=0;
+            if (FILE* fp=std::fopen("/proc/self/statm","r")) { if (std::fscanf(fp,"%ld %ld",&pages,&rss)!=2) pages=0; std::fclose(fp); }
+            rlimit rl {};
+            rl.rlim_cur=rl.rlim_max=(rlim_t) pages*(rlim_t) ::sysconf(_SC_PAGESIZE) + (64u<<20);
+            if (pages<=0 || ::setrlimit(RLIMIT_AS,&rl)!=0) ::_exit(10);
+            std::vector<ConversationCheckpoint> out; std::string e; bool ok=false;
+            try { ok=conversation_checkpoints_store(fat,StateCodec::Bf16,out,e); } catch (...) { ::_exit(11); }
+            if (ok) ::_exit(12);                 // the limit did not bite: proves nothing
+            ::_exit(!out.empty() ? 13 :
+                    fat[0].gdn==was0 && fat[0].state_codec==(uint8_t) StateCodec::Bf16 &&
+                    fat[1].gdn==was1 && fat[1].state_codec==0 && !e.empty() ? 0 : 14);
+        }
+        int status=0;
+        check(pid>0 && ::waitpid(pid,&status,0)==pid && WIFEXITED(status) && WEXITSTATUS(status)==0,
+              "capture: a chain of snapshots captured under the option re-parks under pressure as a refusal, intact");
+    }
+#endif
+}
+
 int main() {
     int devices=0;
     if (cudaGetDeviceCount(&devices)!=cudaSuccess || !devices) return 77;
@@ -747,6 +993,7 @@ int main() {
     for (int fmt : {kKvF16,kKvInt8,kKvQ4}) for (int mode : {0,1}) for (int experts : {256,512})
         full_session(fmt,mode,experts);
     for (int experts : {256,512}) full_session(3,0,experts);
+    for (int experts : {256,512}) fresh_capture(experts);
 #if defined(__linux__)
     // ---- widening under memory pressure (review P2). The parked mount calls conversation_checkpoints_widen with
     // nothing around it, and widening allocates the fp32 array beside the coded one: a throw there ended the engine.

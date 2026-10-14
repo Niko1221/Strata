@@ -58,7 +58,12 @@ bool conversation_session_sizes(const ModelGeometry& g, const SessionState& sess
 bool conversation_checkpoint_validate(const ConversationCheckpoint& checkpoint, const SessionState& session,
                                       const ModelGeometry& g, std::string& error);
 // Saves the session's running state into `checkpoint`, coded the way `checkpoint.state_codec` says (fp32 unless the
-// caller set otherwise, which is what a stored copy asks for). The device is synchronized before the call.
+// caller set otherwise, which is what a stored copy asks for - and a retained conversation checkpoint is one). The
+// device is synchronized before the call. The arrays are built beside the checkpoint and moved in once every one of
+// them has been copied, so a capture that cannot allocate - the stored arrays, or the bounded staging slice a coded
+// copy crosses the device boundary in - is reported as a refusal with `checkpoint` holding what it held before, and
+// never thrown past a caller that has no handler for it. Nothing here writes the session: the running state is only
+// ever read, and it stays fp32 whatever codec the copy is asked for.
 bool conversation_checkpoint_save(ConversationCheckpoint& checkpoint, const SessionState& session,
                                   const ModelGeometry& g, std::string& error);
 // Puts `checkpoint`'s running state back into the session's own fp32 buffers, decoding it the way the checkpoint's

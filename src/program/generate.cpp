@@ -1505,10 +1505,22 @@ ConvStateSizes conv_state_sizes(const strata::core::ModelGeometry& g, const stra
 }
 
 /// Copies the running state out (this session's carve only).  The caller has synchronized the device.
-bool checkpoint_save(ConvCheckpoint& c, const strata::core::SessionState& ss, const strata::core::ModelGeometry& g) {
+/// `codec` is how the COPY is to hold the running state (strata/core/state_codec.hpp); it is never the session's
+/// own - the live state stays fp32 whatever this says. A retained conversation checkpoint passes the resolved
+/// --session-state-codec, so it is coded the moment it is captured and not only when it is later parked; a
+/// temporary copy of the working state (a device or batch-slot transfer) passes Fp32 and gets the bytes as
+/// computed, exactly as before. Fp32 here is the identity: the same bytes, in the same order, as the last release.
+bool checkpoint_save(ConvCheckpoint& c, const strata::core::SessionState& ss, const strata::core::ModelGeometry& g,
+                     strata::core::StateCodec codec = strata::core::StateCodec::Fp32) {
     std::string error;
+    c.state_codec = (uint8_t) codec;   // conversation_checkpoint_save codes the copy the way this says
     if (strata::core::conversation_checkpoint_save(c, ss, g, error)) return true;
-    std::fprintf(stderr, "strata serve: checkpoint save: %s\n", error.c_str());   // the caller's ERR has no reason
+    // A capture that could not allocate refuses here, and the caller's `false` is the existing contract: the
+    // checkpoint is not published and the session still holds what it held (conversation_checkpoint_save builds
+    // beside the checkpoint). The message is a literal or what() read while the exception is still alive, never
+    // one assembled on this path (strata/core/conversation_report.hpp).
+    std::fprintf(stderr, "strata serve: checkpoint save: %s\n",
+                 error.empty() ? "not enough memory to capture the running state" : error.c_str());
     return false;
 }
 
@@ -8174,10 +8186,10 @@ int main(int argc, char** argv) {
             c.imgs = imgs_below(req_imgs, L);
             if (parts != nullptr) {
                 if (parts->size() != stages.size() + 1) return false;
-                // Every part says how ITS arrays are held; none of this reads the engine's configured codec. The
-                // parts below come off a stage session that was just captured, so they are fp32 and this is a
-                // no-op today - but a checkpoint's own coding belongs to its own arrays and its stage parts
-                // carry their own, which is what split/merge, a park and a restore all read them as.
+                // Every part says how ITS arrays are held, and none of this reads the engine's configured codec
+                // directly: the parts were captured by their own stage's callback with the codec a RETAINED
+                // checkpoint is stored under, so the joined checkpoint names the codec its own arrays are in and
+                // every stage part keeps its own. That is what split/merge, a park and a restore all read them as.
                 c.state_codec = (*parts)[0].state_codec;
                 c.gdn = std::move((*parts)[0].gdn);
                 c.ple = std::move((*parts)[0].ple);
@@ -8186,12 +8198,17 @@ int main(int argc, char** argv) {
                 c.block_pos = std::move((*parts)[0].block_pos);
                 for (size_t i = 1; i < parts->size(); ++i) c.stage_parts.push_back(std::move((*parts)[i]));
             } else {
-                if (!gpu_sync_ok() || !checkpoint_save(c, ss, g)) return false;
+                // A RETAINED conversation checkpoint: it joins `checks`, the chain a later request resumes through,
+                // so it is a stored copy and is coded the way this engine stores one (--session-state-codec).
+                // `session_codec` is fp32 unless the option says otherwise, and it never touches the session: the
+                // live buffers stay fp32 and a restore decodes this snapshot into them without rewriting it.
+                if (!gpu_sync_ok() || !checkpoint_save(c, ss, g, session_codec)) return false;
                 for (auto& st : stages) {   // a layer split's later stages: their sessions' part
                     const strata::core::OnDevice on(st->dev);
                     ConvCheckpoint part;
                     part.ids = c.ids;
-                    if (!gpu_sync_ok() || !checkpoint_save(part, st->ss, g)) return false;
+                    // the part is retained with its checkpoint, so it is stored the same way and says so itself
+                    if (!gpu_sync_ok() || !checkpoint_save(part, st->ss, g, session_codec)) return false;
                     c.stage_parts.push_back(std::move(part));
                 }
             }
@@ -8311,7 +8328,13 @@ int main(int argc, char** argv) {
                     part_next[i] = done + o.prompt_cache_every;
                     ConvCheckpoint part;   // this stage's state at `done` (its stream is synchronized)
                     part.ids.assign(cur.begin(), cur.begin() + done);
-                    if (!checkpoint_save(part, stage_ss, g)) { e = "saving a checkpoint part failed"; return false; }
+                    // This part becomes a stage part of a retained checkpoint (the last stage joins them in
+                    // checkpoint_at), so it is captured under the codec a stored copy uses and keeps its own
+                    // `state_codec` through the join, the split and a park. The stage's own buffers are only read.
+                    if (!checkpoint_save(part, stage_ss, g, session_codec)) {
+                        e = "saving a checkpoint part failed";
+                        return false;
+                    }
                     std::lock_guard<std::mutex> lk(part_mu);
                     auto& v = part_at[done];
                     v.resize(stages.size() + 1);
@@ -9421,6 +9444,10 @@ int main(int argc, char** argv) {
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
                 strata::core::ConversationCheckpoint ck;
                 ck.ids = ids;
+                // A temporary copy of the WORKING state, not a retained conversation checkpoint: it is restored
+                // straight into the slot's own fp32 buffers and thrown away. Coding it would round a state the slot
+                // keeps computing on, so it stays fp32 whatever --session-state-codec says (and a capture that
+                // cannot allocate is a refusal here, not a throw past the batch loop).
                 if (!strata::core::conversation_checkpoint_save(ck, from, g, e) ||
                     !strata::core::conversation_checkpoint_restore(ck, to, g, e))
                     return false;
@@ -9493,6 +9520,9 @@ int main(int argc, char** argv) {
                 } else {
                     strata::core::ConversationCheckpoint ck;
                     ck.ids = bs[(size_t) b].ids;
+                    // the reverse of the above: a slot-to-session transfer of the working state, fp32 for the same
+                    // reason (see copy_to_slot); a retained checkpoint reaches this path through `at` below and is
+                    // read from its own recorded codec
                     if (!strata::core::conversation_checkpoint_save(ck, from, g, e) ||
                         !strata::core::conversation_checkpoint_restore(ck, to, g, e))
                         return false;
@@ -10057,7 +10087,18 @@ int main(int argc, char** argv) {
                             if (strata::core::conversation_session_sizes(g, ss, z, why)) {
                                 const uint64_t q = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0);
                                 const uint64_t per = (uint64_t) z.tail + z.dead + z.block_pos;
-                                if (q == 0 || per <= (UINT64_MAX - z.gdn - z.ple) / q) state = z.gdn + z.ple + q * per;
+                                // The live state goes into the file the way `session_codec` writes it, so it is
+                                // priced that way: charging it at fp32 while capturing bf16 asks for twice what the
+                                // save then takes and refuses a save that fits (the same fix a park already has in
+                                // conversation_snapshot_bytes). block_pos is int32 positions and keeps its own size
+                                // whatever the codec, and with the option off state_codec_size is the identity, so
+                                // this is exactly the figure this preflight has always asked for.
+                                if (q == 0 || per <= (UINT64_MAX - z.gdn - z.ple) / q) {
+                                    const uint64_t coded = (uint64_t) strata::core::state_codec_size(
+                                        z.gdn + z.ple + q * ((uint64_t) z.tail + z.dead), session_codec);
+                                    const uint64_t pos = q * (uint64_t) z.block_pos;
+                                    if (coded <= UINT64_MAX - pos) state = coded + pos;
+                                }
                             }
                             sl.state_bytes = state;
                             sl.tokens = live.size();
