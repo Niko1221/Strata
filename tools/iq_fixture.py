@@ -57,6 +57,7 @@ LAYOUT = {   # (block values, block bytes) == the vendored gguf-py's GGML_QUANT_
     "IQ2_S":   (256,  82),
     "IQ3_XXS": (256,  98),
     "IQ3_S":   (256, 110),
+    "IQ1_S":   (256,  50),
     "IQ1_M":   (256,  56),
     "IQ4_NL":   (32,  18),
     "IQ4_XS":  (256, 136),
@@ -83,7 +84,7 @@ def repair_scales(name: str, raw: np.ndarray) -> None:
     raw[:, 0:2] = np.frombuffer(HALF_ONE, dtype=np.uint8)
 # name -> (the KERNEL type id written into the .bin header, identical to the gguf-py enum id)
 KERNEL_IDS = {"IQ2_XXS": 16, "IQ2_XS": 17, "IQ2_S": 22, "IQ3_XXS": 18, "IQ3_S": 21,
-              "IQ1_M": 29, "IQ4_NL": 20, "IQ4_XS": 23, "Q2_0": 42, "Q3_K": 11}
+              "IQ1_S": 19, "IQ1_M": 29, "IQ4_NL": 20, "IQ4_XS": 23, "Q2_0": 42, "Q3_K": 11}
 
 
 def build(name: str, rows: int, cols: int, seed: int):

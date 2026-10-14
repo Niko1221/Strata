@@ -145,9 +145,117 @@ inline void row_dot_iq2xs(const uint8_t* row, int nblocks, const block_q8_K* con
     for (int t = 0; t < NT; ++t) res[t] = hsum8(accf[t]);
 }
 
+// ---- IQ1_S (19): 256 values as 8 sub-blocks of 32.  Each sub-block is four 8-value grid entries
+// (iq1s_grid) plus one `qh` word: a 4-bit scale selector (bits 12-14) and a sign bit (15) for the -1 +/- 1/8
+// delta every value carries.  The grid half is the same maddubs/madd pair as the other formats (the grid
+// bytes are 0/-1/+1, so ggml's mul_add sign trick applies); the delta half is a scalar per sub-block,
+// ls * delta * (sum of the sub-block's activations), which q8_K precomputes in `bsums` as groups of 16.
+// Ported from ggml's ggml_vec_dot_iq1_s_q8_K (arch/x86/quants.c); only the float-addition order differs.
+template <int NT> STRATA_ROWS_FN
+inline void row_dot_iq1s(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
+    __m256 accf[NT];
+    float accd[NT];
+    for (int t = 0; t < NT; ++t) { accf[t] = _mm256_setzero_ps(); accd[t] = 0.f; }
+    const int pf = prefetch_distance();
+    for (int i = 0; i < nblocks; ++i) {
+        const uint8_t* blk = row + (size_t) i * 50;
+        rows_ahead(blk, pf);
+        __m256i acci[NT];
+        float sd[NT];
+        for (int t = 0; t < NT; ++t) { acci[t] = _mm256_setzero_si256(); sd[t] = 0.f; }
+        for (int ib = 0; ib < 8; ++ib) {
+            const uint16_t qh = u16(blk + 34 + 2 * ib);
+            const uint8_t* qs = blk + 2 + 4 * ib;
+            const __m256i g = _mm256_set_epi64x(
+                (long long) iq1s_grid[qs[3] | ((qh >> 1) & 0x700)],
+                (long long) iq1s_grid[qs[2] | ((qh << 2) & 0x700)],
+                (long long) iq1s_grid[qs[1] | ((qh << 5) & 0x700)],
+                (long long) iq1s_grid[qs[0] | ((qh << 8) & 0x700)]);
+            const int lsv = 2 * ((qh >> 12) & 7) + 1;
+            const __m256i sc = _mm256_set1_epi16((short) lsv);
+            const float sgn = (qh & 0x8000) ? -1.f : 1.f;
+            for (int t = 0; t < NT; ++t) {
+                const __m256i yv = _mm256_loadu_si256((const __m256i*) (y[t][i].qs + 32 * ib));
+                // iq1s_grid holds signed values in {-1,0,1}: ggml's mul_add_epi8 trick (|g| as the maddubs
+                // operand, q8's sign taken from g) - a direct maddubs would read -1 as 255.
+                const __m256i ga = _mm256_sign_epi8(g, g);
+                const __m256i ys = _mm256_sign_epi8(yv, g);
+                acci[t] = madd_add(acci[t], _mm256_maddubs_epi16(ga, ys), sc);
+                sd[t] += sgn * (float) lsv * (float) (y[t][i].bsums[2 * ib] + y[t][i].bsums[2 * ib + 1]);
+            }
+        }
+        const float dx = h2f(u16(blk));
+        for (int t = 0; t < NT; ++t) {
+            const float dd = dx * y[t][i].d;
+            accf[t] = _mm256_fmadd_ps(_mm256_set1_ps(dd), _mm256_cvtepi32_ps(acci[t]), accf[t]);
+            accd[t] += dd * sd[t];
+        }
+    }
+    for (int t = 0; t < NT; ++t) res[t] = hsum8(accf[t]) + IQ1S_DELTA * accd[t];
+}
+
+// ---- IQ1_M (29): 256 values as 8 sub-blocks of 32; qs[32] grid indices, qh[16] high bits + delta signs,
+// scales[8] packed 3-bit sub-scales.  Each 32-value sub-block splits into two 16-value halves with their own
+// scale (ls1 from the low 6 bits of scales[ib/2], ls2 from the bits above), and each 8-value group carries the
+// qh delta sign.  Ported from ggml's ggml_vec_dot_iq1_m_q8_K (arch/x86/quants.c); the shared f16 scale is
+// assembled once per block from the top nibbles of the four scale words.
+template <int NT> STRATA_ROWS_FN
+inline void row_dot_iq1m(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
+    const __m256i one8 = _mm256_set1_epi8(1);
+    __m256 accf[NT];
+    float accd[NT];
+    for (int t = 0; t < NT; ++t) { accf[t] = _mm256_setzero_ps(); accd[t] = 0.f; }
+    const int pf = prefetch_distance();
+    for (int i = 0; i < nblocks; ++i) {
+        const uint8_t* blk = row + (size_t) i * 56;
+        rows_ahead(blk, pf);
+        const uint8_t* qh = blk + 32;
+        const uint16_t* sc = (const uint16_t*) (blk + 48);
+        const uint16_t su = (uint16_t) ((sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) | ((sc[2] >> 4) & 0x0f00) |
+                                        (sc[3] & 0xf000));
+        const float dscale = h2f(su);
+        __m256i acci[NT], acc2[NT];
+        for (int t = 0; t < NT; ++t) { acci[t] = _mm256_setzero_si256(); acc2[t] = _mm256_setzero_si256(); }
+        for (int ib = 0; ib < 8; ++ib) {
+            const uint8_t qh0 = qh[2 * ib], qh1 = qh[2 * ib + 1];
+            const uint8_t* qs = blk + 4 * ib;
+            const __m256i g = _mm256_set_epi64x(
+                (long long) iq1s_grid[qs[3] | ((qh1 << 4) & 0x700)],
+                (long long) iq1s_grid[qs[2] | ((qh1 << 8) & 0x700)],
+                (long long) iq1s_grid[qs[1] | ((qh0 << 4) & 0x700)],
+                (long long) iq1s_grid[qs[0] | ((qh0 << 8) & 0x700)]);
+            const __m256i delta = _mm256_set_epi64x(
+                (long long) (qh1 & 0x80 ? 0xffffffffffffffffULL : 0x0101010101010101ULL),
+                (long long) (qh1 & 0x08 ? 0xffffffffffffffffULL : 0x0101010101010101ULL),
+                (long long) (qh0 & 0x80 ? 0xffffffffffffffffULL : 0x0101010101010101ULL),
+                (long long) (qh0 & 0x08 ? 0xffffffffffffffffULL : 0x0101010101010101ULL));
+            const int ls1 = 2 * ((sc[ib / 2] >> (6 * (ib % 2) + 0)) & 0x7) + 1;
+            const int ls2 = 2 * ((sc[ib / 2] >> (6 * (ib % 2) + 3)) & 0x7) + 1;
+            const __m128i lo = _mm_set1_epi16((short) ls1), hi = _mm_set1_epi16((short) ls2);
+            const __m256i scv = _mm256_inserti128_si256(_mm256_castsi128_si256(lo), hi, 1);
+            for (int t = 0; t < NT; ++t) {
+                const __m256i yv = _mm256_loadu_si256((const __m256i*) (y[t][i].qs + 32 * ib));
+                const __m256i ga = _mm256_sign_epi8(g, g);
+                const __m256i ys = _mm256_sign_epi8(yv, g);
+                acci[t] = madd_add(acci[t], _mm256_maddubs_epi16(ga, ys), scv);
+                const __m256i yd = _mm256_sign_epi8(yv, delta);
+                acc2[t] = madd_add(acc2[t], _mm256_maddubs_epi16(one8, yd), scv);
+            }
+        }
+        for (int t = 0; t < NT; ++t) {
+            const float dd = dscale * y[t][i].d;
+            accf[t] = _mm256_fmadd_ps(_mm256_set1_ps(dd), _mm256_cvtepi32_ps(acci[t]), accf[t]);
+            accd[t] += dd * hsum8(_mm256_cvtepi32_ps(acc2[t]));
+        }
+    }
+    for (int t = 0; t < NT; ++t) res[t] = hsum8(accf[t]) + IQ1M_DELTA * accd[t];
+}
+
 template <int TY, int NT> STRATA_ROWS_FN
 inline void row_dot_any(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
     if constexpr (TY == 17) row_dot_iq2xs<NT>(row, nblocks, y, res);
+    else if constexpr (TY == 19) row_dot_iq1s<NT>(row, nblocks, y, res);
+    else if constexpr (TY == 29) row_dot_iq1m<NT>(row, nblocks, y, res);
     else                    row_dot<TY, NT>(row, nblocks, y, res);
 }
 
@@ -214,9 +322,11 @@ void gu_type(int type, int nt, const uint8_t* blob, size_t gu_row, size_t up_off
         case 16: gu_rows_nt<16>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 17: gu_rows_nt<17>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 18: gu_rows_nt<G ? 118 : 18>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 19: gu_rows_nt<19>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 21: gu_rows_nt<G ? 121 : 21>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 22: gu_rows_nt<G ? 122 : 22>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 23: gu_rows_nt<23>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 29: gu_rows_nt<29>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         default: break;
     }
 }
@@ -228,9 +338,11 @@ void dot_type(int type, int nt, const uint8_t* w, size_t row_bytes, int n, const
         case 16: dot_rows_nt<16>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 17: dot_rows_nt<17>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 18: dot_rows_nt<G ? 118 : 18>(nt, w, row_bytes, n, act, out, r0, r1); break;
+        case 19: dot_rows_nt<19>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 21: dot_rows_nt<G ? 121 : 21>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 22: dot_rows_nt<G ? 122 : 22>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 23: dot_rows_nt<23>(nt, w, row_bytes, n, act, out, r0, r1); break;
+        case 29: dot_rows_nt<29>(nt, w, row_bytes, n, act, out, r0, r1); break;
         default: break;
     }
 }
