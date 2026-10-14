@@ -25,6 +25,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/b70.hpp"
 #include "strata/sycl_doorbell.hpp"
 #include "strata/core/arch_defaults.hpp"
 #include "strata/core/dma_batch.hpp"
@@ -127,13 +128,6 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include <vector>
 
 namespace {
-bool sycl_mirror_adapt() {
-    static const bool enabled = [] {
-        const char* v = std::getenv("STRATA_SYCL_MIRROR_ADAPT");
-        return v && v[0] == '1';
-    }();
-    return enabled;
-}
 
 // Windows' WDDM driver model: native Windows, or WSL2 (its GPU goes through /dev/dxg to the Windows driver).  There,
 // pinning a large arena into two CUDA contexts leaves WDDM refusing every later allocation (the 5080 + 3090 rig);
@@ -4900,6 +4894,7 @@ int main(int argc, char **argv) try {
     // the GPU takes is --pcie-frac; STRATA_MIRROR_MIB caps the mirror (default: MemAvailable less 4 GiB), 0 = off.
     unsigned long long* mirror_table_d = nullptr;   // [n_layers][n_expert] device-readable mirror addresses (0 = none)
     int64_t unmirrored_misses = 0;
+    bool mirror_adapt = false;
     if (o.stream_experts && srcp == &gguf_src && o.expert_cache > 0) {
         // #1054, #1440: with a layer split the mirror holds only the first GPU's layers. The pinned memory belongs to
         // this GPU's context, and the later stages' caches do not exist yet (every later-stage expert would count as a
@@ -4973,25 +4968,25 @@ int main(int argc, char **argv) try {
                                  "STRATA_MIRROR_MIB or the free RAM, or lower --max-context\n", (long long) unmirrored_misses);
             refuse_exit(2);
         }
+        // Select synchronous adaptation only for the validated complete-mirror configuration.
+        // Unsupported configurations retain the existing adaptation/fallback behavior.
+        const char* device_plan = std::getenv("STRATA_VERIFY_DEVICE_PLAN");
+        mirror_adapt = no_host && device_plan && std::atoi(device_plan) != 0 &&
+            strata::is_b70(nullptr) && o.serve && o.batch == 0 && o.stream_experts && srcp == &gguf_src &&
+            stages.empty() && o.peer_device < 0 && !remote_caches && o.no_prefill_borrow &&
+            !o.vram_elastic && mirror_table_d && unmirrored_misses == 0 && n_true_miss > 0 &&
+            o.adapt_every > 0 && o.adapt_swaps > 0 && o.adapt_swaps <= 96 && o.expert_profile_save.empty();
         // The same rule after the start: the mirror holds the start's misses only, so an expert an adaptive swap moves
         // out of VRAM would be in neither, and the device plan would wait for a host that never serves it (every token
         // 0 after a --batch window had counted misses and the tier swapped).
-        if (!miss.empty() && no_host && o.adapt_every > 0 && o.adapt_swaps > 0 && !sycl_mirror_adapt()) {
+        if (!miss.empty() && no_host && o.adapt_every > 0 && o.adapt_swaps > 0 && !mirror_adapt) {
             std::fprintf(stderr, "strata generate: adaptive swaps off: with STRATA_VERIFY_NO_HOST an expert they move out of "
                                  "VRAM would be neither there nor mirrored\n");
             o.adapt_every = 0;
         }
     }
 
-    if (sycl_mirror_adapt()) {
-        if (!o.serve || !o.stream_experts || srcp != &gguf_src || !stages.empty() ||
-            o.peer_device >= 0 || remote_caches ||
-            !o.no_prefill_borrow || o.vram_elastic || !mirror_table_d || unmirrored_misses ||
-            o.adapt_every <= 0 || o.adapt_swaps <= 0 || o.adapt_swaps > 96 ||
-            !o.expert_profile_save.empty()) {
-            std::fprintf(stderr, "SYCL mirror adaptive cache requires single-device complete stream mirror, no borrow/elastic/profile save\n");
-            return 1;
-        }
+    if (mirror_adapt) {
         std::fprintf(stderr, "SYCL mirror adaptive cache: sync exchange; %lld slots, %lld cache bytes, %llu mirror bytes\n",
             (long long)xcache.slots(), (long long)xcache.bytes(), (unsigned long long)gguf_src.mirrored_bytes());
     }
@@ -7908,7 +7903,7 @@ int main(int argc, char **argv) try {
             std::all_of(host_res.begin(), host_res.end(), [](int32_t r) { return r >= 0; });
         if (o.adapt_every > 0 && o.adapt_swaps > 0 && !all_experts_resident)
             drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
-        if (sycl_mirror_adapt()) ver.set_expert_usage_counter(&drive.d.usage);
+        if (mirror_adapt) ver.set_expert_usage_counter(&drive.d.usage);
         // #477 --expert-profile-save: what the adaptive tier learned, kept across restarts (opt-in; off: `heat` stays
         // empty and nothing below runs).  It needs the adaptive tier's counts and the residency table.
         std::vector<double> heat;
@@ -8007,18 +8002,18 @@ int main(int argc, char **argv) try {
                     else vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
-                std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { if (sycl_mirror_adapt() && a.first == b.first) return a.second < b.second; return a.first > b.first; });
+                std::sort(cand.begin(), cand.end(), [mirror_adapt](auto& a, auto& b) { if (mirror_adapt && a.first == b.first) return a.second < b.second; return a.first > b.first; });
                 const size_t nc = std::min(cand.size(), vict.size());
                 std::partial_sort(vict.begin(), vict.begin() + (ptrdiff_t) nc, vict.end(),
-                                  [](auto& a, auto& b) { if (sycl_mirror_adapt() && a.first == b.first) return a.second < b.second; return a.first < b.first; });
+                                  [mirror_adapt](auto& a, auto& b) { if (mirror_adapt && a.first == b.first) return a.second < b.second; return a.first < b.first; });
                 for (size_t i = 0; i < nc; ++i) {
                     if (cand[i].first < vict[i].first + 1.5f) break;
                     swaps.push_back({cand[i].first - vict[i].first, (int32_t) l, cand[i].second, vict[i].second});
                 }
             }
-            std::sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { if (sycl_mirror_adapt() && a.gain == b.gain) return a.layer == b.layer ? a.in < b.in : a.layer < b.layer; return a.gain > b.gain; });
+            std::sort(swaps.begin(), swaps.end(), [mirror_adapt](const Swap& a, const Swap& b) { if (mirror_adapt && a.gain == b.gain) return a.layer == b.layer ? a.in < b.in : a.layer < b.layer; return a.gain > b.gain; });
             if ((int) swaps.size() > o.adapt_swaps) swaps.resize((size_t) o.adapt_swaps);
-            if (sycl_mirror_adapt()) {
+            if (mirror_adapt) {
                 std::string error;
                 for (const Swap& s : swaps) {
                     const size_t in = (size_t)s.layer * g.n_expert + s.in;
@@ -11463,10 +11458,10 @@ int main(int argc, char **argv) try {
                 std::thread adapt_thr;   // the adaptive tier beside the commit and the draft (as in generate)
                 bool adapt_ok = true;
                 if (!drive.d.usage.empty() && !ajob && ((rounds + 1) % o.adapt_every) == 0) {
-                    if (sycl_mirror_adapt()) adapt_ok = adapt();
+                    if (mirror_adapt) adapt_ok = adapt();
                     else adapt_thr = std::thread([&] { adapt_ok = adapt(); });
                 }
-                if (sycl_mirror_adapt() && !adapt_ok) { std::printf("ERR SYCL mirror adaptive exchange failed\n"); return 1; }
+                if (mirror_adapt && !adapt_ok) { std::printf("ERR SYCL mirror adaptive exchange failed\n"); return 1; }
                 if (!ver.commit(a + 1, err)) {
                     if (adapt_thr.joinable()) adapt_thr.join();
                     std::printf("ERR %s\n", err.c_str());

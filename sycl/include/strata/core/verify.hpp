@@ -87,7 +87,7 @@ public:
     /// Diagnostics: row `t` of the last window's head logits (n_vocab floats) to the host. Valid after run().
     bool copy_logits(int t, float* host) const;
     int64_t vocab() const { return next_ ? next_->vocab() : n_vocab_; }
-    /// STRATA_SYCL_MIRROR_ADAPT: bind the controller's usage counts after init().
+    /// Bind the selected mirror controller's usage counts after init(), before graph capture.
     /// Updated only after a completed NoHost window. The vector must outlive run().
     void set_expert_usage_counter(std::vector<float>* usage);
     /// The sampling the verify window's head applies (temperature / top_p / top_k / seed).  Set per

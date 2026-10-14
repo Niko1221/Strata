@@ -63,13 +63,6 @@
 
 namespace strata::core {
 namespace {
-bool sycl_mirror_adapt() {
-    static const bool enabled = [] {
-        const char* v = std::getenv("STRATA_SYCL_MIRROR_ADAPT");
-        return v && v[0] == '1';
-    }();
-    return enabled;
-}
 class ExpertRouteCount;
 void count_expert_routes(sycl::queue* q, const int32_t* ids, int entries,
                          int layer, int experts, uint32_t* counts) {
@@ -788,14 +781,6 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         functionality is redundant in SYCL.
         */
         if (!ok2) {; all_resident_ = false; device_plan_ = false; }
-    }
-    if (sycl_mirror_adapt()) {
-        if (!device_plan_ || !env_on("STRATA_VERIFY_NO_HOST"))
-            throw std::runtime_error("mirror adaptive expert usage requires NoHost device planning");
-        expert_usage_counts_h_.assign((size_t)g.n_layers * (size_t)g.n_expert, 0);
-        expert_usage_counts_d_ = sycl::malloc_device<uint32_t>(expert_usage_counts_h_.size(), *cs_);
-        if (!expert_usage_counts_d_) throw std::bad_alloc();
-        cs_->memset(expert_usage_counts_d_, 0, expert_usage_counts_h_.size() * sizeof(uint32_t)).wait_and_throw();
     }
     if (std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {   // SYCL port: the per-layer residual ladder (token 0)
         dbgR_ = (float*) sycl::malloc_device((size_t) g.n_layers * g.n_embd * 4, dpct::get_in_order_queue());
@@ -2377,12 +2362,9 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         for (uint32_t count : expert_usage_counts_h_) total += count;
         if (total != (uint64_t)(le_ - lb_) * (uint64_t)T * (uint64_t)ss.k)
             throw std::runtime_error("mirror adaptive route histogram coverage mismatch");
-        // Match the CPU usage counter's scalar increment order.
-        static const bool presence = [] { const char* e=std::getenv("STRATA_SYCL_ADAPT_WINDOW_PRESENCE"); return e && e[0]=='1'; }();
-        for (size_t i = 0; i < expert_usage_counts_h_.size(); ++i) {
-            const uint32_t count=presence ? (expert_usage_counts_h_[i]>0 ? 1u : 0u) : expert_usage_counts_h_[i];
-            for (uint32_t n=0;n<count;++n) (*expert_usage_counter_)[i] += 1.f;
-        }
+        // Rank presence in completed windows, without weighting longer speculative windows more heavily.
+        for (size_t i = 0; i < expert_usage_counts_h_.size(); ++i)
+            if (expert_usage_counts_h_[i]) (*expert_usage_counter_)[i] += 1.f;
     }
     if (no_host && std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {   // SYCL port: what the window left behind
         const int Gd = groups_[T] > 0 ? groups_[T] : 1;
@@ -4018,8 +4000,16 @@ void Verifier::absorb_stats(Verifier& o) {
 }
 
 void Verifier::set_expert_usage_counter(std::vector<float>* usage) {
-    if (!expert_usage_counts_d_ || !usage || usage->size() != expert_usage_counts_h_.size())
-        throw std::invalid_argument("mirror adaptive expert usage shape mismatch");
+    if (!g_ || !cs_ || !device_plan_ || !env_on("STRATA_VERIFY_NO_HOST") || !usage ||
+        usage->size() != size_t(g_->n_layers) * size_t(g_->n_expert))
+        throw std::invalid_argument("mirror adaptive expert usage configuration mismatch");
+    // Called after init and before graph capture. Only the selected mirror path allocates counters.
+    if (!expert_usage_counts_d_) {
+        expert_usage_counts_h_.assign(usage->size(), 0);
+        expert_usage_counts_d_ = sycl::malloc_device<uint32_t>(usage->size(), *cs_);
+        if (!expert_usage_counts_d_) throw std::bad_alloc();
+        cs_->memset(expert_usage_counts_d_, 0, usage->size() * sizeof(uint32_t)).wait_and_throw();
+    }
     expert_usage_counter_ = usage;
 }
 

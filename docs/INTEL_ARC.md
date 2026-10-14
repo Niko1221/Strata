@@ -161,24 +161,6 @@ Things that matter on an Arc (details in INTEL.md):
   `STRATA_*`, `ONEAPI_*`, `UR_*`, `IGC_*`, `SYCL_*` or `ZES_*` variable of the server's environment reach the engine
   through `strata-sycl.sh` (for example `STRATA_MIRROR_MIB`, `IGC_EnableDPEmulation`).
 
-## Optional adaptive expert mirror
-
-```sh
-export STRATA_VERIFY_DEVICE_PLAN=1
-export STRATA_VERIFY_NO_HOST=1
-export STRATA_SYCL_MIRROR_ADAPT=1
-# Optional: count an expert once per verify window instead of once per routed row.
-export STRATA_SYCL_ADAPT_WINDOW_PRESENCE=1
-```
-
-Mirror adaptation requires serving on one device, streamed GGUF experts, a
-complete mirror of the nonresident experts, positive adaptation interval and
-swap count, and `--no-prefill-borrow`. Elastic VRAM, profile saving and split-device
-execution are unsupported by this path. At a completed verify window it counts
-routed experts, exchanges selected VRAM and mirror slots synchronously, then
-updates the residency and mirror tables before the next window. Capacity stays
-fixed. Both new switches default to off; window-presence counting is optional.
-
 ## Windows
 
 There is no Windows path yet. `setup --backend sycl` on Windows stops and points here. oneAPI exists for Windows,
