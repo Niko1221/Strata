@@ -715,11 +715,22 @@ What bf16 gives back on the same requests, all from the HEAD run:
 | retained chain in RAM after a park, 3 / 5 / 6 checkpoints | 354.5 MB → **177,414,796 B** | 591.2 MB → **296,055,504 B** | 710.6 MB → **356,405,752 B** |
 | observed `VmRSS` step, rewind turn | 449.5 → **224.8 MiB** | 449.0 → **225.0 MiB** | 453.8 → **196.1 MiB** |
 
-The `park` rows are where `3f04cc72` shows up. Before it, a bf16 park still had to convert the retained chain
-on the way into the image, and at 121K — six checkpoints — that conversion cancelled the smaller write: the
-same cell on the `e2983e98` build measured `fp32` 78.85 against `bf16` **78.95 ms**, dead even. Coding at
-capture leaves nothing to convert, the park becomes a write of half the bytes, and the same cell now reads
-89.2 against **68.45 ms**. The retained chain is half-size from its first checkpoint, not from the park: the
+The `park` rows are where `3f04cc72` shows up, and the honest way to read them is **within each arm across the
+two builds**, not as one size's fp32-against-bf16 gap. Before that commit a bf16 park still converted the retained
+chain on the way into the image; after it, nothing converts and the park is a write of half the bytes. So the bf16
+park should get faster and the fp32 park should not move, which is what the continuing-turn medians show:
+
+| continuing-turn park, `ms` | `e2983e98` `fp32` | `e2983e98` `bf16` | HEAD `fp32` | HEAD `bf16` | bf16 moved |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 32K, 3 checkpoints | 190.52 | 164.77 | 190.5 | **154.82** | **−9.95** |
+| 63K, 5 checkpoints | 136.9 | 112.6 | 136.32 | **102.75** | **−9.85** |
+| 121K, 6 checkpoints | 84.15 | 79.15 | 87.95 | **68.15** | **−11.0** |
+
+The fp32 column is flat within its own round spread (190.52→190.5, 136.9→136.32, 84.15→87.95 against spreads of
+3.2, 1.85 and 2.5 ms) and the bf16 column drops about 10 ms at every size. That consistency across three sizes is
+the evidence; a single cell is not, and the 121K cell on the old build is a good example of why — its fp32 rounds
+were 78.85 and 89.45, an 11 ms spread, so on that build alone the 84.15-against-79.15 gap would not have separated
+the arms. The retained chain is half-size from its first checkpoint, not from the park: the
 `retained=` line the build prints is the engine's own count. The fp32 chain figure is arithmetic on that count
 (`n × 118,063,152 B` plus the token and image lists). The `VmRSS` column is an observed lower bound and not a
 high-water mark — see the note at the head of **Measured**. Answers and recall on these runs were 20/20 in
