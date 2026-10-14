@@ -173,11 +173,15 @@ function customRange() {  // the Custom view's [from, to) in epoch seconds, or n
   }
   return (f !== null && t !== null && t > f) ? [f, t] : null;
 }
-function prefillCustomRange() {       // a sane starting window: the last 7 days, times left blank (= 00:00)
+function localDateStr(d) {  // "YYYY-MM-DD" for the browser's own day: toISOString() would use UTC's
+  const p = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+function prefillCustomRange() {       // a sane starting window: the same 7 days the 7-day button shows
   if ($("usage-from-d").value) return;
-  const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - 7);
-  $("usage-from-d").value = d.toISOString().slice(0, 10);
-  $("usage-to-d").value = new Date().toISOString().slice(0, 10);
+  const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - 6);   // today and 6 before it
+  $("usage-from-d").value = localDateStr(d);
+  $("usage-to-d").value = localDateStr(new Date());
 }
 function metricsUrl() {
   const p = [];
@@ -296,11 +300,13 @@ function renderUsage(u) {
   if (usageRange === "all") row = { ...(u.lifetime || {}), since: u.since };
   else if (usageRange === "custom") row = ((u.views || {}).custom || {}).total || {};
   else row = ((u.views || {})[usageRange] || {}).total || {};
-  if (usageRange === "custom" && !(u.views || {}).custom) {   // dates not set (or empty window): say so
+  if (usageRange === "custom" && !(u.views || {}).custom) {   // dates not set, or a window with nothing in it
     $("usage-grid").innerHTML = "";
     note.hidden = false;
-    note.textContent = "Pick a start and end date above. Times are optional: a start without one is 00:00, " +
-                       `an end without one covers that whole day; ranges older than ${Math.round((u.kept_hours || 744) / 24)} days are clamped to what is kept.`;
+    note.textContent = customRange()
+      ? `Nothing in that window. The counters start at ${new Date((u.since || 0) * 1000).toLocaleString()} and only ${Math.round((u.kept_hours || 744) / 24)} days are kept.`
+      : "Pick a start and end date above. Times are optional: a start without one is 00:00, " +
+        `an end without one covers that whole day; ranges older than ${Math.round((u.kept_hours || 744) / 24)} days are clamped to what is kept.`;
     return;
   }
   const read = (row.prompt_tokens || 0) - (row.reused || 0);
