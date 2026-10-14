@@ -696,6 +696,38 @@ void DiskParkLogs::trim(const std::string& active) {
             tracked_.erase(victim);
         }
     }
+    // ★★★ P26（2026-10-14）：回收"本次运行里建出来、却一个字节都没写进去"的空壳会话目录。
+    //   现场：DiskParkSession::open() 遇到不存在的文件会 create_directories + 写 64 B 头，而
+    //   append() 是在【打开之后】才判断有没有东西可写（`req.to_tokens <= start` 直接 return 0）
+    //   ⇒ 每请求留下 ~0.8 个只有 kv.bin 的目录（实测 266 请求 +219 个；743 个目录里 661 是空壳）。
+    //   判据（两条都满足才删，宁可漏杀不误杀）：
+    //     ① dir_bytes_[dir] == 0 —— 本次运行从没往它追加过字节。启动扫描出来的目录字节数来自
+    //        st_blocks（恒 > 0）⇒ 老空壳不动，那是 park-gc `--days 1` 的活，引擎不越权。
+    //     ② 盘上没有 tokens.bin —— 真会话一定有（generate.cpp 写的），空壳没有。
+    //   注意：本函数每次 append 都会跑，所以空壳活不过一个请求。
+    {
+        std::size_t reaped = 0;
+        for (auto it = tracked_.begin(); it != tracked_.end();) {
+            const std::string dir = it->second.dir_name;
+            const auto db = dir_bytes_.find(dir);
+            if (db == dir_bytes_.end() || db->second != 0) { ++it; continue; }
+            std::error_code ec;
+            if (std::filesystem::exists(dir_for(dir) + "/tokens.bin", ec)) { ++it; continue; }
+            const auto o = open_.find(dir);
+            if (o != open_.end()) { open_.erase(o); ++stats_.closes; }
+            std::error_code ec2;
+            std::filesystem::remove_all(dir_for(dir), ec2);
+            ++reaped;
+            ++stats_.reaped_dirs;
+            lru_.erase(it->second.lru);
+            dir_bytes_.erase(db);
+            it = tracked_.erase(it);
+        }
+        if (reaped > 0)
+            std::fprintf(stderr, "strata serve: disk park stream: [空壳] 清掉 %zu 个本次运行建的空目录"
+                                 "（累计 %llu）\n", reaped,
+                         (unsigned long long) stats_.reaped_dirs);
+    }
     // （历史）下面这段是 08a62f46 删掉容量上限时的理由，P25 已按其中的 ①③ 改成
     // "引擎侧上限 + park-gc 兜底" 的分工：
     //   超了按 LRU 把最久未用的会话目录【连文件一起删】。已删除。理由：

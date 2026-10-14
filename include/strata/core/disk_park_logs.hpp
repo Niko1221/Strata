@@ -119,6 +119,7 @@ public:
         std::uint64_t failures = 0;
         std::uint64_t evicted_dirs = 0;    // ★ P25：按容量淘汰掉的会话目录数
         std::uint64_t evicted_bytes = 0;
+        std::uint64_t reaped_dirs = 0;     // ★ P26：本次运行建出来、没写过数据的空壳目录
     };
 
     // 一次追加的输入
