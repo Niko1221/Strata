@@ -489,6 +489,10 @@ bool stage_exl3_requantized(Exl3Pack::Impl& im, const RoleSpec& r, const ModelGe
     strata::kernels::exl3_transpose_f16(d_w, d_wt, n_in, n_out, nullptr);
     if (cudaDeviceSynchronize() != cudaSuccess) return fail("reconstruct", cudaGetLastError());
     (void) cudaFree(d_tr); (void) cudaFree(d_suh); (void) cudaFree(d_svh);
+    // **THE UNTRANSPOSED COPY IS DONE WITH THE TRANSPOSE.**  It was not freed, and it is the same size as the
+    // matrix: 301 dense projections leaked ~7 GiB of VRAM, which the expert cache then could not have.  It
+    // cost 78 slots per layer (measured: 216 slots/layer at 18.5 GiB free against 294 at 25.3 GiB).
+    (void) cudaFree(d_w); d_w = nullptr;
 
     const ggml_type qtype = GGML_TYPE_Q8_0;
     const size_t row_bytes = ggml_row_size(qtype, n_in);

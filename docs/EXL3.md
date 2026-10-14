@@ -297,6 +297,13 @@ what makes the same model's prefill 447-966 tok/s on a 64 GB machine (docs/AMD_H
 whole expert set is resident in RAM, not the batch size.  This model's experts are 45 GB and the machine has
 24.5 GiB of free VRAM plus ~20 GB of usable RAM, so they do not fit and the reads are structural.
 
+**The reconstructed copy is freed with the transpose.**  `stage_exl3_requantized` allocates the reconstructed
+fp16 matrix, transposes it, and used to leave the untransposed copy allocated.  It is the same size as the
+matrix, so the 301 dense projections leaked ~7 GiB of VRAM, which the expert cache then could not have:
+measured, **18.52 GiB free -> 216 slots/layer before, 25.28 GiB -> 297 after**.  The decode's steady state (a
+200-token run, the last 30 tokens) went from a 97.4 ms pool to 83.1 ms (the expert uploads 76.2 -> 62.0 ms),
+and a 15-token prompt from 14.0 s to 12.2 s.
+
 **The expert GEMV's geometry, swept on the real layer.**  `strata-exl3-moe` runs the whole expert FFN (gate,
 up, down, both scale transforms, the silu) on layer 0 with 10 experts, and the tiles per block was swept on it:
 T=1 0.534 ms/layer, T=2 0.385 (what it was), T=3 0.321, **T=4 0.308**, T=5 0.319, T=6 0.327, T=7 0.342,
