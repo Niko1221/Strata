@@ -10,11 +10,14 @@
 // follow prompt_chain's defaults: matrix-unit register operands where the GPU has the M5's right-input layout
 // (COOP_K4, function constant 7), else the older expert and attention kernels (the M4).
 //
-// --kv q4_0 NEVER reaches this file's chain (nor prompt_gemm's): prompt_run_rows keeps every q4 prompt on the
-// decode window's slow path (kv_format.h's prompt_fast_path; the one-line notice is logged there), because the
-// fast attention kernels (qsa_attn_mm / qsa_flash) read the int8 pool layout and would misread the q4 pools'
-// bytes.  qsa_prep/attn/merge below would take the format-aware fc-25 specializations through qsa_c()/qsa_k() if
-// they ever did run; the fused fast q4 prompt variants are milestone M2.
+// --kv q4_0 NEVER reaches this file's chain (nor prompt_gemm's): prompt_run_rows (window.cpp) keeps every q4
+// prompt on the decode window's slow path (kv_format.h's prompt_fast_path; the one-line notice is logged there),
+// and that entry guard is the ONLY protection - this chain is int8-only.  qsa_attn_mm / qsa_flash read the
+// int8 pool layout, and qsa_attn / qsa_merge below dispatch under plain keys with EMPTY Constants while
+// qsa_prep alone goes through qsa_c()/qsa_k(): if this chain ever ran under q4, prep would write q4-format
+// cells that the attention kernels would then read as int8 codes.  The plain keys are deliberate (the path is
+// dead under q4; making it half format-aware would only hide the mismatch) - the real fix, fast q4 prompt
+// kernels that are format-aware throughout, is milestone M2's.
 
 namespace {
 constexpr int PC_QB = 2051, PC_QCHUNKS = 33, PC_TM = 16;
