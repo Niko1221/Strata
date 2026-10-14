@@ -265,7 +265,10 @@ not a surprise.
 **Sampled memory did not move.** `VmRSS` windows, fresh engine per arm, same phase, median of 3: `SAVE` +240.8 MiB
 before against +236.8 MiB after at 32K (+241.2 against +241.2 at 63K), `RESTORE` +351.0 against +350.2 (+804.6 against
 +804.6), a park/resume switch +48.0 against +56.2 (0.0 against 2.8). That is what was expected: the scratch the patch
-removes is `kStateCodecChunkFloats`, 4 MiB, not a running state.
+removes is `kStateCodecChunkFloats`, 4 MiB, not a running state. Read the `SAVE` column as a matched pair, not as a
+level: it is a median of 3, and the re-measurement under **Parked images, 4K and 128K, cold reads, and RAM** below
+shows why a median of 3 cannot describe that operation. The `RESTORE` pair stands, and on the current build the same
+`RESTORE` window reads +406.5 MiB rather than +351.0.
 
 ## Files to change
 
@@ -492,12 +495,28 @@ fifth of a second, but it grew with the chain. **These two columns are supersede
 "Lazy restoration" below**; the parked-image bytes and `park_ms` are unchanged by that change. At long context K/V
 (15,271 B/token here) is 79% of an image, so the byte saving flattens toward −16%.
 
-**RAM.** `VmRSS` sampled at 20 ms from outside the process, on a fresh engine, median of 3: `SAVE` +353.2 MiB
-configured `fp32` against +240.8 MiB configured `bf16` at 32K (+353.8 against +240.8 at 63K). A bf16 `RESTORE` at 32K
-is *bigger*, +415.2 against +350.8 MiB: widening coded state allocates the fp32 arrays the engine runs on beside the
-compressed originals. At 63K both read +805 MiB, where K/V dominates the transient. Steady RSS with three
-conversations parked 55,026 → 57,342 MiB `fp32`, 54,749 → 56,897 MiB `bf16`; the cache's own accounting 3,842,780,664 B
-over 3 images against 3,370,528,248 B. Two limits on these numbers: `VmRSS` misses pages the kernel already wrote out
+**RAM.** `VmRSS` polled at 20 ms from outside the process, fresh engine per arm, two configs differing only in
+`--session-state-codec`, median of 9, build at `79955461`. `SAVE` splits on whether the allocator has already admitted
+its scratch. The **first** save after a prefill grows RSS by +353.2 MiB configured `fp32` against +180.5 MiB configured
+`bf16` at 32K (+354.0 against +181.2 at 63K): the same figure to 1 MiB at both sizes, so it is not token-sized, and the
+`bf16` one is 0.51× the `fp32` one, consistent with `bf16` being half the bytes. No further attribution is claimed —
+this PR does not instrument the allocator. Every
+later save reuses it, so its increment is nothing — median −1.5 MiB `fp32` and −66.7 MiB `bf16` at 32K, and negative at
+63K (−392.5 against −490.2) as the kernel writes back page cache while the image goes to disk. An earlier revision of
+this section read `SAVE` as +353.2 against +240.8 MiB from a median of 3. That median mixed "caught the allocation" with
+"reused it": the per-rep values were 353.2, −107.2, −12.2, and the run it came from lived in a file the harness keyed
+on codec alone, which a second size then overwrote.
+
+A `bf16` `RESTORE` is *bigger* than an `fp32` one, and by a constant: +406.5 against +350.3 MiB at 32K, +861.3 against
++805.1 at 63K — **+56.2 MiB at both sizes**. The constancy is the mechanism. Widening allocates the fp32 array the
+engine runs on beside the coded original still held in the cache, so `bf16` pays live fp32 (112.6 MiB) plus its own
+coded state (56.3 MiB) where `fp32` pays the live array alone; the delta is the coded `bf16` state, 59,031,600 B,
+predicted to 0.1 MiB. At 63K K/V dominates the transient on top of it, which is why both arms read ~2.2× larger there
+(2.30× `fp32`, 2.12× `bf16`).
+
+Steady RSS with conversations parked, both arms at 32K: 54,325.6 → 56,527.0 MiB `bf16` (+2,201.4) against 54,673.3 →
+57,314.4 MiB `fp32` (+2,641.1), the cache's own accounting 3,077,756,360 B against 3,727,103,432 B over 4 parked images.
+Two limits on these numbers: `VmRSS` misses pages the kernel already wrote out
 and most parked state is pageable, so they are lower bounds; and once the cache is at its budget every increment reads
 zero, because the allocator already owns the blocks — which is why this runs on a fresh process.
 
@@ -865,11 +884,16 @@ State the machine (CPU, GPU, RAM, OS, engine version, model, flags) next to ever
   read in 21.7 s either codec (21,716.5 ms `fp32` against 21,702.5 `bf16` at the default spacing, 21,796 against
   21,867.5 at `--prompt-cache-every` 8192, inside the arms' own 3–22 ms round spread), and the 24 tokens of a turn
   produced at ~77 tok/s either way. No codec code is on the token path.
-- peak RAM during SAVE, flag off vs on, to show the capture scratch is admitted and not a surprise. **Done, with the
-  limits stated:** `SAVE` grows `VmRSS` by +353.2 MiB configured `fp32` and +240.8 MiB configured `bf16` at 32K on a
-  fresh process; a bf16 `RESTORE` is the one operation that grows *more* (+415.2 against +350.8 MiB), because widening
-  allocates the fp32 arrays beside the coded originals. The scratch itself is 4 MiB per coding pass, not 118 MB, and
-  the preflight admits it.
+- peak RAM during SAVE, flag off vs on, to show the capture scratch is admitted and not a surprise. **Done, and
+  re-measured on `79955461` after an earlier pair of figures proved unreproducible.** The *first* `SAVE` after a
+  prefill grows `VmRSS` by +353.2 MiB configured `fp32` against +180.5 MiB configured `bf16` at 32K (+354.0 against
+  +181.2 at 63K); every later save reuses it and reads ~0, or negative at 63K as page cache is written back. That
+  admission is not the codec scratch — the coding pass chunks at `kStateCodecChunkFloats`, 4 MiB, not 118 MB, and the
+  preflight admits it — and it is not token-sized, since 32K and 63K give the same figure to 1 MiB. It scales with the
+  codec (0.51× at `bf16`), which is what arrays sized by state look like, but this PR does not instrument the allocator
+  and no further attribution is claimed. A bf16 `RESTORE` is the one operation that grows *more*, by a constant
+  **+56.2 MiB at both 32K and 63K** (+406.5 against +350.3, +861.3 against +805.1), because widening allocates the fp32
+  array beside the coded original: the delta is the coded bf16 state, 59,031,600 B, to 0.1 MiB.
 
 ## What this unlocks (not in this PR)
 
