@@ -187,7 +187,8 @@ def handle(svc, req: dict) -> tuple[int, dict]:
             cancel = threading.Event()
             for _ in engine.generate(ids, 1, {}, cancel):
                 pass                                     # the one decode step; its logits row is the readout
-            row = engine.final_row_logits(ids)
+            tokens = sorted({t for v in variants for t in v})
+            row = engine.final_row_logits(ids, tokens)   # BROW: only the label tokens asked for
             try:
                 scores = readout_scores(row, variants)
             except ValueError as e:
