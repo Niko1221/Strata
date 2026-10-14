@@ -27,6 +27,8 @@
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-image"/></svg>Images</button>
     <button class="st-tab" role="tab" id="tab-btn-monitor" aria-controls="view-monitor" aria-selected="false" data-tab="monitor">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Monitor</button>
+    <button class="st-tab" role="tab" id="tab-btn-engine" aria-controls="view-engine" aria-selected="false" data-tab="engine">
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-gpu"/></svg>Engine</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>About</button>
   </nav>
@@ -166,6 +168,30 @@
         <div class="mcp-list" id="mcp-list"></div>
         <p class="muted small mcp-note">Their tools run on this PC with your rights, when the model decides to call them
           (in this page's chat only; switch it off in Sampling).</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ Engine ============================ -->
+  <section class="view view--engine" id="view-engine" role="tabpanel" aria-labelledby="tab-btn-engine" hidden>
+    <div class="about">
+      <div class="st-card">
+        <div class="req-head"><span class="card-title">Engine switches</span><span class="muted small" id="eng-scope"></span></div>
+        <p class="muted small" id="eng-note">Speed and feature switches for this GPU, kept in the run config (env / args).
+          An empty field is the engine default. They take effect the next time the model starts.</p>
+        <div class="eng-restart" id="eng-restart-bar" hidden>
+          <span>The engine settings changed since it started.</span>
+          <button class="st-btn st-btn--primary" id="eng-restart" type="button">Restart engine</button>
+          <span class="muted small" id="eng-restart-msg" role="status"></span>
+        </div>
+        <div class="eng-tools">
+          <input class="st-input" id="eng-search" type="search" placeholder="Search switches…" autocomplete="off" aria-label="Search switches">
+          <label class="eng-ab" for="eng-ab"><input type="checkbox" id="eng-ab"> experimental</label>
+          <span class="muted small" id="eng-count"></span>
+        </div>
+        <div id="eng-list" class="eng-list"></div>
+        <div class="cfg-actions"><button class="st-btn st-btn--primary" id="eng-save" type="button">Save</button>
+          <span class="muted small" id="eng-msg" role="status"></span></div>
       </div>
     </div>
   </section>

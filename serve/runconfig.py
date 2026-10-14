@@ -14,8 +14,12 @@ import os
 import shutil
 from pathlib import Path
 
+from serve import engine_options
+
 # (key, kind, help).  kind: "bool", "int>=0", "num>=0", ("enum", values), "names", or ("sampling", check) for a key
 # of the "sampling" block, ("arg", flag) for an engine option kept in "args".
+# The Engine tab's keys - "env.NAME", "arg.--flag" (int), "argflag.--flag" (presence), "argstr.--flag",
+# "argenum.--flag" - are not listed here: serve/engine_options.py's catalog is their allowlist.
 EDITABLE = [
     ("sampling.temperature", ("sampling", "num>=0"),
      "Default temperature for requests that send none (0 = greedy; without it the model card's: 1.0 thinking, 0.7 not)"),
@@ -49,6 +53,28 @@ def _arg(cfg: dict, flag: str):
 
 
 def value_of(cfg: dict, key: str):
+    if key in engine_options.CATALOG:
+        kind, _, rest = key.partition(".")
+        if kind == "env":
+            e = cfg.get("env")
+            return e.get(rest) if isinstance(e, dict) else None
+        flag = engine_options.CATALOG[key]["flag"]
+        a = cfg.get("args")
+        if not isinstance(a, list):
+            a = []
+        if kind == "argflag":
+            return flag in a
+        if flag in a[:-1]:
+            v = str(a[a.index(flag) + 1])
+            if kind == "arg" and v.isdigit():
+                return int(v)
+            if engine_options.CATALOG[key].get("kind") == "number":
+                try:
+                    return float(v)
+                except ValueError:
+                    pass
+            return v
+        return None
     kind = SPEC[key]
     if isinstance(kind, tuple) and kind[0] == "sampling":
         s = cfg.get("sampling")
@@ -80,6 +106,35 @@ def _number(key, v, whole=False, lo=0.0, hi=None, lo_open=False):
 
 def check(key: str, v, cfg: dict):
     """The value to store for `key`, or a ValueError naming what is expected.  None removes the key (its default)."""
+    if key in engine_options.CATALOG:
+        if v is None:
+            return None
+        kind, _, rest = key.partition(".")
+        o = engine_options.CATALOG[key]
+        input_kind = o.get("kind", "str")
+        if kind == "argflag":
+            if not isinstance(v, bool):
+                raise ValueError(f"{key}: expected true or false, not {v!r}")
+            return v
+        if kind == "arg" and input_kind == "int":
+            return _number(key, v, whole=True, lo=o.get("min", 0), hi=o.get("max"))
+        if kind == "arg" and input_kind == "number":
+            return _number(key, v, lo=o.get("min", 0), hi=o.get("max"))
+        if kind == "argenum":
+            if v not in o.get("choices", ()):
+                raise ValueError(f"{key}: expected one of {', '.join(o['choices'])}, not {v!r}")
+            return v
+        # env.NAME and string args: the engine parses the string itself
+        if isinstance(v, bool):
+            return "1" if v else "0"
+        if isinstance(v, (int, float)):
+            return str(v)
+        if isinstance(v, str):
+            s = v.strip()
+            if not s or len(s) > 512 or any(c in s for c in "\r\n\t"):
+                raise ValueError(f"{key}: expected a short value with no newlines, not {v!r}")
+            return s
+        raise ValueError(f"{key}: expected a value, not {v!r}")
     if key not in SPEC:
         raise ValueError(f"{key!r} cannot be changed here (only the keys the Settings view lists)")
     if v is None:
@@ -128,6 +183,39 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
     changed = []
     for key, v in checked.items():
         if value_of(new, key) == v:
+            continue
+        if key in engine_options.CATALOG:
+            kind, _, rest = key.partition(".")
+            if kind == "env":
+                e = new.get("env")
+                e = dict(e) if isinstance(e, dict) else {}
+                if v is None:
+                    e.pop(rest, None)
+                else:
+                    e[rest] = v
+                if e:
+                    new["env"] = e
+                else:
+                    new.pop("env", None)
+            else:
+                a = new.get("args")
+                a = list(a) if isinstance(a, list) else []
+                flag = engine_options.CATALOG[key]["flag"]
+                if kind == "argflag":
+                    if v and flag not in a:
+                        a.append(flag)
+                    elif not v and flag in a:
+                        a.remove(flag)
+                elif flag in a[:-1]:
+                    i = a.index(flag)
+                    if v is None:
+                        del a[i:i + 2]
+                    else:
+                        a[i + 1] = str(v)
+                elif v is not None:
+                    a += [flag, str(v)]
+                new["args"] = a
+            changed.append(key)
             continue
         kind = SPEC[key]
         if isinstance(kind, tuple) and kind[0] == "sampling":
