@@ -1,0 +1,55 @@
+{
+ "args": [
+  "--pack",
+  "<models>/packs/iq3_s",
+  "--native",
+  "<models>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "--ple-gguf",
+  "<models>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+  "--expert-profile",
+  "<strata-install>/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "<models>/mtp/rt",
+  "--max-context",
+  "262144",
+  "--kv",
+  "int8",
+  "--kv-resident",
+  "65536",
+  "--conversation-cache-mib",
+  "16384",
+  "--conversation-cache-slots",
+  "6",
+  "--vision",
+  "--vram-reserve-mib",
+  "700",
+  "--vram-reserve-later-mib",
+  "1800",
+  "--mtp-draft-vocab",
+  "<strata-install>/data/draft_vocab_en.bin",
+  "--trim-stage-weights"
+ ],
+ "env": {
+  "STRATA_HIPBLASLT_TUNING": "<strata-install>/tools/hip/gfx1201-hipblaslt-100202.txt"
+ },
+ "gpu": [
+  0,
+  1
+ ],
+ "layer_split": "26",
+ "backend": "hip",
+ "reasoning_budget_tokens": 8192,
+ "vision": {
+  "gpu": false,
+  "max_tokens": 300,
+  "threads": 12
+ }
+}

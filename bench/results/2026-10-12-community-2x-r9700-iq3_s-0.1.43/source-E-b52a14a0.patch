@@ -1,0 +1,931 @@
+From d4ec454b3739272982b6113ac8c51e26aa8b0454 Mon Sep 17 00:00:00 2001
+From: Justin Cunningham <justin@bulletprooftiger.com>
+Date: Tue, 13 Oct 2026 09:07:11 -0400
+Subject: [PATCH 1/3] gfx12 layer split: the ten exact decode switches of the
+ gfx1151 table on by default (2x R9700, IQ3_S, --layer-split 26: greedy 108.0
+ -> 115.0 tok/s, output unchanged); one GPU unchanged
+
+#1478 put only the prompt half of the gfx1151 table into the gfx12
+defaults, because the decode half measured slower on one R9700. Split
+over two R9700s the same switches measured faster: there every expert
+is resident, so the CPU computes no misses.
+
+arch_default_env / apply_arch_defaults take `layer_split` (default
+false, so the SYCL caller and every other path are unchanged). On
+gfx1200 / gfx1201 with it set, the table is the five prompt switches
+followed by STRATA_Q8_PACKED, STRATA_Q6_PACKED, STRATA_MMVF_ROWS,
+STRATA_ATTN_LANECELL, STRATA_EXPERT_V2, STRATA_TSUM, STRATA_LFUSE,
+STRATA_GDN_SPLIT, STRATA_QFUSE and STRATA_PLE_BATCH: the gfx1151
+table's decode half without STRATA_SH_STREAM (not measured on a gfx12
+split). All ten are in the gfx1151 table, which holds only switches
+with byte-identical output. No bit-changing switch is added.
+
+generate.cpp passes layer_split = --layer-split given and two or more
+GPUs visible (cudaGetDeviceCount). The device count decides because
+`--layer-split auto` resolves later and clears itself on one GPU, so a
+one-GPU box never gets the decode half. On a box with two or more GPUs
+a split that later runs on one GPU (--split-device 0, or
+--split-skip-if-fits when the model fits) keeps the switches; they are
+exact, so only the speed can differ there.
+
+Opt-outs: STRATA_GFX12_SPLIT_DECODE=0 drops only the decode half;
+STRATA_GFX12_DEFAULTS=0 still turns the whole gfx12 table off; a switch
+the user set is kept. The start-up line names the "gfx12 (RDNA4),
+layer-split table" and both opt-outs.
+
+Measured on 2x Radeon AI PRO R9700 32 GB (Ryzen 9 5900X, X570 PCIe 4.0
+x8 / x8, ROCm 7.2.4), Qwen3.8-Flash-Next IQ3_S, --layer-split 26 (all
+24,576 experts resident), spec 4 + MTP, 3 runs each; greedy is the
+geometric mean of prose / code / edit / reasoning at temp 0, sampled
+at temp 1.0, prompts are cold reads:
+- 0.1.43 stock (mean of two sessions, one before and one after):
+  greedy 108.0, sampled 100.5, 4K 1,370, 16K 1,553, 64K 2,452 tok/s
+- this commit: greedy 115.0 (+6.5%), sampled 106.6 (+6.1%), 4K 1,450
+  (+6%), 16K 1,788 (+15%), 64K 2,792 (+14%) tok/s
+- greedy output byte-identical to stock on all four prompts, in all
+  three runs
+- STRATA_HIP_WMMA=1 on top (opt-in, it changes bits) reads prompts
+  faster still: 4K 1,759, 16K 2,376, 64K 3,556 tok/s
+
+Checks: arch_defaults_test (no GPU) OK: the one-GPU gfx12 table is
+still exactly the five prompt switches; gfx12 + layer split gives 15
+entries with the prompt half first, no bit-changing switch, no
+STRATA_SH_STREAM and no STRATA_VERIFY_QDEDUP;
+STRATA_GFX12_SPLIT_DECODE=0 gives 5, STRATA_GFX12_DEFAULTS=0 none;
+gfx1151 is identical with and without the split; other architectures
+stay empty; a user setting wins on the split table. On the GPUs the
+two-GPU start-up line named all 15 switches; with HIP_VISIBLE_DEVICES=0
+and --layer-split 26 it named only the 5 prompt switches. Built for HIP
+(ROCm 7.2.4, gfx1201, Linux, GCC); CUDA and SYCL not built (the new
+parameter has a default, so their callers compile unchanged). Docs:
+DETAILS.md, AMD_HIP.md (RDNA4), MULTI_GPU.md (Measured).
+---
+ docs/AMD_HIP.md                       | 10 ++++++
+ docs/DETAILS.md                       |  2 ++
+ docs/MULTI_GPU.md                     |  6 ++++
+ include/strata/core/arch_defaults.hpp | 18 ++++++----
+ src/core/arch_defaults.cpp            | 51 +++++++++++++++++++++++----
+ src/core/arch_defaults_test.cpp       | 49 +++++++++++++++++++++++++
+ src/program/generate.cpp              | 12 +++++--
+ 7 files changed, 132 insertions(+), 16 deletions(-)
+
+diff --git a/docs/AMD_HIP.md b/docs/AMD_HIP.md
+index 66250f25..3d2c1765 100644
+--- a/docs/AMD_HIP.md
++++ b/docs/AMD_HIP.md
+@@ -359,6 +359,16 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
+     prompt's top token was the same one, so that check says little); 4 of 4 long-context retrieval checks passed.
+     0.1.42 re-check on an R9700 (Linux, ROCm 7.14), 12 prompts of 1.5K-24K tokens, first-token KL against the FP16 prompt path (MMQ / fused): IQ3_S 0.00332 / 0.00284, top-1 12 of 12 for both; IQ3_XXS 0.00335 / 0.00452 on one sample and 0.00344 / 0.00323 on a second (24 prompts pooled: 0.00340 / 0.00388, top-1 24 of 24 for both); the Q2_0 pack does not take these kernels on gfx12 (output bit-identical to MMQ). Because the IQ3_XXS pool is not at or below MMQ's, the flag stays opt-in. Measured on Linux only.
+     gfx1200 builds the same kernels and was not run; Windows and K-quant packs (`STRATA_PF_FUSED_KQ=1`) were not measured.
++- **Exact defaults (arch table):** on gfx1200 / gfx1201 the engine sets five exact prompt switches on every run
++  (`STRATA_GDN_HEAD`, `STRATA_GDN_PP=2`, `STRATA_GDN_CONVL2`, `STRATA_GDN_NOY`, `STRATA_CVEC_FUSE`; #1478). With
++  `--layer-split` and two or more GPUs visible it also sets the ten exact decode switches of the gfx1151 table
++  (`STRATA_Q8_PACKED` ... `STRATA_PLE_BATCH`, not `STRATA_SH_STREAM`; list and numbers in
++  [DETAILS.md](DETAILS.md)). On one R9700 those decode switches measured slower, so a one-GPU run does not get them;
++  on 2x R9700 (`--layer-split 26`, IQ3_S, every expert resident) they took greedy decode from 108.0 to 115.0 tok/s
++  and 64K prompt reads from 2,452 to 2,792 tok/s, with byte-identical greedy output. The opt-in `STRATA_HIP_WMMA`
++  (changes bits) adds more on prompts.
++  `STRATA_GFX12_SPLIT_DECODE=0` drops the decode half, `STRATA_GFX12_DEFAULTS=0` the whole table; the start-up line
++  names what was set.
+ - **Known:** rarely (about 1 start in 10) a HIP run's greedy output differs from another start's at some token, on
+   one card or two and on engine 0.1.29 as well; not yet explained.
+ - **Not validated:** images, long contexts beyond 16K, answer-quality benchmarks.
+diff --git a/docs/DETAILS.md b/docs/DETAILS.md
+index 49c49d1b..35c02449 100644
+--- a/docs/DETAILS.md
++++ b/docs/DETAILS.md
+@@ -1945,3 +1945,5 @@ The prompt path's half-output buffer `bo` reuses the embedding buffer `emb`, whi
+ **Fused int8 prompt experts on gfx12 (RDNA4, R9700): on by default for IQ3_S and IQ3_XXS packs.** `STRATA_PF_FUSED=0` turns them off (back to the MMQ prompt kernels, the previous bits). R9700, 1 card: prompt 4K +15.7%, 16K +13..+17%, 32K +19..+20%, a 96K prompt +16% (answers identical text); first-token KL against the FP16 prompt path over 96 prompts is equal to MMQ within noise (IQ3_XXS 0.00613 against 0.00683, IQ3_S 0.00416 against 0.00372). Other quants and other GPUs are unchanged; `STRATA_PF_FUSED=1` still opts in every covered format.
+ 
+ **gfx12 (Linux): a bare `--prefill auto` may take 16384-token chunks.** Explicit `--prefill N`, `auto:N` and `STRATA_PREFILL_AUTO_MAX` are untouched; `STRATA_GFX12_CHUNK=0` or `STRATA_GFX12_DEFAULTS=0` keeps 8192.
++
++**gfx12 (RDNA4): exact speed switches on by default, the decode half only for a layer split.** At start the engine looks at GPU 0. On gfx1200 / gfx1201 it sets the prompt half of the gfx1151 table (`STRATA_GDN_HEAD`, `STRATA_GDN_PP=2`, `STRATA_GDN_CONVL2`, `STRATA_GDN_NOY`, `STRATA_CVEC_FUSE`; #1478) on every run. With `--layer-split` and two or more GPUs visible it also sets the ten decode switches of that table (`STRATA_Q8_PACKED`, `STRATA_Q6_PACKED`, `STRATA_MMVF_ROWS`, `STRATA_ATTN_LANECELL`, `STRATA_EXPERT_V2`, `STRATA_TSUM`, `STRATA_LFUSE`, `STRATA_GDN_SPLIT`, `STRATA_QFUSE`, `STRATA_PLE_BATCH`; not `STRATA_SH_STREAM`). All of them are bitwise switches ([STRIX_HALO.md](STRIX_HALO.md) section 4): they change speed, not answers. On one R9700 the decode half measured slower, so a one-GPU run keeps the prompt half only. On 2x R9700 32 GB (Ryzen 9 5900X, PCIe 4.0 x8 / x8, ROCm 7.2.4), Qwen3.8-Flash-Next IQ3_S, `--layer-split 26` (every expert resident), 3 runs each, the stock prompt-only table gave greedy 108.0 tok/s (geometric mean of prose / code / edit / reasoning; mean of two sessions), sampled 100.5 tok/s and cold prompts of 4K / 16K / 64K at 1,370 / 1,553 / 2,452 tok/s; with these ten switches it gave 115.0 (+6.5%), 106.6 (+6.1%) and 1,450 / 1,788 / 2,792 (+6% / +15% / +14%), with byte-identical greedy output on all four prompts. If you accept changed bits, the opt-in `STRATA_HIP_WMMA` on top reads prompts faster still (1,759 / 2,376 / 3,556). `STRATA_GFX12_SPLIT_DECODE=0` keeps the prompt half only; `STRATA_GFX12_DEFAULTS=0` turns both off; a switch you set yourself is kept. The decision is made before the weights load, so on a box with two or more GPUs a split that ends up on one GPU (`--split-device 0`, or `--split-skip-if-fits` when the model fits) keeps the decode half.
+diff --git a/docs/MULTI_GPU.md b/docs/MULTI_GPU.md
+index cb01fa0e..facc54ed 100644
+--- a/docs/MULTI_GPU.md
++++ b/docs/MULTI_GPU.md
+@@ -236,6 +236,12 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
+ - **Decode is on par with the faster card alone**, and ahead on code. Once both caches hold nearly every routed
+   expert, the per-layer GPU time decides.
+ - **Correctness:** one GPU is byte-identical to 0.1.20, and the hand-off itself is bit-exact.
++- **AMD gfx12 splits get the exact decode switches by default.** When GPU 0 is a gfx1200 / gfx1201 and
++  `--layer-split` runs with two or more GPUs visible, the engine adds the ten bitwise decode switches of the gfx1151
++  table to the gfx12 prompt switches (the start-up line says "gfx12 (RDNA4), layer-split table"; [DETAILS.md](DETAILS.md) has the list). On
++  2x R9700, Qwen3.8-Flash-Next IQ3_S, `--layer-split 26`: greedy decode 108.0 -> 115.0 tok/s, sampled 100.5 -> 106.6,
++  greedy output byte-identical. One-GPU runs
++  are unchanged; `STRATA_GFX12_SPLIT_DECODE=0` turns the decode half off.
+ 
+ **Which cards and in what order:**
+ - Put the fastest card first; auto gives it as many layers as its cache allows.
+diff --git a/include/strata/core/arch_defaults.hpp b/include/strata/core/arch_defaults.hpp
+index cd11a0ed..c47b4506 100644
+--- a/include/strata/core/arch_defaults.hpp
++++ b/include/strata/core/arch_defaults.hpp
+@@ -8,6 +8,11 @@
+ // STRATA_SELECT_WMMA, STRATA_HC_Q8: rounding-level, KL-gated) stay opt-in; docs/STRIX_HALO.md lists them.
+ //
+ // A switch the user set (to anything) is never overridden; STRATA_GFX1151_DEFAULTS=0 turns the whole table off.
++//
++// gfx1200 / gfx1201 (RDNA4) take the PROMPT half of that table on every run.  Ten exact switches of the DECODE half (all of
++// it but STRATA_SH_STREAM) are added only for a layer split over two or more GPUs: on one R9700 they measured slower (#1478),
++// on a two-R9700 split (--layer-split 26, every expert resident) they measured faster (src/core/arch_defaults.cpp has the
++// numbers).  STRATA_GFX12_DEFAULTS=0 turns the gfx12 table off; STRATA_GFX12_SPLIT_DECODE=0 drops only its decode half.
+ #pragma once
+ 
+ #include <string>
+@@ -17,12 +22,13 @@
+ namespace strata::core {
+ 
+ /// The environment settings that are the defaults of `gcn_arch` (hipDeviceProp_t::gcnArchName; "gfx1151" or
+-/// "gfx1151:sramecc-:xnack-"): empty for every other architecture.
+-std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch);
++/// "gfx1151:sramecc-:xnack-"): empty for every other architecture.  `layer_split`: the run is a layer split over two or
++/// more GPUs; it adds the decode half on gfx12 and changes nothing elsewhere (gfx1151 has its whole table either way).
++std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch, bool layer_split = false);
+ 
+-/// Sets `arch_default_env(gcn_arch)` in this process's environment where the user has not set the variable, prints one
+-/// line to stderr when it set anything, and returns the names it set.  Call once, before any engine code reads its
+-/// switches (they are read lazily, at first use).
+-std::vector<std::string> apply_arch_defaults(const char* gcn_arch);
++/// Sets `arch_default_env(gcn_arch, layer_split)` in this process's environment where the user has not set the variable,
++/// prints one line to stderr when it set anything, and returns the names it set.  Call once, before any engine code reads
++/// its switches (they are read lazily, at first use).
++std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool layer_split = false);
+ 
+ }  // namespace strata::core
+diff --git a/src/core/arch_defaults.cpp b/src/core/arch_defaults.cpp
+index e8ca7c9b..19fca74e 100644
+--- a/src/core/arch_defaults.cpp
++++ b/src/core/arch_defaults.cpp
+@@ -6,14 +6,16 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <iterator>
+ 
+ namespace strata::core {
+ 
+-std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch) {
++std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch, bool layer_split) {
+     std::vector<std::pair<std::string, std::string>> t;
+     if (strata::kernels::gfx_arch_is_gfx12(gcn_arch)) {
+         // gfx1200 / gfx1201 (RDNA4): only the PROMPT half of the gfx1151 table.  Reported exact (identical answers) on an R9700
+-        // in #1478 and re-checked bitwise here (notes-142-amd.md); the decode half measured slower on that card, so it stays out.
++        // in #1478 and re-checked bitwise here (notes-142-amd.md); the decode half measured slower on that card, so it stays out
++        // of a one-GPU run.  A layer split over two or more GPUs adds it (below).
+         // STRATA_HCD_EXACT is left out: it needs the gfx1151 hipBLASLt tuning table, finds none on gfx12, says so on every start
+         // and does nothing (measured: with and without it identical, 0.0 to +0.1%).
+         // STRATA_GDN_CONVL2 is AMD-only on purpose: it is not bitwise on CUDA 13.3 sm_120 (#1522), and this table is never
+@@ -27,6 +29,38 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
+             {"STRATA_GDN_NOY", "1"},
+             {"STRATA_CVEC_FUSE", "1"},
+         };
++        // A layer split (`layer_split`: --layer-split with two or more GPUs visible): the DECODE half of the gfx1151 table as
++        // well.  On one R9700 it measured slower (#1478); split over two R9700s, where every expert is resident and the CPU
++        // computes no misses, the same switches measured faster.  2x R9700
++        // 32 GB (Ryzen 9 5900X, PCIe 4.0 x8 / x8, ROCm 7.2.4), Qwen3.8-Flash-Next IQ3_S, --layer-split 26 (all 24,576 experts
++        // resident), spec 4 + MTP, 3 runs each: the stock 0.1.43 table gave greedy 108.0 tok/s (geometric mean of prose /
++        // code / edit / reasoning at temp 0; mean of two sessions), sampled 100.5 (temp 1.0), cold prompts 4K 1,370 / 16K
++        // 1,553 / 64K 2,452 tok/s; with these ten it gave 115.0 (+6.5%), 106.6 (+6.1%), 1,450 / 1,788 / 2,792 (+6% / +15% /
++        // +14%), and the greedy output of all four prompts stayed byte-identical.  The opt-in STRATA_HIP_WMMA (bit-changing)
++        // on top reads prompts faster still (1,759 / 2,376 / 3,556).  Every one of the ten is bitwise on gfx1151 (header), and none is new code for gfx12:
++        // the HIP build already compiles and runs each of them on gfx1201 when the user sets it.
++        // Not taken: STRATA_SH_STREAM (not measured on a gfx12 split; it is off on other AMD cards, #816), STRATA_HCD_EXACT
++        // and STRATA_PF_PAD (prompt switches that do nothing on gfx12, above / without STRATA_PF_GEMM).
++        // STRATA_GFX12_SPLIT_DECODE=0 keeps the five prompt switches only (the one-GPU table).
++        // On a box with two or more GPUs the decision is made before the weights load, so a split that later runs on one GPU
++        // (--split-device 0, or --split-skip-if-fits when the model fits on GPU 0) keeps these switches; they are exact, so
++        // only the speed can differ from the one-GPU table there.
++        const char* dec12 = std::getenv("STRATA_GFX12_SPLIT_DECODE");
++        if (layer_split && !(dec12 != nullptr && dec12[0] == '0')) {
++            const std::pair<std::string, std::string> dec[] = {
++                {"STRATA_Q8_PACKED", "1"},       // the packed Q8_0 decode layout (a second, packed copy of each eligible dense matrix)
++                {"STRATA_Q6_PACKED", "1"},       // the packed Q6_K heads
++                {"STRATA_MMVF_ROWS", "1"},       // bf16 multi-row GEMV, 4 rows per block
++                {"STRATA_ATTN_LANECELL", "1"},   // decode attention scores, one cell per thread
++                {"STRATA_EXPERT_V2", "1"},       // the grouped decode experts, IQ3_S gate/up + IQ4_NL down
++                {"STRATA_TSUM", "1"},            // several warp sums as one transposed butterfly
++                {"STRATA_LFUSE", "1"},           // fewer launches around the shared expert and the KV append
++                {"STRATA_GDN_SPLIT", "1"},       // the GDN step over 4 blocks per head
++                {"STRATA_QFUSE", "1"},           // activation q8_1 images written by their producers
++                {"STRATA_PLE_BATCH", "1"},       // the verify window's PLE key / value projections at once
++            };
++            t.insert(t.end(), std::begin(dec), std::end(dec));
++        }
+         return t;
+     }
+     if (!strata::kernels::gfx_arch_is_gfx1151(gcn_arch)) return t;
+@@ -58,9 +92,9 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
+     return t;
+ }
+ 
+-std::vector<std::string> apply_arch_defaults(const char* gcn_arch) {
++std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool layer_split) {
+     std::vector<std::string> set;
+-    for (const auto& kv : arch_default_env(gcn_arch)) {
++    for (const auto& kv : arch_default_env(gcn_arch, layer_split)) {
+         if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, whatever it is
+ #if defined(_WIN32)
+         _putenv_s(kv.first.c_str(), kv.second.c_str());
+@@ -71,10 +105,13 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch) {
+     }
+     if (!set.empty()) {
+         const bool g12 = strata::kernels::gfx_arch_is_gfx12(gcn_arch);
++        const char* dec12 = std::getenv("STRATA_GFX12_SPLIT_DECODE");
++        const bool split12 = g12 && layer_split && !(dec12 != nullptr && dec12[0] == '0');
+         std::fprintf(stderr, "strata: %s: %zu exact speed switches on by default (%s=0 turns "
+-                             "them off; a switch you set is kept): ",
+-                     g12 ? "gfx12 (RDNA4)" : "gfx1151 (Strix Halo)", set.size(),
+-                     g12 ? "STRATA_GFX12_DEFAULTS" : "STRATA_GFX1151_DEFAULTS");
++                             "them off%s; a switch you set is kept): ",
++                     split12 ? "gfx12 (RDNA4), layer-split table" : g12 ? "gfx12 (RDNA4)" : "gfx1151 (Strix Halo)",
++                     set.size(), g12 ? "STRATA_GFX12_DEFAULTS" : "STRATA_GFX1151_DEFAULTS",
++                     split12 ? ", STRATA_GFX12_SPLIT_DECODE=0 only the decode half" : "");
+         for (size_t i = 0; i < set.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", set[i].c_str() + 7);
+         std::fprintf(stderr, "\n");
+     }
+diff --git a/src/core/arch_defaults_test.cpp b/src/core/arch_defaults_test.cpp
+index 737d4a23..b85ac8ed 100644
+--- a/src/core/arch_defaults_test.cpp
++++ b/src/core/arch_defaults_test.cpp
+@@ -1,6 +1,7 @@
+ // src/core/arch_defaults_test.cpp - the per-architecture default table (no GPU needed).
+ #include "strata/core/arch_defaults.hpp"
+ 
++#include <algorithm>
+ #include <cstdio>
+ #include <cstdlib>
+ #include <string>
+@@ -59,6 +60,54 @@ int main() {
+     put("STRATA_GFX12_DEFAULTS", "0");
+     CHECK(arch_default_env("gfx1201").empty());
+     unset("STRATA_GFX12_DEFAULTS");
++    // gfx12 and a layer split over two or more GPUs: the five prompt switches, then the ten exact decode switches of the
++    // gfx1151 table; not STRATA_SH_STREAM, no bit-changing switch, no STRATA_VERIFY_QDEDUP
++    unset("STRATA_GFX12_SPLIT_DECODE");
++    for (const char* a : {"gfx1200", "gfx1201", "gfx1201:sramecc-:xnack-"}) {
++        const auto one = arch_default_env(a);
++        const auto t = arch_default_env(a, true);
++        CHECK(t.size() == 15);
++        CHECK(t.size() >= one.size() && std::equal(one.begin(), one.end(), t.begin()));   // the prompt half comes first, unchanged
++        auto has = [&](const char* k) {
++            for (const auto& kv : t) if (kv.first == k) return kv.second == "1";
++            return false;
++        };
++        for (const char* k : {"STRATA_GDN_HEAD", "STRATA_GDN_CONVL2", "STRATA_GDN_NOY", "STRATA_CVEC_FUSE", "STRATA_Q8_PACKED",
++                              "STRATA_Q6_PACKED", "STRATA_MMVF_ROWS", "STRATA_ATTN_LANECELL", "STRATA_EXPERT_V2", "STRATA_TSUM",
++                              "STRATA_LFUSE", "STRATA_GDN_SPLIT", "STRATA_QFUSE", "STRATA_PLE_BATCH"})
++            CHECK(has(k));
++        for (const auto& kv : t) {
++            CHECK(kv.first.rfind("STRATA_", 0) == 0);
++            for (const char* no : {"STRATA_SH_STREAM", "STRATA_VERIFY_QDEDUP", "STRATA_HCD_EXACT", "STRATA_PF_PAD", "STRATA_PF_GEMM",
++                                   "STRATA_PF_FUSED", "STRATA_HC_UPMIX", "STRATA_PA_FAST", "STRATA_HIP_WMMA", "STRATA_SELECT_WMMA",
++                                   "STRATA_HC_Q8", "STRATA_PF_HCDOWN", "STRATA_WMMA_GEMM"})
++                CHECK(kv.first != no);
++        }
++    }
++    // STRATA_GFX12_SPLIT_DECODE=0 drops only the decode half; STRATA_GFX12_DEFAULTS=0 still drops everything
++    put("STRATA_GFX12_SPLIT_DECODE", "0");
++    CHECK(arch_default_env("gfx1201", true).size() == 5);
++    unset("STRATA_GFX12_SPLIT_DECODE");
++    put("STRATA_GFX12_DEFAULTS", "0");
++    CHECK(arch_default_env("gfx1201", true).empty());
++    unset("STRATA_GFX12_DEFAULTS");
++    // a layer split changes nothing for gfx1151 and for every other architecture
++    CHECK(arch_default_env("gfx1151", true) == arch_default_env("gfx1151"));
++    CHECK(arch_default_env("gfx1151:sramecc-:xnack-", true) == arch_default_env("gfx1151:sramecc-:xnack-"));
++    for (const char* a : {"gfx1100", "gfx1101", "gfx1150", "gfx1030", "gfx906", "gfx12010", ""})
++        CHECK(arch_default_env(a, true).empty());
++    CHECK(arch_default_env(nullptr, true).empty());
++    // gfx12 split: a user's setting wins, the rest are set (the one-GPU names are not set twice)
++    put("STRATA_EXPERT_V2", "0");
++    unset("STRATA_PLE_BATCH");
++    const auto set12 = apply_arch_defaults("gfx1201", true);
++    CHECK(std::getenv("STRATA_EXPERT_V2") != nullptr && std::string(std::getenv("STRATA_EXPERT_V2")) == "0");
++    CHECK(std::getenv("STRATA_PLE_BATCH") != nullptr && std::string(std::getenv("STRATA_PLE_BATCH")) == "1");
++    for (const auto& n : set12) CHECK(n != "STRATA_EXPERT_V2");
++    for (const char* k : {"STRATA_GDN_HEAD", "STRATA_GDN_PP", "STRATA_GDN_CONVL2", "STRATA_GDN_NOY", "STRATA_CVEC_FUSE",
++                          "STRATA_Q8_PACKED", "STRATA_Q6_PACKED", "STRATA_MMVF_ROWS", "STRATA_ATTN_LANECELL", "STRATA_EXPERT_V2",
++                          "STRATA_TSUM", "STRATA_LFUSE", "STRATA_GDN_SPLIT", "STRATA_QFUSE", "STRATA_PLE_BATCH"})
++        unset(k);   // back to a clean environment for the gfx1151 checks below
+     // a user's setting wins, whatever it is; the rest are set
+     put("STRATA_TSUM", "0");
+     unset("STRATA_QFUSE");
+diff --git a/src/program/generate.cpp b/src/program/generate.cpp
+index 4aa057db..90718b90 100644
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -2150,10 +2150,16 @@ int main(int argc, char** argv) {
+         }
+     }
+ #if defined(STRATA_USE_HIP)
+-    {   // gfx1151 (Strix Halo): the switches that are exact there are on by default (strata/core/arch_defaults.hpp); before
+-        // any engine code reads its switches (they are read at first use), and the user's own settings are kept
++    {   // gfx1151 (Strix Halo), gfx12 (RDNA4): the switches that are exact there are on by default (strata/core/arch_defaults.hpp);
++        // before any engine code reads its switches (they are read at first use), and the user's own settings are kept.
++        // gfx12 adds its decode half for a layer split: --layer-split given and two or more GPUs visible.  The device count and
++        // not the split itself decides, because `--layer-split auto` resolves only below (one visible GPU clears it there), so a
++        // one-GPU box never gets the decode half.
++        int n_vis = 0;
++        if (cudaGetDeviceCount(&n_vis) != cudaSuccess) { (void) cudaGetLastError(); n_vis = 0; }
++        const bool split_run = !o.layer_split.empty() && n_vis >= 2;
+         cudaDeviceProp ad{};
+-        if (cudaGetDeviceProperties(&ad, 0) == cudaSuccess) strata::core::apply_arch_defaults(ad.gcnArchName);
++        if (cudaGetDeviceProperties(&ad, 0) == cudaSuccess) strata::core::apply_arch_defaults(ad.gcnArchName, split_run);
+         else (void) cudaGetLastError();
+     }
+ #endif
+
+From 1c7ec78011d8339d9ac5fd65963b80af08de93a1 Mon Sep 17 00:00:00 2001
+From: Justin Cunningham <justin@bulletprooftiger.com>
+Date: Tue, 13 Oct 2026 11:40:10 -0400
+Subject: [PATCH 2/3] STRATA_Q8_PACKED: the split search prices the packed
+ copies, and a copy that does not fit is dropped instead of aborting the load
+
+STRATA_Q8_PACKED=1 (on by default on gfx1151) keeps a second, packed copy
+of each eligible Q8_0 dense matrix in VRAM. NativeDense::load allocated
+it, but NativeDense::weight_bytes_for, which prices a later stage's
+projections for `--layer-split auto --trim-stage-weights` (#1238), did
+not count it. The search could then give a stage more layers than its
+card holds, and a failed packed cudaMalloc ended the load with "native
+dense packed upload".
+
+- weight_bytes_for adds the packed copy of every matrix that load would
+  pack. One predicate (q8_packs) now serves both, so they stay in step.
+- load: when the packed copy's cudaMalloc runs out of memory, the copy is
+  dropped, one stderr line names the matrix, and the matrices after it
+  are not packed either. The MMVQ looks each matrix up in the packed
+  registry and reads the GGUF layout when there is no entry, so the
+  decode output does not change, only the speed of those matrices. Any
+  other error (a failed copy) still ends the load as before.
+- allocated_bytes() now counts the packed copies; weight_bytes() stays
+  the GGUF payload (the packed total has its own log line).
+
+The SYCL port has its own native_dense.cpp and is not changed.
+
+Checks: built for HIP (ROCm 7.2.4, gfx1201, Linux, GCC); no GPU run of
+this commit. The packed path acts only on Q8_0 dense matrices of an
+eligible shape. The IQ3_S pack's one Q8_0 projection
+(blk.47.ffn_down_shexp, 640 inputs) is below the packed kernel's
+minimum width, so on that pack neither change does anything.
+---
+ include/strata/core/native_dense.hpp |  6 ++--
+ src/core/native_dense.cpp            | 51 ++++++++++++++++++++--------
+ 2 files changed, 41 insertions(+), 16 deletions(-)
+
+diff --git a/include/strata/core/native_dense.hpp b/include/strata/core/native_dense.hpp
+index 7b2b4a79..a5724a11 100644
+--- a/include/strata/core/native_dense.hpp
++++ b/include/strata/core/native_dense.hpp
+@@ -31,7 +31,8 @@ public:
+     /// PLE tensors are loaded everywhere).  Process-wide, read by the next `load`; (-1, -1) = all layers.
+     static void set_layer_range(int lb, int le);
+     /// Layer split: the device bytes `load` would allocate for the matrices of layers [lb, le) - the same walk and
+-    /// filters, each matrix rounded up to the granule cudaMalloc backs it with - reading the GGUF headers and `table`
++    /// filters, each matrix rounded up to the granule cudaMalloc backs it with, and a second copy of each matrix that
++    /// STRATA_Q8_PACKED=1 packs (the switch is read here as `load` reads it) - reading the GGUF headers and `table`
+     /// only, so it allocates nothing and needs no device (#1238).  `table` must hold every tensor the shards carry.
+     static bool weight_bytes_for(const std::vector<std::string>& shards, WeightTable& table, bool include_ple_key,
+                                  int64_t lb, int64_t le, uint64_t& out, std::string& err);
+@@ -40,7 +41,8 @@ public:
+     /// of `skip` and `load` does not upload the GGUF key over it.  A quantized row leaves `skip` unchanged.
+     static bool keep_unquantized_ple_key(const std::string& pack_dir, std::set<std::string>& skip, std::string& err);
+     uint64_t weight_bytes() const { return bytes_; }
+-    /// What the device lost to `load`: each matrix rounded up to the granule `cudaMalloc` backs it with.
++    /// What the device lost to `load`: each matrix rounded up to the granule `cudaMalloc` backs it with (the
++    /// STRATA_Q8_PACKED copies included; `weight_bytes` is the GGUF payload alone).
+     uint64_t allocated_bytes() const { return allocated_; }
+     size_t tensor_count() const { return weights_.size() - packed_keys_.size(); }
+ 
+diff --git a/src/core/native_dense.cpp b/src/core/native_dense.cpp
+index e0775a6a..6a21ded9 100644
+--- a/src/core/native_dense.cpp
++++ b/src/core/native_dense.cpp
+@@ -99,6 +99,13 @@ bool eligible(const strata::TensorInfo& tensor, bool include_ple_key) {
+     for (const char* suffix : suffixes) if (name.ends_with(suffix)) return true;
+     return false;
+ }
++// STRATA_Q8_PACKED=1: `load` keeps a second, packed copy of this matrix for the decode MMVQ (the same bytes as the GGUF
++// copy).  `weight_bytes_for` prices it with the same test, so a split search sees what `load` will allocate.
++bool q8_packs(const strata::TensorInfo& tensor, int64_t ne0, int64_t ne1) {
++    return tensor.type == 8 && tensor.name != "blk.1.ple_key.weight" &&   // the PLE has its own kernel
++           strata::kernels::native_q8_0_packed_enabled() &&
++           strata::kernels::native_q8_0_packed_eligible((int) ne0, (int) ne1);
++}
+ struct DeviceFree { void operator()(void* p) const { if (p) cudaFree(p); } };
+ using DevicePtr = std::unique_ptr<void, DeviceFree>;
+ struct Pending {
+@@ -131,7 +138,8 @@ void NativeDense::set_layer_range(int lb, int le) { g_layer_lb = lb; g_layer_le
+ // The byte walk `load` does for the layers [lb, le), without the allocations: the same filters in the same order,
+ // reading the GGUF headers and the canonical table only, so it needs no device.  A later stage's projections are not
+ // on the card when the split search prices that stage, and `load` runs one cudaMalloc per matrix (#1238).  The two
+-// have to stay in step.  A repeated name is skipped rather than refused (`load` refuses it).
++// have to stay in step, the STRATA_Q8_PACKED copies included.  A repeated name is skipped rather than refused (`load`
++// refuses it).
+ bool NativeDense::weight_bytes_for(const std::vector<std::string>& shards, WeightTable& table, bool include_ple_key,
+                                    int64_t lb, int64_t le, uint64_t& out, std::string& err) {
+     out = 0;
+@@ -161,7 +169,10 @@ bool NativeDense::weight_bytes_for(const std::vector<std::string>& shards, Weigh
+                     err = "native dense: incompatible matrix " + tensor.name;
+                     return false;
+                 }
+-                total += alloc_bytes(strata::kernels::native_mmvq_weight_bytes(tensor.type, (int) ref.ne0, (int) ref.ne1));
++                const uint64_t bytes = alloc_bytes(strata::kernels::native_mmvq_weight_bytes(tensor.type, (int) ref.ne0,
++                                                                                             (int) ref.ne1));
++                total += bytes;
++                if (q8_packs(tensor, ref.ne0, ref.ne1)) total += bytes;   // its STRATA_Q8_PACKED copy, the same size
+             }
+         }
+         out = total;
+@@ -203,6 +214,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
+         uint64_t total = 0, hc_q8_bytes = 0, allocated = 0;
+         uint64_t split_count = 0, split_tensors = 0;
+         std::set<uint64_t> split_numbers;
++        bool q8_pack_off = false;   // a packed copy did not fit: the rest keep the GGUF layout only
+         bool have_architecture = false;
+         for (const auto& path : shards) {
+             strata::GgufFile gguf(path);
+@@ -300,22 +312,33 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
+                 total += bytes;
+                 allocated += alloc_bytes(bytes);
+                 // STRATA_Q8_PACKED=1: a second, packed copy of an eligible Q8_0 matrix for the decode MMVQ (the GGUF
+-                // copy stays: the prompt path's GEMMs read it).
++                // copy stays: the prompt path's GEMMs read it).  The copy is only a faster layout of the same bytes (the
++                // MMVQ looks each matrix up and reads the GGUF layout when it has none), so a copy that does not fit is
++                // dropped, said once, and the matrices after it are not packed either: the load goes on without them.
+                 DevicePtr packed;
+-                if (tensor.type == 8 && tensor.name != "blk.1.ple_key.weight" &&   // the PLE has its own kernel
+-                    strata::kernels::native_q8_0_packed_enabled() &&
+-                    strata::kernels::native_q8_0_packed_eligible((int) ref.ne0, (int) ref.ne1)) {
+-                    std::vector<uint8_t> host(bytes);
+-                    strata::kernels::native_q8_0_pack_host(gguf.tensor_data(tensor), host.data(), (int) ref.ne0,
+-                                                           (int) ref.ne1);
++                if (!q8_pack_off && q8_packs(tensor, ref.ne0, ref.ne1)) {
+                     void* packed_allocation = nullptr;
+                     auto packed_status = cudaMalloc(&packed_allocation, bytes);
+                     packed.reset(packed_allocation);
+-                    if (packed_status == cudaSuccess)
+-                        packed_status = cudaMemcpy(packed.get(), host.data(), bytes, cudaMemcpyHostToDevice);
+-                    if (packed_status != cudaSuccess) {
+-                        err = "native dense packed upload " + tensor.name + ": " + cudaGetErrorString(packed_status);
+-                        return false;
++                    if (packed_status == cudaErrorMemoryAllocation) {
++                        (void) cudaGetLastError();
++                        packed.reset();
++                        q8_pack_off = true;
++                        std::fprintf(stderr, "native dense: STRATA_Q8_PACKED=1: no VRAM for the packed copy of %s (%.1f MiB); "
++                                             "it and the matrices after it keep the GGUF layout only\n",
++                                     tensor.name.c_str(), bytes / 1048576.0);
++                    } else {
++                        std::vector<uint8_t> host(bytes);
++                        if (packed_status == cudaSuccess) {
++                            strata::kernels::native_q8_0_pack_host(gguf.tensor_data(tensor), host.data(), (int) ref.ne0,
++                                                                   (int) ref.ne1);
++                            packed_status = cudaMemcpy(packed.get(), host.data(), bytes, cudaMemcpyHostToDevice);
++                        }
++                        if (packed_status != cudaSuccess) {
++                            err = "native dense packed upload " + tensor.name + ": " + cudaGetErrorString(packed_status);
++                            return false;
++                        }
++                        allocated += alloc_bytes(bytes);
+                     }
+                 }
+                 pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data), std::move(packed)});
+
+From b52a14a0b6382963096a9dd4449475f28f82a8ef Mon Sep 17 00:00:00 2001
+From: Justin Cunningham <justin@bulletprooftiger.com>
+Date: Tue, 13 Oct 2026 11:40:10 -0400
+Subject: [PATCH 3/3] gfx12 split decode switches: decided from the resolved
+ split (every GPU gfx12, Linux, no --split-skip-if-fits), not the visible GPU
+ count; STRATA_Q8_PACKED left out (inert on the measured IQ3_S pack)
+
+The previous commit turned the decode half on for `--layer-split` with
+two or more GPUs visible, looked only at GPU 0's architecture, and ran
+on every OS. So `--split-device 0` (both stages on one GPU), an `auto`
+split cancelled by --split-skip-if-fits, and a gfx1201 + other-AMD split
+got the switches, and Windows did too, none of which was measured.
+
+- arch_defaults: new pure function gfx12_split_decode(gpu_archs,
+  may_collapse, measured_os, why). Yes for two or more GPUs, every one
+  gfx12 (gcnArchName of each, not GPU 0 only), a split that cannot fall
+  back to one GPU, and a measured OS. STRATA_GFX12_SPLIT_DECODE=0 or
+  STRATA_GFX12_DEFAULTS=0 make it no; STRATA_GFX12_SPLIT_DECODE=1 makes
+  it yes on any gfx12 run (Windows, one GPU, --split-skip-if-fits), as
+  setting the switches by hand would.
+- generate.cpp: apply_arch_defaults moves from right after argument
+  parsing to right after the split is resolved and every used GPU's
+  architecture is checked (the gpu_arch_problem loop). multi_gpu is
+  final there for --split-device 0 and for `auto` with one GPU visible.
+  The archs passed are those of CUDA0, every later stage's device and
+  any --expert-cache-remote helper. Nothing between the old place and
+  the new one reads a switch: every reader of the 15 gfx12 and 18
+  gfx1151 switches is a function-local static in prefill/, verify.cpp,
+  native_dense.cpp, native_head.cpp, mtp.cpp or the kernels, first
+  reached when CUDA0's dense weights load (STRATA_Q8_PACKED) or later.
+  The gfx1151 table is applied at the new place too, unchanged.
+- --split-skip-if-fits is decided after CUDA0's dense weights load, so
+  after the switches are read. An `auto` split with it therefore keeps
+  the prompt switches only (conservative; =1 overrides).
+- Linux only: the switches are the same code on every OS, but the gain
+  was measured on Linux only, and 0.1.43's other gfx12 default (16384
+  prompt chunks) is Linux-only for the same reason. The caller passes
+  measured_os = false on Windows.
+- gfx1200 stays in: gfx_arch_is_gfx12 covers gfx1200 and gfx1201 and
+  0.1.43's gfx12 table already treats them alike. gfx1200 was not run.
+- When GPU 0 is gfx12, --layer-split is given and the decode switches
+  stay off, one start-up line says why.
+- STRATA_Q8_PACKED is out of the gfx12 split table (14 entries, not
+  15). It packs only Q8_0 dense matrices of an eligible shape; the
+  IQ3_S pack's one Q8_0 projection (blk.47.ffn_down_shexp, 640 inputs)
+  is too small, and the measured runs log no "packed ... Q8_0
+  matrices" line. So it did nothing in the measurement, and its effect
+  on gfx12 is unknown. The measured numbers stand for the other nine.
+
+Claims are now qualified to what was measured: 2x R9700 32 GB, Linux,
+ROCm 7.2.4, IQ3_S, --layer-split 26, all 24,576 experts resident; the
+generated output (answer text and token count) of four greedy prompts
+was identical to stock 0.1.43 in all three runs, and so were twelve
+sampled answers at fixed seeds. That is a check of generated output,
+not of bitwise intermediate results. Report with per-run data, configs
+and output hashes: bench/results/2026-10-12-community-2x-r9700-iq3_s-
+0.1.43 on github.com/justincinmd/Strata, branch pr/bench-2x-r9700.
+Code comments, DETAILS.md, AMD_HIP.md and MULTI_GPU.md say so.
+
+Checks: arch_defaults_test (g++ -std=c++20, no GPU) OK. New: the
+gfx12 split table is 14 entries without STRATA_Q8_PACKED;
+gfx12_split_decode is yes for 2 and 4 gfx1201, gfx1200 + gfx1201 and a
+gfx1201 with its feature suffix; no for no GPU or one, gfx1201 +
+gfx1100 / gfx1151 / gfx1030 in any order, an unreadable name,
+may_collapse, and measured_os = false; =0 and STRATA_GFX12_DEFAULTS=0
+win over a qualifying split; =1 is yes on one GPU and on a mixed
+split. Built for HIP (ROCm 7.2.4, gfx1201, Linux, GCC).
+arch_defaults.cpp and its test also pass g++ -fsyntax-only -Wall
+-Wextra. CUDA and SYCL were not built (no toolkit or compiler on this
+machine). A CUDA build never calls the new code (it is inside
+STRATA_USE_HIP); the SYCL port calls apply_arch_defaults with one
+argument, which still compiles against the defaulted parameter. No GPU
+run of this commit yet.
+---
+ docs/AMD_HIP.md                       | 19 +++++----
+ docs/DETAILS.md                       |  2 +-
+ docs/MULTI_GPU.md                     | 13 +++---
+ include/strata/core/arch_defaults.hpp | 25 +++++++++---
+ src/core/arch_defaults.cpp            | 53 ++++++++++++++++--------
+ src/core/arch_defaults_test.cpp       | 59 ++++++++++++++++++++++++---
+ src/program/generate.cpp              | 44 +++++++++++++-------
+ 7 files changed, 156 insertions(+), 59 deletions(-)
+
+diff --git a/docs/AMD_HIP.md b/docs/AMD_HIP.md
+index 3d2c1765..efdf5ba1 100644
+--- a/docs/AMD_HIP.md
++++ b/docs/AMD_HIP.md
+@@ -360,15 +360,16 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
+     0.1.42 re-check on an R9700 (Linux, ROCm 7.14), 12 prompts of 1.5K-24K tokens, first-token KL against the FP16 prompt path (MMQ / fused): IQ3_S 0.00332 / 0.00284, top-1 12 of 12 for both; IQ3_XXS 0.00335 / 0.00452 on one sample and 0.00344 / 0.00323 on a second (24 prompts pooled: 0.00340 / 0.00388, top-1 24 of 24 for both); the Q2_0 pack does not take these kernels on gfx12 (output bit-identical to MMQ). Because the IQ3_XXS pool is not at or below MMQ's, the flag stays opt-in. Measured on Linux only.
+     gfx1200 builds the same kernels and was not run; Windows and K-quant packs (`STRATA_PF_FUSED_KQ=1`) were not measured.
+ - **Exact defaults (arch table):** on gfx1200 / gfx1201 the engine sets five exact prompt switches on every run
+-  (`STRATA_GDN_HEAD`, `STRATA_GDN_PP=2`, `STRATA_GDN_CONVL2`, `STRATA_GDN_NOY`, `STRATA_CVEC_FUSE`; #1478). With
+-  `--layer-split` and two or more GPUs visible it also sets the ten exact decode switches of the gfx1151 table
+-  (`STRATA_Q8_PACKED` ... `STRATA_PLE_BATCH`, not `STRATA_SH_STREAM`; list and numbers in
+-  [DETAILS.md](DETAILS.md)). On one R9700 those decode switches measured slower, so a one-GPU run does not get them;
+-  on 2x R9700 (`--layer-split 26`, IQ3_S, every expert resident) they took greedy decode from 108.0 to 115.0 tok/s
+-  and 64K prompt reads from 2,452 to 2,792 tok/s, with byte-identical greedy output. The opt-in `STRATA_HIP_WMMA`
+-  (changes bits) adds more on prompts.
+-  `STRATA_GFX12_SPLIT_DECODE=0` drops the decode half, `STRATA_GFX12_DEFAULTS=0` the whole table; the start-up line
+-  names what was set.
++  (`STRATA_GDN_HEAD`, `STRATA_GDN_PP=2`, `STRATA_GDN_CONVL2`, `STRATA_GDN_NOY`, `STRATA_CVEC_FUSE`; #1478). On Linux,
++  when the resolved layer split runs on two or more GPUs and every one of them is gfx12, it also sets nine decode
++  switches of the gfx1151 table (`STRATA_Q6_PACKED` ... `STRATA_PLE_BATCH`; not `STRATA_Q8_PACKED`, not
++  `STRATA_SH_STREAM`; list and numbers in [DETAILS.md](DETAILS.md)). On one R9700 those decode switches measured
++  slower, so a one-GPU run (also `--split-device 0`) does not get them. Measured on 2x R9700 only (Linux, IQ3_S,
++  `--layer-split 26`, every expert resident): greedy decode 108.0 -> 115.0 tok/s, 64K prompt reads 2,452 -> 2,792
++  tok/s, and the same generated output (answer text and token count) on four greedy prompts. The opt-in
++  `STRATA_HIP_WMMA` (changes bits) adds more on prompts. `STRATA_GFX12_SPLIT_DECODE=0` drops the decode switches,
++  `=1` asks for them on any gfx12 run (Windows, one GPU, `--split-skip-if-fits`), `STRATA_GFX12_DEFAULTS=0` drops the
++  whole table; the start-up line names what was set, or says why the decode switches stay off.
+ - **Known:** rarely (about 1 start in 10) a HIP run's greedy output differs from another start's at some token, on
+   one card or two and on engine 0.1.29 as well; not yet explained.
+ - **Not validated:** images, long contexts beyond 16K, answer-quality benchmarks.
+diff --git a/docs/DETAILS.md b/docs/DETAILS.md
+index 35c02449..c5a27120 100644
+--- a/docs/DETAILS.md
++++ b/docs/DETAILS.md
+@@ -1946,4 +1946,4 @@ The prompt path's half-output buffer `bo` reuses the embedding buffer `emb`, whi
+ 
+ **gfx12 (Linux): a bare `--prefill auto` may take 16384-token chunks.** Explicit `--prefill N`, `auto:N` and `STRATA_PREFILL_AUTO_MAX` are untouched; `STRATA_GFX12_CHUNK=0` or `STRATA_GFX12_DEFAULTS=0` keeps 8192.
+ 
+-**gfx12 (RDNA4): exact speed switches on by default, the decode half only for a layer split.** At start the engine looks at GPU 0. On gfx1200 / gfx1201 it sets the prompt half of the gfx1151 table (`STRATA_GDN_HEAD`, `STRATA_GDN_PP=2`, `STRATA_GDN_CONVL2`, `STRATA_GDN_NOY`, `STRATA_CVEC_FUSE`; #1478) on every run. With `--layer-split` and two or more GPUs visible it also sets the ten decode switches of that table (`STRATA_Q8_PACKED`, `STRATA_Q6_PACKED`, `STRATA_MMVF_ROWS`, `STRATA_ATTN_LANECELL`, `STRATA_EXPERT_V2`, `STRATA_TSUM`, `STRATA_LFUSE`, `STRATA_GDN_SPLIT`, `STRATA_QFUSE`, `STRATA_PLE_BATCH`; not `STRATA_SH_STREAM`). All of them are bitwise switches ([STRIX_HALO.md](STRIX_HALO.md) section 4): they change speed, not answers. On one R9700 the decode half measured slower, so a one-GPU run keeps the prompt half only. On 2x R9700 32 GB (Ryzen 9 5900X, PCIe 4.0 x8 / x8, ROCm 7.2.4), Qwen3.8-Flash-Next IQ3_S, `--layer-split 26` (every expert resident), 3 runs each, the stock prompt-only table gave greedy 108.0 tok/s (geometric mean of prose / code / edit / reasoning; mean of two sessions), sampled 100.5 tok/s and cold prompts of 4K / 16K / 64K at 1,370 / 1,553 / 2,452 tok/s; with these ten switches it gave 115.0 (+6.5%), 106.6 (+6.1%) and 1,450 / 1,788 / 2,792 (+6% / +15% / +14%), with byte-identical greedy output on all four prompts. If you accept changed bits, the opt-in `STRATA_HIP_WMMA` on top reads prompts faster still (1,759 / 2,376 / 3,556). `STRATA_GFX12_SPLIT_DECODE=0` keeps the prompt half only; `STRATA_GFX12_DEFAULTS=0` turns both off; a switch you set yourself is kept. The decision is made before the weights load, so on a box with two or more GPUs a split that ends up on one GPU (`--split-device 0`, or `--split-skip-if-fits` when the model fits) keeps the decode half.
++**gfx12 (RDNA4): exact speed switches on by default, most of the decode half only for a split over gfx12 GPUs (Linux).** On gfx1200 / gfx1201 (GPU 0) the engine sets the prompt half of the gfx1151 table (`STRATA_GDN_HEAD`, `STRATA_GDN_PP=2`, `STRATA_GDN_CONVL2`, `STRATA_GDN_NOY`, `STRATA_CVEC_FUSE`; #1478) on every run. It adds nine decode switches of that table (`STRATA_Q6_PACKED`, `STRATA_MMVF_ROWS`, `STRATA_ATTN_LANECELL`, `STRATA_EXPERT_V2`, `STRATA_TSUM`, `STRATA_LFUSE`, `STRATA_GDN_SPLIT`, `STRATA_QFUSE`, `STRATA_PLE_BATCH`) only when the resolved layer split runs on two or more GPUs, every one of them gfx12, on Linux. The engine decides after the split is resolved and before any switch is read. A split that runs on one GPU (`--split-device 0`, or `--layer-split auto` with one GPU visible) keeps the prompt half only. So does an `auto` split with `--split-skip-if-fits`: it can still fall back to one GPU after the first weights load, and by then the switches are read. A one-line start-up note says why the decode switches stay off. `STRATA_Q8_PACKED` and `STRATA_SH_STREAM` are not in the set: the measured IQ3_S pack has one Q8_0 projection, too small to pack, so `STRATA_Q8_PACKED` did nothing there, and `STRATA_SH_STREAM` was not measured on a gfx12 split. On gfx1151 every one of these switches is bitwise ([STRIX_HALO.md](STRIX_HALO.md) section 4). On gfx12 we checked only the generated output, as below. On one R9700 the decode half measured slower (#1478). Measured on 2x R9700 32 GB only (Linux, ROCm 7.2.4, Ryzen 9 5900X, PCIe 4.0 x8 / x8), Qwen3.8-Flash-Next IQ3_S, `--layer-split 26` with all 24,576 experts resident, 3 runs each: the 0.1.43 table gave greedy 108.0 tok/s (geometric mean of prose / code / edit / reasoning; mean of two sessions), sampled 100.5 tok/s and cold prompts of 4K / 16K / 64K at 1,370 / 1,553 / 2,452 tok/s; with the decode switches it gave 115.0 (+6.5%), 106.6 (+6.1%) and 1,450 / 1,788 / 2,792 (+6% / +15% / +14%). The generated output (answer text and token count) of the four greedy prompts was identical to the 0.1.43 table in all three runs, and so were the twelve sampled answers at fixed seeds. Other GPUs, other packs and partly resident splits were not measured. Report with per-run data and output hashes: [bench/results/2026-10-12-community-2x-r9700-iq3_s-0.1.43](https://github.com/justincinmd/Strata/tree/pr/bench-2x-r9700/bench/results/2026-10-12-community-2x-r9700-iq3_s-0.1.43). If you accept changed bits, the opt-in `STRATA_HIP_WMMA` on top reads prompts faster still (1,759 / 2,376 / 3,556). `STRATA_GFX12_SPLIT_DECODE=0` keeps the prompt half only, `=1` adds the decode switches on any gfx12 run (Windows, one GPU, `--split-skip-if-fits`); `STRATA_GFX12_DEFAULTS=0` turns both off; a switch you set yourself is kept.
+diff --git a/docs/MULTI_GPU.md b/docs/MULTI_GPU.md
+index facc54ed..94089c9d 100644
+--- a/docs/MULTI_GPU.md
++++ b/docs/MULTI_GPU.md
+@@ -236,12 +236,13 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
+ - **Decode is on par with the faster card alone**, and ahead on code. Once both caches hold nearly every routed
+   expert, the per-layer GPU time decides.
+ - **Correctness:** one GPU is byte-identical to 0.1.20, and the hand-off itself is bit-exact.
+-- **AMD gfx12 splits get the exact decode switches by default.** When GPU 0 is a gfx1200 / gfx1201 and
+-  `--layer-split` runs with two or more GPUs visible, the engine adds the ten bitwise decode switches of the gfx1151
+-  table to the gfx12 prompt switches (the start-up line says "gfx12 (RDNA4), layer-split table"; [DETAILS.md](DETAILS.md) has the list). On
+-  2x R9700, Qwen3.8-Flash-Next IQ3_S, `--layer-split 26`: greedy decode 108.0 -> 115.0 tok/s, sampled 100.5 -> 106.6,
+-  greedy output byte-identical. One-GPU runs
+-  are unchanged; `STRATA_GFX12_SPLIT_DECODE=0` turns the decode half off.
++- **AMD gfx12 splits get exact decode switches by default (Linux).** When every GPU of the resolved split is a
++  gfx1200 / gfx1201, the engine adds nine decode switches of the gfx1151 table to the gfx12 prompt switches (the
++  start-up line says "gfx12 (RDNA4), layer-split table"; [DETAILS.md](DETAILS.md) has the list). Measured on 2x R9700
++  only, Qwen3.8-Flash-Next IQ3_S, `--layer-split 26`, every expert resident: greedy decode 108.0 -> 115.0 tok/s,
++  sampled 100.5 -> 106.6, and the same generated output on four greedy prompts. A split that runs on one GPU
++  (`--split-device 0`), a mixed-architecture split and an `auto` split with `--split-skip-if-fits` keep the prompt
++  switches only; `STRATA_GFX12_SPLIT_DECODE=0` turns the decode switches off, `=1` on.
+ 
+ **Which cards and in what order:**
+ - Put the fastest card first; auto gives it as many layers as its cache allows.
+diff --git a/include/strata/core/arch_defaults.hpp b/include/strata/core/arch_defaults.hpp
+index c47b4506..f8fbed3d 100644
+--- a/include/strata/core/arch_defaults.hpp
++++ b/include/strata/core/arch_defaults.hpp
+@@ -9,10 +9,12 @@
+ //
+ // A switch the user set (to anything) is never overridden; STRATA_GFX1151_DEFAULTS=0 turns the whole table off.
+ //
+-// gfx1200 / gfx1201 (RDNA4) take the PROMPT half of that table on every run.  Ten exact switches of the DECODE half (all of
+-// it but STRATA_SH_STREAM) are added only for a layer split over two or more GPUs: on one R9700 they measured slower (#1478),
+-// on a two-R9700 split (--layer-split 26, every expert resident) they measured faster (src/core/arch_defaults.cpp has the
+-// numbers).  STRATA_GFX12_DEFAULTS=0 turns the gfx12 table off; STRATA_GFX12_SPLIT_DECODE=0 drops only its decode half.
++// gfx1200 / gfx1201 (RDNA4) take the PROMPT half of that table on every run.  Nine exact switches of the DECODE half (all
++// of it but STRATA_Q8_PACKED and STRATA_SH_STREAM) are added only for a layer split that gfx12_split_decode accepts: two
++// or more GPUs, every one gfx12, Linux.  On one R9700 they measured slower (#1478); on a two-R9700 split (Linux, IQ3_S,
++// --layer-split 26, every expert resident) they measured faster with the same generated output (src/core/arch_defaults.cpp
++// has the numbers and the report).  STRATA_GFX12_DEFAULTS=0 turns the gfx12 table off; STRATA_GFX12_SPLIT_DECODE=0 drops
++// only its decode half, =1 asks for it on any run.
+ #pragma once
+ 
+ #include <string>
+@@ -22,10 +24,21 @@
+ namespace strata::core {
+ 
+ /// The environment settings that are the defaults of `gcn_arch` (hipDeviceProp_t::gcnArchName; "gfx1151" or
+-/// "gfx1151:sramecc-:xnack-"): empty for every other architecture.  `layer_split`: the run is a layer split over two or
+-/// more GPUs; it adds the decode half on gfx12 and changes nothing elsewhere (gfx1151 has its whole table either way).
++/// "gfx1151:sramecc-:xnack-"): empty for every other architecture.  `layer_split`: gfx12_split_decode said yes for this
++/// run; it adds the decode half on gfx12 and changes nothing elsewhere (gfx1151 has its whole table either way).
+ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch, bool layer_split = false);
+ 
++/// gfx12: whether this run takes the decode half (the `layer_split` argument above).  Decided from the RESOLVED split,
++/// before any switch is read: `gpu_archs` is the gcnArchName of every GPU the run computes on (CUDA0, each later stage's
++/// device and any --expert-cache-remote helper; empty or one entry when the run uses one GPU), `may_collapse` says the
++/// split can still fall back to one GPU after the weights load (--layer-split auto with --split-skip-if-fits, decided
++/// after some switches are read), `measured_os` is false where the gain was not measured (the caller passes false on
++/// Windows).  Yes for two or more GPUs, every one gfx12, no collapse, measured OS.  STRATA_GFX12_SPLIT_DECODE=0 or
++/// STRATA_GFX12_DEFAULTS=0 make it no, STRATA_GFX12_SPLIT_DECODE=1 yes on any run.  `why` (optional) gets the reason
++/// for a no.  Pure: no device calls.
++bool gfx12_split_decode(const std::vector<std::string>& gpu_archs, bool may_collapse, bool measured_os,
++                        std::string* why = nullptr);
++
+ /// Sets `arch_default_env(gcn_arch, layer_split)` in this process's environment where the user has not set the variable,
+ /// prints one line to stderr when it set anything, and returns the names it set.  Call once, before any engine code reads
+ /// its switches (they are read lazily, at first use).
+diff --git a/src/core/arch_defaults.cpp b/src/core/arch_defaults.cpp
+index 19fca74e..0fe0f0d9 100644
+--- a/src/core/arch_defaults.cpp
++++ b/src/core/arch_defaults.cpp
+@@ -15,7 +15,7 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
+     if (strata::kernels::gfx_arch_is_gfx12(gcn_arch)) {
+         // gfx1200 / gfx1201 (RDNA4): only the PROMPT half of the gfx1151 table.  Reported exact (identical answers) on an R9700
+         // in #1478 and re-checked bitwise here (notes-142-amd.md); the decode half measured slower on that card, so it stays out
+-        // of a one-GPU run.  A layer split over two or more GPUs adds it (below).
++        // of a one-GPU run.  A layer split over two or more gfx12 GPUs adds most of it (below).
+         // STRATA_HCD_EXACT is left out: it needs the gfx1151 hipBLASLt tuning table, finds none on gfx12, says so on every start
+         // and does nothing (measured: with and without it identical, 0.0 to +0.1%).
+         // STRATA_GDN_CONVL2 is AMD-only on purpose: it is not bitwise on CUDA 13.3 sm_120 (#1522), and this table is never
+@@ -29,26 +29,28 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
+             {"STRATA_GDN_NOY", "1"},
+             {"STRATA_CVEC_FUSE", "1"},
+         };
+-        // A layer split (`layer_split`: --layer-split with two or more GPUs visible): the DECODE half of the gfx1151 table as
+-        // well.  On one R9700 it measured slower (#1478); split over two R9700s, where every expert is resident and the CPU
+-        // computes no misses, the same switches measured faster.  2x R9700
+-        // 32 GB (Ryzen 9 5900X, PCIe 4.0 x8 / x8, ROCm 7.2.4), Qwen3.8-Flash-Next IQ3_S, --layer-split 26 (all 24,576 experts
+-        // resident), spec 4 + MTP, 3 runs each: the stock 0.1.43 table gave greedy 108.0 tok/s (geometric mean of prose /
+-        // code / edit / reasoning at temp 0; mean of two sessions), sampled 100.5 (temp 1.0), cold prompts 4K 1,370 / 16K
+-        // 1,553 / 64K 2,452 tok/s; with these ten it gave 115.0 (+6.5%), 106.6 (+6.1%), 1,450 / 1,788 / 2,792 (+6% / +15% /
+-        // +14%), and the greedy output of all four prompts stayed byte-identical.  The opt-in STRATA_HIP_WMMA (bit-changing)
+-        // on top reads prompts faster still (1,759 / 2,376 / 3,556).  Every one of the ten is bitwise on gfx1151 (header), and none is new code for gfx12:
+-        // the HIP build already compiles and runs each of them on gfx1201 when the user sets it.
+-        // Not taken: STRATA_SH_STREAM (not measured on a gfx12 split; it is off on other AMD cards, #816), STRATA_HCD_EXACT
+-        // and STRATA_PF_PAD (prompt switches that do nothing on gfx12, above / without STRATA_PF_GEMM).
++        // A layer split (`layer_split`, decided by gfx12_split_decode below): nine exact switches of the gfx1151 table's
++        // DECODE half as well.  On one R9700 that half measured slower (#1478); split over two R9700s, where every expert
++        // is resident and the CPU computes no misses, these switches measured faster.  Measured on 2x R9700 32 GB only
++        // (Linux, ROCm 7.2.4, Ryzen 9 5900X, PCIe 4.0 x8 / x8), Qwen3.8-Flash-Next IQ3_S, --layer-split 26 with all
++        // 24,576 experts resident, spec 4 + MTP, 3 runs each: the 0.1.43 table gave greedy 108.0 tok/s (geometric mean of
++        // prose / code / edit / reasoning at temp 0; mean of two sessions), sampled 100.5 (temp 1.0), cold prompts 4K
++        // 1,370 / 16K 1,553 / 64K 2,452 tok/s; with these switches 115.0 (+6.5%), 106.6 (+6.1%), 1,450 / 1,788 / 2,792
++        // (+6% / +15% / +14%).  The generated output (answer text and token count) of the four greedy prompts was the
++        // same as with the 0.1.43 table in every run, and so were the twelve sampled answers at fixed seeds.  Other
++        // GPUs, packs and partly resident splits were not measured.  Report:
++        // bench/results/2026-10-12-community-2x-r9700-iq3_s-0.1.43 on github.com/justincinmd/Strata, branch
++        // pr/bench-2x-r9700.  Each switch is in the gfx1151 table (bitwise there, header), and none is new code for
++        // gfx12: the HIP build already compiles and runs each of them on gfx1201 when the user sets it.
++        // Not taken: STRATA_Q8_PACKED (it packs only Q8_0 dense matrices of an eligible shape; the IQ3_S pack's one Q8_0
++        // projection, blk.47.ffn_down_shexp with 640 inputs, is too small, so it did nothing in the measurement above and
++        // its effect on gfx12 is not known), STRATA_SH_STREAM (not measured on a gfx12 split;
++        // off on other AMD cards, #816), STRATA_HCD_EXACT and STRATA_PF_PAD (prompt switches that do nothing on gfx12,
++        // above / without STRATA_PF_GEMM).
+         // STRATA_GFX12_SPLIT_DECODE=0 keeps the five prompt switches only (the one-GPU table).
+-        // On a box with two or more GPUs the decision is made before the weights load, so a split that later runs on one GPU
+-        // (--split-device 0, or --split-skip-if-fits when the model fits on GPU 0) keeps these switches; they are exact, so
+-        // only the speed can differ from the one-GPU table there.
+         const char* dec12 = std::getenv("STRATA_GFX12_SPLIT_DECODE");
+         if (layer_split && !(dec12 != nullptr && dec12[0] == '0')) {
+             const std::pair<std::string, std::string> dec[] = {
+-                {"STRATA_Q8_PACKED", "1"},       // the packed Q8_0 decode layout (a second, packed copy of each eligible dense matrix)
+                 {"STRATA_Q6_PACKED", "1"},       // the packed Q6_K heads
+                 {"STRATA_MMVF_ROWS", "1"},       // bf16 multi-row GEMV, 4 rows per block
+                 {"STRATA_ATTN_LANECELL", "1"},   // decode attention scores, one cell per thread
+@@ -92,6 +94,23 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
+     return t;
+ }
+ 
++bool gfx12_split_decode(const std::vector<std::string>& gpu_archs, bool may_collapse, bool measured_os, std::string* why) {
++    auto no = [&](const std::string& w) { if (why) *why = w; return false; };
++    if (why) why->clear();
++    const char* off12 = std::getenv("STRATA_GFX12_DEFAULTS");
++    if (off12 != nullptr && off12[0] == '0') return no("STRATA_GFX12_DEFAULTS=0");
++    const char* v = std::getenv("STRATA_GFX12_SPLIT_DECODE");
++    if (v != nullptr && v[0] == '0') return no("STRATA_GFX12_SPLIT_DECODE=0");
++    if (v != nullptr && v[0] == '1') return true;   // asked for: any topology, as setting the switches by hand would be
++    if (gpu_archs.size() < 2) return no("the split runs on one GPU");
++    for (const auto& a : gpu_archs)
++        if (!strata::kernels::gfx_arch_is_gfx12(a.c_str())) return no("not every GPU of the split is gfx12 (one is " + a + ")");
++    if (may_collapse)
++        return no("--split-skip-if-fits may still run it on one GPU; STRATA_GFX12_SPLIT_DECODE=1 asks for it anyway");
++    if (!measured_os) return no("measured on Linux only; STRATA_GFX12_SPLIT_DECODE=1 asks for it");
++    return true;
++}
++
+ std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool layer_split) {
+     std::vector<std::string> set;
+     for (const auto& kv : arch_default_env(gcn_arch, layer_split)) {
+diff --git a/src/core/arch_defaults_test.cpp b/src/core/arch_defaults_test.cpp
+index b85ac8ed..7f0ffd1f 100644
+--- a/src/core/arch_defaults_test.cpp
++++ b/src/core/arch_defaults_test.cpp
+@@ -5,6 +5,7 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <string>
++#include <vector>
+ 
+ static int fails = 0;
+ #define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++fails; } } while (0)
+@@ -60,25 +61,26 @@ int main() {
+     put("STRATA_GFX12_DEFAULTS", "0");
+     CHECK(arch_default_env("gfx1201").empty());
+     unset("STRATA_GFX12_DEFAULTS");
+-    // gfx12 and a layer split over two or more GPUs: the five prompt switches, then the ten exact decode switches of the
+-    // gfx1151 table; not STRATA_SH_STREAM, no bit-changing switch, no STRATA_VERIFY_QDEDUP
++    // gfx12 and a layer split over two or more gfx12 GPUs: the five prompt switches, then nine exact decode switches of
++    // the gfx1151 table; not STRATA_Q8_PACKED (unmeasured on gfx12), not STRATA_SH_STREAM, no bit-changing switch, no
++    // STRATA_VERIFY_QDEDUP
+     unset("STRATA_GFX12_SPLIT_DECODE");
+     for (const char* a : {"gfx1200", "gfx1201", "gfx1201:sramecc-:xnack-"}) {
+         const auto one = arch_default_env(a);
+         const auto t = arch_default_env(a, true);
+-        CHECK(t.size() == 15);
++        CHECK(t.size() == 14);
+         CHECK(t.size() >= one.size() && std::equal(one.begin(), one.end(), t.begin()));   // the prompt half comes first, unchanged
+         auto has = [&](const char* k) {
+             for (const auto& kv : t) if (kv.first == k) return kv.second == "1";
+             return false;
+         };
+-        for (const char* k : {"STRATA_GDN_HEAD", "STRATA_GDN_CONVL2", "STRATA_GDN_NOY", "STRATA_CVEC_FUSE", "STRATA_Q8_PACKED",
++        for (const char* k : {"STRATA_GDN_HEAD", "STRATA_GDN_CONVL2", "STRATA_GDN_NOY", "STRATA_CVEC_FUSE",
+                               "STRATA_Q6_PACKED", "STRATA_MMVF_ROWS", "STRATA_ATTN_LANECELL", "STRATA_EXPERT_V2", "STRATA_TSUM",
+                               "STRATA_LFUSE", "STRATA_GDN_SPLIT", "STRATA_QFUSE", "STRATA_PLE_BATCH"})
+             CHECK(has(k));
+         for (const auto& kv : t) {
+             CHECK(kv.first.rfind("STRATA_", 0) == 0);
+-            for (const char* no : {"STRATA_SH_STREAM", "STRATA_VERIFY_QDEDUP", "STRATA_HCD_EXACT", "STRATA_PF_PAD", "STRATA_PF_GEMM",
++            for (const char* no : {"STRATA_Q8_PACKED", "STRATA_SH_STREAM", "STRATA_VERIFY_QDEDUP", "STRATA_HCD_EXACT", "STRATA_PF_PAD", "STRATA_PF_GEMM",
+                                    "STRATA_PF_FUSED", "STRATA_HC_UPMIX", "STRATA_PA_FAST", "STRATA_HIP_WMMA", "STRATA_SELECT_WMMA",
+                                    "STRATA_HC_Q8", "STRATA_PF_HCDOWN", "STRATA_WMMA_GEMM"})
+                 CHECK(kv.first != no);
+@@ -104,10 +106,55 @@ int main() {
+     CHECK(std::getenv("STRATA_EXPERT_V2") != nullptr && std::string(std::getenv("STRATA_EXPERT_V2")) == "0");
+     CHECK(std::getenv("STRATA_PLE_BATCH") != nullptr && std::string(std::getenv("STRATA_PLE_BATCH")) == "1");
+     for (const auto& n : set12) CHECK(n != "STRATA_EXPERT_V2");
++    CHECK(std::getenv("STRATA_Q8_PACKED") == nullptr);   // not in the gfx12 table
++    CHECK(set12.size() == 13);                            // 14 less the one the user set
+     for (const char* k : {"STRATA_GDN_HEAD", "STRATA_GDN_PP", "STRATA_GDN_CONVL2", "STRATA_GDN_NOY", "STRATA_CVEC_FUSE",
+-                          "STRATA_Q8_PACKED", "STRATA_Q6_PACKED", "STRATA_MMVF_ROWS", "STRATA_ATTN_LANECELL", "STRATA_EXPERT_V2",
++                          "STRATA_Q6_PACKED", "STRATA_MMVF_ROWS", "STRATA_ATTN_LANECELL", "STRATA_EXPERT_V2",
+                           "STRATA_TSUM", "STRATA_LFUSE", "STRATA_GDN_SPLIT", "STRATA_QFUSE", "STRATA_PLE_BATCH"})
+         unset(k);   // back to a clean environment for the gfx1151 checks below
++    // gfx12_split_decode: the resolved split, every GPU of it gfx12, no fallback to one GPU, a measured OS
++    {
++        using V = std::vector<std::string>;
++        unset("STRATA_GFX12_SPLIT_DECODE");
++        unset("STRATA_GFX12_DEFAULTS");
++        std::string why;
++        CHECK(gfx12_split_decode(V{"gfx1201", "gfx1201"}, false, true, &why) && why.empty());
++        CHECK(gfx12_split_decode(V{"gfx1201:sramecc-:xnack-", "gfx1201"}, false, true));
++        CHECK(gfx12_split_decode(V{"gfx1200", "gfx1201"}, false, true));           // gfx1200 is the same gfx12 code
++        CHECK(gfx12_split_decode(V{"gfx1201", "gfx1201", "gfx1201", "gfx1201"}, false, true));
++        // one GPU: no split, --split-device 0 (the caller passes no archs), an `auto` that found one GPU
++        CHECK(!gfx12_split_decode(V{}, false, true, &why) && !why.empty());
++        CHECK(!gfx12_split_decode(V{"gfx1201"}, false, true));
++        // mixed architectures: every GPU of the split must be gfx12, not only GPU 0
++        CHECK(!gfx12_split_decode(V{"gfx1201", "gfx1100"}, false, true, &why) && why.find("gfx1100") != std::string::npos);
++        CHECK(!gfx12_split_decode(V{"gfx1100", "gfx1201"}, false, true));
++        CHECK(!gfx12_split_decode(V{"gfx1201", "gfx1151"}, false, true));
++        CHECK(!gfx12_split_decode(V{"gfx1201", "gfx1201", "gfx1030"}, false, true));
++        CHECK(!gfx12_split_decode(V{"gfx1201", "gfx12010"}, false, true));        // not a prefix match
++        CHECK(!gfx12_split_decode(V{"gfx1201", "unknown"}, false, true));         // a GPU whose name could not be read
++        CHECK(!gfx12_split_decode(V{"gfx1201", ""}, false, true));
++        // a split that may still fall back to one GPU after the switches are read (--split-skip-if-fits)
++        CHECK(!gfx12_split_decode(V{"gfx1201", "gfx1201"}, true, true, &why) && !why.empty());
++        // not on an OS it was not measured on (the caller passes false on Windows)
++        CHECK(!gfx12_split_decode(V{"gfx1201", "gfx1201"}, false, false, &why) && !why.empty());
++        // the opt-outs win over a qualifying split
++        put("STRATA_GFX12_SPLIT_DECODE", "0");
++        CHECK(!gfx12_split_decode(V{"gfx1201", "gfx1201"}, false, true));
++        unset("STRATA_GFX12_SPLIT_DECODE");
++        put("STRATA_GFX12_DEFAULTS", "0");
++        CHECK(!gfx12_split_decode(V{"gfx1201", "gfx1201"}, false, true));
++        put("STRATA_GFX12_SPLIT_DECODE", "1");
++        CHECK(!gfx12_split_decode(V{"gfx1201", "gfx1201"}, false, true));        // the whole table off wins over =1
++        unset("STRATA_GFX12_DEFAULTS");
++        // STRATA_GFX12_SPLIT_DECODE=1 asks for it on any run (as setting the switches by hand would)
++        CHECK(gfx12_split_decode(V{}, false, true, &why) && why.empty());
++        CHECK(gfx12_split_decode(V{"gfx1201", "gfx1100"}, true, false));
++        unset("STRATA_GFX12_SPLIT_DECODE");
++        // the decision feeds the table: yes gives 14 entries on gfx12, no gives the five prompt switches
++        CHECK(arch_default_env("gfx1201", gfx12_split_decode(V{"gfx1201", "gfx1201"}, false, true)).size() == 14);
++        CHECK(arch_default_env("gfx1201", gfx12_split_decode(V{"gfx1201", "gfx1100"}, false, true)).size() == 5);
++        CHECK(arch_default_env("gfx1201", gfx12_split_decode(V{"gfx1201"}, false, true)).size() == 5);
++    }
+     // a user's setting wins, whatever it is; the rest are set
+     put("STRATA_TSUM", "0");
+     unset("STRATA_QFUSE");
+diff --git a/src/program/generate.cpp b/src/program/generate.cpp
+index 90718b90..9253aa42 100644
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -2149,20 +2149,6 @@ int main(int argc, char** argv) {
+         }
+         }
+     }
+-#if defined(STRATA_USE_HIP)
+-    {   // gfx1151 (Strix Halo), gfx12 (RDNA4): the switches that are exact there are on by default (strata/core/arch_defaults.hpp);
+-        // before any engine code reads its switches (they are read at first use), and the user's own settings are kept.
+-        // gfx12 adds its decode half for a layer split: --layer-split given and two or more GPUs visible.  The device count and
+-        // not the split itself decides, because `--layer-split auto` resolves only below (one visible GPU clears it there), so a
+-        // one-GPU box never gets the decode half.
+-        int n_vis = 0;
+-        if (cudaGetDeviceCount(&n_vis) != cudaSuccess) { (void) cudaGetLastError(); n_vis = 0; }
+-        const bool split_run = !o.layer_split.empty() && n_vis >= 2;
+-        cudaDeviceProp ad{};
+-        if (cudaGetDeviceProperties(&ad, 0) == cudaSuccess) strata::core::apply_arch_defaults(ad.gcnArchName, split_run);
+-        else (void) cudaGetLastError();
+-    }
+-#endif
+ #if defined(STRATA_USE_HIP) && !defined(_WIN32)
+     if (o.prefill_auto_bare && o.prefill_auto_cap == 0) {
+         // gfx1200 / gfx1201 (RDNA4, Linux): a bare `--prefill auto` may reach 16384 instead of 8192 (R9700, IQ3_S / Q2_0, 16K / 32K /
+@@ -2427,6 +2413,36 @@ int main(int argc, char** argv) {
+                 return 1;
+             }
+         }
++        // gfx1151 (Strix Halo), gfx12 (RDNA4): the switches that are exact there are on by default
++        // (strata/core/arch_defaults.hpp), the user's own settings kept.  Here and not earlier: the split is resolved by
++        // now (--split-device 0 and an `auto` with one visible GPU have cleared multi_gpu above), and no engine code has
++        // read a switch yet (each is read at first use; the first, STRATA_Q8_PACKED, when CUDA0's dense weights load).
++        // gfx12 adds its decode half only for a split over two or more gfx12 GPUs (each one checked) on Linux, where it
++        // was measured; not for an `auto` split with --split-skip-if-fits, which may still fall back to one GPU after
++        // CUDA0's weights load, i.e. after the switches are read.
++        cudaDeviceProp ad{};
++        if (cudaGetDeviceProperties(&ad, 0) == cudaSuccess) {
++            bool split12 = false;
++            if (strata::kernels::gfx_arch_is_gfx12(ad.gcnArchName)) {
++                std::vector<std::string> archs;   // empty for a run on one GPU
++                if (multi_gpu)
++                    for (const int d : used) {
++                        cudaDeviceProp up{};
++                        if (cudaGetDeviceProperties(&up, d) == cudaSuccess) archs.push_back(up.gcnArchName);
++                        else { (void) cudaGetLastError(); archs.push_back("unknown"); }
++                    }
++#if defined(_WIN32)
++                const bool measured_os = false;
++#else
++                const bool measured_os = true;
++#endif
++                std::string why;
++                split12 = strata::core::gfx12_split_decode(archs, split_auto && o.split_skip_if_fits, measured_os, &why);
++                if (!split12 && !o.layer_split.empty())
++                    std::fprintf(stderr, "strata generate: gfx12 layer split: the decode switches stay off (%s)\n", why.c_str());
++            }
++            strata::core::apply_arch_defaults(ad.gcnArchName, split12);
++        } else (void) cudaGetLastError();
+     }
+ #endif
+     if (o.prefill_auto && (o.no_prefill_borrow || o.expert_profile.empty())) {
