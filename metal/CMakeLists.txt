@@ -39,7 +39,8 @@ target_compile_definitions(mtl_rt PRIVATE
 target_link_libraries(mtl_rt PUBLIC "-framework Metal" "-framework Foundation")
 
 file(GLOB STRATA_METAL_TESTS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp)
-list(REMOVE_ITEM STRATA_METAL_TESTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime_hello.cpp)
+list(REMOVE_ITEM STRATA_METAL_TESTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime_hello.cpp
+                                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/kv_q4_engine.cpp)
 foreach(src ${STRATA_METAL_TESTS})
   get_filename_component(t ${src} NAME_WE)
   add_executable(${t} ${src})
@@ -64,8 +65,15 @@ add_library(strata_core_metal STATIC ${STRATA_ROOT}/src/core/graph.cpp)
 target_link_libraries(strata_core_metal PUBLIC strata_gpu_metal)
 add_executable(runtime_hello tests/runtime_hello.cpp)
 target_link_libraries(runtime_hello PRIVATE strata_core_metal)
+# the kv_q4 entry points' engine path: kv_q4_host.cpp compiled in (it needs no ggml), the device runtime and
+# mtl_rt (read_file) linked, the kernels directory as mtl_rt's Context defaults it
+add_executable(kv_q4_engine tests/kv_q4_engine.cpp src/engine/kv_q4_host.cpp)
+target_compile_definitions(kv_q4_engine PRIVATE
+  STRATA_METAL_KERNELS_DEFAULT="${CMAKE_CURRENT_SOURCE_DIR}/kernels")
+target_link_libraries(kv_q4_engine PRIVATE strata_gpu_metal mtl_rt)
 enable_testing()
 add_test(NAME runtime_hello COMMAND runtime_hello)
+add_test(NAME kv_q4_engine COMMAND kv_q4_engine)
 
 # The engine: ggml (the native expert formats' type traits and ggml-cpu) from a llama.cpp checkout at the commit the
 # PC build pins (CMakeLists.txt: 3cf03257).
