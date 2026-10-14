@@ -4,6 +4,11 @@ Windows 10/11 x64 and .NET Framework 4.8 are required. The Tray uses the officia
 favicon, PerMonitorV2 scaling and system menu colors. It is not installed or
 started by the default Strata installer.
 
+No Codex or OpenCodex client is required in either mode. The Tray does not manage
+external client catalogs or verify their reload. Context and lifecycle status
+describe Strata itself; restarting an unrelated client is not a Strata readiness
+requirement.
+
 ## Build
 
 From the repository root in PowerShell:
@@ -147,6 +152,8 @@ configuration is included.
 
 This original PNG is a visual reference from the author's earlier local Tray;
 its model names and layout are not a screenshot of this generic candidate.
+Any client-specific notices in an earlier local integration are not part of this
+generic Tray's menu or health requirements.
 The candidate uses the same favicon and native styling. Multi-monitor transitions
 and a real GPU upgrade need hardware acceptance; mock tests do not establish them.
 
