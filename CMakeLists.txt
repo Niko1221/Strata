@@ -1457,7 +1457,7 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(bf16_bits_test src/kernels/bf16_bits_test.cpp)
   target_include_directories(bf16_bits_test PRIVATE include)
   add_test(NAME bf16_bits_test COMMAND bf16_bits_test)
-  if(TARGET strata_core)   # verify.hpp pulls cuda_runtime.h and verify.cpp pulls the kernels: link the engine's core
+  if(STRATA_ENABLE_CUDA)   # verify.hpp pulls cuda_runtime.h and verify.cpp pulls the kernels: CUDA builds only
     add_executable(verify_brow_test src/core/verify_brow_test.cpp)
     target_link_libraries(verify_brow_test PRIVATE strata_engine)
     add_test(NAME verify_brow_test COMMAND verify_brow_test)
