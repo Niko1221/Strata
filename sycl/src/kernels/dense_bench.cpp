@@ -1,3 +1,4 @@
+#include <chrono>
 // sycl/src/kernels/dense_bench.cpp - the decode window's dense GEMVs (native_mmvq) at the model's shapes and formats:
 // NMAT different matrices per shape captured in one graph, so the weights stream from DRAM as in the engine (a window
 // reads every layer's matrix once); us per call, GB/s of weights, and an FNV hash of the outputs so two builds or two
@@ -80,12 +81,11 @@ int main(int argc, char** argv) {
                 delete g;
                 std::vector<double> us;
                 for (int i = 0; i < 40; ++i) {
-                    sycl::event e0 = s->ext_oneapi_submit_barrier();
+                    // host-timed (a barrier event's profiling hung on the A770 under xe; the graph launch cost is in it)
+                    const auto t0 = std::chrono::steady_clock::now();
                     s->ext_oneapi_graph(*ge);
-                    sycl::event e1 = s->ext_oneapi_submit_barrier();
-                    e1.wait();
-                    const double ns = (double) (e1.get_profiling_info<sycl::info::event_profiling::command_end>() -
-                                                e0.get_profiling_info<sycl::info::event_profiling::command_start>());
+                    s->wait();
+                    const double ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count();
                     if (i >= 10) us.push_back(ns / 1e3 / NMAT);
                 }
                 delete ge;

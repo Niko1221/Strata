@@ -1,3 +1,4 @@
+#include <chrono>
 // src/kernels/native_grouped_parity.cpp - native_expert_grouped's group stride (grid_groups) and its fused SwiGLU +
 // q8_1 pass, against the launches before them (native_grouped_set_v1: a block row per possible group, SwiGLU and the
 // q8_1 quantization as two kernels over all cap_entries).  Synthetic blobs, no model.
@@ -611,6 +612,42 @@ void bench(dpct::queue_ptr s, std::mt19937 &rng) {
     dpct::destroy_event(e1);
 }
 
+// ------------------------------------------------------------------------------------------------ --bench2 GU DT [G E]
+// A770 decode: one format pair at the Coder's shape (2560 x 640, 4-token window x 10), G VRAM groups holding E entries
+// (default 16 / 24: a layer-window's VRAM hits), 48 layers each with its own experts in a graph; us per call and the
+// GB/s of the experts it reads.  Timing only.
+void bench2(dpct::queue_ptr s, std::mt19937& rng, int gu, int dt, int G, int E) {
+    Setup S(gu, dt, 2560, 640, 4, 10, 32, rng, s);
+    std::vector<int> sizes(G, 1);
+    for (int i = 0; i < E - G; ++i) sizes[i % G] += 1;
+    const int ng = S.plan_sizes(sizes, 0, rng);
+    const Layers Ls(S, ng);
+    auto call48 = [&] {
+        for (int l = 0; l < 48; ++l)
+            k::native_expert_grouped(S.L, Ls.ptr[l], S.start, S.n, S.dst, S.tok, S.cap, S.cap, S.xq, S.scr, S.out, s, 0);
+        s->wait();
+    };
+    for (int ph : {1, 2}) {   // gate/up (+ SwiGLU, q8_1) alone, then down alone
+        k::native_expert_set_mode(0, ph);
+        call48(); std::vector<float> tp;
+        for (int i = 0; i < 20; ++i) { const auto t0 = std::chrono::steady_clock::now(); call48();
+            tp.push_back(std::chrono::duration<float, std::micro>(std::chrono::steady_clock::now() - t0).count() / 48.0f); }
+        std::printf("bench2   phase %d (%s): %8.2f us per call\n", ph, ph == 1 ? "gate/up + swiglu + q8_1" : "down", median(tp));
+    }
+    k::native_expert_set_mode(0, 0);
+    std::vector<float> t;
+    for (int i = 0; i < 30; ++i) {
+        const auto t0 = std::chrono::steady_clock::now();
+        call48();
+        const float x = std::chrono::duration<float, std::micro>(std::chrono::steady_clock::now() - t0).count() / 48.0f;
+        if (i >= 5) t.push_back(x);
+    }
+    const float us = median(t);
+    const double mb = (double) S.L.bytes * G / 1e6;
+    std::printf("bench2 gu %d down %d: %d groups / %d entries: %8.2f us per call, %.2f MB, %.1f GB/s\n", gu, dt, G, E, us, mb,
+                mb / us * 1e3);
+}
+
 // ------------------------------------------------------------------------------------------------ --kqbench [NL [host]]
 // Unsloth's formats against the IQ packs' at the model's shapes (2560 x 640): microseconds per grouped call and the
 // expert bytes it reads per microsecond.  NL layers (default 16), each with its own experts, so the weights stream from
@@ -683,6 +720,10 @@ int main(int argc, char** argv) {
     ck(DPCT_CHECK_ERROR(s = dpct::get_current_device().create_queue(true)),
        "stream");
     std::mt19937 rng(316);
+    if (argc > 3 && std::string(argv[1]) == "--bench2") {
+        bench2(s, rng, std::atoi(argv[2]), std::atoi(argv[3]), argc > 4 ? std::atoi(argv[4]) : 16, argc > 5 ? std::atoi(argv[5]) : 24);
+        return 0;
+    }
     if (argc > 1 && std::string(argv[1]) == "--kqbench") {   // timings only (the checks: run without arguments)
         kq_bench(s, rng, argc > 2 ? std::atoi(argv[2]) : 16, argc > 3 && std::string(argv[3]) == "host");
         dpct::get_current_device().destroy_queue(s);
