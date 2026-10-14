@@ -161,23 +161,6 @@ Things that matter on an Arc (details in INTEL.md):
   `STRATA_*`, `ONEAPI_*`, `UR_*`, `IGC_*`, `SYCL_*` or `ZES_*` variable of the server's environment reach the engine
   through `strata-sycl.sh` (for example `STRATA_MIRROR_MIB`, `IGC_EnableDPEmulation`).
 
-## Optional paired expert prefill
-
-For the FP16 expert path, enable the bounded gate/up decoder and paired XMX
-execution with these environment variables:
-
-```sh
-export STRATA_SYCL_DEQUANT_GU_BOUNDED=1
-export STRATA_SYCL_GU16_METADATA_QUARTET=1
-export STRATA_SYCL_F16_EXPERT_PAIR=1
-```
-
-Pairing applies to IQ2_XXS or IQ2_S gate/up weights with Q2_0 down weights,
-2560 input channels, 640 expert channels and 1–16 rows per expert. Two eligible
-experts share the GU and down submissions. A lone expert or an unsupported
-shape uses the ordinary FP16 path. The bounded decoder also handles IQ1_M;
-IQ2_S keeps the decoder's existing lane order. These switches default to off.
-
 ## Windows
 
 There is no Windows path yet. `setup --backend sycl` on Windows stops and points here. oneAPI exists for Windows,

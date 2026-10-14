@@ -9,6 +9,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
+#include "strata/b70.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/iq_dequant_expert.hpp"
 #include "strata/kernels/dp4a.hpp"
@@ -4740,23 +4741,12 @@ bool iq_dequant_gu_f16_bounded(int type, const void* gate, const void* up,
     if (n_ff <= 0 || n_embd <= 0 || n_embd % QK_K != 0 ||
         uint64_t(n_embd) > UINT32_MAX / 4u ||
         uint64_t(n_ff) > UINT32_MAX / (uint64_t(n_embd) * 4u)) return false;
-#define STRATA_DEQUANT_BOUNDED(TYPE) \
-    case TYPE: \
-        if (n_embd == 2560) launch_dequant_gu_bounded<TYPE, 10>(gate, up, n_ff, n_embd, dst, stream); \
-        else launch_dequant_gu_bounded<TYPE>(gate, up, n_ff, n_embd, dst, stream); \
-        return true;
-    static const bool metadata=[](){const char* e=std::getenv("STRATA_SYCL_GU16_METADATA_QUARTET");return e&&e[0]=='1';}();
-    if(metadata&&type==16&&n_ff==640&&n_embd==2560){
-        launch_dequant_gu_metadata<16,10>(gate,up,640,2560,dst,stream);
-        return true;
-    }
-    switch (type) {
-        STRATA_DEQUANT_BOUNDED(16)
-        STRATA_DEQUANT_BOUNDED(22)
-        STRATA_DEQUANT_BOUNDED(29)
-        default: return false;
-    }
-#undef STRATA_DEQUANT_BOUNDED
+    // The measured B70 expert geometry; other formats/shapes retain the original decoder.
+    if (n_ff != 640 || n_embd != 2560) return false;
+    if (type == 16) launch_dequant_gu_metadata<16, 10>(gate, up, 640, 2560, dst, stream);
+    else if (type == 22) launch_dequant_gu_bounded<22, 10>(gate, up, n_ff, n_embd, dst, stream);
+    else return false;
+    return true;
 }
 
 void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, int64_t n_embd, uint16_t* dst, void* stream,
@@ -4764,8 +4754,7 @@ void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, in
     // checked like the other entry points: an unknown type used to leave `dst` unwritten, a wrong prompt and no error
     // (tail: NVFP4's per-expert scales, CUDA only - never given on SYCL)
     if (n_embd % 256 != 0 || !is_iq(t) || tail != nullptr) { std::fprintf(stderr, "iq_dequant_gu_f16: type %d / %lld\n", t, (long long) n_embd); std::exit(1); }
-    static const bool bounded = env_on("STRATA_SYCL_DEQUANT_GU_BOUNDED");
-    if (bounded && iq_dequant_gu_f16_bounded(t, gate, up, n_ff, n_embd, dst, stream)) return;
+    if (strata::is_b70(stream) && iq_dequant_gu_f16_bounded(t, gate, up, n_ff, n_embd, dst, stream)) return;
     const int64_t per_row = n_embd / 256;
     {
 

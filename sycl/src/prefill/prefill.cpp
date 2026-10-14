@@ -3,6 +3,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/b70.hpp"
 #include "strata/copy_queue.hpp"
 #include "strata/prefill/xmx_moe.hpp"
 #include "strata/prefill/prefill.hpp"
@@ -3829,8 +3830,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             m.stager->start(std::move(js));
                         }
                         StagerDone stager_done{stream_all ? nullptr : m.stager.get()};
-                        static const bool f16_pair_env = [] { const char* v = std::getenv("STRATA_SYCL_F16_EXPERT_PAIR"); return v && v[0] == '1'; }();
-                        const bool f16_pairs = f16_pair_env && lay.native && !use_mmq && strata::prefill::xmx::mode() == 0;
+                        const bool f16_pairs = strata::is_b70(m.cs) && lay.native && !use_mmq && strata::prefill::xmx::mode() == 0;
                         strata::prefill::f16_expert_pair::Pair f16_pending{};
                         int f16_n = 0;
                         int f16_slots[2] = {-1, -1};
