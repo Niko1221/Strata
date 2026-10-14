@@ -3816,23 +3816,14 @@ catch (sycl::exception const &exc) {
 bool Verifier::done(std::string &err) try {
     if (!fl_active_ || fl_k_ < fl_total_) return false;
     const OnDevice on_device(device_);
-    const dpct::err0 q = dpct::sycl_event_query(ev_done_);
-
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
-    /*
-    DPCT1001: The statement could not be removed.
-    */
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
-    if (q != 0) {
-      err = std::string("verify: ") + dpct::get_error_string_dummy(q);
-      return false;
+    // dpct's query is 0 (complete) or 1 (still running); a SYCL error arrives as an exception, caught below.  The CUDA
+    // path's cudaErrorNotReady branch: a window still on the GPU is polled again, not failed.
+    if (dpct::sycl_event_query(ev_done_) != 0) {
+        const double now = now_ms();
+        if (now - fl_flush_ms_ > 2.0) { fl_flush_ms_ = now; (void) cs_->ext_oneapi_empty(); }
+        if (now - fl_since_ms_ > 20000.0)   // every layer served, and the graph still runs: #267 as in service()
+            err = "verify: the window never finished" + released_note(release_gpu_waits(5000));
+        return false;
     }
     if (copy_used_) {   // no host function of this window may raise flag B in the next one
         if (((copy_)->ext_oneapi_empty() ? 0 : 1) == 1) return false;
