@@ -78,6 +78,7 @@ public:
         bool live = false;
         uint64_t bytes = 0;     ///< its files' bytes (queued: the image's)
         bool queued = false;    ///< still in the write queue: its image is in RAM
+        int64_t written = 0;    ///< the length the files hold (the live state's): deeper than `tokens` on a checkpoint
     };
     /// The longest prefix of `prompt` an entry holds (its live state or its checkpoint), queued or on the disk, as
     /// ConversationCache::best; ties prefer the newest entry.
@@ -90,7 +91,7 @@ public:
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
                 const int64_t n = conversation_prefix(c, prompt, images);
                 if (n > best.tokens || (n == best.tokens && n > 0 && e.id > best.id))
-                    best = {e.id, n, live, e.bytes, queued};
+                    best = {e.id, n, live, e.bytes, queued, (int64_t) e.live.ids.size()};
             };
             consider(e.live, true);
             for (const auto& c : e.checkpoints) consider(c, false);

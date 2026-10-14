@@ -11208,7 +11208,7 @@ int main(int argc, char** argv) {
                 }
             }
             // the elastic K/V: a parked conversation is restored whole, and it may be longer than this prompt
-            const int64_t incoming_tokens = incoming ? (int64_t) incoming->live.ids.size() : stream.id ? stream.tokens : 0;
+            const int64_t incoming_tokens = incoming ? (int64_t) incoming->live.ids.size() : stream.id ? stream.written : 0;
             if (incoming_tokens > 0 && !kvg_ensure(incoming_tokens + 256, kv_quiesce)) {
                 std::printf("ERR the K/V cannot grow to the parked conversation: no VRAM is left\n");
                 return 1;
@@ -11224,10 +11224,10 @@ int main(int argc, char** argv) {
                 std::vector<std::vector<strata::core::SessionKvTarget>> kv(stages.size() + 1);
                 strata::core::SavedConversation meta;
                 std::string serr;
-                bool ok = strata::core::conversation_snapshot_targets(kv[0], ss, g, stream.tokens, draft0, serr);
+                bool ok = strata::core::conversation_snapshot_targets(kv[0], ss, g, stream.written, draft0, serr);
                 for (size_t k = 0; ok && k < stages.size(); ++k) {
                     const strata::core::OnDevice on(stages[k]->dev);
-                    ok = strata::core::conversation_snapshot_targets(kv[k + 1], stages[k]->ss, g, stream.tokens,
+                    ok = strata::core::conversation_snapshot_targets(kv[k + 1], stages[k]->ss, g, stream.written,
                                                                       draft_of(k), serr);
                 }
                 const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
