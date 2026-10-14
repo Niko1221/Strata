@@ -566,17 +566,16 @@ No backend file is touched, and the only change outside a header or a test is ho
 
 ### Measured: eager (`2274c1c`) against lazy, both `bf16`
 
-> **These engine numbers predate `3f04cc72`.** Every millisecond and byte in this subsection and in the
-> FP32-against-BF16 table further down was taken on the build at `e2983e98`, when a retained checkpoint was captured
-> fp32 and coded only when the conversation was parked. Coding at capture changes three of the things recorded here:
-> a conversation that never parks now holds a coded chain too, so the retained-checkpoint bytes and the `VmRSS` steps
-> are lower than written for the whole life of a chat and not only after a park; a park no longer converts anything,
-> so the `park` column falls again; and capture itself now codes, which is work no column here charges for. What it
-> leaves alone: the one deferred decode of the selected snapshot, the image and session-file bytes, and that only the
-> selected snapshot is widened. Capture and prefill latency at `--prompt-cache-every` 16384 and 8192, retained bytes
-> before the first park, repeated-turn latency, needle recall after a restore with checkpoints captured in bf16, and
-> a memory-tight conversation that used to refuse and now fits are **not measured**. HIP is unbuilt, and
-> `conversation_state.cpp` and `generate.cpp` are shared with it.
+> **The eager-against-lazy table below predates `3f04cc72`.** It was taken on the build at `e2983e98`, when a
+> retained checkpoint was captured fp32 and coded only when the conversation was parked, and it compares two
+> *restoration* builds, so `3f04cc72` does not undo its result: what it measures (one conversion per retained
+> checkpoint at the mount, removed) is the same on both sides of that later commit. What the later commit does
+> change is three of the quantities recorded in its rows — a conversation that never parks now holds a coded
+> chain too, a park converts nothing, and capture itself codes — so read its retained-byte, `VmRSS` and `park`
+> columns as the pre-capture-coding case. The FP32-against-BF16 comparison and the capture-and-turn-latency
+> sweep further down were both re-taken on HEAD after `3f04cc72` and carry their own provenance. Retained
+> bytes before the first park and a memory-tight conversation that used to refuse and now fits are still **not
+> measured**. HIP is unbuilt, and `conversation_state.cpp` and `generate.cpp` are shared with it.
 
 Same box and configuration as the tables above (Tesla V100 32 GB model GPU, RTX 2080 Ti idle, 93 GB RAM, Linux, CUDA
 12.8 build, IQ3_S, `--kv int8`, 262144 context, `--conversation-cache-mib 16384 --conversation-cache-slots 12
@@ -671,57 +670,117 @@ are gated on the chain actually holding coded snapshots, so a default park/resum
 resume figures that pass printed (50.2 ms append-only, 52.2 ms rewind) are 3 repetitions on one arm and are not the
 comparison; the fp32 numbers this document compares against are the matched ones below.
 
-**FP32 against BF16: one engine, two configs, 0–6.5 ms apart.** fp32 enters no codec in either build, so neither the
-one-pass conversion nor lazy restoration changes what that path does — but an unchanged code path is not a benchmark,
-and this is one. `engine-cuda12/strata.parity`, built from this tree, serves both arms; the two arm configs differ in
-`--session-state-codec` alone. Same prompts, same token counts, same order of workloads within a size, 2 warm-ups + 10
-measured repetitions per workload, **two rounds with the arm order reversed** (fp32 first in round 0, bf16 first in
-round 1), `--adapt-swaps 0 --pcie-frac 0` pinned. Figures are the median of the two rounds' medians; the last column
+**FP32 against BF16: one engine, two configs, +2.2 to +5.9 ms on a continuing turn.** fp32 enters no codec in
+either build, so neither the one-pass conversion nor lazy restoration changes what that path does — but an
+unchanged code path is not a benchmark, and this is one. `engine-cuda12/strata.head`, built from HEAD
+(`e79abfc0`, which carries capture-time coding), serves both arms; the two arm configs differ in
+`--session-state-codec` alone. Same prompts, same token counts, same order of workloads within a size, 2
+warm-ups + 10 measured repetitions per workload, **two rounds with the arm order reversed** (fp32 first in
+round 0, bf16 first in round 1), `--adapt-swaps 0 --pcie-frac 0` pinned
+(`results/lazy_resume_head_parity.json`). Figures are the median of the two rounds' medians; the last column
 is how far the *same* arm moved between its two rounds, which is this harness's noise floor on that path.
 
 | parked resume, ms | `fp32` | `bf16` | difference | round-to-round spread |
 | --- | ---: | ---: | ---: | ---: |
-| 32K, continuing turn | 49.55 | 52.55 | **+3.0** | 0.4 / 0.4 |
-| 32K, older checkpoint | 39.8 | 39.8 | **+0.0** | 0.5 / 0.3 |
-| 63K, continuing turn | 71.15 | 77.68 | **+6.5** | 0.2 / 0.6 |
-| 63K, older checkpoint | 36.45 | 39.63 | **+3.2** | 0.3 / 0.4 |
-| 121K, continuing turn | 122.9 | 127.95 | **+5.1** | 0.9 / 1.0 |
-| 121K, older checkpoint | 41.3 | 37.38 | −3.9 | 3.2 / 1.3 |
+| 32K, continuing turn | 49.25 | 51.48 | **+2.2** | 1.6 / 0.25 |
+| 32K, older checkpoint | 40.12 | 40.3 | **+0.2** | 1.55 / 0.1 |
+| 63K, continuing turn | 71.15 | 77.05 | **+5.9** | 0.7 / 0.5 |
+| 63K, older checkpoint | 36.42 | 40.9 | **+4.5** | 0.55 / 0.5 |
+| 121K, continuing turn | 121.97 | 127.53 | **+5.6** | 1.35 / 0.35 |
+| 121K, older checkpoint | 40.42 | 38.17 | −2.3 | 1.55 / 1.05 |
 
-Four of the five positive deltas are larger than that noise floor, so bf16 really does cost 3–6.5 ms on a parked
-resume — 2 % at 32K and 9 % at 63K on the continuing turn — and the fifth, the 121K rewind, is not separable: fp32's
-own two rounds there moved 3.2 ms (42.9 and 39.7) and its repetitions ranged 29.6–45.0. The cost is the one deferred
-decode, which the engine times at **14.7–16.2 ms** for the selected snapshot at every size and in both workloads; the
-mount that carries it is cheaper than fp32's by most of that, because the image's live running state arrives as
-59,031,600 B instead of 118,063,152 B, so what reaches the client is a few milliseconds and not fifteen.
+Four of the five positive deltas are larger than that noise floor, so bf16 really does cost 2–6 ms on a parked
+resume — 4.5 % at 32K and 8 % at 63K on the continuing turn. The exception is the 32K rewind: +0.2 ms against a
+1.55 ms spread, indistinguishable from nothing. The sixth cell, the 121K rewind, reads −2.3 ms — bf16 measured
+*faster* — and is no more separable: fp32's own two rounds there moved 1.55 ms and its repetitions ranged
+29.3–48.4 ms. The cost is the
+one deferred decode, which the engine times at **14.95 / 16.2 / 15.7 ms** for the selected snapshot at 32K /
+63K / 121K (12, 11 and 12 timed continuations); the mount that carries it is cheaper than fp32's by most of
+that, because the image's live running state arrives as 59,031,600 B instead of 118,063,152 B, so what reaches
+the client is a few milliseconds and not fifteen. The same A/B run on the build at `e2983e98`, before
+capture-time coding, gave **+3.0 / +0.0 / +6.5 / +3.2 / +5.1 / −3.9 ms** on the same six cells
+(`results/lazy_resume_codec_parity2.json`): same signs, same size, so `3f04cc72` did not move the resume path
+— which is what it should do, since it changes when a checkpoint is coded and not how one is widened.
 
-What bf16 gives back on the same requests, all from this run:
+What bf16 gives back on the same requests, all from the HEAD run:
 
 | | 32K | 63K | 121K |
 | --- | ---: | ---: | ---: |
-| park, rewind turn, `ms` | 141.7 → **90.5** | 164.7 → **101.5** | 197.9 → **95.8** |
-| engine `prompt_ms`, rewind turn | 243.8 → **196.8** | 262.4 → **208.9** | 299.5 → **203.2** |
-| client wall, rewind turn, `s` | 0.330 → **0.282** | 0.346 → **0.290** | 0.433 → **0.332** |
-| parked image, rewind turn | 1,518,609,848 → **1,282,483,636** (−15.5 %) | 2,354,017,928 → **1,999,828,616** (−15.0 %) | 3,421,128,424 → **3,007,907,560** (−12.1 %) |
+| park, rewind turn, `ms` | 142.12 → **90.78** | 163.98 → **104.9** | 198.32 → **101.25** |
+| park, continuing turn, `ms` | 190.5 → **154.82** | 136.32 → **102.75** | 87.95 → **68.15** |
+| engine `prompt_ms`, rewind turn | 243.65 → **198.32** | 261.95 → **212.55** | 301.57 → **203.22** |
+| client wall, rewind turn, `s` | 0.33 → **0.28** | 0.34 → **0.29** | 0.43 → **0.33** |
+| parked image, rewind turn | 1,518,609,848 → **1,282,483,636** (−15.5 %) | 2,354,017,928 → **1,999,828,616** (−15.0 %) | 3,420,290,804 → **3,007,069,940** (−12.1 %) |
 | parked image, continuing turn | 615,533,092 → **438,438,436** (−28.8 %) | 615,539,244 → **438,444,588** (−28.8 %) | 615,594,168 → **438,499,512** (−28.8 %) |
-| retained chain in RAM after a park, 3 / 5 / 6 checkpoints | 354.5 MB → **177,414,796 B** | 591.2 MB → **296,055,504 B** | 710.6 MB → **356,406,176 B** |
-| observed `VmRSS` step, rewind turn | 449.0 → **224.8 MiB** | 449.7 → **224.2 MiB** | 561.0 → **138.1 MiB** |
+| retained chain in RAM after a park, 3 / 5 / 6 checkpoints | 354.5 MB → **177,414,796 B** | 591.2 MB → **296,055,504 B** | 710.6 MB → **356,405,752 B** |
+| observed `VmRSS` step, rewind turn | 449.5 → **224.8 MiB** | 449.0 → **225.0 MiB** | 453.8 → **196.1 MiB** |
 
-The retained-chain row is the chain a resumed conversation holds *after* a park, on the build before
-capture-time coding; since `3f04cc72` that chain is coded from the moment its first checkpoint is
-taken, so a conversation that never parks is covered too. The `VmRSS` column is an observed lower
-bound and not a high-water mark — see the note at the head of **Measured**. The fp32 chain figure is
-arithmetic on the engine's own count (`n × 118,063,152 B` plus the token and image lists); the bf16
-one is the `retained=` line the build prints. Answers and recall on these runs were 20/20 in every
-cell of both arms except one: the 32K append-only cell scored 0/20 on `fp32` and 20/20 on `bf16`,
-which is the free-form-sentence artifact recorded under the quality gate and not a codec effect —
-that turn asks for the code word in prose and the check looks for the word in the answer, so it
-depends on how the sentence happens to land.
+The `park` rows are where `3f04cc72` shows up. Before it, a bf16 park still had to convert the retained chain
+on the way into the image, and at 121K — six checkpoints — that conversion cancelled the smaller write: the
+same cell on the `e2983e98` build measured `fp32` 78.85 against `bf16` **78.95 ms**, dead even. Coding at
+capture leaves nothing to convert, the park becomes a write of half the bytes, and the same cell now reads
+89.2 against **68.45 ms**. The retained chain is half-size from its first checkpoint, not from the park: the
+`retained=` line the build prints is the engine's own count. The fp32 chain figure is arithmetic on that count
+(`n × 118,063,152 B` plus the token and image lists). The `VmRSS` column is an observed lower bound and not a
+high-water mark — see the note at the head of **Measured**. Answers and recall on these runs were 20/20 in
+every cell of both arms on the two workloads that ask for the code word — including after restores from
+checkpoints that were captured in bf16, which is the recall question `3f04cc72` left open — except one: the
+32K append-only cell scored 0/20 on `fp32` and 20/20 on `bf16`, which is the free-form-sentence artifact
+recorded under the quality gate and not a codec effect, since that turn asks for the code word in prose and
+the check looks for the word in the answer.
 
-One correction, because an earlier draft of this section carried a wrong number: a partial pass interrupted mid-run
-logged fp32 rewind resume at 29.8 / 30.55 / 38.95 ms. That round carried another load on the box. The matched fp32
-figures are 39.8 / 36.45 / 41.3, so the interrupted pass read the fp32 rewind about 10 ms fast and made bf16 look
-worse against it than it is.
+One correction, because an earlier draft of this section carried a wrong number: a partial pass interrupted
+mid-run logged fp32 rewind resume at 29.8 / 30.55 / 38.95 ms. That round carried another load on the box, and
+the matched fp32 figures — 39.8 / 36.45 / 41.3 on `e2983e98`, 40.12 / 36.42 / 40.42 on HEAD — are about 10 ms
+slower. The interrupted pass made bf16 look worse against fp32 than it is.
+
+### Measured: capture and turn latency, `--prompt-cache-every` 16384 against 8192
+
+`3f04cc72` put coding on the capture, and the engine has no timing line for a capture, so this measures what a
+client can see around it. `engine-cuda12/strata.head` at HEAD, both codecs, `--adapt-swaps 0 --pcie-frac 0`
+pinned, a fresh server per cell, **two rounds with the arm order reversed** (`results/capture_codec.json`).
+Each cell prefills one 31,813-token document and then makes 12 short turns on it (2 warm-ups + 10 measured);
+the engine captures a retained checkpoint at the start of every new assistant turn, so every timed turn
+carries one capture. The spacing decides how many periodic checkpoints the chain holds alongside it: **3** at
+the default 16384 and **5** at 8192, which the engine's own `checkpoints=` count confirms in every turn of
+every cell. Figures are the median of the two rounds' medians; the spread column is the same arm's movement
+between its rounds.
+
+| `--prompt-cache-every` | codec | prefill `prompt_ms` | turn `prompt_ms` | turn generated `ms` | turn client wall `s` | round spread (prefill / turn) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 16384 (default) | `fp32` | 21,716.5 | 736.5 | 311.0 | 1.07 | 5.0 / 0.0 |
+| 16384 (default) | `bf16` | 21,702.5 | **687.5** | 311.5 | **1.03** | 3.0 / 3.0 |
+| 8192 | `fp32` | 21,796.0 | 806.0 | 296.5 | 1.14 | 22.0 / 0.0 |
+| 8192 | `bf16` | 21,867.5 | **721.0** | 305.5 | **1.05** | 133.0 / 2.0 |
+
+Three things fall out of it, and the third is the one `3f04cc72` was about.
+
+**Coding does not reach the prefill or the token path.** The first prompt of a 31,813-token conversation reads
+the whole cache and takes 21.7 s in every cell: 21,716.5 ms configured `fp32` against 21,702.5 configured
+`bf16` at the default spacing, and 21,796 against 21,867.5 at 8192 — inside the 3–22 ms round-to-round spread
+of the arm's own two rounds, and far inside the 133 ms one outlier 8192 `bf16` round produced. Generation is
+the same story: the 24 tokens a turn produces take 311 ms either codec at the default spacing (spread 9 ms and
+7.5 ms) and 296.5 against 305.5 at 8192 (spread 3.5 ms and 3 ms), about 77 tok/s in all four cells. No codec
+code is on either path, and these are the numbers that says so on this build.
+
+**A turn is cheaper under `bf16`, by 49 ms at the default spacing and 84 ms at 8192.** Every timed turn mounts
+the parked conversation and writes an image, and under a codec both move half the bytes of the state; the
+engine's per-turn `prompt_ms` is where that lands. The medians sit 687.5 against 736.5 and 721 against 806
+with a round-to-round spread of 0–3 ms. Over the 20 measured repetitions of a cell the bf16 turns span 685–715
+ms at the default spacing and 718–745 at 8192 (30 ms and 27 ms) against fp32's 733–777 and 802–825 (44 ms and
+23 ms) — the two distributions do not overlap at either spacing. The client sees 1.03 s against 1.07 s and
+1.05 s against 1.14 s.
+
+**Halving the spacing costs a turn 69.5 ms in fp32 and 33.5 ms in bf16 — and the gap is the chain.** Going
+16384 → 8192 adds two periodic checkpoints to a 31,813-token conversation, and a parked image carries the
+whole chain, so every turn's park and mount gets bigger. fp32 pays +69.5 ms per turn for those two
+checkpoints, bf16 pays +33.5 ms: 48 % of the penalty, which is the codec doing what it claims on bytes that
+scale with chain length rather than with the conversation. Neither figure is noise — the arms' own rounds move
+0–3 ms — and neither is on the token path.
+
+What this cell does **not** cover: a conversation long enough that the chain is tens of checkpoints deep,
+where the spacing term would dominate everything above; capture during a prefill rather than between turns;
+and a park whose image no longer fits the cache budget.
 
 ## Quality gate
 
@@ -791,7 +850,10 @@ State the machine (CPU, GPU, RAM, OS, engine version, model, flags) next to ever
 - decode tok/s and prefill tok/s before and after, to show the codec does not land on the token path. **Done for
   prefill:** the same 63,455-token prompt read in 44.8 s configured `fp32`, 44.6 s configured `bf16`, 44.7 s on the
   previous engine build — the same rate — and `tools/ab_engine.py` medians matching to within 2.8 tok/s on decode over
-  2 rounds. No codec code is on the token path.
+  2 rounds. Re-taken on HEAD after capture-time coding, which put coding on the capture path: a 31,813-token prompt
+  read in 21.7 s either codec (21,716.5 ms `fp32` against 21,702.5 `bf16` at the default spacing, 21,796 against
+  21,867.5 at `--prompt-cache-every` 8192, inside the arms' own 3–22 ms round spread), and the 24 tokens of a turn
+  produced at ~77 tok/s either way. No codec code is on the token path.
 - peak RAM during SAVE, flag off vs on, to show the capture scratch is admitted and not a surprise. **Done, with the
   limits stated:** `SAVE` grows `VmRSS` by +353.2 MiB configured `fp32` and +240.8 MiB configured `bf16` at 32K on a
   fresh process; a bf16 `RESTORE` is the one operation that grows *more* (+415.2 against +350.8 MiB), because widening
