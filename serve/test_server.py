@@ -2010,6 +2010,40 @@ class PcieShare(unittest.TestCase):
         self.assertIn("expert cache 60.0% hit (+20.0% of the routed experts over PCIe)", out.getvalue())
 
 
+class PcieExpertsBytes(unittest.TestCase):
+    """The routed experts the GPU read over PCIe (the DONE line's offloaded count) as bytes and GiB/s: from the mean
+    blob size the engine reports for its own expert cache (INFO), never a constant - a pack's blobs differ in size."""
+
+    def test_from_the_engines_own_cache_size(self):
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX, done_lines=[
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100 0 0 0.0 20 25"])   # 25 blobs over PCIe, 30 ms of decoding
+        engine.info = {"expert_cache_mib": 200, "expert_slots": 100}     # 2 MiB per blob on this pack
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            list(svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event()))
+        row = svc.metrics()["requests"][0]
+        self.assertEqual(row["offloaded"], 25)
+        self.assertEqual((row["pcie_experts_mib"], row["pcie_experts_gib_s"]), (50.0, 1.63))
+
+    def test_no_blobs_no_numbers(self):
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX, done_lines=[
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100 0 0 0.0 20 0",       # nothing went over PCIe
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100 0 0 0.0 20 25",      # but the engine reports no cache size
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100 0 0 0.0 20"])        # an older engine: no offloaded field
+        engine.info = {}
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            for _ in range(3):
+                list(svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event()))
+        rows = svc.metrics()["requests"]
+        for r in reversed(rows):
+            self.assertIsNone(r["pcie_experts_mib"], r)
+            self.assertIsNone(r["pcie_experts_gib_s"], r)
+        self.assertEqual([r["offloaded"] for r in rows], [None, 25, 0])
+
+
 class PeerDevice(unittest.TestCase):
     """#665: several GPUs in the config are a layer split, but --peer-device uses the second card as an expert-cache
     tier, and the engine refuses it beside --layer-split: the server must not add one then."""

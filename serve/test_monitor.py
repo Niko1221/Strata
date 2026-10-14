@@ -194,6 +194,67 @@ class Monitor(unittest.TestCase):
         self.assertEqual(self.request("/web/../server.py")[0], 404)
 
 
+class KvStreamingLines(unittest.TestCase):
+    """The "KV streaming:" line the engine writes at each request's end (bandwidth view): its counters are cumulative
+    over the process, so one request's own share is the difference between two lines - never the line's own numbers."""
+
+    L1 = "strata serve: KV streaming: 80.00% of 1000 block reads hit VRAM, 0.8 MiB read from RAM\n"
+    L2 = "strata serve: KV streaming: 85.00% of 3000 block reads hit VRAM, 1.8 MiB read from RAM\n"
+
+    def test_deltas_not_cumulative(self):
+        from serve.server import ConvCacheLog
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text("an earlier run\n", encoding="utf-8")
+            start = log.stat().st_size
+            c = ConvCacheLog()
+            c.poll(str(log), start)
+            self.assertEqual(c.take_kv_deltas(), [])
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(self.L1)
+            c.poll(str(log), start)
+            (first,) = c.take_kv_deltas()
+            self.assertEqual(c.take_kv_deltas(), [])               # taken once
+            self.assertEqual((first["block_reads"], first["ram_mib"], first["hit_pct"]), (1000, 0.8, 80.0))
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(self.L2)
+            c.poll(str(log), start)
+            (second,) = c.take_kv_deltas()
+            # 3000 - 1000 reads, 1.8 - 0.8 MiB, and 250 missed of the 2000 new reads (450 - 200)
+            self.assertEqual((second["block_reads"], second["ram_mib"], second["hit_pct"]), (2000, 1.0, 87.5))
+            self.assertEqual(c.poll(None, None)["parked"], 0)      # no log: nothing new
+            self.assertEqual(c.take_kv_deltas(), [])
+
+    def test_metrics_attaches_each_line_to_its_request(self):
+        tok = ByteTokenizer()
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text("strata generate: ready\n", encoding="utf-8")
+            engine = MockEngine(tok, "Thought.</think>\n\nok", max_context=4096)
+            engine.log_path, engine.log_start = str(log), log.stat().st_size
+            svc = Service(engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+            httpd = serve(svc, port=0)
+            base = f"http://127.0.0.1:{httpd.server_address[1]}"
+            try:
+                body = json.dumps({"messages": [{"role": "user", "content": "hi"}], "max_tokens": 10})
+                for line in (self.L1, self.L2):
+                    with urllib.request.urlopen(urllib.request.Request(
+                            base + "/v1/chat/completions", data=body.encode(),
+                            headers={"Content-Type": "application/json"}), timeout=10) as r:
+                        r.read()
+                    with open(log, "a", encoding="utf-8") as f:    # the engine's summary at this request's end
+                        f.write(line)
+                with urllib.request.urlopen(base + "/metrics", timeout=10) as r:
+                    rows = json.loads(r.read())["requests"]
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+        self.assertEqual([(x["kv_block_reads"], x["kv_ram_mib"], x["kv_hit_pct"]) for x in rows],
+                         [(2000, 1.0, 87.5), (1000, 0.8, 80.0)])   # newest first: the lines' own shares
+
+
 class ConversationCacheCard(unittest.TestCase):
     """#596: /metrics' "conversation_cache": the parked conversations from the engine's log lines, the budget and
     slots from its INFO line, and how much of the prompts the cache gave back."""

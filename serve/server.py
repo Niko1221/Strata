@@ -655,18 +655,33 @@ class ConvCacheLog:
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
                        r"(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
+    KVSTREAM = re.compile(r"KV streaming: ([\d.]+)% of (\d+) block reads hit VRAM, ([\d.]+) MiB read from RAM")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
     def __init__(self):
         self.key, self.pos = None, 0
+        self.lock = threading.Lock()                    # the settle path polls too, beside /metrics
         self.reset()
 
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
                       "last_tokens": None, "last_at": None}
+        self.kv_cum = None                              # the last "KV streaming:" line's process-cumulative counters
+        self.kv_deltas = []                             # one entry per line since the last take_kv_deltas()
+
+    def take_kv_deltas(self) -> list:
+        """The KV streaming summaries no caller has taken yet, oldest first - each is one request's own share (see
+        poll)."""
+        with self.lock:
+            out, self.kv_deltas = self.kv_deltas, []
+        return out
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it."""
+        with self.lock:
+            return self._poll(path, start)
+
+    def _poll(self, path, start) -> dict:
         if not path or start is None:
             return dict(self.state)
         if self.key != (path, start):                   # another start of the engine: its cache starts empty
@@ -687,6 +702,21 @@ class ConvCacheLog:
         self.pos += end
         now = time.time()
         for line in data[:end].decode("utf-8", "replace").splitlines():
+            if "KV streaming:" in line:                    # one line per finished request (bandwidth view)
+                m = self.KVSTREAM.search(line)
+                if m:
+                    # the engine's counters are cumulative over the process (generate.cpp's summary block), so a
+                    # request's own share is the difference from the previous line - never the line's own numbers
+                    look, pct, mib = int(m.group(2)), float(m.group(1)), float(m.group(3))
+                    miss = look * (1.0 - pct / 100.0)
+                    prev, self.kv_cum = self.kv_cum, (look, miss, mib)
+                    d_look = look - (prev[0] if prev else 0)
+                    d_mib = mib - (prev[2] if prev else 0.0)
+                    self.kv_deltas.append({
+                        "at": now, "block_reads": d_look, "ram_mib": round(d_mib, 1),
+                        "hit_pct": round(100.0 * (d_look - (miss - (prev[1] if prev else 0.0))) / d_look, 1)
+                        if d_look > 0 else None})
+                continue
             if "conversation cache:" not in line:
                 continue
             m = self.EVENT.search(line)
@@ -703,6 +733,17 @@ class ConvCacheLog:
             if m:
                 self.state["parked"] = int(m.group(1))
         return dict(self.state)
+
+
+def expert_blob_mib(info: dict) -> float | None:
+    """The mean expert blob's size in MiB, from the engine's own expert-cache size and slot count (its INFO line).
+    A mean, not a constant: the packs' blobs differ in size (a native pack has one size per layer). None when the
+    engine did not report both numbers."""
+    try:
+        slots, mib = int(info.get("expert_slots") or 0), float(info.get("expert_cache_mib") or 0)
+    except (TypeError, ValueError):
+        return None
+    return mib / slots if slots > 0 and mib > 0 else None
 
 
 def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
@@ -3691,11 +3732,23 @@ class Service:
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
+        # each "KV streaming:" line is one request's own share (the engine's counters are cumulative; poll keeps the
+        # differences). The engine writes one line per finished request, in the order the requests finish - the same
+        # order the rows were appended in - so each line goes to the oldest row that can own it. A request whose
+        # engine died before writing its line leaves its row without these fields rather than taking another's.
+        for d in self.conv_log.take_kv_deltas():
+            row = next((r for r in hist if "kv_ram_mib" not in r and r.get("time", 0) <= d["at"]), None)
+            if row is not None:
+                row["kv_ram_mib"], row["kv_hit_pct"], row["kv_block_reads"] = d["ram_mib"], d["hit_pct"], d["block_reads"]
+        def _sp(key):
+            v = [x for x in (tel["history"].get(key) or []) if x is not None]
+            return {"mean": round(sum(v) / len(v), 1), "peak": round(max(v), 1)} if v else None
+        bandwidth = {k: _sp(k) for k in ("gpu_pcie_rx_mb", "gpu_pcie_tx_mb", "disk_read_mb", "disk_write_mb")}
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
-                tel["static"], "history": tel["history"], "time": now}
+                tel["static"], "history": tel["history"], "bandwidth": bandwidth, "time": now}
 
     def prometheus(self) -> str:
         """GET /metrics/prometheus: the totals and what is running in Prometheus' text format, under llama-server's
@@ -4445,6 +4498,7 @@ class Service:
                             pcie_share = round(last["offloaded"] / routed, 3) \
                                 if last.get("offloaded") is not None and routed else None
                             seen = prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read
+                            blob_mib = expert_blob_mib(getattr(self.engine, "info", {}) or {})
                             self.history.append({
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
@@ -4462,7 +4516,17 @@ class Service:
                                 "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
                                 # #457: the speculative drafts from the DONE line (None: the engine did not say)
                                 "drafts_offered": last.get("drafts_offered"),
-                                "drafts_accepted": last.get("drafts_accepted")})
+                                "drafts_accepted": last.get("drafts_accepted"),
+                                # the routed experts the GPU read over PCIe (the DONE line's offloaded count), as
+                                # bytes and GiB/s over the decode window. The blob size is the mean the engine
+                                # reports for its own expert cache (INFO), not a constant: a pack's blobs differ
+                                # (one size per layer on a native pack). None: the engine did not say enough.
+                                "offloaded": last.get("offloaded"),
+                                "pcie_experts_mib": round(last.get("offloaded") * blob_mib, 1)
+                                if last.get("offloaded") and blob_mib else None,
+                                "pcie_experts_gib_s": round(last.get("offloaded") * blob_mib / 1024
+                                                            / (last["decode_ms"] / 1000), 2)
+                                if last.get("offloaded") and blob_mib and last.get("decode_ms") else None})
                             t = self.totals
                             t["requests"] += 1
                             t["prompt_tokens"] += seen

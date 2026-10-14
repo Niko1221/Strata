@@ -309,7 +309,18 @@ engine 0.1.31 or newer). It also lists each request's speculative drafts, `draft
 Its `hit_rate` is the VRAM share of the experts looked up while answering: experts the GPU reads over PCIe
 (`--pcie-frac`) are not in it, so a higher `--pcie-frac` raises it even when decoding gets slower. `pcie_share`
 (engine 0.1.39 or newer, #588) is their share of all routed experts, and the server log and the Monitor tab show it
-beside the hit rate.
+beside the hit rate. `offloaded` is that count as the engine reported it, and `pcie_experts_mib` /
+`pcie_experts_gib_s` turn it into bytes and GiB/s over the request's decode time, using the mean blob size from the
+engine's own expert cache (`expert_cache_mib` over `expert_slots` in its INFO line) - a pack's blobs differ in size
+(a native pack has one size per layer), so this is that mean, and `null` when the engine did not report enough.
+
+With KV streaming on, `kv_block_reads`, `kv_hit_pct` and `kv_ram_mib` are one request's own share of the engine's
+per-request `KV streaming:` summary: the KV blocks the attention read, the share of them that hit the VRAM page
+pool, and how much came over PCIe from RAM. The engine's counters are cumulative over the process, so the server
+reports each line's difference from the previous one, not its own numbers. A request whose engine died before
+writing its summary has `null`, and the fields are absent while KV streaming is off. `GET /metrics` also answers
+with `"bandwidth"`, the mean and peak of the 1-second hardware series since the server started (`gpu_pcie_rx_mb`,
+`gpu_pcie_tx_mb`, `disk_read_mb`, `disk_write_mb`; `null` when there is no hardware telemetry).
 
 **Where a decode window's time goes (profiling, #610):** start the server with `STRATA_DECODE_TIMING=1` (and
 `STRATA_VERIFY_PROFILE=1` for the GPU's side) in the environment. After each request the engine log then has one
