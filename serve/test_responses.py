@@ -36,6 +36,28 @@ class Parsing(unittest.TestCase):
         self.assertEqual(input_messages({"input": "hi", "instructions": "Be brief."}),
                          [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "hi"}])
 
+    def test_video_parts_ride_the_same_path_as_images(self):
+        """#2421: a video_url (a data: or http(s) URL) or an input_video (base64) part becomes one video place
+        carrying its source - the encoder reads the clip itself, so the template draws it like a picture."""
+        msgs = input_messages({"input": [{"role": "user", "content": [
+            {"type": "input_text", "text": "what is it?"},
+            {"type": "video_url", "video_url": {"url": "https://x.com/c.mp4"}}]}]})
+        self.assertEqual(msgs[0]["content"], [{"type": "text", "text": "what is it?"},
+                                              {"type": "video", "source": "https://x.com/c.mp4"}])
+        msgs = input_messages({"input": [{"role": "user", "content": [
+            {"type": "video_url", "video_url": "data:video/webm;base64,AAAB"},
+            {"type": "input_video", "input_video": {"data": "AAAC", "mime_type": "video/mp4"}}]}]})
+        self.assertEqual(msgs[0]["content"], [{"type": "video", "source": "data:video/webm;base64,AAAB"},
+                                              {"type": "video", "source": "data:video/mp4;base64,AAAC"}])
+
+    def test_a_video_part_without_a_source_is_refused(self):
+        for part in ({"type": "video_url", "video_url": {}}, {"type": "input_video", "input_video": {}},
+                     {"type": "video_url"}, {"type": "input_video"}):
+            with self.subTest(part=part):
+                with self.assertRaises(ResponsesError) as cm:
+                    input_messages({"input": [{"role": "user", "content": [part]}]})
+                self.assertEqual(cm.exception.code, "unsupported_parameter")
+
     def test_leading_developer_messages_join_the_system_message_later_ones_become_user(self):
         msgs = input_messages({"instructions": "I", "input": [
             {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "D1"},
