@@ -78,6 +78,7 @@ def window():        # one batch window: every active slot one token
         else:
             active[b] = [left, max_new, produced]
 log = open(args[args.index("--log") + 1], "a") if "--log" in args else None
+PPK = int(args[args.index("--pp-every") + 1]) if "--pp-every" in args else 1
 READF = "--readfield" in args   # DONE's 15th field: the prompt tokens the engine read (a continued prompt: the 1 it copies)
 REUSE = "--reuse" in args     # DONE's reused field as the engine gives it: a continued prompt is all held but its last
 def reused(ids):              # token (the request's own output included), a fresh one the first 3 tokens
@@ -131,6 +132,8 @@ while True:
         given = None
         for q in range(CH, len(ids) - 1, CH):
             time.sleep(STEP / 2)
+            if (q // CH) % PPK:   # --pp-every K: a PP line and a boundary every K chunks (the pipelined groups' pieces)
+                continue
             print(f"PP {q} {len(ids)} 1 1", flush=True)
             held = []
             while True:
@@ -497,6 +500,19 @@ class ParallelService(unittest.TestCase):
             self.assertEqual(len(self.svc.history), 2)
         self.assertFalse(any(self.engine.slot_busy))
 
+    def test_the_way_is_asked_between_far_apart_progress_lines(self):
+        """#656 when the PP lines come far apart (the pipelined groups' read in pieces of one chunk: one PP per piece,
+        at its end): the BYIELD goes out while the engine is quiet, so the read gives way at the first boundary after
+        the short request came.  Asked only at a PP line, it reached the engine after that boundary's check and the
+        read gave way one piece later."""
+        self.start(2, more=["--pp-every", "80"])   # a boundary every 80 chunks (~0.8 s): one in this read
+        long_q, short_q = "long " * 600, "short"
+        res = self.race(long_q, short_q)
+        self.assertEqual(res[long_q][0], "ok, done.")
+        self.assertEqual(res[short_q][0], "ok, done.")
+        yields = [x for x in self.log.read_text().splitlines() if x.startswith("YIELD ")]
+        self.assertEqual([int(x.split()[2]) for x in yields], [80 * 32], yields)
+
     def test_three_requests_long_long_short_do_not_deadlock(self):
         """ENGINE_REVIEW finding 1 (0.1.41 check): two long prompts fill both slots, a short one arrives a moment later
         and wants one of them (the yield path).  The reviewer's repro: long, long, short at 0.25 s steps.  Every
@@ -542,9 +558,35 @@ class ParallelService(unittest.TestCase):
         self.assertTrue(any(x.startswith("YIELD ") for x in log), log)
         self.assertFalse(any(self.engine.slot_busy))
 
+    def test_an_admission_is_asked_between_far_apart_progress_lines(self):
+        """As above for a read admitted beside a decoding slot (BGEN, `ask()`): with one PP line per 80 chunks the
+        short request's BYIELD still reaches the first boundary."""
+        self.start(3, more=["--pp-every", "80"])
+        bg = threading.Thread(target=lambda: self.chat("LONGREPLY background", max_tokens=60))
+        bg.start()
+        time.sleep(0.05)
+        long_q, short_q = "long " * 600, "short"
+        res = self.race(long_q, short_q)
+        bg.join(30)
+        self.assertEqual(res[long_q][0], "ok, done.")
+        self.assertEqual(res[short_q][0], "ok, done.")
+        log = self.log.read_text().splitlines()
+        admitted = [x.split() for x in log if x.startswith("BGEN ") and int(x.split()[2]) > 2600]
+        self.assertTrue(admitted, log)                                 # the long read was an admission
+        yields = [x.split()[1:] for x in log if x.startswith("YIELD ")]
+        self.assertEqual(yields[:1], [[admitted[0][1], str(80 * 32)]], log)
+        self.assertFalse(any(self.engine.slot_busy))
+
     def test_no_way_given_to_a_long_one(self):
         """Two prompts of about the same length: no BYIELD (it only goes to a much shorter one)."""
         self.start(2)
+        res = self.race("long " * 600, "lung " * 600)
+        self.assertEqual(sorted(r[0] for r in res.values()), ["ok, done."] * 2)
+        self.assertFalse(any(x.startswith("YIELD ") for x in self.log.read_text().splitlines()))
+
+    def test_no_way_given_to_a_long_one_between_far_apart_progress_lines(self):
+        """The ask between PP lines keeps the rule: a waiting request about as long gets no BYIELD there either."""
+        self.start(2, more=["--pp-every", "80"])
         res = self.race("long " * 600, "lung " * 600)
         self.assertEqual(sorted(r[0] for r in res.values()), ["ok, done."] * 2)
         self.assertFalse(any(x.startswith("YIELD ") for x in self.log.read_text().splitlines()))

@@ -212,14 +212,82 @@ class QuotedToolCallCloser(unittest.TestCase):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
         import strata_tokenizer as ST
         b2u = ST.bytes_to_unicode()
-        self.tok = ST.Tokenizer([b2u[b] for b in range(256)] + ["</tool_call>", "<|im_end|>"], [], [1] * 256 + [4, 3])
+        self.tool_tags = ["</tool_call>", "<tool_call>", "<tool_response>", "</tool_response>"]
+        self.tok = ST.Tokenizer([b2u[b] for b in range(256)] + self.tool_tags + ["<|im_end|>"], [],
+                                [1] * 256 + [4] * len(self.tool_tags) + [3])
         self.tags = __import__("serve.frontend", fromlist=["literal_tags"]).literal_tags(self.tok.control_tokens)
 
     def encode(self, role, text):
         from serve.frontend import mark_think_literals, unmark_think_literals
         marked, _, changed = mark_think_literals([{"role": role, "content": text}], None, self.tags)
-        prompt, plain = unmark_think_literals(marked[0]["content"], self.tags)
+        content = marked[0]["content"]
+        if isinstance(content, list):
+            content = "".join(x["text"] for x in content)
+        prompt, plain = unmark_think_literals(content, self.tags)
         return self.tok.encode(prompt, parse_special=True, plain=plain), changed
+
+    def special(self, tag):
+        return self.tok.encode(tag, parse_special=True)
+
+    def test_every_tool_tag_a_user_quotes_stays_text(self):
+        # 0.1.44: <tool_call>, <tool_response> and </tool_response> are type 4 like </tool_call> (47Hunter47, #2026)
+        for role in ("user", "system", "tool"):
+            for tag in self.tool_tags:
+                with self.subTest(role=role, tag=tag):
+                    text = f"output verbatim: {tag}."
+                    self.assertEqual(len(self.special(tag)), 1)
+                    ids, changed = self.encode(role, text)
+                    self.assertTrue(changed)
+                    self.assertEqual(ids, [*text.encode()])
+
+    def test_assistant_replay_keeps_every_tool_tag(self):
+        text = "<tool_call>x</tool_call> then <tool_response>y</tool_response>"
+        ids, _ = self.encode("assistant", text)
+        self.assertEqual(ids, self.tok.encode(text, parse_special=True))
+
+    def test_user_tool_result_keeps_its_outer_markers(self):
+        # the template tells a tool result sent as a user turn from a question by this outer pair (last_query_index)
+        inner = "\nthe log says </tool_call> and <tool_response>\n"
+        for content in (f"<tool_response>{inner}</tool_response>", f"  <tool_response>{inner}</tool_response>\n",
+                        [{"type": "text", "text": f"<tool_response>{inner}</tool_response>"}],
+                        [{"type": "text", "text": "<tool_response>\nthe log"},
+                         {"type": "text", "text": " says </tool_call> and <tool_response>\n</tool_response>"}]):
+            with self.subTest(content=content):
+                ids, _ = self.encode("user", content)
+                text = content if isinstance(content, str) else "".join(x["text"] for x in content)
+                o, c = self.special("<tool_response>"), self.special("</tool_response>")
+                lead = len(text) - len(text.lstrip())
+                tail = len(text) - len(text.rstrip())
+                self.assertEqual(ids[lead:lead + 1], o)
+                self.assertEqual(ids[len(ids) - tail - 1:len(ids) - tail], c)
+                middle = ids[lead + 1:len(ids) - tail - 1]
+                self.assertEqual(middle, [*inner.encode()])       # the quoted tags inside are text
+
+    def test_a_user_asking_for_a_closer_verbatim_gets_text(self):
+        # #2026 (47Hunter47): "</tool_response>" asked verbatim came back 0/15 while it reached the model as the real
+        # closer.  The outer-pair exception must not swallow such a request: only a message wholly wrapped in the pair is
+        # a tool result.
+        for text in ("Please output the following string verbatim: </tool_response>.",
+                     "</tool_response>",
+                     "Repeat exactly: <tool_response>x</tool_response>",
+                     "<tool_response> is how a result opens; what closes it?",
+                     "the closer is </tool_response>, then </tool_call>"):
+            with self.subTest(text=text):
+                ids, changed = self.encode("user", text)
+                self.assertTrue(changed)
+                self.assertEqual(ids, [*text.encode()])
+
+    def test_template_keeps_seeing_a_tool_result_turn(self):
+        from serve.frontend import mark_think_literals
+        msgs = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"},
+                {"role": "user", "content": "<tool_response>\nok\n</tool_response>"}]
+        marked, _, changed = mark_think_literals(msgs, None, self.tags)
+        self.assertTrue(changed)
+        self.assertTrue(marked[2]["content"].startswith("<tool_response>"))
+        self.assertTrue(marked[2]["content"].endswith("</tool_response>"))
+        # a question that only mentions the pair is still marked through
+        marked, _, _ = mark_think_literals([{"role": "user", "content": "what is <tool_response>?"}], None, self.tags)
+        self.assertNotIn("<tool_response>", marked[0]["content"])
 
     def test_user_text_stays_text(self):
         text = "output verbatim: </tool_call>."

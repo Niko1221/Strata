@@ -1,5 +1,6 @@
 // src/kernels/cuda/qsa_prompt_attn.cu - see include/strata/kernels/qsa_prompt_attn.hpp.
 #include "strata/core/emulate.hpp"
+#include "strata/core/geometry.hpp"
 #include <cstdlib>
 #include <cstring>
 #include "strata/kernels/qsa_prompt_attn.hpp"
@@ -21,6 +22,7 @@ namespace {
 
 constexpr int HD = 256;           // head_dim
 constexpr int G = 12;             // query heads per KV head
+static_assert(HD == strata::core::kCompiledGeometry.head_dim && G == strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv, "qsa_prompt_attn is compiled for core/geometry.hpp");
 #ifndef D1_CH
 #define D1_CH 32
 #endif
@@ -1139,7 +1141,7 @@ bool launch70(const float*, const QsaAttnPools&, const int32_t*, const int32_t*,
 #if defined(__gfx1200__) || defined(__gfx1201__)
 #define STRATA_PA_WMMA 1
 #define STRATA_PA_GFX11 0
-#elif defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || \
+#elif defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || \
     defined(__gfx1151__)
 #define STRATA_PA_WMMA 1
 #define STRATA_PA_GFX11 1
