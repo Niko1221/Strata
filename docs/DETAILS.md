@@ -81,7 +81,10 @@ attention reads in VRAM (`--kv-resident 32768`), so more experts fit on the GPU.
 (1,589 -> 3,872 experts in VRAM); at 128K about +6%. The attention reads exactly the same values (only where the KV lives changes); it
 costs ~13.7 KB of RAM per context token (1.7 GB at 128K). Existing installs: run `START-HERE.bat --setup` once to turn
 it on. Setup turns it on when the RAM has room for it; `--kv-streaming on|off` overrides that (on past the RAM test with a
-note; never under WSL, which cannot stream).
+note; never under WSL, which cannot stream). It stays off on one card that holds every expert and the whole KV cache
+(#2261; the native packs' sizes), where the VRAM it frees has nothing left to hold: an L40S with IQ2_XS at 262K
+(every expert in VRAM either way, 3 interleaved pairs on each of two hosts) decoded 0-5% faster and read 48K and 120K
+prompts 0-8% faster with the KV cache in VRAM (medians; no pair was more than 1% slower).
 
 **4-bit KV cache (engine 0.1.8, optional):** `START-HERE.bat --setup` asks above 8K context (or pass `--kv q4_0`). It
 halves the KV cache's memory with a Hadamard rotation before 4-bit rounding (PR #21), about 4% faster at 128K, but it

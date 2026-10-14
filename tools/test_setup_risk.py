@@ -470,6 +470,35 @@ class KvStreaming(unittest.TestCase):
         self.assertNotIn("--kv-resident", cfg["args"])
         self.assertIn("a context under 64K is not streamed", out)
 
+    # #2261: the cards as nvidia-smi lists them (an L40S: 46068 MiB)
+    PRO6000 = (253.4, [card(0, "NVIDIA RTX PRO 6000 Blackwell Workstation Edition", 95.6, "120")])
+    L40S = (251.0, [card(0, "NVIDIA L40S", 44.99, "89")])
+
+    def on(self, pc, model, *flags):
+        ram, found = pc
+        return install(ram, found, ["--family", "qwen", "--model", model, "--no-start", "--context", "262144",
+                                    *flags])
+
+    def test_a_card_that_holds_every_expert_and_the_kv_keeps_it_in_vram(self):
+        for pc, model in ((self.PRO6000, "IQ3_S"), (self.L40S, "IQ2_XS")):
+            code, out, cfg, _ = self.on(pc, model)
+            self.assertEqual(code, 0, out)
+            self.assertNotIn("--kv-resident", cfg["args"], model)
+            self.assertIn(f"holds every expert of {model} and the whole KV cache", out)
+            self.assertFalse(setup.kv_streaming_wanted(model, 262144, "int8", pc[0], "auto", pc[1][0]["vram_gb"]))
+        code, out, cfg, _ = self.on(self.PRO6000, "IQ3_S", "--kv-streaming", "on")
+        self.assertEqual(arg(cfg, "--kv-resident"), "32768")
+
+    def test_the_kv_streams_where_the_experts_and_the_kv_do_not_fit(self):
+        for pc, model, flags in ((self.L40S, "IQ3_XXS", ()), (self.L40S, "IQ2_XS", ("--parallel", "2")),
+                                 ((251.0, [card(i, "NVIDIA L40S", 44.99, "89") for i in range(2)]), "IQ2_XS", ())):
+            code, out, cfg, _ = self.on(pc, model, *flags)
+            self.assertEqual(code, 0, out)
+            self.assertEqual(arg(cfg, "--kv-resident"), "32768", f"{model} {flags} on {len(pc[1])} card(s)")
+            self.assertNotIn("holds every expert", out)
+        for model in ("UD-Q4_K_XL", "NVFP4"):                # the rule is measured on the native packs only
+            self.assertFalse(setup.kv_whole_fits_vram(model, 262144, "int8", 95.6))
+
     def test_budget_flag_on_another_size(self):
         code, out, cfg, _ = self.go("Q2_0", "--resident-budget-gib", "30")
         self.assertEqual(code, 0, out)
