@@ -11091,11 +11091,20 @@ int main(int argc, char** argv) {
             }
             auto parked = conversations.best(ids, req_imgs, want_cvec);
             std::optional<strata::core::SavedConversation> incoming;
+            strata::core::ConversationDiskTier::Match stream;   // a disk conversation the RAM refuses whole (id 0: none)
+            bool incoming_streamed = false;                      // incoming's K/V is already in the GPUs
             // the disk tier holds a longer prefix than the session, a --batch slot or the RAM cache: restore that one
             if (conv_disk.enabled()) {
                 conv_disk.expire();
                 const auto on_disk = conv_disk.best(ids, req_imgs, want_cvec);
                 if (on_disk.tokens > std::max({resume, slot_tokens, parked.tokens})) {
+                    const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
+                    size_t evicted = 0;
+                    std::optional<strata::core::HostMemoryReading> room;
+                    // no room for the whole image: its K/V is streamed into the GPUs after the outgoing one is parked
+                    if (!on_disk.queued && !make_ram(on_disk.bytes, floor, evicted, room)) stream = on_disk;
+                }
+                if (stream.id == 0 && on_disk.tokens > std::max({resume, slot_tokens, parked.tokens})) {
                     const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
                     size_t evicted = 0;
                     auto admit = [&](uint64_t need, std::string& why) -> bool {
@@ -11119,8 +11128,9 @@ int main(int argc, char** argv) {
                     if (evicted && !incoming) parked = conversations.best(ids, req_imgs, want_cvec);   // indices moved
                 }
             }
-            if (!incoming && parked.tokens > std::max(resume, slot_tokens)) incoming.emplace(conversations.take(parked.index));
-            if (incoming) slot_source = -1;
+            if (!incoming && stream.id == 0 && parked.tokens > std::max(resume, slot_tokens))
+                incoming.emplace(conversations.take(parked.index));
+            if (incoming || stream.id) slot_source = -1;
             // Reject the entire image before parking/overwriting the outgoing
             // state. Invalid entries can safely fall back to its existing prefix.
             if (incoming && incoming->stage_images.size() != stages.size()) {
@@ -11155,7 +11165,8 @@ int main(int argc, char** argv) {
                 resume == req_pin && live_ok)
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() == resume && c.pinned) pin_sibling = true;
-            if ((!from_live || incoming || slot_source >= 0) && !pin_sibling && !park_current(incoming ? incoming->bytes() : 0)) {
+            if ((!from_live || incoming || stream.id || slot_source >= 0) && !pin_sibling &&
+                !park_current(incoming ? incoming->bytes() : 0)) {
                 std::printf("ERR %s\n", err.c_str());
                 return 1;
             }
@@ -11197,13 +11208,65 @@ int main(int argc, char** argv) {
                 }
             }
             // the elastic K/V: a parked conversation is restored whole, and it may be longer than this prompt
-            if (incoming && !kvg_ensure((int64_t) incoming->live.ids.size() + 256, kv_quiesce)) {
+            const int64_t incoming_tokens = incoming ? (int64_t) incoming->live.ids.size() : stream.id ? stream.tokens : 0;
+            if (incoming_tokens > 0 && !kvg_ensure(incoming_tokens + 256, kv_quiesce)) {
                 std::printf("ERR the K/V cannot grow to the parked conversation: no VRAM is left\n");
                 return 1;
             }
+            // 3. the disk conversation the RAM refused whole: its files' K/V straight into the GPUs, only the running
+            // state and the checkpoints through RAM.  The outgoing one is parked: any failure reads the prompt instead.
+            if (stream.id) {
+                const auto d0 = Clock::now();
+                const strata::core::QsaState* draft0 = use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr;
+                auto draft_of = [&](size_t k) -> const strata::core::QsaState* {
+                    return use_mtp && !mtp_first && k + 1 == stages.size() ? &mtp.kv_state() : nullptr;
+                };
+                std::vector<std::vector<strata::core::SessionKvTarget>> kv(stages.size() + 1);
+                strata::core::SavedConversation meta;
+                std::string serr;
+                bool ok = strata::core::conversation_snapshot_targets(kv[0], ss, g, stream.tokens, draft0, serr);
+                for (size_t k = 0; ok && k < stages.size(); ++k) {
+                    const strata::core::OnDevice on(stages[k]->dev);
+                    ok = strata::core::conversation_snapshot_targets(kv[k + 1], stages[k]->ss, g, stream.tokens,
+                                                                      draft_of(k), serr);
+                }
+                const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
+                size_t evicted = 0;
+                auto admit = [&](uint64_t need, std::string& why) -> bool {
+                    std::optional<strata::core::HostMemoryReading> mem;
+                    if (make_ram(need, floor, evicted, mem)) return true;
+                    why = "not enough RAM even for the running state: " + ram_note(mem);
+                    return false;
+                };
+                ok = ok && conv_disk.take(stream.id, stream.tokens, meta, serr, admit, &kv);
+                ok = ok && strata::core::conversation_snapshot_restore_streamed(meta, ss, g, draft0, serr) ==
+                           strata::core::ConversationRestore::restored;
+                for (size_t k = 0; ok && k < stages.size(); ++k) {
+                    const strata::core::OnDevice on(stages[k]->dev);
+                    ok = strata::core::conversation_snapshot_restore_streamed(meta.stage_images[k], stages[k]->ss, g,
+                                                                              draft_of(k), serr) ==
+                             strata::core::ConversationRestore::restored &&
+                         cudaDeviceSynchronize() == cudaSuccess;
+                }
+                if (ok) {
+                    disk_read_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
+                    incoming.emplace(std::move(meta));
+                    incoming_streamed = true;
+                    parked.tokens = stream.tokens;
+                    parked.live = stream.live;
+                } else {   // the session may be half written: read this prompt from the start
+                    std::fprintf(stderr, "strata serve: conversation disk: %lld tokens not streamed back (%s); reading "
+                                         "the prompt\n", (long long) stream.tokens, serr.c_str());
+                    live.clear();
+                    live_imgs.clear();
+                    checks.clear();
+                    resume = 0;
+                    from_live = false;
+                }
+            }
             if (incoming) {
                 const auto t0 = Clock::now();
-                if (strata::core::conversation_snapshot_restore(*incoming, ss, g,
+                if (!incoming_streamed && strata::core::conversation_snapshot_restore(*incoming, ss, g,
                         use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr, err) !=
                     strata::core::ConversationRestore::restored) {
                     // Already prevalidated above: a failure here is fatal, never
@@ -11211,7 +11274,7 @@ int main(int argc, char** argv) {
                     std::printf("ERR restoring parked conversation: %s\n", err.c_str());
                     return 1;
                 }
-                for (size_t i = 0; i < stages.size(); ++i) {   // the later stages' parts
+                for (size_t i = 0; !incoming_streamed && i < stages.size(); ++i) {   // the later stages' parts
                     const strata::core::OnDevice on(stages[i]->dev);
                     if (strata::core::conversation_snapshot_restore(incoming->stage_images[i], stages[i]->ss, g,
                             use_mtp && !mtp_first && i + 1 == stages.size() ? &mtp.kv_state() : nullptr, err) !=
@@ -11222,7 +11285,7 @@ int main(int argc, char** argv) {
                     }
                     if (cudaDeviceSynchronize() != cudaSuccess) { std::printf("ERR stage sync\n"); return 1; }
                 }
-                if (use_mtp && std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr) {
+                if (!incoming_streamed && use_mtp && std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr) {
                     uint64_t draft_hash = 0;
                     const auto& draft_kv = stages.empty() || mtp_first ? incoming->kv.back() : incoming->stage_images.back().kv.back();
                     const strata::core::OnDevice on_d(stages.empty() || mtp_first ? 0 : stages.back()->dev);
@@ -11249,7 +11312,7 @@ int main(int argc, char** argv) {
                 cvec_cached = incoming->cvec;
                 resume = parked.tokens;
                 from_live = parked.live;
-                if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
+                if (!incoming_streamed && std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
                     std::vector<std::vector<strata::core::ConversationKv>> stage_kv;   // every stage's, for its next park
                     for (auto& si : incoming->stage_images) stage_kv.push_back(std::move(si.kv));
                     conversations.retain(std::move(incoming->kv), int64_t(live.size()), std::move(stage_kv));

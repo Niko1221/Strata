@@ -76,6 +76,8 @@ public:
         uint64_t id = 0;        ///< the entry (stable while the writer runs; 0 = none)
         int64_t tokens = 0;
         bool live = false;
+        uint64_t bytes = 0;     ///< its files' bytes (queued: the image's)
+        bool queued = false;    ///< still in the write queue: its image is in RAM
     };
     /// The longest prefix of `prompt` an entry holds (its live state or its checkpoint), queued or on the disk, as
     /// ConversationCache::best; ties prefer the newest entry.
@@ -83,18 +85,19 @@ public:
     Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
         std::lock_guard<std::mutex> lock(m_);
         Match best;
-        auto scan = [&](const Entry& e) {
+        auto scan = [&](const Entry& e, bool queued) {
             if (e.cvec != cvec) return;
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
                 const int64_t n = conversation_prefix(c, prompt, images);
-                if (n > best.tokens || (n == best.tokens && n > 0 && e.id > best.id)) best = {e.id, n, live};
+                if (n > best.tokens || (n == best.tokens && n > 0 && e.id > best.id))
+                    best = {e.id, n, live, e.bytes, queued};
             };
             consider(e.live, true);
             for (const auto& c : e.checkpoints) consider(c, false);
         };
-        for (const auto& e : entries_) scan(e);
-        for (const auto& j : queue_) scan(j.entry);
-        if (writing_) scan(writing_entry_);   // its file appears when the write ends: take() waits for it
+        for (const auto& e : entries_) scan(e, false);
+        for (const auto& j : queue_) scan(j.entry, true);
+        if (writing_) scan(writing_entry_, false);   // its file appears when the write ends: take() waits for it
         return best;
     }
 
@@ -102,8 +105,12 @@ public:
     /// when it is still queued, else from the disk (waiting for its write when it is being written).  `admit(need,
     /// why)` is asked before each file's payload is allocated (session_file_read's RAM preflight).  `tokens` is what
     /// the request reuses (diagnostics).  On failure `out` is empty and `error` says why.
+    /// With `kv` (per image, its K/V targets: conversation_snapshot_targets) the files' K/V is streamed into them
+    /// instead of RAM, and `out` gets the rest; a queued entry is refused (its image is in RAM: take it without).
+    /// On failure after a read began, the targets may hold part of it.
     bool take(uint64_t id, int64_t tokens, SavedConversation& out, std::string& error,
-              const std::function<bool(uint64_t need_bytes, std::string& why)>& admit = {});
+              const std::function<bool(uint64_t need_bytes, std::string& why)>& admit = {},
+              const std::vector<std::vector<SessionKvTarget>>* kv = nullptr);
 
     /// Whether images wait in the queue or are being written (their RAM is not back yet).
     bool pending() const;

@@ -34,6 +34,12 @@ bool conversation_kv_verify(const ConversationKv& image, const QsaState& state, 
 // conversation_kv_save).  Caller synchronizes the device first and keeps the state untouched while it is read.
 bool conversation_kv_source(SessionKvSource& source, const QsaState& state, const ModelGeometry& g,
                             int64_t upto, bool include_index, std::string& error);
+// Disk restore without a host copy: the layer's authoritative K/V as a streamed target (the reverse of
+// conversation_kv_source); after the bytes are written, conversation_kv_finish refreshes what reads them.
+bool conversation_kv_target(SessionKvTarget& target, const QsaState& state, const ModelGeometry& g,
+                            int64_t upto, bool include_index, std::string& error);
+// After a layer's authoritative K/V was written (restored or streamed): the VRAM residency is refilled from it.
+bool conversation_kv_finish(const QsaState& state, const ModelGeometry& g, int64_t upto, std::string& error);
 // The bytes of each K/V part (k, v, k_scale, v_scale, pooled) a snapshot of `upto` tokens holds: no state read.
 bool conversation_kv_part_sizes(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
                                 std::array<uint64_t, 5>& sizes, std::string& error);
@@ -105,6 +111,16 @@ bool conversation_snapshot_bytes(const ConversationView& view, const SessionStat
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& session,
                                    const ModelGeometry& g, const QsaState* draft, std::string& error);
+// Disk restore without a host copy of the K/V: one target per owned QSA layer then the draft (when given), for a
+// conversation of `upto` tokens.  The caller streams the file into them (session_file_read) and then calls
+// conversation_snapshot_restore_streamed with what the read gave.
+bool conversation_snapshot_targets(std::vector<SessionKvTarget>& targets, const SessionState& session,
+                                   const ModelGeometry& g, int64_t upto, const QsaState* draft, std::string& error);
+// The restore after such a read: `meta` (its K/V headers only) is validated as conversation_snapshot_validate does
+// but for the K/V bytes, then the layers' residency and the running state are restored.
+ConversationRestore conversation_snapshot_restore_streamed(const SavedConversation& meta, SessionState& session,
+                                                           const ModelGeometry& g, const QsaState* draft,
+                                                           std::string& error);
 bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
                                          const SessionState& session, const ModelGeometry& g, const QsaState* draft,
                                          size_t& bytes, std::string& error);

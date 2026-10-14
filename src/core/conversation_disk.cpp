@@ -500,7 +500,8 @@ bool ConversationDiskTier::store(Entry e, size_t images, const WriteFile& write_
 }
 
 bool ConversationDiskTier::take(uint64_t id, int64_t tokens, SavedConversation& out, std::string& error,
-                                const std::function<bool(uint64_t, std::string&)>& admit) {
+                                const std::function<bool(uint64_t, std::string&)>& admit,
+                                const std::vector<std::vector<SessionKvTarget>>* kv) {
     out = SavedConversation{};
     const auto t0 = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> lock(m_);
@@ -508,6 +509,7 @@ bool ConversationDiskTier::take(uint64_t id, int64_t tokens, SavedConversation& 
     // still queued: back from RAM, no disk at all
     for (size_t i = 0; i < queue_.size(); ++i)
         if (queue_[i].entry.id == id) {
+            if (kv) { error = "still queued: its image is in RAM"; return false; }
             out = std::move(queue_[i].image);
             const uint64_t b = queue_[i].entry.bytes;
             queue_.erase(queue_.begin() + (std::ptrdiff_t) i);
@@ -536,6 +538,10 @@ bool ConversationDiskTier::take(uint64_t id, int64_t tokens, SavedConversation& 
     }
     const Entry want = entries_[index];
     const std::vector<std::string>& files = want.files;
+    if (kv && kv->size() != files.size()) {
+        error = "one set of K/V targets per file is needed";
+        return false;
+    }
     remove_locked(index, false);   // the entry goes now; its files are deleted after the read, whatever it gives
     lock.unlock();
     const SessionFileIdentity fid = file_identity();
@@ -546,7 +552,8 @@ bool ConversationDiskTier::take(uint64_t id, int64_t tokens, SavedConversation& 
     for (size_t k = 0; ok && k < files.size(); ++k) {
         SavedConversation part;
         size_t n = 0;
-        ok = session_file_read(files[k], fid, part, n, error, limits);
+        ok = kv ? session_file_read(files[k], fid, part, (*kv)[k], n, error, limits)
+                : session_file_read(files[k], fid, part, n, error, limits);
         bytes += n;
         if (!ok) break;
         if (k == 0) out = std::move(part);
@@ -571,8 +578,9 @@ bool ConversationDiskTier::take(uint64_t id, int64_t tokens, SavedConversation& 
     stats_.read_ms += ms - waited;
     stats_.tokens_back += (uint64_t) std::max<int64_t>(tokens, 0);
     lock.unlock();
-    log(fmt("disk hit: %lld tokens, %.0f MiB in %zu file%s, %.0f ms (%.0f MB/s)%s", (long long) tokens, mib(bytes),
+    log(fmt("disk hit: %lld tokens, %.0f MiB in %zu file%s, %.0f ms (%.0f MB/s)%s%s", (long long) tokens, mib(bytes),
             files.size(), files.size() == 1 ? "" : "s", ms - waited, mbps(bytes, ms - waited),
+            kv ? ", streamed into the GPU" : "",
             waited > 0 ? fmt(", after %.0f ms waiting for its write", waited).c_str() : ""));
     log(summary());
     return true;

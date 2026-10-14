@@ -174,6 +174,16 @@ struct SessionKvSource {
     std::function<bool(size_t part, size_t offset, void* dst, size_t n)> read;
     std::function<std::string()> error;
 };
+// The reverse of SessionKvSource: one K/V layer written straight to where it lives while a streamed read parses
+// it.  The file's layer header must equal this one and each part's size `sizes[part]`; its bytes go to
+// `write(part, offset, src, n)` in pieces of at most 16 MiB.
+struct SessionKvTarget {
+    int format = 0;
+    int64_t cells = 0, heads = 0, head_dim = 0, page_size = 0, pooled_rows = 0, idx_dim = 0;
+    std::array<size_t, 5> sizes{};
+    std::function<bool(size_t part, size_t offset, const void* src, size_t n)> write;
+    std::function<std::string()> error;
+};
 // `meta` carries everything but the K/V (meta.kv must be empty); `kv` supplies the layers in order.
 bool session_file_write(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
                         const SessionFileIdentity& id, size_t& bytes, std::string& error,
@@ -234,6 +244,12 @@ uint64_t session_read_peak_bytes(uint64_t file_bytes);
 bool session_file_read(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
                        size_t& bytes, std::string& error, const SessionReadLimits& limits = {},
                        SessionStatus* status = nullptr);
+// The same with the K/V streamed into `kv` (one target per layer, in order) instead of RAM: `image` gets all but the
+// K/V bytes (its layers keep their headers), and the RAM check (limits.admit) is asked for that part only.  The
+// payload hash is checked after the bytes are written: on false the targets may hold part of the file.
+bool session_file_read(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
+                       const std::vector<SessionKvTarget>& kv, size_t& bytes, std::string& error,
+                       const SessionReadLimits& limits = {}, SessionStatus* status = nullptr);
 
 // The folder the free-space preflight asks about for `path`, by the rules of Windows or of POSIX (exposed so both can
 // be tested anywhere).  Windows: backslashes and a trailing backslash, as GetDiskFreeSpaceExW requires for a UNC

@@ -308,6 +308,63 @@ int main() {
               "put_streamed: read back exactly the image the sources came from");
     }
 
+    {   // take with K/V targets: the files' K/V streamed into them (here: CPU buffers), the rest in `out`
+        using Bytes = std::vector<uint8_t>;
+        auto targets_for = [](const SavedConversation& img, std::vector<std::array<Bytes, 5>>& into) {
+            into.assign(img.kv.size(), {});
+            std::vector<SessionKvTarget> out;
+            for (size_t j = 0; j < img.kv.size(); ++j) {
+                const auto& kv = img.kv[j];
+                SessionKvTarget t;
+                t.format = kv.format; t.cells = kv.cells; t.heads = kv.heads; t.head_dim = kv.head_dim;
+                t.page_size = kv.page_size; t.pooled_rows = kv.pooled_rows; t.idx_dim = kv.idx_dim;
+                const ConversationBuffer* parts[5] = {&kv.k, &kv.v, &kv.k_scale, &kv.v_scale, &kv.pooled};
+                for (size_t p = 0; p < 5; ++p) { t.sizes[p] = parts[p]->size(); into[j][p].assign(t.sizes[p], 0); }
+                std::array<Bytes, 5>* layer = &into[j];
+                t.write = [layer](size_t part, size_t offset, const void* src, size_t n) {
+                    std::memcpy((*layer)[part].data() + offset, src, n);
+                    return true;
+                };
+                out.push_back(std::move(t));
+            }
+            return out;
+        };
+        auto bytes_of_buffer = [](const ConversationBuffer& b) {
+            Bytes v(b.size());
+            b.read(v.data(), 0, v.size());
+            return v;
+        };
+        const SavedConversation expect = split_image(500, 31, 11000);
+        ConversationDiskTier tier(opts(dir, GiB, 1800));
+        check(tier.open(e) && tier.put(split_image(500, 31, 11000)), "streamed take: put");
+        tier.wait_idle();
+        std::vector<std::array<Bytes, 5>> got0, got1;
+        std::vector<std::vector<SessionKvTarget>> kv = {targets_for(expect, got0), targets_for(expect.stage_images[0], got1)};
+        const auto m = tier.best(prompt_of(600, 11000), {}, false);
+        SavedConversation meta;
+        check(m.tokens == 500 && !m.queued && m.bytes > 0 && tier.take(m.id, m.tokens, meta, e, {}, &kv),
+              "streamed take: read");
+        bool same_kv = true;
+        for (size_t j = 0; j < expect.kv.size(); ++j) {
+            const ConversationBuffer* parts[5] = {&expect.kv[j].k, &expect.kv[j].v, &expect.kv[j].k_scale,
+                                                  &expect.kv[j].v_scale, &expect.kv[j].pooled};
+            for (size_t p = 0; p < 5; ++p) same_kv = same_kv && got0[j][p] == bytes_of_buffer(*parts[p]);
+        }
+        check(same_kv && logged("streamed into the GPU"), "streamed take: the targets hold the K/V exactly");
+        check(meta.kv.size() == expect.kv.size() && meta.kv[0].k.size() == 0 &&
+              same_checkpoint(meta.live, expect.live) && meta.checkpoints.size() == expect.checkpoints.size() &&
+              meta.stage_images.size() == 1, "streamed take: the running state and checkpoints in RAM, no K/V");
+        check(tier.put(image(400, 32, 12000)), "streamed take: put a second");
+        tier.wait_idle();
+        const SavedConversation other = image(400, 32, 12000);
+        std::vector<std::array<Bytes, 5>> bad;
+        std::vector<std::vector<SessionKvTarget>> wrong = {targets_for(other, bad)};
+        wrong[0][0].sizes[0] += 1;
+        const auto m2 = tier.best(prompt_of(450, 12000), {}, false);
+        check(!tier.take(m2.id, m2.tokens, meta, e, {}, &wrong) && e.find("size differs") != std::string::npos,
+              "streamed take: a K/V part of another size is refused");
+    }
+
     {   // the RAM cache's evictions go to the disk tier (set_on_evict)
         ConversationDiskTier tier(opts(dir, GiB, 1800));
         check(tier.open(e), "open 6");
