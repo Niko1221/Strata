@@ -54,6 +54,10 @@ public:
     /// unmirrored one answers that layer's first mirrored blob: the verify plan asks `device_alias(layer, 0)` only as
     /// "does this source have device-readable experts", and dereferences an alias only for `pinned()` experts.
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
+    // Same-layer cache replacement. The caller drains consumers before this exchange,
+    // then updates cache/residency and the device mirror table before running them again.
+    bool exchange_cached_expert(int64_t layer, int32_t incoming, int32_t outgoing,
+                                void* device_slot, void* stream, std::string& err);
     uint64_t mirrored_bytes() const { return mirror_bytes_; }
 
 private:
