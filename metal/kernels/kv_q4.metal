@@ -5,6 +5,8 @@
 //   * the codeword math runs in fp32 (d = mval / -8, id = 1 / d), and the fp16 scale is the software
 //     round-to-nearest-even of include/strata/kernels/f16_bits.hpp's f16_from_f32 (bit-exact on every input;
 //     MSL's half() conversion is not used);
+//   * a division like mval / -8 is approximate under STRATA_METAL_MATH=fast: the test runtime honors that env
+//     var, the engine runtime (gpu/runtime.cpp) is pinned Safe - so bit-level parity holds in Safe math only;
 //   * the codeword is int(fma(x, id, 8.5f)): the CUDA build compiles x * id + 8.5f with --fmad=true, i.e. ONE
 //     multiply-add with a single rounding; the explicit fma() is that contraction, whatever Metal's math mode is.
 //     int() truncates toward zero, as __float2int_rz does (rint() is NOT used);
@@ -25,10 +27,13 @@
 
 #define QK4 32
 
-struct kv_q4_blk {          // include/strata/kernels/kv_q4.hpp: 2-byte scale + 16 packed bytes, 18 total
+// include/strata/kernels/kv_q4.hpp's block_q4_0 (2-byte scale + 16 packed bytes), copied because MSL cannot
+// include C++ headers
+struct kv_q4_blk {
     ushort d;
     uchar qs[16];
 };
+static_assert(sizeof(kv_q4_blk) == 18, "kv_q4_blk must be 18 bytes");
 
 // ---- the software fp16 conversions of include/strata/kernels/f16_bits.hpp, as bits (no half() anywhere)
 static inline ushort f16_from_f32(float f) {

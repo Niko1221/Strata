@@ -107,9 +107,14 @@ static_assert(sizeof(Fwht256Args) == 32 && sizeof(KvAppendArgs) == 88 && sizeof(
 const char* kSourceName = "kv_q4.metal";
 const char* kSource = "#include <metal_stdlib>\nusing namespace metal;\n";
 
+// the kernels directory: STRATA_METAL_KERNELS overrides the compile-time default, as mtl_rt's Context does
+const char* kernels_dir() {
+    const char* k = std::getenv("STRATA_METAL_KERNELS");
+    return k ? k : STRATA_METAL_KERNELS_DEFAULT;
+}
+
 MTL::ComputePipelineState* pipe(const char* function) {
-    static const std::string src = std::string(kSource) +
-                                   mtl::read_file(std::string(STRATA_METAL_KERNELS_DEFAULT) + "/" + kSourceName);
+    static const std::string src = std::string(kSource) + mtl::read_file(std::string(kernels_dir()) + "/" + kSourceName);
     std::string err;
     MTL::ComputePipelineState* p = gpu::metal::pipeline(kSourceName, src.c_str(), function, err);
     if (!p) {
