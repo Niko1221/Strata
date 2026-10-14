@@ -331,7 +331,7 @@ class ImageMarkers(unittest.TestCase):
         tok = ByteTokenizer()
         with tempfile.TemporaryDirectory() as d:
             class Keyed(self.FakeVision):
-                def encode(self, source):
+                def encode(self, source, keep=()):
                     p = self.dir / ("0123456789abcdef0123456789abcdef.sve" if source == "a.png" else
                                     "fedcba9876543210fedcba9876543210.sve")
                     p.write_bytes(b"rows")
