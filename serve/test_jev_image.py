@@ -155,6 +155,25 @@ class ImageTwoCall(unittest.TestCase):
         self.assertEqual(st, 422)
         self.assertIn("type", body["error"]["field"])
 
+    def test_direct_mode_raw_image_tokens(self):
+        st, body = self.post({**REQ, "image_mode": "direct"})
+        self.assertEqual(st, 200)
+        self.assertEqual(body["stages_used"], ["image-direct"])
+        self.assertNotIn("image_summary", body)             # no summary stage ran
+        self.assertIn("q1", body["answers"])
+        # ONE engine turn: image + question in the same user turn, question AFTER
+        # the image pad (the SummaryEngine records turns_seen, and its first-turn
+        # branch is the summary script - here that IS the readout turn)
+        self.assertEqual(len(self.engine.turns_seen), 1)
+        prompt = self.engine.tok.decode(self.engine.turns_seen[0])
+        self.assertIn("Is there water?", prompt)
+        self.assertIn("Answer:", prompt)
+
+    def test_bad_image_mode_422(self):
+        st, body = self.post({**REQ, "image_mode": "pixel-magic"})
+        self.assertEqual(st, 422)
+        self.assertEqual(body["error"]["field"], "image_mode")
+
 
 if __name__ == "__main__":
     unittest.main()
