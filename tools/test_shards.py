@@ -89,6 +89,13 @@ class ShardCheck(unittest.TestCase):
         t.write_bytes(t.read_bytes() + bytes(612))
         S.check_shards([t])
 
+    def test_tensorless_shard_needs_no_alignment_padding(self):
+        # a shard with no tensors (Unsloth UD-Q5_K_XL 00001-of-00006 holds only metadata) ends at its unpadded header;
+        # its data start rounds up past the end, yet it has no tensor data to be short of
+        s = self.dir / "m-00001-of-00006.gguf"
+        s.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 0))   # 24 bytes; the data start rounds up to 32
+        S.check_shards([s])
+
     def test_truncated_header_is_refused(self):
         s = self.dir / "m-00001-of-00002.gguf"
         write_gguf(s)
