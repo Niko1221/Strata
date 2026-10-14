@@ -1364,6 +1364,23 @@ __global__ void defer_add_rows_kernel(const float* __restrict__ parts, const flo
     }
 }
 }  // namespace
+namespace {
+__global__ void fill_zero_kernel(float4* __restrict__ dst, long long n4) {
+    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < n4; i += (long long) gridDim.x * blockDim.x)
+        dst[i] = make_float4(0.f, 0.f, 0.f, 0.f);
+}
+}  // namespace
+void fill_zero(float* dst, long long n, void* stream) {
+    if (n <= 0) return;
+    if ((n & 3) != 0 || ((uintptr_t) dst & 15) != 0) {
+        std::fprintf(stderr, "fill_zero: n must be a multiple of 4 and dst 16-byte aligned\n");
+        std::exit(1);
+    }
+    const long long n4 = n / 4;
+    const int blocks = (int) ((n4 + 255) / 256 < 64 ? (n4 + 255) / 256 : 64);
+    fill_zero_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>((float4*) dst, n4);
+    check("fill_zero");
+}
 void defer_add_rows(const float* parts, const float* w, const float* inject, float* R, int64_t n_embd, int k, int hc,
                     int n_tok, void* stream) {
     if (n_tok <= 0 || n_embd <= 0) return;

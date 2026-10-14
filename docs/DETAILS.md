@@ -1721,6 +1721,29 @@ from the old default, as any change of the share does (CPU and GPU round differe
 (run-to-run floor 0.0013) and 0.0011 on the A4000 (floor 0.0012; at that time the share was 0.25).
 The sweeps behind the constant: `phaseA-tests/notes-142-pciefrac.md`.
 
+## A layer's CPU experts join at the next layer's FFN half (opt-in, `STRATA_VERIFY_DEFER=1`, changes the answers)
+
+In a decode window with CPU experts, every layer waits for the CPU pool's rows before its combine, so the GPU idles
+while the CPU computes. **`STRATA_VERIFY_DEFER=1`** lets layer l combine without the CPU's rows (shared expert, VRAM
+hits and the PCIe share only) and go on: layer l+1 runs its mixer (attention or GDN), then waits for layer l's rows
+and adds them to the residual with layer l's own routing weights and residual-write coefficient, before its FFN half
+reads it. The CPU computes layer l while the GPU runs layer l+1's mixer; that mixer is the only part of the model that
+runs without layer l's CPU rows. The stage's last layer is never deferred, nor layer 0 when layer 1 runs the PLE block.
+
+It changes the answers (teacher-forced KL against the default: see below). Windows that run without it (one start-up
+line says why): batch windows, `--spec-split` token groups, `--remote-expert-opt`, the all-resident graph (no CPU
+rows), a stage with no layer to defer, a control vector on the stage. Start-up lines when on:
+`STRATA_VERIFY_DEFER=1 (changes the output)` and `capturing the N-token window (...), deferred`. With
+`STRATA_VERIFY_PROFILE` the late wait shows as `late rows`. CUDA only so far: HIP compiles the same code but it has
+not been built or run there; SYCL and Metal do not have it.
+
+**`STRATA_VERIFY_DEFER=check`** runs the same steps but adds the rows back right after layer l's own combine: no
+deferral, the default's sums in another order, so its answers should differ from the default's only as two runs of the
+default do. It checks the late addition's copy and arithmetic, not the order of the wait in the next layer.
+
+<!-- TODO before the PR: decode speed (interleaved pairs, fresh engines, low and high context) and teacher-forced KL
+     against the default with the tail-skip section's protocol, each with the machine it was measured on. -->
+
 ## More opt-in switches measured for 0.1.41 (all off unless you set them)
 
 None of these changes the default answers; each was measured against the default with interleaved off/on pairs of whole

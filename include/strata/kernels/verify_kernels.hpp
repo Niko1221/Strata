@@ -93,6 +93,9 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
 /// Graph-capturable.
 void defer_add_rows(const float* parts, const float* w, const float* inject, float* R, int64_t n_embd, int k, int hc,
                     int n_tok, void* stream);
+/// n floats of +0.0 (n a multiple of 4, 16-byte aligned): a kernel node where a memset node would break the window's
+/// kernel-to-kernel chain (pdl.hpp).  Graph-capturable.
+void fill_zero(float* dst, long long n, void* stream);
 
 /// Rows of the S2/S4/S8 embedding for T token ids read from DEVICE memory; out (T, n).  Bitwise `embedding_gather`.
 void embedding_gather_dev(const uint8_t* codes, const float* scales, const float* offsets, const int32_t* tokens,

@@ -427,8 +427,8 @@ void Verifier::trace_dump(std::FILE* f) const {
     if (!g_trace || f == nullptr) return;
     static const char* names[kProfPer] = {"pre", "hc-read0", "qkv gemv", "conv", "ab", "z", "rec", "kv-idx",
                                           "k/v rope", "kv append", "q", "scores+topk", "kv-resolve", "attention",
-                                          "gate", "", "out-proj", "router+ring", "shared", "waitA", "VRAM hits", "waitB",
-                                          "PCIe grp", "waitCPU", "combine", "", "head", "", "", "", "", "", ""};
+                                          "gate", "out-proj", "late rows", "router+ring", "shared", "waitA", "VRAM hits",
+                                          "waitB", "PCIe grp", "waitCPU", "combine", "", "head", "", "", "", "", "", ""};
     const uint64_t end = g_trace_next.load();
     const uint64_t n = end < 160 ? end : 160;
     std::fprintf(f, "strata verify trace (#649): the last %llu handshake events (host clock, us before the last; "
@@ -857,7 +857,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
                              "rows of layer l are left out of its combine and added back right after it - no deferral\n");
     else if (defer_)
         std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER=1 (changes the output): the CPU's expert rows of layer l "
-                             "join the residual before layer l+1's FFN-side read (its attention runs without them; the "
+                             "join the residual before layer l+1's FFN-side read (its mixer runs without them; the "
                              "stage's last layer exact)\n");
     return true;
 }
@@ -909,9 +909,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     // STRATA_VERIFY_DEFER=1 (opt-in, changes the output; defer_ok says which windows): post(l) of a deferred layer
     // combines without the CPU's rows (shared expert, VRAM hits and the PCIe share only) and does not wait for them, and
     // pre(l+1) adds them to the residual before its FFN-side read: the CPU computes layer l while the GPU runs layer
-    // l+1's attention, which is the only part that runs without them.  The addition is the pending write's own
+    // l+1's mixer, which is the only part that runs without them.  The addition is the pending write's own
     // arithmetic, 2*sigmoid(inject_l / hc) * the rows' weighted sum.  The stage's last layer is not deferred, nor layer
-    // 0 when layer 1 runs the PLE block (its rows arrive with flag 1).
+    // 0 when layer 1 runs the PLE block (pre(1) copies the PLE rows, which the host writes just before flag 1, and
+    // relies on post(0)'s wait for it).  STRATA_VERIFY_PROFILE shows the late wait and add as "late rows".
     // Nothing the late addition reads has changed by then, and no buffer the host shares is reused earlier than without
     // deferral: pre(l+1)'s attention-side read writes inj_ (not layer l's inject inj2_), its router w_ and the next plan
     // (plan_, skip_) come after the addition, and so does its doorbell - so the host's pool(l+1), which overwrites the
@@ -1499,7 +1500,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             err = "verify layer " + std::to_string(l) + ": " + e.what();
             return false;
         }
-        // STRATA_VERIFY_DEFER=1: the previous layer's CPU rows join the residual here, before the FFN-side read (late_add)
+        stamp(l, 15, grp);   // the profile: the mixer's out-projection ends here
+        // STRATA_VERIFY_DEFER=1: the previous layer's CPU rows join the residual here, before the FFN-side read (late_add;
+        // the profile's "late rows", 15 to 16)
         if (!defer_check_ && l > lb_ && deferred(l - 1)) late_add(l - 1, grp);
         stamp(l, 16, grp);
         const bool q8_ffn = gr_read_group(1, true, inj_, inj2_);   // true: nat_xq_ holds the MoE input's q8_1 (STRATA_QFUSE)
@@ -1710,11 +1713,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             stamp(l, 22, grp);
             // STRATA_VERIFY_DEFER: no wait, no CPU rows now (late_add adds them later): zeros, plus the hits
             if (deferred(l)) {
-                if (cudaMemsetAsync(parts_out, 0, (size_t) n * K * N * sizeof(float), cs) != cudaSuccess) {
-                    err = "verify: the deferred layer's rows could not be cleared";
-                    return false;
-                }
-                stamp(l, 23, grp);
+                stamp(l, 23, grp);   // (no wait: the zeroing counts as copy+combine, as the copy it replaces)
+#if !defined(STRATA_GPU_METAL)   // (as late_add's defer_add_rows)
+                fill_zero(parts_out, (long long) n * K * N, cs);
+#endif
             } else if (device_plan_) {   // no CPU share when the device planned the group: its rows are zeros
                 wait_flag_ge_or(m_flag_, ring, skip_ + grp, cs);
                 copy_or_zero_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (long long) n * K * N,
@@ -1734,10 +1736,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 else
                     copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
             }
-            // 143-amdk: the add of the GPU's hit rows is done by the combine that follows (one launch fewer); a deferred
-            // layer adds them on their own (moe_hit_add), so the combine is the plain one
-            hits_in_combine = !deferred(l) && fuse_hits_on() && !prof_on_ && !remote_opt_ && !sg_gated_[grp] && dec_batch &&
-                              n > 1 && native_moe_combine_enabled() && n <= 8 &&
+            // 143-amdk: the add of the GPU's hit rows is done by the combine that follows (one launch fewer)
+            hits_in_combine = fuse_hits_on() && !prof_on_ && !remote_opt_ && !sg_gated_[grp] && dec_batch && n > 1 &&
+                              native_moe_combine_enabled() && n <= 8 &&
                               native_moe_combine_hits_supported(parts_ + (size_t) tb * K * N, shared_ + tb * N, bo_ + tb * N, N, K, n);
             if (!hits_in_combine) moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);
         }
@@ -1901,7 +1902,7 @@ std::string Verifier::profile_report() {
     if (!prof_on_ || prof_windows_ == 0) return std::string();
     static const char* names[kProfPer] = {"-", "hc-read0", "q8+qkv/q-idx gemv", "conv", "ab", "z", "rec", "q8+kv-idx",
                                           "k/v+norm-rope", "kv+idx append", "q+q-idx", "scores+topk", "kv-resolve",
-                                          "attention", "gate", "", "out-proj", "router+plan+bell", "shared+quant",
+                                          "attention", "gate", "out-proj", "late rows", "router+plan+bell", "shared+quant",
                                           "waitA", "VRAM hits", "waitB", "PCIe grp", "waitCPU", "copy+combine",
                                           "(gap)", "head", "  hc0 norm", "  hc0 down", "  hc0 up", "  hc1 norm", "  hc1 down", "  hc1 up"};
     std::string out;
@@ -1955,13 +1956,11 @@ bool Verifier::defer_ok(int T, std::string* why) const {
     if (split_ && T >= 2) return no("--spec-split's two token groups");
     if (remote_opt_ != nullptr) return no("--remote-expert-opt");
     if (ar_on()) return no("every expert of the stage is in VRAM: no CPU rows");
-    if (le_ - lb_ < 2) return no("the stage has one layer");
-    const ModelGeometry& g = *g_;
+    // record_window's deferred(): not the stage's last layer, nor layer 0 under the PLE block
+    const bool ple_layer0 = lb_ == 0 && ss_->ple.ready() && ple_stage();
+    if (le_ - 1 - lb_ - (ple_layer0 ? 1 : 0) < 1) return no("no layer of the stage to defer");
+    // (STRATA_FUSE_HEAD_GR changes only the last layer's write, which is never deferred)
     const strata::kernels::Cvec& cv = strata::kernels::cvec();
-    const char* fh = std::getenv("STRATA_FUSE_HEAD_GR");   // (record_window's fuse_head_gr: not tried with deferral)
-    if (fh != nullptr && fh[0] == '1' && le_ == g.n_layers && head_ != nullptr && head_->loaded() &&
-        !cv.covers(g.n_layers - 1))
-        return no("STRATA_FUSE_HEAD_GR=1");
     for (int64_t l = lb_; l < le_; ++l)
         if (cv.covers(l)) return no("a control vector covers a layer of the stage");
     return true;
