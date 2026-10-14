@@ -74,7 +74,7 @@ Vendor-gated flags from the engine, installer, and runtime command set:
 
 ## AMD
 
-### AMD-specific environment variables (37)
+### AMD-specific environment variables (38)
 Gate: HIP/ROCm code paths only — inert on NVIDIA/Intel.
 - **`STRATA_ARENA_MMAP`** — `1` (default: off) — maps a native pack's expert arena read-only from its `experts.bin` via POSIX mmap instead of reading it into locked RAM, for PCs whose GPUs hold most experts but whose RAM is small (~1 GB -> 25 GB available while serving). Gate: Linux only (disabled on Windows); the AMD-HIP path additionally raises `GPU_PINNED_MIN_XFER_SIZE` to dodge a ROCclr page-locking leak. Best for: small-RAM machines with big GPU expert residency. Tags: [tunable] (docs: docs/DETAILS.md, docs/AMD_HIP.md)
 - **`STRATA_COPY_HIP_PRIO`** — non-zero (default: off) — creates the verify copy stream at high stream priority so ROCm gives it its own hardware queue, preventing `--pcie-mode dma` copies from queueing behind the window graph and deadlocking on its flag. Gate: AMD HIP only (excluded on gfx906). Best for: set `=1` on AMD if DMA copies time out waiting behind the window graph. Tags: [tunable]
@@ -113,6 +113,7 @@ Gate: HIP/ROCm code paths only — inert on NVIDIA/Intel.
 - **`STRATA_SPLIT_CHUNK16K`** — `1` (default: off) — keeps the gfx12 16384 prefill-chunk ceiling on a layer split; by default splits cap chunks at 8192 so the prompt runs as a pipeline across cards (2x R9700: pp32k +14%, 4x +19%). Gate: AMD gfx12 multi-GPU layer split. Best for: leave off; `=1` restores the single-card chunk size. Tags: [tunable] (docs: docs/MULTI_GPU.md)
 - **`STRATA_TAIL_SKIP_MAX_CACHED`** — percent (default: 90; 60 on a HIP layer split; `101` = never) — moves the cached-expert line below which the route tail skip gets no default (with nearly every expert cached, the few misses are cheap and the skip costs draft acceptance). Gate: same paths as STRATA_ROUTE_TAIL_SKIP. Best for: tune when the skip's auto-off line fires at the wrong point. Tags: [tunable] (docs: docs/DETAILS.md)
 - **`STRATA_WMMA_BF16`** — `0` to exclude bf16 (default: on) — With `STRATA_WMMA_GEMM=1`, allows the RDNA3/3.5 WMMA dense GEMM for BF16 shapes; `=0` keeps those on hipBLASLt. Gate: AMD HIP gfx11 WMMA path (`#ifdef STRATA_USE_HIP`). Best for: leave at default; A/B arm. Tags: [ab]
+- **`STRATA_WMMA_GEMM`** — any non-`0` value (default: off) — Opts into the RDNA3/RDNA3.5 WMMA dense GEMM kernels (FP16 and BF16) ahead of hipBLASLt for T≥16, beta 0/1; unsupported shapes fall through. Gate: AMD HIP gfx11 only (compiled out on CUDA). Best for: try on Strix/RDNA3.5 prompt GEMMs. Tags: [tunable]
 
 ### AMD-related CLI / runtime options
 - `setup.py --backend hip` — build/select the AMD ROCm backend. **Best for:** Radeon cards (docs/AMD_HIP.md).
@@ -197,7 +198,7 @@ Gate: SYCL/Level Zero port (`sycl/`, `.dp.cpp`) only — inert on NVIDIA/AMD.
 ### Intel-related CLI / runtime options
 - `setup.py --backend sycl` — build/select the Intel Arc backend. **Best for:** Arc cards (docs/INTEL_ARC.md, docs/INTEL.md).
 
-## All GPU vendors (cross-vendor engine switches, 288)
+## All GPU vendors (cross-vendor engine switches, 287)
 
 Read in the shared CUDA/HIP tree **and** the SYCL port — these apply to NVIDIA, AMD, and
 Intel alike. Individual entries carry their own `Gate:` line for arch floors (sm_75+,
@@ -489,7 +490,6 @@ gfx12, …); the web page filters them with an optional arch regex.
 - **`STRATA_WATCHDOG_IO_S`** — integer seconds (default: 10x STRATA_WATCHDOG_S, i.e. 600) — extra silent-step time the watchdog allows while the OS is measurably reading the file tier (major faults advancing), so a slow page-in from a paged-out checkpoint is not killed as a stall; `0` = no allowance. Gate: serve watchdog, no vendor gate. Best for: raise on very slow storage; leave at default. Tags: [tunable]
 - **`STRATA_WATCHDOG_S`** — integer seconds (atoi; default: 60) — Ends the engine with a stall report when a request's heartbeat stops this long (a flag nobody will raise); `=0` turns the watchdog off. Gate: serve path, all GPUs. Best for: leave at default; raise on very slow drives (see `STRATA_WATCHDOG_IO_S`). Tags: [tunable] (docs: docs/DETAILS.md)
 - **`STRATA_WDDM_BUDGET`** — `0` to disable (default: on) — Applies the WDDM-aware free-memory budget correction in HIP's mem_get_info (the "leaves M MiB" line); `=0` reports raw figures. Gate: AMD HIP on Windows (WDDM). Best for: leave at default. Tags: [tunable] (docs: docs/AMD_HIP.md)
-- **`STRATA_WMMA_GEMM`** — any non-`0` value (default: off) — Opts into the RDNA3/RDNA3.5 WMMA dense GEMM kernels (FP16 and BF16) ahead of hipBLASLt for T≥16, beta 0/1; unsupported shapes fall through. Gate: AMD HIP gfx11 only (compiled out on CUDA). Best for: try on Strix/RDNA3.5 prompt GEMMs. Tags: [tunable]
 
 ## Apple Metal (36)
 Apple GPU options for the `metal` backend on macOS and Apple Silicon. The Engine tab shows Metal's tunable and experimental entries for Apple configs; debug/internal entries remain reference-only. (docs/MAC.md)

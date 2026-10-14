@@ -498,19 +498,35 @@ $("cfg-save").addEventListener("click", async () => {
 // GPU speed/feature switches for this vendor (the server's catalog: serve/engine_options.py), read from and
 // written to the run config's env block / args list. Only cataloged keys are accepted; next start applies.
 let engOpts = [];
+let engDraft = {};                       // key -> edited value (survives re-renders by the search/experimental filter)
 async function loadEngine() {
   let r;
   try { r = await fetch("engine-options", {headers: headers()}); } catch (e) { return; }
   if (!r.ok) { $("tab-btn-engine").hidden = true; return; }   // no run config, or an older server
   const d = await r.json();
   engOpts = d.options || [];
+  engDraft = {};                                              // the saved values are the baseline again
   const scope = d.vendor === "all" ? "all GPUs" : d.vendor;
   $("eng-scope").textContent = [scope + (d.arch ? " · " + d.arch : ""), d.file].filter(Boolean).join(" · ");
   $("eng-restart-bar").hidden = !(d.restart_supported && d.restart_pending);
   renderEngine();
 }
+function engParse(o, s) {
+  s = (s == null ? "" : String(s)).trim();
+  if (s === "") return null;                                  // empty: the engine default (removes the key)
+  if (o.kind === "bool") return s === "true";
+  if (o.kind === "int" || o.kind === "number") return Number(s);
+  return s;
+}
+function engNorm(o, v) {
+  if (v === null || v === undefined) return null;
+  if (o.kind === "bool") return !!v;
+  if (o.kind === "int" || o.kind === "number") return Number(v);
+  return String(v);
+}
 function engInput(o, i) {
-  const cur = o.value == null ? "" : String(o.value);
+  const saved = o.value == null ? "" : String(o.value);
+  const cur = o.key in engDraft ? (engDraft[o.key] === null ? "" : String(engDraft[o.key])) : saved;
   if (o.kind === "bool" || o.kind === "enum") {
     const opts = o.kind === "bool" ? [["true", "on"], ["false", "off"]] : (o.choices || []).map((x) => [x, x]);
     return `<select class="st-input" id="eng-${i}"><option value=""${cur === "" ? " selected" : ""}>default</option>` +
@@ -540,25 +556,28 @@ function renderEngine() {
   });
   $("eng-list").innerHTML = parts.join("") || '<p class="muted small">Nothing matches.</p>';
   $("eng-count").textContent = `${shown} of ${engOpts.length}`;
+  $("eng-list").querySelectorAll(".eng-row [id^=eng-]").forEach((el) => {   // keep edits in engDraft, not in the DOM
+    const o = engOpts[Number(el.id.slice(4))];
+    const read = () => { engDraft[o.key] = engParse(o, el.value); };
+    el.addEventListener("input", read);
+    el.addEventListener("change", read);
+  });
 }
 $("eng-search").addEventListener("input", renderEngine);
 $("eng-ab").addEventListener("change", renderEngine);
 $("eng-save").addEventListener("click", async () => {
   const set = {};
-  engOpts.forEach((o, i) => {
-    const el = $(`eng-${i}`);
-    if (!el) return;                                       // filtered out of the list: not touched
-    const s = el.value.trim();
-    const v = s === "" ? null : o.kind === "bool" ? s === "true" : (o.kind === "int" || o.kind === "number") ? Number(s) : s;
-    const old = o.value == null ? null
-      : (o.kind === "int" || o.kind === "number") ? Number(o.value) : o.kind === "bool" ? o.value : String(o.value);
-    if (JSON.stringify(v) !== JSON.stringify(old)) set[o.key] = v;
+  engOpts.forEach((o) => {                                   // drafts win, and edited rows count even when filtered out
+    const v = o.key in engDraft ? engDraft[o.key] : o.value;
+    const norm = engNorm(o, v), old = engNorm(o, o.value);
+    if (JSON.stringify(norm) !== JSON.stringify(old)) set[o.key] = norm;
   });
   if (!Object.keys(set).length) { $("eng-msg").textContent = "Nothing changed."; return; }
   try {
     const r = await fetch("config", {method: "POST", headers: headers(true), body: JSON.stringify({set})});
     const b = await r.json();
     if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
+    engDraft = {};
     $("eng-msg").textContent = b.changed.length
       ? `Saved (${b.changed.join(", ")}); the earlier file is ${b.file}.bak. Start the model again to use it.` : "Nothing changed.";
     if (b.changed.some((k) => k.startsWith("env.") || k.startsWith("arg"))) $("eng-restart-bar").hidden = false;

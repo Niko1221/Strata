@@ -16,6 +16,14 @@ from pathlib import Path
 
 from serve import engine_options
 
+# engine_args() (serve/server.py) synthesizes these catalog flags from higher-level config keys: a config with
+# "vram_elastic": true runs --vram-elastic with no flag in "args", "parallel": N runs --batch N, and so on.  The
+# Engine tab reads the effective spawn (engine_args), so clearing a flag there must clear the key that writes it.
+SYNTHESIZED = {"argflag.--vram-elastic": ("vram_elastic", "vram_segment_mib"),
+               "arg.--vram-segment-mib": ("vram_segment_mib",),
+               "arg.--batch": ("parallel",),
+               "arg.--layer-split": ("layer_split",)}
+
 # (key, kind, help).  kind: "bool", "int>=0", "num>=0", ("enum", values), "names", or ("sampling", check) for a key
 # of the "sampling" block, ("arg", flag) for an engine option kept in "args".
 # The Engine tab's keys - "env.NAME", "arg.--flag" (int), "argflag.--flag" (presence), "argstr.--flag",
@@ -131,8 +139,8 @@ def check(key: str, v, cfg: dict):
             return str(v)
         if isinstance(v, str):
             s = v.strip()
-            if not s or len(s) > 512 or any(c in s for c in "\r\n\t"):
-                raise ValueError(f"{key}: expected a short value with no newlines, not {v!r}")
+            if not s or len(s) > 512 or any(ord(c) < 32 or c == "\x7f" for c in s):
+                raise ValueError(f"{key}: expected a short value with no control characters, not {v!r}")
             return s
         raise ValueError(f"{key}: expected a value, not {v!r}")
     if key not in SPEC:
@@ -182,7 +190,12 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
     new = json.loads(json.dumps(cfg))                  # a deep copy: the caller's dict is left alone
     changed = []
     for key, v in checked.items():
-        if value_of(new, key) == v:
+        kind = key.partition(".")[0]
+        # engine_args() synthesizes some catalog flags from higher-level keys; clearing the flag must clear
+        # the key that writes it, so the effective spawn matches what the Engine tab shows and resets do.
+        clears_synth = (key in SYNTHESIZED and (v is None or (kind == "argflag" and v is False))
+                        and any(k in new for k in SYNTHESIZED[key]))
+        if value_of(new, key) == v and not clears_synth:
             continue
         if key in engine_options.CATALOG:
             kind, _, rest = key.partition(".")
@@ -215,6 +228,9 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
                 elif v is not None:
                     a += [flag, str(v)]
                 new["args"] = a
+            if clears_synth:
+                for cfg_key in SYNTHESIZED[key]:
+                    new.pop(cfg_key, None)
             changed.append(key)
             continue
         kind = SPEC[key]

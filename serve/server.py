@@ -3630,21 +3630,32 @@ class Service:
     def apply_config_and_restart(self) -> str:
         """The Engine tab's restart: unload, respawn the engine from the run config as it is now, load.
         "busy" (a request is running: nothing is stopped), "unsupported" (a mock engine, a replica group),
-        "restarting" when the new engine is on its way (the thread loads it; /health shows when it is back)."""
+        "restarting" when the new engine is on its way (the thread loads it; /health shows when it is back).
+        The replacement spawn is built first and the unload + install runs while holding self.fifo: load() takes
+        that lock to start the engine, so no request can reload the old spawn in the gap (and unload() takes the
+        same non-reentrant lock itself, so its work is done inline here, not by calling it under the lock)."""
         if not self.config_path:
             raise OSError("this server was started without a run config")
         cfg = runconfig.load(self.config_path)
         if not self.restart_supported():
             return "unsupported"
-        r = self.unload()
-        if r == "busy":
-            return "busy"
-        self.engine.spawn = self._spawn_from(cfg)
-        try:
-            self.engine.silence_s = engine_silence_s(cfg)
-        except ValueError:
-            pass
-        self.backend = cfg.get("backend")
+        want = self._spawn_from(cfg)
+        with self.fifo:
+            if self.engine.alive():
+                with self.status_lock:
+                    if self.status.get("busy") or self.status.get("queued"):
+                        return "busy"
+                self.engine.unload()          # EngineStuck when the process cannot be ended: the endpoint answers 503
+                if self.vision is not None and hasattr(self.vision, "unload"):
+                    self.vision.unload()
+                self.vision_held = False
+                print("[strata] model unloaded by the Engine tab restart; the new settings load now", flush=True)
+            self.engine.spawn = want
+            try:
+                self.engine.silence_s = engine_silence_s(cfg)
+            except ValueError:
+                pass
+            self.backend = cfg.get("backend")
         threading.Thread(target=self._load_after_restart, name="strata-restart", daemon=True).start()
         return "restarting"
 
@@ -5642,6 +5653,9 @@ def make_handler(svc: Service):
             if path == "/restart":                    # the Engine tab: unload + load with the run config as it is now
                 try:
                     r = svc.apply_config_and_restart()
+                except EngineStuck as e:                   # the running engine could not be ended (as /unload answers)
+                    self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                    return
                 except (OSError, ValueError) as e:
                     self._json(400, {"error": {"type": "invalid_request_error",
                                                "message": f"the run config cannot be used: {e}"}})
@@ -5899,8 +5913,12 @@ def make_handler(svc: Service):
             archs = engine_options.detect_archs(cfg.get("log") or "")
             vendors = engine_options.detect_vendors(cfg, cfg.get("log") or "")
             opts = engine_options.catalog(vendors)
+            # engine_args() synthesizes flags from higher-level keys ("vram_elastic": true runs --vram-elastic):
+            # the tab shows the effective spawn, not just the raw args list.
+            eff = dict(cfg)
+            eff["args"] = engine_args(cfg)
             for o in opts:
-                o["value"] = runconfig.value_of(cfg, o["key"])
+                o["value"] = runconfig.value_of(cfg if o["key"].startswith("env.") else eff, o["key"])
             self._json(200, {"vendor": " + ".join(vendors), "arch": ", ".join(archs),
                              "file": Path(svc.config_path).name, "options": opts,
                              "restart_supported": svc.restart_supported(), "restart_pending": svc.restart_pending(cfg),

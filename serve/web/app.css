@@ -77,7 +77,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .chip .st-btn--icon .st-icon { width: 14px; height: 14px; }
 
 /* ---------------------------------------------------------------- monitor */
-.view--monitor, .view--about { overflow-y: auto; }
+.view--monitor, .view--about, .view--engine { overflow-y: auto; }
 .monitor, .about { max-width: 1240px; width: 100%; margin: 0 auto; padding: var(--st-s-6); display: flex; flex-direction: column;
                    gap: var(--st-s-5); }
 .state-card { display: flex; flex-direction: column; gap: var(--st-s-3); }

@@ -227,7 +227,6 @@ OPTIONS = [
     {'key': 'env.STRATA_WATCHDOG_IO_S', 'name': 'STRATA_WATCHDOG_IO_S', 'vendor': 'all', 'tier': 'tunable', 'kind': 'str', 'values': 'integer seconds (default: 10x STRATA_WATCHDOG_S, i.e. 600)', 'desc': 'extra silent-step time the watchdog allows while the OS is measurably reading the file tier (major faults advancing), so a slow page-in from a paged-out checkpoint is not killed as a stall; `0` = no allowance', 'gate': 'serve watchdog, no vendor gate', 'best': 'raise on very slow storage; leave at default'},
     {'key': 'env.STRATA_WATCHDOG_S', 'name': 'STRATA_WATCHDOG_S', 'vendor': 'all', 'tier': 'tunable', 'kind': 'str', 'values': 'integer seconds (atoi; default: 60)', 'desc': "Ends the engine with a stall report when a request's heartbeat stops this long (a flag nobody will raise); `=0` turns the watchdog off", 'gate': 'serve path, all GPUs', 'best': 'leave at default; raise on very slow drives (see `STRATA_WATCHDOG_IO_S`)'},
     {'key': 'env.STRATA_WDDM_BUDGET', 'name': 'STRATA_WDDM_BUDGET', 'vendor': 'all', 'tier': 'tunable', 'kind': 'str', 'values': '`0` to disable (default: on)', 'desc': 'Applies the WDDM-aware free-memory budget correction in HIP\'s mem_get_info (the "leaves M MiB" line); `=0` reports raw figures', 'gate': 'AMD HIP on Windows (WDDM)', 'best': 'leave at default'},
-    {'key': 'env.STRATA_WMMA_GEMM', 'name': 'STRATA_WMMA_GEMM', 'vendor': 'all', 'tier': 'tunable', 'kind': 'str', 'values': 'any non-`0` value (default: off)', 'desc': 'Opts into the RDNA3/RDNA3.5 WMMA dense GEMM kernels (FP16 and BF16) ahead of hipBLASLt for T≥16, beta 0/1; unsupported shapes fall through', 'gate': 'AMD HIP gfx11 only (compiled out on CUDA)', 'best': 'try on Strix/RDNA3.5 prompt GEMMs'},
     {'key': 'env.STRATA_ARENA_MMAP', 'name': 'STRATA_ARENA_MMAP', 'vendor': 'amd', 'tier': 'tunable', 'kind': 'str', 'values': '`1` (default: off)', 'desc': "maps a native pack's expert arena read-only from its `experts.bin` via POSIX mmap instead of reading it into locked RAM, for PCs whose GPUs hold most experts but whose RAM is small (~1 GB -> 25 GB available while serving)", 'gate': 'Linux only (disabled on Windows); the AMD-HIP path additionally raises `GPU_PINNED_MIN_XFER_SIZE` to dodge a ROCclr page-locking leak', 'best': 'small-RAM machines with big GPU expert residency'},
     {'key': 'env.STRATA_COPY_HIP_PRIO', 'name': 'STRATA_COPY_HIP_PRIO', 'vendor': 'amd', 'tier': 'tunable', 'kind': 'str', 'values': 'non-zero (default: off)', 'desc': 'creates the verify copy stream at high stream priority so ROCm gives it its own hardware queue, preventing `--pcie-mode dma` copies from queueing behind the window graph and deadlocking on its flag', 'gate': 'AMD HIP only (excluded on gfx906)', 'best': 'set `=1` on AMD if DMA copies time out waiting behind the window graph'},
     {'key': 'env.STRATA_DENSE_MMQ', 'name': 'STRATA_DENSE_MMQ', 'vendor': 'amd', 'tier': 'tunable', 'kind': 'str', 'values': '`1` (default: off)', 'desc': "runs the prompt's dense GGUF projections through the int8 MMQ kernels instead of dequantize + hipBLAS (RX 6900 XT: 4K prompt 436 -> 757 tok/s); needs K a multiple of 256, and greedy text diverges from the default path", 'gate': 'AMD HIP only (`__HIPCC__` with STRATA_PREFILL_MMQ)', 'best': 'prompt speed on RDNA2 cards with quantized dense weights'},
@@ -262,6 +261,7 @@ OPTIONS = [
     {'key': 'env.STRATA_SPLIT_CHUNK16K', 'name': 'STRATA_SPLIT_CHUNK16K', 'vendor': 'amd', 'tier': 'tunable', 'kind': 'str', 'values': '`1` (default: off)', 'desc': 'keeps the gfx12 16384 prefill-chunk ceiling on a layer split; by default splits cap chunks at 8192 so the prompt runs as a pipeline across cards (2x R9700: pp32k +14%, 4x +19%)', 'gate': 'AMD gfx12 multi-GPU layer split', 'best': 'leave off; `=1` restores the single-card chunk size'},
     {'key': 'env.STRATA_TAIL_SKIP_MAX_CACHED', 'name': 'STRATA_TAIL_SKIP_MAX_CACHED', 'vendor': 'amd', 'tier': 'tunable', 'kind': 'str', 'values': 'percent (default: 90; 60 on a HIP layer split; `101` = never)', 'desc': 'moves the cached-expert line below which the route tail skip gets no default (with nearly every expert cached, the few misses are cheap and the skip costs draft acceptance)', 'gate': 'same paths as STRATA_ROUTE_TAIL_SKIP', 'best': "tune when the skip's auto-off line fires at the wrong point"},
     {'key': 'env.STRATA_WMMA_BF16', 'name': 'STRATA_WMMA_BF16', 'vendor': 'amd', 'tier': 'ab', 'kind': 'str', 'values': '`0` to exclude bf16 (default: on)', 'desc': 'With `STRATA_WMMA_GEMM=1`, allows the RDNA3/3.5 WMMA dense GEMM for BF16 shapes; `=0` keeps those on hipBLASLt', 'gate': 'AMD HIP gfx11 WMMA path (`#ifdef STRATA_USE_HIP`)', 'best': 'leave at default; A/B arm'},
+    {'key': 'env.STRATA_WMMA_GEMM', 'name': 'STRATA_WMMA_GEMM', 'vendor': 'amd', 'tier': 'tunable', 'kind': 'str', 'values': 'any non-`0` value (default: off)', 'desc': 'Opts into the RDNA3/RDNA3.5 WMMA dense GEMM kernels (FP16 and BF16) ahead of hipBLASLt for T≥16, beta 0/1; unsupported shapes fall through', 'gate': 'AMD HIP gfx11 only (compiled out on CUDA)', 'best': 'try on Strix/RDNA3.5 prompt GEMMs'},
     {'key': 'env.STRATA_METAL_ARENA_GB', 'name': 'STRATA_METAL_ARENA_GB', 'vendor': 'apple', 'tier': 'tunable', 'kind': 'str', 'values': 'float GB (default: auto-sized from free RAM)', 'desc': 'sets the expert arena size directly, overriding the automatic sizing; the engine warns when the value exceeds the resident-footprint cap. Best for: forcing a smaller arena on a memory-constrained Mac, or benchmarking; most users should leave it unset', 'gate': '', 'best': 'forcing a smaller arena on a memory-constrained Mac, or benchmarking; most users should leave it unset'},
     {'key': 'env.STRATA_METAL_ARENA_STEP_GB', 'name': 'STRATA_METAL_ARENA_STEP_GB', 'vendor': 'apple', 'tier': 'tunable', 'kind': 'str', 'values': 'float GB, minimum 64 MB (default: 1.5 GB)', 'desc': 'sets the step size in which the streaming arena is filled, each step first checking that macOS still has the memory for it. Best for: leave at default; smaller steps make the fill back off more gracefully under memory pressure', 'gate': '', 'best': 'leave at default; smaller steps make the fill back off more gracefully under memory pressure'},
     {'key': 'env.STRATA_METAL_CLASS_WASTE', 'name': 'STRATA_METAL_CLASS_WASTE', 'vendor': 'apple', 'tier': 'tunable', 'kind': 'str', 'values': 'float fraction (default: 0.15)', 'desc': "maximum fraction of a slot a member may waste when the layers' expert slot sizes are merged into shared LRU size classes; a larger value means fewer classes and less memory tied up in per-class minimums. Best for: leave at default; raise slightly to shrink arena overhead on models with many slot sizes", 'gate': '', 'best': 'leave at default; raise slightly to shrink arena overhead on models with many slot sizes'},
@@ -373,7 +373,7 @@ ARGS = [
     {'key': 'argenum.--kv', 'flag': '--kv', 'vendor': 'all', 'tier': 'tunable', 'kind': 'enum', 'choices': ['fp16', 'int8', 'q4_0', 'k8v4'], 'values': 'fp16|int8|q4_0|k8v4 (fp16; int8 above 8K)', 'desc': 'KV cache precision: int8 halves VRAM, q4_0 halves it again with slightly lower precision, k8v4 = INT8 K + rotated Q4_0 V', 'gate': 'all GPUs', 'best': 'long contexts: int8 above 8K, k8v4 for more room'},
     {'key': 'arg.--kv-resident', 'flag': '--kv-resident', 'vendor': 'all', 'tier': 'tunable', 'kind': 'int', 'values': 'cells (0=all in VRAM; minimum 20240)', 'desc': 'keep N cells per QSA layer in VRAM and the rest of K/V in pinned RAM, giving freed VRAM to expert slots', 'gate': 'KV streaming', 'best': 'huge contexts on smaller cards'},
     {'key': 'argflag.--kv-grow', 'flag': '--kv-grow', 'vendor': 'all', 'tier': 'tunable', 'kind': 'bool', 'values': 'flag', 'desc': 'grow K/V in VRAM only as requests reach cells; the expert cache gives slots back as context grows', 'gate': 'one GPU, --expert-profile', 'best': 'mixed short/long traffic'},
-    {'key': 'arg.--max-context', 'flag': '--max-context', 'vendor': 'all', 'tier': 'tunable', 'kind': 'int', 'values': 'tokens (4096)', 'desc': 'KV/state capacity', 'gate': 'all GPUs', 'best': 'set to the context length you need; larger values use more memory'},
+    {'key': 'arg.--max-context', 'flag': '--max-context', 'vendor': 'all', 'tier': 'tunable', 'kind': 'int', 'values': 'tokens (4096)', 'min': 1, 'max': 2147483639, 'desc': 'KV/state capacity', 'gate': 'all GPUs', 'best': 'set to the context length you need; larger values use more memory'},
     {'key': 'argstr.--prefill', 'flag': '--prefill', 'vendor': 'all', 'tier': 'tunable', 'kind': 'str', 'values': 'tokens | auto | auto:N', 'desc': 'prompt chunk size; auto:N raises the auto cap (docs/BATCHING.md)', 'gate': 'all GPUs', 'best': 'auto:32768 on roomy VRAM: fewer, bigger prompt chunks'},
     {'key': 'arg.--expert-cache', 'flag': '--expert-cache', 'vendor': 'all', 'tier': 'tunable', 'kind': 'int', 'values': 'expert slots (0=auto/default)', 'desc': 'keep this many expert blobs resident in VRAM for GPU computation', 'gate': 'all GPUs', 'best': 'decode speed when VRAM has room'},
     {'key': 'argflag.--expert-cache-per-layer', 'flag': '--expert-cache-per-layer', 'vendor': 'all', 'tier': 'tunable', 'kind': 'bool', 'values': 'flag', 'desc': 'give each layer its own expert-cache slots instead of sharing one counter', 'gate': 'all GPUs', 'best': 'use with an expert cache; per-layer allocation can improve hit rate'},
@@ -389,7 +389,7 @@ ARGS = [
     {'key': 'arg.--short-read', 'flag': '--short-read', 'vendor': 'all', 'tier': 'tunable', 'kind': 'int', 'values': 'tokens (64; 0=off)', 'desc': 'serve: route short follow-up prompts through decode windows instead of batched prefill', 'gate': '--serve', 'best': 'short follow-up messages'},
     {'key': 'arg.--batch', 'flag': '--batch', 'vendor': 'all', 'tier': 'tunable', 'kind': 'int', 'values': 'slots (2..8)', 'min': 2, 'max': 8, 'desc': 'decode several requests together, each in its own session (docs/BATCHING.md)', 'gate': '--serve', 'best': 'concurrent users when VRAM allows'},
     {'key': 'argflag.--batch-mtp', 'flag': '--batch-mtp', 'vendor': 'all', 'tier': 'tunable', 'kind': 'bool', 'values': 'flag', 'desc': 'batch mode verifies one MTP proposal per slot per window', 'gate': '--batch + --mtp; no --batch-groups', 'best': 'batched speculation'},
-    {'key': 'arg.--batch-groups', 'flag': '--batch-groups', 'vendor': 'all', 'tier': 'tunable', 'kind': 'int', 'values': 'groups', 'desc': 'batch requests in groups pipelined through a layer split', 'gate': '--batch + layer split', 'best': 'multi-GPU batching'},
+    {'key': 'argstr.--batch-groups', 'flag': '--batch-groups', 'vendor': 'all', 'tier': 'tunable', 'kind': 'str', 'values': 'groups | auto', 'desc': 'batch requests in groups pipelined through a layer split', 'gate': '--batch + layer split', 'best': 'multi-GPU batching'},
     {'key': 'argflag.--vram-elastic', 'flag': '--vram-elastic', 'vendor': 'nvidia', 'tier': 'tunable', 'kind': 'bool', 'values': 'flag', 'desc': 'expert cache in segments so POST /v1/vram can give VRAM back between requests and retake it (docs/VRAM_ELASTIC.md)', 'gate': 'NVIDIA, --serve', 'best': 'sharing a GPU with games/apps'},
     {'key': 'arg.--vram-segment-mib', 'flag': '--vram-segment-mib', 'vendor': 'nvidia', 'tier': 'tunable', 'kind': 'int', 'values': 'MiB (512)', 'desc': 'segment size used by --vram-elastic', 'gate': 'with --vram-elastic', 'best': 'fine-tuning the elastic give-back'},
     {'key': 'arg.--peer-device', 'flag': '--peer-device', 'vendor': 'nvidia', 'tier': 'tunable', 'kind': 'int', 'values': 'index', 'desc': "a second GPU as an adaptive expert-cache tier over P2P; it also computes its experts' prompt rows (docs/MULTI_GPU.md)", 'gate': 'P2P-capable NVIDIA pair; not with --layer-split/--expert-cache-device*', 'best': 'big expert packs on two cards'},
@@ -425,18 +425,32 @@ def detect_vendor(cfg: dict) -> str:
 
 def detect_archs(log_path) -> list:
     """Every architecture in the engine's startup lines, in order: ['sm_89', 'gfx1201'] for a mixed layer split.
-    Scans the last 4 MiB (seek, not a whole-file read: serving logs run to hundreds of MB)."""
+    Scans the last 4 MiB (seek, not a whole-file read: serving logs run to hundreds of MB) and only after the
+    newest 'engine started:' boundary the server writes per launch, so a CUDA-to-HIP switch on a reused log
+    does not mix vendors; logs without that marker fall back to the whole tail."""
     try:
         with open(log_path, 'rb') as f:
             f.seek(max(0, f.seek(0, 2) - 4194304))
             tail = f.read().decode('utf-8', 'replace')
     except OSError:
         return []
+    b = tail.rfind('engine started:')
+    if b >= 0:
+        tail = tail[b:]
     matches = []
     for rx in (r'gfx\d{3,4}', r'sm_\d{2,3}', r'compute capability (\d{1,2})\.(\d)',
                r'\b(Arc \w+|A770|A750)\b', r'\bApple M\d+(?: Pro| Max| Ultra)?\b'):
         for m in re.finditer(rx, tail):
-            value = 'sm_' + m.group(1) + m.group(2) if m.lastindex == 2 else m.group(0)
+            if m.lastindex == 2:
+                # the SYCL port prints 'compute capability' too (the device version, not an NVIDIA SM):
+                # the phrase is NVIDIA proof only when the banner line names no other vendor
+                ls = tail.rfind('\n', 0, m.start()) + 1
+                le = tail.find('\n', m.start())
+                if re.search(r'Intel|Arc|Iris|UHD|Level.Zero|oneAPI', tail[ls:le if le > 0 else None], re.I):
+                    continue
+                value = 'sm_' + m.group(1) + m.group(2)
+            else:
+                value = m.group(0)
             matches.append((m.start(), value))
     out = []
     for _, value in sorted(matches):

@@ -10,6 +10,7 @@ import contextlib
 import io
 import json
 import tempfile
+import threading
 import time
 import unittest
 import urllib.error
@@ -19,7 +20,7 @@ from pathlib import Path
 from serve import runconfig
 from serve import engine_options
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, MockEngine, Service, serve, engine_args, child_env
+from serve.server import ByteTokenizer, EngineStuck, MockEngine, Service, serve, engine_args, child_env
 
 ROOT = Path(__file__).resolve().parents[1]
 CFG = {"exe": "engine/strata.exe", "args": ["--pack", "data/packs/q2_0", "--kv", "int8", "--spec-min-p", "0.5"],
@@ -193,6 +194,8 @@ class Engine(unittest.TestCase):
         self.assertFalse(any(o["key"] == "argflag.--vram-elastic" for o in apple))   # NVIDIA-only stays hidden on a Mac
         apple_keys = [o["key"] for o in apple]
         self.assertEqual(len(apple_keys), len(set(apple_keys)))   # vendor + common options, no duplicates
+        self.assertEqual(engine_options.CATALOG["env.STRATA_WMMA_GEMM"]["vendor"], "amd")   # STRATA_USE_HIP guard
+        self.assertNotIn("env.STRATA_WMMA_GEMM", {o["key"] for o in engine_options.catalog("nvidia")})
 
     def test_vendor_and_arch(self):
         self.assertEqual(engine_options.detect_vendor({"backend": "hip"}), "amd")
@@ -249,34 +252,64 @@ class Engine(unittest.TestCase):
         self.assertEqual([o["key"] for o in engine_options.catalog("amd")],
                          [o["key"] for o in engine_options.catalog(["amd"])])   # str == one-element list
 
+    def test_sycl_banner_is_not_nvidia(self):
+        # the SYCL port prints "compute capability" too (the device version, DPCT1005): the phrase alone is not
+        # NVIDIA proof, the banner line's vendor is
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "engine.log"
+            p.write_text("strata generate: GPU 0: Intel Arc A770 Graphics, compute capability 12.0\n", encoding="utf-8")
+            self.assertEqual(engine_options.detect_archs(p), ["Arc A770"])
+            self.assertEqual(engine_options.detect_vendors({"backend": "sycl"}, p), ["intel"])
+            p.write_text("strata generate: GPU 0: Intel Core Ultra 7 (Series 2) integrated GPU, compute capability 12.6\n",
+                         encoding="utf-8")
+            self.assertEqual(engine_options.detect_vendors({"backend": "sycl"}, p), ["intel"])
+            p.write_text("strata generate: GPU 0: NVIDIA GeForce RTX 3060, compute capability 8.6\n", encoding="utf-8")
+            self.assertEqual(engine_options.detect_archs(p), ["sm_86"])    # NVIDIA lines keep working
+
+    def test_startup_boundary_scopes_the_scan(self):
+        # the server writes "engine started:" per launch: a CUDA-to-HIP switch on a reused log must not mix vendors
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "engine.log"
+            p.write_text("strata generate: GPU 0: NVIDIA GeForce RTX 3060, compute capability 8.6\n"
+                         "[strata] 2026-10-14 12:00:00 engine started: ./strata --serve --pack x\n"
+                         "strata generate: GPU 0: AMD Radeon RX 7600 (gfx1100)\n", encoding="utf-8")
+            self.assertEqual(engine_options.detect_archs(p), ["gfx1100"])
+            self.assertEqual(engine_options.detect_vendors({"backend": "hip"}, p), ["amd"])
+            p.write_text("strata generate: GPU 0: AMD Radeon RX 7600 (gfx1100)\n", encoding="utf-8")
+            self.assertEqual(engine_options.detect_archs(p), ["gfx1100"])  # no marker: the whole tail, as before
+
     def test_env_and_arg_keys_round_trip(self):
         new, changed = runconfig.apply(CFG, {"env.STRATA_ATTN_PRE75": "1", "arg.--pipeline-windows": 2,
                                              "argflag.--vram-elastic": True, "argenum.--kv": "k8v4",
                                              "argstr.--prefill": "auto:32768", "arg.--spec-min-p": 0.65,
-                                             "arg.--adapt-min-gain": 1.75})
+                                             "arg.--adapt-min-gain": 1.75, "argstr.--batch-groups": "auto"})
         self.assertEqual(new["env"], {"STRATA_ATTN_PRE75": "1"})
         self.assertEqual(new["args"][new["args"].index("--kv") + 1], "k8v4")   # the existing --kv is replaced
         self.assertEqual(new["args"][new["args"].index("--prefill") + 1], "auto:32768")
         self.assertEqual(new["args"][new["args"].index("--spec-min-p") + 1], "0.65")
+        self.assertEqual(new["args"][new["args"].index("--batch-groups") + 1], "auto")   # the engine's auto mode
         self.assertIn("--vram-elastic", new["args"])
-        self.assertEqual(len(changed), 7)
+        self.assertEqual(len(changed), 8)
         for k, v in (("env.STRATA_ATTN_PRE75", "1"), ("arg.--pipeline-windows", 2),
                      ("argflag.--vram-elastic", True), ("argenum.--kv", "k8v4"),
-                     ("argstr.--prefill", "auto:32768"), ("arg.--spec-min-p", 0.65), ("arg.--adapt-min-gain", 1.75)):
+                     ("argstr.--prefill", "auto:32768"), ("arg.--spec-min-p", 0.65), ("arg.--adapt-min-gain", 1.75),
+                     ("argstr.--batch-groups", "auto")):
             self.assertEqual(runconfig.value_of(new, k), v)
         self.assertIsNone(runconfig.value_of(CFG, "env.STRATA_ATTN_PRE75"))
         back, _ = runconfig.apply(new, {"env.STRATA_ATTN_PRE75": None, "arg.--pipeline-windows": None,
                                         "argflag.--vram-elastic": False, "argenum.--kv": None,
                                         "argstr.--prefill": None, "arg.--spec-min-p": None,
-                                        "arg.--adapt-min-gain": None})
+                                        "arg.--adapt-min-gain": None, "argstr.--batch-groups": None})
         self.assertNotIn("env", back)
-        for flag in ("--pipeline-windows", "--vram-elastic", "--kv", "--prefill"):
+        for flag in ("--pipeline-windows", "--vram-elastic", "--kv", "--prefill", "--batch-groups"):
             self.assertNotIn(flag, back["args"])
         self.assertEqual(back["args"], ["--pack", "data/packs/q2_0"])   # None removes explicit overrides: engine defaults apply
 
     def test_env_values_refused(self):
         for changes in ({"env.NOT_A_SWITCH": "1"}, {"env.STRATA_ATTN_PRE75": "a\nb"}, {"env.STRATA_ATTN_PRE75": ""},
                         {"env.STRATA_ATTN_PRE75": "x" * 600}, {"env.STRATA_ATTN_PRE75": []},
+                        {"env.STRATA_ATTN_PRE75": "1\x00x"}, {"env.STRATA_ATTN_PRE75": "1\x7fx"},
+                        {"arg.--max-context": 0}, {"arg.--max-context": 2147483640},
                         {"arg.--pipeline-windows": -1}, {"arg.--pipeline-windows": 3}, {"arg.--pipeline-windows": 1.5},
                         {"arg.--batch": 1}, {"arg.--batch": 9}, {"arg.--adapt-async": 2},
                         {"arg.--spec-min-p": 1.1}, {"arg.--adapt-min-gain": -0.1},
@@ -291,6 +324,9 @@ class Engine(unittest.TestCase):
             self.assertIn(f'id="{el}"', html)
         self.assertIn('fetch("engine-options"', js)
         self.assertIn('"engine"', js)
+        self.assertIn("engDraft", js)                                   # edits survive the search/experimental filter
+        css = (web / "app.css").read_text(encoding="utf-8")
+        self.assertIn(".view--engine { overflow-y: auto; }", css)       # the long list scrolls, as Monitor's does
 
 
 class EngineHttp(unittest.TestCase):
@@ -346,6 +382,41 @@ class EngineHttp(unittest.TestCase):
         self.assertIn("env.STRATA_DF_PDL", by_key)         # NVIDIA's own: the split spans both cards
         self.assertIn("env.STRATA_DENSE_MMQ", by_key)      # AMD's own
         self.assertNotIn("env.STRATA_METAL_ARENA_GB", by_key)
+
+    def test_synthesized_flags_read_and_reset_with_the_effective_spawn(self):
+        # engine_args() adds --vram-elastic from "vram_elastic" and --batch from "parallel": the tab shows the
+        # effective spawn, and clearing the flag clears the key that writes it (PR #2509 Copilot review).
+        log = Path(self.dir.name) / "engine.log"
+        log.write_text("strata generate: GPU 0: NVIDIA GeForce RTX 3060, compute capability 8.6\n", encoding="utf-8")
+        self.path.write_text(json.dumps({**CFG, "backend": "cuda", "log": str(log),
+                                         "vram_elastic": True, "vram_segment_mib": 768, "parallel": 4}, indent=1),
+                             encoding="utf-8")
+        status, d = self.call("GET", "/engine-options")
+        self.assertEqual(status, 200, d)
+        by_key = {o["key"]: o for o in d["options"]}
+        self.assertTrue(by_key["argflag.--vram-elastic"]["value"])      # shown on, though "args" has no flag
+        self.assertEqual(by_key["arg.--batch"]["value"], 4)
+        with contextlib.redirect_stdout(io.StringIO()):
+            status, saved = self.call("POST", "/config", {"set": {"argflag.--vram-elastic": False,
+                                                                  "arg.--batch": None}},
+                                      {"Origin": f"http://{self.host}"})
+        self.assertEqual(status, 200, saved)
+        updated = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertNotIn("vram_elastic", updated)                       # the reset reaches the effective spawn
+        self.assertNotIn("vram_segment_mib", updated)
+        self.assertNotIn("parallel", updated)
+        self.assertNotIn("--vram-elastic", updated.get("args", []))
+
+    def test_restart_stuck_engine_answers_503(self):
+        class StuckEngine(FakeEngine):
+            def unload(self):
+                raise EngineStuck("Strata is still releasing GPU/RAM; retry unloading after it exits")
+        cfg = json.loads(self.path.read_text(encoding="utf-8"))
+        self.svc.engine = StuckEngine(self.svc._spawn_from(cfg))
+        self.svc.engine.unloaded = False                                # the engine is up; its unload gets stuck
+        status, d = self.call("POST", "/restart", {}, {"Origin": f"http://{self.host}"})
+        self.assertEqual(status, 503, d)                                # the same answer /unload gives
+        self.assertIn("GPU/RAM", d["error"]["message"])
 
     def test_apple_metal_options_and_config_save(self):
         log = Path(self.dir.name) / "engine.log"
@@ -456,6 +527,25 @@ class Restart(unittest.TestCase):
         self.assertEqual(self.svc.engine.restarts, 1)
         self.assertEqual(self.svc.engine.spawn[4]["STRATA_METAL_ARENA_GB"], "64")
         self.assertFalse(self.svc.restart_pending(new))
+
+    def test_restart_waits_for_the_fifo_and_swaps_the_spawn_atomically(self):
+        # a request-driven load takes self.fifo: the restart must not unload + install the new spawn in its gap
+        new, _ = runconfig.apply(CFG, {"env.STRATA_ATTN_PRE75": "1"})
+        self.path.write_text(json.dumps(new, indent=1), encoding="utf-8")
+        self.svc.engine.unloaded = False
+        old_spawn = self.svc.engine.spawn
+        self.svc.fifo.acquire()                                        # a load is in progress
+        self.result = None
+        worker = threading.Thread(target=lambda: setattr(self, "result", self.svc.apply_config_and_restart()))
+        worker.start()
+        time.sleep(0.3)
+        self.assertTrue(worker.is_alive())                             # blocked on the fifo: nothing touched
+        self.assertEqual(self.svc.engine.spawn, old_spawn)
+        self.svc.fifo.release()
+        worker.join(10)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(self.result, "restarting")
+        self.assertEqual(self.svc.engine.spawn[4]["STRATA_ATTN_PRE75"], "1")   # the new spawn, installed atomically
 
     def test_busy_changes_nothing(self):
         self.svc.engine.unloaded = False                                 # the engine is up
