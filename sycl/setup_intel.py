@@ -221,6 +221,11 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
             # The JIT build keeps 64-bit addresses past 4 GiB (-ze-opt-greater-than-4GB-buffer-required, docs/INTEL.md),
             # which is what makes the bigger arena safe. Measured on xe only; i915 keeps the driver's limit.
             env["UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS"] = "1"
+            # The Level Zero v2 adapter: the stepped verify window's graph segments (~97 a round) submit in ~25 us
+            # instead of 53-200 us under the default adapter (Arc A770 16 GB, xe, oneAPI 2026.1, compute runtime 26.05):
+            # decode +7%, prompt +3%, and the window's occasional 3x-slower serves under memory pressure gone in the A/B.
+            # Measured on xe only.
+            env["UR_LOADER_USE_LEVEL_ZERO_V2"] = "1"
     if exe != ROOT / "build-sycl-aot" / "strata":
         env["STRATA_SYCL_BIN"] = exe.relative_to(ROOT).as_posix()
     if MOUNT.resolve() != ROOT.parent.resolve():

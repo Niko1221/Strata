@@ -195,10 +195,13 @@ class ToSycl(unittest.TestCase):
         alch = sorted(m.ALCHEMIST_IDS)[0]
         c = m.to_sycl(self.cfg(m), m.ROOT / "build-sycl" / "strata", 32.0, {}, 16.0, "xe", devid=alch)
         self.assertEqual(c.get("env", {}).get("UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS"), "1")
+        self.assertEqual(c.get("env", {}).get("UR_LOADER_USE_LEVEL_ZERO_V2"), "1")
         c = m.to_sycl(self.cfg(m), m.ROOT / "build-sycl-aot" / "strata", 64.0, {}, 32.0, "xe")   # a B-series card
         self.assertNotIn("UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS", c.get("env", {}))
+        self.assertNotIn("UR_LOADER_USE_LEVEL_ZERO_V2", c.get("env", {}))
         c = m.to_sycl(self.cfg(m), m.ROOT / "build-sycl" / "strata", 64.0, {}, 8.0, "i915")      # an A750 on i915
         self.assertNotIn("UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS", c.get("env", {}))
+        self.assertNotIn("UR_LOADER_USE_LEVEL_ZERO_V2", c.get("env", {}))
 
     def test_an_explicit_reserve_is_kept_on_both_drivers(self):
         m = self.mod()

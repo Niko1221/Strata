@@ -727,6 +727,8 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
   option a single allocation past 4 GiB is safe, but Level Zero still refuses one above DG2's `max_mem_alloc_size` unless
   `UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS=1`: without it the A770's expert cache fell back to 1,906 slots (3.64 GiB) instead of
   4,540 (8.64 GiB), decode 16.5-17.5 instead of 24.0-27.6 tok/s at 128K. Setup writes it for an Alchemist card on `xe`.
+  Setup also writes `UR_LOADER_USE_LEVEL_ZERO_V2=1` there: the stepped window's ~97 graph segments a round submit in ~25 us
+  instead of 53-200 us under the default adapter (decode +7%, prompt +3% on the A770, same-day A/B).
 - **Speed.** About 10 to 15 tok/s decode (76 to 92% of the drafts accepted), a 26-token first prompt in 13 s and later short prompts in 0.2 to
   1.3 s; the A750's PCIe link probes at 10.6 GB/s.
 - **A750 and the xe error counters.** The engine segfaults in a worker thread of the CPU pool when it exits (dmesg only, the server
