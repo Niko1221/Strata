@@ -16,6 +16,7 @@ enum : int {
 };
 
 const char* type_name(int t);
+bool known_type(int t);   // block_bytes knows t (block_bytes exits on any other)
 int block_elems(int t);
 int block_bytes(int t);
 inline size_t row_bytes(int t, int n) { return (size_t)n / block_elems(t) * block_bytes(t); }
