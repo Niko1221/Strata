@@ -3439,8 +3439,19 @@ def apply_ready_timeout(cfg: dict) -> None:
 
 def layer_split_of(cfg: dict) -> bool:
     """Several GPUs in the config are a layer split, unless the args put the later card(s) to another use: with
-    --peer-device the second card is an expert-cache tier, and the engine refuses that beside --layer-split (#665)."""
-    return len(gpu_list(cfg)) > 1 and "--peer-device" not in cfg["args"]
+    --peer-device the second card is an expert-cache tier, with --expert-parallel-device it computes its share of
+    every layer's experts, and with --expert-cache-device1..3 the later card(s) hold the primary's overflow
+    experts; the engine refuses the first two beside --layer-split (#665) and needs a card that runs no stage for
+    the third.  An explicit "layer_split" value still asks for the split (the config names its own cards)."""
+    args = cfg.get("args") or []
+    other_use = any(a in args for a in ("--peer-device", "--expert-parallel-device", "--expert-cache-device1",
+                                        "--expert-cache-device2", "--expert-cache-device3"))
+    if not other_use:
+        return len(gpu_list(cfg)) > 1
+    v = cfg.get("layer_split")
+    explicit = isinstance(v, (int, list, tuple)) or (
+        isinstance(v, str) and v.strip().lower() not in ("", "auto"))
+    return len(gpu_list(cfg)) > 1 and explicit
 
 
 _CARD_CLASS: list = []
@@ -9772,8 +9783,17 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                 raise SystemExit(f"[strata] config {e}")
             print(f"[strata] layer split across GPUs {gpu_list(cfg)} ({split})", flush=True)
         elif len(gpu_list(cfg)) > 1:
-            print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as the peer expert tier (--peer-device)",
-                  flush=True)
+            args = cfg.get("args") or []
+            if "--expert-parallel-device" in args:
+                print(f"[strata] GPUs {gpu_list(cfg)}: the cards compute every layer's experts together "
+                      "(--expert-parallel-device)", flush=True)
+            elif any(a in args for a in ("--expert-cache-device1", "--expert-cache-device2",
+                                         "--expert-cache-device3")):
+                print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) hold the primary's overflow experts "
+                      "(--expert-cache-device1..3)", flush=True)
+            else:
+                print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as the peer expert tier (--peer-device)",
+                      flush=True)
         # a relative "exe" is the config's cwd's: Windows' CreateProcess resolves "engine/strata.exe" against nothing
         # it is told about (WinError 2), so it is made absolute here
         if engine_component.is_reference(cfg["exe"]):      # "component:strata-engine": the engine package for this PC
