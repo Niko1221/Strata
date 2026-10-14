@@ -688,6 +688,101 @@ int main() {
               "17: the recurrent state at the frontier is the checkpoint's (not empty)");
     }
 
+    // ---- 18. layer/ladder-t3: the effort frontier is anchored at the <|im_start|> that OPENS the turn (where the
+    // engine checkpoints), not at the role token one past it.  MEASURED on the pack's real tokenizer: <|im_start|>
+    // 248045 opens the turn, its role "system" (--tail-role-token 8678) sits at opener + 1.  The OLD frontier (the
+    // role token) is not an engine checkpoint, so that frontier's has_state never travelled and the segment chain
+    // broke exactly at the effort turn. ----
+    fs::remove_all(dir);
+    {
+        SegmentStore store;
+        check(store.open(cfg, id, error), "18: open");
+        const int32_t im_start = 248045, im_end = 248046, role_sys = 8678;   // the measured pack ids
+        const int32_t role_user = 248052, role_ast = 248053;
+        const std::vector<int32_t> sys_body = tokens(100000, 40);
+        const std::vector<int32_t> user_body = tokens(101000, 12);
+        const std::vector<int32_t> ast_body = tokens(102000, 10);
+        const std::vector<int32_t> effort_body = tokens(103000, 8);
+        // The template as the server renders it: <|im_start|>, then the role token, then the body, then <|im_end|>.
+        const std::vector<int32_t> prompt = joined({
+            {im_start}, {role_sys}, sys_body, {im_end},
+            {im_start}, {role_user}, user_body, {im_end},
+            {im_start}, {role_ast}, ast_body, {im_end},
+            {im_start}, {role_sys}, effort_body, {im_end},
+            {im_start}, {role_ast}});
+        // The engine's own positions (generate.cpp:12704-12737): turn_at is the last <|im_start|>, pulled back (#458)
+        // to the one whose NEXT token is --tail-role-token; root_at is the first <|im_start|> at index >= 1 (the end
+        // of the system prompt).  This prompt starts with a <|im_start|> at 0 (index 0 is skipped), so root_at is the
+        // first non-system turn's opener.
+        int64_t turn_at = -1;
+        for (int64_t i = (int64_t) prompt.size() - 1; i > 0; --i)
+            if (prompt[(size_t) i] == im_start) { turn_at = i; break; }
+        if (turn_at > 0)
+            for (int64_t i = turn_at - 1; i > 0; --i)
+                if (prompt[(size_t) i] == im_start) {
+                    if (prompt[(size_t) i + 1] == role_sys) turn_at = i;
+                    break;
+                }
+        int64_t root_at = -1;
+        for (size_t i = 1; i < prompt.size(); ++i)
+            if (prompt[i] == im_start) { root_at = (int64_t) i; break; }
+        int64_t role_pos = -1;
+        for (int64_t i = (int64_t) prompt.size() - 1; i >= 0; --i)
+            if (prompt[(size_t) i] == role_sys) { role_pos = i; break; }
+        const std::vector<int64_t> engine = {turn_at, root_at, (int64_t) prompt.size() - 1};
+        const auto is_checkpoint = [&](int64_t p) {
+            for (int64_t c : engine) if (c == p) return true;
+            return false;
+        };
+        check(role_pos == turn_at + 1, "18: the MEASURED off-by-one (the role token is one past the opener)");
+
+        const std::vector<SegmentPlan> plan = segment_plan_split(prompt, im_start, role_sys);
+        std::vector<int64_t> bounds;
+        int64_t at = 0;
+        for (const SegmentPlan& s : plan) { at += (int64_t) s.tokens; bounds.push_back(at); }
+        check(bounds.back() == (int64_t) prompt.size(), "18: the plan covers the prompt");
+        check(bounds.size() == 2 && bounds[0] == turn_at,
+              "18: GREEN - the effort frontier is the <|im_start|> that opens the turn (= the engine's turn_at)");
+        // RED: the OLD rule (cut at the role token) produced a frontier that is NOT a checkpoint, so its has_state
+        // could not travel - the defect measured live.
+        check(role_pos == turn_at + 1 && !is_checkpoint(role_pos),
+              "18: RED - the old frontier (the role token) is not an engine checkpoint");
+        check(bounds[0] == turn_at && is_checkpoint(bounds[0]), "18: GREEN - the anchored frontier IS that checkpoint");
+        // The full invariant: EVERY non-final plan boundary lands on an engine checkpoint, not only the effort one.
+        for (size_t k = 0; k + 1 < bounds.size(); ++k)
+            check(is_checkpoint(bounds[k]), "18: every non-final plan boundary is an engine checkpoint");
+
+        // has_state proof: with a checkpoint exactly at turn_at, the frontier segment carries its running state.
+        SavedConversation img = full_image(prompt);
+        img.checkpoints.clear();
+        ConversationCheckpoint ck = checkpoint((size_t) turn_at, 77);
+        ck.ids.assign(prompt.begin(), prompt.begin() + (std::ptrdiff_t) turn_at);
+        img.checkpoints.push_back(ck);
+        check(store.store_image(51, im_start, false, img, plan, error), "18: store_image with the anchored plan");
+        std::vector<int32_t> changed = prompt;
+        changed[(size_t) turn_at + 2] ^= 7;   // change the effort body: the tail rewrites, the frontier must not
+        const SegmentMatch m = store.best(changed, false, 0.0, 0);
+        check(bool(m) && m.tokens == turn_at, "18: a changed effort finds the frontier exactly at turn_at");
+        SavedConversation back;
+        check(store.load(m, back, {}, error), "18: load the effort frontier");
+        check(back.live.ids.size() == (size_t) turn_at, "18: the frontier ids are the prompt's prefix up to turn_at");
+        check(back.live.gdn == ck.gdn && back.live.tails == ck.tails,
+              "18: the frontier carries the checkpoint's recurrent state (has_state travelled)");
+
+        // DECLARED, not fixed: a frontier where the tail role token does NOT immediately follow a <|im_start|>
+        // keeps the OLD boundary (the role token), which the engine never checkpoints.  The real template always
+        // emits the role right after the opener (the measured pair), so this is the non-template case.
+        const std::vector<int32_t> loose = joined({tokens(200000, 20), {90021}, tokens(201000, 4), {8678},
+                                                   tokens(202000, 6)});
+        const std::vector<SegmentPlan> loose_plan = segment_plan_split(loose, 90021, 8678);
+        int64_t loose_frontier = 0;
+        for (size_t k = 0; k + 1 < loose_plan.size(); ++k) loose_frontier += (int64_t) loose_plan[k].tokens;
+        check(loose_frontier < (int64_t) loose.size() && loose[(size_t) loose_frontier] == 8678,
+              "18: DECLARED - a non-adjacent role token keeps the old frontier (the role token)");
+        check(loose[(size_t) loose_frontier] != 90021,
+              "18: DECLARED - that frontier is not a <|im_start|>, so the engine never checkpoints there");
+    }
+
     fs::remove_all(dir);
     std::printf("conversation_segment_test: %d checks passed\n", checks);
     return 0;

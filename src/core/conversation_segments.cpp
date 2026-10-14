@@ -338,12 +338,24 @@ std::vector<SegmentPlan> segment_plan_split(const std::vector<int32_t>& ids, int
     if (turn_token >= 0)
         for (size_t i = 0; i < n; ++i)
             if (ids[i] == (int32_t) turn_token) { sys_end = i; break; }
-    // The effort turn: the LAST --tail-role-token. It is the frontier of the thinking-effort case, so a change of
-    // effort only rewrites [tail_pos, n).
+    // The effort turn: the LAST --tail-role-token, but the FRONTIER is the <|im_start|> that OPENS that turn, NOT the
+    // role token.  The engine checkpoints at the OPENER: `turn_at` is the last <|im_start|>, pulled back (#458,
+    // generate.cpp) to the one whose next token is --tail-role-token, so that checkpoint's ids.size() == turn_at -
+    // and slice_image only finds the snapshot when token_end equals a checkpoint's ids.size().  The role token sits
+    // at opener + 1 (MEASURED on the pack's real tokenizer: <|im_start|> 248045 at the turn's position 0, role
+    // "system" -- the tail-role-token 8678 -- at position 1).  Cutting at the role token therefore left the frontier
+    // one token past every checkpoint: its has_state never travelled and the segment chain broke exactly at the
+    // effort turn.  This anchors the frontier to the opener so it lands on the engine's checkpoint.
+    // A template where the role token does NOT immediately follow a <|im_start|> keeps the old frontier (the role
+    // token): the engine's own #458 requires that same adjacency (`ids[i + 1] == tail_role_token`), so such a
+    // frontier carries no checkpoint either way.  That case is declared, not fixed here.
     size_t tail_pos = sys_end;
-    if (tail_role_token >= 0)
+    if (tail_role_token >= 0) {
+        size_t role = n;
         for (size_t i = n; i-- > 0;)
-            if (ids[i] == (int32_t) tail_role_token) { tail_pos = i; break; }
+            if (ids[i] == (int32_t) tail_role_token) { role = i; break; }
+        if (role < n) tail_pos = (role > 0 && ids[role - 1] == (int32_t) turn_token) ? role - 1 : role;
+    }
     if (tail_pos < sys_end || tail_pos > n) tail_pos = sys_end;
     if (sys_end == 0 && tail_pos >= n) {   // no usable boundary at all: one segment covers the whole prompt
         plan.push_back({SegmentKind::Other, 0, (uint64_t) n, -1, true});
@@ -351,6 +363,10 @@ std::vector<SegmentPlan> segment_plan_split(const std::vector<int32_t>& ids, int
     }
     if (sys_end > 0) plan.push_back({SegmentKind::Sys, 0, (uint64_t) sys_end, -1, false});
     if (tail_pos > sys_end) plan.push_back({SegmentKind::Other, 0, (uint64_t) (tail_pos - sys_end), -1, false});
+    // `role_token` stays --tail-role-token even though the frontier is now the <|im_start|>: it is the frontier's
+    // ROLE (the turn that opens there is the tail-role turn), and it feeds segment_hash, so keeping it says "this is
+    // the effort/tail-role frontier" instead of conflating it with every other opener-anchored frontier.  The
+    // identity re-directs once regardless, because the segment's token slice changed with the frontier.
     if (tail_pos < n) plan.push_back({SegmentKind::Answer, 0, (uint64_t) (n - tail_pos), tail_role_token, false});
     if (plan.empty()) plan.push_back({SegmentKind::Other, 0, (uint64_t) n, -1, false});
     plan.back().has_state = true;
