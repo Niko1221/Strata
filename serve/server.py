@@ -5590,7 +5590,10 @@ def make_handler(svc: Service):
                     self._anthropic(req)
                 elif path == "/v1/systemone":
                     mode = self.headers.get("X-Jev-Mode", "L")   # A2.6: "V" = choice readout override
-                    code, body = jev.handle(svc, req, mode)
+                    if isinstance(req, dict) and req.get("image_b64"):
+                        code, body = jev.handle_image(svc, req, mode)   # M3.8: image two-call
+                    else:
+                        code, body = jev.handle(svc, req, mode)
                     self._json(code, body)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
