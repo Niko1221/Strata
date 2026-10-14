@@ -1989,6 +1989,39 @@ class PrometheusMetrics(unittest.TestCase):
         self.assertEqual((m["strata:requests_total"], m["strata:drafts_offered_total"],
                           m["strata:drafts_accepted_total"]), (2, 17, 10))
 
+    def test_throughput_gauges_cover_the_window_between_scrapes(self):
+        """#2341: llama.cpp reads these two from a bucket it resets on every scrape, so a scrape that saw no
+        traffic reports 0 - not the lifetime average, which froze at the last request's speed."""
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX,
+                                done_lines=["DONE 4 20 400.0 200.0 stop 7 12 5"])
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+        def scrape():
+            with urllib.request.urlopen(base + "/metrics/prometheus", timeout=10) as r:
+                return {line.split()[0]: float(line.split()[1])
+                        for line in r.read().decode().splitlines() if not line.startswith("#")}
+
+        try:
+            body = json.dumps({"model": "m", "max_tokens": 10, "messages": [{"role": "user", "content": "hi"}]})
+            with urllib.request.urlopen(urllib.request.Request(base + "/v1/chat/completions", data=body.encode(),
+                                                               headers={"Content-Type": "application/json"}),
+                                        timeout=30) as r:
+                self.assertEqual(r.status, 200)
+            first = scrape()
+            self.assertGreater(first["llamacpp:prompt_tokens_seconds"], 0)
+            self.assertGreater(first["llamacpp:predicted_tokens_seconds"], 0)
+            idle = scrape()                       # nothing ran since the scrape above, so the window is empty
+            self.assertEqual((idle["llamacpp:prompt_tokens_seconds"],
+                              idle["llamacpp:predicted_tokens_seconds"]), (0, 0))
+            self.assertEqual(idle["llamacpp:tokens_predicted_total"],         # counters stay cumulative
+                             first["llamacpp:tokens_predicted_total"])
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
 
 class PcieShare(unittest.TestCase):
     """#588: the hit rate stays the VRAM share of the lookups; the routed experts the GPU read over PCIe (the DONE

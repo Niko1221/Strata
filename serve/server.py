@@ -2973,6 +2973,9 @@ class Service:
                        "prompt_ms": 0.0, "decode_ms": 0.0,
                        "drafts_offered": 0, "drafts_accepted": 0}   # #457: the MTP drafts, summed where reported
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
+        # /metrics/prometheus' two throughput gauges need the totals as they stood at the last scrape, because
+        # llama.cpp averages them over the window between two scrapes (#2341).
+        self.scrape_bucket = (0, 0.0, 0, 0.0)
         from serve.prometheus import Latencies
         self.latencies = Latencies()                     # GET /metrics in Prometheus text: the latency histograms
         self.last_request_at = None                      # when a request last started or finished
@@ -3596,8 +3599,15 @@ class Service:
         with self.status_lock:
             s, t = dict(self.status), dict(self.totals)
             running = len(self.live_reqs) or int(bool(s.get("busy")))
-        prompt_n = t["prompt_tokens"] - t["reused"]               # what was read, as llama.cpp counts it
-        prompt_s, decode_s = t["prompt_ms"] / 1000, t["decode_ms"] / 1000
+            prompt_n = t["prompt_tokens"] - t["reused"]               # what was read, as llama.cpp counts it
+            prompt_s, decode_s = t["prompt_ms"] / 1000, t["decode_ms"] / 1000
+            # llama.cpp reads these two gauges from a bucket it resets on every scrape (server_metrics::bucket,
+            # "the gauges are averaged over the window between two scrapes"), so an idle server reports 0 rather
+            # than its lifetime average. Keep the same window here, or the names lie to llama.cpp dashboards.
+            was_prompt_n, was_prompt_s, was_predicted_n, was_decode_s = self.scrape_bucket
+            self.scrape_bucket = (prompt_n, prompt_s, t["output_tokens"], decode_s)
+        d_prompt_n, d_prompt_s = prompt_n - was_prompt_n, prompt_s - was_prompt_s
+        d_predicted_n, d_decode_s = t["output_tokens"] - was_predicted_n, decode_s - was_decode_s
         rows = [
             ("llamacpp:prompt_tokens_total", "counter", "Prompt tokens read", prompt_n),
             ("llamacpp:prompt_tokens_cached_total", "counter", "Prompt tokens the conversation cache already held",
@@ -3605,10 +3615,10 @@ class Service:
             ("llamacpp:prompt_seconds_total", "counter", "Prompt read time", prompt_s),
             ("llamacpp:tokens_predicted_total", "counter", "Tokens generated", t["output_tokens"]),
             ("llamacpp:tokens_predicted_seconds_total", "counter", "Generation time", decode_s),
-            ("llamacpp:prompt_tokens_seconds", "gauge", "Average prompt read throughput in tokens/s",
-             prompt_n / prompt_s if prompt_s else 0),
-            ("llamacpp:predicted_tokens_seconds", "gauge", "Average generation throughput in tokens/s",
-             t["output_tokens"] / decode_s if decode_s else 0),
+            ("llamacpp:prompt_tokens_seconds", "gauge", "Average prompt read throughput in tokens/s, since the last scrape",
+             d_prompt_n / d_prompt_s if d_prompt_s > 0 else 0),
+            ("llamacpp:predicted_tokens_seconds", "gauge", "Average generation throughput in tokens/s, since the last scrape",
+             d_predicted_n / d_decode_s if d_decode_s > 0 else 0),
             ("llamacpp:requests_processing", "gauge", "Requests running", running),
             ("llamacpp:requests_deferred", "gauge", "Requests waiting their turn", s.get("queued") or 0),
             ("strata:requests_total", "counter", "Requests finished", t["requests"]),
