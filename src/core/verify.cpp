@@ -566,6 +566,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     cudaGetDevice(&device_);   // a layer split's stage on another GPU: its streams, graphs and buffers live there
     rr_stats_ = route_resident_cfg().stats_on(device_);   // STRATA_ROUTE_RESIDENT: this GPU's counters, outside graph capture
     strata::kernels::fused_gr_check();   // once per card: which bitwise-equal hyper-connection read runs there
+    strata::kernels::fused_gr_persist_init();   // opt-in STRATA_HC_PERSIST=1 (HIP)
     wt_ = &wt;
     g_ = &g;
     ss_ = &ss;
@@ -1103,6 +1104,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     else if (strata::kernels::cpu::expert_layout().native) a.q8_mixed = nat_xq_ + (size_t) t * (N / 32) * 36;
                 }
             }
+            if (strata::kernels::fused_gr_read_persist(fa, n, cs)) return false;   // STRATA_HC_PERSIST=1; q8_mixed is never set there
             return fused_gr_read_multi(fa, n, xn_ + (size_t) tb * HC * N, cs, (prof_on_ && grp == 0) ? prof_ : nullptr,
                                 (int) (l * kProfPer + (half == 0 ? 27 : 30)));
         };
@@ -2241,6 +2243,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
 #endif
     using namespace strata::kernels;
     const OnDevice on_device(device_);
+    strata::kernels::fused_gr_persist_poll();   // STRATA_HC_PERSIST=1: logs a read that gave up (a mapped word, no sync)
     last_batch_ = false;
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
@@ -3420,6 +3423,7 @@ bool Verifier::prestage(int T, const int32_t* tokens, int64_t pos0, const int32_
 
 bool Verifier::pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string& err) {
     const OnDevice on_device(device_);
+    strata::kernels::fused_gr_persist_poll();   // STRATA_HC_PERSIST=1: logs a read that gave up (a mapped word, no sync)
     if (fl_active_) { err = "verify: a window is already in flight on this verifier"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
