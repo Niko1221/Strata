@@ -62,6 +62,7 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
+from serve import jev  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
@@ -5519,6 +5520,9 @@ def make_handler(svc: Service):
                     self._openai(req)
                 elif path == "/v1/messages":
                     self._anthropic(req)
+                elif path == "/v1/systemone":
+                    code, body = jev.handle(svc, req)
+                    self._json(code, body)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
                 elif path == "/v1/images/generations":
