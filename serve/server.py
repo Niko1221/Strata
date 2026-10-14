@@ -3251,7 +3251,10 @@ class Service:
         if self.vision_held:
             time.sleep(0.2)          # the driver's free-VRAM counter shows the cache's release a moment later
         free0, t0 = self.free_vram_mib(), time.time()
-        v.restart()
+        try:
+            v.restart()
+        except Exception as e:      # a 503 as for a non-elastic encoder at a load, not a dropped connection
+            raise EngineDied(f"the image encoder failed to start: {e}") from e
         free1 = self.free_vram_mib()
         took = f", {free0 - free1} MiB of VRAM" if free0 is not None and free1 is not None else ""
         print(f"[strata] images: the image encoder started in {time.time() - t0:.1f} s{took}", flush=True)
@@ -3269,11 +3272,14 @@ class Service:
             return "busy"
         try:
             v.unload()
+            back = ""
             if self.vision_held and hasattr(self.engine, "vram") and self.loaded():
                 out = self.engine.vram(self._engine_reserve())
-                print(f"[strata] images: the image encoder stopped after {v.elastic_idle_s:g} s without a picture; "
-                      f"the expert cache took its VRAM back ({out.get('expert_cache_mib')} of "
-                      f"{out.get('expert_cache_full_mib')} MiB)", flush=True)
+                back = (f"; the expert cache took its VRAM back ({out.get('expert_cache_mib')} of "
+                        f"{out.get('expert_cache_full_mib')} MiB)")
+            # also when the cache never made room (a layer split, an engine without --vram-elastic): the stop happened
+            print(f"[strata] images: the image encoder stopped after {v.elastic_idle_s:g} s without a picture{back}",
+                  flush=True)
             self.vision_held = False
             return "down"
         finally:
@@ -6717,6 +6723,12 @@ def main() -> int:
                 print('[strata] the vision section\'s "elastic" needs "vram_elastic": true (the expert cache gives the '
                       "encoder its VRAM): the encoder starts with the model instead", flush=True)
                 vcfg["elastic"] = False
+            elif vcfg.get("elastic") is True and layer_split_of(cfg):
+                # the engine turns --vram-elastic off on a layer split (a cache per GPU): the encoder still starts
+                # with the first picture and stops when idle, but its VRAM has to be free already
+                print('[strata] images: on a layer split the expert cache cannot make room for the image encoder (the '
+                      'engine turns --vram-elastic off); keep its VRAM free with "--vram-reserve-mib" on the '
+                      "encoder's GPU, or the first picture may not get it", flush=True)
             vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
                             env=vision_env(cfg, env), lazy=lazy)
         print("model unloaded; the first request loads it ..." if lazy else
