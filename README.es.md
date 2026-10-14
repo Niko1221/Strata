@@ -90,6 +90,8 @@ cómo conectar tus aplicaciones. Las herramientas de IA también pueden instalar
 [Descarga Strata](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) y descomprímelo (o usa `git clone`).
 **Windows:** haz doble clic en **`START-HERE.bat`**. **Linux:** ejecuta **`./setup.sh`** en la carpeta de Strata.
 
+**Mac (Apple Silicon, M1 a M5, macOS 15 o posterior):** instala una vez las Command Line Tools de Apple (`xcode-select --install` en Terminal; no hace falta Xcode). Luego abre Terminal en la carpeta de Strata y ejecuta **`./setup.sh`**. Compila el motor de Mac en tu Mac (unos 7 minutos), hace las mismas preguntas, descarga el modelo y lo arranca. La próxima vez, `./setup.sh` arranca enseguida. Qué tamaño cabe en tu Mac y qué velocidad tiene: [docs/MAC.md](docs/MAC.md).
+
 Los pasos son los mismos para NVIDIA y AMD. El instalador detecta tu tarjeta y prepara el motor adecuado para ella.
 Te hace unas pocas preguntas:
 
@@ -130,9 +132,10 @@ tamaños pequeños son más rápidos. Los grandes son algo más inteligentes.
 - **[Unsloth UD-IQ4_XS](docs/MODELS.md#unsloth-ud-iq4_xs):** la versión de ~4 bits de Unsloth, entre IQ3_S y
   UD-Q4_K_XL en calidad. Una descarga de 94 GB. Con menos de ~80 GB de RAM, Strata lee una parte desde el SSD
   mientras responde, así que ahí es más lento (un SSD NVMe ayuda).
-- **[Unsloth UD-Q4_K_XL](docs/MODELS.md#unsloth-ud-q4_k_xl-experimental)** (experimental): el más parecido al modelo
-  completo. Pero Strata lee la mayor parte desde el SSD mientras responde, así que solo escribe 7-8.5 tokens/s en un
-  PC con 64 GB.
+- **[Unsloth UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL y Q8_0](docs/MODELS.md#unsloths-files-ud-iq4_xs-to-q8_0):** de 4 a 8 bits, más cerca del modelo completo
+  (93-95 % el mismo token siguiente que Q8_0). Rápidos cuando todos los expertos caben en la RAM (~88 GB para
+  UD-Q4_K_XL hasta ~136 GB para Q8_0); con menos RAM, Strata lee una parte desde el SSD mientras responde, lo que es
+  mucho más lento (7-8.5 tokens/s para UD-Q4_K_XL en un PC con 64 GB).
 - **[OrcaRouter's Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs):** se instala a mano. No está en
   el menú del instalador.
 
@@ -163,6 +166,20 @@ Tamaños, descargas y qué cabe dónde: [docs/MODELS.md](docs/MODELS.md). Para a
   mensajes siguientes empiezan en segundos.
 
 Más: [dónde se guardan tus chats](docs/INSTALL.md#where-things-are-stored), [la API](docs/DETAILS.md#using-it).
+
+### Opcional: más velocidad con una sola tarjeta cuando todo el modelo cabe en la RAM
+
+Dos ajustes opcionales (de RubenTorney, #1904 y #1905). Ayudan si usas una tarjeta gráfica y tu RAM guarda todos los expertos (el modo arena de Strata, por ejemplo Q2_0 o IQ3_XXS en un PC con 64 GB). Abre tu configuración `strata-<model>.json` en la carpeta de datos de Strata ([dónde](docs/INSTALL.md#where-things-are-stored)) y añade:
+
+- **Generación más rápida:** `"--adapt-async", "1"` en la lista `"args"`. La caché de expertos se actualiza entonces en un hilo auxiliar en vez de pausar la respuesta. Medido en una RTX 5070 (Windows, Q2_0): +4-5 % de generación, +7-10 % en código y documentos largos. Las respuestas pueden diferir un poco de las por defecto (son iguales de una ejecución a otra).
+- **Lectura del prompt más rápida en Windows:** `"STRATA_PIN_BY_NEED": "1"` en el bloque `"env"`. Windows solo puede bloquear cerca de la mitad de la RAM para la tarjeta; esto bloquea primero los expertos que la tarjeta necesita de verdad. Medido en la RTX 5070: +4,4 % en la lectura del prompt.
+
+```json
+"args": [ ..., "--adapt-async", "1" ],
+"env": { "STRATA_PIN_BY_NEED": "1" }
+```
+
+Reinicia Strata (`START-HERE.bat` o `./setup.sh`) después del cambio. Para deshacerlo, quita las dos entradas.
 
 ## ¿Algo salió mal?
 

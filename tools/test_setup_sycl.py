@@ -179,6 +179,17 @@ class ToSycl(unittest.TestCase):
         self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "1024")
         self.assertNotIn("STRATA_VERIFY_NO_HOST", c.get("env", {}))
 
+    def test_xe_ranks_the_experts_with_the_sycl_profile_and_i915_keeps_the_shipped_one(self):
+        m = self.mod()
+        shipped = str(m.MOUNT / "data" / "expert-profile.bin")
+        other = str(m.MOUNT / "mine" / "learned.bin")
+        c = m.to_sycl(self.cfg(m, ["--expert-profile", shipped]), m.ROOT / "build-sycl-aot" / "strata", 64.0, {}, 32.0, "xe")
+        self.assertTrue(c["args"][c["args"].index("--expert-profile") + 1].endswith("expert-profile-sycl.bin"))
+        c = m.to_sycl(self.cfg(m, ["--expert-profile", other]), m.ROOT / "build-sycl-aot" / "strata", 64.0, {}, 32.0, "xe")
+        self.assertTrue(c["args"][c["args"].index("--expert-profile") + 1].endswith("learned.bin"))   # the user's own file stays
+        c = m.to_sycl(self.cfg(m, ["--expert-profile", shipped]), m.ROOT / "build-sycl" / "strata", 64.0, {}, 8.0, "i915")
+        self.assertTrue(c["args"][c["args"].index("--expert-profile") + 1].endswith("expert-profile.bin"))   # the CPU computes the misses there
+
     def test_an_explicit_reserve_is_kept_on_both_drivers(self):
         m = self.mod()
         for vram, drv in ((32.0, "xe"), (8.0, "i915")):
@@ -194,6 +205,16 @@ class ToSycl(unittest.TestCase):
         self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "300")
         self.assertEqual(c["env"]["STRATA_VERIFY_NO_HOST"], "0")
         self.assertEqual(c["env"]["STRATA_SYCL_BIN"], "build-sycl/strata")
+
+    def test_split_short_rule(self):
+        # #1980: 2x B60 24 GB - IQ3_XXS (42.9 GB) was refused under NO_HOST=1, IQ2_XS (35.5 GB) loads fully
+        m = self.mod()
+        self.assertTrue(m.split_likely_short(42.9, [24.0, 24.0]))
+        self.assertFalse(m.split_likely_short(35.5, [24.0, 24.0]))
+        self.assertFalse(m.split_likely_short(50.3, [32.0, 32.0]))   # IQ3_S on 2x B70: 79%
+        self.assertTrue(m.split_likely_short(77.0, [32.0, 32.0]))
+        self.assertFalse(m.split_likely_short(0, [24.0]))
+        self.assertFalse(m.split_likely_short(40.0, []))
 
     def test_small_card_rule(self):
         m = self.mod()

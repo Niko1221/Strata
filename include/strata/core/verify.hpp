@@ -39,6 +39,26 @@
 
 namespace strata::core {
 
+/// 0.1.43 (STRATA_ADAPT_OVERLAP): the adaptive tier's copies still landing while a decode window runs.  The window's
+/// residency tables are the baseline's (the swapped-in experts are resident from the window's first layer), but their
+/// bytes arrive layer by layer: `run` holds a layer's plan (the first thing that lets the GPU read the layer's expert
+/// slots) back until `landed >= layer` for a layer with a swap (`has[layer]`).  Set `active` only around one window.
+struct AdaptGate {
+    struct Tick { AdaptGate* gate; int32_t layer; };
+    std::atomic<int32_t> landed{-1};      ///< the highest layer whose swap copies have landed (n_layers: all of them)
+    std::atomic<bool> active{false};
+    std::vector<uint8_t> has;             ///< per layer: a swap copies into this layer's slots
+    std::vector<Tick> ticks;              ///< host-function contexts, one per layer and the final one (stable storage)
+    const int32_t* dvals = nullptr;       ///< device [0..n_layers]: the source of those copies
+    volatile int32_t* hland = nullptr;   ///< pinned host int the copy stream writes (a D2H copy of the layer number), instead of a host function; null: host functions
+    int32_t reached() const {
+        const int32_t a = landed.load(std::memory_order_acquire);
+        if (hland == nullptr) return a;
+        const int32_t b = *hland;
+        return a > b ? a : b;
+    }
+};
+
 class NativeHead;
 class RemoteExpertOpt;
 
@@ -85,6 +105,21 @@ public:
     /// Diagnostics: row `t` of the last window's head logits (n_vocab floats) to the host. Valid after run().
     bool copy_logits(int t, float* host) const;
     int64_t vocab() const { return next_ ? next_->vocab() : n_vocab_; }
+    /// #879 GUARD: the first row of the last finished window (run, run_slot_rows, batch_poll, pl_finish) whose head
+    /// logits held a NaN or an infinity, else -1; nonfinite_pos() is that row's position.  Every window graph
+    /// checks its T rows on the device beside the greedy pick (logits_nonfinite_rows into mapped flags, read after
+    /// the sync the window already does: no extra sync).  On the stage with the head (a layer split asks the last
+    /// stage).  STRATA_NAN_GUARD=0: off (always -1).  STRATA_NAN_INJECT=<n>[,<n>...] (debug): the n-th window the
+    /// guard checks in this process (counted from 1 over every stage-with-head verifier: prompt-tail windows, decode
+    /// windows and batch windows alike) reports row 0 as non-finite, so the whole response can be tested.
+    int nonfinite_row() const { return next_ != nullptr && !last_stage() ? next_->nonfinite_row() : nf_row_; }
+    int64_t nonfinite_pos() const { return next_ != nullptr && !last_stage() ? next_->nonfinite_pos() : nf_pos_; }
+    /// Row t of the last window (a batch window: each slot's own rows) held a non-finite logit.
+    bool nonfinite_in(int t) const {
+        if (next_ != nullptr && !last_stage()) return next_->nonfinite_in(t);
+        return t >= 0 && t < 32 && ((nf_mask_ >> t) & 1u) != 0;
+    }
+    static bool nan_guard_on();
     /// The sampling the verify window's head applies (temperature / top_p / top_k / seed).  Set per
     /// request; greedy by default.  The sampling itself runs OUTSIDE the captured graph - its
     /// parameters would otherwise be baked forever - so this can change between requests freely.
@@ -216,6 +251,14 @@ public:
     /// expert evicted on the host (the pool then computes it on the CPU) before the device table follows.  Also turns
     /// the device-planned layers (E-6) off.  Before `init`.
     void set_always_publish(bool on) { always_publish_ = on; }
+    /// 0.1.43: the adaptive tier's overlap gate (see AdaptGate).  Refused (false) with the device-planned layers (E-6),
+    /// which never ask the host.  The pointer must outlive the verifier's windows.
+    bool set_adapt_gate(AdaptGate* g) {
+        if (g != nullptr && device_plan_) return false;
+        adapt_gate_ = g;
+        return true;
+    }
+    double ms_gate = 0;   ///< host time spent holding a layer's plan for the adaptive copies (decode timing prints it)
     cudaStream_t stream() const { return cs_; }
     int device() const { return device_; }
     /// Capture every window size and the commit graph now (a capture syncs the stream: never with a window in flight).
@@ -321,6 +364,8 @@ private:
     // pipelined windows (pl_launch ...)
     cudaStream_t ext_stream_ = nullptr;   ///< set_stream: the stage's shared stream (not destroyed here)
     bool always_publish_ = false;
+    bool adapt_gate_wait(int32_t layer, std::string& err);
+    AdaptGate* adapt_gate_ = nullptr;     ///< 0.1.43: STRATA_ADAPT_OVERLAP's gate (null: off)
     void pl_stage(int T, const int32_t* tokens, int64_t pos0, const int32_t ple_prev[2]);
     cudaEvent_t ev_done_ = nullptr, ev_commit_ = nullptr;
     unsigned long long* prof_pin_ = nullptr;   ///< pinned host copy of the stamps (pipelined windows)
@@ -344,6 +389,9 @@ private:
     int32_t* d_spec_ = nullptr;          ///< device: kVerifyMaxT draft ids, then kVerifyMaxT q rows
     int hist_len_ = 0;
     bool head_sampling_ = true;          ///< set_head_sampling
+#if defined(STRATA_GPU_METAL)
+    void* metal_ = nullptr;              ///< the Metal decode window (metal/src/engine/window.cpp): init/run/commit go there
+#endif
     std::vector<float> logit_bias_host_;
     float* logit_bias_device_ = nullptr;
     int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
@@ -420,6 +468,11 @@ private:
     int32_t* h_commit_ = nullptr; int32_t* m_commit_ = nullptr; // [n_keep, n_keep-1, pos_0 .. pos_{T-1}]
     float* h_ple_ = nullptr;     float* m_ple_ = nullptr;       // T * n_embd
     int32_t* h_out_ = nullptr;   int32_t* m_out_ = nullptr;     // T argmax ids
+    uint32_t* h_nf_ = nullptr;   uint32_t* m_nf_ = nullptr;     // #879: kVerifyMaxT * kNonfiniteBlocks flags
+    int nf_row_ = -1;                     ///< nonfinite_row()
+    int64_t nf_pos_ = -1;                 ///< nonfinite_pos()
+    uint32_t nf_mask_ = 0;                ///< nonfinite_in(): bit t = row t
+    void note_nonfinite(int T, const int64_t* pos_b);   ///< the window's flags (+ STRATA_NAN_INJECT) -> nf_row_
     float* h_x_ = nullptr;       float* m_x_ = nullptr;         // doorbell payload: T * n_embd
     int32_t* h_ids_ = nullptr;   int32_t* m_ids_ = nullptr;     // T * k
     float* h_w_ = nullptr;       float* m_w_ = nullptr;         // T * k

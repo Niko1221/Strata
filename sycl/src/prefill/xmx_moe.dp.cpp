@@ -15,6 +15,13 @@ namespace strata::prefill::xmx {
 namespace {
 using half = sycl::half;
 namespace jm = sycl::ext::oneapi::experimental::matrix;
+// Sub-group width = the XMX tile's N: 8 on Alchemist (DG2, joint_matrix 8x8x16), 16 on Xe2 (Battlemage, 8x16x16; the
+// CMake switch STRATA_XMX_SG16 for an AOT bmg / lnl build).  A build has one shape: the other is not valid there.
+#ifdef STRATA_XMX_SG16
+constexpr int kSgW = 16;
+#else
+constexpr int kSgW = 8;
+#endif
 
 struct Grp {
     const half* w[kMaxGroup];
@@ -26,8 +33,8 @@ struct Grp {
 template <int SGM_, int SGN_, int MT_, int NT_, int KS_>
 struct Cfg {
     static constexpr int SGM = SGM_, SGN = SGN_, MT = MT_, NT = NT_, KS = KS_;
-    static constexpr int SG = 8;
-    static constexpr int BM = SGM * MT * 8, BN = SGN * NT * 8, NSG = SGM * SGN, WG = NSG * SG;
+    static constexpr int SG = kSgW;
+    static constexpr int BM = SGM * MT * 8, BN = SGN * NT * kSgW, NSG = SGM * SGN, WG = NSG * SG;
 };
 
 template <class C, class Name>
@@ -36,11 +43,12 @@ void launch(sycl::queue& q, const half* X, float* Y, const Grp& gp, int ntiles, 
     constexpr int LDA = KS + 8, LDB = KS + 8;
     const int nb = N / BN;
 #ifndef STRATA_NO_DG2_XMX
+    constexpr int TN = kSgW;
     q.submit([&](sycl::handler& h) {
         sycl::local_accessor<half, 1> sa(BM * LDA, h), sb(BN * LDB, h);
         auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>};
         h.parallel_for<Name>(sycl::nd_range<2>({(size_t) ntiles, (size_t) nb * WG}, {1, (size_t) WG}), props,
-                             [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(8)]] {
+                             [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(kSgW)]] {
             auto sg = it.get_sub_group();
             const int t = (int) it.get_group(0);
             int e = 0;
@@ -53,7 +61,7 @@ void launch(sycl::queue& q, const half* X, float* Y, const Grp& gp, int ntiles, 
             const int n0 = (int) it.get_group(1) * BN;
             const int lid = (int) it.get_local_id(1), sgid = lid / SG;
             const int sgm = sgid / C::SGN, sgn = sgid % C::SGN;
-            jm::joint_matrix<sycl::sub_group, float, jm::use::accumulator, 8, 8> acc[C::MT][C::NT];
+            jm::joint_matrix<sycl::sub_group, float, jm::use::accumulator, 8, TN> acc[C::MT][C::NT];
             for (int i = 0; i < C::MT; ++i)
                 for (int j = 0; j < C::NT; ++j) jm::joint_matrix_fill(sg, acc[i][j], 0.0f);
             half* pa = sa.template get_multi_ptr<sycl::access::decorated::no>().get();
@@ -74,13 +82,13 @@ void launch(sycl::queue& q, const half* X, float* Y, const Grp& gp, int ntiles, 
                 it.barrier(sycl::access::fence_space::local_space);
                 for (int kk = 0; kk < KS; kk += 16) {
                     jm::joint_matrix<sycl::sub_group, half, jm::use::a, 8, 16, jm::layout::row_major> a[C::MT];
-                    jm::joint_matrix<sycl::sub_group, half, jm::use::b, 16, 8, jm::layout::col_major> b[C::NT];
+                    jm::joint_matrix<sycl::sub_group, half, jm::use::b, 16, TN, jm::layout::col_major> b[C::NT];
                     for (int i = 0; i < C::MT; ++i)
                         jm::joint_matrix_load(sg, a[i], sa.template get_multi_ptr<sycl::access::decorated::no>() +
                                                             (sgm * C::MT * 8 + i * 8) * LDA + kk, LDA);
                     for (int j = 0; j < C::NT; ++j)
                         jm::joint_matrix_load(sg, b[j], sb.template get_multi_ptr<sycl::access::decorated::no>() +
-                                                            (sgn * C::NT * 8 + j * 8) * LDB + kk, LDB);
+                                                            (sgn * C::NT * TN + j * TN) * LDB + kk, LDB);
                     for (int i = 0; i < C::MT; ++i)
                         for (int j = 0; j < C::NT; ++j) jm::joint_matrix_mad(sg, acc[i][j], a[i], b[j], acc[i][j]);
                 }
@@ -90,19 +98,19 @@ void launch(sycl::queue& q, const half* X, float* Y, const Grp& gp, int ntiles, 
                 const int r = sgm * C::MT * 8 + i * 8;
                 if (r >= rows) continue;
                 for (int j = 0; j < C::NT; ++j) {
-                    const int c = n0 + sgn * C::NT * 8 + j * 8;
+                    const int c = n0 + sgn * C::NT * TN + j * TN;
                     if (r + 8 <= rows) {
                         jm::joint_matrix_store(sg, acc[i][j],
                             sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(
                                 Ye + (size_t) r * N + c), N, jm::layout::row_major);
                     } else {   // partial rows: through this sub-group's own SLM slice
-                        float* st = reinterpret_cast<float*>(pa) + sgid * 64;
+                        float* st = reinterpret_cast<float*>(pa) + sgid * 8 * TN;
                         jm::joint_matrix_store(sg, acc[i][j],
                             sycl::address_space_cast<sycl::access::address_space::local_space, sycl::access::decorated::no>(st),
-                            8, jm::layout::row_major);
+                            TN, jm::layout::row_major);
                         sycl::group_barrier(sg);
                         const int lim = rows - r, ln = (int) sg.get_local_linear_id();
-                        for (int rr = 0; rr < lim; ++rr) Ye[(size_t) (r + rr) * N + c + ln] = st[rr * 8 + ln];
+                        for (int rr = 0; rr < lim; ++rr) Ye[(size_t) (r + rr) * N + c + ln] = st[rr * TN + ln];
                         sycl::group_barrier(sg);
                     }
                 }
@@ -117,8 +125,13 @@ void launch(sycl::queue& q, const half* X, float* Y, const Grp& gp, int ntiles, 
 }
 
 class k_small; class k_big;
+#ifdef STRATA_XMX_SG16
+using Small = Cfg<2, 4, 4, 2, 32>;   // 64 x 128 tile: few rows per expert (8 sub-groups of 16)
+using Big = Cfg<4, 2, 4, 4, 32>;     // 128 x 128 tile
+#else
 using Small = Cfg<2, 8, 4, 2, 32>;   // 64 x 128 tile: few rows per expert
 using Big = Cfg<4, 4, 4, 4, 32>;     // 128 x 128 tile
+#endif
 
 template <class C>
 int fill(Grp& gp, const int32_t* cnt, int n) {
@@ -133,7 +146,8 @@ int fill(Grp& gp, const int32_t* cnt, int n) {
 }  // namespace
 
 int mode() {
-    // The kernels are joint_matrix 8x8x16 on sub-group 8: DG2 (Arc A-series) only. Battlemage has neither.
+    // The kernels are joint_matrix 8x8x16 on sub-group 8 (DG2, Arc A-series) or, in a STRATA_XMX_SG16 build, 8x16x16 on
+    // sub-group 16 (Xe2, Battlemage).
     static const int v = [] {
         const char* e = std::getenv("STRATA_PF_XMX");
         const int want = e ? std::atoi(e) : 0;
@@ -142,10 +156,12 @@ int mode() {
         std::fprintf(stderr, "STRATA_PF_XMX ignored: this build is AOT for a device without the sub-group 8 XMX kernels\n");
         return 0;
 #else
+#ifndef STRATA_XMX_SG16
         if (strata::intel_gpu_gen(strata::q_of(nullptr)->get_device()) == strata::IntelGpuGen::Battlemage) {
-            std::fprintf(stderr, "STRATA_PF_XMX ignored: Battlemage has no sub-group 8 / 8x8x16 joint_matrix (Arc A-series only)\n");
+            std::fprintf(stderr, "STRATA_PF_XMX ignored: this build has the sub-group 8 / 8x8x16 kernels (Arc A-series); Battlemage needs the AOT bmg build\n");
             return 0;
         }
+#endif
         return want;
 #endif
     }();

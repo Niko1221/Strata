@@ -216,6 +216,14 @@ of decode (one card 47.5 / 46.9 / 48.3 -> 50.5 / 48.5 / 51.3 tok/s with it on). 
 `bench/results/2026-10-04-community-rx-6800-windows`): on was 12-22% slower. 4x R9700: fork off was 13-45% faster.
 Linux RX 6000 users can try `STRATA_SH_STREAM=1`; the output is identical either way.
 
+**The draft's side stream (`STRATA_MTP_SIDE_STREAM`):** HIP does not use the MTP drafter's branch stream, and since
+0.1.40.2 it does not create it (#1240: an R9700 lost prompt speed with it). gfx103x is the exception and creates it: on
+an RX 6800 under Windows (`STRATA_HIP_PROMPT_F16=1`, IQ3_XXS, two runs each) a 7.9K-token prompt reads at 798-808 tok/s
+with the stream and 584-596 without, and a 30.4K-token one at 855-863 against 553-600; `STRATA_PREFILL_TIMING=1` puts
+the whole difference in the "wait copy" phase (3,081 -> 75 ms and 12,642 -> 288 ms). Decode and the output are the same.
+`STRATA_MTP_SIDE_STREAM=0` turns it off on gfx103x, `=1` creates it on another HIP card. Measured on one card and one
+OS; a Linux gfx103x number is welcome.
+
 **Long prompts on a big card: check the lend-coverage line (#1389, measured by the reporter on an RX 7900 XTX, gfx1100,
 v0.1.40.2, 50 GB RAM).** With `--resident-experts` the prompt path borrows cache slots, and the experts of those slots
 must also sit in RAM. After the first request of a start the engine prints

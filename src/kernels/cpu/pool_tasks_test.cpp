@@ -16,6 +16,8 @@ namespace cpu = strata::kernels::cpu;
 
 int main(int argc, char** argv) {
     if (argc != 1 && argc != 4) return 2;
+    // its activation quantiser is the AVX one at least (act_quant_any): a CPU without AVX (Westmere) would stop on an illegal instruction
+    if (!cpu::cpu_avx1_ok()) { std::printf("pool_tasks_test: no AVX on this CPU, skipped\n"); return 0; }
     cpu::NativeFmt f;
     std::string err;
     if (!cpu::native_fmt(argc == 4 ? std::atoi(argv[1]) : GGML_TYPE_Q4_0,

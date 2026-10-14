@@ -194,7 +194,9 @@ strata serve: layer split: layers 0-18 (CUDA0), 19-47 (CUDA1), one hand-off per 
 - **host RAM**: the expert arena once, shared by all cards (the CPU pool computes whatever no card holds).
 
 Prompts are read in chunks that flow through the cards in turn; while a later card reads chunk c, the first card
-already reads chunk c+1. Conversation checkpoints save and restore every card's state; the adaptive expert swaps copy
+already reads chunk c+1. (0.1.44, AMD gfx12: the auto chunk on a split stays at 8192, not the single-card 16384: a 16K prompt is then two chunks
+that overlap instead of one, a 32K one four instead of two. Same tokens; 2x / 3x / 4x R9700 prompt tok/s at 16K +36% / +45% / +53%,
+32K +18% / +21% / +29%, 64K +4% / +12% / +17%, 8K unchanged. `STRATA_SPLIT_CHUNK16K=1` keeps 16384.) Conversation checkpoints save and restore every card's state; the adaptive expert swaps copy
 into the card that owns the layer.
 
 ## Limits (for now)
@@ -243,7 +245,23 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
   3090 pair slower (68 / 90 tok/s decode): every extra card costs its own round per window.
 - More cards pay off when the model's routed experts do not fit the faster ones.
 
-## One conversation with both cards busy (`--pipeline-windows`, opt-in)
+## One conversation with both cards busy (`--pipeline-windows`, default on two or more AMD gfx12 stages)
+
+**Default on AMD RDNA4 (gfx1200 / gfx1201).** With `--serve`, the draft layer and a layer split of **two or more stages**,
+`--pipeline-windows 2` is on unless you say otherwise (the log says "is on by default for a layer split of N stages"; two
+stages since 0.1.44, three or more since 0.1.43). It is no quality trade: the tokens are the serial loop's up to CPU rounding
+(below). `--pipeline-windows 0` or `STRATA_PIPELINE_AUTO=0` turns it off; `--pipeline-windows 2` asks for it on any split.
+The same options that switch it off when you ask for it (`--batch`, `--peer-device`, the helper caches, no draft layer,
+`--adapt-async 1`) leave it off without a line when it is only the default. NVIDIA builds keep it opt-in.
+
+**Where the draft layer sits (0.1.44).** The draft layer's chain used to run on the last card, beside the last stage's window.
+On 2x / 4x R9700 the two streams then slowed each other, in most engine starts and for the whole life of that engine: the
+last stage's window took 27 ms instead of 13 ms while a chain ran (14.9 ms in the lucky starts, which also decoded 25% faster;
+the 0.1.43 notes' "128.9 does not reproduce" was this). With the pipeline on, the engine now loads the draft layer on the
+**first** card, whose window has finished when the chain starts: the chain's source rows are copied across once per chain and the
+draft head's rows once at load. Same tokens; `STRATA_MTP_STAGE0=0` keeps the old place. Exact-flags A/B, 5 pairs, decode tok/s
+(serial loop -> now): 2 cards code 103 -> 125 (+21%), 4K prompt +8%, prose equal; 3 cards code +19%, 4K +12%, prose +2%; 4 cards
+code +22%, prose +4%, 4K +15%.
 
 With a split the cards take turns on a verify window: the first card runs its layers and hands off, then waits while
 the last card runs the rest, the head and the draft. `--pipeline-windows 2` lets the first card start the **next**
