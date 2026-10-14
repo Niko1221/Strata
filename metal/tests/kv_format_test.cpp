@@ -157,7 +157,8 @@ int main() {
         // tree so the pair is not first exercised at runtime.  fc 24 makes prep read the M-RoPE table (buffer
         // 20); with every axis's position the cell's own, the rotation is the plain one - and the v rows (raw,
         // never RoPE'd) keep the same all-zero q4 bits.  The pool is scribbled first, so the check proves the
-        // dispatch wrote it, not that an old result survived.
+        // dispatch wrote it, not that an old result survived.  The identity table cannot tell "reads mtab" from
+        // "ignores it" - that discrimination (a random table, the K pool's numbers) is qsa_q4_parity's pass 5.
         mtl::Buffer mtab = A(4 * 3 * (size_t) (MAXC + 16));
         for (int c = 0; c < MAXC + 16; ++c)
             for (int i = 0; i < 3; ++i) mtab.as<int32_t>()[(size_t) c * 3 + i] = c;

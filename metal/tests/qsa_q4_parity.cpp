@@ -15,14 +15,20 @@
 //                           the same derivation at max|x|/127).  K passes through norm/RoPE on the GPU in fp32, so
 //                           its block bytes are not end-to-end bit-comparable - V above is;
 //                         * qcur (the rotated q attention rows) at 1e-5 and qidx at 1e-5 - qidx must come out
-//                           UNROTATED (asserted directly).  pooled / dead are NOT directly asserted: they are
-//                           covered transitively, through the score check (its reference reads the GPU's
-//                           pooled/dead rows) and the tail's +1e9 bias assertion; the scores/top-k are exactly
-//                           int8's math on the unrotated indexer chain;
+//                           UNROTATED (asserted directly).  pooled / dead are asserted DIRECTLY against
+//                           double-precision references built from the raw ik fixture (the int8 twin's ep
+//                           check): the score stage's reference reads the GPU's own pooled/dead rows, which
+//                           would hide a specialization that polluted them - these two do not;
 //                         * attention + merge from the GPU's own qcur, ids and pool bytes: the reference dequantizes
 //                           both pools, softmaxes in double, rotates the 256-wide output back with fwht256_ref
 //                           BEFORE the sigmoid(gate) multiply (the placement layer.cpp uses; the wrong order -
-//                           gate first - is printed for contrast and fails by orders of magnitude).
+//                           gate first - is printed for contrast and fails by orders of magnitude);
+//                         * a M-RoPE + q4 pass (fc 24 and 25 together: a vision prompt under --kv q4_0) over a
+//                           RANDOM (t, h, w) table (qsa_parity.cpp's fixture - the identity table
+//                           kv_format_test dispatches cannot tell "reads mtab" from "ignores it"): the K pool
+//                           dequantized against the per-pair mtab positions, qcur / qidx likewise, the V pool
+//                           bit-level again (the v rows never rope); the plain-position reference is ASSERTED
+//                           past the K tolerance - the "mtab ignored" error this pass discriminates from.
 // Fixed RNG (ref::Rng); this Mac is its own reference.
 #include "mtl_rt.h"
 #include "ref_quant.h"
@@ -98,16 +104,25 @@ int main(int argc, char** argv) {
     const int zcell = 5;
     for (int h = 0; h < QKV; ++h)
         for (int i = 0; i < QD; ++i) vc.as<float>()[(size_t)zcell * QKV * QD + (size_t)h * QD + i] = 0.0f;
-    auto prep = [&](uint32_t pos0, int nt) {
+    // the M-RoPE table of the section-5 pass: random (t, h, w) positions per cell (qsa_parity.cpp's fixture),
+    // bound as prep's buffer 20, read only with fc 24 on
+    mtl::Buffer mtab = cx.alloc(4 * 3 * (size_t)(MAXC + 16));
+    {
+        ref::Rng rm(77);
+        for (int c = 0; c < MAXC + 16; ++c)
+            for (int k = 0; k < 3; ++k) mtab.as<int>()[c * 3 + k] = (int)(rm.next() % (uint64_t)(MAXC + 16));
+    }
+    auto prep = [&](uint32_t pos0, int nt, mtl::Pipeline* pp = nullptr, const mtl::Buffer* mt = nullptr) {
         QsaArgs a{pos0, pos_base, (uint32_t)MAXC, (uint32_t)nt, 1e-6f};
         mtl::Dispatch d;
-        d.p = &pprep;
+        d.p = pp ? pp : &pprep;
         d.args = {mtl::Arg::B(qfull, 4 * (size_t)pos0 * QH * 2 * QD), mtl::Arg::B(kc, 4 * (size_t)pos0 * QKV * QD),
                   mtl::Arg::B(vc, 4 * (size_t)pos0 * QKV * QD), mtl::Arg::B(iq, 4 * (size_t)pos0 * IH * ID),
                   mtl::Arg::B(ik, 4 * (size_t)pos0 * ID), mtl::Arg::B(qn), mtl::Arg::B(kn), mtl::Arg::B(iqn),
                   mtl::Arg::B(ikn), mtl::Arg::B(cs), mtl::Arg::B(qcur), mtl::Arg::B(qidx), mtl::Arg::B(kq),
                   mtl::Arg::B(vq), mtl::Arg::B(ksc), mtl::Arg::B(vsc), mtl::Arg::B(tail), mtl::Arg::B(dead),
-                  mtl::Arg::B(pooled), mtl::Arg::V(a), mtl::Arg::B(ksc) /* mtab unused, fc 24 off */};
+                  mtl::Arg::B(pooled), mtl::Arg::V(a),
+                  mt ? mtl::Arg::B(*mt) : mtl::Arg::B(ksc) /* ksc stands in for mtab while fc 24 is off */};
         d.grid[0] = 33;
         d.grid[1] = nt;
         d.tg[0] = 256;
@@ -123,8 +138,10 @@ int main(int argc, char** argv) {
     std::printf("device %s, context %d cells, QSA_KV_Q4 (fc 25) on\n", cx.device_name().c_str(), P);
     int fails = 0;   // this case's failures
 
-    // ---- the norm + RoPE reference (qsa_parity.cpp's, double precision); rope = false gives the indexer forms
-    auto normrope = [&](const float* x, const float* g, int w, int absp, bool rope, std::vector<double>& out) {
+    // ---- the norm + RoPE reference (qsa_parity.cpp's, double precision); rope = false gives the indexer forms,
+    // mrope = true takes each pair's position from the table (the kernel's mtab[absp * 3 + p % 3])
+    auto normrope = [&](const float* x, const float* g, int w, int absp, bool rope, std::vector<double>& out,
+                        bool mrope = false) {
         double ss = 0;
         for (int i = 0; i < w; ++i) ss += (double)x[i] * x[i];
         const double rs = 1.0 / std::sqrt(ss / w + 1e-6);
@@ -132,7 +149,8 @@ int main(int argc, char** argv) {
         for (int i = 0; i < w; ++i) out[i] = rs * x[i] * g[i];
         if (rope)
             for (int i = 0; i < 32; ++i) {
-                const double c = cs.as<float>()[(absp * 32 + i) * 2], s = cs.as<float>()[(absp * 32 + i) * 2 + 1];
+                const int pp = mrope ? mtab.as<int>()[absp * 3 + i % 3] : absp;
+                const double c = cs.as<float>()[(pp * 32 + i) * 2], s = cs.as<float>()[(pp * 32 + i) * 2 + 1];
                 const double a = out[i], b = out[i + 32];
                 out[i] = a * c - b * s;
                 out[i + 32] = a * s + b * c;
@@ -184,7 +202,8 @@ int main(int argc, char** argv) {
         fails += zbad != 0;
     }
 
-    // ---- 2. prep's other outputs: the rotated q, the UNROTATED indexer q, the K pool dequantized
+    // ---- 2. prep's other outputs: the rotated q, the UNROTATED indexer q, the K pool dequantized, pooled / dead
+    // straight from the fixture
     {
         Err eq, ei, ekv;
         std::vector<double> o;
@@ -212,12 +231,31 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        // pooled and dead vs references built from the RAW ik rows (qsa_parity.cpp's ep check): the score
+        // stage's reference reads the GPU's own pooled/dead buffers, so a specialization that polluted them
+        // would pass it with the same wrong bytes on both sides - these two close that hole
+        Err ep, ed;
+        const int nb = (P + NT) / 4;   // the completed blocks: cells 4b..4b + 3 all prepped
+        for (int b = std::max(0, nb - 8); b < nb; ++b) {
+            std::vector<float> m(ID);
+            for (int i = 0; i < ID; ++i)
+                m[i] = (((ik.as<float>()[(size_t)(4 * b) * ID + i] + ik.as<float>()[(size_t)(4 * b + 1) * ID + i]) +
+                         ik.as<float>()[(size_t)(4 * b + 2) * ID + i]) + ik.as<float>()[(size_t)(4 * b + 3) * ID + i]) *
+                       0.25f;
+            normrope(m.data(), ikn.as<float>(), ID, 4 * b, true, o);
+            for (int i = 0; i < ID; ++i) ep.add(pooled.as<float>()[(size_t)b * ID + i], o[i]);
+        }
+        // dead: cell 0's raw indexer key, normed, never roped (prep writes it once, at the context's first cell)
+        normrope(ik.as<float>(), ikn.as<float>(), ID, 0, false, o);
+        for (int i = 0; i < ID; ++i) ed.add(dead.as<float>()[i], o[i]);
         // q4's code step is max|x|/8 -> rms error max|x|/(8 sqrt 12) per block, ~0.08 of a rotated row's rms for
         // this fixture: a quantization tolerance, the int8 check's 6e-3 at its step max|x|/127
-        const bool ok = eq.l2() < 1e-5 && ei.l2() < 1e-5 && ekv.l2() < 0.12;
+        const bool ok = eq.l2() < 1e-5 && ei.l2() < 1e-5 && ekv.l2() < 0.12 && ep.l2() < 1e-5 && ed.l2() < 1e-5;
         fails += !ok;
         std::printf("prep: q (rotated) rel L2 %.2e, indexer q (unrotated) %.2e, K deq4 (vs float) %.2e  %s\n", eq.l2(),
                     ei.l2(), ekv.l2(), ok ? "PASS" : "FAIL");
+        std::printf("      pooled %.2e, dead %.2e (vs the raw ik fixture, not the GPU's rows)      %s\n", ep.l2(),
+                    ed.l2(), (ep.l2() < 1e-5 && ed.l2() < 1e-5) ? "PASS" : "FAIL");
     }
 
     // ---- 3. score + top-k: unchanged math on the unrotated indexer chain, ids exactly
@@ -342,6 +380,67 @@ int main(int argc, char** argv) {
         fails += !ok;
         std::printf("attention + inverse rotation + gate: rel L2 %.2e                %s\n", eo.l2(), ok ? "PASS" : "FAIL");
         std::printf("  (contrast: gate-then-rotate, the wrong placement, is off by %.2e)\n", ew.l2());
+    }
+
+    // ---- 5. the M-RoPE + q4 pair (fc 24 and 25 together: a vision prompt under --kv q4_0).  kv_format_test's
+    // dispatch check runs the identity table, where reading mtab and ignoring it give the same bits; here the
+    // table is random and the K pool must carry the per-pair mtab positions, while the plain-position reference
+    // (mtab ignored) is ASSERTED past the K tolerance - the error this pass exists to catch.  Last on purpose:
+    // it rewrites the window cells' pools under different positions, and no check after it reads them.
+    {
+        mtl::Pipeline pm = cx.pipeline(lib, "qsa_prep", mtl::Constants().b(24, true).b(25, true));
+        cx.run({prep(P, NT, &pm, &mtab)});
+        Err eq, ei, ekv, ec;   // ec: the plain positions (mtab ignored), the asserted contrast
+        std::vector<double> o, op;
+        std::vector<float> orot, orotp;
+        for (int t = 0; t < NT; ++t) {
+            const int cell = P + t;
+            for (int h = 0; h < QH; ++h) {
+                normrope(qfull.as<float>() + ((size_t)cell * QH + h) * 2 * QD, qn.as<float>(), QD, cell, true, o, true);
+                rotate_row(o, orot);
+                for (int i = 0; i < QD; ++i) eq.add(qcur.as<float>()[(t * QH + h) * QD + i], orot[i]);
+            }
+            for (int h = 0; h < IH; ++h) {
+                normrope(iq.as<float>() + ((size_t)cell * IH + h) * ID, iqn.as<float>(), ID, cell, true, o, true);
+                for (int i = 0; i < ID; ++i) ei.add(qidx.as<float>()[(t * IH + h) * ID + i], o[i]);
+            }
+            for (int h = 0; h < QKV; ++h) {
+                normrope(kc.as<float>() + ((size_t)cell * QKV + h) * QD, kn.as<float>(), QD, cell, true, o, true);
+                normrope(kc.as<float>() + ((size_t)cell * QKV + h) * QD, kn.as<float>(), QD, cell, true, op, false);
+                rotate_row(o, orot);
+                rotate_row(op, orotp);
+                for (int i = 0; i < QD; ++i) {
+                    const size_t blk = ((size_t)cell * QKV + h) * ROWB + (size_t)(i / 32) * 18;
+                    const block_q4_0* qb = (const block_q4_0*)((const uint8_t*)kq.ptr + blk);
+                    const int j = i & 31, byte = qb->qs[j < 16 ? j : j - 16];
+                    const double deq = ((j < 16 ? (byte & 0x0F) : (byte >> 4)) - 8.0) * strata::kernels::f32_from_f16(qb->d);
+                    ekv.add(deq, orot[i]);
+                    ec.add(deq, orotp[i]);
+                }
+            }
+        }
+        // the V pool bit-level again for the rewritten cells: the v rows never rope, so the combined
+        // specialization must pack the same bits the plain one did in section 1
+        long vbad = 0;
+        {
+            std::vector<float> vrot((size_t)NT * QKV * QD);
+            fwht256_ref(vc.as<float>() + (size_t)P * QKV * QD, vrot.data(), (int64_t)NT * QKV);
+            for (int t = 0; t < NT; ++t)
+                for (int h = 0; h < QKV; ++h)
+                    for (int b = 0; b < BPH; ++b) {
+                        block_q4_0 ref;
+                        q4_block_ref(vrot.data() + ((size_t)t * QKV + h) * QD + b * 32, ref);
+                        vbad += std::memcmp((const uint8_t*)vq.ptr + (((size_t)P + t) * QKV + h) * ROWB +
+                                                (size_t)b * 18,
+                                            &ref, 18) != 0;
+                    }
+        }
+        const bool ok = eq.l2() < 1e-5 && ei.l2() < 1e-5 && ekv.l2() < 0.12 && ec.l2() > 0.12 && vbad == 0;
+        fails += !ok;
+        std::printf("mrope+q4: q (rotated) rel L2 %.2e, indexer q %.2e, K deq4 %.2e, V bits %ld differ  %s\n",
+                    eq.l2(), ei.l2(), ekv.l2(), vbad, ok ? "PASS" : "FAIL");
+        std::printf("  (contrast: the plain-position reference, mtab ignored, is off by %.2e - past the 0.12 K tolerance)\n",
+                    ec.l2());
     }
     return fails;
     };
