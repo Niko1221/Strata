@@ -15,8 +15,6 @@ const gb = (b, d = 1) => (b == null ? "–" : fmt(b / 1073741824, d));   // memo
 const store = {
   get(k, d) { try { const v = localStorage.getItem("strata." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); } catch (e) { /* private mode: in memory only */ } },
-  // the chat list wants to know whether the browser took it (private mode, or the storage is full)
-  setChecked(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); return true; } catch (e) { return false; } },
 };
 
 // ------------------------------------------------------------------ toasts
@@ -619,8 +617,10 @@ function openDb() {
     try { r = indexedDB.open("strata", 1); } catch (e) { resolve(null); return; }      // private mode: memory only
     r.onupgradeneeded = () => { const d = r.result;
       if (!d.objectStoreNames.contains("chats")) d.createObjectStore("chats", {keyPath: "id"}); };
-    r.onsuccess = () => resolve(r.result);
+    // a database already at version 1 does not run onupgradeneeded, so the store may not be there
+    r.onsuccess = () => resolve(r.result.objectStoreNames.contains("chats") ? r.result : null);
     r.onerror = () => resolve(null);
+    r.onblocked = () => resolve(null);           // another tab holds an older version of the database
   });
 }
 function allChats() {
@@ -631,19 +631,25 @@ function allChats() {
     req.onerror = () => resolve([]);
   });
 }
-// one record per chat: rewriting the whole list for one message is wasteful when a chat is megabytes
+// a request that fails because the storage is full aborts the transaction, so it fires abort rather than error
+function onQuota(t) {
+  const warn = () => warnStorage("This browser cannot keep more; the chats on the screen are still there.");
+  t.onerror = warn; t.onabort = warn;
+}
+// one record per chat: rewriting the whole list for one message is wasteful when a chat is megabytes.
+// Another tab's writes do not show up here until that page is reloaded - there is no event for them.
 function putChat(c) {
-  if (!db) return;
+  if (!db) { renderSidebar(); return; }           // memory only: the change still has to show
   const t = db.transaction("chats", "readwrite");
   t.objectStore("chats").put(cleanChat(c));
-  t.onerror = () => warnStorage("This browser cannot keep more; the chats on the screen are still there.");
+  onQuota(t);
   renderSidebar();
 }
 function dropChat(c) {
-  if (!db) return;
+  if (!db) { renderSidebar(); return; }
   const t = db.transaction("chats", "readwrite");
   t.objectStore("chats").delete(c.id);
-  t.onerror = () => warnStorage("This browser cannot keep more; the chats on the screen are still there.");
+  onQuota(t);
   renderSidebar();
 }
 
@@ -695,6 +701,7 @@ function chatItem(c) {
   return row;
 }
 function renderSidebar() {
+  // the search reads every chat's message text, so the whole store is in memory after the first load
   const q = sidebarQuery.trim().toLowerCase();
   const list = chats.filter((c) => !q || chatTitle(c).toLowerCase().includes(q) ||
                                    c.messages.some((m) => (m.text || "").toLowerCase().includes(q)))
@@ -746,7 +753,8 @@ function deleteChat(c) {
     showChat(next);
   }
   toast("info", "Chat deleted", chatTitle(c), 6000, {label: "Undo", run: () => {
-    chats.splice(i, 0, c);
+    if (chats.includes(c)) return;                  // already put back
+    chats.splice(Math.min(i, chats.length), 0, c);  // the display is sorted by time, so only the index matters
     putChat(c);
     if (wasOpen) showChat(c); else renderSidebar();
   }});
@@ -797,7 +805,8 @@ function setHistory(on, save, fromScreen) {
   $("sidebar").hidden = !on;
   $("new-btn").title = on ? "New chat (the one you are in stays in the list)" : "New chat";
   if (save) store.set("history", on);
-  if (!on) { messages = chat ? chat.messages : messages; renderChat(); return; }
+  // off writes the single chat here as well, so a reload shows the chat you were in, not the one from before the switch
+  if (!on) { messages = chat ? chat.messages : messages; store.set("chat", cleanMessages(messages)); renderChat(); return; }
   openHistory(fromScreen).then(renderChat);          // the store is opened before the list can be read
 }
 $("history-toggle").onclick = () => setHistory($("history-toggle").getAttribute("aria-checked") !== "true", true, true);

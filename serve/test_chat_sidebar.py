@@ -27,8 +27,17 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('createObjectStore("chats", {keyPath: "id"})', self.js)
         self.assertIn("function putChat(c)", self.js)                     # one record per chat, not the whole list
         self.assertIn("function dropChat(c)", self.js)
+        self.assertIn('r.onblocked = () => resolve(null)', self.js)       # another tab holds an older version
+        self.assertIn('objectStoreNames.contains("chats") ? r.result : null', self.js)   # a db at version 1 does not run onupgradeneeded
+        self.assertIn("t.onerror = warn; t.onabort = warn;", self.js)     # a full storage aborts, it does not fire error
+        self.assertIn("if (!db) { renderSidebar(); return; }", self.js)   # memory only: the change still has to show
         self.assertNotIn('fetch("chats"', self.js)                        # nothing about it goes to the server
+        self.assertNotIn("setChecked", self.js)                           # the storage helper is as it was
         self.assertIn("function chatTitle(c)", self.js)                   # the name: what the user called it, else the first question
+
+    def test_turning_the_switch_off_keeps_the_chat_on_the_screen(self):
+        # the single chat is written when the switch is flipped, otherwise a reload shows the chat from before it
+        self.assertIn('if (!on) { messages = chat ? chat.messages : messages; store.set("chat", cleanMessages(messages)); renderChat(); return; }', self.js)
 
     def test_a_new_chat_stays_empty_after_a_reload(self):
         # the bug reported on #1787: the single chat from before the switch must not be copied into an empty chat
