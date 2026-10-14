@@ -224,6 +224,59 @@ def v_branch(qdef, key: str) -> str:
 VISION_PROMPT_DEFAULT = "Describe this game screen:"
 
 
+def _handle_image_direct(svc, req: dict, mode: str, qdefs: list, b64: str) -> tuple[int, dict]:
+    """image_mode: "direct" — the RAW image tokens decide, no summary in between
+    (the donor's V2 idea, safe on Strata because the readout is BROW on the final
+    row, never a seq fork): one prompt = [image] + question_block, one decode step,
+    label logits off that row.  The image rides the user turn via Strata's normal
+    vision path (svc.prepare encodes + expands the pads); the question text sits
+    AFTER the image so the readout position attends the full image."""
+    data_uri = "data:image/png;base64," + b64 if not b64.startswith("data:") else b64
+    answers, in_tokens, readouts = {}, 0, 0
+    # no outer fifo hold: svc.prepare takes its own engine turn for the encode,
+    # and each generate() call is its own turn (same as the chat path)
+    for qdef in qdefs:
+        messages = [{"role": "system", "content": SYSTEM_V1},
+                    {"role": "user",
+                     "content": [{"type": "image", "source": data_uri},
+                                 {"type": "text",
+                                  "text": question_block(qdef)}]}]
+        try:
+            ids, _, max_new = svc.prepare(messages, tools=None,
+                                          kwargs={"enable_thinking": False}, max_new=1)
+        except (ValueError, OSError) as e:
+            return 400, {"error": {"type": "invalid_request_error", "param": "image_b64",
+                                   "message": f"vision: {e}"}}
+        variants = [svc.tok.encode(lbl, parse_special=True)[:1]
+                    for lbl in qdef["render_labels"]]
+        cancel = threading.Event()
+        for _ in svc.engine.generate(ids, 1, {}, cancel):
+            pass                                 # the one decode step past the image
+        tokens = sorted({t for v in variants for t in v})
+        row = svc.engine.final_row_logits(ids, tokens)
+        try:
+            scores = readout_scores(row, variants)
+        except ValueError as e:
+            return _err("image_b64", f"logits readout failed: {e}")
+        pr_raw = softmax(scores)
+        pr = [round(x * 10000.0) / 10000.0 for x in pr_raw]
+        t = sum(pr)
+        if t > 0:
+            pr = [x / t for x in pr]
+        pr, calib_id = jev_calib.apply(qdef["type"], pr)
+        answers[qdef["id"]] = answers_from_calibrated(qdef["type"], pr, calib_id)
+        jev_calib.log_enqueue({
+            "ts": int(time.time()),
+            "tuple": jev_calib.tuple_of("D", qdef["type"]),   # D = direct image readout
+            "qid": qdef["id"], "type": qdef["type"],
+            "raw_p": pr_raw})
+        in_tokens += len(ids)
+        readouts += 1
+    return 200, {"answers": answers,
+                 "usage": {"prompt_tokens": in_tokens, "readout_tokens": readouts},
+                 "stages_used": ["image-direct"]}
+
+
 def handle_image(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     """POST /v1/systemone with image_b64 — M3.8 two-call pattern, ONE request on the wire:
     (1) the image is encoded and a bounded summary generated through Strata's existing
@@ -245,6 +298,12 @@ def handle_image(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     if qdefs is None:
         return err_body
     vprompt = req.get("vision_prompt") or VISION_PROMPT_DEFAULT
+    image_mode = req.get("image_mode", "summary")
+    if image_mode not in ("summary", "direct"):
+        return _err("image_mode", "must be 'summary' (two-call) or 'direct' (one readout)")
+
+    if image_mode == "direct":
+        return _handle_image_direct(svc, req, mode, qdefs, b64)
 
     # ---- stage 1: vision summary (Strata's existing path, engine FIFO held) ----
     data_uri = "data:image/png;base64," + b64 if not b64.startswith("data:") else b64
