@@ -1344,6 +1344,35 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
 }
 
 namespace {
+// blockIdx.y = the token; one thread per column: the combine's sum (combine_k10_vec4: the first product rounded, then
+// one FMA per expert in order), then the fused read's pending write per stream (fused_gr.cu: fmaf(bo, 2*sigmoid(inj/hc), R))
+__global__ void defer_add_rows_kernel(const float* __restrict__ parts, const float* __restrict__ w,
+                                      const float* __restrict__ inject, float* __restrict__ R, int64_t n_embd, int k,
+                                      int hc) {
+    const int64_t t = blockIdx.y;
+    const int64_t d = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (d >= n_embd) return;
+    const float* p = parts + t * k * n_embd + d;
+    const float* wt = w + t * k;
+    float s = p[0] * wt[0];
+    for (int j = 1; j < k; ++j) s = fmaf(p[(int64_t) j * n_embd], wt[j], s);
+    const float* inj = inject + t * hc;
+    float* r = R + t * hc * n_embd + d;
+    for (int c = 0; c < hc; ++c) {
+        const float gw = 2.0f * (1.0f / (1.0f + __expf(-(inj[c] / (float) hc))));
+        r[(int64_t) c * n_embd] = fmaf(s, gw, r[(int64_t) c * n_embd]);
+    }
+}
+}  // namespace
+void defer_add_rows(const float* parts, const float* w, const float* inject, float* R, int64_t n_embd, int k, int hc,
+                    int n_tok, void* stream) {
+    if (n_tok <= 0 || n_embd <= 0) return;
+    defer_add_rows_kernel<<<dim3((unsigned) ((n_embd + 255) / 256), (unsigned) n_tok), 256, 0, (cudaStream_t) stream>>>(
+        parts, w, inject, R, n_embd, k, hc);
+    check("defer_add_rows");
+}
+
+namespace {
 __global__ void wait_copy_i32_kernel(const volatile uint32_t* flag, uint32_t value, int32_t* __restrict__ dst,
                                      const volatile int32_t* src, int n) {
     if (threadIdx.x == 0) {

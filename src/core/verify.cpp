@@ -624,6 +624,13 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     const uint64_t TS = (uint64_t) (s.idx_block - 1) * ID;
     const int max_in = (int) std::max<uint64_t>(std::max<uint64_t>(N, ZV), NH * HD);
 
+    {   // STRATA_VERIFY_DEFER=1 or =check (opt-in): read before the allocations (one buffer more, see record_window)
+        const char* v = std::getenv("STRATA_VERIFY_DEFER");
+        defer_check_ = v != nullptr && std::strcmp(v, "check") == 0;
+        defer_ = defer_check_ || (v != nullptr && std::strcmp(v, "1") == 0);
+        if (!defer_ && v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0)
+            std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER=%s is not 1 or check: no deferral\n", v);
+    }
     // ---- mapped staging
     bool ok = mapped(T * 4, (void**) &h_tok_, (void**) &m_tok_) &&
               mapped(T * strata::kernels::kStepCount * 4, (void**) &h_step_, (void**) &m_step_) &&
@@ -705,6 +712,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         one_ = b.take<int32_t>(4);
         hist_snap_ = b.take<float>(T * HS);
         ple_key_ = b.take<float>(T * (uint64_t) strata::kernels::NG_HC_DIM); ple_val_ = b.take<float>(T * N);
+        // STRATA_VERIFY_DEFER (record_window), after everything else: the default layout is unchanged
+        if (defer_) def_parts_ = b.take<float>(T * K * N);
     };
     Bump count;
     carve(count);
@@ -843,6 +852,13 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     std::fprintf(stderr, "strata verify: window up to %d tokens, %.1f MiB of device buffers%s\n", max_t,
                  (double) count.used / 1048576.0,
                  all_resident_ ? " (100% VRAM resident: zero-doorbell graph)" : "");
+    if (defer_check_)
+        std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER=check (a check of the late addition): the CPU's expert "
+                             "rows of layer l are left out of its combine and added back right after it - no deferral\n");
+    else if (defer_)
+        std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER=1 (changes the output): the CPU's expert rows of layer l "
+                             "join the residual before layer l+1's FFN-side read (its attention runs without them; the "
+                             "stage's last layer exact)\n");
     return true;
 }
 
@@ -890,6 +906,42 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     };
     bool sg_gated_[2] = {false, false};   // per group: the combine applies the shared gate
     if (!batch_rec_) groups_[T] = G;
+    // STRATA_VERIFY_DEFER=1 (opt-in, changes the output; defer_ok says which windows): post(l) of a deferred layer
+    // combines without the CPU's rows (shared expert, VRAM hits and the PCIe share only) and does not wait for them, and
+    // pre(l+1) adds them to the residual before its FFN-side read: the CPU computes layer l while the GPU runs layer
+    // l+1's attention, which is the only part that runs without them.  The addition is the pending write's own
+    // arithmetic, 2*sigmoid(inject_l / hc) * the rows' weighted sum.  The stage's last layer is not deferred, nor layer
+    // 0 when layer 1 runs the PLE block (its rows arrive with flag 1).
+    // Nothing the late addition reads has changed by then, and no buffer the host shares is reused earlier than without
+    // deferral: pre(l+1)'s attention-side read writes inj_ (not layer l's inject inj2_), its router w_ and the next plan
+    // (plan_, skip_) come after the addition, and so does its doorbell - so the host's pool(l+1), which overwrites the
+    // doorbell payload and h_ymiss_, starts only after the GPU has waited for flag l and copied layer l's rows.
+    const bool dfr = defer_ok(T, nullptr);
+    auto deferred = [&](int64_t l) { return dfr && l + 1 < le_ && !(ple_on && l == 0); };
+    // STRATA_VERIFY_DEFER: layer dl's CPU rows, the copy post(dl) would have made, weighted as its combine weights them
+    // and added to every stream as its pending write would have.  Where: pre(dl+1) before its FFN-side read (=1), or
+    // post(dl) itself after its combine (=check: the default path's sums in another order, so a run that differs from
+    // the default by more than its own run-to-run noise has a wrong copy or wrong arithmetic; it does not exercise the
+    // host computing layer dl while the GPU runs layer dl+1)
+    auto late_add = [&](int64_t dl, int grp) {
+        const int tb = tb_[grp], n = te_[grp] - tb_[grp];
+        const uint32_t ring_d = (uint32_t) ((dl - lb_) * G + grp + 1);
+        const int32_t* pl = plan_ + (size_t) grp * (size_t) (plan_i32_ + 16);   // counts | start | dst: layer dl's plan
+        const float* ym = m_ymiss_ + (size_t) tb * K * N;
+        if (device_plan_) {
+            wait_flag_ge_or(m_flag_, ring_d, skip_ + grp, cs);
+            copy_or_zero_from_mapped(def_parts_, ym, (long long) n * K * N, skip_ + grp, ring_d, cs);
+        } else {
+            wait_flag_ge(m_flag_, ring_d, cs);
+            if (dec_batch)   // the GPU's own rows (p_dst[0, counts[1])) are zeros
+                copy_rows_from_mapped(def_parts_, ym, (int64_t) n * K, N, pl + 4 + MT * K + 1, pl + 1, cs);
+            else
+                copy_from_mapped(def_parts_, ym, (int64_t) n * K * N, cs);
+        }
+#if !defined(STRATA_GPU_METAL)   // (the Metal window is metal/src/engine/window.cpp: no deferral, no entry point there)
+        defer_add_rows(def_parts_, w_ + tb * K, inj2_ + tb * HC, Rt(tb), N, (int) K, (int) HC, n, cs);
+#endif
+    };
     // Programmatic dependent launch (pdl.hpp; sm_90+, opt-in: STRATA_DF_PDL=1): the window's quantizations and dense
     // projections may start while the kernel before them finishes, loading their weights before they wait for its
     // output.  Only a launch whose predecessors in the graph are all kernels gets programmatic edges; every value is
@@ -1447,6 +1499,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             err = "verify layer " + std::to_string(l) + ": " + e.what();
             return false;
         }
+        // STRATA_VERIFY_DEFER=1: the previous layer's CPU rows join the residual here, before the FFN-side read (late_add)
+        if (!defer_check_ && l > lb_ && deferred(l - 1)) late_add(l - 1, grp);
         stamp(l, 16, grp);
         const bool q8_ffn = gr_read_group(1, true, inj_, inj2_);   // true: nat_xq_ holds the MoE input's q8_1 (STRATA_QFUSE)
         stamp(l, 32, grp);   // the profile only: the FFN-side read ends here, the router starts
@@ -1654,7 +1708,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             // pcie_frac 0), so its launch is kPcieGroupRows block rows striding over the groups, not cap of them
             grouped(p_ptr2, p_start2, p_counts + 2, kPcieGroupRows, hit_out);
             stamp(l, 22, grp);
-            if (device_plan_) {   // no CPU share when the device planned the group: its rows are zeros
+            // STRATA_VERIFY_DEFER: no wait, no CPU rows now (late_add adds them later): zeros, plus the hits
+            if (deferred(l)) {
+                if (cudaMemsetAsync(parts_out, 0, (size_t) n * K * N * sizeof(float), cs) != cudaSuccess) {
+                    err = "verify: the deferred layer's rows could not be cleared";
+                    return false;
+                }
+                stamp(l, 23, grp);
+            } else if (device_plan_) {   // no CPU share when the device planned the group: its rows are zeros
                 wait_flag_ge_or(m_flag_, ring, skip_ + grp, cs);
                 copy_or_zero_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (long long) n * K * N,
                                          skip_ + grp, ring, cs);
@@ -1673,9 +1734,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 else
                     copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
             }
-            // 143-amdk: the add of the GPU's hit rows is done by the combine that follows (one launch fewer)
-            hits_in_combine = fuse_hits_on() && !prof_on_ && !remote_opt_ && !sg_gated_[grp] && dec_batch && n > 1 &&
-                              native_moe_combine_enabled() && n <= 8 &&
+            // 143-amdk: the add of the GPU's hit rows is done by the combine that follows (one launch fewer); a deferred
+            // layer adds them on their own (moe_hit_add), so the combine is the plain one
+            hits_in_combine = !deferred(l) && fuse_hits_on() && !prof_on_ && !remote_opt_ && !sg_gated_[grp] && dec_batch &&
+                              n > 1 && native_moe_combine_enabled() && n <= 8 &&
                               native_moe_combine_hits_supported(parts_ + (size_t) tb * K * N, shared_ + tb * N, bo_ + tb * N, N, K, n);
             if (!hits_in_combine) moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);
         }
@@ -1708,6 +1770,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (remote_opt_) remote_opt_->combine(bo_ + tb * N, y_dummy_ + tb * N, tb, n,
                               device_plan_ ? skip_ + grp : nullptr, ring, cs);
         stamp(l, 24, grp);
+        // STRATA_VERIFY_DEFER=check (late_add): this layer's own rows, here; =1 adds them in pre(l + 1)
+        if (defer_check_ && deferred(l)) late_add(l, grp);
         if (l == g.n_layers - 1) {
             if (!fuse_head_gr) {
                 if (dec_batch && !g_no_multi_gr) gr_write_multi(Rt(tb), bo_ + tb * N, inj2_ + tb * HC, gs, Rt(tb), n, cs);
@@ -1878,13 +1942,46 @@ void Verifier::refresh_ar() {
     }
 }
 
+// STRATA_VERIFY_DEFER: the windows record_window may capture with deferral - one sequence's decode window, one token
+// group, CPU rows to defer and the plain combine and residual writes around them.  (STRATA_LFUSE's gated combine runs
+// only on the all-resident graph, so it never meets a deferred layer.)
+bool Verifier::defer_ok(int T, std::string* why) const {
+    auto no = [&](const char* w) {
+        if (why != nullptr) *why = w;
+        return false;
+    };
+    if (!defer_) return no("STRATA_VERIFY_DEFER is off");
+    if (batch_rec_) return no("a batch window");
+    if (split_ && T >= 2) return no("--spec-split's two token groups");
+    if (remote_opt_ != nullptr) return no("--remote-expert-opt");
+    if (ar_on()) return no("every expert of the stage is in VRAM: no CPU rows");
+    if (le_ - lb_ < 2) return no("the stage has one layer");
+    const ModelGeometry& g = *g_;
+    const strata::kernels::Cvec& cv = strata::kernels::cvec();
+    const char* fh = std::getenv("STRATA_FUSE_HEAD_GR");   // (record_window's fuse_head_gr: not tried with deferral)
+    if (fh != nullptr && fh[0] == '1' && le_ == g.n_layers && head_ != nullptr && head_->loaded() &&
+        !cv.covers(g.n_layers - 1))
+        return no("STRATA_FUSE_HEAD_GR=1");
+    for (int64_t l = lb_; l < le_; ++l)
+        if (cv.covers(l)) return no("a control vector covers a layer of the stage");
+    return true;
+}
+
 bool Verifier::capture(int T, std::string& err) {
     cudaGraphExec_t& exec_t = ar_off_ ? exec_nr_[T] : exec_[T];
     if (exec_t != nullptr) return true;
+    std::string dwhy;
+    const bool dfr = defer_ok(T, &dwhy);   // STRATA_VERIFY_DEFER (record_window decides the same)
+    if (defer_ && !dfr && !defer_said_) {
+        defer_said_ = true;
+        std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER: the %d-token window runs without deferral (%s)\n", T,
+                     dwhy.c_str());
+    }
     {   // said before the capture: a process that exits inside it (#1275: Windows, 313 MiB free) leaves this line as the trace
         size_t free_b = 0, total_b = 0;
         if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
-            std::fprintf(stderr, "strata verify: capturing the %d-token window (%zu MiB of VRAM free)\n", T, free_b >> 20);
+            std::fprintf(stderr, "strata verify: capturing the %d-token window (%zu MiB of VRAM free)%s\n", T, free_b >> 20,
+                         dfr ? ", deferred" : "");
         else
             (void) cudaGetLastError();
     }
