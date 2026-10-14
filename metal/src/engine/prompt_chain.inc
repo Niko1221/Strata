@@ -9,6 +9,12 @@
 // STRATA_METAL_PROMPT_MIN rows (default 32).  STRATA_METAL_PROMPT_CHUNK = C (default 2048).  The kernel variants
 // follow prompt_chain's defaults: matrix-unit register operands where the GPU has the M5's right-input layout
 // (COOP_K4, function constant 7), else the older expert and attention kernels (the M4).
+//
+// --kv q4_0 NEVER reaches this file's chain (nor prompt_gemm's): prompt_run_rows keeps every q4 prompt on the
+// decode window's slow path (kv_format.h's prompt_fast_path; the one-line notice is logged there), because the
+// fast attention kernels (qsa_attn_mm / qsa_flash) read the int8 pool layout and would misread the q4 pools'
+// bytes.  qsa_prep/attn/merge below would take the format-aware fc-25 specializations through qsa_c()/qsa_k() if
+// they ever did run; the fused fast q4 prompt variants are milestone M2.
 
 namespace {
 constexpr int PC_QB = 2051, PC_QCHUNKS = 33, PC_TM = 16;
