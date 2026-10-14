@@ -2400,6 +2400,22 @@ class Vision:
         im.save(out, format="PNG")
         return out.getvalue()
 
+    def key_of(self, source) -> str:
+        """The encoder-cache key of an image: the hash encode() stores under (load+normalize first, so the same
+        picture in another encoding or size hits too)."""
+        data = self.normalize(source if isinstance(source, bytes) else self.load(source))
+        return hashlib.sha256(data).hexdigest()[:32]
+
+    def cached(self, source) -> tuple[Path, int] | None:
+        """(embeddings file, image tokens) if this image was already encoded, else None.  The cache and the .sve
+        files survive an elastic unload (see unload()), so an all-cached conversation never needs the encoder up."""
+        try:
+            key = self.key_of(source)
+        except Exception:
+            return None                       # unreadable source: let encode() produce the proper error later
+        with self.lock:
+            return self.cache.get(key)
+
     def encode_all(self, sources: list, cancel=None) -> list[tuple[Path, int]]:
         """encode() for every image of one request: the files of this request's earlier images are never evicted to
         make room for a later one (#1072: with more than 64 unique images the first was deleted before the request
@@ -3872,17 +3888,24 @@ class Service:
                 return fetched[src] if src in fetched else Vision.download(src) \
                     if src.startswith(("http://", "https://")) else src
             images = [fetch(src) for src in images]
-            # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
-            # run on the GPU at the same time - an encode during a running request left that request stuck at
-            # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
-            # same FIFO as the requests.
-            with self._turn(cancel):
-                self._vision_up()
-                try:
-                    encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
-                               else [self.vision.encode(src) for src in images])
-                finally:
-                    self.last_image_at = time.time()
+            # Pictures the encoder already know never wake it: the hash cache and its .sve files survive an elastic
+            # unload, and most clients re-send every picture of the conversation on every turn - a text-only turn
+            # would otherwise pay the elastic start (a few seconds + the VRAM the expert cache gives up) on a hit.
+            cached = [self.vision.cached(src) for src in images] if hasattr(self.vision, "cached") else [None] * len(images)
+            if all(c is not None for c in cached):
+                encoded = cached
+            else:
+                # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
+                # run on the GPU at the same time - an encode during a running request left that request stuck at
+                # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
+                # same FIFO as the requests.
+                with self._turn(cancel):
+                    self._vision_up()
+                    try:
+                        encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
+                                   else [self.vision.encode(src) for src in images])
+                    finally:
+                        self.last_image_at = time.time()
             # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
             # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
             # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
