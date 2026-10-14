@@ -1,0 +1,110 @@
+{
+ "phase": "baseline-0141-run3",
+ "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+ "started": "2026-10-10 23:47:00",
+ "target_tokens": 131072,
+ "results": {
+  "ru_decode": {
+   "completion_tokens": 450,
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 92,
+    "prompt_ms": 736.5,
+    "prompt_per_token_ms": 8.005,
+    "prompt_per_second": 124.9,
+    "predicted_n": 450,
+    "predicted_ms": 9149.9,
+    "predicted_per_token_ms": 20.333,
+    "predicted_per_second": 49.2,
+    "draft_n": 274,
+    "draft_n_accepted": 210
+   },
+   "wall_s": 9.91,
+   "sha256_text": "e3b0c44298fc1c14",
+   "text_head": ""
+  },
+  "short": {
+   "ru-chat": {
+    "prompt_tokens": 80,
+    "completion_tokens": 130,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 80,
+     "prompt_ms": 749.0,
+     "prompt_per_token_ms": 9.363,
+     "prompt_per_second": 106.8,
+     "predicted_n": 130,
+     "predicted_ms": 2848.4,
+     "predicted_per_token_ms": 21.911,
+     "predicted_per_second": 45.6,
+     "draft_n": 88,
+     "draft_n_accepted": 71
+    },
+    "wall_s": 3.61,
+    "content": "`proxy_read_timeout` задаёт максимальное время ожидания ответа от upstream-сервера после отправки запроса.  \nОн нужен, чтобы nginx не ждал зависший или очень медленный бэкенд бесконечно и мог корректно завершить обработку запроса.  \nПри слишком малом значении nginx может прерывать нормальные долгие запросы и возвращать клиенту ошибку 504 Gateway Timeout.",
+    "reasoning": "We need answer in Russian, three sentences. User asks: Explain in three sentences why nginx needs proxy_read_timeout and what happens if too small. Need final exactly three sentences likely. Ensure concise.\n"
+   },
+   "code": {
+    "prompt_tokens": 103,
+    "completion_tokens": 400,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 103,
+     "prompt_ms": 802.6,
+     "prompt_per_token_ms": 7.792,
+     "prompt_per_second": 128.3,
+     "predicted_n": 400,
+     "predicted_ms": 8140.1,
+     "predicted_per_token_ms": 20.35,
+     "predicted_per_second": 49.1,
+     "draft_n": 262,
+     "draft_n_accepted": 215
+    },
+    "wall_s": 8.96,
+    "content": "",
+    "reasoning": "We need answer user in Russian: \"Напиши на Python функцию `parse_size(s: str) -> int`, которая переводит строки вида '12GiB', '350M', '2T' в байты. Только код и одна строка пояснения.\" Need provide only code and one line explanation. Need likely include function. Need decide units: 'GiB' binary, 'M' decimal? Strings like '12GiB', '350M', '2T'. Need parse size to bytes. Could support common suffixes: B, K, KiB, M, MiB, G, GiB, T, TiB, P, PiB, E, EiB maybe. Need only code and one line explanation. Ensure concise. Could use regex. Need maybe no imports? Can import re. One line explanation maybe comment? User says only code and one line explanation. Could output code block with function and a comment line? \"Только код и одна строка пояснения.\" Means final should be code and one explanatory line. Maybe include a single comment line above code? But code block includes comment? Need satisfy. Could output:\n# Поддерживает суффиксы B/K/M/G/T/P/E и двоичные KiB/MiB/GiB/TiB/PiB/EiB.\nimport re\n...\nBut that's one line explanation plus code. Or code with docstring? They asked only code and one line explanation. Maybe final:\n```python\n# ...\ndef parse_size...\n```\nNeed ensure function correct. Let's design robust.\n\nparse_size(s: str) -> int:\n    s = s.strip()\n    if not s: return 0? maybe raise ValueError.\n    m = re.fullmatch(r'(?i)(\\d+(?:\\.\\d+)?)\\s*([a-z]+)?',"
+   },
+   "math": {
+    "prompt_tokens": 113,
+    "completion_tokens": 400,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 113,
+     "prompt_ms": 788.8,
+     "prompt_per_token_ms": 6.981,
+     "prompt_per_second": 143.3,
+     "predicted_n": 400,
+     "predicted_ms": 7055.8,
+     "predicted_per_token_ms": 17.64,
+     "predicted_per_second": 56.7,
+     "draft_n": 278,
+     "draft_n_accepted": 253
+    },
+    "wall_s": 7.86,
+    "content": "1. Найдём общий путь:  \n\\[\n240 + 180 = 420 \\text{ км}\n\\]\n\n2. Найдём общее время:  \n\\[\n2 \\text{ ч } 40 \\text{ мин} + 1 \\text{ ч } 50 \\text{ мин} = 4 \\text{ ч } 30 \\text{ мин}\n\\]\n\n3. Переведём время в часы:  \n\\[\n4 \\text{ ч } 30 \\text{ мин} = 4.5 \\text{ ч}\n\\]\n\n4. Найдём среднюю скорость:  \n\\[\nv = \\frac{420}{4.5} = 93.333\\ldots \\text{ км/ч}\n\\]\n\n5. Округляем до 0.1:  \n\\[\n93.3 \\text{ км/ч}\n",
+    "reasoning": "We need answer in Russian likely. Need solve step by step. Problem: train traveled 240 km in 2 h 40 min, then 180 km in 1 h 50 min. Average speed total distance / total time. Total distance 420 km. Total time 2h40 +1h50 = 4h30 = 4.5 h. Average speed = 420/4.5 = 93.333... km/h. To 0.1 = 93.3. Need show steps. Ensure no mistakes: 2h40=2+40/60=2.6667; 1h50=1.8333; sum 4.5. 420/4.5=93.333. final.\n"
+   },
+   "tool-json": {
+    "prompt_tokens": 101,
+    "completion_tokens": 159,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 101,
+     "prompt_ms": 797.6,
+     "prompt_per_token_ms": 7.897,
+     "prompt_per_second": 126.6,
+     "predicted_n": 159,
+     "predicted_ms": 3374.3,
+     "predicted_per_token_ms": 21.222,
+     "predicted_per_second": 47.1,
+     "draft_n": 120,
+     "draft_n_accepted": 108
+    },
+    "wall_s": 4.19,
+    "content": "{\"host\":\"127.0.0.1\",\"port\":8080,\"engine\":\"strata\",\"tags\":[\"llm\",\"v100\"]}",
+    "reasoning": "We need to respond to user: \"Верни строго JSON без пояснений: объект с полями host=\"127.0.0.1\", port=8080, engine=\"strata\", tags=[\"llm\",\"v100\"].\" Need output strictly JSON no explanations. Need final only JSON. Ensure valid JSON. Could be {\"host\":\"127.0.0.1\",\"port\":8080,\"engine\":\"strata\",\"tags\":[\"llm\",\"v100\"]}. No markdown.\n"
+   }
+  }
+ },
+ "finished": "2026-10-10 23:47:34"
+}

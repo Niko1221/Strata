@@ -1,0 +1,187 @@
+{
+ "phase": "baseline-0141",
+ "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+ "started": "2026-10-10 22:03:53",
+ "target_tokens": 131072,
+ "results": {
+  "needle": {
+   "10": {
+    "depth_pct": 10,
+    "chars": 405249,
+    "prompt_tokens": 131100,
+    "cached_tokens": 0,
+    "found": true,
+    "answer": "ХЯ-6043-ВЕКТОР",
+    "finish_reason": "stop",
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 131100,
+     "prompt_ms": 99346.7,
+     "prompt_per_token_ms": 0.758,
+     "prompt_per_second": 1319.6,
+     "predicted_n": 159,
+     "predicted_ms": 3085.0,
+     "predicted_per_token_ms": 19.403,
+     "predicted_per_second": 51.5,
+     "draft_n": 118,
+     "draft_n_accepted": 104
+    },
+    "wall_s": 102.57
+   },
+   "50": {
+    "depth_pct": 50,
+    "chars": 405249,
+    "prompt_tokens": 131101,
+    "cached_tokens": 0,
+    "found": true,
+    "answer": "ХЯ-6043-ВЕКТОР",
+    "finish_reason": "stop",
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 131101,
+     "prompt_ms": 100256.0,
+     "prompt_per_token_ms": 0.765,
+     "prompt_per_second": 1307.7,
+     "predicted_n": 162,
+     "predicted_ms": 2692.5,
+     "predicted_per_token_ms": 16.62,
+     "predicted_per_second": 60.2,
+     "draft_n": 116,
+     "draft_n_accepted": 109
+    },
+    "wall_s": 103.09
+   },
+   "90": {
+    "depth_pct": 90,
+    "chars": 405249,
+    "prompt_tokens": 131101,
+    "cached_tokens": 65280,
+    "found": true,
+    "answer": "ХЯ-6043-ВЕКТОР",
+    "finish_reason": "stop",
+    "timings": {
+     "cache_n": 65280,
+     "prompt_n": 65821,
+     "prompt_ms": 52655.3,
+     "prompt_per_token_ms": 0.8,
+     "prompt_per_second": 1250.0,
+     "predicted_n": 138,
+     "predicted_ms": 2336.9,
+     "predicted_per_token_ms": 16.934,
+     "predicted_per_second": 59.1,
+     "draft_n": 103,
+     "draft_n_accepted": 90
+    },
+    "wall_s": 55.13
+   }
+  },
+  "ru_decode": {
+   "completion_tokens": 450,
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 92,
+    "prompt_ms": 1027.6,
+    "prompt_per_token_ms": 11.17,
+    "prompt_per_second": 89.5,
+    "predicted_n": 450,
+    "predicted_ms": 8493.2,
+    "predicted_per_token_ms": 18.874,
+    "predicted_per_second": 53.0,
+    "draft_n": 301,
+    "draft_n_accepted": 257
+   },
+   "wall_s": 9.54,
+   "sha256_text": "e3b0c44298fc1c14",
+   "text_head": ""
+  },
+  "short": {
+   "ru-chat": {
+    "prompt_tokens": 80,
+    "completion_tokens": 130,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 80,
+     "prompt_ms": 751.7,
+     "prompt_per_token_ms": 9.396,
+     "prompt_per_second": 106.4,
+     "predicted_n": 130,
+     "predicted_ms": 2880.9,
+     "predicted_per_token_ms": 22.161,
+     "predicted_per_second": 45.1,
+     "draft_n": 89,
+     "draft_n_accepted": 71
+    },
+    "wall_s": 3.65,
+    "content": "`proxy_read_timeout` задаёт максимальное время ожидания ответа от upstream-сервера после отправки запроса.  \nОн нужен, чтобы nginx не ждал зависший или очень медленный бэкенд бесконечно и мог корректно завершить обработку запроса.  \nПри слишком малом значении nginx может прерывать нормальные долгие запросы и возвращать клиенту ошибку 504 Gateway Timeout.",
+    "reasoning": "We need answer in Russian, three sentences. User asks: Explain in three sentences why nginx needs proxy_read_timeout and what happens if too small. Need final exactly three sentences likely. Ensure concise.\n"
+   },
+   "code": {
+    "prompt_tokens": 103,
+    "completion_tokens": 400,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 103,
+     "prompt_ms": 808.4,
+     "prompt_per_token_ms": 7.849,
+     "prompt_per_second": 127.4,
+     "predicted_n": 400,
+     "predicted_ms": 8044.4,
+     "predicted_per_token_ms": 20.111,
+     "predicted_per_second": 49.7,
+     "draft_n": 269,
+     "draft_n_accepted": 216
+    },
+    "wall_s": 8.87,
+    "content": "",
+    "reasoning": "We need answer user's request in Russian: \"Напиши на Python функцию `parse_size(s: str) -> int`, которая переводит строки вида '12GiB', '350M', '2T' в байты. Только код и одна строка пояснения.\" Need provide only code and one line explanation. Need likely include function. Need decide units: 'GiB' binary, 'M' decimal? Strings like '12GiB', '350M', '2T'. Need parse size to bytes. Could support common suffixes: B, K, KiB, M, MiB, G, GiB, T, TiB, P, PiB, E, EiB maybe. Need only code and one line explanation. Ensure concise. Could use regex. Need maybe no imports? Can import re. One line explanation after code? User says only code and one line пояснения. Could output code block then one line. But \"Только код и одна строка пояснения\" maybe means code plus one explanatory line. We can include a comment? Better: code block with function, then one line in Russian. But they said only code and one line explanation. Could include explanation as comment? Maybe final:\n```python\nimport re\n...\n```\nФункция поддерживает суффиксы B, K/KiB, M/MiB, G/GiB, T/TiB и т.д.\nBut that's two lines? The code block multiple lines is code. One line explanation outside. Need ensure only one line explanation. Could make explanation a comment inside code? Then only code? But request says code and one line explanation. Maybe final with code block and one line after. Need not overdo.\n\nNeed think about parsing: '12GiB' -> 12*1024^3. '350M' -> 3"
+   },
+   "math": {
+    "prompt_tokens": 113,
+    "completion_tokens": 400,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 113,
+     "prompt_ms": 758.4,
+     "prompt_per_token_ms": 6.712,
+     "prompt_per_second": 149.0,
+     "predicted_n": 400,
+     "predicted_ms": 7085.3,
+     "predicted_per_token_ms": 17.713,
+     "predicted_per_second": 56.5,
+     "draft_n": 279,
+     "draft_n_accepted": 250
+    },
+    "wall_s": 7.86,
+    "content": "1. Найдём общий путь:  \n\\[\n240 + 180 = 420 \\text{ км}\n\\]\n\n2. Найдём общее время:  \n\\[\n2 \\text{ ч } 40 \\text{ мин} + 1 \\text{ ч } 50 \\text{ мин} = 4 \\text{ ч } 30 \\text{ мин}\n\\]\n\nПереведём в часы:  \n\\[\n4 \\text{ ч } 30 \\text{ мин} = 4.5 \\text{ ч}\n\\]\n\n3. Средняя скорость:  \n\\[\nv = \\frac{420}{4.5} = 93.333\\ldots \\text{ км/ч}\n\\]\n\n4. Округляем до 0.1:  \n\\[\n\\boxed{",
+    "reasoning": "We need answer in Russian likely. Need solve step by step. Problem: train traveled 240 km in 2 h 40 min, then 180 km in 1 h 50 min. Average speed total distance / total time. Total distance 420 km. Total time 2h40 + 1h50 = 4h30 = 4.5 h. Average speed = 420/4.5 = 93.333... km/h. To 0.1 = 93.3. Need show steps. Ensure no mistakes: 240/(2+40/60=2.6667)=90; 180/(1.8333)=98.1818; weighted average = (240+180)/(4.5)=93.333. Answer 93.3.\n"
+   },
+   "tool-json": {
+    "prompt_tokens": 101,
+    "completion_tokens": 159,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 101,
+     "prompt_ms": 808.8,
+     "prompt_per_token_ms": 8.008,
+     "prompt_per_second": 124.9,
+     "predicted_n": 159,
+     "predicted_ms": 3284.8,
+     "predicted_per_token_ms": 20.659,
+     "predicted_per_second": 48.4,
+     "draft_n": 116,
+     "draft_n_accepted": 109
+    },
+    "wall_s": 4.11,
+    "content": "{\"host\":\"127.0.0.1\",\"port\":8080,\"engine\":\"strata\",\"tags\":[\"llm\",\"v100\"]}",
+    "reasoning": "We need to respond to user: \"Верни строго JSON без пояснений: объект с полями host=\"127.0.0.1\", port=8080, engine=\"strata\", tags=[\"llm\",\"v100\"].\" Need output strictly JSON no explanations. Need final only JSON. Ensure valid JSON. Could be {\"host\":\"127.0.0.1\",\"port\":8080,\"engine\":\"strata\",\"tags\":[\"llm\",\"v100\"]}. No markdown.\n"
+   }
+  }
+ },
+ "calib": {
+  "chars": 20000,
+  "prompt_tokens": 6471,
+  "chars_per_token": 3.091,
+  "prompt_per_second": 1166.4
+ },
+ "finished": "2026-10-10 22:08:54"
+}
