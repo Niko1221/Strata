@@ -65,6 +65,17 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 
+- [2026-10-13: 1x/2x/6x Tesla V100-PCIE-32GB (sm_70), Xeon Silver 4116, 502.6 GiB RAM](../bench/results/2026-10-13-community-tesla-v100-pcie-32gb-qwen3-8-flash-next-unsloth-ud-q4-k-xl/README.md):
+  Strata `a0116b2` (0.1.43.1) as installed, Unsloth UD-Q4_K_XL with its expert profile, `--spec 4` with
+  MTP, int8 KV, `--resident-budget-gib 71`; one machine measured with 1, 2 and 6 PCIe cards
+  (driver 580.178.04, CUDA 13.0). Fresh-prompt prefill at 4K/16K tokens: 596/1,017 (one card),
+  992/1,646 (two), and 1,281/2,422 tok/s on six
+  ([32K context](../bench/results/2026-10-13-community-6x-tesla-v100-pcie-32gb-qwen3-8-flash-next-unsloth-ud-q4-k-xl/README.md));
+  the [same six cards at 262,144 context](../bench/results/2026-10-13-community-6x-tesla-v100-pcie-32gb-qwen3-8-flash-next-unsloth-ud-q4-k-xl-262k/README.md)
+  take a 32K prompt at 3,388 tok/s and decode 80.1 tok/s on a short chat (37.5/63.3/70.6 on the
+  single/two/six-card 32K arms). Agent sessions reuse 68.5-68.8% of the follow-up turns' tokens.
+  Speed only: no needle or correctness runs, no power or background-load capture, one machine.
+
 ## Run the benchmark
 
 The simplest report is one command after setup. Windows: double-click `BENCH.bat`. Linux: `./bench.sh`. Or
