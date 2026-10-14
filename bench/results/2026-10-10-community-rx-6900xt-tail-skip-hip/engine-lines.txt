@@ -1,0 +1,215 @@
+===== engine_tail_off_r0.log
+[strata] 2026-10-10 16:42:54 engine started: <repo>/engine/strata --serve --pack <strata-data>/packs/unsloth-ud-q4_k_xl --native <models>/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --expert-profile <repo>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <strata-data>/mtp/rt --max-context 131072 --kv int8 --kv-resident 32768 --resident-budget-gib 71 --prompt-cache-tail
+strata generate: expert cache auto: 9.22 GiB free, 700 MiB reserved (+281 MiB for the draft head) -> 2220 slots
+strata prefill: HIP device 0 gfx1030 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: expert cache 2831 slots, 8.25 GiB of VRAM; policy is
+FileExpertSource: mapped pinned cache complement ready: resident 63.47 GiB, pinned 63.47 GiB in 48 s; page-locked and mapped
+strata serve: prompt 15 tokens = 0 reused + 15 read in 423 ms (35.5 tok/s), 8 generated in 424 ms (18.9 tok/s), drafts accepted 7 of 9, 1 checkpoints
+strata serve: decode expert cache hit rate: 31.3% (1297 hits / 4144 lookups); 2096 more read by the GPU over PCIe or from another GPU (33.6% of all 6240 routed)
+strata serve: prompt 44 tokens = 0 reused + 44 read in 1082 ms (40.7 tok/s), 300 generated in 10533 ms (28.5 tok/s), drafts accepted 158 of 264, 1 checkpoints
+strata serve: decode expert cache hit rate: 73.8% (119626 hits / 162100 lookups); 33260 more read by the GPU over PCIe or from another GPU (17.0% of all 195360 routed)
+strata serve: prompt 57 tokens = 0 reused + 57 read in 1456 ms (39.2 tok/s), 300 generated in 9259 ms (32.4 tok/s), drafts accepted 207 of 247, 1 checkpoints
+strata serve: decode expert cache hit rate: 60.7% (75279 hits / 123934 lookups); 39746 more read by the GPU over PCIe or from another GPU (24.3% of all 163680 routed)
+strata serve: prompt 7913 tokens = 0 reused + 7913 read in 11697 ms (676.5 tok/s), 300 generated in 10360 ms (29.0 tok/s), drafts accepted 199 of 262, 1 checkpoints
+strata serve: decode expert cache hit rate: 59.7% (77201 hits / 129375 lookups); 44865 more read by the GPU over PCIe or from another GPU (25.7% of all 174240 routed)
+strata serve: prompt 8046 tokens = 0 reused + 8046 read in 9737 ms (826.4 tok/s), 8 generated in 342 ms (23.4 tok/s), drafts accepted 6 of 6, 1 checkpoints
+strata serve: decode expert cache hit rate: 33.2% (918 hits / 2765 lookups); 1555 more read by the GPU over PCIe or from another GPU (36.0% of all 4320 routed)
+strata serve: prompt 31982 tokens = 0 reused + 31982 read in 34218 ms (934.7 tok/s), 8 generated in 294 ms (27.2 tok/s), drafts accepted 6 of 6, 3 checkpoints
+strata serve: decode expert cache hit rate: 38.9% (1126 hits / 2894 lookups); 1426 more read by the GPU over PCIe or from another GPU (33.0% of all 4320 routed)
+===== engine_tail_tail7_r0.log
+[strata] 2026-10-10 16:45:35 engine started: <repo>/engine/strata --serve --pack <strata-data>/packs/unsloth-ud-q4_k_xl --native <models>/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --expert-profile <repo>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <strata-data>/mtp/rt --max-context 131072 --kv int8 --kv-resident 32768 --resident-budget-gib 71 --prompt-cache-tail
+strata generate: expert cache auto: 9.22 GiB free, 700 MiB reserved (+281 MiB for the draft head) -> 2220 slots
+strata prefill: HIP device 0 gfx1030 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: expert cache 2831 slots, 8.25 GiB of VRAM; policy is
+FileExpertSource: mapped pinned cache complement ready: resident 63.47 GiB, pinned 63.47 GiB in 47 s; page-locked and mapped
+strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON: a missed expert that every token of a verify window routes at rank 7 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); STRATA_ROUTE_TAIL_SKIP=0 turns it off
+strata serve: prompt 15 tokens = 0 reused + 15 read in 948 ms (15.8 tok/s), 8 generated in 336 ms (23.8 tok/s), drafts accepted 7 of 9, 1 checkpoints
+strata serve: decode expert cache hit rate: 36.8% (1300 hits / 3533 lookups); 1583 more read by the GPU over PCIe or from another GPU (30.9% of all 5116 routed)
+strata serve: route tail skip: 1964 missed experts skipped (2146 entries) since the start
+strata serve: prompt 46 tokens = 0 reused + 46 read in 917 ms (50.1 tok/s), 300 generated in 9423 ms (31.8 tok/s), drafts accepted 145 of 270, 1 checkpoints
+strata serve: decode expert cache hit rate: 79.3% (125572 hits / 158345 lookups); 23780 more read by the GPU over PCIe or from another GPU (13.1% of all 182125 routed)
+strata serve: route tail skip: 25702 missed experts skipped (27742 entries) since the start
+strata serve: prompt 59 tokens = 0 reused + 59 read in 1237 ms (47.7 tok/s), 300 generated in 7670 ms (39.1 tok/s), drafts accepted 204 of 255, 1 checkpoints
+strata serve: decode expert cache hit rate: 66.9% (76941 hits / 115061 lookups); 28957 more read by the GPU over PCIe or from another GPU (20.1% of all 144018 routed)
+strata serve: route tail skip: 53656 missed experts skipped (58321 entries) since the start
+strata serve: prompt 7915 tokens = 0 reused + 7915 read in 12851 ms (615.9 tok/s), 300 generated in 8808 ms (34.1 tok/s), drafts accepted 187 of 275, 1 checkpoints
+strata serve: decode expert cache hit rate: 68.9% (87730 hits / 127342 lookups); 32219 more read by the GPU over PCIe or from another GPU (20.2% of all 159561 routed)
+strata serve: route tail skip: 78918 missed experts skipped (85354 entries) since the start
+strata serve: prompt 8046 tokens = 0 reused + 8046 read in 9320 ms (863.3 tok/s), 8 generated in 243 ms (32.9 tok/s), drafts accepted 6 of 6, 1 checkpoints
+strata serve: decode expert cache hit rate: 33.6% (760 hits / 2261 lookups); 1220 more read by the GPU over PCIe or from another GPU (35.0% of all 3481 routed)
+strata serve: route tail skip: 80054 missed experts skipped (86597 entries) since the start
+strata serve: prompt 31982 tokens = 0 reused + 31982 read in 34239 ms (934.1 tok/s), 8 generated in 267 ms (30.0 tok/s), drafts accepted 6 of 6, 3 checkpoints
+strata serve: decode expert cache hit rate: 41.0% (997 hits / 2432 lookups); 1091 more read by the GPU over PCIe or from another GPU (31.0% of all 3523 routed)
+strata serve: route tail skip: 81145 missed experts skipped (87783 entries) since the start
+===== engine_tail_off_r1.log
+[strata] 2026-10-10 16:50:47 engine started: <repo>/engine/strata --serve --pack <strata-data>/packs/unsloth-ud-q4_k_xl --native <models>/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --expert-profile <repo>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <strata-data>/mtp/rt --max-context 131072 --kv int8 --kv-resident 32768 --resident-budget-gib 71 --prompt-cache-tail
+strata generate: expert cache auto: 9.22 GiB free, 700 MiB reserved (+281 MiB for the draft head) -> 2220 slots
+strata prefill: HIP device 0 gfx1030 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: expert cache 2831 slots, 8.25 GiB of VRAM; policy is
+FileExpertSource: mapped pinned cache complement ready: resident 63.47 GiB, pinned 63.47 GiB in 46 s; page-locked and mapped
+strata serve: prompt 15 tokens = 0 reused + 15 read in 437 ms (34.3 tok/s), 8 generated in 481 ms (16.6 tok/s), drafts accepted 7 of 9, 1 checkpoints
+strata serve: decode expert cache hit rate: 31.3% (1297 hits / 4144 lookups); 2096 more read by the GPU over PCIe or from another GPU (33.6% of all 6240 routed)
+strata serve: prompt 44 tokens = 0 reused + 44 read in 1078 ms (40.8 tok/s), 300 generated in 11147 ms (26.9 tok/s), drafts accepted 144 of 267, 1 checkpoints
+strata serve: decode expert cache hit rate: 74.1% (124920 hits / 168670 lookups); 34370 more read by the GPU over PCIe or from another GPU (16.9% of all 203040 routed)
+strata serve: prompt 57 tokens = 0 reused + 57 read in 1469 ms (38.8 tok/s), 300 generated in 9488 ms (31.6 tok/s), drafts accepted 206 of 251, 1 checkpoints
+strata serve: decode expert cache hit rate: 59.6% (74682 hits / 125387 lookups); 41173 more read by the GPU over PCIe or from another GPU (24.7% of all 166560 routed)
+strata serve: prompt 7913 tokens = 0 reused + 7913 read in 12034 ms (657.6 tok/s), 300 generated in 10613 ms (28.3 tok/s), drafts accepted 193 of 267, 1 checkpoints
+strata serve: decode expert cache hit rate: 62.3% (84851 hits / 136158 lookups); 44322 more read by the GPU over PCIe or from another GPU (24.6% of all 180480 routed)
+strata serve: prompt 8103 tokens = 0 reused + 8103 read in 10383 ms (780.4 tok/s), 9 generated in 305 ms (29.5 tok/s), drafts accepted 6 of 6, 1 checkpoints
+strata serve: decode expert cache hit rate: 28.4% (776 hits / 2734 lookups); 1586 more read by the GPU over PCIe or from another GPU (36.7% of all 4320 routed)
+strata serve: prompt 31978 tokens = 0 reused + 31978 read in 34882 ms (916.7 tok/s), 8 generated in 283 ms (28.3 tok/s), drafts accepted 6 of 6, 3 checkpoints
+strata serve: decode expert cache hit rate: 43.0% (1265 hits / 2939 lookups); 1381 more read by the GPU over PCIe or from another GPU (32.0% of all 4320 routed)
+===== engine_tail_tail7_r1.log
+[strata] 2026-10-10 16:48:08 engine started: <repo>/engine/strata --serve --pack <strata-data>/packs/unsloth-ud-q4_k_xl --native <models>/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --expert-profile <repo>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <strata-data>/mtp/rt --max-context 131072 --kv int8 --kv-resident 32768 --resident-budget-gib 71 --prompt-cache-tail
+strata generate: expert cache auto: 9.22 GiB free, 700 MiB reserved (+281 MiB for the draft head) -> 2220 slots
+strata prefill: HIP device 0 gfx1030 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: expert cache 2831 slots, 8.25 GiB of VRAM; policy is
+FileExpertSource: mapped pinned cache complement ready: resident 63.47 GiB, pinned 63.47 GiB in 50 s; page-locked and mapped
+strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON: a missed expert that every token of a verify window routes at rank 7 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); STRATA_ROUTE_TAIL_SKIP=0 turns it off
+strata serve: prompt 15 tokens = 0 reused + 15 read in 628 ms (23.9 tok/s), 8 generated in 644 ms (12.4 tok/s), drafts accepted 7 of 9, 1 checkpoints
+strata serve: decode expert cache hit rate: 36.8% (1300 hits / 3533 lookups); 1583 more read by the GPU over PCIe or from another GPU (30.9% of all 5116 routed)
+strata serve: route tail skip: 1964 missed experts skipped (2146 entries) since the start
+strata serve: prompt 46 tokens = 0 reused + 46 read in 1272 ms (36.2 tok/s), 300 generated in 11221 ms (26.7 tok/s), drafts accepted 142 of 289, 1 checkpoints
+strata serve: decode expert cache hit rate: 80.2% (133764 hits / 166693 lookups); 24526 more read by the GPU over PCIe or from another GPU (12.8% of all 191219 routed)
+strata serve: route tail skip: 26668 missed experts skipped (28747 entries) since the start
+strata serve: prompt 59 tokens = 0 reused + 59 read in 1227 ms (48.1 tok/s), 300 generated in 7682 ms (39.1 tok/s), drafts accepted 200 of 250, 1 checkpoints
+strata serve: decode expert cache hit rate: 68.0% (78419 hits / 115286 lookups); 28294 more read by the GPU over PCIe or from another GPU (19.7% of all 143580 routed)
+strata serve: route tail skip: 53776 missed experts skipped (58272 entries) since the start
+strata serve: prompt 7915 tokens = 0 reused + 7915 read in 11720 ms (675.3 tok/s), 300 generated in 8375 ms (35.8 tok/s), drafts accepted 195 of 257, 1 checkpoints
+strata serve: decode expert cache hit rate: 68.5% (81583 hits / 119131 lookups); 30807 more read by the GPU over PCIe or from another GPU (20.5% of all 149938 routed)
+strata serve: route tail skip: 77576 missed experts skipped (83906 entries) since the start
+strata serve: prompt 8103 tokens = 0 reused + 8103 read in 9517 ms (851.4 tok/s), 9 generated in 405 ms (22.2 tok/s), drafts accepted 4 of 7, 1 checkpoints
+strata serve: decode expert cache hit rate: 35.3% (1057 hits / 2998 lookups); 1642 more read by the GPU over PCIe or from another GPU (35.4% of all 4640 routed)
+strata serve: route tail skip: 78970 missed experts skipped (85421 entries) since the start
+strata serve: prompt 31978 tokens = 0 reused + 31978 read in 34117 ms (937.3 tok/s), 8 generated in 217 ms (36.9 tok/s), drafts accepted 6 of 6, 3 checkpoints
+strata serve: decode expert cache hit rate: 52.6% (1354 hits / 2574 lookups); 950 more read by the GPU over PCIe or from another GPU (27.0% of all 3524 routed)
+strata serve: route tail skip: 80052 missed experts skipped (86594 entries) since the start
+===== engine_tail_off_r2.log
+[strata] 2026-10-10 16:53:26 engine started: <repo>/engine/strata --serve --pack <strata-data>/packs/unsloth-ud-q4_k_xl --native <models>/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --expert-profile <repo>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <strata-data>/mtp/rt --max-context 131072 --kv int8 --kv-resident 32768 --resident-budget-gib 71 --prompt-cache-tail
+strata generate: expert cache auto: 9.22 GiB free, 700 MiB reserved (+281 MiB for the draft head) -> 2220 slots
+strata prefill: HIP device 0 gfx1030 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: expert cache 2831 slots, 8.25 GiB of VRAM; policy is
+FileExpertSource: mapped pinned cache complement ready: resident 63.47 GiB, pinned 63.47 GiB in 48 s; page-locked and mapped
+strata serve: prompt 15 tokens = 0 reused + 15 read in 457 ms (32.8 tok/s), 8 generated in 437 ms (18.3 tok/s), drafts accepted 7 of 9, 1 checkpoints
+strata serve: decode expert cache hit rate: 31.3% (1297 hits / 4144 lookups); 2096 more read by the GPU over PCIe or from another GPU (33.6% of all 6240 routed)
+strata serve: prompt 44 tokens = 0 reused + 44 read in 1100 ms (40.0 tok/s), 300 generated in 10702 ms (28.0 tok/s), drafts accepted 149 of 255, 1 checkpoints
+strata serve: decode expert cache hit rate: 74.8% (121902 hits / 163015 lookups); 32345 more read by the GPU over PCIe or from another GPU (16.6% of all 195360 routed)
+strata serve: prompt 57 tokens = 0 reused + 57 read in 1505 ms (37.9 tok/s), 300 generated in 9554 ms (31.4 tok/s), drafts accepted 207 of 253, 1 checkpoints
+strata serve: decode expert cache hit rate: 59.0% (73850 hits / 125170 lookups); 41870 more read by the GPU over PCIe or from another GPU (25.1% of all 167040 routed)
+strata serve: prompt 7913 tokens = 0 reused + 7913 read in 12033 ms (657.6 tok/s), 300 generated in 10902 ms (27.5 tok/s), drafts accepted 190 of 262, 1 checkpoints
+strata serve: decode expert cache hit rate: 59.9% (80101 hits / 133697 lookups); 45823 more read by the GPU over PCIe or from another GPU (25.5% of all 179520 routed)
+strata serve: prompt 8037 tokens = 0 reused + 8037 read in 9255 ms (868.4 tok/s), 8 generated in 374 ms (21.4 tok/s), drafts accepted 6 of 6, 1 checkpoints
+strata serve: decode expert cache hit rate: 30.7% (859 hits / 2800 lookups); 1520 more read by the GPU over PCIe or from another GPU (35.2% of all 4320 routed)
+strata serve: prompt 32018 tokens = 0 reused + 32018 read in 34204 ms (936.1 tok/s), 7 generated in 333 ms (21.0 tok/s), drafts accepted 6 of 6, 3 checkpoints
+strata serve: decode expert cache hit rate: 38.6% (1102 hits / 2857 lookups); 1463 more read by the GPU over PCIe or from another GPU (33.9% of all 4320 routed)
+===== engine_tail_tail7_r2.log
+[strata] 2026-10-10 16:56:09 engine started: <repo>/engine/strata --serve --pack <strata-data>/packs/unsloth-ud-q4_k_xl --native <models>/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --expert-profile <repo>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <strata-data>/mtp/rt --max-context 131072 --kv int8 --kv-resident 32768 --resident-budget-gib 71 --prompt-cache-tail
+strata generate: expert cache auto: 9.22 GiB free, 700 MiB reserved (+281 MiB for the draft head) -> 2220 slots
+strata prefill: HIP device 0 gfx1030 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: expert cache 2831 slots, 8.25 GiB of VRAM; policy is
+FileExpertSource: mapped pinned cache complement ready: resident 63.47 GiB, pinned 63.47 GiB in 46 s; page-locked and mapped
+strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON: a missed expert that every token of a verify window routes at rank 7 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); STRATA_ROUTE_TAIL_SKIP=0 turns it off
+strata serve: prompt 15 tokens = 0 reused + 15 read in 593 ms (25.3 tok/s), 8 generated in 867 ms (9.2 tok/s), drafts accepted 7 of 9, 1 checkpoints
+strata serve: decode expert cache hit rate: 36.8% (1300 hits / 3533 lookups); 1583 more read by the GPU over PCIe or from another GPU (30.9% of all 5116 routed)
+strata serve: route tail skip: 1964 missed experts skipped (2146 entries) since the start
+strata serve: prompt 46 tokens = 0 reused + 46 read in 923 ms (49.9 tok/s), 300 generated in 9369 ms (32.0 tok/s), drafts accepted 146 of 268, 1 checkpoints
+strata serve: decode expert cache hit rate: 79.8% (125639 hits / 157379 lookups); 23216 more read by the GPU over PCIe or from another GPU (12.9% of all 180595 routed)
+strata serve: route tail skip: 25451 missed experts skipped (27361 entries) since the start
+strata serve: prompt 59 tokens = 0 reused + 59 read in 1185 ms (49.8 tok/s), 300 generated in 7555 ms (39.7 tok/s), drafts accepted 200 of 248, 1 checkpoints
+strata serve: decode expert cache hit rate: 68.6% (78423 hits / 114344 lookups); 27720 more read by the GPU over PCIe or from another GPU (19.5% of all 142064 routed)
+strata serve: route tail skip: 52572 missed experts skipped (56851 entries) since the start
+strata serve: prompt 7915 tokens = 0 reused + 7915 read in 11990 ms (660.1 tok/s), 300 generated in 8674 ms (34.6 tok/s), drafts accepted 191 of 267, 1 checkpoints
+strata serve: decode expert cache hit rate: 69.1% (86022 hits / 124490 lookups); 31337 more read by the GPU over PCIe or from another GPU (20.1% of all 155827 routed)
+strata serve: route tail skip: 77277 missed experts skipped (83315 entries) since the start
+strata serve: prompt 8037 tokens = 0 reused + 8037 read in 9452 ms (850.3 tok/s), 8 generated in 274 ms (29.2 tok/s), drafts accepted 6 of 6, 1 checkpoints
+strata serve: decode expert cache hit rate: 33.9% (791 hits / 2334 lookups); 1135 more read by the GPU over PCIe or from another GPU (32.7% of all 3469 routed)
+strata serve: route tail skip: 78401 missed experts skipped (84551 entries) since the start
+strata serve: prompt 32018 tokens = 0 reused + 32018 read in 34266 ms (934.4 tok/s), 7 generated in 251 ms (27.9 tok/s), drafts accepted 6 of 6, 3 checkpoints
+strata serve: decode expert cache hit rate: 37.1% (854 hits / 2300 lookups); 1140 more read by the GPU over PCIe or from another GPU (33.1% of all 3440 routed)
+strata serve: route tail skip: 79568 missed experts skipped (85830 entries) since the start
+===== engine_tail_off_r3.log
+[strata] 2026-10-10 17:01:28 engine started: <repo>/engine/strata --serve --pack <strata-data>/packs/unsloth-ud-q4_k_xl --native <models>/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --expert-profile <repo>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <strata-data>/mtp/rt --max-context 131072 --kv int8 --kv-resident 32768 --resident-budget-gib 71 --prompt-cache-tail
+strata generate: expert cache auto: 9.22 GiB free, 700 MiB reserved (+281 MiB for the draft head) -> 2220 slots
+strata prefill: HIP device 0 gfx1030 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: expert cache 2831 slots, 8.25 GiB of VRAM; policy is
+FileExpertSource: mapped pinned cache complement ready: resident 63.47 GiB, pinned 63.47 GiB in 48 s; page-locked and mapped
+strata serve: prompt 15 tokens = 0 reused + 15 read in 419 ms (35.8 tok/s), 8 generated in 426 ms (18.8 tok/s), drafts accepted 7 of 9, 1 checkpoints
+strata serve: decode expert cache hit rate: 31.3% (1297 hits / 4144 lookups); 2096 more read by the GPU over PCIe or from another GPU (33.6% of all 6240 routed)
+strata serve: prompt 44 tokens = 0 reused + 44 read in 1077 ms (40.9 tok/s), 300 generated in 10599 ms (28.3 tok/s), drafts accepted 154 of 257, 1 checkpoints
+strata serve: decode expert cache hit rate: 73.0% (116582 hits / 159666 lookups); 33774 more read by the GPU over PCIe or from another GPU (17.5% of all 193440 routed)
+strata serve: prompt 57 tokens = 0 reused + 57 read in 1470 ms (38.8 tok/s), 300 generated in 9404 ms (31.9 tok/s), drafts accepted 208 of 250, 1 checkpoints
+strata serve: decode expert cache hit rate: 59.9% (74352 hits / 124097 lookups); 41023 more read by the GPU over PCIe or from another GPU (24.8% of all 165120 routed)
+strata serve: prompt 7913 tokens = 0 reused + 7913 read in 11939 ms (662.8 tok/s), 300 generated in 10630 ms (28.2 tok/s), drafts accepted 193 of 272, 1 checkpoints
+strata serve: decode expert cache hit rate: 62.5% (86473 hits / 138335 lookups); 44545 more read by the GPU over PCIe or from another GPU (24.4% of all 182880 routed)
+strata serve: prompt 8065 tokens = 0 reused + 8065 read in 9248 ms (872.1 tok/s), 8 generated in 311 ms (25.7 tok/s), drafts accepted 6 of 6, 1 checkpoints
+strata serve: decode expert cache hit rate: 28.1% (779 hits / 2777 lookups); 1543 more read by the GPU over PCIe or from another GPU (35.7% of all 4320 routed)
+strata serve: prompt 32015 tokens = 0 reused + 32015 read in 34265 ms (934.3 tok/s), 8 generated in 374 ms (21.4 tok/s), drafts accepted 6 of 6, 3 checkpoints
+strata serve: decode expert cache hit rate: 38.0% (1181 hits / 3108 lookups); 1692 more read by the GPU over PCIe or from another GPU (35.2% of all 4800 routed)
+===== engine_tail_tail7_r3.log
+[strata] 2026-10-10 16:58:42 engine started: <repo>/engine/strata --serve --pack <strata-data>/packs/unsloth-ud-q4_k_xl --native <models>/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --expert-profile <repo>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <strata-data>/mtp/rt --max-context 131072 --kv int8 --kv-resident 32768 --resident-budget-gib 71 --prompt-cache-tail
+strata generate: expert cache auto: 9.22 GiB free, 700 MiB reserved (+281 MiB for the draft head) -> 2220 slots
+strata prefill: HIP device 0 gfx1030 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: expert cache 2831 slots, 8.25 GiB of VRAM; policy is
+FileExpertSource: mapped pinned cache complement ready: resident 63.47 GiB, pinned 63.47 GiB in 47 s; page-locked and mapped
+strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON: a missed expert that every token of a verify window routes at rank 7 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); STRATA_ROUTE_TAIL_SKIP=0 turns it off
+strata serve: prompt 15 tokens = 0 reused + 15 read in 366 ms (40.9 tok/s), 8 generated in 341 ms (23.5 tok/s), drafts accepted 7 of 9, 1 checkpoints
+strata serve: decode expert cache hit rate: 36.8% (1300 hits / 3533 lookups); 1583 more read by the GPU over PCIe or from another GPU (30.9% of all 5116 routed)
+strata serve: route tail skip: 1964 missed experts skipped (2146 entries) since the start
+strata serve: prompt 46 tokens = 0 reused + 46 read in 910 ms (50.6 tok/s), 300 generated in 10141 ms (29.6 tok/s), drafts accepted 139 of 254, 1 checkpoints
+strata serve: decode expert cache hit rate: 79.6% (123566 hits / 155229 lookups); 22711 more read by the GPU over PCIe or from another GPU (12.8% of all 177940 routed)
+strata serve: route tail skip: 25211 missed experts skipped (27122 entries) since the start
+strata serve: prompt 59 tokens = 0 reused + 59 read in 1193 ms (49.4 tok/s), 300 generated in 7531 ms (39.8 tok/s), drafts accepted 203 of 247, 1 checkpoints
+strata serve: decode expert cache hit rate: 67.2% (74881 hits / 111439 lookups); 28534 more read by the GPU over PCIe or from another GPU (20.4% of all 139973 routed)
+strata serve: route tail skip: 52519 missed experts skipped (56813 entries) since the start
+strata serve: prompt 7915 tokens = 0 reused + 7915 read in 11708 ms (676.0 tok/s), 300 generated in 8328 ms (36.0 tok/s), drafts accepted 198 of 261, 1 checkpoints
+strata serve: decode expert cache hit rate: 67.2% (79026 hits / 117621 lookups); 31894 more read by the GPU over PCIe or from another GPU (21.3% of all 149515 routed)
+strata serve: route tail skip: 76679 missed experts skipped (82869 entries) since the start
+strata serve: prompt 8065 tokens = 0 reused + 8065 read in 9257 ms (871.2 tok/s), 8 generated in 270 ms (29.6 tok/s), drafts accepted 6 of 6, 1 checkpoints
+strata serve: decode expert cache hit rate: 36.3% (853 hits / 2352 lookups); 1147 more read by the GPU over PCIe or from another GPU (32.8% of all 3499 routed)
+strata serve: route tail skip: 77796 missed experts skipped (84095 entries) since the start
+strata serve: prompt 32015 tokens = 0 reused + 32015 read in 34156 ms (937.3 tok/s), 8 generated in 321 ms (24.9 tok/s), drafts accepted 6 of 6, 3 checkpoints
+strata serve: decode expert cache hit rate: 45.7% (1185 hits / 2593 lookups); 1198 more read by the GPU over PCIe or from another GPU (31.6% of all 3791 routed)
+strata serve: route tail skip: 79090 missed experts skipped (85487 entries) since the start
+===== engine_tail_off_r4.log
+[strata] 2026-10-10 17:04:10 engine started: <repo>/engine/strata --serve --pack <strata-data>/packs/unsloth-ud-q4_k_xl --native <models>/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --expert-profile <repo>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <strata-data>/mtp/rt --max-context 131072 --kv int8 --kv-resident 32768 --resident-budget-gib 71 --prompt-cache-tail
+strata generate: expert cache auto: 9.22 GiB free, 700 MiB reserved (+281 MiB for the draft head) -> 2220 slots
+strata prefill: HIP device 0 gfx1030 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: expert cache 2831 slots, 8.25 GiB of VRAM; policy is
+FileExpertSource: mapped pinned cache complement ready: resident 63.47 GiB, pinned 63.47 GiB in 46 s; page-locked and mapped
+strata serve: prompt 15 tokens = 0 reused + 15 read in 949 ms (15.8 tok/s), 8 generated in 511 ms (15.6 tok/s), drafts accepted 7 of 9, 1 checkpoints
+strata serve: decode expert cache hit rate: 31.3% (1297 hits / 4144 lookups); 2096 more read by the GPU over PCIe or from another GPU (33.6% of all 6240 routed)
+strata serve: prompt 44 tokens = 0 reused + 44 read in 1113 ms (39.5 tok/s), 300 generated in 10459 ms (28.7 tok/s), drafts accepted 160 of 268, 1 checkpoints
+strata serve: decode expert cache hit rate: 74.0% (120337 hits / 162633 lookups); 33687 more read by the GPU over PCIe or from another GPU (17.2% of all 196320 routed)
+strata serve: prompt 57 tokens = 0 reused + 57 read in 1503 ms (37.9 tok/s), 300 generated in 9376 ms (32.0 tok/s), drafts accepted 207 of 248, 1 checkpoints
+strata serve: decode expert cache hit rate: 59.2% (72723 hits / 122863 lookups); 41297 more read by the GPU over PCIe or from another GPU (25.2% of all 164160 routed)
+strata serve: prompt 7913 tokens = 0 reused + 7913 read in 11818 ms (669.6 tok/s), 300 generated in 10654 ms (28.2 tok/s), drafts accepted 195 of 267, 1 checkpoints
+strata serve: decode expert cache hit rate: 60.0% (80065 hits / 133451 lookups); 45589 more read by the GPU over PCIe or from another GPU (25.5% of all 179040 routed)
+strata serve: prompt 8073 tokens = 0 reused + 8073 read in 9671 ms (834.7 tok/s), 8 generated in 384 ms (20.8 tok/s), drafts accepted 6 of 6, 1 checkpoints
+strata serve: decode expert cache hit rate: 31.0% (839 hits / 2710 lookups); 1610 more read by the GPU over PCIe or from another GPU (37.3% of all 4320 routed)
+strata serve: prompt 31986 tokens = 0 reused + 31986 read in 34387 ms (930.2 tok/s), 8 generated in 284 ms (28.2 tok/s), drafts accepted 6 of 6, 3 checkpoints
+strata serve: decode expert cache hit rate: 41.6% (1215 hits / 2923 lookups); 1397 more read by the GPU over PCIe or from another GPU (32.3% of all 4320 routed)
+===== engine_tail_tail7_r4.log
+[strata] 2026-10-10 17:06:48 engine started: <repo>/engine/strata --serve --pack <strata-data>/packs/unsloth-ud-q4_k_xl --native <models>/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --expert-profile <repo>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <strata-data>/mtp/rt --max-context 131072 --kv int8 --kv-resident 32768 --resident-budget-gib 71 --prompt-cache-tail
+strata generate: expert cache auto: 9.22 GiB free, 700 MiB reserved (+281 MiB for the draft head) -> 2220 slots
+strata prefill: HIP device 0 gfx1030 - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata generate: expert cache 2831 slots, 8.25 GiB of VRAM; policy is
+FileExpertSource: mapped pinned cache complement ready: resident 63.47 GiB, pinned 63.47 GiB in 46 s; page-locked and mapped
+strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON: a missed expert that every token of a verify window routes at rank 7 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); STRATA_ROUTE_TAIL_SKIP=0 turns it off
+strata serve: prompt 15 tokens = 0 reused + 15 read in 402 ms (37.3 tok/s), 8 generated in 355 ms (22.5 tok/s), drafts accepted 7 of 9, 1 checkpoints
+strata serve: decode expert cache hit rate: 36.8% (1300 hits / 3533 lookups); 1583 more read by the GPU over PCIe or from another GPU (30.9% of all 5116 routed)
+strata serve: route tail skip: 1964 missed experts skipped (2146 entries) since the start
+strata serve: prompt 46 tokens = 0 reused + 46 read in 966 ms (47.6 tok/s), 300 generated in 8744 ms (34.3 tok/s), drafts accepted 157 of 247, 1 checkpoints
+strata serve: decode expert cache hit rate: 79.4% (115909 hits / 145892 lookups); 21587 more read by the GPU over PCIe or from another GPU (12.9% of all 167479 routed)
+strata serve: route tail skip: 24158 missed experts skipped (26091 entries) since the start
+strata serve: prompt 59 tokens = 0 reused + 59 read in 1248 ms (47.3 tok/s), 300 generated in 7566 ms (39.6 tok/s), drafts accepted 204 of 241, 1 checkpoints
+strata serve: decode expert cache hit rate: 66.9% (73709 hits / 110244 lookups); 28226 more read by the GPU over PCIe or from another GPU (20.4% of all 138470 routed)
+strata serve: route tail skip: 51051 missed experts skipped (55351 entries) since the start
+strata serve: prompt 7915 tokens = 0 reused + 7915 read in 12410 ms (637.8 tok/s), 300 generated in 8526 ms (35.2 tok/s), drafts accepted 188 of 254, 1 checkpoints
+strata serve: decode expert cache hit rate: 69.2% (82834 hits / 119787 lookups); 30382 more read by the GPU over PCIe or from another GPU (20.2% of all 150169 routed)
+strata serve: route tail skip: 75261 missed experts skipped (81225 entries) since the start
+strata serve: prompt 8073 tokens = 0 reused + 8073 read in 9546 ms (845.7 tok/s), 8 generated in 244 ms (32.8 tok/s), drafts accepted 6 of 6, 1 checkpoints
+strata serve: decode expert cache hit rate: 35.9% (815 hits / 2268 lookups); 1191 more read by the GPU over PCIe or from another GPU (34.4% of all 3459 routed)
+strata serve: route tail skip: 76421 missed experts skipped (82471 entries) since the start
+strata serve: prompt 31986 tokens = 0 reused + 31986 read in 34375 ms (930.5 tok/s), 8 generated in 268 ms (29.9 tok/s), drafts accepted 6 of 6, 3 checkpoints
+strata serve: decode expert cache hit rate: 41.5% (1022 hits / 2465 lookups); 1053 more read by the GPU over PCIe or from another GPU (29.9% of all 3518 routed)
+strata serve: route tail skip: 77508 missed experts skipped (83655 entries) since the start

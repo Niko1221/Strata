@@ -1,0 +1,49 @@
+{
+ "exe": "<repo>/engine/strata",
+ "args": [
+  "--pack",
+  "<strata-data>/packs/unsloth-ud-q4_k_xl",
+  "--native",
+  "<models>/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+  "--expert-profile",
+  "<repo>/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "<strata-data>/mtp/rt",
+  "--max-context",
+  "131072",
+  "--kv",
+  "int8",
+  "--kv-resident",
+  "32768",
+  "--resident-budget-gib",
+  "71",
+  "--prompt-cache-tail"
+ ],
+ "cwd": "<repo>",
+ "tokenizer": "<strata-data>/packs/unsloth-ud-q4_k_xl/tokenizer",
+ "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
+ "log": "<out>/engine_tail_<arm>_r<round>.log",
+ "lib_dirs": [
+  "/opt/rocm/lib"
+ ],
+ "port": 8091,
+ "backend": "hip",
+ "host": "127.0.0.1",
+ "idle_unload_s": 120,
+ "open_browser": false,
+ "reasoning_budget_tokens": 8192,
+ "sampling": {
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0
+ }
+}
