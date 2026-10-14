@@ -632,9 +632,11 @@ struct Options {
     ///   不限速时一天能写 100-220 GiB。超出预算后当天的条目直接丢弃
     ///   （与没有这一层时的行为一致）。
     int64_t disk_park_daily_gib = 0;
+    // ★★ 2026-10-13：盘上总占用上限（GiB，0 = 不限）。超过就按 LRU 删最久未用的会话目录（连文件）。
     /// ★ P9 流式停放层：把「每个请求结束后的本轮增量」追加进【每会话一个】的日志，
     ///   而不是每次淘汰整份快照重写。空 = 关闭（行为与没有它逐字节一致）。
     std::string disk_park_stream_dir;
+    int64_t disk_park_max_gib = 0;     // ★ P25：盘上总占用上限（GiB，0 = 不限）
     /// ★ 退出时把常驻（Host）层保存到这个清单文件；空 = 关闭。
     ///   对应 ninfer 的 --prefix-cache-file：本实现把常驻会话写进磁盘停放层
     ///   （复用现有的打包/恢复路径），PATH 里记下身份清单，
@@ -802,6 +804,7 @@ void usage() {
                  "                       missing page reads as a miss and the engine recomputes.\n"
                  "  --disk-park-gib N     --serve: total disk budget for that tier (default 64)\n"
                  "  --disk-park-stream-dir DIR  --serve: per-conversation APPEND log (streaming tier).\n"
+                 "  --disk-park-max-gib N       --serve: cap the streamed tier's allocated bytes (0 = no cap).\n"
                  "                        Empty = off.  Appends only this request's K/V delta instead of\n"
                  "                        rewriting the whole snapshot on every eviction.\n"
                  "  --no-disk-park-restore  --serve: write the tier only, never read it back\n"
@@ -2447,6 +2450,9 @@ int main(int argc, char** argv) {
         else if (a == "--no-disk-park-restore") o.disk_park_restore = false;
         else if (a == "--disk-park-daily-gib") o.disk_park_daily_gib = std::max<int64_t>(0, std::atoll(next("--disk-park-daily-gib")));
         else if (a == "--disk-park-stream-dir") o.disk_park_stream_dir = next("--disk-park-stream-dir");
+        // ★★ P25（2026-10-13）：盘上【总占用】上限（0/不给 = 不限）。与"每天写多少"无关，
+        //   限的是"盘上留多少"——限容量才是对的刹车。超了 trim() 按 LRU 删整个会话目录。
+        else if (a == "--disk-park-max-gib") o.disk_park_max_gib = std::max<int64_t>(0, std::atoll(next("--disk-park-max-gib")));
         else if (a == "--prefix-cache-file") o.prefix_cache_file = next("--prefix-cache-file");
         else if (a == "--value-aware-demote") {
             o.value_aware_demote = true;
@@ -8226,6 +8232,9 @@ int main(int argc, char** argv) {
                 } else {
                     strata::core::DiskParkLogs::Config c;
                     c.root           = o.disk_park_stream_dir;
+                    c.max_bytes      = o.disk_park_max_gib > 0     // ★ P25
+                                       ? (std::uint64_t) o.disk_park_max_gib * 1024ull * 1024ull * 1024ull
+                                       : 0;
                     c.tag            = disk_park.profile().tag();
                     c.kv_format      = strata::core::qsa_kv_format(st0);
                     c.heads          = g.n_head_kv;
@@ -11425,6 +11434,18 @@ int main(int argc, char** argv) {
                 std::vector<std::int32_t> c_ids, w_ids;
                 c_ids.reserve(ids.size()); w_ids.reserve(ids.size());
                 for (const auto& t : ids) c_ids.push_back((std::int32_t) t);
+                // ★★★ 2026-10-13：请求侧前缀指纹表（前 kDirHeadTokens 个 token）。
+                //   取回路径用它做【零文件 I/O 预筛】：某个会话目录的 head_n 前缀指纹
+                //   与之不符，就完全不必打开那个目录的任何文件。
+                //   为什么以 1024 为准：LCP 的地板就是 1024（cover/lcp < 1024 一律跳过），
+                //   所以前 1024 个 token 是"是不是同一段对话"最廉价且充分的证据。
+                //   ★ 只是预筛：通过的仍走下面的完整校验，索引过期也不会装错 K/V。
+                std::vector<std::uint64_t> req_fp;
+                {
+                    const std::size_t hn = std::min<std::size_t>(
+                        c_ids.size(), strata::core::kDirHeadTokens);
+                    if (hn > 0) req_fp = strata::core::disk_park_head_prefixes(c_ids.data(), hn);
+                }
                 std::vector<std::uint64_t> c_h; std::vector<std::int64_t> c_s;
                 c_h.reserve(req_imgs.size()); c_s.reserve(req_imgs.size());
                 for (const auto& im : req_imgs) { c_s.push_back(im.start); c_h.push_back(im.hash); }
@@ -11462,6 +11483,16 @@ int main(int argc, char** argv) {
                     std::int64_t mount_cand = -1;      // 本目录能提供的挂载点（检查点长度）
                     for (const auto& e : fs::directory_iterator(tagdir, ec)) {
                         if (!e.is_directory()) continue;
+                        // ★★★ 2026-10-13 零文件 I/O 预筛。
+                        {
+                            const auto& hidx = disk_park_stream->dir_heads();
+                            const auto hit = hidx.find(e.path().filename().string());
+                            if (hit != hidx.end() && hit->second.head_n > 0 && !req_fp.empty()) {
+                                const std::size_t hn = (std::size_t) hit->second.head_n;
+                                if (hn > req_fp.size()) continue;
+                                if (req_fp[hn - 1] != hit->second.fp_head) continue;
+                            }
+                        }
                         strata::core::DiskParkSession pr;
                         std::vector<std::byte> pl;
                         std::uint64_t cells = 0, kva = 0;
@@ -11621,7 +11652,17 @@ int main(int argc, char** argv) {
                     }
                 }
                 // 再退回：扫 tag 目录下所有会话（按摘要）
-                {
+                // ★★★ 2026-10-13 修（性能）：这一段原来【无条件】跑 —— 而它比主路径贵得多：
+                //   对每个会话目录 open + 读 state.bin，再对一个 601 长度的窗口逐个算
+                //   prefix_digest（每次都要哈希最长整个 prompt）。实测 1,508 个会话时
+                //   最坏 1,508 × 601 ≈ 90 万次摘要计算，而主路径的 [身份] 选中往往早就成功了。
+                //   隔离实测（同一台机、同尺寸、全冷读）：
+                //     停靠层关闭              冷读 85.1K = 34.6 / 34.9 / 35.0 s
+                //     停靠层开着，目录空       冷读 85.1K = 34.6 / 35.5 / 36.2 s
+                //     停靠层开着，1,508 会话   冷读 85.1K = 49.3 / 49.6 / 50.2 / 50.8 / 51.1 s
+                //   语义上它只是 dir_hint 的【后备】（见 p13_restore_from_log 的 try_dirs：
+                //   hint 优先、cands 其次），所以主路径找到时它没有任何作用。
+                if (restore_dir_hint.empty()) {
                     namespace fs = std::filesystem;
                     const std::string tagdir = disk_park_stream->dir_for("");
                     std::error_code ec;
@@ -11634,6 +11675,17 @@ int main(int argc, char** argv) {
                     for (const auto& e : fs::directory_iterator(tagdir, ec)) {
                         if (!e.is_directory()) continue;
                         const std::string nm = e.path().filename().string();
+                        // ★★★ 2026-10-13 同一道零文件 I/O 预筛（这一段最贵：每个目录
+                        //   还要对 601 个长度窗口逐个算 prefix_digest）。
+                        {
+                            const auto& hidx = disk_park_stream->dir_heads();
+                            const auto hit = hidx.find(nm);
+                            if (hit != hidx.end() && hit->second.head_n > 0 && !req_fp.empty()) {
+                                const std::size_t hn = (std::size_t) hit->second.head_n;
+                                if (hn > req_fp.size()) continue;
+                                if (req_fp[hn - 1] != hit->second.fp_head) continue;
+                            }
+                        }
                         // 读该会话的 state.bin 拿 cells
                         strata::core::DiskParkSession pr;
                         std::vector<std::byte> pl;
@@ -11754,6 +11806,19 @@ int main(int argc, char** argv) {
                             *disk_park_blob, disk_park_stream->dir_for(restore_used_dir), ck_ids,
                             (std::size_t) std::max<int64_t>(o.prompt_cache, 1), checks,
                             restore_mount);
+                        // ★★★ P24（2026-10-13）：blob 里的检查点只存【状态】，没有图片前缀
+                        //   （p13_restore_checkpoints 从不填 c.imgs），而下面按
+                        //   !starts_with(c.ids, c.imgs) 淘汰检查点时会拿【本请求的】图片前缀
+                        //   去校验它：这段历史里只要有一张图（imgs_below(req_imgs, L) != {}），
+                        //   刚取回的挂载点就被当成"不在本请求路径上"删掉 ⇒ checks=0
+                        //   ⇒ checkpoint restore failed: found=0 resume=… ⇒ 从 0 全量冷读（~50 s）。
+                        //   实测：带图会话 529d7eb6（3,250 个 image-pad token）连失 21 次，
+                        //   8227b696（780 个）再失一次；同一晚纯文本 4072733400 复用正常。
+                        //   ids[0,cut) 的摘要已与本请求核对过（prefix_digest 命中才取到），
+                        //   所以图片前缀就是 imgs_below(req_imgs, cut) —— 与 checkpoint_at()
+                        //   建检查点时填的是同一个表达式。
+                        for (auto& c : checks)
+                            c.imgs = imgs_below(req_imgs, (int64_t) c.ids.size());
                         std::string ck_len;
                         for (const auto& c : checks) {
                             ck_len += " ";
@@ -12055,6 +12120,11 @@ int main(int argc, char** argv) {
                              conversations.size(), conversations.bytes());
             }
             if (want_cvec != cvec_cached) {
+                if (!from_live && resume > 0 && !checks.empty())
+                    std::fprintf(stderr, "strata serve: 控制向量切换 (%d → %d) 丢掉 %zu 份检查点"
+                                         "（含挂载点 %lld）⇒ 这次只能从 0 读\n",
+                                 (int) cvec_cached, (int) want_cvec,
+                                 checks.size(), (long long) resume);
                 live_ok = false;
                 checks.clear();
                 cvec_cached = want_cvec;
@@ -12062,6 +12132,18 @@ int main(int argc, char** argv) {
             if (strata::kernels::cvec().loaded()) strata::kernels::cvec_set_enabled(want_cvec);
             // this request rewrites every cell from `resume` on, so a checkpoint past it (or not on this prompt's
             // path) no longer has its cells; the ones kept are prefixes of both the old tokens and the new
+            if (!from_live && resume > 0) {   // ★ P24 诊断：挂载点被淘汰时说清是谁淘汰的
+                std::size_t drop_len = 0, drop_img = 0;
+                for (const ConvCheckpoint& c : checks) {
+                    if ((int64_t) c.ids.size() > resume) ++drop_len;
+                    else if (!starts_with(c.ids, c.imgs)) ++drop_img;
+                }
+                if (drop_img > 0)
+                    std::fprintf(stderr, "strata serve: 检查点链按【图片前缀】淘汰 %zu 份"
+                                         "（按长度淘汰 %zu 份），挂载点 %lld，剩下 %zu 份\n",
+                                 drop_img, drop_len, (long long) resume,
+                                 checks.size() - drop_len - drop_img);
+            }
             checks.erase(std::remove_if(checks.begin(), checks.end(), [&](const ConvCheckpoint& c) {
                              return (int64_t) c.ids.size() > resume || !starts_with(c.ids, c.imgs);
                          }), checks.end());
@@ -13808,6 +13890,17 @@ int main(int argc, char** argv) {
                 //   不是本轮摘要的 hex（拿错就会写进另一个目录/空目录）。
                 std::string sdir_name;
                 req.out_dir = &sdir_name;
+                // ★★★ 2026-10-13：算本轮头部指纹，随 append 写进 dir_heads 索引。
+                {
+                    const std::size_t hn = std::min<std::size_t>(
+                        live.size(), strata::core::kDirHeadTokens);
+                    if (hn > 0) {
+                        std::vector<std::int32_t> h32(hn);
+                        for (std::size_t i = 0; i < hn; ++i) h32[i] = (std::int32_t) live[i];
+                        req.fp_head = strata::core::disk_park_head_fingerprint(h32.data(), hn);
+                        req.head_n  = hn;
+                    }
+                }
                 const std::uint64_t wrote = disk_park_stream->append_layers(req, n_layers, lfill);
                 disk_park_session_name = sdir_name;
 

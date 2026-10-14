@@ -187,14 +187,44 @@ bool conversation_kv_validate(const ConversationKv& image, const QsaState& st, c
     if (!valid(st, l, upto, error)) return false;
     const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
     const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
-    if (image.format != l.format || image.cells != l.cells || image.heads != g.n_head_kv ||
+    // ★★★ 2026-10-13 修（磁盘停靠的草稿 K/V 332/332 全失败）：cells 原来是【必须相等】，
+    //   但存侧 upto 是"停靠时的水位"、取侧 upto 是"日志挂载点"，两者通常差几个 token
+    //   ⇒ round_up(upto, page_size=4) 必然不等。诊断实测（七项里只有它差）：
+    //     format 1/1  cells 85132/85120  heads 2/2  head_dim 256/256
+    //     page_size 4/4  pooled_rows 0/0  idx_dim 128/128   (upto=85118)
+    //   语义上我们要的只有 [0, upto)，而镜像覆盖 [0, image.cells) ⊇ [0, upto) 时取前缀
+    //   是【完全正确】的 ⇒ 判据从 "!=" 放宽为 "<"（镜像不得比需要的小）。
+    //   ★ format 仍然【必须严格相等】—— 格式不符意味着那些字节的含义不同，绝不能放宽。
+    if (image.format != l.format || image.cells < l.cells || image.heads != g.n_head_kv ||
         image.head_dim != g.head_dim || image.page_size != l.page_size || image.pooled_rows != l.pooled_rows ||
         image.idx_dim != g.idx_key_dim) {
+        // ★★★ 2026-10-13 诊断（临时）：把 7 个字段的实际值打出来，定位到底哪一项不符。
+        //   背景：磁盘停靠的日志恢复路径只恢复主 K/V，草稿(MTP)的 K/V 要单独装
+        //   （generate.cpp:11999），而那一步 332/332 全失败在 "incompatible K/V geometry"。
+        //   算术上怀疑是 cells：layout() 把 upto 向上取整到 page_size(4)，
+        //   而存侧 upto 是"停靠时的水位"、取侧 upto 是"日志挂载点"，两者通常差几个 token。
+        std::fprintf(stderr,
+                     "strata snapshot: K/V geometry MISMATCH"
+                     "  format %lld/%lld  cells %lld/%lld  heads %lld/%lld  head_dim %lld/%lld"
+                     "  page_size %lld/%lld  pooled_rows %lld/%lld  idx_dim %lld/%lld"
+                     "   (upto=%lld index=%d)\n",
+                     (long long) image.format,   (long long) l.format,
+                     (long long) image.cells,    (long long) l.cells,
+                     (long long) image.heads,    (long long) g.n_head_kv,
+                     (long long) image.head_dim, (long long) g.head_dim,
+                     (long long) image.page_size,(long long) l.page_size,
+                     (long long) image.pooled_rows,(long long) l.pooled_rows,
+                     (long long) image.idx_dim,  (long long) g.idx_key_dim,
+                     (long long) upto, (int) index);
         error = "conversation snapshot: incompatible K/V geometry";
         return false;
     }
+    // ★★★ 2026-10-13（配套 cells 的放宽）：缓冲区大小同样从【必须相等】放宽为
+    //   【镜像不得更小】。理由与 cells 完全一致：mirror 是按存侧水位分配的
+    //   (image.cells)，而 sizes[] 现在按取侧 upto 算 —— 镜像更大时取前缀即可，
+    //   恢复侧也已相应地只拷 min(sizes[i], 镜像大小)。镜像【更小】仍然判死。
     for (size_t i = 0; i < src.size(); ++i)
-        if (src[i]->size() != sizes[i]) { error = "conversation snapshot: invalid K/V payload size"; return false; }
+        if (src[i]->size() < sizes[i]) { error = "conversation snapshot: invalid K/V payload size"; return false; }
     const auto dst = pools(st);
     for (size_t i = 0; i < src.size(); ++i)
         if (sizes[i] && !dst[i]) { error = "conversation snapshot: missing target state buffer"; return false; }
@@ -206,10 +236,23 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
     if (!conversation_kv_validate(image, st, g, upto, index, error)) return false;
     const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     const auto dst = pools(st);
-    for (size_t i = 0; i < src.size(); ++i)
-        if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
+    // ★★★ 2026-10-13（配套上面的放宽）：镜像可能覆盖得比 upto 更远，只装【需要的那些字节】。
+    //   多出来的部分不装 —— 挂载点之后的 K/V 本来就会被随后的 prompt 读覆盖，
+    //   装它只是白费 PCIe 带宽。上限由 layout() 给出（与校验用的是同一套几何）。
+    std::array<std::uint64_t,5> lim{};
+    {
+        Layout l{};
+        std::string lerr;
+        if (!layout(st, g, upto, index, l, lerr)) { error = lerr; return false; }
+        lim = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
+    }
+    for (size_t i = 0; i < src.size(); ++i) {
+        const std::size_t n_copy =
+            static_cast<std::size_t>(std::min<std::uint64_t>(lim[i], src[i]->size()));
+        if (!src[i]->visit(0, n_copy, [&](const uint8_t* p, size_t n, size_t at) {
                 return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
             })) return false;
+    }
     // VRAM slots still contain the outgoing conversation. Resolve must refill
     // them from the restored authoritative pools before any attention reads.
     if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, nullptr);

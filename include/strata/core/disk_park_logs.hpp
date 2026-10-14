@@ -39,6 +39,55 @@ struct DiskParkLogDigest {
     }
 };
 
+// ★★★ 2026-10-13（取回侧性能修复）：会话目录 → 头部指纹索引。
+//   为什么需要：取回路径的主路径要为【每个】会话目录读 tokens.bin 算 LCP、读 12 个
+//   pooled.bin、读 ckpt_lengths.bin（约 15 次文件操作 × 目录数）。隔离实测：
+//     停靠层关闭              冷读 85.1K = 34.6 / 34.9 / 35.0 s
+//     停靠层开着，目录空       冷读 85.1K = 34.6 / 35.5 / 36.2 s
+//     停靠层开着，1,508 会话   冷读 85.1K = 49.3 / 49.6 / 50.2 / 50.8 / 51.1 s
+//   有了这个索引：前 1024 个 token 的指纹不一致就直接跳过 —— 【零文件 I/O】。
+//   ★ 指纹只是【预筛】：通过之后仍然走原来的完整校验（LCP / pooled / ckpt_lengths），
+//     所以索引再旧、再缺项，也绝不会让错误的 K/V 被装进请求（fail-closed 不变）。
+struct DirHead {
+    std::uint64_t cells   = 0;   // 该会话写到多少 token（state.bin 里的 log_cells）
+    std::uint64_t head_n  = 0;   // 指纹覆盖多少个 token（= min(1024, cells)）
+    std::uint64_t fp_head = 0;   // FNV-1a over the first head_n token ids
+};
+
+// 前 head_n 个 token id 的指纹（写侧存、读侧比，必须是同一个函数）。
+[[nodiscard]] inline std::uint64_t disk_park_head_fingerprint(const std::int32_t* ids,
+                                                              std::size_t n) noexcept {
+    std::uint64_t h = 1469598103934665603ull;              // FNV-1a 64 offset basis
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::uint32_t v = (std::uint32_t) ids[i];
+        h ^= (std::uint64_t) (v & 0xFFu);        h *= 1099511628211ull;
+        h ^= (std::uint64_t) ((v >> 8) & 0xFFu); h *= 1099511628211ull;
+        h ^= (std::uint64_t) ((v >> 16) & 0xFFu);h *= 1099511628211ull;
+        h ^= (std::uint64_t) ((v >> 24) & 0xFFu);h *= 1099511628211ull;
+    }
+    return h;
+}
+
+// 指纹覆盖的长度上限（也是请求侧要预计算的长度）。
+static constexpr std::size_t kDirHeadTokens = 1024;
+
+// 前缀指纹表：out[k] = 前 (k+1) 个 token 的指纹。请求侧算一次，之后每个目录
+// 只做一次比较（O(1)），不必为每个目录各自重算一遍前缀。
+[[nodiscard]] inline std::vector<std::uint64_t>
+disk_park_head_prefixes(const std::int32_t* ids, std::size_t n) {
+    std::vector<std::uint64_t> out(n);
+    std::uint64_t h = 1469598103934665603ull;
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::uint32_t v = (std::uint32_t) ids[i];
+        h ^= (std::uint64_t) (v & 0xFFu);         h *= 1099511628211ull;
+        h ^= (std::uint64_t) ((v >> 8) & 0xFFu);  h *= 1099511628211ull;
+        h ^= (std::uint64_t) ((v >> 16) & 0xFFu); h *= 1099511628211ull;
+        h ^= (std::uint64_t) ((v >> 24) & 0xFFu); h *= 1099511628211ull;
+        out[i] = h;
+    }
+    return out;
+}
+
 class DiskParkLogs {
 public:
     struct Config {
@@ -53,6 +102,11 @@ public:
         // pooled 的 row_bytes 由 row_cells = idx_block 与它在这里的字节数反推。
         std::uint64_t part_bytes_at_cap[5] = {0, 0, 0, 0, 0};
         std::size_t max_open = 16;         // 同时打开几个会话文件
+        // ★★ P25（2026-10-13）：盘上【总占用】上限（字节，0 = 不限）。超了按 LRU 把最久未用的
+        //   会话目录【连文件一起删】。这是 08a62f46 删掉的那段，现在按方案 C 恢复：
+        //   引擎知道哪个会话正在用，按整会话淘汰比 park-gc 按时间删更准；park-gc 退成
+        //   老目录清扫 + 高位兜底。口径必须是 st_blocks×512（见 .cpp 启动扫描处的注释）。
+        std::uint64_t max_bytes = 0;
         std::size_t max_tracked = 4096;    // 跟踪多少个「摘要 → 会话」
     };
 
@@ -63,6 +117,9 @@ public:
         std::uint64_t fresh = 0;           // 开了新会话的次数
         std::uint64_t opens = 0, closes = 0;
         std::uint64_t failures = 0;
+        std::uint64_t evicted_dirs = 0;    // ★ P25：按容量淘汰掉的会话目录数
+        std::uint64_t evicted_bytes = 0;
+        std::uint64_t reaped_dirs = 0;     // ★ P26：本次运行建出来、没写过数据的空壳目录
     };
 
     // 一次追加的输入
@@ -93,6 +150,10 @@ public:
         // ★ 出参：这次写进了哪个会话目录。调用方拿它去 commit 镜像元数据
         //   （水位与 sidecar 必须是同一个文件，不能各算各的）。
         std::string* out_dir = nullptr;
+        // ★★★ 2026-10-13：本轮的头部指纹（调用方算一次）—— 写进 dir_head_ 索引，
+        //   供取回路径零 I/O 预筛。head_n = min(kDirHeadTokens, ids.size())。
+        std::uint64_t fp_head = 0;
+        std::uint64_t head_n  = 0;
     };
 
     explicit DiskParkLogs(Config cfg);
@@ -101,6 +162,11 @@ public:
     DiskParkLogs& operator=(const DiskParkLogs&) = delete;
 
     [[nodiscard]] bool enabled() const noexcept { return enabled_; }
+
+    // ★★★ 2026-10-13：会话目录 → 头部指纹。懒加载（从 sidecar 读；与盘上目录列表
+    //   对账，缺的补、多的丢），之后常驻内存。取回路径用它做零 I/O 预筛。
+    //   ★ 返回的是【目录名 → DirHead】；目录名就是 digest_hex。
+    [[nodiscard]] const std::map<std::string, DirHead>& dir_heads();
     [[nodiscard]] const DiskParkSessionPlan& plan() const noexcept { return plan_; }
     [[nodiscard]] Stats stats() const { return stats_; }
     [[nodiscard]] std::string dir_for(const std::string& dir_name) const;
@@ -206,7 +272,12 @@ private:
                                        std::uint64_t resume, bool* opened_now, bool layered);
     void remember(const DiskParkLogDigest& d, const std::string& dir_name, std::uint64_t watermark);
     void touch(const DiskParkLogDigest& d);
-    void trim();
+    void trim(const std::string& active = std::string());   // ★ P25：active = 正在追加的那份，绝不删
+    // ★★ 2026-10-13：头部指纹索引的加载/落盘/对账（见 dir_heads 的说明）。
+    void load_dir_heads();
+    void save_dir_heads() const;
+    void note_dir_head(const std::string& dir_name, std::uint64_t cells,
+                       std::uint64_t head_n, std::uint64_t fp_head);
     // ★★ P18：逐层路径下 open_ 的键是 "目录#层号"，一个会话目录占 12 条（12+ 个 fd），
     //   而 max_open 的淘汰循环只写在单层的 append() 里 ⇒ 逐层路径无上限增长。
     //   这里按【目录】为单位淘汰：把最久没用过的那个目录的 12 层一起关掉。
@@ -222,6 +293,17 @@ private:
     std::map<std::string, std::uint64_t> open_dir_stamp_;   // P18：目录 → 最近使用序号
     std::uint64_t open_stamp_ = 0;                          // P18：序号发生器
     mutable Stats stats_{};
+    // ★★ 2026-10-13：会话目录 → 已写字节；以及所有目录之和。
+    //   只用于启动时那行诊断（[启动] 盘上已有 N 个会话目录，共 X GiB）。
+    //   ★ 引擎【不做】容量上限：流式层的字节预算归 tools/park-gc（--max-gib），
+    //   那里能同时看见会话目录和 checkpoints.bin，并用 st_blocks 而不是表观大小记账。
+    //   按【目录】而不是按【摘要】记账：一个目录会被多个摘要（别名 frontier）指向。
+    std::map<std::string, std::uint64_t> dir_bytes_;
+    std::uint64_t total_bytes_ = 0;
+    // ★★ 2026-10-13：头部指纹索引（见 dir_heads）。loaded 之前为空。
+    std::map<std::string, DirHead> dir_heads_;
+    bool dir_heads_loaded_ = false;
+    bool dir_heads_dirty_  = false;
 };
 
 } // namespace strata::core

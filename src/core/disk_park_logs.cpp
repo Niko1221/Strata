@@ -1,10 +1,16 @@
 #include "strata/core/disk_park_logs.hpp"
+#include "strata/core/p13_session_id.hpp"   // kTokensMagic（读 tokens.bin 头部）
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <set>
+#include <vector>
 #include <system_error>
+#include <sys/stat.h>
 #include <thread>
 
 namespace strata::core {
@@ -17,6 +23,23 @@ std::string digest_hex(const DiskParkLogDigest& d) {
     std::snprintf(buf, sizeof buf, "%016llx%016llx",
                   (unsigned long long) d.lo, (unsigned long long) d.hi);
     return buf;
+}
+
+// ★★ 2026-10-13：digest_hex 的逆。会话目录名就是摘要的 hex，所以启动时能从盘上
+//   把摘要表重建出来（原来 tracked_ 不落盘，重启后 lookup()/watermark() 全 miss）。
+bool digest_unhex(const std::string& s, DiskParkLogDigest& out) {
+    if (s.size() != 32) return false;
+    auto hexv = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    std::uint64_t lo = 0, hi = 0;
+    for (int i = 0; i < 16; ++i) { const int v = hexv(s[(std::size_t) i]);      if (v < 0) return false; lo = (lo << 4) | (std::uint64_t) v; }
+    for (int i = 0; i < 16; ++i) { const int v = hexv(s[(std::size_t) (16 + i)]); if (v < 0) return false; hi = (hi << 4) | (std::uint64_t) v; }
+    out.lo = lo; out.hi = hi;
+    return true;
 }
 
 } // namespace
@@ -98,9 +121,72 @@ DiskParkLogs::DiskParkLogs(Config cfg) : cfg_(std::move(cfg)) {
         return;
     }
     enabled_ = true;
+    // ★★★ 2026-10-13：启动时把盘上已有的会话目录重建进 tracked_/lru_/dir_bytes_。
+    //   tracked_ 不落盘 ⇒ 重启后 lookup() 全 miss ⇒ 同一对话被当新会话重写一份。
+    //   目录名就是摘要的 hex，能反解，所以可以重建。
+    {
+        char tagbuf[16];
+        std::snprintf(tagbuf, sizeof tagbuf, "%08X", cfg_.tag);
+        const std::string tdir = cfg_.root + "/tag-" + tagbuf;
+        std::error_code ec;
+        std::size_t n_dirs = 0;
+        // ★★★ P25：先收集，最后【按 mtime 升序】插进 LRU（原因见下面那段注释）
+        struct ScanEnt { std::int64_t mt; DiskParkLogDigest d; std::string dn; std::uint64_t bytes; };
+        std::vector<ScanEnt> scanned;
+        for (std::filesystem::directory_iterator it(tdir, ec), end;
+             !ec && it != end; it.increment(ec)) {
+            std::error_code ec2;
+            if (!it->is_directory(ec2)) continue;
+            DiskParkLogDigest d{};
+            const std::string dn = it->path().filename().string();
+            if (!digest_unhex(dn, d)) continue;
+            std::uint64_t bytes = 0;
+            std::error_code ec3;
+            for (std::filesystem::recursive_directory_iterator f(it->path(), ec3), fend;
+                 !ec3 && f != fend; f.increment(ec3)) {
+                std::error_code ec4;
+                // ★★★ 2026-10-13 关键修正：必须用【实际分配】而不是表观大小。
+                //   逐层的 kv.bin 是按满容量预分配（ftruncate）、只写一部分的【稀疏文件】：
+                //   实测表观合计 2,368 GiB，而 du 只有 87 GB —— 表观【高估 27 倍】。
+                //   用表观大小会让第一次 trim() 以为远超上限，几乎删光所有会话目录。
+                if (f->is_regular_file(ec4)) {
+                    struct ::stat stt;
+                    if (::stat(f->path().c_str(), &stt) == 0)
+                        bytes += (std::uint64_t) stt.st_blocks * 512ull;
+                }
+            }
+            struct ::stat dstt;
+            const std::int64_t mt = (::stat(it->path().c_str(), &dstt) == 0)
+                                    ? (std::int64_t) dstt.st_mtime : 0;
+            scanned.push_back(ScanEnt{mt, d, dn, bytes});
+            ++n_dirs;
+        }
+        // ★★★ P25（2026-10-13）：按 mtime【升序】重建 LRU —— 最老的先插 ⇒ 落在队尾 ⇒ 先被淘汰。
+        //   原来直接按 directory_iterator 的顺序 push_front，LRU 顺序等于随机；配上容量上限后，
+        //   重启后的第一刀（盘上 78.9 GiB vs 上限 60 GiB ⇒ 要删 ~19 GiB）会随机砍掉活跃会话。
+        std::sort(scanned.begin(), scanned.end(),
+                  [](const ScanEnt& a, const ScanEnt& b) { return a.mt < b.mt; });
+        for (const ScanEnt& e : scanned) {
+            Track t;
+            t.dir_name  = e.dn;
+            t.watermark = 0;             // 真实水位在 state.bin 里，append 时会读
+            lru_.push_front(e.d);
+            t.lru = lru_.begin();
+            tracked_.emplace(e.d, std::move(t));
+            dir_bytes_[e.dn] = e.bytes;
+            total_bytes_ += e.bytes;
+        }
+        if (n_dirs > 0)
+            std::fprintf(stderr, "strata serve: disk park stream: [启动] 盘上已有 %zu 个会话目录，"
+                                 "共 %.2f GiB\n",
+                         n_dirs, (double) total_bytes_ / 1073741824.0);
+    }
 }
 
-DiskParkLogs::~DiskParkLogs() = default;
+DiskParkLogs::~DiskParkLogs() {
+    // ★★★ 2026-10-13：退出时把头部指纹索引落盘（运行中新增的目录）
+    if (dir_heads_dirty_) { try { save_dir_heads(); } catch (...) {} }
+}
 
 std::string DiskParkLogs::name_for(const DiskParkLogDigest& d) {
     return digest_hex(d);      // append 开新会话用的就是它
@@ -275,8 +361,159 @@ std::uint64_t DiskParkLogs::append_layers(const Request& req, std::size_t layers
     touch(req.next);
     ++stats_.writes;
     stats_.write_bytes += written;
+    // ★★ 2026-10-13：把本轮写入记到这个【目录】上（只供启动诊断那行用）
+    if (written > 0) { dir_bytes_[dir_name] += written; total_bytes_ += written; }
+    // ★★★ 2026-10-13：把本轮的头部指纹记进索引（供取回路径零 I/O 预筛）
+    if (req.head_n > 0 && req.fp_head != 0)
+        note_dir_head(dir_name, req.to_tokens, req.head_n, req.fp_head);
+    trim(dir_name);          // ★ P25：容量淘汰 + max_tracked LRU；绝不删正在写的这一份
     evict_open_dirs();       // ★ P18：逐层路径也要有界（单层那条老循环保持不变）
     return written;
+}
+
+
+// ---------------------------------------------------------------------------
+// ★★★ 2026-10-13（取回侧性能修复）：头部指纹索引
+//   取回路径原来对【每个】会话目录都要 open + 读 state.bin + 读 tokens.bin 算 LCP
+//   + 读 12 个 pooled.bin + 读 ckpt_lengths.bin。隔离实测（1,508 个会话）：
+//     停靠层关闭 34.6-35.0 s / 目录空 34.6-36.2 s / 有 1,508 会话 49.3-51.1 s
+//   有了本索引，前 1024 个 token 的指纹不一致就能【零文件 I/O】跳过该目录。
+//   ★ 只是预筛：通过的仍走原来的完整校验 ⇒ 索引再旧也不会装错 K/V（fail-closed）。
+// ---------------------------------------------------------------------------
+
+namespace {
+inline constexpr char kDirHeadMagic[9] = "SKDH0001";
+constexpr std::size_t kDirHeadRec = 32 + 8 + 8 + 8;      // 目录名(32 hex) + cells + head_n + fp
+
+// 读 tokens.bin 的头部令牌（最多 want 个）。返回实际读到的个数，失败返回 0。
+std::size_t read_tokens_head(const std::string& path, std::int32_t* out, std::size_t want) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (f == nullptr) return 0;
+    std::uint8_t h[16];
+    std::uint64_t cnt = 0;
+    bool ok = std::fread(h, 1, sizeof h, f) == sizeof h &&
+              std::memcmp(h, strata::core::p13_session_detail::kTokensMagic, 8) == 0;
+    if (ok) { std::memcpy(&cnt, h + 8, 8); if (cnt > (std::uint64_t) 1 << 22) ok = false; }
+    std::size_t got = 0;
+    if (ok && cnt > 0) {
+        const std::size_t take = (std::size_t) std::min<std::uint64_t>(cnt, (std::uint64_t) want);
+        got = std::fread(out, sizeof(std::int32_t), take, f);
+    }
+    std::fclose(f);
+    return got;
+}
+}   // namespace
+
+void DiskParkLogs::load_dir_heads() {
+    dir_heads_loaded_ = true;
+    if (!enabled_) return;
+    bool dirty = false;
+
+    // ① sidecar 先读进来（缺失就只当空表）
+    {
+        const std::string p = dir_for("") + "/../dir-heads.bin";   // tag 目录下，与会话目录同级
+        std::FILE* f = std::fopen(p.c_str(), "rb");
+        if (f != nullptr) {
+            std::uint8_t h[12];
+            std::uint32_t cnt = 0;
+            bool ok = std::fread(h, 1, sizeof h, f) == sizeof h &&
+                      std::memcmp(h, kDirHeadMagic, 8) == 0;
+            if (ok) { std::memcpy(&cnt, h + 8, 4); if (cnt > 100000u) ok = false; }
+            std::vector<std::uint8_t> buf((std::size_t) cnt * kDirHeadRec);
+            if (ok && cnt > 0) ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
+            if (ok) {
+                for (std::uint32_t i = 0; i < cnt; ++i) {
+                    const std::uint8_t* r = buf.data() + (std::size_t) i * kDirHeadRec;
+                    DirHead e;
+                    std::memcpy(&e.cells,   r + 32, 8);
+                    std::memcpy(&e.head_n,  r + 40, 8);
+                    std::memcpy(&e.fp_head, r + 48, 8);
+                    dir_heads_.emplace(std::string((const char*) r, 32), e);
+                }
+            }
+            std::fclose(f);
+        }
+    }
+
+    // ② 与盘上目录列表对账：多的丢、缺的补
+    std::error_code ec;
+    std::set<std::string> on_disk;
+    for (std::filesystem::directory_iterator it(dir_for(""), ec), end; !ec && it != end;
+         it.increment(ec)) {
+        std::error_code ec2;
+        if (!it->is_directory(ec2)) continue;
+        const std::string nm = it->path().filename().string();
+        if (nm.size() != 32) continue;
+        on_disk.insert(nm);
+    }
+    for (auto it = dir_heads_.begin(); it != dir_heads_.end();) {
+        if (on_disk.count(it->first) == 0) { it = dir_heads_.erase(it); dirty = true; }
+        else ++it;
+    }
+    std::vector<std::int32_t> head(kDirHeadTokens);
+    for (const auto& nm : on_disk) {
+        if (dir_heads_.count(nm) != 0) continue;
+        DiskParkSession pr;
+        std::vector<std::byte> pl;
+        std::uint64_t cells = 0, kva = 0;
+        if (!DiskParkSession::open(pr, dir_for(nm), plan_, 0)) continue;
+        if (!pr.read_meta(pl, cells, &kva) || cells == 0) continue;
+        const std::size_t hn = (std::size_t) std::min<std::uint64_t>(cells, (std::uint64_t) kDirHeadTokens);
+        const std::size_t got = read_tokens_head(dir_for(nm) + "/tokens.bin", head.data(), hn);
+        DirHead e;
+        e.cells  = cells;
+        e.head_n = (std::uint64_t) got;
+        e.fp_head = got > 0 ? disk_park_head_fingerprint(head.data(), got) : 0;
+        dir_heads_.emplace(nm, e);
+        dirty = true;
+    }
+
+    if (dirty) save_dir_heads();
+    if (!dir_heads_.empty())
+        std::fprintf(stderr, "strata serve: disk park stream: [头索引] %zu 个会话目录"
+                             "（取回路径零 I/O 预筛已就绪）\n", dir_heads_.size());
+}
+
+void DiskParkLogs::save_dir_heads() const {
+    if (!enabled_) return;
+    const std::string p   = dir_for("") + "/../dir-heads.bin";
+    const std::string tmp = p + ".tmp";
+    std::FILE* f = std::fopen(tmp.c_str(), "wb");
+    if (f == nullptr) return;
+    std::uint8_t h[12];
+    std::memcpy(h, kDirHeadMagic, 8);
+    const std::uint32_t cnt = (std::uint32_t) dir_heads_.size();
+    std::memcpy(h + 8, &cnt, 4);
+    bool ok = std::fwrite(h, 1, sizeof h, f) == sizeof h;
+    for (const auto& kv : dir_heads_) {
+        if (!ok) break;
+        std::uint8_t r[kDirHeadRec];
+        std::memset(r, 0, sizeof r);
+        std::memcpy(r, kv.first.data(), std::min<std::size_t>(kv.first.size(), 32));
+        std::memcpy(r + 32, &kv.second.cells,   8);
+        std::memcpy(r + 40, &kv.second.head_n,  8);
+        std::memcpy(r + 48, &kv.second.fp_head, 8);
+        ok = std::fwrite(r, 1, sizeof r, f) == sizeof r;
+    }
+    if (ok && std::fflush(f) != 0) ok = false;
+    if (std::fclose(f) != 0) ok = false;
+    if (!ok) { std::remove(tmp.c_str()); return; }
+    std::rename(tmp.c_str(), p.c_str());
+}
+
+void DiskParkLogs::note_dir_head(const std::string& dir_name, std::uint64_t cells,
+                                 std::uint64_t head_n, std::uint64_t fp_head) {
+    if (dir_name.empty()) return;
+    DirHead& e = dir_heads_[dir_name];       // 默认构造后覆盖
+    e.cells   = cells;
+    e.head_n  = head_n;
+    e.fp_head = fp_head;
+    dir_heads_dirty_ = true;
+}
+
+const std::map<std::string, DirHead>& DiskParkLogs::dir_heads() {
+    if (!dir_heads_loaded_) load_dir_heads();
+    return dir_heads_;
 }
 
 bool DiskParkLogs::read_layer_cells(DiskParkSession& sess, std::size_t L, std::uint64_t from_cell,
@@ -298,6 +535,12 @@ bool DiskParkLogs::read_layer_cells(DiskParkSession& sess, std::size_t L, std::u
                 std::min<std::uint64_t>(static_cast<std::uint64_t>(batch_cells), to_cell - c);
             const std::size_t n_bytes = static_cast<std::size_t>(n_cells) * pp.bytes_per_cell;
             if (!sess.read_kv(p, c, c + n_cells, cell_buf.data(), n_bytes)) return false;
+            // ★★ 2026-10-13 实测【撤回批量化】：一次回调给整批看起来能省 860 万次
+            //   std::function 调用，但实测反而更慢 —— 同样 8.5 万 token 的恢复，
+            //   12 线程下 6,304 ms（逐 cell）→ 9,047 ms（整批），归一化到冷读后
+            //   0.162 → 0.212。推测是回调内层 while 循环跨越大段时破坏了 memcpy 的
+            //   局部性（目标地址由 position 映射算出，本来就不连续）。
+            //   所以保留逐 cell 调用，语义与 0.1.43 原版一致。
             for (std::uint64_t k = 0; k < n_cells; ++k) {
                 if (!read(L, part, static_cast<std::size_t>((c - from_cell + k) * pp.bytes_per_cell),
                           cell_buf.data() + static_cast<std::size_t>(k) * pp.bytes_per_cell,
@@ -382,10 +625,10 @@ void DiskParkLogs::remember(const DiskParkLogDigest& d, const std::string& dir_n
         it->second.watermark = tokens;
         touch(d);
     }
-    trim();
+    trim(dir_name);
 }
 
-void DiskParkLogs::trim() {
+void DiskParkLogs::trim(const std::string& active) {
     // ★★ 淘汰按【最近用过】，不按水位。
     //    对话链是 D1→D2→D3…，被用到的是"每个请求带来的那个 prev" ——
     //    那是链上前一个节点，可能水位很小（早期轮次）。按水位淘汰会掐掉它，
@@ -408,6 +651,94 @@ void DiskParkLogs::trim() {
         }
         tracked_.erase(victim);
     }
+    // ★★★ P25（2026-10-13）：盘上【总占用】上限 —— 08a62f46 删掉的那段，现在恢复。
+    //   为什么恢复：park-gc 的闸门够不着（--keep-newer-hours 6 h 是硬地板，窗外只有 0.07 GiB），
+    //   于是 18:48 摘掉引擎上限之后 tier 从 52.8 GiB 涨到 78.9 GiB。引擎侧淘汰的好处是
+    //   它知道【哪个会话正在用】，按整会话 LRU 删比按时间删准。park-gc 退成老目录清扫 + 兜底。
+    //   ① 不删 active（正在追加的那份）：把它挪到队首，本轮跳过，继续看下一个。
+    //   ② 还有别的摘要指向同一目录时不删（否则要重开一遍）。
+    //   ③ freed 用 dir_bytes_（st_blocks 口径累计），与启动扫描一致。
+    if (cfg_.max_bytes > 0) {
+        std::size_t guard = tracked_.size() + 1;      // 最多绕一圈，避免只有一个候选时死循环
+        while (total_bytes_ > cfg_.max_bytes && !lru_.empty() && guard-- > 0) {
+            const DiskParkLogDigest vkey = lru_.back();
+            const auto victim = tracked_.find(vkey);
+            if (victim == tracked_.end()) { lru_.pop_back(); continue; }
+            const std::string dir = victim->second.dir_name;
+            if (!active.empty() && dir == active) { touch(vkey); continue; }   // ★ ①
+            bool still_referenced = false;
+            for (const auto& kv : tracked_)
+                if (kv.first != victim->first && kv.second.dir_name == dir) { still_referenced = true; break; }
+            if (still_referenced) {                              // ★ ② 只淘汰记忆，不动文件
+                lru_.pop_back();
+                tracked_.erase(victim);
+                continue;
+            }
+            const auto db = dir_bytes_.find(dir);
+            const std::uint64_t freed = (db != dir_bytes_.end()) ? db->second : 0;
+            std::error_code ec;
+            const std::uint64_t removed = std::filesystem::remove_all(dir_for(dir), ec);
+            lru_.pop_back();
+            if (!ec) {
+                total_bytes_ = (freed <= total_bytes_) ? (total_bytes_ - freed) : 0;
+                if (db != dir_bytes_.end()) dir_bytes_.erase(db);
+                stats_.evicted_dirs += 1;
+                stats_.evicted_bytes += freed;
+                std::fprintf(stderr, "strata serve: disk park stream: [容量] 淘汰目录 %s（%llu 项 / %.2f GiB），"
+                                     "余 %.2f GiB / 上限 %.2f GiB\n",
+                             dir.c_str(), (unsigned long long) removed,
+                             (double) freed / 1073741824.0,
+                             (double) total_bytes_ / 1073741824.0,
+                             (double) cfg_.max_bytes / 1073741824.0);
+            }
+            const auto o = open_.find(dir);
+            if (o != open_.end()) { open_.erase(o); ++stats_.closes; }
+            tracked_.erase(victim);
+        }
+    }
+    // ★★★ P26（2026-10-14）：回收"本次运行里建出来、却一个字节都没写进去"的空壳会话目录。
+    //   现场：DiskParkSession::open() 遇到不存在的文件会 create_directories + 写 64 B 头，而
+    //   append() 是在【打开之后】才判断有没有东西可写（`req.to_tokens <= start` 直接 return 0）
+    //   ⇒ 每请求留下 ~0.8 个只有 kv.bin 的目录（实测 266 请求 +219 个；743 个目录里 661 是空壳）。
+    //   判据（两条都满足才删，宁可漏杀不误杀）：
+    //     ① dir_bytes_[dir] == 0 —— 本次运行从没往它追加过字节。启动扫描出来的目录字节数来自
+    //        st_blocks（恒 > 0）⇒ 老空壳不动，那是 park-gc `--days 1` 的活，引擎不越权。
+    //     ② 盘上没有 tokens.bin —— 真会话一定有（generate.cpp 写的），空壳没有。
+    //   注意：本函数每次 append 都会跑，所以空壳活不过一个请求。
+    {
+        std::size_t reaped = 0;
+        for (auto it = tracked_.begin(); it != tracked_.end();) {
+            const std::string dir = it->second.dir_name;
+            const auto db = dir_bytes_.find(dir);
+            if (db == dir_bytes_.end() || db->second != 0) { ++it; continue; }
+            std::error_code ec;
+            if (std::filesystem::exists(dir_for(dir) + "/tokens.bin", ec)) { ++it; continue; }
+            const auto o = open_.find(dir);
+            if (o != open_.end()) { open_.erase(o); ++stats_.closes; }
+            std::error_code ec2;
+            std::filesystem::remove_all(dir_for(dir), ec2);
+            ++reaped;
+            ++stats_.reaped_dirs;
+            lru_.erase(it->second.lru);
+            dir_bytes_.erase(db);
+            it = tracked_.erase(it);
+        }
+        if (reaped > 0)
+            std::fprintf(stderr, "strata serve: disk park stream: [空壳] 清掉 %zu 个本次运行建的空目录"
+                                 "（累计 %llu）\n", reaped,
+                         (unsigned long long) stats_.reaped_dirs);
+    }
+    // （历史）下面这段是 08a62f46 删掉容量上限时的理由，P25 已按其中的 ①③ 改成
+    // "引擎侧上限 + park-gc 兜底" 的分工：
+    //   超了按 LRU 把最久未用的会话目录【连文件一起删】。已删除。理由：
+    //   ① 位置不对：DiskParkLogs 看不见 checkpoints.bin，而 blob 常常占一半以上
+    //      （实测 9.7 GB blob / 52.8 GiB 合计），只掉会话目录会掉错。
+    //   ② 口径错过：第一版用 file_size 记账，把预分配的稀疏 kv.bin 高估 27 倍
+    //      （表观 2368.64 GiB vs 实际 87 GB），差一点删光所有会话目录。正确口径是 st_blocks×512。
+    //   ③ tools/park-gc 已经把它做好了：--max-gib 同时算会话目录 + blob、
+    //      用 st_blocks 记账、有 --keep-newer-hours 保护新数据、能压缩 blob，且由 cron/timer 调度。
+    //   所以流式层的字节预算【只】归 park-gc（见 tools/park-gc.cpp 头注释）。引擎这侧保留的
+    //   trim() 只做 max_tracked 的 LRU 淘汰 —— 淘汰记忆，不动盘上文件。
 }
 
 bool DiskParkLogs::commit_watermark(const DiskParkLogDigest& d, std::uint64_t tokens) {
