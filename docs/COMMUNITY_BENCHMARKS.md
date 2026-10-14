@@ -64,6 +64,10 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-12: RTX 4090 D 48 GB (PCIe 4.0 x4), Ryzen AI Max+ 395, 127.1 GiB RAM](../bench/results/2026-10-12-community-rtx-4090-d-strata-qwen3-8-flash-next-0143/README.md):
+  Strata 0.1.43 official Windows release, original Flash-Next IQ3_XXS with a native pack (24,576 of 24,576 experts resident), 262,144-token context;
+  fresh prompts at 4,096 / 16,384 / 32,768 tokens: prompt **2,314 / 3,333 / 3,528 tok/s** (medians), 32K first token 9.14 s;
+  agent-session conversation cache hit 68.8 %, turn first token 1.62 s, decode 158.6 tok/s. The card runs on a PCIe 4.0 x4 link.
 
 ## Run the benchmark
 

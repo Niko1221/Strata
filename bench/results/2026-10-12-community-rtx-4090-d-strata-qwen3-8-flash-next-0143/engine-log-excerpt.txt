@@ -1,0 +1,27 @@
+# Engine start-up lines for the configuration behind this report
+#
+# Added by hand by the reporter: this run used `tools/strata_bench.py --url ...` against an
+# already running server, so the tool did not write an excerpt of its own.  The lines below are
+# from a start-up of the *same configuration* on the same day (paths sanitized: <install> is the
+# Strata folder).  The first line carries the exact flags; the rest are the config-relevant
+# start-up lines (the run's own per-request data is in results.json).
+
+[strata] 2026-10-12 02:42:36 engine started: <install>\strata\engine\strata.exe --serve --pack <install>\Strata-data\packs\iq3_xxs --native <install>\Strata-data\models\IQ3_XXS\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf --ple-gguf <install>\Strata-data\models\IQ3_XXS\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf --ple-io direct --expert-profile <install>\strata\data\expert-profile.bin --expert-cache auto --prefill auto:32768 --spec 4 --spec-min-p 0.70 --pcie-frac 0.35 --mtp <install>\Strata-data\mtp\rt --max-context 262144 --kv int8 --kv-resident 32768 --prompt-cache 12 --vision --vram-reserve-mib 700 --conversation-cache-mib 32768 --conversation-cache-slots 8 --embd-gguf <install>/Strata-data/models/token-embd-bf16.gguf
+strata generate: native pack: <install>\Strata-data\packs\iq3_xxs experts (largest blob 2.33 MB), token embedding BF16 in mapped host memory (1212 MiB, 0.8 s)
+strata generate: expert cache 24576 slots, 39.97 GiB of VRAM; policy is PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 24576 of 24576 slots from the profile in 8.9 s (4834 MB/s); slot 0 verified
+strata generate: PLE direct read probe: 48468 rows/s (fine)
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages (2097152 B)
+strata generate: session is up (engine 0.1.43)
+strata serve: every expert is in the GPU cache (24576 of 24576): the CPU prefill share has nothing to take, so it is not armed by default (STRATA_PREFILL_CPU_SHARE=auto forces it)
+strata serve: prompt chunk auto: 32768 tokens, a 384-slot ring
+strata verify: window up to 6 tokens, 70.8 MiB of device buffers (100% VRAM resident: zero-doorbell graph)
+
+# Notes
+# - The model is the original GSQ-RCO IQ3_XXS (ISTA-DASLab), run natively from its own GGUF shards
+#   with a pack built by tools/iq_pack.py; the BF16 token embedding is the one from the stock FP8
+#   release (tools/embd_bf16_pack.py).  --ple-io direct is pinned so the boot probe never has to
+#   fall back (see issue #1984 for why the fallback mattered on this box).
+# - Windows 11 26200, driver 617.42, CUDA (not read by the tool: the engine is CUDA 13.0).
+# - The PCIe link is 4.0 x4 (the engine's own probe measured ~5.1 GB/s), which is why prompt
+#   throughput here is not higher; GPU and CPU details are in README.md.
