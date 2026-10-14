@@ -8,6 +8,7 @@
 #pragma once
 
 #include "strata/core/conversation_cache.hpp"
+#include "strata/core/state_codec.hpp"
 
 #include <array>
 #include <cstddef>
@@ -191,14 +192,18 @@ struct SessionSaveLive {
     uint64_t tokens = 0, images = 0;
     uint64_t kv_layers = 0;     // K/V sources (owned QSA layers + the draft)
 };
-// The peak, with saturating arithmetic: two copies of the deepest checkpoint (the list handed to the capture and the
-// one inside the captured image), the copied live state with its token and image lists, the K/V source directory,
-// the 16 MiB write buffer and 1 MiB for the small vectors.
-uint64_t session_save_peak_bytes(const ConversationCheckpoint* deepest, const SessionSaveLive& live);
+// The peak, with saturating arithmetic: the deepest checkpoint twice - once as the engine holds it (the list handed
+// to the capture) and once as the file will hold it (the copy inside the captured image, which is what `save_codec`
+// sizes) - the copied live state with its token and image lists, the K/V source directory, the 16 MiB write buffer
+// and 1 MiB for the small vectors. `save_codec` matters when the chain and the file disagree: checkpoints that came
+// off a coded file widen to fp32 here, and that copy is twice what the chain holds.
+uint64_t session_save_peak_bytes(const ConversationCheckpoint* deepest, const SessionSaveLive& live,
+                                 StateCodec save_codec);
 // The SAVE's RAM PREFLIGHT, BEFORE anything is copied: `admit` is asked for session_save_peak_bytes; only when it
 // agrees is the deepest checkpoint copied into `out`.  On a refusal nothing was allocated, `out` is empty, `chain`
 // and the live state are untouched and no file was opened.  Not a reservation.
 bool session_save_checkpoints(const std::vector<ConversationCheckpoint>& chain, const SessionSaveLive& live,
+                              StateCodec save_codec,
                               const std::function<bool(uint64_t need_bytes, std::string& why)>& admit,
                               std::vector<ConversationCheckpoint>& out, std::string& why);
 

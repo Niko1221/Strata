@@ -312,6 +312,60 @@ int main() {
         check(same, "merge(split(x)) == x, in the original order");
         check(back[0].gdn.data() == gdn0 && back[2].stage_parts[1].gdn.data() == part1, "merge moves them back too");
 
+        // ---- a chain that is not uniform. A conversation resumed from a parked image keeps the snapshots it
+        // imported in the codec they were parked in, beside the fp32 ones it captures itself, and a split's stage
+        // parts each say how THEIR arrays are held. Nothing may infer a format from the engine's configured option,
+        // so a split and a merge have to carry every one of those bytes and every one of those codes.
+        auto staged = [](std::initializer_list<int32_t> ids, uint8_t own, std::initializer_list<uint8_t> parts) {
+            ConversationCheckpoint c;
+            c.ids = ids;
+            c.state_codec = own;
+            c.gdn.assign(own == 1 ? 128 : 256, 0x11);
+            for (uint8_t k : parts) {
+                ConversationCheckpoint p;
+                p.state_codec = k;
+                p.gdn.assign(k == 1 ? 64 : 128, uint8_t(0x51 + k));
+                c.stage_parts.push_back(std::move(p));
+            }
+            return c;
+        };
+        std::vector<ConversationCheckpoint> staged_chain;
+        staged_chain.push_back(staged({1, 2}, 1, {0, 1}));
+        staged_chain.push_back(staged({1, 2, 3}, 0, {1, 0}));
+        const auto staged_before = staged_chain;
+        auto staged_split = conversation_checkpoints_split(std::move(staged_chain), 2);
+        bool staged_codes = staged_split.stage0.size() == 2 && staged_split.parts.size() == 2;
+        for (size_t j = 0; staged_codes && j < staged_split.stage0.size(); ++j) {
+            staged_codes = staged_codes && staged_split.stage0[j].state_codec == staged_before[j].state_codec &&
+                    staged_split.stage0[j].gdn == staged_before[j].gdn;
+            for (size_t k = 0; staged_codes && k < staged_split.parts.size(); ++k)
+                staged_codes = staged_codes && staged_split.parts[k][j].state_codec == staged_before[j].stage_parts[k].state_codec &&
+                        staged_split.parts[k][j].gdn == staged_before[j].stage_parts[k].gdn;
+        }
+        check(staged_codes, "split: a checkpoint's own coding and each stage part's travel with their own bytes");
+        std::vector<ConversationCheckpoint> staged_back;
+        check(conversation_checkpoints_merge(std::move(staged_split), staged_back) && staged_back.size() == 2,
+              "merge: a mixed-codec split goes back");
+        bool staged_same = true;
+        for (size_t j = 0; staged_same && j < staged_back.size(); ++j) {
+            staged_same = staged_same && staged_back[j].state_codec == staged_before[j].state_codec && staged_back[j].gdn == staged_before[j].gdn &&
+                    staged_back[j].stage_parts.size() == staged_before[j].stage_parts.size();
+            for (size_t k = 0; staged_same && k < staged_back[j].stage_parts.size(); ++k)
+                staged_same = staged_same && staged_back[j].stage_parts[k].state_codec == staged_before[j].stage_parts[k].state_codec &&
+                        staged_back[j].stage_parts[k].gdn == staged_before[j].stage_parts[k].gdn;
+        }
+        check(staged_same, "merge: with every codec and every byte of the chain it came from");
+        // and the cache prices a lazy chain at what it actually holds: a retained coded snapshot costs the half it
+        // keeps, which is what lets a resumed conversation sit in the same budget as an fp32 one
+        ConversationCheckpoint half;
+        half.ids = {1, 2, 3};
+        half.state_codec = 1;
+        half.gdn.assign(1024, 0x77);
+        ConversationCheckpoint whole = half;
+        whole.state_codec = 0;
+        whole.gdn.assign(2048, 0x77);
+        check(half.bytes() + 1024 == whole.bytes(), "bytes(): a retained coded snapshot is charged the half it holds");
+
         auto torn = conversation_checkpoints_split(std::vector<ConversationCheckpoint>(original), 2);
         torn.parts[1].pop_back();
         check(!conversation_checkpoints_merge(std::move(torn), back) && back.empty(), "a stage short of a part is refused");

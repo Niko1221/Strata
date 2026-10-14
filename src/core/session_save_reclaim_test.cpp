@@ -54,7 +54,7 @@ int main() {
         const size_t bytes_before = cache.bytes();
         size_t chain_bytes = 0; for (const auto& c : chain) chain_bytes += c.bytes();
         deny_alloc = true;
-        auto freed = session_save_reclaim(chain, cache, live, floor, [] { return std::optional<uint64_t>(0); });
+        auto freed = session_save_reclaim(chain, cache, live, StateCodec::Fp32, floor, [] { return std::optional<uint64_t>(0); });
         deny_alloc = false;
         check(chain.size() == 1 && same(chain[0], before), "selected checkpoint unchanged under pressure");
         check(chain[0].gdn.data() == storage, "checkpoint moved without copying storage");
@@ -62,7 +62,7 @@ int main() {
         check(cache.evictions() == 2 && cache.retained_bytes() == 0, "cache accounting and retained buffers");
         check(freed.bytes == bytes_before - cache.bytes() + chain_bytes - chain[0].bytes(), "released byte accounting");
         check(session_deepest_checkpoint(chain)->ids == before.ids, "same file selection after reclaim");
-        auto again = session_save_reclaim(chain, cache, live, floor, [] { return std::optional<uint64_t>(0); });
+        auto again = session_save_reclaim(chain, cache, live, StateCodec::Fp32, floor, [] { return std::optional<uint64_t>(0); });
         check(again.bytes == 0 && again.checkpoints == 0 && again.parked == 0, "exhausted reclaim is idempotent");
     }
     // No-pressure path, unknown telemetry, overflowed estimate: no cache mutation.
@@ -72,8 +72,8 @@ int main() {
         const auto before = chain;
         const auto bytes = cache.bytes(); auto sl = live;
         if (mode == 2) sl.state_bytes = UINT64_MAX;
-        const uint64_t need = session_save_peak_bytes(session_deepest_checkpoint(chain), sl);
-        auto r = session_save_reclaim(chain, cache, sl, floor, [&]() -> std::optional<uint64_t> {
+        const uint64_t need = session_save_peak_bytes(session_deepest_checkpoint(chain), sl, StateCodec::Fp32);
+        auto r = session_save_reclaim(chain, cache, sl, StateCodec::Fp32, floor, [&]() -> std::optional<uint64_t> {
             if (mode == 1) return std::nullopt;
             return mode == 2 ? 0 : need + floor + (mode == 3 ? 1 : 0);
         });
@@ -86,9 +86,9 @@ int main() {
         auto* selected_storage = chain[1].gdn.data();
         ConversationCache cache(1u << 20, 10); park(cache, 10); park(cache, 20);
         std::vector<ConversationKv> kv(1); kv[0].v.resize(100); cache.retain(std::move(kv), 100);
-        const auto need = session_save_peak_bytes(session_deepest_checkpoint(chain), live);
+        const auto need = session_save_peak_bytes(session_deepest_checkpoint(chain), live, StateCodec::Fp32);
         int probes = 0;
-        auto r = session_save_reclaim(chain, cache, live, floor, [&]() -> std::optional<uint64_t> {
+        auto r = session_save_reclaim(chain, cache, live, StateCodec::Fp32, floor, [&]() -> std::optional<uint64_t> {
             return probes++ >= sufficient_after ? need + floor : 0;
         });
         check(probes == sufficient_after + 1, "stop immediately once RAM meets unchanged floor");
@@ -99,17 +99,46 @@ int main() {
     {
         std::vector<ConversationCheckpoint> chain{checkpoint(100, true), checkpoint(300, true), checkpoint(500)};
         ConversationCache cache(0, 0);
-        auto r = session_save_reclaim(chain, cache, live, floor, [] { return std::optional<uint64_t>(0); });
+        auto r = session_save_reclaim(chain, cache, live, StateCodec::Fp32, floor, [] { return std::optional<uint64_t>(0); });
         check(r.checkpoints == 1 && chain.size() == 2 && chain[0].pinned && chain[1].pinned, "all pins survive in original order");
         std::vector<ConversationCheckpoint> out; std::string why;
-        check(!session_save_checkpoints(chain, live, [](uint64_t, std::string& w) { w = "low RAM"; return false; }, out, why)
+        check(!session_save_checkpoints(chain, live, StateCodec::Fp32,
+                                        [](uint64_t, std::string& w) { w = "low RAM"; return false; }, out, why)
               && out.empty() && why == "low RAM", "still refused before copying when reclamation is insufficient");
     }
     {
         std::vector<ConversationCheckpoint> chain;
         ConversationCache cache(0, 0);
-        auto r = session_save_reclaim(chain, cache, live, floor, [] { return std::optional<uint64_t>(0); });
+        auto r = session_save_reclaim(chain, cache, live, StateCodec::Fp32, floor, [] { return std::optional<uint64_t>(0); });
         check(!r.bytes && !r.checkpoints && !r.parked, "empty chain and disabled cache");
+    }
+    {
+        // A chain mounted from a coded file, saved by an engine configured fp32: the list holds the coded bytes and
+        // the copy inside the image is widened to fp32. Pricing both at the coded size admitted less than the save
+        // then allocated (host reproduction: 242.2 MiB admitted for 297.5 MiB needed).
+        ConversationCheckpoint coded = checkpoint(300);
+        coded.state_codec = (uint8_t) StateCodec::Bf16;
+        std::vector<ConversationCheckpoint> chain{coded};
+        std::vector<ConversationCheckpoint> stored; std::string err;
+        check(session_save_checkpoints(chain, live, StateCodec::Fp32,
+                                       [](uint64_t, std::string&) { return true; }, stored, err) && stored.size() == 1,
+              "a coded chain is admitted for an fp32 save");
+        const uint64_t both = chain[0].bytes() + stored[0].bytes();     // what the save actually holds
+        const uint64_t peak = session_save_peak_bytes(&chain[0], live, StateCodec::Fp32);
+        check(peak >= both, "the SAVE peak covers the widened copy, not two copies of the coded size");
+        check(session_save_peak_bytes(&chain[0], live, StateCodec::Bf16) < peak,
+              "and an fp32 save of a coded chain asks for more than a bf16 one does");
+        ConversationCheckpoint plain = checkpoint(300);
+        // The same figure the preflight has always returned, for the save this flag is off for - pinned so the codec
+        // accounting cannot quietly change what a default SAVE asks to be admitted.
+        const uint64_t expected = (16u << 20) + (1u << 20) + 2 * plain.bytes() + live.state_bytes +
+                                  live.tokens * sizeof(int32_t) + live.images * sizeof(ConversationImageKey) +
+                                  live.kv_layers * (sizeof(SessionKvSource) + 256);
+        check(session_save_peak_bytes(&plain, live, StateCodec::Fp32) == expected,
+              "an all-fp32 save is priced exactly as it was before the codec existed");
+        auto unknown = live; unknown.state_bytes = UINT64_MAX;
+        check(session_save_peak_bytes(&plain, unknown, StateCodec::Bf16) == UINT64_MAX,
+              "an unknown live state size still refuses, whatever the codec");
     }
     std::printf("session_save_reclaim: %d checks passed\n", checks_run);
 }

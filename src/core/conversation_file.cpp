@@ -1,4 +1,5 @@
 #include "strata/core/conversation_file.hpp"
+#include "strata/core/state_codec.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -45,7 +46,8 @@ namespace strata::core {
 namespace {
 constexpr char kMagic[8] = {'S', 'T', 'R', 'S', 'E', 'S', 'S', '\x01'};
 constexpr char kEnd[8] = {'S', 'T', 'R', 'S', 'E', 'N', 'D', '\x01'};
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 1;          // the running state is fp32 in every checkpoint
+constexpr uint32_t kVersionCoded = 2;     // a checkpoint says how its running state is stored (state_codec.hpp)
 constexpr size_t kHeader = 64, kTrailer = 16;
 
 // Progress for a transfer: one report after every block that was handed to (or read from) the OS, whatever its size
@@ -631,6 +633,7 @@ struct Out {
     SessionHasher* hash = nullptr;
     uint64_t n = 0;
     bool ok = true, overflow = false;
+    bool coded = false;   // a v2 file: every checkpoint record starts with how its running state is stored
     void count(uint64_t c) {
         if (c > UINT64_MAX - n) { overflow = true; ok = false; return; }
         n += c;
@@ -679,6 +682,9 @@ void put_kv_header(Out& o, int format, int64_t cells, int64_t heads, int64_t hea
 }
 
 void put_checkpoint(Out& o, const ConversationCheckpoint& c) {
+    // first, so a reader refuses a codec it does not know before it allocates any array. Only in a v2 file: a v1
+    // file's bytes are unchanged, which is what keeps a default save byte-identical to the last release.
+    if (o.coded) o.u64(c.state_codec);
     o.vec(c.ids);
     o.u64(c.imgs.size());
     for (const auto& k : c.imgs) { o.i64(k.start); o.u64(k.hash); }
@@ -716,6 +722,7 @@ struct In {
     const SessionReadLimits& limits;
     SessionError kind = SessionError::invalid;
     size_t kv_layer = 0;
+    bool coded = false;   // read from the header: a v1 file has no per-checkpoint codec field
     bool fail(const std::string& m) { if (error.empty()) error = "session file: " + m; return false; }
     bool raw(void* p, size_t c) {
         if (c > left) return fail("payload ends early");
@@ -752,6 +759,14 @@ struct In {
 };
 
 bool get_checkpoint(In& in, ConversationCheckpoint& c) {
+    if (in.coded) {   // v2: the coding of this checkpoint's running state, read before anything is allocated
+        uint64_t code = 0;
+        if (!in.u64(code)) return false;
+        StateCodec codec = StateCodec::Fp32;
+        if (!state_codec_by_code(code, codec))
+            return in.fail("stored with a running-state codec this build cannot read (" + std::to_string(code) + ")");
+        c.state_codec = (uint8_t) code;
+    }
     if (!in.vec(c.ids, in.limits.max_tokens)) return false;
     uint64_t n = 0;
     if (!in.count(n, 16, in.limits.max_tokens)) return false;
@@ -801,12 +816,22 @@ bool has_stage_parts(const SavedConversation& s) {
     return false;
 }
 
-// header v1, little-endian: magic[8] version:u32 header_size:u32 model:u64 config:u64 payload:u64 reserved:u64[2]
+// A file is written as v2 only when some checkpoint of this image actually holds coded bytes: a default save stays
+// a v1 file, byte for byte the same as the last release wrote.
+bool any_coded(const SavedConversation& s) {
+    if (s.live.state_codec != 0) return true;
+    for (const auto& c : s.checkpoints) if (c.state_codec != 0) return true;
+    return false;
+}
+
+// header v1 and v2, little-endian: magic[8] version:u32 header_size:u32 model:u64 config:u64 payload:u64 reserved:u64[2]
 // header_hash:u64 (session_hash64 of bytes 0..55, seed 0)
-void header_bytes(uint8_t* h, const SessionFileIdentity& id, uint64_t payload) {
+// v2 adds one u64 at the front of every checkpoint record: how that checkpoint's running state is stored. A v1 file
+// has none and is fp32 throughout, which is what it has always been.
+void header_bytes(uint8_t* h, const SessionFileIdentity& id, uint64_t payload, uint32_t version) {
     std::memset(h, 0, kHeader);
     std::memcpy(h, kMagic, 8);
-    const uint32_t version = kVersion, size = kHeader;
+    const uint32_t size = kHeader;
     std::memcpy(h + 8, &version, 4);
     std::memcpy(h + 12, &size, 4);
     std::memcpy(h + 16, &id.model, 8);
@@ -1032,6 +1057,7 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
     if (has_stage_parts(image)) { error = "session file: layer-split state cannot be saved"; return false; }
     if (sources && !image.kv.empty()) { error = "session file: K/V given both in the image and as sources"; return false; }
     Out sizing;
+    sizing.coded = any_coded(image);
     put_payload(sizing, image, sources);
     if (sizing.overflow || sizing.n > UINT64_MAX - kHeader - kTrailer ||
         sizing.n + kHeader + kTrailer > (uint64_t) std::numeric_limits<size_t>::max()) {
@@ -1039,6 +1065,7 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
         return false;
     }
     const uint64_t payload = sizing.n, total = kHeader + payload + kTrailer;
+    const bool coded = any_coded(image);
     st.error = SessionError::io;
     if (opt.min_free_bytes) {
         uint64_t avail = 0;
@@ -1069,12 +1096,13 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
     f.write_fault = injected(fault, "write");
     f.flush_fault = injected(fault, "file_flush");
     uint8_t h[kHeader];
-    header_bytes(h, id, payload);
+    header_bytes(h, id, payload, coded ? kVersionCoded : kVersion);
     bool ok = f.write(h, kHeader);
     SessionHasher hash(0);
     Out out;
     out.f = &f;
     out.hash = &hash;
+    out.coded = coded;
     if (ok) put_payload(out, image, sources);
     ok = ok && out.ok && out.n == payload;
     if (ok) {
@@ -1135,9 +1163,35 @@ const ConversationCheckpoint* session_deepest_checkpoint(const std::vector<Conve
     return deepest;
 }
 
-uint64_t session_save_peak_bytes(const ConversationCheckpoint* deepest, const SessionSaveLive& live) {
+namespace {
+// What a stored copy of `c` holds under `dest`: the arrays bytes() counts, each sized the way `dest` sizes it.
+// UINT64_MAX for a checkpoint naming a codec this build does not know - the caller refuses those anyway.
+uint64_t checkpoint_bytes_under(const ConversationCheckpoint& c, StateCodec dest) {
+    StateCodec from = StateCodec::Fp32;
+    if (!state_codec_by_code(c.state_codec, from)) return UINT64_MAX;
+    uint64_t n = sat_mul(c.ids.capacity(), sizeof(int32_t));
+    n = sat_add(n, sat_mul(c.imgs.capacity(), sizeof(ConversationImageKey)));
+    // pointers, not a list of the arrays: this is an estimate, and copying what it measures would double the
+    // allocation it exists to price
+    for (const std::vector<uint8_t>* v : {&c.gdn, &c.ple, &c.tails, &c.dead})
+        n = sat_add(n, state_codec_size(state_codec_fp32_bytes(v->size(), from), dest));
+    n = sat_add(n, c.block_pos.capacity());                                    // int32 positions, never coded
+    for (const auto& part : c.stage_parts) n = sat_add(n, checkpoint_bytes_under(part, dest));
+    return n;
+}
+} // namespace
+
+uint64_t session_save_peak_bytes(const ConversationCheckpoint* deepest, const SessionSaveLive& live,
+                                 StateCodec save_codec) {
     uint64_t n = sat_add(kBlock, uint64_t(1) << 20);                          // write buffer, small vectors
-    if (deepest) n = sat_add(n, sat_mul(2, deepest->bytes()));                // the list and the image's copy
+    if (deepest) {
+        n = sat_add(n, sat_mul(2, deepest->bytes()));                         // the list and the image's copy
+        // and, when the file will hold the checkpoint wider than the chain does - checkpoints mounted from a coded
+        // file written by an engine configured fp32 - the widening on top. Zero when codec and chain agree, which is
+        // every save this flag is off for, so that figure is the one this function has always returned.
+        const uint64_t under = checkpoint_bytes_under(*deepest, save_codec);
+        if (under > deepest->bytes()) n = sat_add(n, under - deepest->bytes());
+    }
     n = sat_add(n, live.state_bytes);                                         // the live running state
     n = sat_add(n, sat_mul(live.tokens, sizeof(int32_t)));                    // its token list
     n = sat_add(n, sat_mul(live.images, sizeof(ConversationImageKey)));       // its images
@@ -1146,11 +1200,12 @@ uint64_t session_save_peak_bytes(const ConversationCheckpoint* deepest, const Se
 }
 
 bool session_save_checkpoints(const std::vector<ConversationCheckpoint>& chain, const SessionSaveLive& live,
+                              StateCodec save_codec,
                               const std::function<bool(uint64_t need_bytes, std::string& why)>& admit,
                               std::vector<ConversationCheckpoint>& out, std::string& why) {
     out.clear();
     const ConversationCheckpoint* deepest = session_deepest_checkpoint(chain);
-    if (admit && !admit(session_save_peak_bytes(deepest, live), why)) return false;
+    if (admit && !admit(session_save_peak_bytes(deepest, live, save_codec), why)) return false;
     if (deepest) out.push_back(*deepest);
     return true;
 }
@@ -1204,7 +1259,10 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
     std::memcpy(&r0, h + 40, 8); std::memcpy(&r1, h + 48, 8); std::memcpy(&hh, h + 56, 8);
     if (std::memcmp(h, kMagic, 8) != 0) { error = "session file: not a Strata session file (magic)"; return false; }
     if (hh != session_hash64(h, 56, 0)) { error = "session file: header checksum mismatch"; return false; }
-    if (version != kVersion) { error = "session file: unsupported version " + std::to_string(version); return false; }
+    if (version != kVersion && version != kVersionCoded) {
+        error = "session file: unsupported version " + std::to_string(version);
+        return false;
+    }
     if (hsize != kHeader || r0 || r1) { error = "session file: invalid header fields"; return false; }
     if (model != id.model) { error = "session file: saved with another model (model fingerprint differs)"; return false; }
     if (config != id.config) { error = "session file: saved with another engine configuration (config fingerprint differs)"; return false; }
@@ -1223,6 +1281,7 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
     }
     SavedConversation parsed;
     In in{&f, SessionHasher(0), payload, error, limits};
+    in.coded = version == kVersionCoded;
     if (!get_payload(in, parsed)) { st.error = in.kind; return false; }
     if (in.left) { error = "session file: payload has " + std::to_string(in.left) + " unparsed bytes"; return false; }
     uint8_t t[kTrailer];

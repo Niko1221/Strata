@@ -14,13 +14,15 @@ struct SessionSaveReclaimed {
 // eviction: freed capacity is not necessarily physical RAM returned by the allocator.
 // No allocation is needed here. Unknown telemetry / sizes cannot justify cache eviction.
 // Preserve every explicit pin and exactly the checkpoint the file would have selected.
+// `save_codec` is the codec the SAVE will write: it is part of the peak, so the reclaim that a coded chain under an
+// fp32 save triggers is the reclaim that save actually needs.
 template<class Probe>
 SessionSaveReclaimed session_save_reclaim(std::vector<ConversationCheckpoint>& chain,
                                         ConversationCache& cache, const SessionSaveLive& live,
-                                        uint64_t floor, Probe available) {
+                                        StateCodec save_codec, uint64_t floor, Probe available) {
     SessionSaveReclaimed out;
     const auto* selected = session_deepest_checkpoint(chain);
-    const uint64_t need = session_save_peak_bytes(selected, live);
+    const uint64_t need = session_save_peak_bytes(selected, live, save_codec);
     auto room = available();
     auto done = [&] { return !room || need == UINT64_MAX || conversation_memory_admit(room, need, floor); };
     if (done()) return out;

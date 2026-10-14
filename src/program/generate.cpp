@@ -23,6 +23,7 @@
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
+#include "strata/core/conversation_report.hpp"
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/session_save_reclaim.hpp"
 #include "strata/core/conversation_memory.hpp"
@@ -643,6 +644,11 @@ struct Options {
     /// --serve SAVE: disk space a session file must leave free where it is written (MiB; 0 = no check)
     int64_t session_min_free_mib = 4096;
     bool session_save_reclaim = false;
+    /// --serve: how a stored conversation's running state is held - "fp32" (the bytes the engine computes) or
+    /// "bf16" (half the bytes, every value within 2^-8 of what it was). Parked conversation-cache images and
+    /// session files only: the state the engine computes on, and its live checkpoint chain, are always fp32.
+    std::string session_state_codec = "fp32";
+    strata::core::StateCodec session_state_codec_id = strata::core::StateCodec::Fp32;   // resolved from the name above
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
     int64_t prompt_cache_every = 16384;
     bool prompt_cache_tail = false;   // optional extra checkpoint at an existing near-tail chunk boundary
@@ -794,6 +800,9 @@ void usage() {
                  "                       short side requests do not take the slots a long one needs (default 0 = park any)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
                  "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE needs RAM (opt-in)\n"
+                 "  --session-state-codec NAME  --serve: how a stored conversation's running state is held:\n"
+                 "                       fp32 (default) or bf16 (half the bytes, within 2^-8 per value). Affects what\n"
+                 "                       is parked and what a SAVE writes; the live state is never coded\n"
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
                  "                       default 512), so the command `VRAM <reserve_mib>` (the server's POST /v1/vram) can\n"
                  "                       give VRAM back to other programs between requests and take it back later\n"
@@ -1517,19 +1526,59 @@ ConvStateSizes conv_state_sizes(const strata::core::ModelGeometry& g, const stra
 }
 
 /// Copies the running state out (this session's carve only).  The caller has synchronized the device.
-bool checkpoint_save(ConvCheckpoint& c, const strata::core::SessionState& ss, const strata::core::ModelGeometry& g) {
+/// `codec` is how the COPY is to hold the running state (strata/core/state_codec.hpp); it is never the session's
+/// own - the live state stays fp32 whatever this says. A retained conversation checkpoint passes the resolved
+/// --session-state-codec, so it is coded the moment it is captured and not only when it is later parked; a
+/// temporary copy of the working state (a device or batch-slot transfer) passes Fp32 and gets the bytes as
+/// computed, exactly as before. Fp32 here is the identity: the same bytes, in the same order, as the last release.
+bool checkpoint_save(ConvCheckpoint& c, const strata::core::SessionState& ss, const strata::core::ModelGeometry& g,
+                     strata::core::StateCodec codec = strata::core::StateCodec::Fp32) {
     std::string error;
+    c.state_codec = (uint8_t) codec;   // conversation_checkpoint_save codes the copy the way this says
     if (strata::core::conversation_checkpoint_save(c, ss, g, error)) return true;
-    std::fprintf(stderr, "strata serve: checkpoint save: %s\n", error.c_str());   // the caller's ERR has no reason
+    // A capture that could not allocate refuses here, and the caller's `false` is the existing contract: the
+    // checkpoint is not published and the session still holds what it held (conversation_checkpoint_save builds
+    // beside the checkpoint). The message is a literal or what() read while the exception is still alive, never
+    // one assembled on this path (strata/core/conversation_report.hpp).
+    std::fprintf(stderr, "strata serve: checkpoint save: %s\n",
+                 error.empty() ? "not enough memory to capture the running state" : error.c_str());
     return false;
 }
 
 /// Puts a checkpoint's running state back; the positional cells below it are the caller's to guarantee.
-bool checkpoint_restore(const ConvCheckpoint& c, strata::core::SessionState& ss, const strata::core::ModelGeometry& g) {
+/// A checkpoint mounted from a parked image may hold its running state coded (strata/core/state_codec.hpp), and
+/// this is the one place the engine pays for it: decoding allocates host memory for the widened indexer arrays and
+/// for the fp32 slice the state crosses the device boundary in. Neither the serve loop nor the batch slot path has
+/// a handler around this call, so an allocation failure is reported here as a refusal, never thrown past it. The
+/// stored snapshot is not modified: what it holds, and the codec it says it holds, are unchanged by a restore.
+/// The handlers report with a literal or with what() read while the exception is still alive, and never build a
+/// message (strata/core/conversation_report.hpp): assembling an error string is the one thing that can fail on this
+/// path, and a bad_alloc leaving the handler would end the engine instead of refusing one rewind.
+bool checkpoint_restore(const ConvCheckpoint& c, strata::core::SessionState& ss, const strata::core::ModelGeometry& g,
+                        std::string& why) {
+    why.clear();
+    const char* why_message = nullptr;   // set by the handler that caught it, read by refuse() while still valid
+    auto refuse = [&]() {
+        std::fprintf(stderr, "strata serve: checkpoint restore: %s\n",
+                     strata::core::conversation_detail::report_restore(
+                         why, why_message, "checkpoint restore failed"));   // the caller's ERR has no reason otherwise
+        return false;
+    };
     std::string error;
-    if (strata::core::conversation_checkpoint_restore(c, ss, g, error)) return true;
-    std::fprintf(stderr, "strata serve: checkpoint restore: %s\n", error.c_str());
-    return false;
+    try {
+        if (strata::core::conversation_checkpoint_restore(c, ss, g, error)) return true;
+    } catch (const std::bad_alloc&) {
+        why_message = "not enough RAM to widen the checkpoint's running state";
+        return refuse();
+    } catch (const std::exception& e) {
+        why_message = e.what();   // read here: the exception object is gone once this handler is left
+        return refuse();
+    } catch (...) {
+        why_message = "checkpoint restore failed";
+        return refuse();
+    }
+    why_message = error.empty() ? nullptr : error.c_str();   // refused without throwing: its own reason
+    return refuse();
 }
 
 // --control-vector-scaled: llama.cpp's `common_control_vector_load` (every file's `direction.<l>` times its scale,
@@ -2124,6 +2173,14 @@ int main(int argc, char** argv) {
             else o.conversation_cache_slots = (int) number;
         }
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
+        else if (a == "--session-state-codec") {
+            const std::string value = next(a.c_str());
+            if (!strata::core::state_codec_by_name(value, o.session_state_codec_id)) {
+                std::fprintf(stderr, "%s wants fp32 or bf16 (got '%s')\n", a.c_str(), value.c_str());
+                return 2;
+            }
+            o.session_state_codec = value;
+        }
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
@@ -8138,6 +8195,19 @@ int main(int argc, char** argv) {
         strata::core::ConversationCache conversations(
             o.prompt_cache > 0 ? (size_t) o.conversation_cache_mib * 1024 * 1024 : 0,
             (size_t) o.conversation_cache_slots, o.conversation_cache_min_tokens);
+        // How a stored conversation's running state is held (strata/core/state_codec.hpp). The name was checked when
+        // the flags were read, so it resolves here. fp32 - the default - leaves every byte of every parked image and
+        // every session file exactly as the last release wrote it; bf16 halves the running state in both, and says so
+        // in the image and in the file so that anything reading them knows. What this never decides is how a
+        // checkpoint that ALREADY exists is read: each one says that for itself. The session's working state is
+        // fp32 whatever this says; the retained checkpoint chain is not - a conversation resumed from a parked
+        // image keeps that image's snapshots in the codec they were parked in, beside the fp32 ones this session
+        // captures, and only the snapshot a rewind selects is decoded into the session's fp32 buffers.
+        const strata::core::StateCodec session_codec = o.session_state_codec_id;
+        if (session_codec != strata::core::StateCodec::Fp32)
+            std::fprintf(stderr, "strata serve: stored conversation state: %s (parked images and session files; the "
+                                 "working state stays fp32, and a resumed conversation keeps its imported snapshots "
+                                 "in the codec they were parked in)\n", strata::core::state_codec_name(session_codec));
         // Disk sessions: what a session file is bound to.  The model fingerprint samples every model input this
         // engine loaded, by role (conversation_file.hpp), once; the config fingerprint covers the RESOLVED settings
         // that change what the saved bytes mean - the rope (K is cached post-RoPE), the loaded control vector, the
@@ -8253,7 +8323,8 @@ int main(int argc, char** argv) {
                 strata::core::ConversationCheckpointSplit& cs; std::vector<ConvCheckpoint>& checks; bool on;
                 ~MergeBack() { if (on && !strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear(); }
             } merge_back{cs, checks, n_st > 0};
-            const strata::core::ConversationView view{live, live_imgs, n_st > 0 ? cs.stage0 : checks, cvec_cached};
+            const strata::core::ConversationView view{live, live_imgs, n_st > 0 ? cs.stage0 : checks, cvec_cached,
+                                                      session_codec};
             auto reuse = conversations.take_reuse();
             std::vector<strata::core::ConversationKvReuse> stage_reuse = std::move(reuse.stages);
             stage_reuse.resize(n_st);
@@ -8263,7 +8334,7 @@ int main(int argc, char** argv) {
             for (size_t k = 0; k < n_st; ++k) {
                 auto& st = stages[k];
                 const strata::core::OnDevice on(st->dev);
-                const strata::core::ConversationView view_k{live, live_imgs, cs.parts[k], cvec_cached};
+                const strata::core::ConversationView view_k{live, live_imgs, cs.parts[k], cvec_cached, session_codec};
                 size_t b = 0;
                 if (!strata::core::conversation_snapshot_bytes(view_k, st->ss, g, draft_of(k), b, err)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (stage CUDA%d: %s)\n",
@@ -8352,7 +8423,7 @@ int main(int argc, char** argv) {
                     auto& st = stages[k];
                     const strata::core::OnDevice on(st->dev);
                     if (cudaDeviceSynchronize() != cudaSuccess) { err = "stage sync failed"; return false; }
-                    const strata::core::ConversationView view_k{live, live_imgs, cs.parts[k], cvec_cached};
+                    const strata::core::ConversationView view_k{live, live_imgs, cs.parts[k], cvec_cached, session_codec};
                     strata::core::SavedConversation part;
                     if (!strata::core::conversation_snapshot_save(part, view_k, st->ss, g, draft_of(k), err,
                             std::move(stage_reuse[k]), &reused_bytes))
@@ -8449,6 +8520,11 @@ int main(int argc, char** argv) {
             c.imgs = imgs_below(req_imgs, L);
             if (parts != nullptr) {
                 if (parts->size() != stages.size() + 1) return false;
+                // Every part says how ITS arrays are held, and none of this reads the engine's configured codec
+                // directly: the parts were captured by their own stage's callback with the codec a RETAINED
+                // checkpoint is stored under, so the joined checkpoint names the codec its own arrays are in and
+                // every stage part keeps its own. That is what split/merge, a park and a restore all read them as.
+                c.state_codec = (*parts)[0].state_codec;
                 c.gdn = std::move((*parts)[0].gdn);
                 c.ple = std::move((*parts)[0].ple);
                 c.tails = std::move((*parts)[0].tails);
@@ -8456,12 +8532,17 @@ int main(int argc, char** argv) {
                 c.block_pos = std::move((*parts)[0].block_pos);
                 for (size_t i = 1; i < parts->size(); ++i) c.stage_parts.push_back(std::move((*parts)[i]));
             } else {
-                if (!gpu_sync_ok() || !checkpoint_save(c, ss, g)) return false;
+                // A RETAINED conversation checkpoint: it joins `checks`, the chain a later request resumes through,
+                // so it is a stored copy and is coded the way this engine stores one (--session-state-codec).
+                // `session_codec` is fp32 unless the option says otherwise, and it never touches the session: the
+                // live buffers stay fp32 and a restore decodes this snapshot into them without rewriting it.
+                if (!gpu_sync_ok() || !checkpoint_save(c, ss, g, session_codec)) return false;
                 for (auto& st : stages) {   // a layer split's later stages: their sessions' part
                     const strata::core::OnDevice on(st->dev);
                     ConvCheckpoint part;
                     part.ids = c.ids;
-                    if (!gpu_sync_ok() || !checkpoint_save(part, st->ss, g)) return false;
+                    // the part is retained with its checkpoint, so it is stored the same way and says so itself
+                    if (!gpu_sync_ok() || !checkpoint_save(part, st->ss, g, session_codec)) return false;
                     c.stage_parts.push_back(std::move(part));
                 }
             }
@@ -8581,7 +8662,13 @@ int main(int argc, char** argv) {
                     part_next[i] = done + o.prompt_cache_every;
                     ConvCheckpoint part;   // this stage's state at `done` (its stream is synchronized)
                     part.ids.assign(cur.begin(), cur.begin() + done);
-                    if (!checkpoint_save(part, stage_ss, g)) { e = "saving a checkpoint part failed"; return false; }
+                    // This part becomes a stage part of a retained checkpoint (the last stage joins them in
+                    // checkpoint_at), so it is captured under the codec a stored copy uses and keeps its own
+                    // `state_codec` through the join, the split and a park. The stage's own buffers are only read.
+                    if (!checkpoint_save(part, stage_ss, g, session_codec)) {
+                        e = "saving a checkpoint part failed";
+                        return false;
+                    }
                     std::lock_guard<std::mutex> lk(part_mu);
                     auto& v = part_at[done];
                     v.resize(stages.size() + 1);
@@ -9871,6 +9958,10 @@ int main(int argc, char** argv) {
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
                 strata::core::ConversationCheckpoint ck;
                 ck.ids = ids;
+                // A temporary copy of the WORKING state, not a retained conversation checkpoint: it is restored
+                // straight into the slot's own fp32 buffers and thrown away. Coding it would round a state the slot
+                // keeps computing on, so it stays fp32 whatever --session-state-codec says (and a capture that
+                // cannot allocate is a refusal here, not a throw past the batch loop).
                 if (!strata::core::conversation_checkpoint_save(ck, from, g, e) ||
                     !strata::core::conversation_checkpoint_restore(ck, to, g, e))
                     return false;
@@ -9912,11 +10003,40 @@ int main(int argc, char** argv) {
                 const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch slot restore: device sync failed"; return false; }
                 if (at != nullptr) {
-                    if (!strata::core::conversation_checkpoint_restore(k == 0 ? *at : at->stage_parts[k - 1], to, g, e))
+                    // The slot's checkpoint may belong to a conversation that was parked with its running state
+                    // coded (--session-state-codec bf16), so restoring it decodes, and decoding allocates host
+                    // memory. This path's failure is not fatal - the caller reads the prompt from token 0 - but it
+                    // has to be a reported refusal, not a bad_alloc escaping the batch loop. Reporting is guarded
+                    // the same way as the serve path's: the message is a literal or what(), never one assembled
+                    // here, because assembling it is what fails when there is no RAM left (strata/core/
+                    // conversation_report.hpp).
+                    const strata::core::ConversationCheckpoint& src = k == 0 ? *at : at->stage_parts[k - 1];
+                    const char* why_message = nullptr;
+                    bool ok = false;
+                    try {
+                        ok = strata::core::conversation_checkpoint_restore(src, to, g, e);
+                    } catch (const std::bad_alloc&) {
+                        why_message = "not enough RAM to widen the slot checkpoint's running state";
+                    } catch (const std::exception& ex) {
+                        why_message = ex.what();   // read here: the exception object is gone once this handler is left
+                    } catch (...) {
+                        why_message = "slot checkpoint restore failed";
+                    }
+                    if (!ok) {
+                        if (why_message != nullptr)   // it threw: `e` may hold a partial reason, the throw's is better
+                            why_message = strata::core::conversation_detail::report_restore(
+                                e, why_message, "slot checkpoint restore failed");
+                        else
+                            why_message = e.empty() ? "slot checkpoint restore failed" : e.c_str();
+                        std::fprintf(stderr, "strata batch: %s\n", why_message);
                         return false;
+                    }
                 } else {
                     strata::core::ConversationCheckpoint ck;
                     ck.ids = bs[(size_t) b].ids;
+                    // the reverse of the above: a slot-to-session transfer of the working state, fp32 for the same
+                    // reason (see copy_to_slot); a retained checkpoint reaches this path through `at` below and is
+                    // read from its own recorded codec
                     if (!strata::core::conversation_checkpoint_save(ck, from, g, e) ||
                         !strata::core::conversation_checkpoint_restore(ck, to, g, e))
                         return false;
@@ -10481,7 +10601,18 @@ int main(int argc, char** argv) {
                             if (strata::core::conversation_session_sizes(g, ss, z, why)) {
                                 const uint64_t q = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0);
                                 const uint64_t per = (uint64_t) z.tail + z.dead + z.block_pos;
-                                if (q == 0 || per <= (UINT64_MAX - z.gdn - z.ple) / q) state = z.gdn + z.ple + q * per;
+                                // The live state goes into the file the way `session_codec` writes it, so it is
+                                // priced that way: charging it at fp32 while capturing bf16 asks for twice what the
+                                // save then takes and refuses a save that fits (the same fix a park already has in
+                                // conversation_snapshot_bytes). block_pos is int32 positions and keeps its own size
+                                // whatever the codec, and with the option off state_codec_size is the identity, so
+                                // this is exactly the figure this preflight has always asked for.
+                                if (q == 0 || per <= (UINT64_MAX - z.gdn - z.ple) / q) {
+                                    const uint64_t coded = (uint64_t) strata::core::state_codec_size(
+                                        z.gdn + z.ple + q * ((uint64_t) z.tail + z.dead), session_codec);
+                                    const uint64_t pos = q * (uint64_t) z.block_pos;
+                                    if (coded <= UINT64_MAX - pos) state = coded + pos;
+                                }
                             }
                             sl.state_bytes = state;
                             sl.tokens = live.size();
@@ -10491,7 +10622,7 @@ int main(int argc, char** argv) {
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                         if (o.session_save_reclaim) {
                             const auto freed = strata::core::session_save_reclaim(
-                                checks, conversations, sl, floor, strata::core::available_host_bytes);
+                                checks, conversations, sl, session_codec, floor, strata::core::available_host_bytes);
                             if (freed.bytes || freed.checkpoints || freed.parked) {
                                 // A removed tail must not mark a later checkpoint at this length as a tail.
                                 if (tail_ckpt_len >= 0 && std::none_of(checks.begin(), checks.end(), [&](const auto& c) {
@@ -10514,12 +10645,13 @@ int main(int argc, char** argv) {
                         };
                         std::vector<ConvCheckpoint> disk_checks;
                         std::string why;
-                        if (!strata::core::session_save_checkpoints(checks, sl, admit, disk_checks, why)) {
+                        if (!strata::core::session_save_checkpoints(checks, sl, session_codec, admit, disk_checks, why)) {
                             refuse(why, strata::core::SessionError::memory);
                             continue;
                         }
                         kept = disk_checks.size();
-                        const strata::core::ConversationView view{live, live_imgs, disk_checks, cvec_cached};
+                        const strata::core::ConversationView view{live, live_imgs, disk_checks, cvec_cached,
+                                                                  session_codec};
                         strata::core::SavedConversation meta;
                         std::vector<strata::core::SessionKvSource> sources;
                         // the live running state comes off the device in one synchronous copy
@@ -11112,6 +11244,19 @@ int main(int argc, char** argv) {
                     if (!strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear();
                 }
                 cvec_cached = incoming->cvec;
+                // A parked image may hold its running state coded (strata/core/state_codec.hpp), and the chain it
+                // hands over keeps those bytes: nothing here widens the whole chain any more. A resumed conversation
+                // that only continues never pays for a checkpoint it does not use. The active chain is therefore
+                // mixed from this line on - coded snapshots imported from parking beside the fp32 ones this session
+                // captures itself - and every reader of a checkpoint reads the codec THAT checkpoint names, never
+                // the engine's configured one. The one snapshot a rewind selects is widened by
+                // conversation_checkpoint_restore, into the session's fp32 buffers, and the stored bytes it came
+                // from are left exactly as they were (see the `retained=` figure on the line below).
+                size_t retained_coded = 0, retained_coded_bytes = 0, retained_bytes = 0;
+                for (const ConvCheckpoint& k : checks) {
+                    retained_bytes += k.bytes();
+                    if (k.state_codec != 0) { ++retained_coded; retained_coded_bytes += k.bytes(); }
+                }
                 resume = parked.tokens;
                 from_live = parked.live;
                 if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
@@ -11124,6 +11269,14 @@ int main(int argc, char** argv) {
                              (long long) resume, from_live ? "live" : "checkpoint",
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes());
+                // Only said when the chain actually holds coded snapshots: a default fp32 park/resume logs exactly
+                // what it logged before.
+                if (retained_coded)
+                    std::fprintf(stderr, "strata serve: conversation cache: retained %zu checkpoint%s beside the "
+                                         "live state, %zu bytes of running state and token lists kept as stored "
+                                         "(%zu coded, %zu bytes of it): widened only for the one a rewind selects\n",
+                                 checks.size(), checks.size() == 1 ? "" : "s", retained_bytes, retained_coded,
+                                 retained_coded_bytes);
             }
             if (want_cvec != cvec_cached) {
                 live_ok = false;
@@ -11180,16 +11333,45 @@ int main(int argc, char** argv) {
                     reread_to = resume;
                     std::fprintf(stderr, "strata serve: STRATA_CKPT_REREAD: reading %lld tokens again instead of "
                                          "restoring\n", (long long) resume);
-                } else if (c == nullptr || !checkpoint_restore(*c, ss, g) || c->stage_parts.size() != stages.size() ||
-                           [&] {
-                               for (size_t i = 0; i < stages.size(); ++i) {
-                                   const strata::core::OnDevice on(stages[i]->dev);
-                                   if (!checkpoint_restore(c->stage_parts[i], stages[i]->ss, g)) return true;
-                               }
-                               return false;
-                           }()) {
-                    std::printf("ERR restoring a conversation checkpoint failed\n");
-                    return 1;
+                } else {
+                    // THE DEFERRED WIDENING. A checkpoint mounted from a parked image may hold its running state
+                    // coded, and this is the only point that decodes it: the ONE snapshot this request resumes
+                    // through goes into the session's fp32 buffers, every other retained snapshot keeps its bytes
+                    // and its `state_codec` exactly as they are. An allocation failure here is reported, not thrown
+                    // (checkpoint_restore), and the session may be half written, so the engine ends as it did before.
+                    const auto tc_rest = Clock::now();
+                    std::string why;
+                    bool bad = c == nullptr;
+                    if (!bad) bad = !checkpoint_restore(*c, ss, g, why);
+                    if (!bad && c->stage_parts.size() != stages.size()) {
+                        bad = true;
+                        try { why = "the checkpoint does not hold a part for every layer stage"; } catch (...) {}
+                    }
+                    for (size_t i = 0; !bad && i < stages.size(); ++i) {
+                        const strata::core::OnDevice on(stages[i]->dev);
+                        bad = !checkpoint_restore(c->stage_parts[i], stages[i]->ss, g, why);
+                    }
+                    if (bad) {
+                        std::printf("ERR restoring a conversation checkpoint failed%s%s\n",
+                                    why.empty() ? "" : ": ", why.c_str());
+                        return 1;
+                    }
+                    // Which checkpoint was selected, and whether it had to be widened on the way in. Only said when
+                    // the chain actually holds coded snapshots: the default fp32 path stays as quiet as it was.
+                    if (std::any_of(checks.begin(), checks.end(),
+                                    [](const ConvCheckpoint& k) { return k.state_codec != 0; })) {
+                        strata::core::StateCodec sel = strata::core::StateCodec::Fp32;
+                        strata::core::state_codec_by_code(c->state_codec, sel);
+                        const char* note = sel == strata::core::StateCodec::Fp32
+                            ? "fp32, no widening"
+                            : "widened into the session's fp32 buffers; its stored bytes are kept as they are";
+                        std::fprintf(stderr, "strata serve: conversation cache: resumed through the checkpoint at "
+                                             "%lld tokens (%s) in %.1f ms; the other %zu retained checkpoint%s were "
+                                             "not touched\n",
+                                     (long long) resume, note,
+                                     std::chrono::duration<double, std::milli>(Clock::now() - tc_rest).count(),
+                                     checks.size() - 1, checks.size() == 1 ? "" : "s");
+                    }
                 }
             }
             // KV streaming: the drafter's ring may hold cells past `resume` from a longer turn; the main layers'

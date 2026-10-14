@@ -9419,7 +9419,10 @@ int main(int argc, char **argv) try {
                         };
                         std::vector<ConvCheckpoint> disk_checks;
                         std::string why;
-                        if (!strata::core::session_save_checkpoints(checks, sl, admit, disk_checks, why)) {
+                        // Fp32: this port has no --session-state-codec, so the file holds the state exactly as the
+                        // chain does and the peak is the figure this call has always been priced at.
+                        if (!strata::core::session_save_checkpoints(checks, sl, strata::core::StateCodec::Fp32,
+                                                                    admit, disk_checks, why)) {
                             refuse(why, strata::core::SessionError::memory);
                             continue;
                         }

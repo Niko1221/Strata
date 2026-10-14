@@ -2,6 +2,7 @@
 // Built with -DSTRATA_BUILD_CONVERSATION_TESTS=ON; no CUDA, no model.
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/session_save_reclaim.hpp"
+#include "strata/core/state_codec.hpp"
 
 #include <array>
 #include <cerrno>
@@ -99,7 +100,8 @@ constexpr uint64_t kGoldenHash = 0x70f812b350360d09ull;
 
 bool same_checkpoint(const ConversationCheckpoint& a, const ConversationCheckpoint& b) {
     return a.ids == b.ids && a.imgs == b.imgs && a.gdn == b.gdn && a.ple == b.ple && a.tails == b.tails &&
-           a.dead == b.dead && a.block_pos == b.block_pos && a.used == b.used && b.stage_parts.empty();
+           a.dead == b.dead && a.block_pos == b.block_pos && a.used == b.used &&
+           a.state_codec == b.state_codec && b.stage_parts.empty();
 }
 
 bool same(const SavedConversation& a, const SavedConversation& b) {
@@ -244,7 +246,7 @@ int main() {
     // wrong version: header field patched and header hash recomputed so only the version differs
     {
         auto d = image;
-        uint32_t v = 2; std::memcpy(d.data() + 8, &v, 4);
+        uint32_t v = 3; std::memcpy(d.data() + 8, &v, 4);
         const uint64_t h = session_hash64(d.data(), 56, 0); std::memcpy(d.data() + 56, &h, 8);
         const fs::path p = dir / "ver.bin"; spit(p, d);
         check(rejects(p, id, "version"), "unknown version rejected");
@@ -644,28 +646,28 @@ int main() {
             check(session_deepest_checkpoint(pinned_chain) == &pinned_chain[0], "save: a pinned shared prefix beats a deeper checkpoint");
             check(session_deepest_checkpoint(chain) == &chain[1], "save: no pin, the deepest as before");
         }
-        const uint64_t need = session_save_peak_bytes(&chain[1], live);
+        const uint64_t need = session_save_peak_bytes(&chain[1], live, StateCodec::Fp32);
         check(need >= 2 * (uint64_t) chain[1].bytes() + 5000 + 4000 + (16u << 20) &&
               need <= 2 * (uint64_t) chain[1].bytes() + 5000 + 4000 + (18u << 20),
               "save: the peak counts two checkpoint copies, the live state, tokens and the buffer");
         SessionSaveLive huge = live;
         huge.state_bytes = UINT64_MAX;
-        check(session_save_peak_bytes(&chain[1], huge) == UINT64_MAX, "save: the peak saturates");
+        check(session_save_peak_bytes(&chain[1], huge, StateCodec::Fp32) == UINT64_MAX, "save: the peak saturates");
         std::vector<ConversationCheckpoint> out(1);
         std::string why;
         uint64_t asked = 0;
         bool empty_when_asked = false;
         const auto refuse = [&](uint64_t n, std::string& w) { asked = n; empty_when_asked = out.empty(); w = "low RAM"; return false; };
-        check(!session_save_checkpoints(chain, live, refuse, out, why) && why == "low RAM" && asked == need,
+        check(!session_save_checkpoints(chain, live, StateCodec::Fp32, refuse, out, why) && why == "low RAM" && asked == need,
               "save: the preflight is asked for the peak and can refuse");
         check(empty_when_asked && out.empty(), "save: refused before any copy (nothing copied)");
         bool same_chain = chain.size() == before.size();
         for (size_t i = 0; same_chain && i < chain.size(); ++i) same_chain = same_checkpoint(chain[i], before[i]);
         check(same_chain, "save: a refusal leaves the live checkpoints untouched");
         const auto agree = [&](uint64_t, std::string&) { return true; };
-        check(session_save_checkpoints(chain, live, agree, out, why) && out.size() == 1 &&
+        check(session_save_checkpoints(chain, live, StateCodec::Fp32, agree, out, why) && out.size() == 1 &&
               same_checkpoint(out[0], chain[1]), "save: admitted, the deepest checkpoint is copied");
-        check(session_save_checkpoints({}, live, agree, out, why) && out.empty(), "save: no checkpoints, none copied");
+        check(session_save_checkpoints({}, live, StateCodec::Fp32, agree, out, why) && out.empty(), "save: no checkpoints, none copied");
 #if defined(__linux__) && !defined(__SANITIZE_ADDRESS__) && !defined(STRATA_NO_RLIMIT_TEST)
         // under a real address-space limit that cannot hold one more copy: the refusal comes first, no bad_alloc;
         // and the same limit with an admitting preflight does fail at the copy (the test can see the difference)
@@ -686,9 +688,9 @@ int main() {
             std::string w;
             const auto low = [](uint64_t n, std::string& m) { m = "need " + std::to_string(n); return false; };
             bool refused = false;
-            try { refused = !session_save_checkpoints(fat, live, low, o2, w) && o2.empty(); } catch (...) { ::_exit(11); }
+            try { refused = !session_save_checkpoints(fat, live, StateCodec::Fp32, low, o2, w) && o2.empty(); } catch (...) { ::_exit(11); }
             if (!refused) ::_exit(12);
-            try { session_save_checkpoints(fat, live, agree, o2, w); } catch (const std::bad_alloc&) { ::_exit(0); }
+            try { session_save_checkpoints(fat, live, StateCodec::Fp32, agree, o2, w); } catch (const std::bad_alloc&) { ::_exit(0); }
             ::_exit(13);   // the copy fitted: the limit did not bite, the test proves nothing
         }
         int status = 0;
@@ -710,7 +712,7 @@ int main() {
         check(session_file_write(before_path.string(), expected, id, written, error), "reclaim: baseline file written");
         ConversationCache parked(1u << 20, 4);
         SessionSaveLive sl; sl.state_bytes = source.live.bytes(); sl.tokens = source.live.ids.size();
-        const auto freed = session_save_reclaim(source.checkpoints, parked, sl, 0,
+        const auto freed = session_save_reclaim(source.checkpoints, parked, sl, StateCodec::Fp32, 0,
                                                 [] { return std::optional<uint64_t>(0); });
         check(freed.checkpoints == 1, "reclaim: a non-selected checkpoint released");
         check(same_checkpoint(source.live, live_before), "reclaim: live state remains intact");
@@ -768,6 +770,68 @@ int main() {
         check(::stat(link.c_str(), &st) == 0 && (st.st_mode & 0777) == 0600, "the session file is mode 0600");
     }
 #endif
+
+    // ---- the running-state codec. A file whose checkpoints hold coded bytes is version 2 and says, per
+    // checkpoint, how they are held; a file whose checkpoints are fp32 is version 1 and is the golden bytes above.
+    {
+        auto coded_checkpoint = [](ConversationCheckpoint c) {
+            // the sample's arrays are arbitrary lengths; give this one whole floats so the coded size is exact
+            c.gdn = bytes_of(4096, 11); c.ple = bytes_of(76, 12); c.tails = bytes_of(300, 13); c.dead = bytes_of(64, 14);
+            std::string e;
+            for (auto* a : {&c.gdn, &c.ple, &c.tails, &c.dead}) {
+                const size_t floats = a->size() / 4;
+                std::vector<float> f(floats);
+                std::memcpy(f.data(), a->data(), floats * 4);
+                std::vector<uint8_t> out(state_codec_size(floats * 4, StateCodec::Bf16));
+                if (!state_encode(f.data(), floats, StateCodec::Bf16, out.data(), e)) return c;
+                a->swap(out);
+            }
+            c.state_codec = (uint8_t) StateCodec::Bf16;
+            return c;
+        };
+        SavedConversation coded_img = original;
+        coded_img.live = coded_checkpoint(coded_img.live);
+        coded_img.checkpoints[1] = coded_checkpoint(coded_img.checkpoints[1]);
+        check(coded_img.live.gdn.size() == 2048, "a coded checkpoint holds half the running state");
+        const fs::path coded = dir / "coded.bin";
+        size_t coded_bytes = 0;
+        check(session_file_write(coded.string(), coded_img, id, coded_bytes, error), "a coded image writes");
+        {
+            const std::vector<char> g = slurp(coded);
+            auto u32 = [&](size_t o) { uint32_t v = 0; for (int i = 3; i >= 0; --i) v = v << 8 | uint8_t(g[o + i]); return v; };
+            check(u32(8) == 2, "a file with coded state is version 2");
+            check(g.size() < slurp(good).size(), "and it is smaller than the same conversation as fp32");
+        }
+        SavedConversation back;
+        size_t read = 0;
+        check(session_file_read(coded.string(), id, back, read, error), "a coded file reads back");
+        check(same(coded_img, back), "and every array, every id and every checkpoint's codec come back unchanged");
+        check(back.live.state_codec == (uint8_t) StateCodec::Bf16 && back.checkpoints[0].state_codec == 0,
+              "each checkpoint keeps its own coding: one coded, one not");
+        // the engine's read limits are the fp32 sizes it can ever restore, which bound a coded file from above
+        SessionReadLimits limits;
+        limits.max_state_bytes = {4099, 77, 301, 64, 8};   // the sample's fp32 arrays, the checkpoint's own size
+        check(session_file_read(coded.string(), id, back, read, error, limits),
+              "the fp32 limits bound a coded file, which is smaller than they allow");
+        // the live checkpoint's codec u64: payload starts at 64, and the payload's own header is 18 geometry i64 +
+        // layer_lo + layer_hi + cvec = 168 bytes, so the first checkpoint record begins at 232
+        const size_t codec_at = 64 + 18 * 8 + 3 * 8;
+        for (uint64_t bogus : {7ull, 256ull}) {
+            auto d = slurp(coded);
+            for (int i = 0; i < 8; ++i) d[codec_at + i] = uint8_t(bogus >> (8 * i));
+            const fs::path p = dir / ("bogus-codec-" + std::to_string(bogus) + ".bin");
+            spit(p, d);
+            check(rejects(p, id, "codec"), "a checkpoint naming a codec this build cannot read is refused");
+        }
+        // a v2 file read as if it were v1 would misparse every checkpoint: it must be refused, not half-read
+        {
+            auto d = slurp(coded);
+            const uint32_t v1 = 1; std::memcpy(d.data() + 8, &v1, 4);
+            const uint64_t h = session_hash64(d.data(), 56, 0); std::memcpy(d.data() + 56, &h, 8);
+            const fs::path p = dir / "downgraded.bin"; spit(p, d);
+            check(rejects(p, id), "a coded file claiming to be version 1 is refused");
+        }
+    }
 
     fs::remove_all(dir);
     std::printf("conversation_file_test: %d checks passed\n", checks);
