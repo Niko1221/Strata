@@ -25,7 +25,8 @@ int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     const bool noflash = std::getenv("QSA_NOFLASH") != nullptr;
     mtl::Context cx;
-    const int lib = cx.compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+    // kv_q4.metal first: qsa.metal's optional q4 mode (function constant 25) uses its shared prelude
+    const int lib = cx.compile({"kv_q4.metal", "qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
     std::printf("device %s\n", cx.device_name().c_str());
     const int T = bench ? 2048 : 96, MAXC = 40000;
     mtl::Buffer kq = cx.alloc((size_t)MAXC * QKV * QD), vq = cx.alloc((size_t)MAXC * QKV * QD), ksc = cx.alloc(2 * (size_t)MAXC * QKV * 4),

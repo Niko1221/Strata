@@ -37,7 +37,9 @@ int main(int argc, char** argv) {
     }
     const int MAXT = 8, MAXC = std::max(4096, (P + 64) / 4 * 4 + 64);
     mtl::Context cx;
-    const int lib = cx.compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
+    // kv_q4.metal first: qsa.metal's optional q4 mode (function constant 25) uses its shared prelude - metal/'s
+    // concatenation convention (with fc 25 off, as here, the prelude is unused but harmless)
+    const int lib = cx.compile({"kv_q4.metal", "qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
     // QSA_TOPK=1: the v1 top-k; QSA_ATTN=1|2|3 (default 3): which attention (2 has its own chunking and merge)
     const int av = std::getenv("QSA_ATTN") ? std::atoi(std::getenv("QSA_ATTN")) : 1;
     const bool v2 = av == 2;
