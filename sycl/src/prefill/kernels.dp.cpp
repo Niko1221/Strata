@@ -4,6 +4,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/prefill/kernels.hpp"
+#include "strata/prefill/gdn_xe.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/router_top10.hpp"
@@ -16,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 
 namespace strata::prefill {
 namespace {
@@ -2600,6 +2602,25 @@ void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, i
     }
     check("gdn_conv");
 }
+// Variant 6, the Xe sub-group recurrence (gdn_xe.hpp): one barrier per token instead of five, the same bits.  Arc A770
+// (Coder IQ1_M, 128K context, int8 KV): recurrence 1.83 -> 0.92 s on an 8K prompt (+5% prompt tok/s), 7.3 -> 3.65 s on
+// 32K (+8%), the same output tokens.  On by default on Alchemist only (not measured on other cards).
+// STRATA_GDN_XE=0: the column kernels everywhere; STRATA_GDN_XE=1: variant 6 on any Intel GPU with 16-lane sub-groups.
+static bool gdn_xe_device(void* stream) {
+    const auto device = strata::q_of(stream)->get_device();
+    const auto subgroups = device.get_info<sycl::info::device::sub_group_sizes>();
+    const bool sg16 = std::find(subgroups.begin(), subgroups.end(), size_t(16)) != subgroups.end();
+    return sg16 && device.is_gpu() && device.get_info<sycl::info::device::vendor_id>() == 0x8086;
+}
+static bool gdn_xe_on(void* stream) {
+    static const bool on = [stream] {
+        const char* v = std::getenv("STRATA_GDN_XE");
+        if (v && *v) return std::atoi(v) != 0 && gdn_xe_device(stream);
+        return strata::intel_gpu_gen(strata::q_of(stream)->get_device()) == strata::IntelGpuGen::Alchemist &&
+               gdn_xe_device(stream);
+    }();
+    return on;
+}
 void gdn_recurrence_variant(int variant, float* state, const float* h, const float* gate, const float* beta,
                             const float* z, const float* gamma, float eps, float* y, uint16_t* y16, int64_t T,
                             void* stream, int64_t ld16) {
@@ -2648,7 +2669,10 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
     (void) variant;   // the quad recurrence kernels are AMD-only
 #endif
     static const bool serial = std::getenv("STRATA_GDN_REC_HEADS") != nullptr;   // the one-block-per-head kernel (A/B)
-    if (serial || T <= 0 || variant == 2) {
+    // variant 6 = the Xe sub-group recurrence + the unchanged norm kernel (gdn_recurrence: gdn_xe_on)
+    const bool xe = T > 0 && !serial && variant == 6;
+    if (xe && !gdn_xe_device(stream)) throw std::runtime_error("GDN Xe variant requires an Intel GPU with 16-lane sub-groups");
+    if (!xe && (serial || T <= 0 || variant == 2)) {
         /*
         DPCT1049: The work-group size passed to the SYCL kernel may exceed
         the limit. To get the device limit, query
@@ -2669,6 +2693,9 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
                     });
     } else {
         static const bool pipe = [] { const char* v = std::getenv("STRATA_GDN_PIPELINE"); return v == nullptr || std::atoi(v) != 0; }();
+        if (xe) {
+            detail::gdn_xe_launch(*strata::q_of(stream), state, h, gate, beta, y, T);
+        } else
 #if !defined(__HIPCC__)
         if (pipe && gdn_keyhead_ok())   // the value heads of a key head in one thread (same bits)
         {
@@ -2740,7 +2767,8 @@ void gdn_recurrence(float* state, const float* h, const float* gate, const float
     // (AMD builds only; the arch defaults set STRATA_GDN_HEAD=1 on gfx1151 and leave other cards on the earlier kernels)
     static const bool head = [] { const char* v = std::getenv("STRATA_GDN_HEAD"); return v != nullptr && std::atoi(v) != 0; }();
     static const bool serial = std::getenv("STRATA_GDN_REC_HEADS") != nullptr;
-    gdn_recurrence_variant(head && !serial ? 1 : 0, state, h, gate, beta, z, gamma, eps, y, y16, T, stream, ld16);
+    const int v = head && !serial ? 1 : (!serial && gdn_xe_on(stream)) ? 6 : 0;
+    gdn_recurrence_variant(v, state, h, gate, beta, z, gamma, eps, y, y16, T, stream, ld16);
 }
 void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t n_expert, void* stream) {
     if (n_expert == 512)
@@ -2934,7 +2962,8 @@ void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int
     check("gather_rows16");
 }
 void moe_combine(const float* Dm, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
-                 int64_t T, void* stream) {
+                 int64_t T, void* stream, const float* row_sd) {
+    if (row_sd != nullptr) { std::fprintf(stderr, "moe_combine: per-row scales (NVFP4) are CUDA only\n"); std::exit(1); }
 #ifndef STRATA_W_NO_COMB
     if (((reinterpret_cast<uintptr_t>(Dm) | reinterpret_cast<uintptr_t>(shared) | reinterpret_cast<uintptr_t>(bo)) & 15) == 0) {
         {

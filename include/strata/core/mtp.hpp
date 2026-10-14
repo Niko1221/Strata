@@ -20,6 +20,7 @@
 #pragma once
 
 #include "strata/core/layer.hpp"
+#include "strata/core/pinned_ring.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/sampler.hpp"
 
@@ -81,6 +82,7 @@ public:
     /// The main model's embedding and head, and the verify window's final residuals (T rows, hc*n_embd each).
     bool bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err,
               const MtpDrafter* shared = nullptr);
+    void set_window_R(const float* window_R) { window_R_ = window_R; }
 
     /// Prompt cells [cell0, cell0 + n): residual rows `R_rows` (device, hc*n_embd each) and `next_tokens` (host,
     /// the token at position cell+1).  Runs in batches of up to max_t rows.  `sync` false: returns without waiting
@@ -144,6 +146,8 @@ public:
     const float* chain_prob() const { return chain_prob_; }
 
     double ms_draft = 0, ms_prefill = 0;
+    double ms_src = 0;      ///< the host time spent staging the source rows (a cross-card copy when the drafter is on another card)
+    int64_t n_src = 0;
     int64_t rounds = 0;
 
     /// E-9: the prompt path computes this layer's prompt K/V in batches (Prefill::draft_kv): its tensors, its K/V
@@ -227,6 +231,7 @@ private:
     cudaStream_t cs_ = nullptr;
     cudaGraphExec_t prefill_exec_[9] = {};
     cudaGraphExec_t prefill_dev_exec_[9] = {};
+    PinnedRing pf_ring_;          ///< #1996: the records above go up from a pinned slot, not from the pageable vector they are built in
     int32_t* pf_dev_ = nullptr;   ///< E-4: a prompt's rows' token / step / position records, uploaded at once
     int64_t pf_cap_ = 0;          ///< its capacity in ints
     cudaStream_t side_ = nullptr;                    // the shared expert's branch of the draft graphs (CUDA)

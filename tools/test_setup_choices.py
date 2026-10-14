@@ -122,7 +122,7 @@ class GgufDirUnsupported(unittest.TestCase):
         self.assertEqual(msg, "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf is UD-IQ3_XXS, a GGUF Strata "
                               "cannot run")
         self.assertIn("ISTA-DASLab's GSQ-RCO files", hint)
-        self.assertIn("Unsloth's UD-Q4_K_XL and UD-IQ4_XS only", hint)
+        self.assertIn("Unsloth's UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 only", hint)
 
     def test_a_folder_without_the_choice_names_what_is_there(self):
         gsq = ["Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-%05d-of-00002.gguf" % i for i in (1, 2)]
@@ -145,7 +145,7 @@ class GgufDirUnsupported(unittest.TestCase):
             code, out, _, _ = install(ram, found, ["--gguf-dir", d, "--family", "unsloth", "--model", "IQ3_XXS"])
         self.assertEqual(code, 1)
         self.assertIn("has no IQ3_XXS model file", out)
-        self.assertIn("choose one of: UD-IQ4_XS, UD-Q4_K_XL (or IQ3_XXS: --family qwen --model IQ3_XXS, --family swift --model "
+        self.assertIn("choose one of: UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL, Q8_0 (or IQ3_XXS: --family qwen --model IQ3_XXS, --family swift --model "
                       "IQ3_XXS)", out)
         self.assertIn("Strata runs ISTA-DASLab's GSQ-RCO files", out)
 
@@ -614,3 +614,50 @@ class HostCompilers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CalibrateWithModel(unittest.TestCase):
+    """#2036: --calibrate --model X tunes model X (it used to fall through to a plain re-setup); a model that is not
+    installed is an error that says so; --calibrate with --setup or --check says it does nothing."""
+
+    def run_main(self, *argv, installed=("iq3_xxs", "q2_0")):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cfgs = []
+        for tag in installed:
+            p = Path(tmp.name) / f"strata-{tag}.json"
+            p.write_text(json.dumps({"exe": "x", "args": ["--max-context", "8192"], "model_name": tag}))
+            cfgs.append(p)
+        tuned = []
+        with mock.patch.object(sys, "argv", ["setup.py", *argv]), \
+                mock.patch.object(setup, "installed_configs", lambda: cfgs), \
+                mock.patch.object(setup, "update_installed_engine", lambda *a, **k: None), \
+                mock.patch.object(setup, "calibrate_config", lambda c: tuned.append(c.name) or True), \
+                mock.patch.object(setup, "start", lambda *a, **k: 0), \
+                mock.patch.object(setup, "data_folder", lambda d: (Path(tmp.name), [])), \
+                mock.patch.object(setup, "step", side_effect=SystemExit("reached the plain setup")):
+            try:
+                code, out = quiet(setup.main)
+            except SystemExit as e:
+                code, out = e.code, ""
+        return code, tuned
+
+    def test_model_is_the_target(self):
+        code, tuned = self.run_main("--calibrate", "--model", "IQ3_XXS", "--yes", "--no-start")
+        self.assertEqual((code, tuned), (0, ["strata-iq3_xxs.json"]))
+
+    def test_a_model_not_installed_is_an_error(self):
+        code, tuned = self.run_main("--calibrate", "--model", "IQ3_S", "--yes", "--no-start")
+        self.assertEqual((code, tuned), (1, []))
+
+    def test_targets(self):
+        with tempfile.TemporaryDirectory() as d:
+            ps = []
+            for tag in ("iq3_xxs", "q2_0"):
+                p = Path(d) / f"strata-{tag}.json"
+                p.write_text(json.dumps({"args": []}))
+                ps.append(p)
+            self.assertEqual(setup.calibration_targets(ps, None, None), ps)
+            self.assertEqual(setup.calibration_targets(ps, "Q2_0", None), [ps[1]])
+            self.assertEqual(setup.calibration_targets(ps, "Q2_0", "qwen"), [ps[1]])
+            self.assertEqual(setup.calibration_targets(ps, "Q4_K_M", None), [])

@@ -324,6 +324,31 @@ class ImageMarkers(unittest.TestCase):
                     self.assertIn("<|image_pad|> marks" if "docs" in text else "plain", tok.decode(ids))
             svc.embeddings.path.unlink(missing_ok=True)
 
+    def test_pictures_are_keyed_by_their_bytes_for_the_engine(self):
+        """#2228: each picture's key (its normalized bytes' hash: the encoder's file name) goes to the engine as
+        img_keys=, in prompt order, so the conversation cache does not depend on the embedding floats."""
+        import tempfile
+        tok = ByteTokenizer()
+        with tempfile.TemporaryDirectory() as d:
+            class Keyed(self.FakeVision):
+                def encode(self, source):
+                    p = self.dir / ("0123456789abcdef0123456789abcdef.sve" if source == "a.png" else
+                                    "fedcba9876543210fedcba9876543210.sve")
+                    p.write_bytes(b"rows")
+                    return p, 3
+            svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                          vision=Keyed(d))
+            msgs = [{"role": "user", "content": [{"type": "image", "source": "b.png"}, {"type": "text", "text": "and"},
+                                                 {"type": "image", "source": "a.png"}]}]
+            svc.prepare(msgs, None, {})
+            self.assertEqual(svc.embeddings.keys, ["fedcba9876543210", "0123456789abcdef"])
+            svc.embeddings.path.unlink(missing_ok=True)
+        keys = StrataEngine.sampling_keys({"strata_img_keys": ["fedcba9876543210", "0123456789abcdef"]})
+        self.assertEqual(keys, " img_keys=fedcba9876543210,0123456789abcdef")
+        for bad in ([], ["XYZ"], ["ab cd"], "abc", [3]):   # never sent malformed: the engine falls back to the embeddings
+            with self.subTest(bad=bad):
+                self.assertNotIn("img_keys", StrataEngine.sampling_keys({"strata_img_keys": bad}))
+
     def test_anthropic_tool_result_image(self):
         """Claude Code's Read of a picture returns it inside a tool_result: it reaches the encoder, in place."""
         import tempfile
@@ -2342,6 +2367,92 @@ class StartFailureLog(unittest.TestCase):
             self.assertNotIn("an earlier start", text)
 
 
+class StartCrashReported(unittest.TestCase):
+    """#2324: an engine the system ends at the start (SIGILL on a CPU without AVX, a bad memory access, the OOM killer)
+    writes nothing to its log.  It used to be retried 3 times as "stopped while the GPU runtime was starting" and the
+    error showed only the launcher's own line.  Now a crash is not retried, and the error names how the process ended."""
+
+    def run_fake(self, code, retries=3):
+        import contextlib
+        import io
+        import serve.server as server
+        with tempfile.TemporaryDirectory() as d:
+            script, log = Path(d) / "fake_strata.py", Path(d) / "strata.log"
+            script.write_text(code, encoding="utf-8")
+            real = server.subprocess.Popen
+            out = io.StringIO()
+            with mock.patch.object(server.subprocess, "Popen",
+                                   lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)), \
+                    mock.patch.object(server, "narrate_start", lambda *a, **k: None), \
+                    mock.patch.object(server, "START_RETRIES", retries), \
+                    mock.patch.object(server.time, "sleep", lambda s: None), \
+                    contextlib.redirect_stdout(out):
+                with self.assertRaises(RuntimeError) as cm:
+                    StrataEngine("strata", [], log=str(log))
+            return str(cm.exception), out.getvalue()
+
+    def test_status_words(self):
+        from serve.server import engine_crashed, engine_exit_words
+        self.assertEqual(engine_exit_words(None), "")
+        self.assertEqual(engine_exit_words(2), "exit code 2")
+        self.assertIn("illegal instruction", engine_exit_words(0xC000001D).lower())
+        self.assertIn("DLL", engine_exit_words(0xC0000135))
+        self.assertTrue(engine_crashed(0xC000001D) and engine_crashed(0xC0000005))
+        self.assertFalse(engine_crashed(0) or engine_crashed(1) or engine_crashed(2) or engine_crashed(None))
+        if os.name != "nt":
+            import signal
+            self.assertIn("signal 4 (SIGILL", engine_exit_words(-int(signal.SIGILL)))
+            for sig in (signal.SIGILL, signal.SIGSEGV, signal.SIGBUS, signal.SIGFPE, signal.SIGKILL):
+                self.assertTrue(engine_crashed(-int(sig)), sig)
+            self.assertFalse(engine_crashed(-int(signal.SIGABRT)))     # the ROCm teardown abort stays a retry
+            self.assertFalse(engine_crashed(-int(signal.SIGTERM)))
+
+    def test_a_crash_is_not_a_transient_start(self):
+        from serve.server import transient_start_failure
+        d = tempfile.mkdtemp()
+        p = Path(d) / "engine.log"
+        p.write_text("[strata] 2026-10-13 17:49:15 engine started: /x/strata --serve\n", encoding="utf-8")
+        self.assertTrue(transient_start_failure(str(p), 0, 3.0, 0))         # a silent plain exit: the old retry
+        self.assertTrue(transient_start_failure(str(p), 0, 3.0, -6))        # SIGABRT (ROCm teardown)
+        self.assertFalse(transient_start_failure(str(p), 0, 3.0, 1))        # the engine's own error exit
+        self.assertFalse(transient_start_failure(str(p), 0, 3.0, 0xC000001D))
+        if os.name != "nt":
+            import signal
+            for sig in (signal.SIGILL, signal.SIGSEGV, signal.SIGBUS, signal.SIGKILL):
+                self.assertFalse(transient_start_failure(str(p), 0, 3.0, -int(sig)), sig)
+        # the runtime's own words keep it a retry whatever the status
+        p.write_text("[strata] x engine started\nterminate called after throwing an instance of "
+                     "'rocr::AMD::hsa_exception'\n", encoding="utf-8")
+        self.assertTrue(transient_start_failure(str(p), 0, 3.0, -6))
+
+    @unittest.skipIf(os.name == "nt", "signals")
+    def test_sigill_is_reported_not_retried(self):
+        text, said = self.run_fake("import os, signal\nos.kill(os.getpid(), signal.SIGILL)\n")
+        self.assertIn("exited before it was ready", text)
+        self.assertIn("the engine process ended: killed by signal 4 (SIGILL", text)
+        self.assertIn("An illegal instruction: the engine ran an instruction this CPU cannot execute", text)
+        self.assertIn("the engine itself wrote nothing", text)
+        self.assertNotIn("starting it again", said)                        # not retried
+        self.assertNotIn("GPU runtime", text + said)                       # and never called a GPU runtime start
+
+    @unittest.skipIf(os.name == "nt", "signals")
+    def test_a_silent_exit_is_retried_without_claiming_the_gpu_runtime(self):
+        text, said = self.run_fake("import sys\nsys.exit(0)\n", retries=2)
+        self.assertEqual(said.count("starting it again"), 2)
+        self.assertIn("the engine exited before it wrote anything to its log (exit code 0)", said)
+        self.assertNotIn("stopped while the GPU runtime was starting", said)
+        self.assertIn("the engine process ended: exit code 0", text)
+
+    @unittest.skipIf(os.name == "nt", "signals")
+    def test_the_runtimes_own_failure_is_named(self):
+        code = ("import os, sys\nsys.stderr.write(\"terminate called after throwing an instance of 'rocr::AMD::hsa_exception'"
+                "\\n\")\nsys.stderr.flush()\nos._exit(134)\n")
+        text, said = self.run_fake(code, retries=1)
+        self.assertEqual(said.count("starting it again"), 1)
+        self.assertIn("stopped while the GPU runtime was starting", said)
+        self.assertIn("hsa_exception", text)                               # the engine's own last line is in the error
+
+
 class StartNarrator(unittest.TestCase):
     """#505: the start's words say what happens to the experts - --mmap-experts loads nothing into RAM up front."""
 
@@ -3384,6 +3495,97 @@ class SharingTheGpu(unittest.TestCase):
         self.assertFalse(mark.exists())
         self.assertEqual(self.chat()[0], 200)
         self.assertTrue(mark.exists())
+
+    def _raw_chat(self):
+        r = urllib.request.Request(self.base + "/v1/chat/completions",
+                                   data=json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}]}).encode(),
+                                   headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(r, timeout=30) as resp:
+                return resp.status, dict(resp.headers), json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, dict(e.headers), json.loads(e.read())
+
+    def test_failing_before_load_with_free_vram_still_loads(self):
+        """#1997: a peer that is not running makes `curl` exit 7; the card has room, so the model loads."""
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(7)"]
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 20000
+        self.svc.unload()
+        self.assertEqual(self._raw_chat()[0], 200)
+        self.assertEqual(self.engine.starts, 1)
+
+    def test_failing_before_load_with_full_vram_refuses_with_503_and_retry_after(self):
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(3)"]
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 2000
+        self.svc.unload()
+        self.svc.vram_free_wait_s = 0.2                              # (not the 15 s wait for memory)
+        status, headers, body = self._raw_chat()
+        self.assertEqual(status, 503)
+        self.assertIn("exited with code 3", body["error"]["message"])
+        self.assertTrue(int(headers["Retry-After"]) > 0)
+        self.assertFalse(self.engine.alive())
+        self.assertEqual(self.engine.starts, 0)
+        self.svc.free_vram_mib = lambda: 20000                      # the peer let go: the next try loads
+        self.assertEqual(self._raw_chat()[0], 200)
+
+    def test_before_load_strict_refuses_even_with_free_vram(self):
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(7)"]
+        self.svc.before_load_strict = True
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 20000
+        self.svc.unload()
+        status, headers, body = self._raw_chat()
+        self.assertEqual(status, 503)
+        self.assertTrue(int(headers["Retry-After"]) > 0)
+        self.assertEqual(self.engine.starts, 0)
+
+    def test_failing_before_load_without_a_vram_limit_loads(self):
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(7)"]
+        self.svc.unload()
+        self.assertEqual(self._raw_chat()[0], 200)
+
+    def test_before_load_timeout_is_configurable_and_a_timeout_refuses(self):
+        self.svc.before_load = [sys.executable, "-c", "import time; time.sleep(30)"]
+        self.svc.before_load_timeout_s = 0.5
+        self.svc.before_load_strict = True
+        self.svc.unload()
+        t0 = time.time()
+        status, headers, body = self._raw_chat()
+        self.assertEqual(status, 503)
+        self.assertLess(time.time() - t0, 10)
+        self.assertIn("before_load_timeout_s", body["error"]["message"])
+        self.assertFalse(self.engine.alive())
+
+    def test_before_load_failure_can_be_ignored_by_config(self):
+        self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(1)"]
+        self.svc.before_load_ignore_failure = True
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 2000                       # full, but ignore means load
+        self.svc.unload()
+        self.assertEqual(self._raw_chat()[0], 200)
+
+    def test_unload_wait_waits_for_the_running_turn(self):
+        """#1997: POST /unload answers busy at once (409); with ?wait=1 it waits for the turn and then unloads."""
+        self.svc.fifo.acquire()
+        threading.Timer(1.0, self.svc.fifo.release).start()
+        t0 = time.time()
+        self.assertEqual(self.req("/unload", {}), (409, {"status": "busy"}))
+        self.assertLess(time.time() - t0, 0.9)
+        status, body = self.req("/unload?wait=1", {})
+        self.assertEqual((status, body), (200, {"status": "unloaded"}))
+        self.assertGreaterEqual(time.time() - t0, 0.9)
+        self.assertFalse(self.engine.alive())
+
+    def test_unload_wait_gives_up_after_the_given_seconds(self):
+        with self.svc.fifo:
+            t0 = time.time()
+            self.assertEqual(self.req("/unload?wait=0.6", {}),
+                             (409, {"status": "busy"}))
+            self.assertLess(time.time() - t0, 5)
+        self.assertTrue(self.engine.alive())
 
     def test_vision_encoder_unloads_and_starts_first(self):
         order = []
@@ -5348,3 +5550,72 @@ class UntimedReads(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrepareCancelled(unittest.TestCase):
+    """#1999: a client that leaves while its pictures are prepared gives the turn up and encodes nothing more."""
+
+    def make(self, d, vision):
+        tok = ByteTokenizer()
+        return Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                       vision=vision(d))
+
+    @staticmethod
+    def msgs(n=2):
+        return [{"role": "user", "content": [{"type": "text", "text": "look"}] +
+                 [{"type": "image", "source": f"{i}.png"} for i in range(n)]}]
+
+    def test_cancel_before_the_encode_runs_none(self):
+        import tempfile
+        calls = []
+
+        class V(ImageMarkers.FakeVision):
+            def encode(self, source):
+                calls.append(source)
+                return self.rows, 3
+        with tempfile.TemporaryDirectory() as d:
+            svc = self.make(d, V)
+            cancel = threading.Event()
+            cancel.set()
+            from serve.server import ClientGone
+            with self.assertRaises(ClientGone):
+                svc.prepare(self.msgs(), None, {}, cancel=cancel)
+            self.assertEqual(calls, [])
+            self.assertTrue(svc.fifo.acquire(blocking=False))        # the turn was not left held
+            svc.fifo.release()
+
+    def test_cancel_while_waiting_for_the_turn(self):
+        import tempfile
+        from serve.server import ClientGone
+        with tempfile.TemporaryDirectory() as d:
+            svc = self.make(d, ImageMarkers.FakeVision)
+            cancel = threading.Event()
+            threading.Timer(0.3, cancel.set).start()
+            with svc.fifo:                                          # another request holds the engine
+                t0 = time.perf_counter()
+                with self.assertRaises(ClientGone):
+                    svc.prepare(self.msgs(1), None, {}, cancel=cancel)
+                self.assertLess(time.perf_counter() - t0, 3)
+
+    def test_cancel_between_pictures_stops_the_next_encode(self):
+        import tempfile
+        from serve.server import ClientGone, Vision
+        cancel, seen = threading.Event(), []
+        v = Vision.__new__(Vision)
+
+        def encode(src, keep=()):
+            seen.append(src)
+            cancel.set()                                            # the client leaves during the first encode
+            return Path("x"), 3
+        v.encode = encode
+        with self.assertRaises(ClientGone):
+            v.encode_all([b"a", b"b", b"c"], cancel)
+        self.assertEqual(seen, [b"a"])
+
+    def test_without_cancel_nothing_changes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            svc = self.make(d, ImageMarkers.FakeVision)
+            ids, _, _ = svc.prepare(self.msgs(), None, {}, cancel=threading.Event())
+            self.assertEqual(ids.count(ByteTokenizer().encode("<|image_pad|>", parse_special=True)[0]), 6)
+            svc.embeddings.path.unlink(missing_ok=True)

@@ -14,6 +14,7 @@
 // The two agree to float rounding and not to the bit, which is the same contract `s_gemv_parity` carries for
 // the same reason.  `bench/micro/moe_hit_parity.cu` is the check.
 #include "strata/kernels/s2_expert_grouped.hpp"
+#include "strata/core/geometry.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/f16_bits.hpp"
 
@@ -37,6 +38,7 @@ namespace {
 // are what the CPU kernel's indexing computes, and `moe_hit_parity` compares the two end to end.
 constexpr int H = 2560;
 constexpr int FF = 640;
+static_assert(H == strata::core::kCompiledGeometry.n_embd && FF == strata::core::kCompiledGeometry.n_ff, "s2_expert_grouped is compiled for core/geometry.hpp");
 constexpr int QK = 64;                       // Q2_0's group: one fp16 scale per 64 weights
 constexpr int ROW_GU = H / 4;                // 640 B of codes per gate/up row (2 bits per element)
 constexpr int ROW_D = FF / 4;                // 160 B per down row

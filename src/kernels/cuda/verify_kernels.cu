@@ -3,6 +3,7 @@
 // The per-token arithmetic of every kernel here is transcribed from its single-token original (fused_gdn.cu,
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
 #include "strata/kernels/verify_kernels.hpp"
+#include "strata/core/geometry.hpp"
 #include "strata/core/emulate.hpp"
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
 #include "strata/kernels/dp4a.hpp"
@@ -24,6 +25,7 @@ namespace strata::kernels {
 namespace {
 
 constexpr int S = 128;          // GDN state size
+static_assert(S == strata::core::kCompiledGeometry.ssm_state_size, "verify_kernels is compiled for core/geometry.hpp");
 constexpr int RG = 4;
 constexpr int RPG = S / RG;
 
@@ -170,6 +172,10 @@ __global__ void __launch_bounds__(S) gdn_conv_ab_kernel(int conv_blocks, float* 
 // (48 * 4 = 192 blocks of 128 threads across all SMs, vs 48 blocks of 512 threads), with no sq/o/norm/z/y work.
 // DBG (STRATA_DBG_GDN=1, #937): a window count the launch never allowed (n_keep is read from device memory; n_max is the
 // rows the window holds) is reported and the commit skipped, where the fault would be a memory-aperture violation
+__device__ __forceinline__ void gdn_step_commit_body(float* __restrict__ state, const float* __restrict__ hbuf, int C,
+                                                     const float* __restrict__ gate, const float* __restrict__ beta,
+                                                     int h_k, int h_v, int n);
+
 template <bool DBG>
 __global__ void __launch_bounds__(32 * RG) gdn_step_commit_kernel(float* __restrict__ state,
                                                                   const float* __restrict__ hbuf, int C,
@@ -184,6 +190,46 @@ __global__ void __launch_bounds__(32 * RG) gdn_step_commit_kernel(float* __restr
             printf("strata DBG: gdn_step_commit: n_keep %d is past the window's %d rows: commit skipped (#937)\n", n, n_max);
         return;
     }
+    gdn_step_commit_body(state, hbuf, C, gate, beta, h_k, h_v, n);
+}
+
+// engine-latency: gdn_step_commit_kernel for every GDN layer of the commit in one launch (blockIdx.z = the layer); each
+// layer's blocks run gdn_step_commit_body on that layer's state and rows, exactly as its own launch did
+__global__ void __launch_bounds__(32 * RG) gdn_step_commit_layers_kernel(float* __restrict__ state, long long state_stride,
+                                                                         const float* __restrict__ hbuf, long long h_stride,
+                                                                         int C, const float* __restrict__ gate,
+                                                                         const float* __restrict__ beta, long long gb_stride,
+                                                                         int h_k, int h_v, const int32_t* __restrict__ n_keep) {
+    const int n = *n_keep;
+    if (n <= 0) return;
+    const long long z = blockIdx.z;
+    gdn_step_commit_body(state + z * state_stride, hbuf + z * h_stride, C, gate + z * gb_stride, beta + z * gb_stride, h_k,
+                         h_v, n);
+}
+
+// engine-latency: gdn_conv_commit_kernel for every GDN layer in one launch (blockIdx.y = the layer)
+__global__ void gdn_conv_commit_layers_kernel(float* __restrict__ hist0, long long hist_stride, const float* __restrict__ qkv0,
+                                              long long qkv_stride, int C, const int32_t* __restrict__ n_keep) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= C) return;
+    const int n = *n_keep;
+    if (n <= 0) return;
+    float* hist = hist0 + (long long) blockIdx.y * hist_stride;
+    const float* qkv = qkv0 + (long long) blockIdx.y * qkv_stride;
+    float seq[3];
+#pragma unroll
+    for (int j = 0; j < 3; ++j) {
+        const int src = n + j;          // the last three of [hist(3) | x_0..x_{n-1}]
+        seq[j] = src < 3 ? hist[c * 3 + src] : qkv[(size_t) (src - 3) * C + c];
+    }
+    hist[c * 3] = seq[0];
+    hist[c * 3 + 1] = seq[1];
+    hist[c * 3 + 2] = seq[2];
+}
+
+__device__ __forceinline__ void gdn_step_commit_body(float* __restrict__ state, const float* __restrict__ hbuf, int C,
+                                                     const float* __restrict__ gate, const float* __restrict__ beta,
+                                                     int h_k, int h_v, int n) {
     __shared__ float sk[S];
     __shared__ float red[RG][32];
     const int head = blockIdx.x;
@@ -968,6 +1014,29 @@ void gdn_conv_commit(float* history, const float* qkv, int channels, const int32
     gdn_conv_commit_kernel<<<(unsigned) ((channels + 255) / 256), 256, 0, (cudaStream_t) stream>>>(history, qkv,
                                                                                                  channels, n_keep);
     check("gdn_conv_commit");
+}
+
+bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, const float* qkv, int64_t qkv_stride,
+                       const float* h, int64_t h_stride, const float* gate, const float* beta, int64_t gb_stride,
+                       int conv_channels, int h_k, int h_v, int n_max, int n_layers, const int32_t* n_keep, void* stream) {
+    // the per-layer commit's kernel choice (gdn_step_norm_multi below): only its state-only kernel is batched here
+    static const bool per_layer = [] {
+        const char* sp = std::getenv("STRATA_GDN_SPLIT");
+        const char* cs = std::getenv("STRATA_GDN_COMMIT_SPLIT");
+        const char* dbg = std::getenv("STRATA_DBG_GDN");
+        return (sp && sp[0] == '1') || (cs && cs[0] == '0') || (dbg && dbg[0] == '1');
+    }();
+    if (per_layer || n_layers <= 0 || n_layers > 65535 || n_max < 1 || n_max > kVerifyMaxT || n_keep == nullptr ||
+        h_v <= 0 || h_k <= 0 || h_v % h_k != 0)
+        return false;
+    cudaStream_t st = (cudaStream_t) stream;
+    gdn_conv_commit_layers_kernel<<<dim3((unsigned) ((conv_channels + 255) / 256), (unsigned) n_layers), 256, 0, st>>>(
+        state + conv_off, (long long) state_stride, qkv, (long long) qkv_stride, conv_channels, n_keep);
+    gdn_step_commit_layers_kernel<<<dim3((unsigned) h_v, 4u, (unsigned) n_layers), dim3(32, RG), 0, st>>>(
+        state, (long long) state_stride, h, (long long) h_stride, conv_channels, gate, beta, (long long) gb_stride, h_k, h_v,
+        n_keep);
+    check("gdn_commit_layers");
+    return true;
 }
 
 void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_beta, const float* dt, const float* ssm_a,

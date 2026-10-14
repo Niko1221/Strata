@@ -4,6 +4,7 @@
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/sycl_doorbell.hpp"
@@ -30,6 +31,7 @@ namespace strata::kernels {
 namespace {
 
 constexpr int S = 128;          // GDN state size
+static_assert(S == strata::core::kCompiledGeometry.ssm_state_size, "verify_kernels is compiled for core/geometry.hpp");
 constexpr int RG = 4;
 constexpr int RPG = S / RG;
 
@@ -2364,8 +2366,15 @@ namespace {
 const int32_t* g_mirror_res = nullptr;
 const unsigned long long* g_mirror_table = nullptr;
 int32_t* g_usage = nullptr;
+long long g_mirror_entries = 0;   // 0: unchecked
+// #1980: the layer slice `res_layer` belongs to the table the mirror was set for (a later stage passes its own)
+bool in_mirror_table(const int32_t* res_layer) {
+    if (g_mirror_res == nullptr || res_layer < g_mirror_res) return false;
+    return g_mirror_entries <= 0 || res_layer - g_mirror_res < g_mirror_entries;
 }
-void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table, int32_t* usage) {
+}
+void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table, int32_t* usage, long long entries) {
+    g_mirror_entries = entries;
     g_usage = usage;
     g_mirror_res = d_res;
     g_mirror_table = mirror_table;
@@ -2375,9 +2384,8 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
                    long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err) {
     const unsigned long long* mir = nullptr;   // SYCL port: the layer's slice of the host-mirror table, if any
     int32_t* use = nullptr;                    // the layer's slice of the device routing counts, if on
-    if (g_mirror_table != nullptr && g_mirror_res != nullptr && res_layer >= g_mirror_res)
-        mir = g_mirror_table + (res_layer - g_mirror_res);
-    if (g_usage != nullptr && g_mirror_res != nullptr && res_layer >= g_mirror_res) use = g_usage + (res_layer - g_mirror_res);
+    if (g_mirror_table != nullptr && in_mirror_table(res_layer)) mir = g_mirror_table + (res_layer - g_mirror_res);
+    if (g_usage != nullptr && in_mirror_table(res_layer)) use = g_usage + (res_layer - g_mirror_res);
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};

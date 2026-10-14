@@ -27,6 +27,11 @@
 #include <string>
 #include <vector>
 
+namespace strata::kernels {
+// SYCL port only (iq_kernels.dp.cpp): the K-quant / Q5_1 / Q8_0 lane kernels with (true, the default) or without the
+// multi-entry split; STRATA_KQ_SPLIT=0 at startup is false
+void native_expert_set_kq_split(bool on);
+}
 namespace k = strata::kernels;
 
 namespace {
@@ -85,7 +90,7 @@ std::vector<uint8_t> random_rows(int t, int64_t rows, int64_t n, std::mt19937& r
             // (Q4_K / Q5_K: 2^-14 .. 2^-11, their 6-bit sub-scales multiply it by up to 63)
             const int e = (t == 12 || t == 13) ? 1 + ex(rng) % 4 : ex(rng);
             const uint16_t h = (uint16_t) ((sgn(rng) ? 0x8000 : 0) | (e << 10) | man(rng));
-            std::memcpy(&w[o], &h, 2);
+            std::memcpy(&w[o + (t == 14 ? 208 : 0)], &h, 2);   // Q6_K keeps its fp16 scale last (ql, qh, scales, d)
             if (t == 12 || t == 13 || t == 7) {   // Q4_K / Q5_K: dmin, Q5_1: m - the second fp16, as small
                 const int em = (t == 7) ? ex(rng) : 1 + ex(rng) % 4;
                 const uint16_t m = (uint16_t) ((sgn(rng) ? 0x8000 : 0) | (em << 10) | man(rng));
@@ -109,6 +114,10 @@ struct Setup {
     size_t out_floats = 0;
     unsigned long long* ptr = nullptr;
     int32_t *start = nullptr, *n = nullptr, *dst = nullptr, *tok = nullptr;
+    std::vector<std::vector<uint8_t>> hb;          // host copies: the blobs, the q8_1 activations, the last plan
+    std::vector<uint8_t> h_xq;
+    std::vector<int> h_blob;
+    std::vector<int32_t> h_start, h_tok, h_dst;
 
     Setup(int gu, int dt, int64_t H, int64_t FF, int tokens, int k_per_token,
           int blobs_n, std::mt19937 &rng, dpct::queue_ptr s) {
@@ -121,6 +130,7 @@ struct Setup {
             auto blob = random_rows(gu, 2 * FF, H, rng);
             const auto down = random_rows(dt, H, FF, rng);
             blob.insert(blob.end(), down.begin(), down.end());
+            hb.push_back(blob);
             if (blob.size() != L.bytes) { std::fprintf(stderr, "blob %zu != %zu bytes\n", blob.size(), L.bytes); std::exit(2); }
             /*
             DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -147,6 +157,8 @@ struct Setup {
            "x");
         xq = dalloc<uint8_t>((size_t) T * (H / 32) * 36);
         k::quantize_q8_1_rows(dx, T, H, xq, s);
+        h_xq.resize((size_t) T * (H / 32) * 36);
+        s->memcpy(h_xq.data(), xq, h_xq.size()).wait();
         ck(DPCT_CHECK_ERROR(s->wait()), "quantize");
         sycl::free(dx, dpct::get_in_order_queue());
         scr_bytes = k::native_expert_scratch_bytes(cap, FF);
@@ -192,7 +204,9 @@ struct Setup {
         std::shuffle(order.begin(), order.end(), rng);
         std::vector<unsigned long long> p;
         std::vector<int32_t> st(1, base), tk_v, ds(cap);
+        h_blob.clear();
         for (const int m : sizes) {
+            h_blob.push_back(order[p.size() % order.size()]);
             p.push_back((unsigned long long) (blobs + slot * (size_t) order[p.size() % order.size()]));
             st.push_back(st.back() + m);
         }
@@ -201,6 +215,7 @@ struct Setup {
         std::iota(ds.begin(), ds.end(), 0);
         std::shuffle(ds.begin(), ds.end(), rng);                  // scattered rows of `out`
         for (int e = 0; e < cap; ++e) tk_v.push_back(tk(rng));
+        h_start = st; h_tok = tk_v; h_dst = ds;   // host copies for the CPU reference
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
         assuming in the original code the source host memory is pageable memory.
@@ -296,6 +311,162 @@ void check(int gu, int dt, int64_t H, int64_t FF, dpct::queue_ptr s,
     std::printf("%-8s/%-7s %5lld x %4lld  %d calls: %s (%zu output floats written in all)\n", name_of(gu), name_of(dt),
                 (long long) H, (long long) FF, calls, bad ? "FAIL" : "bitwise equal to v1", written);
     if (written == 0) { std::printf("  nothing was written: the check checked nothing  FAIL\n"); ++bad; }
+    g_fail += bad;
+}
+
+// ------------------------------------------------------------------------------------------------ --kq
+// MODEL-UPDATE (Intel): the K-quant / Q5_1 / Q8_0 multi-entry split (native_expert_set_kq_split) against the per-entry
+// kernels, bitwise; and both against a CPU reference in float: ggml's dequantize_row_* of the weights, the q8_1
+// activations' own values (d x q), SwiGLU in float (the GPU re-quantizes h to q8_1 for the down product, the reference
+// does not: that rounding is the tolerance, 3e-2 of the output's largest magnitude).
+float h2f(const uint8_t* p) {
+    uint16_t h;
+    std::memcpy(&h, p, 2);
+    return (float) sycl::bit_cast<sycl::half>(h);
+}
+// ggml-quants.c dequantize_row_* (one block)
+void dq_block(int t, const uint8_t* b, float* y) {
+    switch (t) {
+        case 8: {   // Q8_0: d, qs[32]
+            const float d = h2f(b);
+            for (int i = 0; i < 32; ++i) y[i] = d * (float) (int8_t) b[2 + i];
+            break;
+        }
+        case 7: {   // Q5_1: d, m, qh[4], qs[16]
+            const float d = h2f(b), m = h2f(b + 2);
+            uint32_t qh;
+            std::memcpy(&qh, b + 4, 4);
+            const uint8_t* qs = b + 8;
+            for (int j = 0; j < 16; ++j) {
+                const uint8_t xh0 = ((qh >> j) << 4) & 0x10, xh1 = ((qh >> (j + 12))) & 0x10;
+                y[j] = (float) ((qs[j] & 0x0F) | xh0) * d + m;
+                y[j + 16] = (float) ((qs[j] >> 4) | xh1) * d + m;
+            }
+            break;
+        }
+        case 12: case 13: {   // Q4_K: d, dmin, scales[12], qs[128]; Q5_K: d, dmin, scales[12], qh[32], qs[128]
+            const float d = h2f(b), dmin = h2f(b + 2);
+            const uint8_t* sc = b + 4;
+            const uint8_t* qh = b + 16;
+            const uint8_t* ql = t == 12 ? b + 16 : b + 48;
+            auto smk = [&](int j, uint8_t& s, uint8_t& m) {
+                if (j < 4) { s = sc[j] & 63; m = sc[j + 4] & 63; }
+                else { s = (sc[j + 4] & 0xF) | ((sc[j - 4] >> 6) << 4); m = (sc[j + 4] >> 4) | ((sc[j] >> 6) << 4); }
+            };
+            int is = 0;
+            uint8_t u1 = 1, u2 = 2;
+            for (int j = 0; j < 256; j += 64) {
+                uint8_t s, m;
+                smk(is, s, m);
+                const float d1 = d * s, m1 = dmin * m;
+                smk(is + 1, s, m);
+                const float d2 = d * s, m2 = dmin * m;
+                for (int l = 0; l < 32; ++l)
+                    *y++ = d1 * (float) ((ql[l] & 0xF) + (t == 13 && (qh[l] & u1) ? 16 : 0)) - m1;
+                for (int l = 0; l < 32; ++l)
+                    *y++ = d2 * (float) ((ql[l] >> 4) + (t == 13 && (qh[l] & u2) ? 16 : 0)) - m2;
+                ql += 32; is += 2; u1 <<= 2; u2 <<= 2;
+            }
+            break;
+        }
+        case 14: {   // Q6_K: ql[128], qh[64], scales[16], d
+            const uint8_t* ql = b;
+            const uint8_t* qh = b + 128;
+            const int8_t* sc = (const int8_t*) (b + 192);
+            const float d = h2f(b + 208);
+            for (int n = 0; n < 256; n += 128) {
+                for (int l = 0; l < 32; ++l) {
+                    const int is = l / 16;
+                    const int q1 = (int8_t) ((ql[l] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
+                    const int q2 = (int8_t) ((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
+                    const int q3 = (int8_t) ((ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4)) - 32;
+                    const int q4 = (int8_t) ((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) - 32;
+                    y[l] = d * sc[is] * q1;
+                    y[l + 32] = d * sc[is + 2] * q2;
+                    y[l + 64] = d * sc[is + 4] * q3;
+                    y[l + 96] = d * sc[is + 6] * q4;
+                }
+                y += 128; ql += 64; qh += 32; sc += 8;
+            }
+            break;
+        }
+        default: std::fprintf(stderr, "dq_block: type %d\n", t); std::exit(2);
+    }
+}
+std::vector<float> dq_rows(int t, const uint8_t* w, int64_t rows, int64_t n) {
+    const int bv = block_values(t);
+    const size_t bs = k::iq_row_bytes(t, bv);
+    std::vector<float> y((size_t) rows * n);
+    for (size_t b = 0; b < y.size() / bv; ++b) dq_block(t, w + b * bs, &y[b * bv]);
+    return y;
+}
+// the CPU reference of the last plan's call: out rows ent_dst[e] (n_embd floats each)
+std::vector<float> reference(const Setup& S) {
+    const int64_t H = S.L.n_embd, FF = S.L.n_ff;
+    std::vector<float> ref(S.out_floats, std::nanf(""));
+    std::vector<float> x(H);
+    for (size_t g = 0; g + 1 < S.h_start.size(); ++g) {
+        const auto& blob = S.hb[S.h_blob[g]];
+        const auto G = dq_rows(S.L.gu_type, blob.data(), FF, H);
+        const auto U = dq_rows(S.L.gu_type, blob.data() + S.L.up_off, FF, H);
+        const auto D = dq_rows(S.L.d_type, blob.data() + S.L.down_off, H, FF);
+        for (int e = S.h_start[g]; e < S.h_start[g + 1]; ++e) {
+            const uint8_t* xb = &S.h_xq[(size_t) S.h_tok[e] * (H / 32) * 36];
+            for (int64_t i = 0; i < H; ++i) x[i] = h2f(xb + (i / 32) * 36) * (float) (int8_t) xb[(i / 32) * 36 + 4 + i % 32];
+            std::vector<float> h(FF);
+            for (int64_t r = 0; r < FF; ++r) {
+                double gs = 0, us = 0;
+                for (int64_t i = 0; i < H; ++i) { gs += (double) G[r * H + i] * x[i]; us += (double) U[r * H + i] * x[i]; }
+                h[r] = (float) (gs / (1.0 + std::exp(-gs)) * us);
+            }
+            for (int64_t r = 0; r < H; ++r) {
+                double s = 0;
+                for (int64_t i = 0; i < FF; ++i) s += (double) D[r * FF + i] * h[i];
+                ref[(size_t) S.h_dst[e] * H + r] = (float) s;
+            }
+        }
+    }
+    return ref;
+}
+void check_kq(int gu, int dt, int64_t H, int64_t FF, dpct::queue_ptr s, std::mt19937& rng) {
+    Setup S(gu, dt, H, FF, 6, 4, 9, rng, s);   // groups of 1..6 entries: the split's chunks of 4 and 2 and the rest
+    int calls = 0, bad = 0;
+    double worst = 0;
+    for (const int groups : {1, 2, 3, 5, 8}) {
+        const int ng = S.plan(groups, 0, rng);
+        k::native_expert_set_kq_split(false);
+        const auto a = S.result(false, 0, 0x00, s);
+        k::native_expert_set_kq_split(true);
+        const auto b = S.result(false, 0, 0x7F, s);
+        ++calls;
+        size_t diff = 0;
+        for (size_t i = 0; i < a.size(); ++i) diff += a[i] != b[i];
+        if (diff) {
+            std::printf("  %-6s/%-6s %d groups: split vs per-entry: %zu of %zu floats differ  FAIL\n", name_of(gu), name_of(dt),
+                        ng, diff, a.size());
+            ++bad;
+        }
+        const auto ref = reference(S);
+        double amax = 0, emax = 0;
+        size_t n = 0;
+        for (size_t i = 0; i < ref.size(); ++i) {
+            if (std::isnan(ref[i])) continue;
+            float g;
+            std::memcpy(&g, &b[i], 4);
+            amax = std::max(amax, (double) std::fabs(ref[i]));
+            emax = std::max(emax, (double) std::fabs(g - ref[i]));
+            ++n;
+        }
+        const double rel = amax > 0 ? emax / amax : 1.0;
+        worst = std::max(worst, rel);
+        if (n == 0 || !(rel < 3e-2)) {
+            std::printf("  %-6s/%-6s %d groups: GPU vs CPU reference: max err %.3g of %.3g (%zu values)  FAIL\n", name_of(gu),
+                        name_of(dt), ng, emax, amax, n);
+            ++bad;
+        }
+    }
+    std::printf("%-6s/%-6s %5lld x %4lld  %d calls: split %s, CPU reference worst %.2e of the largest output\n", name_of(gu),
+                name_of(dt), (long long) H, (long long) FF, calls, bad ? "FAIL" : "bitwise equal to per-entry", worst);
     g_fail += bad;
 }
 
@@ -440,6 +611,70 @@ void bench(dpct::queue_ptr s, std::mt19937 &rng) {
     dpct::destroy_event(e1);
 }
 
+// ------------------------------------------------------------------------------------------------ --kqbench [NL [host]]
+// Unsloth's formats against the IQ packs' at the model's shapes (2560 x 640): microseconds per grouped call and the
+// expert bytes it reads per microsecond.  NL layers (default 16), each with its own experts, so the weights stream from
+// DRAM; a call reads each of its groups' whole blobs (gate + up + down) once.  Shapes: one token (10 groups of 1), a
+// window of 2 tokens (16 groups, 20 entries) and of 4 (28 groups, 40 entries; native_grouped_parity's --bench).
+// STRATA_GU_LANES / STRATA_DOWN_LANES pick the lane split as in the engine.
+void kq_bench(dpct::queue_ptr s, std::mt19937& rng, int nl, bool host) {
+    const int pairs[][2] = {{21, 20}, {23, 20}, {18, 42}, {12, 7}, {12, 8}, {13, 8},
+#ifdef STRATA_Q6K_EXPERTS
+                            {14, 8},
+#endif
+                            {8, 8}};
+    std::vector<int> w1(10, 1), w2(12, 1), w4(16, 1);
+    w2.insert(w2.end(), 4, 2);                                  // 16 groups, 20 entries
+    w4.insert(w4.end(), 12, 2);                                 // 28 groups, 40 entries
+    const struct { const char* what; int T; const std::vector<int>* sizes; } shapes[] = {
+        {"1 token, 10x1", 1, &w1}, {"2 tokens, 16 groups / 20", 2, &w2}, {"4 tokens, 28 groups / 40", 4, &w4}};
+    dpct::event_ptr e0 = new sycl::event(), e1 = new sycl::event();
+    std::printf("\n--kqbench: %d layers per graph, each its own experts (%s); us per call (median of 40), expert MB per call, GB/s\n",
+                nl, host ? "pinned host memory" : "device memory");
+    for (const auto& pr : pairs) {
+        for (const auto& sh : shapes) {
+            Setup S(pr[0], pr[1], 2560, 640, sh.T, 10, 28, rng, s);
+            const int ng = S.plan_sizes(*sh.sizes, 0, rng);
+            // host: the arena in pinned host memory, read by the kernels over PCIe (the B70's mirrored experts)
+            uint8_t* arena = host ? (uint8_t*) sycl::malloc_host(S.slot * (size_t) (nl * ng) + 256, dpct::get_in_order_queue())
+                                  : dalloc<uint8_t>(S.slot * (size_t) (nl * ng));
+            std::vector<unsigned long long*> lp;
+            for (int l = 0; l < nl; ++l) {
+                std::vector<unsigned long long> p;
+                for (int j = 0; j < ng; ++j) {
+                    uint8_t* d = arena + S.slot * (size_t) (l * ng + j);
+                    dpct::get_in_order_queue().memcpy(d, S.blobs + S.slot * (size_t) (j % S.n_blobs), S.L.bytes).wait();
+                    p.push_back((unsigned long long) d);
+                }
+                unsigned long long* dp = dalloc<unsigned long long>(p.size());
+                dpct::get_in_order_queue().memcpy(dp, p.data(), p.size() * 8).wait();
+                lp.push_back(dp);
+            }
+            dpct::experimental::command_graph_ptr g;
+            dpct::experimental::begin_recording(s);
+            for (int l = 0; l < nl; ++l)
+                k::native_expert_grouped(S.L, lp[l], S.start, S.n, S.dst, S.tok, S.cap, S.cap, S.xq, S.scr, S.out, s, 0);
+            dpct::experimental::end_recording(s, &g);
+            auto* ge = new sycl::ext::oneapi::experimental::command_graph<
+                sycl::ext::oneapi::experimental::graph_state::executable>(g->finalize());
+            delete g;
+            std::vector<float> t;
+            for (int i = 0; i < 60; ++i) {
+                const float us = launch_us(s, ge, e0, e1) * 48.0f / (float) nl;
+                if (i >= 20) t.push_back(us);
+            }
+            delete ge;
+            const double mb = (double) ng * (double) S.L.bytes / 1e6, us = median(t);
+            std::printf("  %-7s/%-6s %-26s %8.2f us  %6.2f MB  %6.1f GB/s\n", name_of(pr[0]), name_of(pr[1]), sh.what, us,
+                        mb, mb * 1e3 / us);
+            for (auto* p : lp) sycl::free(p, dpct::get_in_order_queue());
+            sycl::free(arena, dpct::get_in_order_queue());
+        }
+    }
+    dpct::destroy_event(e0);
+    dpct::destroy_event(e1);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -448,6 +683,19 @@ int main(int argc, char** argv) {
     ck(DPCT_CHECK_ERROR(s = dpct::get_current_device().create_queue(true)),
        "stream");
     std::mt19937 rng(316);
+    if (argc > 1 && std::string(argv[1]) == "--kqbench") {   // timings only (the checks: run without arguments)
+        kq_bench(s, rng, argc > 2 ? std::atoi(argv[2]) : 16, argc > 3 && std::string(argv[3]) == "host");
+        dpct::get_current_device().destroy_queue(s);
+        return 0;
+    }
+    if (argc > 1 && std::string(argv[1]) == "--kq") {   // the K-quant split and the CPU reference only
+        const int pairs[][2] = {{12, 7}, {12, 8}, {13, 8}, {14, 8}, {8, 8}, {13, 7}};
+        for (const auto& pr : pairs) check_kq(pr[0], pr[1], 2560, 640, s, rng);   // the model's shapes
+        for (const auto& pr : pairs) check_kq(pr[0], pr[1], 512, 256, s, rng);
+        std::printf("native_grouped_parity --kq: %d failures\n", g_fail);
+        dpct::get_current_device().destroy_queue(s);
+        return g_fail ? 1 : 0;
+    }
     for (int gu : {16, 17, 18, 21, 22, 23, 29, 42, 12, 13,
 #ifdef STRATA_Q6K_EXPERTS
                    14,

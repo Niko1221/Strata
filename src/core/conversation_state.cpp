@@ -152,8 +152,22 @@ bool conversation_checkpoint_validate(const ConversationCheckpoint& c, const Ses
     return true;
 }
 
+#if defined(STRATA_GPU_METAL)
+}  // namespace strata::core
+namespace strata::metal_engine {
+// the running state lives in the Metal decode window (metal/src/engine/window.cpp), not in the session's buffers
+bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& error);
+bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& error);
+}  // namespace strata::metal_engine
+namespace strata::core {
+#endif
+
 bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState& ss,
                                   const ModelGeometry& g, std::string& error) {
+#if defined(STRATA_GPU_METAL)
+    (void) ss; (void) g;
+    return strata::metal_engine::window_checkpoint_save(c, error);
+#endif
     ConversationStateSizes z;
     if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
     const size_t layers = owned_qsa(ss);
@@ -172,6 +186,13 @@ bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState&
 
 bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionState& ss,
                                      const ModelGeometry& g, std::string& error) {
+#if defined(STRATA_GPU_METAL)
+    (void) g;
+    if (!strata::metal_engine::window_checkpoint_restore(c, error)) return false;
+    ss.ple_prev[0] = c.ids.size() >= 2 ? c.ids[c.ids.size() - 2] : -1;
+    ss.ple_prev[1] = c.ids.size() >= 1 ? c.ids[c.ids.size() - 1] : -1;
+    return true;
+#endif
     if (!conversation_checkpoint_validate(c, ss, g, error)) return false;
     ConversationStateSizes z;
     if (!conversation_session_sizes(g, ss, z, error)) return false;
@@ -257,7 +278,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     captured.geometry = geometry_key(g);
     captured.layer_lo = ss.layer_lo; captured.layer_hi = ss.layer_hi;
     captured.live.ids = view.ids; captured.live.imgs = view.images;
-    captured.cvec = view.cvec; captured.checkpoints = view.checkpoints;
+    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints);
     const int64_t unchanged = reuse.kv.empty() ? 0 : reuse.unchanged_tokens;
     captured.kv = std::move(reuse.kv);
     const size_t layers = owned_qsa(ss);
@@ -283,7 +304,7 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     captured.geometry = geometry_key(g);
     captured.layer_lo = ss.layer_lo; captured.layer_hi = ss.layer_hi;
     captured.live.ids = view.ids; captured.live.imgs = view.images;
-    captured.cvec = view.cvec; captured.checkpoints = view.checkpoints;
+    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints);
     if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
     const int64_t upto = (int64_t) view.ids.size();
     const size_t layers = owned_qsa(ss);

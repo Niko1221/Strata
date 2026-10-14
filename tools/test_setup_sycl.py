@@ -206,6 +206,16 @@ class ToSycl(unittest.TestCase):
         self.assertEqual(c["env"]["STRATA_VERIFY_NO_HOST"], "0")
         self.assertEqual(c["env"]["STRATA_SYCL_BIN"], "build-sycl/strata")
 
+    def test_split_short_rule(self):
+        # #1980: 2x B60 24 GB - IQ3_XXS (42.9 GB) was refused under NO_HOST=1, IQ2_XS (35.5 GB) loads fully
+        m = self.mod()
+        self.assertTrue(m.split_likely_short(42.9, [24.0, 24.0]))
+        self.assertFalse(m.split_likely_short(35.5, [24.0, 24.0]))
+        self.assertFalse(m.split_likely_short(50.3, [32.0, 32.0]))   # IQ3_S on 2x B70: 79%
+        self.assertTrue(m.split_likely_short(77.0, [32.0, 32.0]))
+        self.assertFalse(m.split_likely_short(0, [24.0]))
+        self.assertFalse(m.split_likely_short(40.0, []))
+
     def test_small_card_rule(self):
         m = self.mod()
         self.assertTrue(m.small_card(8.0, "i915"))
