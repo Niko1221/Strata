@@ -423,6 +423,10 @@ struct Options {
     /// candidate VRAM expert cache is computed from, and it needs no new kernels - the doorbell already
     /// publishes exactly this much to pinned memory.
     std::string dump_routing;
+    /// #2415: the decode windows' KV block selections for tools/replay_kv_stream_policy.py - one record per resolve
+    /// call (`int32 layer, int32 k, k int32 block ids, k float weights`), weights 1.0.  Measurement only: the copies
+    /// cost time every window.
+    std::string dump_kv_select;
     bool no_capture = false;          // run the layers directly instead of replaying graphs
     bool no_pool = false;             // skip the CPU expert pool: the GPU-only floor
     bool sync_every_layer = false;
@@ -777,6 +781,7 @@ void usage() {
                  "  --dump-layers PATH   write R after EVERY layer, per position: the C1 bisection ladder\n"
                  "  --dump-halves PATH   write both halves' block_out and inject per layer: the half bisection\n"
                  "  --dump-routing PATH  write the routed expert ids and weights per layer per position (P0.S8)\n"
+                 "  --dump-kv-select PATH  write the decode windows' KV block selections for the policy bench (#2415)\n"
                  "  --no-capture         run the layers directly instead of replaying graphs\n"
                  "  --shared-late        A/B: shared expert after the CPU pool (default: overlapped with it)\n"
                  "  --keep-canonical     A/B: also load canonical copies of natively served tensors (more VRAM)\n"
@@ -1940,6 +1945,7 @@ int main(int argc, char** argv) {
         else if (a == "--dump-layers") o.dump_layers = next("--dump-layers");
         else if (a == "--dump-halves") o.dump_halves = next("--dump-halves");
         else if (a == "--dump-routing") o.dump_routing = next("--dump-routing");
+        else if (a == "--dump-kv-select") o.dump_kv_select = next("--dump-kv-select");
         else if (a == "--ple-gguf") o.ple_gguf = next("--ple-gguf");
         else if (a == "--no-ple") o.no_ple = true;
         else if (a == "--ple-io") { o.ple_io = next("--ple-io"); o.ple_io_explicit = true; }
@@ -5936,6 +5942,13 @@ int main(int argc, char** argv) {
             return 1;
         }
         drive.routing = routing;
+    }
+    if (!o.dump_kv_select.empty()) {
+        std::string kverr;
+        if (!strata::core::kv_select_dump_open(o.dump_kv_select.c_str(), g, kverr)) {
+            std::fprintf(stderr, "strata generate: %s\n", kverr.c_str());
+            return 1;
+        }
     }
     strata::core::PoolFn pool_fn = o.no_pool ? nullptr : &drive_pool;
     // The hit hook rides the same switch as the pool: with no pool there is no `parts` staging to
@@ -14015,6 +14028,10 @@ int main(int argc, char** argv) {
         drive.routing = nullptr;
         std::printf("%-24s %s (%lld records of layer, k, ids, weights)\n", "routing dumped",
                     o.dump_routing.c_str(), (long long) drive.calls);
+    }
+    if (strata::core::kv_select_dump_on()) {
+        strata::core::kv_select_dump_close();
+        std::printf("%-24s %s\n", "kv selections dumped", o.dump_kv_select.c_str());
     }
     if (o.stage_timing) strata::core::stage_timing_report(g.n_layers);
 

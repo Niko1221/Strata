@@ -83,6 +83,13 @@ costs ~13.7 KB of RAM per context token (1.7 GB at 128K). Existing installs: run
 it on. Setup turns it on when the RAM has room for it; `--kv-streaming on|off` overrides that (on past the RAM test with a
 note; never under WSL, which cannot stream).
 
+**The selections the streaming sees (measurement only, #2415):** `--dump-kv-select PATH` writes one record per
+resolve call of the decode windows - `int32 layer, int32 k, k int32 block ids, k float32 weights`, weights 1.0 -
+the trace `tools/replay_kv_stream_policy.py` replays through the page pool's policies (the kernel's CLOCK against
+LRFU, LRU and Belady). The copies run on every window, so the flag is for comparing policies, not for timing. The
+prompt's mid-chunks are not recorded (only the windows the verifier runs: the prompt's tail and decoding), a
+`--batch` window keeps each layer's last call, and the SYCL port has its own engine sources and no dump yet.
+
 **4-bit KV cache (engine 0.1.8, optional):** `START-HERE.bat --setup` asks above 8K context (or pass `--kv q4_0`). It
 halves the KV cache's memory with a Hadamard rotation before 4-bit rounding (PR #21), about 4% faster at 128K, but it
 is measurably less precise on long documents (perplexity +8-12%; needle tests still pass). 8-bit stays the default.

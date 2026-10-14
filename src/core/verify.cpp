@@ -1406,7 +1406,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                          max_blocks_, s, scores_ + (size_t) t * max_blocks_, cs);
                         qsa_block_topk(scores_ + (size_t) t * max_blocks_, step_ + t * kStepCount, 1, max_blocks_, cap_, s,
                                        sel_ + (size_t) t * cap_, cs);
-                        qsa_kv_resolve(sx, *g_, sel_ + (size_t) t * cap_, step_ + t * kStepCount, 1, cap_, cs);
+                        qsa_kv_resolve(sx, *g_, sel_ + (size_t) t * cap_, step_ + t * kStepCount, 1, cap_, cs,
+                                       (int) qi);   // #2415: the dump slot is the QSA ordinal (one call per slot)
                         const QsaAttnPools px = qsa_attn_pools(sx);
                         qsa_decode_attn_batch(qcur_ + t * NH * HD, px, sel_ + (size_t) t * cap_, step_ + t * kStepCount,
                                               cap_, s, attn_scratch_ + (size_t) t * attn_scratch_floats_,
@@ -1419,7 +1420,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                sel_ + (size_t) tb * cap_, cs);
                 stamp(l, 11, grp);
                 // KV streaming: the n selections' blocks resident (device-side, inside the graph)
-                qsa_kv_resolve(st, *g_, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, n, cap_, cs);
+                qsa_kv_resolve(st, *g_, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, n, cap_, cs, (int) qi);
                 stamp(l, 12, grp);
                 if (qbr) join(0);   // the query, for attention
                 const QsaAttnPools pools = qsa_attn_pools(st);
@@ -2420,6 +2421,20 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const cudaError_t se = cudaStreamSynchronize(cs_);
     trace_ev("SYNCED", -1, -1, (int64_t) se);
     if (se != cudaSuccess) { err = std::string("verify: ") + cudaGetErrorString(se); return false; }
+    if (strata::core::kv_select_dump_on()) {
+        // #2415: this window's selection trace, now that the staging copies have landed (one record per QSA layer
+        // of this stage that ran - the layer split's stages each write their own ordinals)
+        int64_t s0 = -1, s1 = -1, qi = 0;
+        for (int64_t l = 0; l < g.n_layers; ++l) {
+            if (!is_qsa_layer(g, l)) continue;
+            if (l >= lb_ && l < le_) {
+                if (s0 < 0) s0 = qi;
+                s1 = qi + 1;
+            }
+            ++qi;
+        }
+        if (s0 >= 0) strata::core::kv_select_dump_flush(s0, s1, T, qsa_shapes(g).page_size);
+    }
     if (ar_on() && h_plan_err_ != nullptr && *(volatile uint32_t*) h_plan_err_ != 0) {   // #871: refresh_ar saw the table whole
         *(volatile uint32_t*) h_plan_err_ = 0;
         err = "verify: the all-resident plan met an expert that is not in VRAM (the residency table changed during the window)";

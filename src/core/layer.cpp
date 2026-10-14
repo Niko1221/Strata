@@ -40,7 +40,9 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <vector>
+#include "strata/kernels/verify_kernels.hpp"   // kVerifyMaxT: the staging's row bound (#2415's --dump-kv-select)
 namespace strata::core {
 namespace { bool g_shared_early = true; bool g_fused_gr = false; bool g_fast_attn = true; bool g_publish_kernel = true; bool g_fused_gdn = true; bool g_fast_select = true; }
 namespace {constexpr int Q8K_BYTES_PER_BLOCK = 292;
@@ -900,8 +902,105 @@ strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {
     return pools;
 }
 
+// ---- #2415: --dump-kv-select, a measurement-only trace of the decode windows' KV block selections ----
+// One staging slot per QSA state in pinned host memory; qsa_kv_resolve's copies are fixed-address memcpy nodes, so
+// captured graphs bake them in and every window lands in its slot.  kv_select_dump_flush reads the slots after the
+// window's stream has been synchronized and appends one record per call (the tools/replay_kv_stream_policy.py
+// format).  The copies cost time every window: use the trace to compare policies, not to measure speed.
+namespace {
+struct KvSelectDump {
+    std::FILE* f = nullptr;
+    std::mutex mu;
+    bool alloced = false;
+    int64_t n_slots = 0, max_rows = strata::kernels::kVerifyMaxT, cap = 0;
+    int32_t* ids = nullptr;      // pinned host staging: [slot][max_rows][cap] cell ids
+    int32_t* steps = nullptr;    // pinned host staging: [slot][max_rows][kStepCount] (kStepWidth is the row's width)
+};
+KvSelectDump g_kvsel;
+}  // namespace
+
+bool kv_select_dump_open(const char* path, const ModelGeometry& g, std::string& err) {
+    std::lock_guard<std::mutex> lk(g_kvsel.mu);
+    if (g_kvsel.f != nullptr) { err = "kv select dump: already open"; return false; }
+    KvSelectDump& d = g_kvsel;
+    d.n_slots = std::max<int64_t>(g.n_qsa_layers(), 1);
+    d.cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, qsa_shapes(g));
+    const size_t in = (size_t) d.n_slots * (size_t) d.max_rows * (size_t) d.cap;
+    const size_t sn = (size_t) d.n_slots * (size_t) d.max_rows * strata::kernels::kStepCount;
+    // allocated before any window is captured: an allocation inside a capture poisons its stream
+    if (cudaMallocHost((void**) &d.ids, in * 4) != cudaSuccess || cudaMallocHost((void**) &d.steps, sn * 4) != cudaSuccess) {
+        d.ids = nullptr;
+        d.steps = nullptr;
+        err = "kv select dump: cannot pin the staging";
+        return false;
+    }
+    std::memset(d.ids, 0, in * 4);
+    std::memset(d.steps, 0, sn * 4);
+    d.alloced = true;
+    d.f = std::fopen(path, "wb");
+    if (d.f == nullptr) {
+        err = std::string("kv select dump: cannot write ") + path;
+        return false;
+    }
+    return true;
+}
+
+bool kv_select_dump_on() { return g_kvsel.f != nullptr; }
+
+void kv_select_dump_close() {
+    std::lock_guard<std::mutex> lk(g_kvsel.mu);
+    if (g_kvsel.f != nullptr) {
+        std::fclose(g_kvsel.f);
+        g_kvsel.f = nullptr;
+    }
+}
+
+// The copies are fixed-address memcpy nodes (the staging is allocated once, at open), so captured graphs bake
+// them in and every window lands in its slot.  Nothing allocates here: a capture must not.
+static bool kv_select_dump_stage(int64_t slot, const int32_t* ids, const int32_t* steps, int64_t n_q, int64_t cap,
+                                 void* stream) {
+    KvSelectDump& d = g_kvsel;
+    if (d.f == nullptr || !d.alloced) return true;
+    if (n_q < 1 || n_q > d.max_rows || cap != d.cap || slot < 0 || slot >= d.n_slots) return false;
+    int32_t* di = d.ids + (size_t) slot * (size_t) d.max_rows * (size_t) d.cap;
+    int32_t* ds = d.steps + (size_t) slot * (size_t) d.max_rows * strata::kernels::kStepCount;
+    if (cudaMemcpyAsync(di, ids, (size_t) n_q * (size_t) d.cap * 4, cudaMemcpyDeviceToHost, (cudaStream_t) stream) !=
+            cudaSuccess) return false;
+    return cudaMemcpyAsync(ds, steps, (size_t) n_q * strata::kernels::kStepCount * 4, cudaMemcpyDeviceToHost,
+                           (cudaStream_t) stream) == cudaSuccess;
+}
+
+void kv_select_dump_flush(int64_t slot0, int64_t slot1, int rows, int page_size) {
+    KvSelectDump& d = g_kvsel;
+    std::lock_guard<std::mutex> lk(d.mu);
+    if (d.f == nullptr || !d.alloced || page_size <= 0) return;
+    const int64_t n_q = std::min<int64_t>(rows, d.max_rows);
+    std::vector<int32_t> blocks;
+    std::vector<float> weights;
+    for (int64_t slot = slot0; slot < slot1 && slot < d.n_slots; ++slot) {
+        const int32_t* di = d.ids + (size_t) slot * (size_t) d.max_rows * (size_t) d.cap;
+        const int32_t* ds = d.steps + (size_t) slot * (size_t) d.max_rows * strata::kernels::kStepCount;
+        blocks.clear();
+        for (int64_t q = 0; q < n_q; ++q) {
+            const int32_t w = ds[q * strata::kernels::kStepCount + strata::kernels::kStepWidth];
+            for (int32_t i = 0; i < w && i < (int32_t) d.cap; ++i) blocks.push_back(di[q * d.cap + i] / page_size);
+        }
+        std::sort(blocks.begin(), blocks.end());
+        blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
+        if (blocks.empty()) continue;       // an unwritten slot (its zeroed widths) or a call with no selection
+        const int32_t k = (int32_t) blocks.size(), layer = (int32_t) slot;
+        weights.assign((size_t) k, 1.0f);   // the indexer's scores are not copied: every selection weighs 1
+        if (std::fwrite(&layer, 4, 1, d.f) != 1 || std::fwrite(&k, 4, 1, d.f) != 1) break;
+        if (std::fwrite(blocks.data(), 4, (size_t) k, d.f) != (size_t) k) break;
+        if (std::fwrite(weights.data(), 4, (size_t) k, d.f) != (size_t) k) break;
+    }
+    std::fflush(d.f);
+}
+
 void qsa_kv_resolve(const QsaState& st, const ModelGeometry& g, const int32_t* ids, const int32_t* steps, int64_t n_q,
-                    int64_t cap, void* stream) {
+                    int64_t cap, void* stream, int dump_slot) {
+    if (dump_slot >= 0 && g_kvsel.f != nullptr)
+        (void) kv_select_dump_stage(dump_slot, ids, steps, n_q, cap, stream);
     if (st.kv_mode != 1) return;
     strata::kernels::kv_stream_resolve(st.map, qsa_attn_pools(st), st.host, qsa_kv_format(st), ids, steps, n_q, cap,
                                        qsa_shapes(g), stream);

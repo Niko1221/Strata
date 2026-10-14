@@ -327,8 +327,22 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
                         const QsaState* share_rope = nullptr, int64_t ring_cells = 0);
 /// KV streaming: the pools a reader sees (the VRAM slots) and, when streamed, make the selection's blocks resident.
 strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st);
+/// `dump_slot` >= 0 arms #2415's --dump-kv-select for this call: the selection lands in that slot's staging (fixed
+/// addresses, so captured graphs bake the copy in), and kv_select_dump_flush writes the records after the window's
+/// stream has been synchronized.  The prompt path passes nothing and is not recorded.
 void qsa_kv_resolve(const QsaState& st, const ModelGeometry& g, const int32_t* ids, const int32_t* steps, int64_t n_q,
-                    int64_t cap, void* stream);
+                    int64_t cap, void* stream, int dump_slot = -1);
+/// #2415's --dump-kv-select, a measurement-only trace of the decode windows' KV block selections (one record per
+/// resolve call: int32 layer, int32 k, k int32 block ids, k float32 weights - the tools/replay_kv_stream_policy.py
+/// format, weights 1.0 since the indexer's scores are not copied).  Open it BEFORE the first window is captured:
+/// the staging is allocated here, and a capture that allocates poisons its stream.  The trace is for the policy
+/// bench, not for timing: the copies cost time every window.
+bool kv_select_dump_open(const char* path, const ModelGeometry& g, std::string& err);
+bool kv_select_dump_on();
+/// Append the slots [slot0, slot1) as records; call only after the stream those calls ran on is synchronized.
+/// `rows` is the window's row count, `page_size` the engine's cells per KV block (the ids are cell ids).
+void kv_select_dump_flush(int64_t slot0, int64_t slot1, int rows, int page_size);
+void kv_select_dump_close();
 /// Zeroes the pools AND the indexer, so a fresh sequence matches the reference's own `zeros()`.  The KV pool
 /// matters even for cells that are never attended, because `kv_gather` reads whatever the selection names.
 void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream);
