@@ -5508,7 +5508,14 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision):
 def engine_families(eng: Path) -> set:
     """The model families an engine runs (`strata --families`; an engine from before it: Flash-Next's only)."""
     try:
-        text = subprocess.run([str(eng / EXE), "--families"], capture_output=True, text=True, timeout=60).stdout
+        # A ready-made Windows HIP engine keeps hipblas/libhipblaslt in rocm/bin beside it and its loader
+        # asks for them before main, so the probe needs the PATH hip_devices() builds; without it the
+        # launch dies in the loader, --families prints nothing and setup reads that as "no such family"
+        # (#2372).
+        env = dict(os.environ)
+        env["PATH"] = os.pathsep.join([str(d) for d in hip_lib_dirs(eng)] + [env.get("PATH", "")])
+        text = subprocess.run([str(eng / EXE), "--families"], capture_output=True, text=True, timeout=60,
+                              env=env).stdout
     except (OSError, subprocess.SubprocessError):
         return {"qwen4exp"}
     names = set(text.split())
