@@ -36,6 +36,28 @@ EDITABLE = [
     ("open_browser", "bool", "Open the chat page in the browser when the model is ready"),
     ("vram_reserve_mib", ("arg", "--vram-reserve-mib"),
      "VRAM in MiB the engine leaves free for other programs (engine default 700)"),
+    # the on-disk layer (off unless set here): the conversation cache's disk tier and the system prompt cache
+    ("conversation_cache_spill_dir", ("arg", "--conversation-cache-spill-dir", "str"),
+     "Folder the RAM cache writes the conversations it evicts to (giving it turns the disk tier on)"),
+    ("conversation_cache_disk_mib", ("arg", "--conversation-cache-disk-mib"),
+     "The spill folder's limit in MiB (engine default 8192; 0 = off)"),
+    ("conversation_cache_spill_when_full", ("arg", "--conversation-cache-spill-when-full",
+                                            ("enum", ["evict-oldest", "reject"])),
+     "When the spill folder is full: evict-oldest (the default) or reject (keep it all, save nothing new)"),
+    ("conversation_cache_spill_max_age_days", ("arg", "--conversation-cache-spill-max-age-days"),
+     "Delete spilled conversations older than this many days (0 or empty: never)"),
+    ("system_prompt_cache", ("flag", "--system-prompt-cache"),
+     "Keep the system prompt's prefill checkpoint on disk and reuse it after a restart"),
+    ("system_prompt_cache_dir", ("arg", "--system-prompt-cache-dir", "str"),
+     "The system prompt cache's own folder (not the spill folder)"),
+    ("system_prompt_cache_mib", ("arg", "--system-prompt-cache-mib"),
+     "The system prompt cache folder's limit in MiB (engine default 2048)"),
+    ("system_prompt_cache_slots", ("arg", "--system-prompt-cache-slots"),
+     "How many system prompt variants are kept (engine default 2; 0 = no cap)"),
+    ("system_prompt_cache_max_age_days", ("arg", "--system-prompt-cache-max-age-days"),
+     "Delete system prompt variants older than this many days (0 or empty: never)"),
+    ("system_prompt_cache_key", ("arg", "--system-prompt-cache-key", "str"),
+     "Optional identity added to the system prompt's cache key"),
 ]
 SPEC = {k: kind for k, kind, _ in EDITABLE}
 
@@ -48,13 +70,47 @@ def _arg(cfg: dict, flag: str):
     return None
 
 
+def _arg_raw(cfg: dict, flag: str):
+    """The value after `flag` as written (a folder, an enum name), or None."""
+    a = cfg.get("args") if isinstance(cfg.get("args"), list) else []
+    return str(a[a.index(flag) + 1]) if flag in a[:-1] else None
+
+
+def _has_flag(cfg: dict, flag: str) -> bool:
+    """Whether a bare engine flag (no value of its own) is in the config's args."""
+    a = cfg.get("args") if isinstance(cfg.get("args"), list) else []
+    return flag in a
+
+
+def _arg_kind(kind: tuple):
+    """What an ("arg", flag[, spec]) key carries: "num" (the default), "str", or ("enum", values)."""
+    return kind[2] if len(kind) > 2 else "num"
+
+
+def _frontend_kind(kind):
+    """What the page's Settings view needs for a key: its input kind and its choices (if any)."""
+    k = kind[0] if isinstance(kind, tuple) else kind
+    if k == "flag":
+        return "bool", {}
+    if k == "arg":
+        spec = _arg_kind(kind)
+        if isinstance(spec, tuple) and spec[0] == "enum":
+            return "enum", {"choices": spec[1]}
+        return ("string" if spec == "str" else "number"), {}
+    if k == "enum":
+        return "enum", {"choices": kind[1]}
+    return ("number" if k in ("sampling", "int>=0", "num>=0") else k), {}
+
+
 def value_of(cfg: dict, key: str):
     kind = SPEC[key]
     if isinstance(kind, tuple) and kind[0] == "sampling":
         s = cfg.get("sampling")
         return s.get(key.split(".", 1)[1]) if isinstance(s, dict) else None
     if isinstance(kind, tuple) and kind[0] == "arg":
-        return _arg(cfg, kind[1])
+        return _arg(cfg, kind[1]) if _arg_kind(kind) == "num" else _arg_raw(cfg, kind[1])
+    if isinstance(kind, tuple) and kind[0] == "flag":
+        return _has_flag(cfg, kind[1])
     return cfg.get(key)
 
 
@@ -62,10 +118,8 @@ def view(cfg: dict, path: str | Path) -> dict:
     """GET /config: the editable keys with their values (None: not set, the default applies)."""
     out = []
     for key, kind, help_ in EDITABLE:
-        k = kind[0] if isinstance(kind, tuple) else kind
-        out.append({"key": key, "value": value_of(cfg, key), "help": help_,
-                    "kind": "number" if k in ("sampling", "arg", "int>=0", "num>=0") else k,
-                    **({"choices": kind[1]} if k == "enum" else {})})
+        front, extra = _frontend_kind(kind)
+        out.append({"key": key, "value": value_of(cfg, key), "help": help_, "kind": front, **extra})
     return {"file": Path(path).name, "keys": out,
             "note": "Saved to the run config; used from the next start of the model."}
 
@@ -92,6 +146,10 @@ def check(key: str, v, cfg: dict):
         if key == "lazy_load" and v and cfg.get("vision"):
             raise ValueError("lazy_load: lazy loading is text-only, and this model reads images (\"vision\")")
         return v
+    if k == "flag":
+        if not isinstance(v, bool):
+            raise ValueError(f"{key}: expected true or false, not {v!r}")
+        return v
     if k == "enum":
         if v not in kind[1]:
             raise ValueError(f"{key}: expected one of {', '.join(kind[1])}, not {v!r}")
@@ -107,6 +165,15 @@ def check(key: str, v, cfg: dict):
     if k == "num>=0":
         return _number(key, v)
     if k == "arg":
+        spec = _arg_kind(kind)
+        if spec == "str":
+            if not isinstance(v, str) or not v.strip() or any(ord(c) < 32 for c in v):
+                raise ValueError(f"{key}: expected a non-empty value, not {v!r}")
+            return v.strip()
+        if isinstance(spec, tuple) and spec[0] == "enum":
+            if v not in spec[1]:
+                raise ValueError(f"{key}: expected one of {', '.join(spec[1])}, not {v!r}")
+            return v
         return _number(key, v, whole=True)
     rule = kind[1]                                     # a sampling key: the server's own rules
     if rule == "num>=0":
@@ -152,6 +219,15 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
                     a[i + 1] = str(v)
             elif v is not None:
                 a += [flag, str(v)]
+            new["args"] = a
+        elif isinstance(kind, tuple) and kind[0] == "flag":
+            a = list(new.get("args") or [])
+            flag = kind[1]
+            if flag in a:
+                if not v:
+                    a.remove(flag)
+            elif v:
+                a.append(flag)
             new["args"] = a
         elif v is None:
             new.pop(key, None)
