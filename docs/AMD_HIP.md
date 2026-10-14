@@ -374,8 +374,8 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
 ## Community-validated cards
 
 Run by their owners, not on the maintainers' machines; setup accepts them like gfx1100 / gfx1201. setup ships a
-hipBLASLt table for gfx1200 (the numbers below); gfx1101 has none (make one with [Tuning table](#tuning-table)
-and compare the prompt speed with and without it).
+hipBLASLt table for gfx1200 (the numbers below) and for gfx1101 with hipBLASLt 1.2.0; for gfx1101 with another
+hipBLASLt, make one with [Tuning table](#tuning-table) and compare the prompt speed with and without it.
 
 - **gfx1101, RX 7800 XT 16 GB** (jhohertz, #254; engine 0.1.29, Ryzen 9 5950X, 121 GiB RAM, system ROCm with
   hipBLASLt 1.4.1): `./setup.sh --backend hip` detected the card and compiled the engine; `strata-device --selftest`
@@ -603,6 +603,17 @@ Shipped tables:
   no fallbacks over prompts of 28-7,880 tokens. Setup does not use it (it does not install for gfx1150): point
   `STRATA_HIPBLASLT_TUNING` at it. Measurements and the per-row timings:
   [bench/results/2026-10-07-community-gfx1150](../bench/results/2026-10-07-community-gfx1150/README.md).
+- `gfx1101-hipblaslt-100200.txt`: RX 7800 XT (gfx1101, 16 GB), calibrated with the ROCm 7.10.0a20251120 wheels that
+  setup installs for gfx110X (hipBLASLt 1.2.0, version number 100200); setup uses it only when the installed hipBLASLt
+  reports 1.2.0. The 43 geometries of `gfx1100-hipblaslt-100401.txt` (the small-T expert GEMM included), calibrated
+  with `tune_hipblaslt --workspace-mib 32`. Two passes picked the same solution in all 43 rows; every row beats plain
+  hipBLAS, 2.98-16.6x per GEMM (median 4.9-6.0x). `hip_prefill_hipblaslt_gemm` passes with it (`launches=4
+  fallbacks=0`); `hip_prefill_hcd_exact_parity` skips (the table sends no tested T to solution 1176 / 1177). Ryzen 7
+  5800X3D, 60 GiB RAM, Ubuntu 26.04 (kernel 7.0.0), engine 0.1.44.1 in Docker, Qwen3.8-Flash-Next GSQ-RCO IQ3_S at
+  131072 ctx, `--kv q4_0`, three interleaved pairs: a cold prompt of 35,537 tokens reads at 447.0 -> 761.9 tok/s
+  (median; 446.7-449.1 -> 758.0-762.1), 91,320 tokens at 443.6 -> 751.9 tok/s (443.4-444.5 -> 751.6-752.5), both
+  +70%; decode after the prompt is unchanged (42.0 / 48.5 -> 41.5 / 49.3 tok/s), and `STRATA_HIPBLASLT_VERBOSE=1`
+  reported `launches=13328 fallbacks=0` in each run. Measured on a 7800 XT only.
 
 Calibrated on my PC and kept in this checkout, not shipped: `gfx1201-hipblaslt-100401.txt`, a Radeon AI PRO
 R9700 (gfx1201, 32 GB, 1002:7551) on a Ryzen 9 9950X3D with 62 GiB RAM, CachyOS (kernel 7.3.0-rc6-1-cachyos-rc,
