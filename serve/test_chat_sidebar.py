@@ -1,4 +1,4 @@
-"""The chat sidebar: the conversations kept in this browser (localStorage), the open one on the screen.
+"""The chat sidebar: the conversations kept in this browser, the open one on the screen.
 The feature is opt-in; with the switch off the page is the page from the last release."""
 import unittest
 from pathlib import Path
@@ -22,14 +22,18 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('if (!historyOn) { store.set("chat", cleanMessages(messages)); return; }', self.js)
         self.assertIn("const backup = messages;", self.js)                # off: "New chat" clears, with an Undo
 
-    def test_the_chat_before_the_sidebar_becomes_the_first_entry(self):
-        self.assertIn('store.get("chats", null)', self.js)
-        self.assertIn('store.get("chat", [])', self.js)                   # read once: a browser that only had that key
-
     def test_the_list_stays_in_the_browser(self):
-        self.assertIn('store.setChecked("chats"', self.js)
+        self.assertIn('indexedDB.open("strata", 1)', self.js)             # a chat can be megabytes; localStorage is ~5 MB
+        self.assertIn('createObjectStore("chats", {keyPath: "id"})', self.js)
+        self.assertIn("function putChat(c)", self.js)                     # one record per chat, not the whole list
+        self.assertIn("function dropChat(c)", self.js)
         self.assertNotIn('fetch("chats"', self.js)                        # nothing about it goes to the server
         self.assertIn("function chatTitle(c)", self.js)                   # the name: what the user called it, else the first question
+
+    def test_a_new_chat_stays_empty_after_a_reload(self):
+        # the bug reported on #1787: the single chat from before the switch must not be copied into an empty chat
+        self.assertIn("chats = db ? await allChats() : []", self.js)
+        self.assertIn('const old = fromScreen ? messages : store.get("chat", [])', self.js)
 
     def test_the_open_chat_is_what_a_request_is_built_from(self):
         self.assertIn("messages = chat.messages", self.js)                # the list and the screen share the array
