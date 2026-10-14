@@ -281,6 +281,77 @@ def handle_image(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     return code, body
 
 
+THEN_SAMPLING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0}
+
+
+def handle_then(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
+    """POST /v1/systemone with "then": {"generate": {...}} — amendment 7 mode 1:
+    decide first (the standard readout on this request's state/questions), then
+    generate with the answers folded into the LAST USER TURN as
+    'Jev decisions (JSON): {...}' (a trailing system message throws in this chat
+    template - donor folds it too).  Response = decision body + then {text,
+    finish_reason, usage}.  Sampling mirrors the chat endpoint (donor defaults
+    temp 0.6, top_p 0.95, top_k 20; max_tokens default 512)."""
+    gen = ((req or {}).get("then") or {}).get("generate")
+    if not isinstance(gen, dict) or not gen.get("messages"):
+        return _err("then.generate.messages", "required non-empty array")
+    sub = {k: v for k, v in req.items() if k != "then"}
+    code, dec = handle(svc, sub, mode)
+    if code != 200:
+        return code, dec
+    answers = dec.get("answers", {})
+
+    messages = [m for m in gen["messages"] if isinstance(m, dict) and m.get("role")]
+    injected = False
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            text = messages[i].get("content") if isinstance(messages[i].get("content"), str) else \
+                "".join(p.get("text", "") for p in (messages[i].get("content") or [])
+                        if isinstance(p, dict) and p.get("type") == "text")
+            messages[i] = {**messages[i],
+                           "content": text + "\n\nJev decisions (JSON): " + json.dumps(answers, indent=2)}
+            injected = True
+            break
+    if not injected:
+        messages.append({"role": "user",
+                         "content": "Jev decisions (JSON): " + json.dumps(answers, indent=2)})
+
+    sampling = {**THEN_SAMPLING}
+    for k in ("temperature", "top_p", "top_k", "min_p", "seed"):
+        if isinstance(gen.get(k), (int, float)) and not isinstance(gen[k], bool):
+            sampling[k] = gen[k]
+    max_tokens = gen.get("max_tokens") if isinstance(gen.get("max_tokens"), int) else 512
+    max_tokens = max(1, max_tokens)
+    stops = gen.get("stop")
+    stops = ([stops] if isinstance(stops, str) else
+             [s for s in stops if isinstance(s, str)] if isinstance(stops, list) else [])
+
+    prompt = svc.template.render(messages, add_generation_prompt=True, enable_thinking=False)
+    ids = svc.tok.encode(prompt, parse_special=True)
+    if not ids:
+        return 400, {"error": {"type": "invalid_request_error",
+                               "message": "then.generate: prompt tokenization failed"}}
+    cancel = threading.Event()
+    out = []
+    finish = "stop"
+    with svc.fifo:
+        for tok in svc.engine.generate(ids, max_tokens, sampling, cancel):
+            text = svc.tok.decode([tok])
+            out.append(tok)
+            if any(st and st in svc.tok.decode(out[-8:]) for st in stops):
+                finish = "stop"
+                break
+            if len(out) >= max_tokens:
+                finish = "length"
+    text = svc.tok.decode(out).strip()
+    for st in stops:
+        if st in text:
+            text = text.split(st)[0]
+    dec["then"] = {"text": text, "finish_reason": finish,
+                   "usage": {"prompt_tokens": len(ids), "completion_tokens": len(out)}}
+    return 200, dec
+
+
 def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     """POST /v1/systemone -> (HTTP status, body).  The whole inference holds the engine turn
     (svc.fifo), like every other engine-touching path."""
