@@ -1053,6 +1053,11 @@ when the disk holds a longer prefix than the session, a `--batch` slot or the RA
   its 8 checkpoints is 6.2 GB; with the deepest one only, a prompt that left a 329K conversation at 220K read all
   220K again); the files' identity is a random number of this run, so
   only this engine reads them back, and its files (`strata-conv-*`) are removed at start and when it ends;
+- a park the physical-RAM admission refuses (its in-RAM snapshot would not fit beside the floor) is written straight
+  from the GPUs instead of dropped: only the running state passes through RAM and the checkpoints are lent to the files
+  (`sent to the disk` in the log). Its read-back is the same in reverse: when the whole image does not fit, the files'
+  K/V is streamed into the GPUs in 16 MiB pieces (`disk hit ... streamed into the GPU`), only the running state and the
+  checkpoints through RAM - measured here at 773 MB/s, a 3,048 MiB image in 4.1 s;
 - a background thread (CPU nice 10 on Linux) writes them, so a switch never waits for the disk; a conversation asked
   for again before its write started comes back from RAM, one being written is waited for, then read. A queued image
   holds its RAM until it is written: parking, and a read back, wait for the queue before they evict more;
