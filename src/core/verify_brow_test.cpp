@@ -23,14 +23,24 @@ int main() {
     strata::core::Verifier v;
     std::string err;
 
-    // Before any run: fail closed, no row.
-    std::vector<float> row;
-    if (v.brow_row(row, err)) {
+    // Before any run: fail closed, no row (n = 0 and a real id alike: no window ever ran).
+    float out[1] = {0.0f};
+    const int32_t one = 1;
+    if (v.brow_row(&one, 1, out, err)) {
         std::printf("FAIL: brow_row succeeded before any window ran\n");
         return 1;
     }
     if (err.empty()) {
         std::printf("FAIL: brow_row set no error before any window ran\n");
+        return 1;
+    }
+    err.clear();
+    if (v.brow_row(nullptr, 0, nullptr, err)) {
+        std::printf("FAIL: brow_row succeeded with no tokens\n");
+        return 1;
+    }
+    if (err.empty()) {
+        std::printf("FAIL: brow_row set no error with no tokens\n");
         return 1;
     }
 
