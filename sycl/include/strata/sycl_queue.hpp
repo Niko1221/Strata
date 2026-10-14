@@ -288,3 +288,99 @@ inline void* malloc_device_guarded(size_t bytes, sycl::queue& q, const char* wha
     return p;
 }
 }  // namespace strata
+
+#include <sycl/ext/oneapi/virtual_mem/physical_mem.hpp>
+#include <sycl/ext/oneapi/virtual_mem/virtual_mem.hpp>
+namespace strata {
+// Alchemist (A770, oneMKL 2026.1): a big arena as physical segments mapped behind one reserved address range, instead
+// of one sycl::malloc_device.  oneMKL's GEMM misreads an operand more than 4 GiB into ONE allocation (device_offset_end
+// above), so with the arena in one allocation the prompt path staged nearly every GEMM operand it borrowed from the
+// expert cache: ~200 GB of device copies in an 8K prompt, ~40% of its time.  The same GEMMs in a segmented range read
+// right at any offset (sycl/probe/a770/vmm_sweep), so the arena is not registered and nothing in it is staged.  To the
+// rest of the engine it is still one contiguous range.  STRATA_ARENA_SEGMENTED=0: one allocation, as before; =1: also
+// on other devices.  STRATA_ARENA_SEGMENT_MIB: the segment size (default 512).
+inline bool arena_segmented_wanted(const sycl::device& d) {
+    const char* v = std::getenv("STRATA_ARENA_SEGMENTED");
+    if (v != nullptr && v[0] != 0) return v[0] != '0';
+    return intel_gpu_gen(d) == IntelGpuGen::Alchemist;
+}
+struct SegmentedArena {
+    uintptr_t va = 0;
+    size_t bytes = 0;
+    std::vector<std::pair<sycl::ext::oneapi::experimental::physical_mem, size_t>> segs;   // (memory, its size)
+};
+inline std::map<const void*, SegmentedArena>& segmented_arena_map() {
+    static std::map<const void*, SegmentedArena> m;
+    return m;
+}
+// nullptr when the device cannot (no virtual memory, out of memory); the caller then allocates the usual way
+inline void* malloc_device_segmented(size_t bytes, sycl::queue& q, const char* what = "device buffer") {
+    namespace sx = sycl::ext::oneapi::experimental;
+    const sycl::device d = q.get_device();
+    const sycl::context c = q.get_context();
+    if (bytes == 0 || !d.has(sycl::aspect::ext_oneapi_virtual_mem)) return nullptr;
+    SegmentedArena a;
+    const char* step = "granularity";
+    try {
+        const size_t g = sx::get_mem_granularity(d, c, sx::granularity_mode::recommended);
+        const char* sv = std::getenv("STRATA_ARENA_SEGMENT_MIB");
+        const size_t want_seg = (size_t) (sv != nullptr && std::atoll(sv) > 0 ? std::atoll(sv) : 512) << 20;
+        // equal segments of whole 2 MiB pages: Level Zero refused a last, smaller segment of whole 64 KiB granules
+        // (A770, NEO 26.05: UR_RESULT_ERROR_INVALID_VALUE for a 144 MiB tail after 17 x 512 MiB)
+        const size_t page = std::max<size_t>(g, (size_t) 2 << 20);
+        const size_t nseg = std::max<size_t>(1, (bytes + want_seg - 1) / want_seg);
+        const size_t seg = ((bytes + nseg - 1) / nseg + page - 1) / page * page;
+        a.bytes = seg * nseg;
+        step = "reserve";
+        a.va = sx::reserve_virtual_mem(a.bytes, c);
+        for (size_t at = 0; at < a.bytes; at += seg) {
+            const size_t n = std::min(seg, a.bytes - at);
+            step = "physical_mem";
+            a.segs.emplace_back(sx::physical_mem(d, c, n), n);
+            step = "map";
+            a.segs.back().first.map(a.va + at, n, sx::address_access_mode::read_write);
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "strata: %s in segments failed at %s, segment %zu (%s); one allocation instead\n", what, step,
+                     a.segs.size(), e.what());
+        size_t at = 0;
+        for (auto& s : a.segs) { try { sx::unmap((void*) (a.va + at), s.second, c); } catch (...) {} at += s.second; }
+        a.segs.clear();
+        if (a.va != 0) try { sx::free_virtual_mem(a.va, a.bytes, c); } catch (...) {}
+        return nullptr;
+    }
+    void* p = (void*) a.va;
+    if (arena_alias_guard_enabled() && arena_alias_check(q, p, bytes, nullptr) != 0)
+        std::fprintf(stderr, "strata: WARNING: the %s (in segments) has aliased pages\n", what);
+    std::fprintf(stderr, "strata: %s: %.2f GiB in %zu segments of one address range (STRATA_ARENA_SEGMENTED=0: one allocation)\n",
+                 what, (double) a.bytes / 1073741824.0, a.segs.size());
+    std::lock_guard<std::mutex> lk(device_alloc_mutex());
+    segmented_arena_map()[p] = std::move(a);
+    return p;
+}
+// false when p is not a segmented arena (the caller frees it the usual way)
+inline bool free_device_segmented(void* p, sycl::queue& q) {
+    namespace sx = sycl::ext::oneapi::experimental;
+    SegmentedArena a;
+    {
+        std::lock_guard<std::mutex> lk(device_alloc_mutex());
+        auto it = segmented_arena_map().find(p);
+        if (it == segmented_arena_map().end()) return false;
+        a = std::move(it->second);
+        segmented_arena_map().erase(it);
+    }
+    // at process exit the runtime may already be torn down (UR_RESULT_ERROR_UNINITIALIZED): the driver frees it then
+    try {
+        q.wait();
+        const sycl::context c = q.get_context();
+        size_t at = 0;
+        for (auto& s : a.segs) { sx::unmap((void*) (a.va + at), s.second, c); at += s.second; }
+        a.segs.clear();   // releases the physical memory
+        sx::free_virtual_mem(a.va, a.bytes, c);
+    } catch (const std::exception&) {
+        for (auto& s : a.segs) (void) new sx::physical_mem(std::move(s.first));   // never destroyed: no driver call
+        a.segs.clear();
+    }
+    return true;
+}
+}  // namespace strata

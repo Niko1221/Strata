@@ -659,6 +659,10 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
         }
         base_ = r->base();
         vmm_ = std::move(r);
+    } else if (strata::arena_segmented_wanted(dpct::get_in_order_queue().get_device()) &&
+               (base_ = (uint8_t*) strata::malloc_device_segmented((size_t) want, dpct::get_in_order_queue(),
+                                                                   "expert cache arena")) != nullptr) {
+        // Alchemist: the arena in segments, so the prompt path's GEMMs on borrowed slots need no staging (sycl_queue.hpp)
     } else if (DPCT_CHECK_ERROR(
                    base_ = (uint8_t *)strata::malloc_device_guarded(
                        (size_t)want, dpct::get_in_order_queue(), "expert cache arena")) != 0 ||
@@ -763,6 +767,8 @@ void ExpertCache::close() {
     } else if (vmm_) {
         vmm_.reset();   // unmaps and frees every chunk it still holds
         strata::device_alloc_unregister(base_);
+        base_ = nullptr;
+    } else if (base_ != nullptr && strata::free_device_segmented(base_, dpct::get_in_order_queue())) {
         base_ = nullptr;
     } else if (base_ != nullptr) {
         strata::device_alloc_unregister(base_);
