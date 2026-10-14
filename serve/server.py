@@ -5004,6 +5004,44 @@ def make_handler(svc: Service):
                 self._json(404, {"error": {"message": "not found"}})
 
         def do_POST(self):
+            # ★ P28（2026-10-14）：并发准入 —— 满了立刻 429，不占用后端 FIFO 的排队位。
+            _st = type(self).__dict__.get("_admit_state")
+            if _st is None:
+                _lim = 0
+                try:
+                    import json as _json, os as _os, sys as _sys
+                    _p = ""
+                    if "--config" in _sys.argv:
+                        _p = _sys.argv[_sys.argv.index("--config") + 1]
+                    if _p:
+                        _lim = int(_json.load(open(_p, encoding="utf-8")).get("max_concurrent", 0) or 0)
+                except Exception:
+                    _lim = 0
+                _st = (_lim, threading.Semaphore(_lim) if _lim > 0 else None)
+                type(self)._admit_state = _st
+            _lim, _sem = _st
+            if _sem is not None and not _sem.acquire(blocking=False):
+                _b = ('{"error":{"message":"server busy: at most %d concurrent requests",'
+                      '"type":"rate_limit_error"}}' % _lim).encode()
+                self.send_response(429)
+                self.send_header("Retry-After", "5")
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(_b)))
+                self.end_headers()
+                try:
+                    self.wfile.write(_b)
+                except Exception:
+                    pass
+                print("[strata] rejected (busy): %d concurrent requests allowed, limit reached"
+                      % _lim, flush=True)
+                return
+            try:
+                return self._do_POST_inner()
+            finally:
+                if _sem is not None:
+                    _sem.release()
+
+        def _do_POST_inner(self):
             try:
                 self._post()
             except BadBody as e:                              # #893: a malformed or oversized chunked body
