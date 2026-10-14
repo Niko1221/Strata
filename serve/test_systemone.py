@@ -95,8 +95,9 @@ class DecisionEngine(MockEngine):
         self.prompts.append(list(ids))
         yield from super().generate(ids, max_new, sampling, cancel, embeddings)
 
-    def final_row_logits(self, prompt):
-        return dict(self.ROW)
+    def final_row_logits(self, ids, tokens):
+        # the real engine answers only the asked tokens (BROW); the mock mirrors that
+        return {t: self.ROW[t] for t in tokens if t in self.ROW}
 
 
 def start_server():
@@ -139,6 +140,7 @@ class BrowWire(unittest.TestCase):
         cls.httpd.server_close()
 
     def test_brow_roundtrip(self):
+        self.eng.script = ["BROWD 2 78:0.5 89:4.25\n"]      # earlier tests replaced it
         row = self.eng.final_row_logits([1, 2, 3], [78, 89])
         self.assertEqual(row, {78: 0.5, 89: 4.25})
         self.assertEqual(self.eng.proc.sent[-1], "BROW 78 89\n")
