@@ -609,13 +609,15 @@ let chats = [], chat = null, chatId = "";
 let messages = store.get("chat", []);         // off: the single chat; on: the open chat's messages
 let sidebarQuery = "", sidebarOpen = true, quotaWarned = false;
 
-// turning the switch on: the chat on the screen becomes the first entry of the list
-function openHistory() {
+// turning the switch on: the chat on the screen becomes the first entry of the list. Only when the switch is
+// flipped in this session: on a page load the list is the list, so a fresh chat stays empty and "strata.chat" is
+// read once, when there is no list yet.
+function openHistory(fromScreen) {
   chats = loadChats();
   chat = chats.find((c) => c.id === store.get("chatId", "")) || chats[0] || newChat();
   if (!chats.includes(chat)) chats.push(chat);
   chatId = chat.id;
-  if (!chat.messages.length && messages.length) chat.messages = messages;
+  if (fromScreen && !chat.messages.length && messages.length) chat.messages = messages;
   messages = chat.messages;
 }
 
@@ -754,16 +756,16 @@ $("sidebar-list").addEventListener("click", (e) => {
 });
 
 // the switch under About > Settings. Off is the old page: one chat, "New chat" clears it.
-function setHistory(on, save) {
+function setHistory(on, save, fromScreen) {
   historyOn = on;
   $("history-toggle").setAttribute("aria-checked", String(on));
   $("sidebar").hidden = !on;
   $("new-btn").title = on ? "New chat (the one you are in stays in the list)" : "New chat";
   if (save) store.set("history", on);
-  if (on) openHistory(); else messages = chat ? chat.messages : messages;
+  if (on) openHistory(fromScreen); else messages = chat ? chat.messages : messages;
   renderChat();
 }
-$("history-toggle").onclick = () => setHistory($("history-toggle").getAttribute("aria-checked") !== "true", true);
+$("history-toggle").onclick = () => setHistory($("history-toggle").getAttribute("aria-checked") !== "true", true, true);
 
 function msgEl(m, i) {
   const el = document.createElement("div");
@@ -1280,7 +1282,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawe
 setBusy(false);
 // a narrow screen starts with the list closed so the chat has room
 setSidebar(store.get("sidebar", true) && !matchMedia("(max-width: 760px)").matches, false);
-setHistory(historyOn, false);                        // off by default: the page as it was
+setHistory(historyOn, false, false);                   // off by default: the page as it was
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
