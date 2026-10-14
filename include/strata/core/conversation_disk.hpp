@@ -65,6 +65,12 @@ public:
     /// with it (they hold no K/V), so a prompt that leaves the conversation early still resumes from one.  False when
     /// the tier is off or over budget.
     bool put(SavedConversation&& image);
+    /// Writes a conversation straight from where it lives, on the caller's thread: `meta` holds all but the K/V
+    /// (stage images likewise), `sources[k]` the K/V of image k (the first stage's, then each later stage's).  For a
+    /// park the RAM check refuses: the conversation goes to the disk instead of being dropped.  The caller keeps the
+    /// session as it is until this returns; `meta` is given back as it came.  False when the tier is off, the write
+    /// fails or it is over budget.
+    bool put_streamed(SavedConversation& meta, const std::vector<std::vector<SessionKvSource>>& sources);
 
     struct Match {
         uint64_t id = 0;        ///< the entry (stable while the writer runs; 0 = none)
@@ -134,7 +140,10 @@ private:
         SavedConversation image;
     };
     void writer();
+    using WriteFile = std::function<bool(size_t image, const std::string& path, size_t& written, std::string& error)>;
     void write(Job& job);                                    // without the lock
+    bool store(Entry e, size_t images, const WriteFile& write_file, const char* how);   // writes e's files, keeps e
+    SessionWriteOptions write_options() const;
     void remove_locked(size_t index, bool delete_files);     // m_ held
     size_t expire_locked();                                  // m_ held
     void log(const std::string& line) const;

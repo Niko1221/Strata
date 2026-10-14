@@ -8386,6 +8386,42 @@ int main(int argc, char** argv) {
                              estimate >> 20);
                 return true;
             }
+            // A park the RAM check refuses goes to the disk tier straight from the GPUs: only the running state passes
+            // through RAM, and the checkpoints are lent to the files (moved in and back), not copied.
+            auto park_streamed = [&]() -> bool {
+                const auto ts = Clock::now();
+                const std::vector<ConvCheckpoint> none;
+                std::vector<ConvCheckpoint>& checks0 = n_st > 0 ? cs.stage0 : checks;
+                strata::core::SavedConversation meta;
+                std::vector<std::vector<strata::core::SessionKvSource>> sources(n_st + 1);
+                bool ok = strata::core::conversation_snapshot_sources(meta, sources[0], {live, live_imgs, none, cvec_cached},
+                                                                       ss, g, draft0, err);
+                for (size_t k = 0; ok && k < n_st; ++k) {
+                    const strata::core::OnDevice on(stages[k]->dev);
+                    strata::core::SavedConversation part;
+                    ok = strata::core::conversation_snapshot_sources(part, sources[k + 1],
+                                                                      {live, live_imgs, none, cvec_cached},
+                                                                      stages[k]->ss, g, draft_of(k), err);
+                    meta.stage_images.push_back(std::move(part));
+                }
+                if (!ok) {
+                    std::fprintf(stderr, "strata serve: conversation disk: cannot stream %zu tokens (%s)\n", live.size(),
+                                 err.c_str());
+                    err.clear();
+                    return false;
+                }
+                meta.checkpoints = std::move(checks0);
+                for (size_t k = 0; k < n_st; ++k) meta.stage_images[k].checkpoints = std::move(cs.parts[k]);
+                ok = conv_disk.put_streamed(meta, sources);
+                checks0 = std::move(meta.checkpoints);
+                for (size_t k = 0; k < n_st; ++k) cs.parts[k] = std::move(meta.stage_images[k].checkpoints);
+                if (ok)
+                    std::fprintf(stderr, "strata serve: conversation cache: sent to the disk %zu tokens in %.1f ms; parked=%zu "
+                                         "bytes=%zu evictions=%zu (streamed: no room in RAM)\n", live.size(),
+                                 std::chrono::duration<double, std::milli>(Clock::now() - ts).count(),
+                                 conversations.size(), conversations.bytes(), conversations.evictions());
+                return ok;
+            };
             const auto t0 = Clock::now();
             try {
                 const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
@@ -8404,6 +8440,7 @@ int main(int argc, char** argv) {
                 size_t evicted = 0;
                 std::optional<strata::core::HostMemoryReading> mem;
                 if (!make_ram(additional, floor, evicted, mem)) {
+                    if (conv_disk.enabled() && park_streamed()) return true;
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked)\n",
                                  additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
                                  evicted, conversations.size());

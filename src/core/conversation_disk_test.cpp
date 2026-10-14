@@ -277,6 +277,37 @@ int main() {
         check(tier.stats().read_failed == 1, "a failed read is counted");
     }
 
+    {   // put_streamed: the K/V read from where it lives (here: the image's own buffers) gives the same files
+        auto sources_of = [](const SavedConversation& img) {
+            std::vector<SessionKvSource> out;
+            for (const auto& kv : img.kv) {
+                SessionKvSource s;
+                s.format = kv.format; s.cells = kv.cells; s.heads = kv.heads; s.head_dim = kv.head_dim;
+                s.page_size = kv.page_size; s.pooled_rows = kv.pooled_rows; s.idx_dim = kv.idx_dim;
+                const ConversationBuffer* parts[5] = {&kv.k, &kv.v, &kv.k_scale, &kv.v_scale, &kv.pooled};
+                for (size_t p = 0; p < 5; ++p) s.sizes[p] = parts[p]->size();
+                s.read = [parts](size_t part, size_t offset, void* dst, size_t n) {
+                    return parts[part]->read(dst, offset, n);
+                };
+                out.push_back(std::move(s));
+            }
+            return out;
+        };
+        const SavedConversation expect = split_image(500, 30, 9000);
+        std::vector<std::vector<SessionKvSource>> sources = {sources_of(expect), sources_of(expect.stage_images[0])};
+        SavedConversation meta = split_image(500, 30, 9000);
+        meta.kv.clear();
+        meta.stage_images[0].kv.clear();
+        ConversationDiskTier tier(opts(dir, GiB, 1800));
+        check(tier.open(e) && tier.put_streamed(meta, sources), "put_streamed: written");
+        check(meta.stage_images.size() == 1 && meta.checkpoints.size() == 2, "put_streamed: the image is given back");
+        check(tier.size() == 1 && tier_files(dir) == 2 && logged("streamed from the GPU"), "put_streamed: two files, logged");
+        const auto m = tier.best(prompt_of(600, 9000), {}, false);
+        SavedConversation back;
+        check(m.tokens == 500 && tier.take(m.id, m.tokens, back, e) && same(back, expect),
+              "put_streamed: read back exactly the image the sources came from");
+    }
+
     {   // the RAM cache's evictions go to the disk tier (set_on_evict)
         ConversationDiskTier tier(opts(dir, GiB, 1800));
         check(tier.open(e), "open 6");

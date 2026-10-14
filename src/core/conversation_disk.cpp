@@ -387,47 +387,87 @@ void ConversationDiskTier::writer() {
 
 void ConversationDiskTier::write(Job& job) {
     if (options_.before_write) options_.before_write();
-    const size_t tokens = job.entry.live.ids.size();
+    std::vector<SavedConversation> parts = std::move(job.image.stage_images);   // one file per image, none nested
+    job.image.stage_images.clear();
+    const SessionFileIdentity id = file_identity();
+    store(std::move(job.entry), parts.size() + 1,
+          [&](size_t k, const std::string& path, size_t& written, std::string& error) {
+              return session_file_write(path, k == 0 ? job.image : parts[k - 1], id, written, error, write_options());
+          }, "");
+    job.image = SavedConversation{};   // the RAM goes back now, written or not
+}
+
+bool ConversationDiskTier::put_streamed(SavedConversation& meta,
+                                        const std::vector<std::vector<SessionKvSource>>& sources) {
+    if (!open_ || sources.size() != meta.stage_images.size() + 1) return false;
+    Entry e;
+    e.live = key_of(meta.live);
+    for (const auto& c : meta.checkpoints) e.checkpoints.push_back(key_of(c));
+    e.cvec = meta.cvec;
+    e.bytes = meta.bytes();
+    for (const auto& image : sources)
+        for (const auto& layer : image)
+            for (size_t part : layer.sizes) e.bytes += part;
+    if (e.bytes > options_.budget_bytes) {
+        log(fmt("dropped %zu tokens: %.0f MiB is over the disk budget", e.live.ids.size(), mib(e.bytes)));
+        std::lock_guard<std::mutex> lock(m_);
+        ++stats_.write_failed;
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        e.id = ++next_id_;
+    }
+    std::vector<SavedConversation> parts = std::move(meta.stage_images);
+    meta.stage_images.clear();
+    const SessionFileIdentity id = file_identity();
+    const bool ok = store(std::move(e), parts.size() + 1,
+                          [&](size_t k, const std::string& path, size_t& written, std::string& error) {
+                              return session_file_write(path, k == 0 ? meta : parts[k - 1], sources[k], id, written,
+                                                        error, write_options());
+                          }, ", streamed from the GPU");
+    meta.stage_images = std::move(parts);   // given back as it came: the caller lent its checkpoints
+    return ok;
+}
+
+SessionWriteOptions ConversationDiskTier::write_options() const {
+    SessionWriteOptions wo;
+    wo.min_free_bytes = options_.min_free_bytes;
+    wo.durable = false;   // a cache: a file a power loss damages fails its hash check and is read again from the prompt
+    return wo;
+}
+
+bool ConversationDiskTier::store(Entry e, size_t images, const WriteFile& write_file, const char* how) {
+    const size_t tokens = e.live.ids.size();
     size_t made_room = 0, expired = 0;
     {
         std::lock_guard<std::mutex> lock(m_);
         expired = expire_locked();
-        while (!entries_.empty() && bytes_ + job.entry.bytes > options_.budget_bytes) {
+        while (!entries_.empty() && bytes_ + e.bytes > options_.budget_bytes) {
             remove_locked(0, true);
             ++made_room;
         }
         stats_.evicted += made_room;
     }
     const auto t0 = std::chrono::steady_clock::now();
-    // one session file per image: the first stage's, then each later stage's (the writer takes no nested images)
-    std::vector<SavedConversation> parts = std::move(job.image.stage_images);
-    job.image.stage_images.clear();
-    const SessionFileIdentity id = file_identity();
-    SessionWriteOptions wo;
-    wo.min_free_bytes = options_.min_free_bytes;
-    wo.durable = false;   // a cache: a file a power loss damages fails its hash check and is read again from the prompt
-    Entry e = std::move(job.entry);
     e.bytes = 0;
     std::string error;
-    auto write_one = [&](const SavedConversation& img, size_t k) -> bool {
+    bool ok = true;
+    for (size_t k = 0; ok && k < images; ++k) {
         char name[96];
         std::snprintf(name, sizeof name, "%s%016llx-%llu-%zu.bin", file_prefix(), (unsigned long long) nonce_,
                       (unsigned long long) e.id, k);
         const std::string path = (fs::path(options_.dir) / name).string();
         size_t written = 0;
-        if (!session_file_write(path, img, id, written, error, wo)) {
+        ok = write_file(k, path, written, error);
+        if (!ok) {
             remove_file(path);
-            return false;
+            break;
         }
         e.files.push_back(path);
         e.bytes += written;
-        return true;
-    };
-    bool ok = write_one(job.image, 0);
-    for (size_t k = 0; ok && k < parts.size(); ++k) ok = write_one(parts[k], k + 1);
+    }
     if (ok && options_.persist) ok = write_index(e, error);   // after the images: an index names complete files only
-    job.image = SavedConversation{};   // the RAM goes back now, written or not
-    parts.clear();
     const double ms = ms_since(t0);
     if (!ok) {
         for (const auto& f : e.files) remove_file(f);
@@ -436,7 +476,7 @@ void ConversationDiskTier::write(Job& job) {
             ++stats_.write_failed;
         }
         log(fmt("dropped %zu tokens: the write failed after %.0f ms (%s)", tokens, ms, error.c_str()));
-        return;
+        return false;
     }
     e.at = now_();
     const uint64_t b = e.bytes;
@@ -453,9 +493,10 @@ void ConversationDiskTier::write(Job& job) {
         on_disk = entries_.size();
         disk_bytes = bytes_;
     }
-    log(fmt("wrote %zu tokens: %.0f MiB in %zu file%s, %.0f ms (%.0f MB/s); on disk %zu, %.0f MiB; %zu removed for "
-            "the budget, %zu expired", tokens, mib(b), nfiles, nfiles == 1 ? "" : "s", ms, mbps(b, ms), on_disk,
+    log(fmt("wrote %zu tokens%s: %.0f MiB in %zu file%s, %.0f ms (%.0f MB/s); on disk %zu, %.0f MiB; %zu removed for "
+            "the budget, %zu expired", tokens, how, mib(b), nfiles, nfiles == 1 ? "" : "s", ms, mbps(b, ms), on_disk,
             mib(disk_bytes), made_room, expired));
+    return true;
 }
 
 bool ConversationDiskTier::take(uint64_t id, int64_t tokens, SavedConversation& out, std::string& error,
