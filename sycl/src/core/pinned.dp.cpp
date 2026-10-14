@@ -320,10 +320,11 @@ namespace {
 bool sliced_pin_limit(uint64_t& limit, std::string& why) {
     constexpr uint64_t GiB = 1ull << 30;
     char buf[256];
+    std::string err = "no CUDA device properties";
+#if defined(STRATA_USE_CUDA) || defined(__CUDACC__)
     int dev = 0;
     cudaDeviceProp p{};
     uint64_t budget = 0, usage = 0;
-    std::string err = "no CUDA device properties";
     if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
         strata::platform::gpu_shared_memory_budget(p.luid, budget, usage, err)) {
         limit = budget > usage + 4 * GiB ? budget - usage - 4 * GiB : 0;
@@ -333,6 +334,8 @@ bool sliced_pin_limit(uint64_t& limit, std::string& why) {
         return true;
     }
     (void) cudaGetLastError();
+#endif
+    // SYCL (and any non-CUDA build): no device properties here, so size the slice cap from RAM.
     const uint64_t ram = strata::platform::total_physical_memory();
     if (ram == 0) return false;
     limit = ram / 2 > 8 * GiB ? ram / 2 - 8 * GiB : 0;

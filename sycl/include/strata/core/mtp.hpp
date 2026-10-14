@@ -175,6 +175,11 @@ private:
     bool record_rest(int step_row, dpct::queue_ptr cs, std::string &err);
     void norm_rope(float *data, const float *gamma, int rows, int cols,
                    const int32_t *p, dpct::queue_ptr cs);
+    // The bodies the capture_* functions record into command graphs. SYCL port, STRATA_VERIFY_EAGER=1: backends
+    // without command graphs (the OpenCL adapter) replay the body on the queue instead of recording it.
+    bool record_prefill(int T, bool dev_inputs, std::string& err);
+    bool record_round(int T, bool coupled, std::string& err);
+    bool record_step(int j, bool coupled, std::string& err);
     bool capture_prefill(int T, std::string& err);
     bool capture_prefill_dev(int T, std::string& err);   ///< E-4: without the mapped staging (inputs copied on device)
     bool capture_round(int T, bool coupled, std::string& err);
