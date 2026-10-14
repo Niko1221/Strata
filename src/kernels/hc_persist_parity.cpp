@@ -7,6 +7,9 @@
 // magnitude, and two runs of the persistent read must agree bit for bit. Where the card does not hold the 80 blocks at
 // once (or on CUDA, where the read is not built) the read reports that it did not run and the test passes as a skip.
 // `--off`: with STRATA_HC_PERSIST unset the persistent read must never run (the default path is untouched).
+// `--fault`: STRATA_HC_PERSIST_FAULT=2 makes the second run-time read give up at its first barrier: that read's mixed
+// rows must all be non-finite (the window's logits then are, and the engine ends the request, #879), the poll must count
+// it, and the third read must be correct again (the kernel cleared its barrier: one abort does not poison the path).
 // GPU, synthetic, no model.
 #include "strata/kernels/fused_gr.hpp"
 
@@ -52,8 +55,10 @@ T* dev(size_t n) {
 
 int main(int argc, char** argv) {
     const bool off = argc > 1 && std::strcmp(argv[1], "--off") == 0;
+    const bool fault = argc > 1 && std::strcmp(argv[1], "--fault") == 0;
     if (off) unsetenv("STRATA_HC_PERSIST");
     else setenv("STRATA_HC_PERSIST", "1", 1);
+    if (fault) setenv("STRATA_HC_PERSIST_FAULT", "2", 1);
     k::fused_gr_check();
     k::fused_gr_persist_init();
 
@@ -81,6 +86,53 @@ int main(int argc, char** argv) {
     float* dio = dev<float>((size_t) TM * HC);
     float* dmix = dev<float>((size_t) TM * N);
 
+    if (fault) {   // read 1 correct, read 2 gives up (non-finite, counted), read 3 correct again
+        constexpr int T = 4;
+        k::FusedGrArgs a[TM];
+        for (int t = 0; t < T; ++t) {
+            a[t] = k::FusedGrArgs{};
+            a[t].R = dR + (size_t) t * D; a[t].R_out = dR + (size_t) t * D; a[t].apply = true;
+            a[t].bo_prev = dbo + (size_t) t * N; a[t].inj_prev = dinj + (size_t) t * HC;
+            a[t].w_norm = dwn; a[t].w_down = dwd; a[t].w_up = dwu; a[t].w_inject = dwi; a[t].eps = 1e-6f;
+            a[t].lo = dlo + (size_t) t * LR; a[t].rs = drs + (size_t) t * HC;
+            a[t].inject_out = dio + (size_t) t * HC; a[t].mixed = dmix + (size_t) t * N;
+        }
+        auto read = [&](bool persist, std::vector<float>& mix) -> bool {
+            ck(cudaMemcpy(dR, R.data(), R.size() * 4, cudaMemcpyHostToDevice), "R");
+            ck(cudaMemset(dmix, 0, (size_t) TM * N * 4), "mix");   // zeros, not 0xff (that is a NaN already)
+            ck(cudaDeviceSynchronize(), "sync");
+            bool ran_p = false;
+            if (persist) ran_p = k::fused_gr_read_persist(a, T, nullptr);
+            else k::fused_gr_read_multi(a, T, dxn, nullptr);
+            ck(cudaDeviceSynchronize(), "read");
+            mix.resize((size_t) T * N);
+            ck(cudaMemcpy(mix.data(), dmix, (size_t) T * N * 4, cudaMemcpyDeviceToHost), "d2h mix");
+            return persist ? ran_p : true;
+        };
+        std::vector<float> ref, r1, r2, r3;
+        read(false, ref);
+        if (!read(true, r1)) { std::printf("SKIP: the persistent read is not used on this card\n"); return 0; }
+        read(true, r2);
+        const unsigned aborts = k::fused_gr_persist_poll();
+        read(true, r3);
+        auto rel = [&](const std::vector<float>& x) {
+            double mref = 0.0, md = 0.0;
+            for (size_t i = 0; i < x.size(); ++i) {
+                if (!std::isfinite(x[i])) return 1e30;
+                mref = std::fmax(mref, std::fabs((double) ref[i]));
+                md = std::fmax(md, std::fabs((double) x[i] - ref[i]));
+            }
+            return md / (mref > 0 ? mref : 1.0);
+        };
+        size_t nonfinite = 0;
+        for (float v : r2) nonfinite += !std::isfinite(v);
+        const double e1 = rel(r1), e3 = rel(r3);
+        const bool ok = e1 < 1e-4 && nonfinite == r2.size() && aborts == 1 && e3 < 1e-4;
+        std::printf("read 1: max relative difference %.3g; read 2 (forced abort): %zu of %zu mixed values non-finite, "
+                    "%u abort(s) counted; read 3: max relative difference %.3g  %s\n", e1, nonfinite, r2.size(), aborts,
+                    e3, ok ? "PASS" : "FAIL");
+        return ok ? 0 : 1;
+    }
     int bad = 0, ran = 0;
     for (int T = 1; T <= TM; ++T) {
         k::FusedGrArgs a[TM];

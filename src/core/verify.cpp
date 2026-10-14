@@ -2139,6 +2139,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
                    std::string& err) {
     using namespace strata::kernels;
     const OnDevice on_device(device_);
+    strata::kernels::fused_gr_persist_poll();   // STRATA_HC_PERSIST=1: logs a read that gave up (a mapped word, no sync)
     last_batch_ = false;
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
@@ -3243,6 +3244,7 @@ bool Verifier::prestage(int T, const int32_t* tokens, int64_t pos0, const int32_
 
 bool Verifier::pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string& err) {
     const OnDevice on_device(device_);
+    strata::kernels::fused_gr_persist_poll();   // STRATA_HC_PERSIST=1: logs a read that gave up (a mapped word, no sync)
     if (fl_active_) { err = "verify: a window is already in flight on this verifier"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }

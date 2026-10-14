@@ -941,6 +941,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(hc_persist_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME hc_persist_parity COMMAND hc_persist_parity)
   add_test(NAME hc_persist_default_off COMMAND hc_persist_parity --off)
+  add_test(NAME hc_persist_fault COMMAND hc_persist_parity --fault)
   if(STRATA_HIP_GFX906)
     # the S6 router (STRATA_HIP_ROUTER_FAST=1 on gfx906) against the portable kernel, bitwise, on wave64
     add_executable(hip_router_fast tests/hip/router_fast.cpp)

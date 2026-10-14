@@ -81,5 +81,8 @@ int fused_gr_variant();
 /// runs `fused_gr_read_multi`.  Only for reads on a stream no other persistent read runs on concurrently (the verifier's).
 void fused_gr_persist_init();
 bool fused_gr_read_persist(const FusedGrArgs* a, int n_tok, void* stream);
+/// The persistent reads that gave up at a barrier on this device so far (each made its window non-finite and reset
+/// itself); a new count is logged once.  Cheap (a mapped host word): the Verifier calls it before each window.
+unsigned fused_gr_persist_poll();
 
 }  // namespace strata::kernels

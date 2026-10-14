@@ -2193,14 +2193,21 @@ struct PArgs {
     FusedGrArgs a[kFusedGrMaxT];
     float* part;        // [T][NR][NB]
     float* ssp;         // [T][NB]
-    unsigned* bar;      // [0] count, [32] generation, [48] abort (a barrier that timed out)
+    unsigned* bar;      // [0] count, [32] generation, [48] abort (a barrier that timed out), [52] aborted reads,
+                        // [56] reads that ran, [60] blocks that left this read
     unsigned long long timeout_ticks;   // s_memrealtime ticks (100 MHz) a barrier waits before it aborts the read
+    unsigned* host_aborts;              // mapped host word: bar[52] after each aborted read (the host's log line), or null
+    unsigned fault_at;                  // tests only (STRATA_HC_PERSIST_FAULT=n): the n-th read aborts at its first barrier
     double* partd;      // STRATA_HC_PERSIST=3 (a reference only): the partial dots and sums of squares in double
     double* sspd;
 };
 // Returns false when the read was aborted: a block waited longer than `ticks` (the 80 blocks were not all resident - the
 // start-up check finds that out by running every T with a short timeout) or another block aborted.  Then every block
-// leaves the kernel; the outputs are not written completely and bar[48] stays set until the host clears the words.
+// leaves the kernel: each block makes its slice of the outputs non-finite (abort_outputs), so the window's logits are not
+// finite and the engine ends the request instead of using a half-written read (#879), and the last block to leave
+// clears the barrier (leave), so the next read starts clean.
+// gfx12 has no s_memrealtime (clang: "needs target feature s-memrealtime"): the read is off there (init), and this
+// device code only has to build - a barrier that would have to wait aborts at once.
 __device__ __forceinline__ bool grid_sync(unsigned* bar, unsigned long long ticks) {
     __shared__ int s_abort;
     __syncthreads();
@@ -2213,6 +2220,11 @@ __device__ __forceinline__ bool grid_sync(unsigned* bar, unsigned long long tick
             __hip_atomic_store(&bar[0], 0u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
             __hip_atomic_fetch_add(&bar[32], 1u, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_AGENT);
         } else {
+#if defined(__GFX12__)
+            (void) ticks;
+            __hip_atomic_store(&bar[48], 1u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+            ab = 1;
+#else
             const unsigned long long t0 = __builtin_amdgcn_s_memrealtime();
             while (__hip_atomic_load(&bar[32], __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_AGENT) == gen) {
                 if (__hip_atomic_load(&bar[48], __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT) != 0u) { ab = 1; break; }
@@ -2223,6 +2235,7 @@ __device__ __forceinline__ bool grid_sync(unsigned* bar, unsigned long long tick
                 }
                 __builtin_amdgcn_s_sleep(1);
             }
+#endif
         }
         if (__hip_atomic_load(&bar[48], __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT) != 0u) ab = 1;
         s_abort = ab;
@@ -2242,6 +2255,33 @@ __device__ __forceinline__ double dot8d(const uint4 w, const float* x) {
     }
     return acc;
 }
+// an aborted read: this block's columns of every token's mixed row (and, block 0, the inject outputs) become NaN
+template <int T>
+__device__ __forceinline__ void abort_outputs(const PArgs& f, int b, int tid) {
+    const float nan = __int_as_float(0x7fc00000);
+    for (int idx = tid; idx < T * UPC; idx += THREADS) {
+        const int k = idx / UPC, col = idx - k * UPC;
+        f.a[k].mixed[b * UPC + col] = nan;
+    }
+    if (b == 0 && tid < T * HC) f.a[tid / HC].inject_out[tid % HC] = nan;
+}
+// every block of a read that gave up, on its way out (a read gives up in every block or in none: the abort flag is set
+// while a barrier is still waited on, and every block checks it after its wait): the last one clears the barrier and
+// reports the abort.  A read that completed skips this (its barrier is already reset); with STRATA_HC_PERSIST_FAULT the
+// completed reads go through it too, to be counted.
+__device__ __forceinline__ void leave(const PArgs& f) {
+    __syncthreads();
+    if (threadIdx.x != 0) return;
+    __threadfence();
+    if (__hip_atomic_fetch_add(&f.bar[60], 1u, __ATOMIC_ACQ_REL, __HIP_MEMORY_SCOPE_AGENT) != NB - 1) return;
+    __hip_atomic_store(&f.bar[60], 0u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+    __hip_atomic_fetch_add(&f.bar[56], 1u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+    if (__hip_atomic_load(&f.bar[48], __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_AGENT) == 0u) return;
+    __hip_atomic_store(&f.bar[0], 0u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+    __hip_atomic_store(&f.bar[48], 0u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+    const unsigned n = __hip_atomic_fetch_add(&f.bar[52], 1u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT) + 1u;
+    if (f.host_aborts != nullptr) __hip_atomic_store(f.host_aborts, n, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
+}
 template <int T, bool DP = false>
 __global__ void __launch_bounds__(THREADS) persist_kernel(PArgs f) {
     using A = typename std::conditional<DP, double, float>::type;
@@ -2251,6 +2291,9 @@ __global__ void __launch_bounds__(THREADS) persist_kernel(PArgs f) {
     __shared__ float g[T][HC][UPC];
     const int tid = threadIdx.x, lane = tid & 31, b = blockIdx.x;
     const FusedGrArgs& a0 = f.a[0];
+    if (f.fault_at != 0u && b == 0 && tid == 0 &&
+        __hip_atomic_load(&f.bar[56], __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT) + 1u == f.fault_at)
+        __hip_atomic_store(&f.bar[48], 1u, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);   // tests: abort this read
     // (A) block b: columns [128 b, 128 b + 128) of D (one stream): R' * w_norm into LDS, the slice's sum of squares, and
     // the UNSCALED partial dots of the 320 down + 4 inject rows (w . xn = sum_c rs[c] (w[:, c] . x'[c]))
     const int c_b = b / SPS, col0 = b * SL;
@@ -2300,7 +2343,7 @@ __global__ void __launch_bounds__(THREADS) persist_kernel(PArgs f) {
                 else f.part[((size_t) k * NR + r) * NB + b] = (float) acc[k];
             }
     }
-    if (!grid_sync(f.bar, f.timeout_ticks)) return;
+    if (!grid_sync(f.bar, f.timeout_ticks)) { abort_outputs<T>(f, b, tid); leave(f); return; }
     // (B) rs per stream (every block), then rows (k, r) = b + 80 j reduced to lo / inject by the blocks in turn
     if (tid < T * HC) {
         const int k = tid / HC, c = tid - k * HC;
@@ -2348,7 +2391,7 @@ __global__ void __launch_bounds__(THREADS) persist_kernel(PArgs f) {
             f.a[k].inject_out[r - LR] = (float) sum;
         }
     }
-    if (!grid_sync(f.bar, f.timeout_ticks)) return;
+    if (!grid_sync(f.bar, f.timeout_ticks)) { abort_outputs<T>(f, b, tid); leave(f); return; }
     for (int idx = tid; idx < T * LR; idx += THREADS) {
         const int k = idx / LR, r = idx - k * LR;
         lo[k][r] = f.a[k].lo[r];
@@ -2401,6 +2444,7 @@ __global__ void __launch_bounds__(THREADS) persist_kernel(PArgs f) {
         for (int c = 0; c < HC; ++c) s += g[k][c][col];
         f.a[k].mixed[b * UPC + col] = s / (float) HC;
     }
+    if (f.fault_at != 0u) leave(f);   // a read that did not give up needs no clean-up; the fault test counts every read
 }
 struct DevState {
     float* part = nullptr;
@@ -2408,6 +2452,10 @@ struct DevState {
     double* partd = nullptr;
     double* sspd = nullptr;
     unsigned* bar = nullptr;
+    unsigned* h_aborts = nullptr;   // mapped host word the kernel writes bar[52] into after an aborted read
+    unsigned* d_aborts = nullptr;   // its device address
+    unsigned seen = 0;              // aborted reads already reported
+    unsigned fault_at = 0;          // STRATA_HC_PERSIST_FAULT (tests)
     int max_t = 0;      // 0: off on this card
     bool tried = false;
 };
@@ -2439,6 +2487,8 @@ void launch(const FusedGrArgs* a, int n_tok, const DevState& st, cudaStream_t s,
     PArgs f;
     for (int t = 0; t < n_tok; ++t) f.a[t] = a[t];
     f.part = st.part; f.ssp = st.ssp; f.bar = st.bar; f.partd = st.partd; f.sspd = st.sspd; f.timeout_ticks = ticks;
+    f.host_aborts = st.d_aborts;
+    f.fault_at = ticks == kTicksRun ? st.fault_at : 0u;   // the start-up check never takes the injected fault
     kernel_for(n_tok)<<<NB, THREADS, 0, s>>>(f);
 }
 bool env_on() {
@@ -2462,6 +2512,11 @@ void fused_gr_persist_init() {
                              "(this card runs %d)\n", dev, prop.warpSize);
         return;
     }
+    if (strata::kernels::gfx_arch_is_gfx12(prop.gcnArchName)) {   // no s_memrealtime for the barrier timeout (grid_sync)
+        std::fprintf(stderr, "strata hc: CUDA%d: STRATA_HC_PERSIST=1 is off here: gfx12 has no s_memrealtime for the "
+                             "barrier timeout\n", dev);
+        return;
+    }
     const int mp = prop.multiProcessorCount;   // only for the confirmation line (WGPs on RDNA)
     bool ok = cudaMalloc((void**) &st.part, (size_t) kFusedGrMaxT * hcp::NR * hcp::NB * sizeof(float)) == cudaSuccess &&
               cudaMalloc((void**) &st.ssp, (size_t) kFusedGrMaxT * hcp::NB * sizeof(float)) == cudaSuccess &&
@@ -2469,6 +2524,14 @@ void fused_gr_persist_init() {
               cudaMalloc((void**) &st.partd, (size_t) kFusedGrMaxT * hcp::NR * hcp::NB * sizeof(double)) == cudaSuccess &&
               cudaMalloc((void**) &st.sspd, (size_t) kFusedGrMaxT * hcp::NB * sizeof(double)) == cudaSuccess &&
               cudaMemset(st.bar, 0, 64 * sizeof(unsigned)) == cudaSuccess;
+    if (ok && (cudaHostAlloc((void**) &st.h_aborts, sizeof(unsigned), cudaHostAllocMapped) != cudaSuccess ||
+               cudaHostGetDevicePointer((void**) &st.d_aborts, st.h_aborts, 0) != cudaSuccess)) {
+        cudaGetLastError();   // no mapped word: an aborted read still poisons its window and resets, without a log line
+        st.h_aborts = nullptr;
+        st.d_aborts = nullptr;
+    }
+    if (st.h_aborts != nullptr) *(volatile unsigned*) st.h_aborts = 0u;
+    if (const char* v = std::getenv("STRATA_HC_PERSIST_FAULT"); v != nullptr && std::atoi(v) > 0) st.fault_at = (unsigned) std::atoi(v);
     if (!ok) {
         cudaGetLastError();
         std::fprintf(stderr, "strata hc: CUDA%d: STRATA_HC_PERSIST=1 is off here: workspace allocation failed\n", dev);
@@ -2525,17 +2588,14 @@ void fused_gr_persist_init() {
             cudaMemset(dmix, 0xff, (size_t) TM * N * 4);
             cudaMemset(dio, 0xff, (size_t) TM * HC * 4);
             cudaDeviceSynchronize();
+            unsigned aborts0 = 0, aborts1 = 0;   // bar[52]: the kernel clears its barrier itself and counts the abort
+            if (which == 1) cudaMemcpy(&aborts0, st.bar + 52, sizeof aborts0, cudaMemcpyDeviceToHost);
             if (which == 0) fused_gr_read_multi(a, T, dxn, nullptr);
             else hcp::launch(a, T, st, nullptr, hcp::kTicksCheck);
             if (cudaDeviceSynchronize() != cudaSuccess) { cudaGetLastError(); return 2; }
             if (which == 1) {
-                unsigned abort_word = 0;
-                cudaMemcpy(&abort_word, st.bar + 48, sizeof abort_word, cudaMemcpyDeviceToHost);
-                if (abort_word != 0u) {
-                    cudaMemset(st.bar, 0, 64 * sizeof(unsigned));
-                    cudaDeviceSynchronize();
-                    return 1;
-                }
+                cudaMemcpy(&aborts1, st.bar + 52, sizeof aborts1, cudaMemcpyDeviceToHost);
+                if (aborts1 != aborts0) return 1;
             }
             out[which].resize((size_t) T * (N + HC + D));
             cudaMemcpy(out[which].data(), dmix, (size_t) T * N * 4, cudaMemcpyDeviceToHost);
@@ -2562,9 +2622,10 @@ void fused_gr_persist_init() {
     }
     cudaFree(dR); cudaFree(dbo); cudaFree(dinj); cudaFree(dwn); cudaFree(dxn); cudaFree(dlo); cudaFree(drs);
     cudaFree(dio); cudaFree(dmix); cudaFree(dwd); cudaFree(dwu); cudaFree(dwi);
-    cudaMemset(st.bar, 0, 64 * sizeof(unsigned));
+    cudaMemset(st.bar, 0, 64 * sizeof(unsigned));   // the counters too: the first run-time read is read 1
     cudaDeviceSynchronize();
     cudaGetLastError();
+    if (st.h_aborts != nullptr) *(volatile unsigned*) st.h_aborts = 0u;
     if (!ok) {
         std::fprintf(stderr, "strata hc: CUDA%d: STRATA_HC_PERSIST=1 is off here: the check failed at %d tokens "
                              "(max relative difference %.3g)\n", dev, bad_t, worst);
@@ -2595,9 +2656,28 @@ bool fused_gr_read_persist(const FusedGrArgs* a, int n_tok, void* stream) {
     hcp::launch(a, n_tok, st, (cudaStream_t) stream, hcp::kTicksRun);
     return true;
 }
+
+unsigned fused_gr_persist_poll() {
+    if (!hcp::env_on()) return 0;
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 0 || dev >= 64) return 0;
+    hcp::DevState& st = hcp::g_dev[dev];
+    if (st.h_aborts == nullptr) return 0;
+    const unsigned n = *(volatile unsigned*) st.h_aborts;
+    if (n != st.seen) {
+        st.seen = n;
+        std::fprintf(stderr, "strata hc: CUDA%d: STRATA_HC_PERSIST=1: %u persistent read(s) gave up at a barrier so far "
+                             "(2 s): each made its window's outputs non-finite, so that request ended (#879), and the read "
+                             "reset itself for the next window; if this repeats, run with STRATA_HC_PERSIST=0\n", dev, n);
+        std::fflush(stderr);
+    }
+    return n;
+}
 #else
 void fused_gr_persist_init() {}
 bool fused_gr_read_persist(const FusedGrArgs*, int, void*) { return false; }
+unsigned fused_gr_persist_poll() { return 0; }
 #endif
 
 }  // namespace strata::kernels
