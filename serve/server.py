@@ -4228,8 +4228,10 @@ class Service:
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
         progress = progress or (lambda event: None)
+        videos = videos_of(messages)
+        has_video = bool(videos)
         if cancel is not None and cancel.is_set():
-            raise VideoCancelled("video request cancelled")
+            raise (VideoCancelled("video request cancelled") if has_video else ClientGone())
         fetched = self._note_unreadable_tool_images(messages, cancel)
         ids = encoded_ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
@@ -4237,7 +4239,6 @@ class Service:
         self.embeddings.path = None
         self.embeddings.keys = None
         images = images_of(messages)
-        videos = videos_of(messages)
         records = []                                    # the embeddings files, in prompt order
         if images or videos:
             if self.vision is None:
@@ -4251,14 +4252,14 @@ class Service:
             # for as long as urlopen waited.
             def fetch(src):
                 if cancel is not None and cancel.is_set():
-                    raise ClientGone()
+                    raise (VideoCancelled("video request cancelled") if has_video else ClientGone())
                 return fetched[src] if src in fetched else Vision.download(src) \
                     if src.startswith(("http://", "https://")) else src
             images = [fetch(src) for src in images]
             videos = [(Vision.download(src, VIDEO_URL_MAX, "video") if src.startswith(("http://", "https://")) else src,
                        opts) for src, opts in videos]
             if cancel is not None and cancel.is_set():
-                raise VideoCancelled("video request cancelled")
+                raise (VideoCancelled("video request cancelled") if has_video else ClientGone())
             if videos:                                  # a video's automatic budget: a share of the context, split
                 self.vision.context = self.reported_ctx()               # between the request's videos
                 self.vision.videos_in_request = len(videos)
@@ -4344,7 +4345,7 @@ class Service:
                 raise ValueError("the prompt and its videos do not match")
             ids = out
             if cancel is not None and cancel.is_set():
-                raise VideoCancelled("video request cancelled")
+                raise (VideoCancelled("video request cancelled") if has_video else ClientGone())
             progress({"stage": "assembling_prompt", "done": None, "total": None, "unit": None})
         ctx = self.engine.max_context
         if ctx <= 0:
@@ -4375,7 +4376,7 @@ class Service:
                                  "model's strata-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
         if cancel is not None and cancel.is_set():
-            raise VideoCancelled("video request cancelled")
+            raise (VideoCancelled("video request cancelled") if has_video else ClientGone())
         if records:
             # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
             # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
