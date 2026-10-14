@@ -5,7 +5,7 @@
 Every argument is serve/server.py's.  Nothing in serve/ is edited (the SYCL port keeps out of the shared files so
 upstream merges stay clean); this wrapper adds, at run time:
 
-  - the Monitor tab's GPU readings on an Intel Arc (sycl/serve/xe_telemetry.py) (also on a PC with an NVIDIA card: the engine runs on the Intel one);
+  - Intel GPU readings: IGCL on Windows, xe on Linux, preferring the Intel card even with NVIDIA present;
   - a model menu in the web app's header, for a host that swaps models on one GPU: the config names the RPC that
     does the swap as "model_switcher" (it takes {"mode": m} and answers {"mode", "up", "starting", "choices",
     "urls"}); the menu offers the models served on this server's port.  Without that key nothing changes;
@@ -35,16 +35,51 @@ from xe_telemetry import _XeGpu  # noqa: E402
 
 
 def install_xe_reader():
-    """telemetry.gpu_reader -> the xe reader whenever an Intel Arc is there.  #2001: this server runs the SYCL engine,
-    so the cards it reports are the Intel ones; before, an NVIDIA card in the same PC answered first and the Monitor
-    (and the benchmark report, which takes the card's name from it) showed the GeForce the engine never used."""
+    """Report the Intel card used by SYCL, with native Windows IGCL or Linux xe."""
     orig = T.gpu_reader
 
     def gpu_reader(index=0, amd=False):
+        if sys.platform == "win32" and not amd:
+            from windows_telemetry import _WindowsIntelGpu
+            return _WindowsIntelGpu(index)
         xe = _XeGpu(index)
         return xe if xe.ok() else orig(index, amd)
 
     T.gpu_reader = gpu_reader
+
+    class IntelTelemetry(T.Telemetry):
+        def close(self):
+            super().close()
+            for _, reader in self.gpus:
+                close = getattr(reader, "close", None)
+                if close:
+                    close()
+
+    T.Telemetry = IntelTelemetry
+
+
+def install_windows_monitor():
+    """Explain IGCL power scope and current PCIe link in the Windows Monitor."""
+    if sys.platform != "win32":
+        return
+    original = S.make_handler
+
+    def make(svc):
+        class Handler(original(svc)):
+            def do_GET(self):
+                if self.path.split("?")[0] == "/web/app.js":
+                    body = (ROOT / "serve/web/app.js").read_bytes() + b"\n" + (HERE / "web/windows-monitor.js").read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/javascript; charset=utf-8")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                super().do_GET()
+        return Handler
+
+    S.make_handler = make
 
 
 def model_switcher(url: str, port, model, mode: str = "") -> dict:
@@ -308,6 +343,7 @@ def top_logprobs(req: dict):
 
 if __name__ == "__main__":
     install_xe_reader()
+    install_windows_monitor()
     install_narrator()
     install_switcher(sys.argv[1:])
     install_logprobs()
