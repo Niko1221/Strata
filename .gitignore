@@ -61,3 +61,13 @@ build-vision-cuda12.bat
 
 /.ccache/
 /.rocm-win/
+
+# Local per-machine files in the repo root (client configs, launch helpers,
+# server logs): never committed, so they cannot block `git pull --ff-only`
+# in update.sh and never get added by accident. Root-anchored on purpose:
+# bench/results/**/*.out are committed community benchmarks and stay tracked.
+/*.out
+/claude-*.sh
+/mode-*.sh
+/mcp.*.json
+/opencode.work.jsonc
