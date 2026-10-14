@@ -647,7 +647,9 @@ struct Options {
     std::string conversation_disk_dir;
     int64_t conversation_disk_mib = 32768;    ///< --conversation-disk-mib: at most this many MiB of files
     int64_t conversation_disk_ttl_min = 30;   ///< --conversation-disk-ttl-min: a file older than this is removed
-    bool conversation_disk_persist = false;   ///< --conversation-disk-persist: the files outlive the engine (budget only)
+    /// --conversation-disk-persist: off = the files end with the engine; on = they outlive it (budget only) and QUIT
+    /// writes the current and the parked conversations; exit-only = the same, but nothing is written while the engine runs
+    std::string conversation_disk_persist = "off";
     /// --memory-limit-mib N / STRATA_MEMORY_LIMIT_MIB: the total RAM this engine's container or cgroup may use, for a
     /// container that cannot see its real limit (0 or unset = none; the flag wins over the variable)
     int64_t memory_limit_mib = -1;
@@ -806,8 +808,10 @@ void usage() {
                  "  --conversation-disk-mib N  --serve: at most N MiB of such files (default 32768)\n"
                  "  --conversation-disk-ttl-min N  --serve: a conversation stays on the disk N minutes (default 30; 0 =\n"
                  "                       until the budget evicts it)\n"
-                 "  --conversation-disk-persist  --serve: keep the disk's conversations for the next start (budget only,\n"
-                 "                       no time limit); QUIT writes the current and the parked ones there first\n"
+                 "  --conversation-disk-persist off|on|exit-only  --serve: keep the disk's conversations for the next start:\n"
+                 "                       off (default) removes them at the end; on keeps them (budget only, no time\n"
+                 "                       limit) and QUIT writes the current and the parked ones there first; exit-only\n"
+                 "                       writes at QUIT alone, nothing while the engine runs (an eviction drops a conversation)\n"
                  "  --conversation-cache-min-tokens N  --serve: park only conversations of at least N tokens, so\n"
                  "                       short side requests do not take the slots a long one needs (default 0 = park any)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
@@ -2145,7 +2149,7 @@ int main(int argc, char** argv) {
             else o.conversation_cache_slots = (int) number;
         }
         else if (a == "--conversation-disk-dir") o.conversation_disk_dir = next("--conversation-disk-dir");
-        else if (a == "--conversation-disk-persist") o.conversation_disk_persist = true;
+        else if (a == "--conversation-disk-persist") o.conversation_disk_persist = next("--conversation-disk-persist");
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
@@ -2566,6 +2570,10 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (o.kv == "q4") o.kv = "q4_0";
+    if (o.conversation_disk_persist != "off" && o.conversation_disk_persist != "on" && o.conversation_disk_persist != "exit-only") {
+        std::fprintf(stderr, "strata generate: --conversation-disk-persist must be off, on or exit-only\n");
+        return 2;
+    }
     if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "k8v4") {
         std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0 or k8v4\n");
         return 2;
@@ -8241,7 +8249,7 @@ int main(int argc, char** argv) {
         disk_opts.budget_bytes = (uint64_t) o.conversation_disk_mib << 20;
         disk_opts.ttl_s = o.conversation_disk_ttl_min * 60;
         disk_opts.min_free_bytes = (uint64_t) o.session_min_free_mib << 20;
-        if (o.conversation_disk_persist && !disk_opts.dir.empty()) {
+        if (o.conversation_disk_persist != "off" && !disk_opts.dir.empty()) {
             // the session files' identity: a later start with the same model and settings takes the files in
             std::string id_err;
             disk_opts.persist = session_identity(disk_opts.identity, id_err, {});
@@ -8258,9 +8266,10 @@ int main(int argc, char** argv) {
                                  "(--conversation-cache-mib, --conversation-cache-slots, --prompt-cache): off\n");
         if (std::string disk_err; !conv_disk.open(disk_err))
             std::fprintf(stderr, "strata serve: conversation disk tier off: %s\n", disk_err.c_str());
-        else if (conv_disk.enabled())
-            conversations.set_on_evict([&conv_disk](strata::core::SavedConversation&& image) {
-                conv_disk.put(std::move(image));   // queued for the writer; a refusal is in its log
+        bool disk_writes = conv_disk.enabled() && o.conversation_disk_persist != "exit-only";   // none until QUIT
+        if (conv_disk.enabled())
+            conversations.set_on_evict([&conv_disk, &disk_writes](strata::core::SavedConversation&& image) {
+                if (disk_writes) conv_disk.put(std::move(image));   // queued for the writer; a refusal is in its log
             });
         // freed images stay in malloc's heap, which MemAvailable does not count
         auto return_freed_heap = [] {
@@ -8381,7 +8390,7 @@ int main(int argc, char** argv) {
             // a capped figure would under-evict and overfill the budget.
             // Over the budget (the incoming image still counts while it is restored): the disk tier takes it instead
             const bool to_disk = !conversations.make_room(estimate, held);
-            if (to_disk && !conv_disk.enabled()) {
+            if (to_disk && !disk_writes) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
                              estimate >> 20);
                 return true;
@@ -13340,6 +13349,7 @@ int main(int argc, char** argv) {
         if (conv_disk.persistent()) {
             // --conversation-disk-persist: the current conversation and every parked one to the disk for the next start
             const auto t0 = Clock::now();
+            disk_writes = true;
             park_current(0);
             while (conversations.evict_oldest()) {}
             conv_disk.wait_idle();

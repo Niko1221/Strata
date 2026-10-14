@@ -1078,7 +1078,8 @@ asked for a conversation still being written. After the engine ended no file was
 `conversation_disk_test` (CPU only, `-DSTRATA_BUILD_CONVERSATION_TESTS=ON`; also clean under ThreadSanitizer). Not run
 on Windows or HIP.
 
-**Conversations that outlive the engine (opt-in, `--conversation-disk-persist`, with `--conversation-disk-dir`).**
+**Conversations that outlive the engine (opt-in, `--conversation-disk-persist on|exit-only`, with
+`--conversation-disk-dir`; default `off`).**
 Who it is for: whoever does not keep Strata running all day - start it, continue yesterday's long session, stop it -
 and whoever restarts the server (an update, a settings change, a reboot). Without it every restart reads every
 conversation from token 0 again (77.6 s for 165K tokens below); with it the next start continues from the disk in
@@ -1100,6 +1101,15 @@ parked): the save at the stop took 6.8 s (L written in 2.9 s, 2,639 MiB at 956 M
 conversations (4,311 MiB) and refused none; after the restart all three came back from the disk with the same greedy
 answers as before it - L in 6.7 s instead of 77.6 s. `conversation_disk_test` covers the restart (files kept, taken in,
 read back exactly, another identity's files and a damaged index refused).
+
+`--conversation-disk-persist exit-only` keeps the same files for the next start but writes nothing while the engine
+runs: a conversation the RAM cache evicts is dropped (as without a disk folder), and QUIT writes the current and the
+parked ones. For a box that restarts more often than it switches between more conversations than its RAM holds: on
+our box (2x CMP 50HX, one person's agent sessions of 250-340K tokens) on one day the evictions' writes were never read
+back within a run - 40 writes, 197 GiB, and 34 requests waited 4.5 min in all for a write to finish - while both disk
+hits of the day came from the QUIT save. Tested there with three 13K-token conversations and a one-slot RAM cache:
+nothing written while the engine ran, two conversations written at QUIT, and after the next start the follow-up took
+12,912 of its 12,938 tokens from the disk.
 
 **The RAM figure (`available_host_bytes()`).** The headroom is the smallest of three
 numbers, sampled each time it is asked and not a reservation (other writers can take the
