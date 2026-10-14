@@ -25,4 +25,35 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
 /// switches (they are read lazily, at first use).
 std::vector<std::string> apply_arch_defaults(const char* gcn_arch);
 
+// gfx1200 / gfx1201 (RDNA4) layer split, OPT-IN: STRATA_GFX12_SPLIT_DECODE=1 adds nine decode switches of the gfx1151
+// table (all of its decode half but STRATA_Q8_PACKED and STRATA_SH_STREAM) to the gfx12 table above, when the resolved
+// split runs on two or more GPUs, every one gfx12, on Linux.  Without the flag nothing changes: a gfx12 run gets the five
+// prompt switches only.  These nine are bitwise on gfx1151 (above); on gfx12 only the generated output was checked, on
+// 2x R9700 with one IQ3_S pack, and 11 of 12 seeded sampled runs matched, so they are speed switches there, not shown to
+// be bitwise.  Numbers and the output check: docs/AMD_HIP.md.  On one R9700 they measured slower (#1478).
+
+/// What a run does with the gfx12 split decode switches.
+enum class Gfx12SplitDecode {
+    off,    ///< not set; `why` says why when the flag asked for them
+    hint,   ///< the split qualifies but STRATA_GFX12_SPLIT_DECODE is unset: the caller prints one hint line
+    on,     ///< STRATA_GFX12_SPLIT_DECODE=1 and the split qualifies: the caller calls apply_gfx12_split_decode
+};
+
+/// Decided from the RESOLVED split, before any switch is read.  `gpu_archs` is the gcnArchName of every GPU the run
+/// computes on (CUDA0, each later stage's device, any --expert-cache-remote helper; empty or one entry for a run on one
+/// GPU).  `measured_os` is false where the gain was not measured (the caller passes false on Windows).  Qualifies: two or
+/// more GPUs, every one gfx12, a measured OS, and STRATA_GFX12_DEFAULTS not 0.  Then STRATA_GFX12_SPLIT_DECODE=1 gives
+/// `on` (exactly "1"), unset gives `hint`, any other value `off`.  An `auto` split with --split-skip-if-fits still qualifies: the
+/// user asked, so the switches stay on even if the split later falls back to one GPU.  `why` (optional) gets the reason
+/// for `off`.  Pure: no device calls.
+Gfx12SplitDecode gfx12_split_decode(const std::vector<std::string>& gpu_archs, bool measured_os, std::string* why = nullptr);
+
+/// The nine decode switches STRATA_GFX12_SPLIT_DECODE=1 adds, in order.
+std::vector<std::pair<std::string, std::string>> gfx12_split_decode_env();
+
+/// Sets `gfx12_split_decode_env()` where the user has not set the variable, prints one line to stderr when it set
+/// anything, and returns the names it set.  Call only for `Gfx12SplitDecode::on`, before any engine code reads its
+/// switches.
+std::vector<std::string> apply_gfx12_split_decode();
+
 }  // namespace strata::core

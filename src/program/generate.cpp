@@ -2421,6 +2421,43 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
+        // gfx12 layer split, opt-in (strata/core/arch_defaults.hpp): STRATA_GFX12_SPLIT_DECODE=1 adds nine decode switches
+        // when every GPU of the resolved split is gfx12 (Linux).  Decided here, after the split is resolved
+        // (--split-device 0 and an `auto` with one visible GPU have cleared multi_gpu above) and before any engine code
+        // reads those switches (each is read at first use, when the decode kernels first run or the output head loads).
+        // Without the flag a qualifying split prints one hint and nothing changes.
+        std::vector<std::string> archs;   // empty for a run on one GPU
+        if (multi_gpu)
+            for (const int d : used) {
+                cudaDeviceProp up{};
+                if (cudaGetDeviceProperties(&up, d) == cudaSuccess) archs.push_back(up.gcnArchName);
+                else { (void) cudaGetLastError(); archs.push_back("unknown"); }
+            }
+#if defined(_WIN32)
+        const bool measured_os = false;
+#else
+        const bool measured_os = true;
+#endif
+        std::string why;
+        switch (strata::core::gfx12_split_decode(archs, measured_os, &why)) {
+        case strata::core::Gfx12SplitDecode::on:
+            strata::core::apply_gfx12_split_decode();
+            if (split_auto && o.split_skip_if_fits)
+                std::fprintf(stderr, "strata generate: STRATA_GFX12_SPLIT_DECODE=1: the decode switches stay on if "
+                                     "--split-skip-if-fits runs the model on one GPU\n");
+            break;
+        case strata::core::Gfx12SplitDecode::hint:
+            std::fprintf(stderr, "strata: gfx12 layer split: STRATA_GFX12_SPLIT_DECODE=1 turns on 9 more decode switches "
+                                 "(measured +5.8%% greedy / +4.9%% sampled decode on 2x R9700, docs/AMD_HIP.md)\n");
+            break;
+        case strata::core::Gfx12SplitDecode::off: {
+            const char* v = std::getenv("STRATA_GFX12_SPLIT_DECODE");
+            if (v != nullptr && std::string(v) == "1")   // the same exact match that turns them on
+                std::fprintf(stderr, "strata generate: STRATA_GFX12_SPLIT_DECODE=1: the decode switches stay off (%s)\n",
+                             why.c_str());
+            break;
+        }
+        }
     }
 #endif
     if (o.prefill_auto && (o.no_prefill_borrow || o.expert_profile.empty())) {

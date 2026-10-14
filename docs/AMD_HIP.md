@@ -363,6 +363,85 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
   one card or two and on engine 0.1.29 as well; not yet explained.
 - **Not validated:** images, long contexts beyond 16K, answer-quality benchmarks.
 
+### Layer split over gfx12 GPUs: `STRATA_GFX12_SPLIT_DECODE=1` (opt-in)
+
+By default a gfx1200 / gfx1201 run sets five prompt switches of the gfx1151 table (`STRATA_GDN_HEAD`,
+`STRATA_GDN_PP=2`, `STRATA_GDN_CONVL2`, `STRATA_GDN_NOY`, `STRATA_CVEC_FUSE`; #1478). The decode half of that table
+stays off, because it measured slower on one R9700. A layer split over two R9700s measured faster with most of it.
+`STRATA_GFX12_SPLIT_DECODE=1` turns on these nine decode switches:
+
+- `STRATA_Q6_PACKED`: a packed copy of each Q6_K output head (more VRAM: +497 MiB for the main head and +81 MiB for
+  the MTP draft head on the measured pack, on the last card).
+- `STRATA_MMVF_ROWS`: bf16 multi-row GEMV, 4 rows per block.
+- `STRATA_ATTN_LANECELL`: the decode attention scores, one KV cell per thread.
+- `STRATA_EXPERT_V2`: the grouped decode experts, IQ3_S gate/up + IQ4_NL down.
+- `STRATA_TSUM`: several warp sums as one transposed butterfly.
+- `STRATA_LFUSE`: fewer launches around the shared expert and the KV append.
+- `STRATA_GDN_SPLIT`: the GDN step over 4 blocks per head.
+- `STRATA_QFUSE`: activation q8_1 images written by their producers.
+- `STRATA_PLE_BATCH`: the verify window's PLE key / value projections at once.
+
+When it applies:
+
+- Only when the resolved split runs on two or more GPUs, every one of them gfx12, on Linux. The engine decides after
+  the split is resolved and before any of these switches is read.
+- With the flag on one GPU (also `--split-device 0`), on a mixed-architecture split or on Windows, the switches stay
+  off and one start-up line says why.
+- An `auto` split with `--split-skip-if-fits` keeps the switches on even if it falls back to one GPU.
+- `STRATA_GFX12_DEFAULTS=0` turns off the whole gfx12 table, these nine included. A switch you set yourself is kept.
+- Without the flag, a qualifying split prints one hint line and runs as before. Any value other than exactly `1`
+  (`0`, empty, `10`) is the same as unset, without the hint.
+- `STRATA_Q8_PACKED` and `STRATA_SH_STREAM` (the rest of the decode half) are not in the set. The measured pack has no
+  Q8_0 matrix that `STRATA_Q8_PACKED` packs, so its effect on gfx12 is unknown. `STRATA_SH_STREAM` was not measured on
+  a gfx12 split.
+
+Measured on 2x R9700 32 GB, Linux, ROCm 7.2.4, Ryzen 9 5900X (PCIe 4.0 x8 / x8), Qwen3.8-Flash-Next IQ3_S,
+`--layer-split 26` with all 24,576 experts resident, spec 4 + MTP:
+
+| | greedy decode | sampled decode (temp 1.0) |
+|---|---|---|
+| stock 0.1.43, session B | 108.9 tok/s | 101.5 tok/s |
+| stock 0.1.43, session B2 | 108.5 tok/s | 101.0 tok/s |
+| `STRATA_GFX12_SPLIT_DECODE=1` set | 115.0 tok/s (+5.8%) | 106.2 tok/s (+4.9%) |
+
+- Decode is the geometric mean of four prompts (prose, code, edit, reasoning), 3 repetitions per prompt. The gains
+  are against the mean of the two stock sessions (one before the run with the switches, one after).
+- Cold prompts of about 4.6K / 19K / 69K tokens read +10.8% / +12.0% / +12.1% faster than the same stock mean
+  (1,368 / 1,568 / 2,462 -> 1,515 / 1,756 / 2,761 tok/s). This is one cold request per size per session, not 3
+  repetitions; the noise on this machine is about 7% for the 4.6K read and about 1% for the others.
+
+Output check (parity), on gfx12 only by generated output, not by intermediate results:
+
+- Greedy: the reasoning text, the answer text and the token count were identical to stock on 4 prompts x 3 runs.
+- Seeded sampled (temperature 1.0, seeds 1000-1002): 11 of 12 runs were identical to stock. The twelfth (the code
+  prompt, seed 1002) had the same reasoning text and token count but a different answer text. The two stock sessions
+  matched each other in 12 of 12. The cause was not investigated.
+- Seeded sampled output also varies from run to run with stock v0.1.43 alone. In a later session on the same machine,
+  one seeded request (the prose prompt, seed 1001) gave one answer in two stock runs and a different answer in a third
+  stock run (that run used one-token decode windows, a setting that does not change greedy output). A second build
+  compared with stock in that session gave both answers too; 23 of its 24 seeded runs matched stock. So the one
+  different run above is consistent with run-to-run variation. This neither proves nor disproves that the switches
+  are bitwise on gfx12. See also the "Known" note on greedy output above.
+- So these are speed switches on gfx12: they are bitwise on gfx1151 (STRIX_HALO.md), but not shown to be bitwise on
+  gfx12.
+
+Check of the flag itself, with an earlier revision of this change that has the same switch logic (one session, fresh
+server per arm, `--layer-split 26` on both GPUs, 4 prompts, greedy x2 and temperature 1.0 at seeds 1000 / 1001):
+
+- Without the flag: only the five prompt switches and the hint line; greedy and seeded output hashes equal stock
+  v0.1.43's.
+- With the flag: the nine-switch line; output hashes equal the run with the nine switches above (and stock's). Decode
+  106.7 -> 113.3 tok/s greedy, 98.3 -> 102.6 sampled. This is one session with 2 repetitions, not a controlled
+  benchmark; the table above is the measurement.
+- With the flag and `--split-device 0`, or with one visible GPU: the switches stay off (the start-up line says so).
+- Expert residency is unchanged (every expert resident, the same slot counts per card); the packed heads take
+  0.49 GiB of the last card's room for experts.
+
+Not measured: other gfx12 cards (gfx1200, the RX 9070 series), other packs, partly resident splits, more than two
+GPUs, Windows. Report with per-run data and output hashes:
+[bench/results/2026-10-12-community-2x-r9700-iq3_s-0.1.43](https://github.com/justincinmd/Strata/tree/pr/bench-2x-r9700/bench/results/2026-10-12-community-2x-r9700-iq3_s-0.1.43).
+The maintainers may want to make this the default for gfx12 splits after more coverage.
+
 ## Community-validated cards
 
 Run by their owners, not on the maintainers' machines; setup accepts them like gfx1100 / gfx1201. setup ships a

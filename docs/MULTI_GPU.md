@@ -236,6 +236,10 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
 - **Decode is on par with the faster card alone**, and ahead on code. Once both caches hold nearly every routed
   expert, the per-layer GPU time decides.
 - **Correctness:** one GPU is byte-identical to 0.1.20, and the hand-off itself is bit-exact.
+- **AMD gfx12 splits (Linux), opt-in:** `STRATA_GFX12_SPLIT_DECODE=1` adds nine decode switches when every GPU of the
+  split is a gfx1200 / gfx1201. On 2x R9700 (IQ3_S, `--layer-split 26`, every expert resident) decode measured +5.8%
+  greedy and +4.9% sampled. On gfx12 the output was checked by generated text only, so they are not shown to be
+  bitwise there. Details: [AMD_HIP.md](AMD_HIP.md#layer-split-over-gfx12-gpus-strata_gfx12_split_decode1-opt-in).
 
 **Which cards and in what order:**
 - Put the fastest card first; auto gives it as many layers as its cache allows.
