@@ -475,6 +475,11 @@ struct Options {
     /// measurement found nothing - see `expert_cache_per_layer`.
     int expert_cache = 0;
     bool expert_cache_given = false;           ///< the flag was on the command line (the EXL3 path's auto default)
+    /// the EXL3 path's HOST expert cache in MiB (-1 = auto, 0 = off).  The VRAM tier cannot hold the model and
+    /// the page cache does not hold it either on every machine (measured: a 10.6 GB read of the routed experts
+    /// re-read at 0.46 GB/s, the SATA speed), so the misses are read into a managed host cache instead.
+    int expert_ram_cache_mib = 0;
+    bool expert_ram_cache_given = false;
     std::array<int, 3> expert_cache_remote{}; ///< CUDA1..3 slots; CUDA0 keeps dense/state/MTP
     std::array<bool, 3> expert_cache_remote_auto{};
     bool remote_expert_opt = false; ///< optional optimization of the existing remote-expert decode path
@@ -880,6 +885,11 @@ void usage() {
                  "                       waits for the next driver entry and does not overlap at all.\n"
                  "  --no-ple-prefetch     A/B arm: read the PLE table's sixteen rows one at a time, instead of\n"
                  "                       issuing them in one PrefetchVirtualMemory call.\n"
+                 "  --expert-ram-cache MiB|auto  EXL3: keep the recently missed experts in host RAM (a miss that\n"
+                 "                       hits it is a memcpy instead of a disk read).  DEFAULT 0.  Measured on the\n"
+                 "                       development machine: 0.0% hits at 4 GiB and at 19.5 GiB, because the misses\n"
+                 "                       were first-time experts; it pays where the working set fits in RAM+VRAM\n"
+                 "                       (`auto` = a quarter of what the host reports free, up to 4 GiB)\n"
                  "  --expert-cache N     R4: keep N expert blobs resident in VRAM and compute their rows on the\n"
                  "                       GPU via `moe_hit_grouped_s2`.  DEFAULT 0.  Measured at 4096 slots\n"
                  "                       with --expert-cache-per-layer: 54.4%% hits, CPU pool drain 19.1 -> 10.3\n"
@@ -2053,6 +2063,11 @@ int main(int argc, char** argv) {
             const std::string v = next("--expert-cache");
             o.expert_cache = (v == "auto") ? -1 : std::atoi(v.c_str());
             o.expert_cache_given = true;
+        }
+        else if (a == "--expert-ram-cache") {
+            const std::string v = next("--expert-ram-cache");
+            o.expert_ram_cache_mib = (v == "auto") ? -1 : std::atoi(v.c_str());
+            o.expert_ram_cache_given = true;
         }
         else if (a == "--expert-cache-device1" || a == "--expert-cache-device2" || a == "--expert-cache-device3") {
             const size_t r = (size_t) (a.back() - '1');
@@ -5829,11 +5844,31 @@ int main(int argc, char** argv) {
         // GGUF count is global because its blobs are one pool), `auto`/unset sizes it from the free VRAM after
         // this instance's buffers, and 0 turns it off.
         const int exl3_slots = o.expert_cache_given ? o.expert_cache : -1;
+        // `--expert-ram-cache auto` (the default): a quarter of what the host reports as available, capped at
+        // 4 GiB, so a machine that is already short of RAM is not made shorter.  A number sets it, 0 turns it off.
+        size_t exl3_ram = 0;
+        {
+            // **OFF BY DEFAULT, AND MEASURED BEFORE IT WAS LEFT THAT WAY.**  The tier can only serve an expert
+            // the VRAM cache has already evicted; on the development machine the miss stream was compulsory
+            // (each miss a first-time expert, the routing still exploring), and the measured hit rate was 0.0%
+            // at 4 GiB and again at 19.5 GiB.  It is here for the machine where the model's working set does
+            // fit in RAM and VRAM together, which is the case the GGUF path's `--resident-cpu-experts` serves.
+            int mib = o.expert_ram_cache_given ? o.expert_ram_cache_mib : 0;
+            if (mib < 0) {
+                strata::core::detail::HostMemory hm;
+                const bool known = strata::core::detail::host_available_memory(hm);
+                mib = known ? (int) std::min<uint64_t>(hm.available / 4 / (1ull << 20), 4096) : 0;
+                if (known && hm.available < (uint64_t) 8 << 30) mib = 0;   // under 8 GiB free: leave it alone
+            }
+            exl3_ram = (size_t) std::max(0, mib) << 20;
+        }
         exl3_stream = std::make_unique<strata::kernels::Exl3ExpertStream>(o.exl3_dir, (int) g.n_embd, (int) g.n_layers,
-                                                                         exl3_slots, nullptr);
+                                                                         exl3_slots, nullptr, exl3_ram);
         exl3_drive.stream = exl3_stream.get();
-        std::fprintf(stderr, "strata generate: EXL3 expert stream ready (%d slots/layer, %.2f GiB device)\n",
-                     exl3_stream->slots_per_layer(), (double) exl3_stream->bytes() / (double) (1ull << 30));
+        std::fprintf(stderr, "strata generate: EXL3 expert stream ready (%d slots/layer, %.2f GiB device; "
+                             "%d host slots/layer, %.2f GiB RAM)\n",
+                     exl3_stream->slots_per_layer(), (double) exl3_stream->bytes() / (double) (1ull << 30),
+                     exl3_stream->ram_slots_per_layer(), (double) exl3_stream->ram_bytes() / (double) (1ull << 30));
     }
     // #731 (opt-in, STRATA_DISJOINT_ADAPT=1): the adaptive tiers leave an expert a helper GPU holds out of the primary's
     // promotion candidates (it would sit in both caches).  Asked live, from the helper's own cache (RemoteExperts::holds,

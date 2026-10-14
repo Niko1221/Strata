@@ -140,6 +140,25 @@ struct Exl3ExpertStream::Impl {
     };
     std::vector<Layer> layers;         // cache > 0: `cache` slots per layer, resident across tokens
 
+    // ---- the host-side cache (see the header).  Per layer, like the VRAM one: the routing is layer-specific,
+    // and a slot holds that layer's nine pieces at fixed offsets, so a hit is a memcpy into the staging buffer.
+    std::vector<uint8_t> ram;                     // pageable: pinning this much needs a memlock limit
+    std::vector<size_t> ram_base;                 // per layer: where its slots start in `ram`
+    std::vector<size_t> ram_slot_bytes;           // per layer: one expert's nine pieces
+    std::vector<std::array<size_t, 9>> ram_off;   // per layer: the nine piece offsets inside a slot
+    int ram_slots = 0;                            // slots per layer
+    struct RamLayer {
+        std::unordered_map<int, int> at;          // expert -> slot
+        std::vector<uint32_t> tick;               // per slot: the last use, for the LRU
+        std::vector<int> key;                     // slot -> expert
+        int filled = 0;
+        uint32_t clock = 0;
+    };
+    std::vector<RamLayer> ram_layers;
+    std::mutex ram_mu;
+    long long ram_hits = 0, ram_misses = 0;
+    int cur_layer = 0;                            // the layer `run` is on (the queue is host-side, single-threaded)
+
     // STRATA_EXL3_TIME=1: per-token upload/ffn/d2h milliseconds and the cache hit rate
     long long hits = 0, misses = 0;
     double up_ms = 0, ffn_ms = 0, d2h_ms = 0, call_ms = 0;
@@ -153,7 +172,10 @@ struct Exl3ExpertStream::Impl {
     //
     // The destination is pinned staging, one buffer per worker, so the kernel writes straight into memory
     // the H2D can DMA from: no pageable staging copy, and the buffer's own pages never fault again.
-    struct Job { uint16_t* dst; const uint16_t* src; int fd; size_t off; size_t bytes; };
+    struct Job { uint16_t* dst; const uint16_t* src; int fd; size_t off; size_t bytes;
+                 uint8_t* ram_dst = nullptr;       // a miss: fill this slot as a side effect of the read
+                 const uint8_t* ram_src = nullptr; // a hit: copy this out of RAM through the pinned staging
+               };
     std::vector<Job> jobs;
     std::vector<std::thread> workers;
     // **TWO BUFFERS PER WORKER, WITH AN EVENT ON EACH.**  The DMA out of a staging buffer is asynchronous,
@@ -183,6 +205,19 @@ struct Exl3ExpertStream::Impl {
     void stage_one(const Job& j, Stage& stg) {
         if (j.bytes == 0) return;
         const uint16_t* src = j.src;
+        if (j.ram_src != nullptr && stg.buf[0] != nullptr) {
+            // **A HIT GOES THROUGH THE PINNED BUFFER TOO.**  `cudaMemcpyAsync` from pageable memory is
+            // synchronous: it would stall each worker for the length of the copy, which is exactly what the
+            // double buffer and the events exist to avoid.
+            const int b = stg.turn;
+            stg.turn ^= 1;
+            if (stg.done[b] != nullptr) (void) cudaEventSynchronize(stg.done[b]);
+            std::memcpy(stg.buf[b], j.ram_src, j.bytes);
+            const std::lock_guard<std::mutex> lk(api_mu);
+            (void) cudaMemcpyAsync(j.dst, stg.buf[b], j.bytes, cudaMemcpyHostToDevice, work_stream);
+            if (stg.done[b] != nullptr) (void) cudaEventRecord(stg.done[b], work_stream);
+            return;
+        }
 #if !defined(_WIN32)
         if (j.fd >= 0 && stg.buf[0] != nullptr) {
             const int b = stg.turn;
@@ -191,6 +226,10 @@ struct Exl3ExpertStream::Impl {
             const ssize_t got = ::pread(j.fd, stg.buf[b], j.bytes, (off_t) j.off);
             if (got == (ssize_t) j.bytes) {
                 src = (const uint16_t*) stg.buf[b];
+                // the host cache is filled as a side effect of the read that had to happen anyway; the copy is
+                // synchronous, so it is complete before this buffer is read into again (the double buffer's
+                // event only guards the DMA)
+                if (j.ram_dst != nullptr) std::memcpy(j.ram_dst, stg.buf[b], j.bytes);
                 {
                     // **ONE ENQUEUE AT A TIME.**  The workers read in parallel, but two threads enqueueing
                     // `cudaMemcpyAsync` on the same (legacy default) stream raced: the same run produced
@@ -211,15 +250,53 @@ struct Exl3ExpertStream::Impl {
         }
     }
 
-    // Queue one expert's nine pieces: the FILE location (for the pread) and the mmap pointer (the fallback).
-    void queue_expert(const std::string& b, const Slot* gs, const Slot* us, const Slot* ds,
+    // Queue one expert's nine pieces: the FILE location (for the pread), the mmap pointer (the fallback), and
+    // the host cache: on a hit the pieces come out of RAM, on a miss the read fills the slot as a side effect.
+    void queue_expert(int expert, const Slot* gs, const Slot* us, const Slot* ds,
                       const Exl3Linear& Lg, const Exl3Linear& Lu, const Exl3Linear& Ld) {
+        const std::string b = "model.language_model.layers." + std::to_string(cur_layer) + ".mlp.experts." +
+                              std::to_string(expert) + ".";
+        const uint8_t* ram_src = nullptr;
+        uint8_t* ram_dst = nullptr;
+        if (ram_slots > 0) {
+            const std::lock_guard<std::mutex> lk(ram_mu);
+            RamLayer& rl = ram_layers[(size_t) cur_layer];
+            const size_t base = ram_base[(size_t) cur_layer];
+            const size_t slot_bytes = ram_slot_bytes[(size_t) cur_layer];
+            auto it = rl.at.find(expert);
+            int s = -1;
+            if (it != rl.at.end()) {
+                s = it->second;
+                ram_src = ram.data() + base + (size_t) s * slot_bytes;
+                ++ram_hits;
+            } else {
+                ++ram_misses;
+                if (rl.filled < ram_slots) {
+                    s = rl.filled++;
+                } else {
+                    s = (int) (std::min_element(rl.tick.begin(), rl.tick.end()) - rl.tick.begin());
+                    rl.at.erase(rl.key[(size_t) s]);
+                }
+                rl.at[expert] = s;
+                rl.key[(size_t) s] = expert;
+                ram_dst = ram.data() + base + (size_t) s * slot_bytes;
+            }
+            rl.tick[(size_t) s] = ++rl.clock;
+        }
+        const std::array<size_t, 9>& ro = ram_off[(size_t) cur_layer];
         std::string path; size_t off = 0, bytes = 0;
+        int piece = 0;
         auto push = [&](uint16_t* dst, const std::string& base, const char* plane, const uint16_t* src, size_t n) {
             // STRATA_EXL3_NO_PREAD=1 reads through the mmap instead (an A/B arm for the pread path)
             static const bool no_pread = std::getenv("STRATA_EXL3_NO_PREAD") != nullptr;
+            if (ram_src != nullptr) {   // a hit: no file read at all
+                jobs.push_back({dst, src, -1, 0, n, nullptr, ram_src + ro[(size_t) piece]});
+                ++piece;
+                return;
+            }
             const int fd = (!no_pread && model->locate(base + plane, path, off, bytes) && bytes == n) ? fd_of(path) : -1;
-            jobs.push_back({dst, src, fd, off, n});
+            jobs.push_back({dst, src, fd, off, n, ram_dst != nullptr ? ram_dst + ro[(size_t) piece] : nullptr});
+            ++piece;
         };
         const std::string bg = b + "gate_proj", bu = b + "up_proj", bd = b + "down_proj";
         push(gs->tr, bg, ".trellis", Lg.trellis, gs->trb);
@@ -306,7 +383,7 @@ struct Exl3ExpertStream::Impl {
 };
 
 Exl3ExpertStream::Exl3ExpertStream(const std::string& model_dir, int n_embd, int n_layers, int slots_per_layer,
-                                   void* stream) {
+                                   void* stream, size_t ram_cache_bytes) {
     impl_ = new Impl;
     impl_->dir = model_dir;
     impl_->model = std::make_unique<Exl3Model>(model_dir);
@@ -325,13 +402,44 @@ Exl3ExpertStream::Exl3ExpertStream(const std::string& model_dir, int n_embd, int
     // The staging workers: enough to saturate the host's memory bandwidth on the miss reads, not more.
     const char* nw = std::getenv("STRATA_EXL3_WORKERS");
     impl_->n_workers = nw != nullptr ? std::atoi(nw) : 4;
-    // the largest piece any layer's expert has (the bitrate can differ per layer)
+    // the largest piece any layer's expert has (the bitrate can differ per layer), and one expert's nine
+    // pieces per layer for the host cache's slot layout
+    impl_->ram_slot_bytes.assign((size_t) n_layers, 0);
+    impl_->ram_off.assign((size_t) n_layers, {});
     for (int l = 0; l < n_layers; ++l) {
         const std::string b = "model.language_model.layers." + std::to_string(l) + ".mlp.experts.0.";
+        size_t off = 0;
+        int piece = 0;
         for (const char* p : {"gate_proj", "up_proj", "down_proj"}) {
             Exl3Linear L = impl_->model->linear(b + p);
             const size_t trb = (size_t) L.ki * L.nj * (256 * L.bits / 16) * 2;
             impl_->stage_bytes = std::max(impl_->stage_bytes, std::max(trb, (size_t) (L.in() + L.out()) * 2));
+            for (const size_t n : {trb, (size_t) L.in() * 2, (size_t) L.out() * 2}) {
+                impl_->ram_off[(size_t) l][(size_t) piece++] = off;
+                off += n;
+            }
+        }
+        impl_->ram_slot_bytes[(size_t) l] = off;
+    }
+    if (ram_cache_bytes > 0) {
+        size_t per_layer = 0;
+        for (size_t n : impl_->ram_slot_bytes) per_layer += n;
+        if (per_layer > 0) impl_->ram_slots = (int) std::min<size_t>(ram_cache_bytes / per_layer, 1u << 20);
+        if (impl_->ram_slots > 0) {
+            impl_->ram_base.assign((size_t) n_layers, 0);
+            size_t at = 0;
+            for (int l = 0; l < n_layers; ++l) {
+                impl_->ram_base[(size_t) l] = at;
+                at += (size_t) impl_->ram_slots * impl_->ram_slot_bytes[(size_t) l];
+            }
+            try { impl_->ram.assign(at, 0); } catch (const std::exception&) { impl_->ram_slots = 0; }
+            if (impl_->ram_slots > 0) {
+                impl_->ram_layers.resize((size_t) n_layers);
+                for (Impl::RamLayer& rl : impl_->ram_layers) {
+                    rl.tick.assign((size_t) impl_->ram_slots, 0);
+                    rl.key.assign((size_t) impl_->ram_slots, -1);
+                }
+            }
         }
     }
     impl_->stage.resize((size_t) (impl_->n_workers > 0 ? impl_->n_workers : 1));
@@ -436,6 +544,8 @@ Exl3ExpertStream::Exl3ExpertStream(const std::string& model_dir, int n_embd, int
 Exl3ExpertStream::~Exl3ExpertStream() { delete impl_; }
 
 int Exl3ExpertStream::slots_per_layer() const { return impl_->cache; }
+int Exl3ExpertStream::ram_slots_per_layer() const { return impl_->ram_slots; }
+size_t Exl3ExpertStream::ram_bytes() const { return impl_->ram.size(); }
 
 size_t Exl3ExpertStream::bytes() const {
     size_t n = (size_t) impl_->n_embd * 2 + (size_t) impl_->max_k * impl_->n_embd * (2 + 4);
@@ -466,6 +576,7 @@ bool Exl3ExpertStream::run(int layer, const float* x_f32, const int* ids, int k,
     std::vector<int> hrow, mrow;
     Impl::Layer* cache = (impl_->cache > 0 && layer >= 0 && layer < (int) impl_->layers.size() &&
                           k <= impl_->cache) ? &impl_->layers[(size_t) layer] : nullptr;
+    impl_->cur_layer = layer;
     const std::string pfx = "model.language_model.layers." + std::to_string(layer) + ".mlp.experts.";
     if (cache != nullptr) {
         hg.reserve((size_t) k); hu.reserve((size_t) k); hd.reserve((size_t) k);
@@ -488,11 +599,10 @@ bool Exl3ExpertStream::run(int layer, const float* x_f32, const int* ids, int k,
                     for (auto victim = cache->at.begin(); victim != cache->at.end(); ++victim)
                         if (victim->second == s) { cache->at.erase(victim); break; }
                 }
-                const std::string b = pfx + std::to_string(e) + ".";
-                Exl3Linear Lg = impl_->model->linear(b + "gate_proj");
-                Exl3Linear Lu = impl_->model->linear(b + "up_proj");
-                Exl3Linear Ld = impl_->model->linear(b + "down_proj");
-                impl_->queue_expert(b, &cache->g[(size_t) s], &cache->u[(size_t) s], &cache->d[(size_t) s],
+                Exl3Linear Lg = impl_->model->linear(pfx + std::to_string(e) + ".gate_proj");
+                Exl3Linear Lu = impl_->model->linear(pfx + std::to_string(e) + ".up_proj");
+                Exl3Linear Ld = impl_->model->linear(pfx + std::to_string(e) + ".down_proj");
+                impl_->queue_expert(e, &cache->g[(size_t) s], &cache->u[(size_t) s], &cache->d[(size_t) s],
                                     Lg, Lu, Ld);
                 cache->at[e] = s;
             }
@@ -508,11 +618,10 @@ bool Exl3ExpertStream::run(int layer, const float* x_f32, const int* ids, int k,
     } else {
         gm.resize((size_t) k); um.resize((size_t) k); dm.resize((size_t) k);
         for (int i = 0; i < k; ++i) {
-            const std::string b = pfx + std::to_string(ids[i]) + ".";
-            Exl3Linear Lg = impl_->model->linear(b + "gate_proj");
-            Exl3Linear Lu = impl_->model->linear(b + "up_proj");
-            Exl3Linear Ld = impl_->model->linear(b + "down_proj");
-            impl_->queue_expert(b, &impl_->scratch.g[(size_t) i], &impl_->scratch.u[(size_t) i],
+            Exl3Linear Lg = impl_->model->linear(pfx + std::to_string(ids[i]) + ".gate_proj");
+            Exl3Linear Lu = impl_->model->linear(pfx + std::to_string(ids[i]) + ".up_proj");
+            Exl3Linear Ld = impl_->model->linear(pfx + std::to_string(ids[i]) + ".down_proj");
+            impl_->queue_expert(ids[i], &impl_->scratch.g[(size_t) i], &impl_->scratch.u[(size_t) i],
                                 &impl_->scratch.d[(size_t) i], Lg, Lu, Ld);
             gm[(size_t) i] = impl_->scratch.gm[(size_t) i];
             um[(size_t) i] = impl_->scratch.um[(size_t) i];
@@ -560,11 +669,13 @@ bool Exl3ExpertStream::run(int layer, const float* x_f32, const int* ids, int k,
         impl_->call_ms += std::chrono::duration<double, std::milli>(t_d2h1 - t_call0).count();
         if (layer == impl_->n_layers - 1) {
             const long long uses = impl_->hits + impl_->misses;
-            std::fprintf(stderr, "exl3 stream: %lld experts, %.1f%% cached | upload %.1f ms, ffn %.1f ms, "
-                                 "d2h %.1f ms, pool %.1f ms per token\n", uses,
+            std::fprintf(stderr, "exl3 stream: %lld experts, %.1f%% cached, host %.1f%% (%lld reads) | upload %.1f ms, "
+                                 "ffn %.1f ms, d2h %.1f ms, pool %.1f ms per token\n", uses,
                          100.0 * (double) impl_->hits / (double) std::max<long long>(uses, 1),
-                         impl_->up_ms, impl_->ffn_ms, impl_->d2h_ms, impl_->call_ms);
+                         100.0 * (double) impl_->ram_hits / (double) std::max<long long>(impl_->ram_hits + impl_->ram_misses, 1),
+                         impl_->ram_misses, impl_->up_ms, impl_->ffn_ms, impl_->d2h_ms, impl_->call_ms);
             impl_->hits = impl_->misses = 0;
+            impl_->ram_hits = impl_->ram_misses = 0;
             impl_->up_ms = impl_->ffn_ms = impl_->d2h_ms = impl_->call_ms = 0;
         }
     }

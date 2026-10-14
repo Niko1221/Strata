@@ -46,7 +46,14 @@ public:
     /// `--expert-cache`, counted per layer because the stream is).  0 keeps none: every use reads and
     /// uploads the expert again.  -1 sizes the slots from the free VRAM after this instance's own buffers.
     /// `n_layers` is the model's layer count (the cache spans all of them).
-    Exl3ExpertStream(const std::string& model_dir, int n_embd, int n_layers, int slots_per_layer, void* stream);
+    /// `ram_cache_bytes` is the host-side expert cache (0 = off).  **THE PAGE CACHE IS NOT A CACHE YOU CAN
+    /// COUNT ON**: on the development machine a 10.6 GB read of the routed experts did not stay resident, so
+    /// every miss was a SATA read (measured 8-91 ms of uploads per token against 1.4 ms of FFN).  A managed
+    /// host cache sits outside whatever reclaim policy evicts those pages and is the design the GGUF path
+    /// already uses (`--resident-cpu-experts`): a miss is read into RAM, and every later miss of the same
+    /// expert is a memcpy at RAM speed (0.2 ms per 1.86 MB against 3.7 ms from the disk).
+    Exl3ExpertStream(const std::string& model_dir, int n_embd, int n_layers, int slots_per_layer, void* stream,
+                     size_t ram_cache_bytes = 0);
     ~Exl3ExpertStream();
     Exl3ExpertStream(const Exl3ExpertStream&) = delete;
     Exl3ExpertStream& operator=(const Exl3ExpertStream&) = delete;
@@ -55,6 +62,9 @@ public:
     bool run(int layer, const float* x_f32, const int* ids, int k, float* out, void* stream);
     size_t bytes() const;
     int slots_per_layer() const;
+    /// the host cache's slots per layer and its bytes (0 when it is off)
+    int ram_slots_per_layer() const;
+    size_t ram_bytes() const;
 
 private:
     struct Impl;
