@@ -16,6 +16,7 @@ and the formats change often; the engine boundary is token ids in, text deltas o
 from __future__ import annotations
 
 import json
+import math
 import logging
 import os
 import re
@@ -834,10 +835,42 @@ def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
     return ToolCall(name=obj["name"], arguments=args) if isinstance(args, dict) else None
 
 
+def _coerce_tool_value(value: str, declared):
+    """Keep strings verbatim and existing JSON decoding; recover typed scalar literals after JSON fails.
+
+    This is not schema validation: valid JSON retains its original meaning, including quoted strings. Unknown
+    or incompatible non-JSON values stay unchanged rather than guessing (especially for boolean arguments).
+    """
+    types = declared if isinstance(declared, list) else [declared]
+    if types == ["string"]:
+        return value
+    try:
+        return json.loads(value)
+    except ValueError:
+        pass
+    v = value.strip()
+    low = v.lower()
+    untyped = not declared or None in types
+    if ("boolean" in types or untyped) and low in ("true", "false"):
+        return low == "true"
+    if ("null" in types or untyped) and low in ("null", "none"):
+        return None
+    if "integer" in types and re.fullmatch(r"[+-]?[0-9]+", v):
+        try:
+            return int(v)
+        except ValueError:
+            pass
+    if "number" in types and re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", v):
+        n = float(v)
+        if math.isfinite(n):
+            return n
+    return value
+
+
 def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall. Values are JSON-decoded
-    when the tool's schema says the parameter is not a string (or, without a schema, when they parse as JSON
-    objects/arrays/numbers/booleans)."""
+    unless declared as a string. Non-JSON scalar literals are converted by the declared type; without a type,
+    Python-style booleans and None are also accepted. Unrecognized values are kept unchanged."""
     body = body.strip()
     if not body.startswith("<function=") or ">" not in body:
         raise ValueError("malformed tool call: " + body[:80])
@@ -857,13 +890,7 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
         if value.endswith("\n"):
             value = value[:-1]
         declared = (props.get(pname) or {}).get("type")
-        if declared == "string":
-            args[pname] = value
-        else:
-            try:
-                args[pname] = json.loads(value)
-            except ValueError:
-                args[pname] = value
+        args[pname] = _coerce_tool_value(value, declared)
     return ToolCall(name=name, arguments=args)
 
 
@@ -1079,7 +1106,8 @@ class OutputParser:
                     args(("" if self.sfirst else ",") + json.dumps(pname) + ":")
                     self.sfirst = False
                     self.sp += b + 1
-                    if self.sdeclared.get(pname) == "string":
+                    self.stype = self.sdeclared.get(pname)
+                    if self.stype == "string" or self.stype == ["string"]:
                         args('"')
                         self.ss, self.sval_started = "str", False
                     else:
@@ -1124,10 +1152,7 @@ class OutputParser:
                     value = value[1:]
                 if value.endswith("\n"):
                     value = value[:-1]
-                try:
-                    v = json.loads(value)
-                except ValueError:
-                    v = value
+                v = _coerce_tool_value(value, self.stype)
                 args(json.dumps(v, ensure_ascii=False))
                 self.sp += end + len(PARAM_END)
                 self.ss = "between"
