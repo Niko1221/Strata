@@ -1365,6 +1365,12 @@ if(STRATA_NATIVE_EXPERTS)
     target_link_libraries(dequant_q5_1_test PRIVATE strata_artifact ggml-base)
     add_test(NAME dequant_q5_1_test COMMAND dequant_q5_1_test)
   endif()
+  # ple_reader_test's Q4_1 check compares against ggml's own dequantize_row_q4_1 (q4_1_matches_ggml); without
+  # ggml in this build the check prints a skip rather than comparing against a second copy of itself.
+  if(TARGET ple_reader_test)
+    target_link_libraries(ple_reader_test PRIVATE ggml-base)
+    target_compile_definitions(ple_reader_test PRIVATE STRATA_PLE_HAS_GGML=1)
+  endif()
   # the router lookahead's dot on each rung this CPU has (AVX2, the older CPUs' AVX1) against a double reference
   add_executable(router_dot_parity src/kernels/cpu/router_dot_parity.cpp)
   target_link_libraries(router_dot_parity PRIVATE strata_kernels_cpu)

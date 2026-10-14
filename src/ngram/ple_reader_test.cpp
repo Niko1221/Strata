@@ -9,8 +9,13 @@
 #include "strata/kernels/ngram.hpp"
 #include "strata/ngram/ple_reader.hpp"
 #include "strata/platform/direct_file.hpp"
+#ifdef STRATA_PLE_HAS_GGML
+#include "strata/artifact/dequant.hpp"                 // for the Q4_1 check against ggml's own dequantizer
+#include "ggml.h"
+#endif
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -242,8 +247,85 @@ void bad_sizes_are_refused(const std::string& dir) {
     }
 }
 
+/// THE Q4_1 ROW GEOMETRY AND ITS REGISTRATION. A Q4_1 block is 32 unsigned 4-bit values in 20 bytes (fp16 d,
+/// fp16 m, qs[16]), so the 160-value PLE row is 5 blocks = 100 bytes. The row is checked against the code's own
+/// `PLE_ROW_BYTES_Q4_1` and against what `ple_formats()` registers, because a format that is in the table with a
+/// row size the reader never uses - or with the wrong GGUF name - passes every byte test above it.
+void q4_1_row_is_five_blocks_of_twenty_bytes() {
+    const k::PleFormatInfo& f = k::ple_format_info(k::PleFormat::Q4_1);
+    CHECK(k::PLE_HEAD_DIM == 160, "PLE_HEAD_DIM is %d, not 160", k::PLE_HEAD_DIM);
+    CHECK(k::PLE_ROW_BYTES_Q4_1 == (k::PLE_HEAD_DIM / 32) * 20, "PLE_ROW_BYTES_Q4_1 is not 5 blocks of 20 bytes");
+    CHECK(k::PLE_ROW_BYTES_Q4_1 == 100, "a Q4_1 row is %d bytes, not 100", k::PLE_ROW_BYTES_Q4_1);
+    CHECK(f.row_bytes == (uint32_t) k::PLE_ROW_BYTES_Q4_1, "the Q4_1 format registers %u bytes, PLE_ROW_BYTES_Q4_1 is %d",
+          f.row_bytes, k::PLE_ROW_BYTES_Q4_1);
+    CHECK(f.row_bytes == 5u * 20u, "the Q4_1 format registers %u bytes, not 5 blocks of 20", f.row_bytes);
+    CHECK(std::strcmp(f.name, "Q4_1") == 0, "the format's name is \"%s\"", f.name);
+    CHECK(std::strcmp(f.gguf_type, "Q4_1") == 0, "the format's GGUF type is \"%s\"", f.gguf_type);
+    CHECK(!f.needs_scale, "Q4_1 asks for a table scale; d and m are in every block");
+    CHECK(k::ple_format_for_type("Q4_1") == &f, "ple_format_for_type(\"Q4_1\") is not the Q4_1 format");
+}
+
+/// STRATA'S Q4_1 AGAINST GGML'S OWN `dequantize_row_q4_1`. The reference is reached through the type traits'
+/// `to_float`, which is that very function - ggml-quants.c registers `.to_float = dequantize_row_q4_1` for
+/// GGML_TYPE_Q4_1 - so this is ggml's scalar C, not a second copy of Strata's. One block (32 values, 20 bytes)
+/// and one whole PLE row (160 values, 5 blocks, 100 bytes) both have to agree, the row through the format
+/// table's own dequantizer because that is the path `PleTable::read_row` takes. The nibble order flipped
+/// between j and j+16, d and m swapped, or m multiplied by d instead of added are the failures this catches.
+void q4_1_matches_ggml() {
+#ifdef STRATA_PLE_HAS_GGML
+    const auto* traits = ggml_get_type_traits(GGML_TYPE_Q4_1);
+    CHECK(traits != nullptr && traits->to_float != nullptr, "ggml has no Q4_1 to_float");
+    if (g_fail) return;
+    const k::PleFormatInfo& f = k::ple_format_info(k::PleFormat::Q4_1);
+    constexpr int kBlocks = 2048;
+    constexpr int kBlockBytes = 20;
+    std::mt19937 rng(20261010);
+    std::uniform_int_distribution<int> byte(0, 255);
+    std::uniform_real_distribution<float> scale(-0.05f, 0.05f);
+    std::vector<uint8_t> blocks((size_t) kBlocks * kBlockBytes);
+    for (int b = 0; b < kBlocks; ++b) {
+        uint8_t* blk = blocks.data() + (size_t) b * kBlockBytes;
+        const ggml_fp16_t d = ggml_fp32_to_fp16(scale(rng));
+        const ggml_fp16_t m = ggml_fp32_to_fp16(b == 1 ? -1.5f : scale(rng) * 20.0f);
+        std::memcpy(blk, &d, 2);
+        std::memcpy(blk + 2, &m, 2);
+        for (int i = 4; i < kBlockBytes; ++i) blk[i] = (uint8_t) byte(rng);
+        if (b == 0) std::memset(blk + 4, 0x00, 16);   // every code 0: the value is m
+        if (b == 1) std::memset(blk + 4, 0xFF, 16);   // every code 15, and a negative m
+        if (b == 2) { std::memset(blk + 4, 0x0F, 16); std::memset(blk, 0, 4); }  // low nibbles only, d = m = 0
+    }
+    double max_abs = 0.0;
+    const auto worse = [&max_abs](const float* a, const float* b, size_t n) {
+        for (size_t i = 0; i < n; ++i) max_abs = std::fmax(max_abs, std::fabs((double) a[i] - b[i]));
+    };
+    std::vector<float> want((size_t) kBlocks * 32), got((size_t) kBlocks * 32);
+    traits->to_float(blocks.data(), want.data(), (int64_t) want.size());
+    for (int b = 0; b < kBlocks; ++b)
+        strata::dequantize_q4_1(blocks.data() + (size_t) b * kBlockBytes, got.data() + (size_t) b * 32);
+    worse(want.data(), got.data(), want.size());
+
+    // the whole row, through the format table's dequantizer: a block stride off by two bytes shows only here
+    std::vector<uint8_t> rows((size_t) kBlocks * f.row_bytes);
+    for (size_t i = 0; i < rows.size(); ++i) rows[i] = blocks[i % blocks.size()];
+    std::vector<float> wrow((size_t) kBlocks * k::PLE_HEAD_DIM), grow((size_t) kBlocks * k::PLE_HEAD_DIM);
+    traits->to_float(rows.data(), wrow.data(), (int64_t) wrow.size());
+    for (int b = 0; b < kBlocks; ++b)
+        f.dequant(rows.data() + (size_t) b * f.row_bytes, 1.0f, grow.data() + (size_t) b * k::PLE_HEAD_DIM);
+    worse(wrow.data(), grow.data(), wrow.size());
+
+    const bool ok = max_abs <= 1e-6;
+    std::printf("Q4_1 vs ggml dequantize_row_q4_1: %d blocks + %d rows, max_abs %.3e %s\n", kBlocks, kBlocks,
+                max_abs, ok ? "OK" : "FAILED");
+    CHECK(ok, "Q4_1: max_abs %.3e above 1e-6", max_abs);
+#else
+    std::printf("Q4_1 vs ggml: skipped (this build has no ggml to compare against)\n");
+#endif
+}
+
 void all_formats_round_trip(const std::string& dir) {
     bf16_widening_is_exact();                      // BF16's own claim: a shift, exact for every pattern
+    q4_1_row_is_five_blocks_of_twenty_bytes();     // the Q4_1 row and its entry in ple_formats()
+    q4_1_matches_ggml();                           // Q4_1's own claim: ggml's numbers, not a second copy
     bad_sizes_are_refused(dir);
     CHECK(k::ple_format_count() > 0, "no formats");
     for (int i = 0; i < k::ple_format_count(); ++i) {

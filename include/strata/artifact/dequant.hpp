@@ -94,6 +94,16 @@ inline void dequantize_q4_0(const uint8_t* block, float* out) {
     }
 }
 
+// Q4_1: 32 unsigned 4-bit values, scaled by d and offset by m.
+inline void dequantize_q4_1(const uint8_t* block, float* out) {
+    const float d = fp16_to_fp32(read_u16(block));
+    const float m = fp16_to_fp32(read_u16(block + 2));
+    const uint8_t* qs = block + 4;
+    for (int j = 0; j < 16; ++j) {
+        out[j] = (float)(qs[j] & 0x0F) * d + m;
+        out[j + 16] = (float)(qs[j] >> 4) * d + m;
+    }
+}
 // ---- Q5_0: 32 elements from a 22-byte block. Same nibble layout as Q4_0 plus a 5th bit per element
 // packed in qh[4]; the 32 bits of qh are the high bits of elements 0..31 in order.
 inline void dequantize_q5_0(const uint8_t* block, float* out) {
