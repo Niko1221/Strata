@@ -12,6 +12,13 @@
 
 namespace strata::prefill {
 
+/// STRATA_F16_RANGE: count what the gfx103x FP16 route converts on this device - the BF16 weights to FP16 (slot 0)
+/// and the FP16 GEMM outputs widened to FP32 (slot 1): the largest |value| and how many were beyond 65504 or not
+/// finite.  gemm_f16_range_read returns them (and resets when asked); false where the route does not exist (CUDA).
+void gemm_set_f16_range(bool on);
+bool gemm_f16_range_read(float max_abs[2], unsigned long long over[2], bool reset);
+
+
 class Gemm {
 public:
     Gemm() = default;
