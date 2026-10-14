@@ -258,7 +258,7 @@ def _check_parts(content, path: str, kinds):
 
 def media_of(messages: list[dict]) -> list[tuple[str, str]]:
     """The (kind, source) of every media item of the rendered conversation, in prompt order: kind is
-    "image" (a picture) or "video" (a clip, one item until the server has cut it into frames)."""
+    "image" (a picture) or "video" (a clip: the encoder reads it natively, so it stays one item)."""
     return [(item.get("type"), item["source"]) for m in messages if isinstance(m.get("content"), list)
             for item in m["content"] if item.get("type") in ("image", "video")]
 

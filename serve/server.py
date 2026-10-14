@@ -14,10 +14,11 @@ Images (optional, when the config has a "vision" entry): OpenAI image_url parts 
 data, http(s) URLs or local file paths) go through `strata-vision` (the model's mmproj file) and reach the engine as
 embeddings (`GENI`).  JPEG/PNG/BMP/GIF go straight in; WebP, TIFF, AVIF, ... (agents like omp send WebP) are
 converted to PNG first with Pillow.
-Videos (the same "vision" entry): OpenAI video_url / input_video parts are cut into frames with ffmpeg - at the
-config's "video_fps" (2 by default, the model's own video rate), or a pinned count when the config has
-"video_frames" - and reach the engine as the frames' pictures.  Without ffmpeg on the PATH a video request is a
-400 that names the missing program - never a silent drop.
+Videos (the same "vision" entry): OpenAI video_url / input_video parts are read and encoded natively by
+strata-vision - the ENCV line hands the clip to mtmd, which samples its frames at the config's "video_fps"
+(2 by default, the model's own video rate) and merges them the way the model reads them - and the frames'
+embeddings reach the engine as one video's pictures.  The encoder needs ffmpeg (and ffprobe) on the PATH where
+it runs; without it a video request is a 400 that names the missing program - never a silent drop.
 Requests whose prompt plus max tokens exceed the engine's context are REJECTED with 400, never truncated.
 An unset (or 0, or -1) max tokens means "unlimited": whatever the prompt leaves of the context.
 
@@ -62,7 +63,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
 from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
-                            forced_call, images_of, literal_tags, mark_think_literals, media_of,
+                            forced_call, literal_tags, mark_think_literals, media_of,
                             openai_to_messages, tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
@@ -269,9 +270,6 @@ def engine_frozen(base: tuple[float, int], now: tuple[float, int]) -> bool:
 
 VISION_READY_S = _timeout_env("STRATA_VISION_READY_S", 300.0)
 VISION_ENCODE_S = _timeout_env("STRATA_VISION_ENCODE_S", 300.0)
-VIDEO_FRAMES_S = _timeout_env("STRATA_VIDEO_FRAMES_S", 120.0)      # ffmpeg/ffprobe: cutting one video's frames
-VIDEO_MIN_FRAMES, VIDEO_MAX_FRAMES = 4, 64    # the fps cut's count: the model's own 4..768 capped at 64 - a
-                                              # frame keeps a full image's pixels, not a shrinking share
 ENGINE_READY_S = _timeout_env("STRATA_ENGINE_READY_S", 900.0)
 
 
@@ -2210,8 +2208,9 @@ def vision_start_error(line: str, log=None) -> str:
 
 class Vision:
     """The resident image encoder: `strata-vision` (llama.cpp mtmd + the mmproj file) reads `ENC <image> <out>`
-    lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
-    sends the same picture again (every turn, with most clients) encodes it once."""
+    and `ENCV <video> <out> [fps]` lines and writes each media's embeddings - a video's file holds one record per
+    merged frame group; results are cached by the media's hash, so a conversation that sends the same picture or
+    clip again (every turn, with most clients) encodes it once."""
 
     @staticmethod
     def work_dir() -> Path:
@@ -2364,49 +2363,6 @@ class Vision:
         return data
 
     @staticmethod
-    def extract_frames(source: str | bytes, n: int | None = None, fps: float = 2.0, cancel=None) -> list[bytes]:
-        """A video's frames, evenly over its length, as PNG bytes - one per picture the request sends
-        (server.py turns them into image items, so the template draws each frame as a picture and the encoder
-        reads it as one).  ffmpeg/ffprobe on the PATH cut them (ffprobe for the length, the fps filter for the
-        even cut); without either the ValueError names the fix instead of a silent drop.  The count is the
-        model's own video rate when `n` is unset: `fps` frames a second (2 by default), an even count between
-        4 and 64.  `source`: what load() reads - a data: URL, an http(s) URL or a local file path, at most
-        IMAGE_URL_MAX of a download - or the video's bytes."""
-        ffmpeg, ffprobe = shutil.which("ffmpeg"), shutil.which("ffprobe")
-        if not (ffmpeg and ffprobe):
-            raise ValueError("this video needs ffmpeg (and ffprobe) on the PATH where the server runs: put a "
-                             "static build into a directory that PATH finds and start the server again")
-        if cancel is not None and cancel.is_set():
-            raise ClientGone()
-        data = source if isinstance(source, bytes) else Vision.load(source)
-        with tempfile.TemporaryDirectory(prefix="strata-frames-") as d:
-            path = Path(d) / "video.bin"
-            path.write_bytes(data)
-            dur = 0.0
-            try:
-                probe = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration",
-                                        "-of", "default=nw=1:nk=1", str(path)],
-                                       capture_output=True, text=True, timeout=VIDEO_FRAMES_S)
-                dur = float((probe.stdout or "").strip() or 0)
-            except (OSError, subprocess.TimeoutExpired, ValueError):
-                pass                        # no readable length
-            if n is None:                   # the model's own rate: fps a second over the clip, an even 4..64
-                n = max(VIDEO_MIN_FRAMES, min(VIDEO_MAX_FRAMES, int(dur * fps) if dur > 0 else VIDEO_MIN_FRAMES))
-                n = round(n / 2) * 2
-            rate = f"{n / dur:.6f}" if dur > 0 else "1"      # no length: the first n seconds at one a second
-            try:
-                cut = subprocess.run([ffmpeg, "-v", "error", "-y", "-i", str(path), "-vf", f"fps={rate}",
-                                      "-frames:v", str(n), str(Path(d) / "frame_%03d.png")],
-                                     capture_output=True, text=True, timeout=VIDEO_FRAMES_S)
-            except (OSError, subprocess.TimeoutExpired) as e:
-                raise ValueError(f"the video could not be cut: {e}") from None
-            frames = [p.read_bytes() for p in sorted(Path(d).glob("frame_*.png"))]
-            if not frames:
-                why = (cut.stderr or "").strip().splitlines()
-                raise ValueError("the video has no readable frames" + (f" ({why[-1]})" if why and why[-1] else ""))
-            return frames
-
-    @staticmethod
     def _exif_rotated(data: bytes) -> bool:
         """A JPEG whose EXIF Orientation says it is stored turned (phones do this for portrait photos): the decoder
         (stb_image) ignores the tag.  False without Pillow, or when the tag is missing, 1 or unreadable (#1229)."""
@@ -2494,6 +2450,42 @@ class Vision:
                     self.cache.pop(old)[0].unlink(missing_ok=True)
             return self.cache[key]
 
+    def encode_video(self, source: str | bytes, fps: float = 2.0, keep=()) -> tuple[Path, int]:
+        """-> (embeddings file, the video's total image tokens).  The clip is read and encoded by the encoder
+        itself (ENCV): mtmd samples its frames at `fps` - the clip's own rate when unset - and merges them the
+        model's way, so one clip is one encode and its file holds one record per merged frame group (the engine
+        reads them at the video's pad tokens, in order).  `source`: what load() reads, or the clip's bytes.
+        `keep`: files the caller still needs (never evicted by this call)."""
+        data = source if isinstance(source, bytes) else self.load(source)
+        key = hashlib.sha256(data).hexdigest()[:32]
+        with self.lock:
+            if key in self.cache:
+                self.cache[key] = self.cache.pop(key)                  # most recently used last
+                return self.cache[key]
+            vid, out = self.dir / f"{key}.vid", self.dir / f"{key}.sve"
+            vid.write_bytes(data)
+            try:
+                self.proc.stdin.write(f"ENCV {vid.name} {out.name} {fps}\n")    # relative to the encoder's cwd (#480)
+                self.proc.stdin.flush()
+                try:
+                    line = self._readline(VISION_ENCODE_S, "the video could not be read").strip()
+                except RuntimeError as e:                 # silent for VISION_ENCODE_S: the encoder was ended (#1317)
+                    self.stopped = True                   # alive() is False, so the next request starts it again
+                    raise ValueError(str(e)) from None
+            finally:                                                   # #352: also when the encoder's pipe is gone
+                vid.unlink(missing_ok=True)
+            if not line.startswith("OK"):
+                raise ValueError("the video could not be read: " + (line[4:] if line.startswith("ERR") else
+                                                                    "the vision encoder stopped"))
+            self.cache[key] = (out, int(line.split()[1]))
+            held = {str(p) for p in keep} | {str(out)}
+            for old in list(self.cache):                               # oldest first, but never one still in use
+                if len(self.cache) <= 64:
+                    break
+                if str(self.cache[old][0]) not in held:
+                    self.cache.pop(old)[0].unlink(missing_ok=True)
+            return self.cache[key]
+
     def close(self):
         proc, self.proc = self.proc, None
         if proc is None:
@@ -2531,20 +2523,9 @@ def gpu_list(cfg: dict) -> list[int]:
     return [int(str(x).strip()) for x in items if str(x).strip() != ""]
 
 
-def video_frames_of(value):
-    """The config's "video_frames" (vision section): a pinned frame count for the cut - it overrides the
-    default fps=2 sampling.  A whole number from 1 to 64 - a frame takes an image's worth of context, so the
-    cap keeps a long clip inside the window."""
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 64:
-        raise ValueError(f'"video_frames" must be a whole number from 1 to 64, not {value!r}')
-    return value
-
-
 def video_fps_of(value):
-    """The config's "video_fps" (vision section): the frames a second a video is cut at - the model's own
-    video rate (2 by default, uniform over the clip's length, an even count between 4 and 64)."""
+    """The config's "video_fps" (vision section): the frames a second the encoder's mtmd samples a video at -
+    the model's own video rate (2 by default, uniform over the clip's length)."""
     if value is None:
         return 2.0
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < float(value) <= 64:
@@ -3101,7 +3082,6 @@ class Service:
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
-        self.video_frames = None                        # the config's "video_frames": a pinned count (overrides video_fps)
         self.video_fps = 2.0                            # the config's "video_fps": the model's own video rate, frames a second
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
@@ -3918,31 +3898,6 @@ class Service:
                     content[n] = {"type": "text", "text": f"[image omitted: {why}]"}
         return fetched
 
-    def _expand_videos(self, messages, cancel=None):
-        """A video goes in as its frames - ordinary image items, in order, one media place per frame in the
-        rendered prompt (prepare's marker scan fills each with the frame's picture, in the same pass as the
-        pictures).  The frames are cut with ffmpeg at the config's "video_fps" (2 by default, the model's own
-        rate) or its pinned "video_frames" count, a data: or
-        http(s) source read first as a picture's is; a video that cannot be cut is a 400 that says why, not a
-        silent drop.  The other items are untouched; a request without a video comes back as it was."""
-        out, changed = [], False
-        for m in messages:
-            content = m.get("content")
-            if m.get("role") == "system" or not isinstance(content, list) or not any(
-                    isinstance(p, dict) and p.get("type") == "video" for p in content):
-                out.append(m)
-                continue
-            items = []
-            for p in content:
-                if not isinstance(p, dict) or p.get("type") != "video":
-                    items.append(p)
-                    continue
-                frames = self.vision.extract_frames(p.get("source") or "", self.video_frames, self.video_fps, cancel)
-                changed = True
-                items.extend({"type": "image", "source": f} for f in frames)
-            out.append({**m, "content": items})
-        return out if changed else messages
-
     def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
@@ -3950,21 +3905,16 @@ class Service:
         # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
         # between pictures and raise ClientGone
         fetched = self._note_unreadable_tool_images(messages, cancel)
-        if any(kind == "video" for kind, _ in media_of(messages)):
-            if self.vision is None:
-                raise ValueError("this server was started without the vision encoder (run setup again and choose "
-                                 "'vision'), so it cannot read images or videos")
-            messages = self._expand_videos(messages, cancel)
         ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
             ids = ids + self.tok.encode(force, parse_special=True)
         self.embeddings.path = None
         self.embeddings.keys = None
-        images = images_of(messages)
-        if images:
+        media = media_of(messages)                    # the pictures and the videos, in the order the prompt draws them
+        if media:
             if self.vision is None:
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
-                                 "'vision'), so it cannot read images")
+                                 "'vision'), so it cannot read images or videos")
             pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
             start = self.tok.encode(VISION_START, parse_special=True)[0]
             # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
@@ -3972,11 +3922,9 @@ class Service:
             def fetch(src):
                 if cancel is not None and cancel.is_set():
                     raise ClientGone()
-                if isinstance(src, bytes):            # a video's already-cut frame
-                    return src
                 return fetched[src] if src in fetched else Vision.download(src) \
                     if src.startswith(("http://", "https://")) else src
-            images = [fetch(src) for src in images]
+            items = [fetch(src) for _, src in media]
             # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
@@ -3984,28 +3932,43 @@ class Service:
             with self._turn(cancel):
                 self._vision_up()
                 try:
-                    encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
-                               else [self.vision.encode(src) for src in images])
+                    encoded = []
+                    for (kind, _), src in zip(media, items):
+                        if cancel is not None and cancel.is_set():
+                            raise ClientGone()
+                        keep = [p for p, _ in encoded]
+                        # a video is one ENCV: the encoder samples its frames (mtmd) and encodes them merged the model's
+                        # way - the clip's total image tokens are what its marker expands to below
+                        encoded.append(self.vision.encode_video(src, self.video_fps, keep=keep)
+                                       if kind == "video" else self.vision.encode(src, keep=keep))
                 finally:
                     self.last_image_at = time.time()
-            # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
-            # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
-            # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
+            # one media marker -> image tokens: the template writes its start plus one pad per picture, and its start
+            # alone per video (the clip's frames are the encoder's merged records).  Only the template's media places
+            # expand: the same text inside a message (an agent reading these docs, #150) is kept plain, or it took
+            # one's place and the counts no longer matched.
             literal = self.tok.encode(IMAGE_PAD, parse_special=False)
-            out, k = [], 0
+            out, k, prev_start = [], 0, False
             for j, t in enumerate(ids):
-                if t == pad and j > 0 and ids[j - 1] == start:
-                    # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
+                if t == pad and prev_start:
+                    # the picture's place: the start before it, then its rows
                     if k == len(encoded):
-                        raise ValueError("the prompt and its images do not match")
+                        raise ValueError("the prompt and its media do not match")
                     out += [pad] * encoded[k][1]
+                    k += 1
+                elif t == start and (j + 1 >= len(ids) or ids[j + 1] != pad):
+                    # the video's place: the start on its own, then the clip's rows
+                    if k == len(encoded):
+                        raise ValueError("the prompt and its media do not match")
+                    out += [start] + [pad] * encoded[k][1]
                     k += 1
                 elif t == pad:
                     out += literal
                 else:
                     out.append(t)
+                prev_start = t == start
             if k != len(encoded):
-                raise ValueError("the prompt and its images do not match")
+                raise ValueError("the prompt and its media do not match")
             ids = out
         ctx = self.engine.max_context
         if ctx <= 0:
@@ -4031,8 +3994,8 @@ class Service:
                                  f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
                                  "model's strata-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
-        if images:
-            # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
+        if media:
+            # The request's media in one file for GENI (a video's ~10 MB a frame group), written once nothing above refuses the
             # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
             # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
             combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
@@ -4043,7 +4006,7 @@ class Service:
             self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
             write_temporary(combined, [p for p, _ in encoded])
         if req is not None and req.get("strata_prefix") is not None:
-            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
+            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(media))
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
 
     PREFIX_END = "\u0001strata-prefix-end\u0001"          # marks where a message's shared part ends in the rendered prompt
@@ -5477,7 +5440,7 @@ def make_handler(svc: Service):
                     modalities = ["text"]
                     if svc.vision is not None:
                         modalities += ["image"]
-                        if shutil.which("ffmpeg"):      # a video is cut into frames with it; without it the part is a 400 that says so
+                        if shutil.which("ffmpeg"):      # the encoder's mtmd reads a video's frames with it; without it a video request is a 400 that says so
                             modalities += ["video"]
                     model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
                              "meta": {"n_ctx": svc.reported_ctx()},
@@ -6895,7 +6858,6 @@ def main() -> int:
         print(f"[strata] image generation: {svc.images.model} {icfg.get('quant') or ''} on "
               f"{icfg.get('backend') or '?'} (POST /v1/images/generations; GPU policy {svc.images.policy})", flush=True)
     try:
-        svc.video_frames = video_frames_of((cfg.get("vision") or {}).get("video_frames"))   # a pinned frame count
         svc.video_fps = video_fps_of((cfg.get("vision") or {}).get("video_fps"))            # the model's own video rate
     except ValueError as e:
         raise SystemExit(f"[strata] config {e}")
