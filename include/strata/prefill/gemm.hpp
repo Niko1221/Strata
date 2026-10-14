@@ -68,6 +68,13 @@ private:
     bool external_ = false;
     void* hipblaslt_state_ = nullptr;
     bool f16_io_ = false;
+    /// cuBLAS 12 answers the default FP16 algorithm of a few (N, K) shapes with CUBLAS_STATUS_INTERNAL_ERROR once
+    /// another CUDA device in the process has initialized its context (issue #1650, Turing + Pascal).  A fixed
+    /// algorithm (ALGO2) survives that state, but is markedly slower for the wide shapes, so only the shapes that
+    /// fail move, and they are remembered here ((K << 32) | N, up to kF16AlgoSlots).  CUDA only.
+    static constexpr int kF16AlgoSlots = 32;
+    int64_t f16_algo_shape_[kF16AlgoSlots] = {};
+    int f16_algo_n_ = 0;
     // below sm_80: FP16 (Pascal: fp32) copies of a BF16 product's weight and activation slice (Gemm::bf16)
     uint16_t* tc_w_ = nullptr;
     int64_t tc_w_elems_ = 0;
@@ -81,6 +88,12 @@ private:
     /// Y = X . W^T with FP16 out, written into Y's own rows and widened there (no buffer): prompt_f16() only.
     void f16_inplace(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy);
 };
+
+/// Pascal, opt-in: Gemm::f16's large dense shapes as cublasSgemm on FP32 copies (gemm.cu; bitwise the FP16 call's
+/// result at the sizes it takes with the cuBLAS it was measured on).  0 off, 1 on (any card), -1 the default
+/// (STRATA_DENSE_F32=1 on compute capability 6.x, else off).  For gemm_f32_parity; a no-op outside the experimental
+/// CUDA 12 build.
+void gemm_set_dense_f32(int mode);
 
 /// HIP on gfx103x (RDNA2), for the current device: rocBLAS's tuned GEMMs there are FP16 in -> FP16 out only (FP16 or
 /// BF16 in -> FP32 out runs ~6x slower), so the prompt path's 16-bit GEMMs run in FP16 (Gemm::set_f16_io,

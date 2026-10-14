@@ -74,6 +74,19 @@ size_t device_free_bytes() try {
     You may need to adjust the code.
     */
     dpct::get_current_device().get_memory_info(free_b, total_b);
+    // An Arc on the xe driver whose Level Zero has no ext_intel_free_memory reports 0 free (Arc A770 16 GB, xe, #1545):
+    // --expert-cache auto then sized its caches from 0 bytes.  0 with a known total means "the driver does not know", so on
+    // Linux (xe is Linux-only) the card's total less what this process holds (the DRM fdinfo, as for the A750/i915 below)
+    // is used instead.  Like that figure it does not see other processes' memory.  Elsewhere the 0 stands.
+#if defined(__linux__)
+    if (free_b == 0 && total_b > 0)
+        if (const unsigned long long own = own_drm_local_bytes(); own < total_b) {
+            static std::atomic<bool> said{false};
+            if (!said.exchange(true))
+                std::fprintf(stderr, "strata: the driver reports no free card memory (xe without ext_intel_free_memory); sizing from the DRM fdinfo (this process holds %.2f GiB)\n", (double) own / 1073741824.0);
+            free_b = (size_t) (total_b - own);
+        }
+#endif
     // #1440: own_drm_local_bytes() sums every DRM fd of the process, i.e. both cards on a layer split, and would charge the
     // first card's cache to the second. With more than one GPU it runs only where the driver reports the whole card as
     // free (Arc A750/i915); a one-GPU run keeps the figure it always had.
@@ -430,6 +443,9 @@ bool ExpertCache::open_segmented(uint64_t want, std::string &err) try {
         }
         mapped_segs_ = (int64_t) i + 1;
     }
+    // the reserved VA, so device_offset_end can place a borrowed prompt buffer or a resident expert inside it (the GEMM
+    // stages an operand that lies more than 4 GiB in; oneMKL misreads such an operand's last partial tile)
+    strata::device_alloc_register(base_, (size_t) reserved_);
     return true;
 #endif
 }
@@ -456,6 +472,7 @@ void ExpertCache::release_segmented() {
     seg_size_.clear();
     mapped_segs_ = 0;
     reserved_ = 0;
+    strata::device_alloc_unregister(base_);
     base_ = nullptr;
 }
 
@@ -745,8 +762,10 @@ void ExpertCache::close() {
         release_segmented();
     } else if (vmm_) {
         vmm_.reset();   // unmaps and frees every chunk it still holds
+        strata::device_alloc_unregister(base_);
         base_ = nullptr;
     } else if (base_ != nullptr) {
+        strata::device_alloc_unregister(base_);
         sycl::free(base_, dpct::get_in_order_queue());
         base_ = nullptr;
     }

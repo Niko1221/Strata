@@ -520,6 +520,70 @@ int main(int argc, char** argv) {
         bad += ab_bad + sn_bad;
     }
 
+    // ================= 6. the layer-batched commit (engine-latency), bitwise against the per-layer calls =================
+    // gdn_commit_layers runs every layer's conv-history commit and state commit in one launch each; the per-layer loop
+    // (gdn_conv_commit + gdn_step_norm_multi with n_keep, no outputs) is the reference.  Several layers with their own
+    // state, rows and gate/beta; n_keep 1..T; memcmp on the whole state arena (states and conv histories).
+    {
+        const int qk = S * h_k, C = 2 * qk + S * h_v, L = 5, MT = strata::kernels::kVerifyMaxT;
+        const int64_t conv_off = (int64_t) S * h_v * S, stride = conv_off + (int64_t) C * 3;
+        std::vector<float> st0((size_t) (stride * L)), hb((size_t) L * MT * C), qkv((size_t) L * MT * C),
+            gt((size_t) L * MT * h_v), bt((size_t) L * MT * h_v), zdummy((size_t) MT * S * h_v), gm(S, 1.0f);
+        for (auto& x : st0) x = gauss(rng) * 0.1f;
+        for (auto& x : hb) x = gauss(rng) * 0.1f;
+        for (auto& x : qkv) x = gauss(rng);
+        for (auto& x : gt) x = -(0.5f + (float) (rng() % 100) / 50.0f);
+        for (auto& x : bt) x = (float) (rng() % 100) / 100.0f;
+        float *d_a = nullptr, *d_b = nullptr, *d_h = nullptr, *d_qkv = nullptr, *d_g = nullptr, *d_bt = nullptr,
+              *d_z = nullptr, *d_y = nullptr, *d_gm = nullptr;
+        int32_t* d_nk = nullptr;
+        check(cudaMalloc(&d_a, st0.size() * 4), "la"); check(cudaMalloc(&d_b, st0.size() * 4), "lb");
+        check(cudaMalloc(&d_h, hb.size() * 4), "lh"); check(cudaMalloc(&d_qkv, qkv.size() * 4), "lq");
+        check(cudaMalloc(&d_g, gt.size() * 4), "lg"); check(cudaMalloc(&d_bt, bt.size() * 4), "lbt");
+        check(cudaMalloc(&d_z, zdummy.size() * 4), "lz"); check(cudaMalloc(&d_y, zdummy.size() * 4), "ly");
+        check(cudaMalloc(&d_gm, gm.size() * 4), "lgm"); check(cudaMalloc(&d_nk, 4), "lnk");
+        check(cudaMemcpy(d_h, hb.data(), hb.size() * 4, cudaMemcpyHostToDevice), "lch");
+        check(cudaMemcpy(d_qkv, qkv.data(), qkv.size() * 4, cudaMemcpyHostToDevice), "lcq");
+        check(cudaMemcpy(d_g, gt.data(), gt.size() * 4, cudaMemcpyHostToDevice), "lcg");
+        check(cudaMemcpy(d_bt, bt.data(), bt.size() * 4, cudaMemcpyHostToDevice), "lcb");
+        check(cudaMemcpy(d_gm, gm.data(), gm.size() * 4, cudaMemcpyHostToDevice), "lcm");
+        check(cudaMemset(d_z, 0, zdummy.size() * 4), "lz0");
+        int lb_bad = 0, lb_n = 0;
+        bool launched = true;
+        for (int nk = 1; nk <= MT && launched; ++nk) {
+            check(cudaMemcpy(d_nk, &nk, 4, cudaMemcpyHostToDevice), "lnk1");
+            check(cudaMemcpy(d_a, st0.data(), st0.size() * 4, cudaMemcpyHostToDevice), "lca");
+            check(cudaMemcpy(d_b, st0.data(), st0.size() * 4, cudaMemcpyHostToDevice), "lcb2");
+            for (int l = 0; l < L; ++l) {   // the reference: the per-layer calls
+                float* stl = d_a + (size_t) l * stride;
+                strata::kernels::gdn_conv_commit(stl + conv_off, d_qkv + (size_t) l * MT * C, C, d_nk, nullptr);
+                strata::kernels::gdn_step_norm_multi(stl, d_h + (size_t) l * MT * C, C, d_g + (size_t) l * MT * h_v,
+                                                     d_bt + (size_t) l * MT * h_v, d_z, d_gm, 1e-6f, d_y, h_k, h_v, MT, d_nk,
+                                                     nullptr, MT);
+            }
+            launched = strata::kernels::gdn_commit_layers(d_b, stride, conv_off, d_qkv, (int64_t) MT * C, d_h, (int64_t) MT * C,
+                                                          d_g, d_bt, (int64_t) MT * h_v, C, h_k, h_v, MT, L, d_nk, nullptr);
+            if (!launched) break;
+            check(cudaDeviceSynchronize(), "lsync");
+            std::vector<float> a(st0.size()), b(st0.size());
+            check(cudaMemcpy(a.data(), d_a, a.size() * 4, cudaMemcpyDeviceToHost), "lda");
+            check(cudaMemcpy(b.data(), d_b, b.size() * 4, cudaMemcpyDeviceToHost), "ldb");
+            ++lb_n;
+            if (std::memcmp(a.data(), b.data(), a.size() * 4) != 0 || std::memcmp(a.data(), st0.data(), a.size() * 4) == 0) {
+                std::printf("    *** gdn_commit_layers n_keep=%d differs from the per-layer commit (or wrote nothing) ***\n", nk);
+                ++lb_bad;
+            }
+        }
+        cudaFree(d_a); cudaFree(d_b); cudaFree(d_h); cudaFree(d_qkv); cudaFree(d_g); cudaFree(d_bt); cudaFree(d_z);
+        cudaFree(d_y); cudaFree(d_gm); cudaFree(d_nk);
+        if (launched)
+            std::printf("  %-42s %s (%d cases, %d layers)\n", "gdn_commit_layers == per-layer commit", lb_bad ? "*** NO ***" : "bitwise",
+                        lb_n, L);
+        else
+            std::printf("  %-42s skipped (the per-layer commit is not the state-only kernel here)\n", "gdn_commit_layers");
+        bad += lb_bad;
+    }
+
     std::printf("\ngdn: %d failures\n", bad);
     if (bad) return 1;
     if (selftest) std::printf("gdn_parity OK\n");

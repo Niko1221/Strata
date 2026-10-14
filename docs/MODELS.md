@@ -14,7 +14,8 @@ The installer recommends one for your PC; this page explains the choice. Back to
 | **32 GB** | **Coder** | it fits 32 GB; best at code, weaker at everything else ([why](#coder)). With a 24 GB card, Q2_0 and IQ2_XS run too ([low-RAM mode](#a-big-graphics-card-and-little-ram)) and are the better pick for general use |
 | **48 GB** | **IQ2_XS** (or Q2_0, the fastest) | the larger sizes do not fit |
 | **64 GB** | **IQ2_XS** (recommended), or IQ3_XXS / IQ3_S | every size fits (IQ3_S with little else open) |
-| **96 GB or more** | **IQ3_S**, or [Unsloth's UD-IQ4_XS](#unsloth-ud-iq4_xs) (~4-bit) | room for the largest sizes |
+| **96 GB or more** | **IQ3_S**, or [Unsloth's UD-IQ4_XS or UD-Q4_K_XL](#unsloths-files-ud-iq4_xs-to-q8_0) (~4-bit) | room for the largest sizes |
+| **128-192 GB** | [Unsloth's UD-Q5_K_XL, UD-Q6_K_XL or Q8_0](#unsloths-files-ud-iq4_xs-to-q8_0) | every expert of the 5-8-bit files in RAM |
 
 Not sure? Take **IQ2_XS**. The **Coder** is the one that fits a 32 GB PC, but it keeps only 256 of the 512 experts,
 chosen on code data, so it is weaker outside code and in languages other than English. For general use, or whenever
@@ -62,7 +63,7 @@ in a pull request.
 | **Q2_0** | 37.6 GB | fastest | good |
 | **IQ2_XS** | 39.2 GB | fast | better (**recommended**) |
 | **IQ3_XXS** | 47.0 GB | slower | great |
-| **IQ3_S** | 54.8 GB | slowest | best: matches the full model on the published tests (original model only) |
+| **IQ3_S** | 54.8 GB | slowest | best: matches the full model on the published tests |
 
 The download is 66-76 GB for the three smaller sizes ([details](DETAILS.md#which-model)); the first start also
 fetches the MTP draft layer (~6 GB, +1 GB with images).
@@ -110,41 +111,39 @@ START-HERE.bat --setup --family coder
 
 **[Swift 1.5](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF)** - a fine-tune by UkisAI that
 thinks much shorter before answering, so you get the answer sooner, with about the same quality. Same speed per
-token, and about the same RAM as the same size of the original (no IQ3_S). Its own license applies (see its page).
+token, and about the same RAM as the same size of the original. Its own license applies (see its page).
 More: [details](DETAILS.md#or-swift-15-a-fine-tune-that-thinks-shorter).
 
 ```
 START-HERE.bat --setup --family swift --model IQ2_XS
 ```
 
-### Unsloth UD-IQ4_XS
+<a id="unsloth-ud-iq4_xs"></a><a id="unsloth-ud-q4_k_xl-experimental"></a>
 
-**Unsloth's UD-IQ4_XS** (~4-bit) is the fourth version in setup's menu (`--family unsloth`, its first size), a
-regular choice from 0.1.39: a 94 GB download with 59.5 GB of experts (IQ3_S and IQ4_NL), between IQ3_S and UD-Q4_K_XL
-in quality. Strata keeps your RAM minus 24 GB of the experts in RAM and reads the rest from the SSD while it answers:
-on a 64 GB PC part of them come from the SSD (slower; an NVMe SSD helps), from ~80 GB of RAM all of them stay in RAM.
-It needs 48 GB of RAM or more and engine 0.1.38 or newer; images are an option, as with the other models.
-Details: [UD-IQ4_XS](UNSLOTH_Q4.md#ud-iq4_xs-setup-from-0139-621).
+### Unsloth's files: UD-IQ4_XS to Q8_0
+
+The fourth version in setup's menu (`--family unsloth`) is **Unsloth's quantizations** of the same model, from ~4 to 8
+bits. They keep the original's experts at more bits than the 2-3-bit sizes above, so they need more RAM. Setup keeps
+every expert in RAM where they and 16 GB more fit (the fastest way); with less RAM it keeps as many as fit and reads
+the rest from the SSD while it answers (much slower), and for the bigger files it asks first. Images are on by default
+on an NVIDIA card of 16 GB or more (and on AMD with the CPU encoder where the experts fit in RAM).
+
+| Size | Download | Experts | RAM for all of them in RAM | Same top token as Q8_0 | AMD R9700 (32 GB): story / code / 32K prompt |
+| --- | ---: | ---: | ---: | ---: | --- |
+| **UD-IQ4_XS** (setup's first) | 94 GB | 55 GiB | ~72 GB | 88.9% | - |
+| **UD-Q4_K_XL** | 111 GB | 72 GiB | ~88 GB | 93.1% | 63 / 87 tok/s / 1,110-1,320 tok/s |
+| **UD-Q5_K_XL** | 158 GB | 92 GiB | ~108 GB | 94.6% | 57-60 / 82 / 810-1,260 |
+| **UD-Q6_K_XL** | 169 GB | 102 GiB | ~118 GB | 94.6% | 54 / 76 / 1,020 |
+| **Q8_0** | 188 GB | 120 GiB | ~136 GB | 100% (the reference) | 53-57 / 66-74 / 1,230-1,300 |
+
+For comparison, IQ3_S on the same card: 75 / 95 tok/s, 87.7% the same top token as Q8_0. The quality numbers, the
+speed bound and NVIDIA/AMD/Intel details: [QUANTS.md](QUANTS.md); the files: [UD-Q4_K_XL](UNSLOTH_Q4.md),
+[UD-Q6_K_XL](UNSLOTH_Q6.md).
 
 ```
-START-HERE.bat --setup --family unsloth --model UD-IQ4_XS
+START-HERE.bat --setup --family unsloth --model UD-Q5_K_XL
 ```
 
-### Unsloth UD-Q4_K_XL (experimental)
-
-**Unsloth's 4-bit UD-Q4_K_XL** (experimental) is the second size of the same family (`--family unsloth`): the closest
-to the full model, but a 111 GB download whose 77 GB of experts do not fit in RAM. Strata keeps your RAM minus 24 GB
-of them in RAM and reads the rest from the SSD while it answers: 7-8.5 tokens/s on a 64 GB PC with a 12 GB GPU, several
-times slower than the sizes above, and long prompts are slow. It needs 48 GB of RAM or more, an NVMe SSD and one
-NVIDIA GPU (no images yet). Details and measurements: [UD-Q4_K_XL](UNSLOTH_Q4.md).
-
-```
-START-HERE.bat --setup --family unsloth --model UD-Q4_K_XL
-```
-
-**Unsloth's 6-bit UD-Q6_K_XL** (experimental, not in setup's menu) trades more bytes per expert for less precision
-loss against the same files: 169.2 GB together, its PLE table Q8_0 (read by the engine since 0.1.38). High RAM
-machines run it without a RAM budget. Manual workflow: [UD-Q6_K_XL](UNSLOTH_Q6.md).
 ### OrcaRouter Uncensored IQ3_XXS
 
 For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](ORCA.md). It needs an

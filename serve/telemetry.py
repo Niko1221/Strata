@@ -166,6 +166,69 @@ class _Amd:
         except (OSError, TypeError):
             return "AMD Radeon"
 
+    @staticmethod
+    def _gen(text):
+        """The PCIe generation of a link-speed file's contents ("16.0 GT/s PCIe" -> 4), or None."""
+        try:
+            return {2.5: 1, 5.0: 2, 8.0: 3, 16.0: 4, 32.0: 5, 64.0: 6}[float(str(text).split()[0])]
+        except (ValueError, TypeError, IndexError, KeyError):
+            return None
+
+    @staticmethod
+    def _bdf(s):
+        """True for a sysfs pci device name ("0000:03:00.0"); nothing is imported for it."""
+        return (len(s) == 12 and s[4] == ":" and s[7] == ":" and s[10] == "." and s[11] in "01234567"
+                and all(c in "0123456789abcdef" for c in s[0:4] + s[5:7] + s[8:10]))
+
+    @staticmethod
+    def _read(d, name):
+        try:
+            with open(os.path.join(d, name), encoding="utf-8") as f:
+                return f.read().strip()
+        except (OSError, TypeError):
+            return None
+
+    def _hops(self):
+        """The PCIe devices between the root port and this card, the card last: the sysfs path names every
+        hop (a card behind a bridge chain has more than one; a directly attached card has one)."""
+        out, prefix = [], []
+        for part in os.path.realpath(self.dev or "").split("/"):
+            prefix.append(part)
+            if self._bdf(part):
+                out.append("/".join(prefix))
+        return out
+
+    def link(self):
+        """The PCIe link the card actually gets: the **narrowest/slowest hop** between the root port and the card,
+        from each hop's `max_link_speed` / `max_link_width` (the capability, so a power-saving downgrade or a Gen3
+        slot cannot make it read low).  A card that is Gen4 on its own hop but sits behind a Gen3 root port really
+        runs at Gen3, and that is the number a PCIe bandwidth budget needs.
+        `pcie_own_gen` keeps the card's own hop aside: the gap between the two is what a user has to see.
+
+        The bottleneck is only claimed when **every** hop of the path could be read; `pcie_path` reports how many
+        of them were ("4/4").  A kernel or a container that hides part of /sys/devices would otherwise drop the
+        unreadable hops in silence and report the card's own Gen4 hop as the whole path - i.e. be optimistic
+        exactly where it matters.  When the walk is incomplete the reading falls back to the card's own negotiated
+        link and pcie_path says so."""
+        hops = self._hops()
+        gens, widths, read = [], [], 0
+        for d in hops:
+            g = self._gen(_Amd._read(d, "max_link_speed"))
+            w = self._int(os.path.join(d, "max_link_width"))
+            read += 1 if (g is not None or w is not None) else 0
+            if g:
+                gens.append(g)
+            if w:
+                widths.append(w)
+        own = self.dev or ""
+        own_gen = self._gen(_Amd._read(own, "current_link_speed"))
+        whole = bool(hops) and read == len(hops)
+        gen = min(gens) if (whole and gens) else own_gen
+        width = min(widths) if (whole and widths) else self._int(os.path.join(own, "current_link_width"))
+        return {"pcie_gen": gen, "pcie_gen_max": gen, "pcie_own_gen": own_gen, "pcie_width": width,
+                "pcie_path": "%d/%d" % (read, len(hops))}
+
+
     def read(self):
         out = {"util": self._int(os.path.join(self.dev, "gpu_busy_percent")),
                "mem_used": self._int(os.path.join(self.dev, "mem_info_vram_used")),
@@ -179,12 +242,70 @@ class _Amd:
             out["power"] = p / 1e6 if p is not None else None
             cap = self._int(os.path.join(self.hwmon, "power1_cap"))
             out["power_limit"] = cap / 1e6 if cap is not None else None
+        out.update(self.link())
         return out
 
 
 def gpu_reader(index=0, amd=False):
     """The card's readings: NVML (NVIDIA), or the amdgpu sysfs files with the AMD backend (#301)."""
     return _Amd(index) if amd else _Nvml(index)
+
+
+_DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+
+
+def windows_display_adapters(vendor=None) -> list:
+    """#1587: the display adapters Windows has drivers for, from the registry's display class (no subprocess, no vendor
+    library): [{"name", "provider", "driver", "vram_bytes"}] in the class's order.  `vendor`: "amd", "nvidia" or
+    "intel" keeps that vendor's cards.  [] off Windows or when nothing can be read."""
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+        root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _DISPLAY_CLASS)
+    except OSError:
+        return []
+    out = []
+    i = 0
+    while True:
+        try:
+            sub = winreg.EnumKey(root, i)
+        except OSError:
+            break
+        i += 1
+        if not sub.isdigit():
+            continue
+        try:
+            k = winreg.OpenKey(root, sub)
+        except OSError:
+            continue
+
+        def val(name, k=k):
+            try:
+                return winreg.QueryValueEx(k, name)[0]
+            except OSError:
+                return None
+        name = val("DriverDesc")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        mem = val("HardwareInformation.qwMemorySize")
+        if mem is None:
+            mem = val("HardwareInformation.MemorySize")
+        if isinstance(mem, (bytes, bytearray)):
+            mem = int.from_bytes(bytes(mem[:8]), "little") if mem else None
+        out.append({"name": name.strip(), "provider": str(val("ProviderName") or ""), "driver": val("DriverVersion"),
+                    "vram_bytes": mem if isinstance(mem, int) and mem > 0 else None})
+    if vendor:
+        keys = {"amd": ("advanced micro devices", "amd", "radeon"), "nvidia": ("nvidia",), "intel": ("intel",)}[vendor]
+        out = [a for a in out if any(s in (a["provider"] + " " + a["name"]).lower() for s in keys)]
+    return out
+
+
+def windows_amd_cards(adapters=None) -> list:
+    """The AMD cards HIP runs on, as windows_display_adapters lists them.  A Ryzen's integrated Radeon is listed too
+    (512 MiB on a Ryzen 5 7600): beside a card with 2 GiB or more it is left out (an APU alone keeps it)."""
+    cards = windows_display_adapters("amd") if adapters is None else adapters
+    return [c for c in cards if (c["vram_bytes"] or 0) >= 2 << 30] or cards
 
 
 def free_vram_mib(index=0, amd=False):
@@ -284,8 +405,18 @@ class Telemetry:
         except ImportError:
             self.ps = None
         self.fallback = _CpuRamFallback()
+        gpu_name = " + ".join(g.name() or "?" for _, g in self.gpus) if self.gpu.ok() else None
+        win_amd = None
+        if gpu_name is None and amd and os.name == "nt":
+            # #1587: no readings for an AMD card on Windows yet, but its name (and VRAM size) are in the registry, so the
+            # dashboard and strata_bench do not call the run "CPU only".  The class order is taken as HIP's order.
+            cards = windows_amd_cards()
+            win_amd = [cards[i] for i in idx if 0 <= i < len(cards)] or cards[:1]
+            gpu_name = " + ".join(c["name"] for c in win_amd) if win_amd else None
         self.static = {
-            "gpu_name": " + ".join(g.name() or "?" for _, g in self.gpus) if self.gpu.ok() else None,
+            "gpu_name": gpu_name,
+            "gpu_vram_total_mib": (sum(c["vram_bytes"] for c in win_amd) >> 20
+                                   if win_amd and all(c["vram_bytes"] for c in win_amd) else None),
             "gpu_count": len(self.gpus),
             # #1380: the AMD readings are the amdgpu driver's Linux sysfs files; a Windows AMD card has none yet, and the
             # dashboard said "not readable (NVML)" or showed empty tiles with no word why
@@ -306,6 +437,8 @@ class Telemetry:
         try:
             c = self.ps.disk_io_counters()
         except (OSError, RuntimeError):
+            return None, None
+        if c is None:   # psutil found no disk (a gVisor container, Windows with its disk counters off)
             return None, None
         t = time.time()
         prev, self._disk_prev = self._disk_prev, (t, c.read_bytes, c.write_bytes)
