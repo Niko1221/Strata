@@ -321,12 +321,19 @@ not in the schedule.
   measurement: a 5-bit block quant on top of the trellis decode's own 10-bit codes measures a **4%** round-trip
   error, and the model then answers "surface表面的表面的" - Q8_0's round-trip error is **0.65%** and the model is
   correct.  Q8_0 is 1.7x the bytes of the 5-bit trellis it replaces (3.7 GiB against 2117 MiB of dense linears),
-  which the expert cache pays for: measured 24.57 GiB free -> **289 slots/layer** against 311 before.  It costs
-  ~40 s of load time, streamed through small row-chunk buffers: holding a whole matrix on the host (7 GB of fp16
+  which the expert cache pays for: +31 MiB per layer, about 16 expert slots, measured 24.57 GiB free -> **289
+  slots/layer**.  It costs 5.8 s of load time (21.2 against 15.4, measured), streamed through small row-chunk
+  buffers: holding a whole matrix on the host (7 GB of fp16
   for the model) leaves that much anonymous dirty memory behind, the kernel evicts the model's page cache for it,
   and the expert reads then come off the SATA SSD - measured 1132 MiB of disk reads for 8 tokens and
   ~500 ms/token of uploads against 14-27 ms.  `STRATA_EXL3_QUANT_THREADS` sets the quantizer's thread count and
   `STRATA_EXL3_DENSE=exl3` keeps the trellis.
+
+  The bytes are the price and they land in the batched prefill, which reads the weights once per batch: the dense
+  work of a 14-token prompt measures **20.5 ms against 31.6 ms** with Q8_0 (683.8 against 442.5 tok/s), the same
+  1.5x the byte counts predict.  In the pooled prefill the dense projections are 20-32 ms of a 1.55 s batch
+  (9.0 tok/s measured), so ~1% there, while the decode reads those weights every token and gains the 18.4 ms:
+  with the experts skipped, the dense work goes **21.1 -> 34.5 tok/s** (47.4 -> 28.9 ms/token, four runs).
 - **The v-head reorder is part of the weight, and a requantized copy has to carry it.**  The GDN's v projections
   are staged with their v heads permuted (`Vr::OutV`/`Out`/`In`: `attn_qkv`, `attn_gate`, `ssm_out`) and the
   activations are permuted to match; `stage_exl3` reorders the trellis and the scales, so the requantizer runs the
