@@ -6,6 +6,7 @@ the run config holds the counters, so the page can show lifetime and 1 day / 7 d
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import time
 import unittest
@@ -124,6 +125,20 @@ class UsageTest(unittest.TestCase):
         empty = usage.totals_speed({})
         self.assertIsNone(empty["decode_tok_s"])
         self.assertIsNone(empty["prompt_tok_s"])
+
+    def test_the_panel_opens_on_seven_days_and_remembers_the_choice(self):
+        """The Usage panel opens on the 7-day view; a pick is kept in the browser (localStorage)."""
+        web = Path(__file__).parent / "web"
+        js, html = (web / "app.js").read_text(encoding="utf-8"), (web / "index.html").read_text(encoding="utf-8")
+        self.assertIn('store.get("usage.view", "")', js)                                  # read what the browser remembers
+        self.assertIn('USAGE_VIEWS.includes(savedUsageView) ? savedUsageView : "7d"', js)  # nothing remembered: 7 days
+        handler = js[js.index('".usage-range")) b.addEventListener("click"'):][:400]
+        self.assertIn('store.set("usage.view", usageRange)', handler)                     # a click is remembered
+
+        # a remembered value is only honoured if it is still a button on the page
+        views = re.findall(r'"([a-z0-9]+)"', js.split("USAGE_VIEWS = [")[1].split("]")[0])
+        buttons = re.findall(r'usage-range" data-range="([a-z0-9]+)"', html)
+        self.assertEqual(sorted(views), sorted(buttons))
 
 
 if __name__ == "__main__":
