@@ -393,6 +393,21 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
   target_link_libraries(strata_kernels PUBLIC strata_core strata_artifact)
+  # Exact gfx1100 prompt scorer (PR1825 method port): optional standalone test,
+  # also available where the published source omits tests/.
+  option(STRATA_PARITY_GFX1100_QSA_SCORES "Build the exact gfx1100 QSA score/ID check" OFF)
+  if(STRATA_ENABLE_HIP AND (STRATA_BUILD_TESTS OR STRATA_PARITY_GFX1100_QSA_SCORES))
+    set_source_files_properties(src/kernels/cuda/qsa_scores_gfx1100_test.cu
+                                src/kernels/qsa_scores_gfx1100_parity.cpp PROPERTIES LANGUAGE HIP)
+    add_executable(qsa_scores_gfx1100_parity src/kernels/qsa_scores_gfx1100_parity.cpp
+                                           src/kernels/cuda/qsa_scores_gfx1100_test.cu)
+    target_include_directories(qsa_scores_gfx1100_parity PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(qsa_scores_gfx1100_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    enable_testing()
+    add_test(NAME qsa_scores_gfx1100_parity COMMAND qsa_scores_gfx1100_parity --full)
+    set_tests_properties(qsa_scores_gfx1100_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180
+      ENVIRONMENT "STRATA_SCORES_THREAD=1;STRATA_SCORES_THREAD_TRACE=1")
+  endif()
   # perf-review D-1: the tensor-core prompt attention vs the FP32 kernel and FP64 (GPU, synthetic, no model); with
   # the tests, or alone with -DSTRATA_PARITY_PROMPT_ATTN=ON.  CUDA only: HIP compiles the tensor-core kernel out.
   if((STRATA_BUILD_TESTS OR STRATA_PARITY_PROMPT_ATTN) AND STRATA_ENABLE_CUDA)

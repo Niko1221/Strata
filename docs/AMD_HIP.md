@@ -241,6 +241,17 @@ only when its version matches the installed library; otherwise it prefills on pl
 prompt), so keep the table and the library paired. Not worth trying (measured flat): `--kv-resident` changes, a prefill
 chunk above 32768, `--spec` above 4.
 
+## gfx1100: optional exact long-prompt QSA scorer
+
+`STRATA_SCORES_THREAD=1` at engine startup enables a HIP port of #1825's score kernel on gfx1100, for batches of
+at least 64 queries with at least 16,385 live index blocks. The default, short-prompt and decode paths keep the
+existing scorer. On one RX 7900 XTX / 7950X3D / ROCm 10.0.0, three paired runs of a tuned 0.1.40.3 engine reduced
+fresh one-token request time by 10.45% at 130,978 prompt tokens and 22.64% at 239,906; one same-binary current-main
+pair measured 12.85% and 21.71%. Cached follow-ups did not show a repeatable large gain, and a two-task coding pilot
+was 3.27% slower overall. This is opt-in, not a general coding-speed recommendation. The
+[report, per-run data and standalone score/ID check](../bench/results/2026-10-11-gfx1100-qsa-scores/README.md)
+give the settings, exact-parity checks and limits. `STRATA_SCORES_THREAD_TRACE=1` prints an engagement line.
+
 ## Linux: verify timeouts while the kernel reclaims host memory (experimental workarounds)
 
 A `verify: timed out at layer N` or "no progress for 60 s" message does not by itself mean a kernel or handshake bug. Two
