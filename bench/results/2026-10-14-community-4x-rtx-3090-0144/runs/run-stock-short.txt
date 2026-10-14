@@ -1,0 +1,7 @@
+# run 2026-10-14T04:19:30+02:00 config CB144-stock-0.1.44-p8.json exe strata sha256 4e6bdc675c414742 server ed4773eb
+# cb144-stock-short: prompt~100 tok, max_tokens 512, 2 request(s) per user, temperature 0.0
+users  ok/req    wall  agg out  dec p50  dec p5  TTFT p50  TTFT p95  TTFT max  e2e p50  e2e p95  steady
+    1   2/2       9.2    111.7    120.8   120.8      0.35      0.35      0.35      4.6      4.6   116.2
+    8  16/16     26.1    314.4     46.0    40.4      1.68      3.60      4.00     13.0     14.2   343.3
+   16  32/32     55.9    292.9     45.9    40.3      8.69     29.47     41.54     18.9     39.6       -
+# gpu means over 102 samples (1 s): GPU0 1856 MHz 274 W 68 C (max 76) 59 % | GPU1 1870 MHz 274 W 67 C (max 74) 58 % | GPU2 1891 MHz 265 W 61 C (max 68) 48 % | GPU3 1825 MHz 276 W 69 C (max 77) 63 %

@@ -1,0 +1,7 @@
+# run 2026-10-14T04:14:38+02:00 config CB144-ours-prod-text.json exe strata-g3-143v2 sha256 39f0adea03f7ccfe server 08830ddf
+# cb144-ours-short: prompt~100 tok, max_tokens 512, 2 request(s) per user, temperature 0.0
+users  ok/req    wall  agg out  dec p50  dec p5  TTFT p50  TTFT p95  TTFT max  e2e p50  e2e p95  steady
+    1   2/2       8.8    116.2    121.5   121.3      0.20      0.20      0.20      4.4      4.4   118.9
+    8  16/16     20.5    399.4     54.5    50.5      0.65      1.66      1.84     10.2     10.9   421.1
+   16  32/32     31.7    516.7     34.4    32.8      0.89      3.10      3.47     15.8     17.9   548.9
+# gpu means over 72 samples (1 s): GPU0 1858 MHz 290 W 66 C (max 75) 70 % | GPU1 1872 MHz 286 W 65 C (max 74) 58 % | GPU2 1897 MHz 283 W 59 C (max 68) 56 % | GPU3 1842 MHz 290 W 67 C (max 76) 64 %

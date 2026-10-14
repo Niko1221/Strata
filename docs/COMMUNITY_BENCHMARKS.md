@@ -64,6 +64,11 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-14: 4x RTX 3090 24 GB (layer split 12,25,37), Threadripper 3990X without AVX-512, 251 GiB RAM](../bench/results/2026-10-14-community-4x-rtx-3090-0144/README.md):
+  same-day serving comparison of stock v0.1.44 (`ed4773eb` source build, 8 slots, the most it runs on this split with its default pipelined groups, without `--batch-mtp`) and a modified
+  0.1.43 with an unmerged patch series (16 slots, many opt-in switches; source commit and patch series linked in the report), Unsloth UD-IQ4_XS, 262,144-token context, text only, one run per arm.
+  Aggregate output 111.7 / 314.4 / 292.9 tok/s (stock) and 116.2 / 399.4 / 516.7 (modified) at 1 / 8 / 16 users with short prompts,
+  238.1 and 406.5 at 16 users with 1.2K prompts; greedy replies byte-identical between the builds (82/82). The 16-user rows mix 16 against 8 slots with the other patches.
 
 ## Run the benchmark
 
