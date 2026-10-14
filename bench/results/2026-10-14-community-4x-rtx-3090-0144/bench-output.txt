@@ -1,0 +1,30 @@
+[cb144] production down 04:12:10
+# cb144-ours-short: prompt~100 tok, max_tokens 512, 2 request(s) per user, temperature 0.0
+users  ok/req    wall  agg out  dec p50  dec p5  TTFT p50  TTFT p95  TTFT max  e2e p50  e2e p95  steady
+    1   2/2       8.8    116.2    121.5   121.3      0.20      0.20      0.20      4.4      4.4   118.9
+    8  16/16     20.5    399.4     54.5    50.5      0.65      1.66      1.84     10.2     10.9   421.1
+   16  32/32     31.7    516.7     34.4    32.8      0.89      3.10      3.47     15.8     17.9   548.9
+# gpu means over 72 samples (1 s): GPU0 1858 MHz 290 W 66 C (max 75) 70 % | GPU1 1872 MHz 286 W 65 C (max 74) 58 % | GPU2 1897 MHz 283 W 59 C (max 68) 56 % | GPU3 1842 MHz 290 W 67 C (max 76) 64 %
+users  ok/req    wall  agg out  dec p50  dec p5  TTFT p50  TTFT p95  TTFT max  e2e p50  e2e p95  steady
+   16  32/32     40.3    406.5     28.3    26.6      1.91      6.61      7.29     20.0     24.8   454.3
+# gpu means over 43 samples (1 s): GPU0 1868 MHz 318 W 73 C (max 78) 74 % | GPU1 1883 MHz 321 W 72 C (max 76) 72 % | GPU2 1924 MHz 316 W 66 C (max 71) 62 % | GPU3 1870 MHz 314 W 74 C (max 78) 69 %
+   1   11131       0     15.25     28.80     10.8
+   2   15589   11440      1.82      5.38     16.2
+   3   20017   15863      0.98      3.61     22.2
+wall 87s, output 13202 tok = 151.9 tok/s, prompt tokens sent 747829, follow-up TTFT p50 1.52 s
+[cb144] arm ours took 343 s
+# cb144-stock-short: prompt~100 tok, max_tokens 512, 2 request(s) per user, temperature 0.0
+users  ok/req    wall  agg out  dec p50  dec p5  TTFT p50  TTFT p95  TTFT max  e2e p50  e2e p95  steady
+    1   2/2       9.2    111.7    120.8   120.8      0.35      0.35      0.35      4.6      4.6   116.2
+    8  16/16     26.1    314.4     46.0    40.4      1.68      3.60      4.00     13.0     14.2   343.3
+   16  32/32     55.9    292.9     45.9    40.3      8.69     29.47     41.54     18.9     39.6       -
+# gpu means over 102 samples (1 s): GPU0 1856 MHz 274 W 68 C (max 76) 59 % | GPU1 1870 MHz 274 W 67 C (max 74) 58 % | GPU2 1891 MHz 265 W 61 C (max 68) 48 % | GPU3 1825 MHz 276 W 69 C (max 77) 63 %
+users  ok/req    wall  agg out  dec p50  dec p5  TTFT p50  TTFT p95  TTFT max  e2e p50  e2e p95  steady
+   16  32/32     68.8    238.1     38.7    31.4      6.96     39.91     42.50     18.9     52.1       -
+# gpu means over 71 samples (1 s): GPU0 1890 MHz 291 W 71 C (max 77) 69 % | GPU1 1912 MHz 295 W 69 C (max 74) 55 % | GPU2 1949 MHz 289 W 63 C (max 67) 45 % | GPU3 1874 MHz 292 W 71 C (max 77) 62 %
+   1   11131       0     28.02     82.98     12.0
+   2   15587   11131     14.43     51.40     14.1
+   3   20019   15608      4.68     76.65     16.5
+wall 146s, output 13453 tok = 92.0 tok/s, prompt tokens sent 747809, follow-up TTFT p50 9.91 s
+[cb144] arm stock took 401 s
+[cb144] production started again 04:25:06
