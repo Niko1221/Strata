@@ -207,8 +207,8 @@ def _video_source(part: dict) -> str:
 def _parts_of(content):
     """Message content for the template: a string when there is no picture or video (unchanged behaviour),
     otherwise the template's list form - text items and image/video items, in order - whose media items
-    carry their source.  A video stays one item: the server cuts it into frames (its pictures) before
-    render, and the template then draws each frame as a picture."""
+    carry their source.  A video stays one item: the encoder reads the clip itself (its mtmd samples the
+    frames), and the template draws it as one place, like a picture."""
     if not _has_image(content) and not _has_video(content):
         return _text_of(content)
     items = []
