@@ -1928,7 +1928,16 @@ int main(int argc, char** argv) {
         if (a == "--help" || a == "-h") { usage(); return 0; }
         else if (a == "--gpu") { (void) next("--gpu"); }   // applied at startup, before any CUDA call
         else if (a == "--pack") o.pack = next("--pack");
-        else if (a == "--exl3") o.exl3_dir = next("--exl3");
+        else if (a == "--exl3") {
+            o.exl3_dir = next("--exl3");
+            // **THE EXL3 PATH GETS THE NATIVE BF16 PROJECTIONS.**  The SSM gates, the router and the indexer are
+            // bf16 rows staged in the engine's own form on this path too, and the native kernels are the ones
+            // the engine measured: with --stage-timing the dense token drops 38.798 -> 35.572 ms (moe_route
+            // 2.202 -> 1.333, gdn alpha/beta/gate 1.831 -> 0.803) and the model's answer is unchanged.
+            // STRATA_EXL3_NATIVE_BF16=0 keeps the old path for an A/B.
+            const char* nb = std::getenv("STRATA_EXL3_NATIVE_BF16");
+            if (!(nb != nullptr && nb[0] == '0')) o.native_bf16 = true;
+        }
         else if (a == "--ple-exl3") o.ple_exl3 = next("--ple-exl3");
         else if (a == "--tokens") {
             if (have_tokens) { std::fprintf(stderr, "supply one token input only\n"); return 2; }

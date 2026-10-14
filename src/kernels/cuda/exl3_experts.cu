@@ -229,7 +229,12 @@ struct Exl3ExpertStream::Impl {
                 // the host cache is filled as a side effect of the read that had to happen anyway; the copy is
                 // synchronous, so it is complete before this buffer is read into again (the double buffer's
                 // event only guards the DMA)
-                if (j.ram_dst != nullptr) std::memcpy(j.ram_dst, stg.buf[b], j.bytes);
+                if (j.ram_dst != nullptr) {
+                    static std::atomic<int> fdbg{0};
+                    if (std::getenv("STRATA_EXL3_RAM_DEBUG") != nullptr && fdbg.fetch_add(1) < 10)
+                        std::fprintf(stderr, "ram fill: %zu bytes\n", j.bytes);
+                    std::memcpy(j.ram_dst, stg.buf[b], j.bytes);
+                }
                 {
                     // **ONE ENQUEUE AT A TIME.**  The workers read in parallel, but two threads enqueueing
                     // `cudaMemcpyAsync` on the same (legacy default) stream raced: the same run produced
@@ -282,6 +287,11 @@ struct Exl3ExpertStream::Impl {
                 ram_dst = ram.data() + base + (size_t) s * slot_bytes;
             }
             rl.tick[(size_t) s] = ++rl.clock;
+            static std::atomic<int> dbg{0};
+            const int dn = dbg.fetch_add(1);
+            if (std::getenv("STRATA_EXL3_RAM_DEBUG") != nullptr && dn % 500 == 0)
+                std::fprintf(stderr, "ram: lookup %d L%d e%d %s slot %d map=%zu filled=%d\n", dn, cur_layer, expert,
+                             ram_src != nullptr ? "HIT" : "miss", s, rl.at.size(), rl.filled);
         }
         const std::array<size_t, 9>& ro = ram_off[(size_t) cur_layer];
         std::string path; size_t off = 0, bytes = 0;
