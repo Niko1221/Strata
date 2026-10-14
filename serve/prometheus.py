@@ -140,6 +140,13 @@ def strata(m: dict, out: list, lab: str):
            round((totals.get("prompt_ms") or 0) / 1000, 3))
     metric("totals_decode_seconds_total", "counter", "Time spent generating (totals.decode_ms).",
            round((totals.get("decode_ms") or 0) / 1000, 3))
+    # #1814: replies that ended inside the thinking with no answer at all, only while the opt-in "literal_think_guard"
+    # is on.  The total is never set with the flag off, so a default server's /metrics carries no such series.
+    if "ended_inside_thinking" in totals:
+        metric("totals_ended_inside_thinking_total", "counter",
+               "Ends inside the thinking with no answer (totals.ended_inside_thinking); a reply the guard continues "
+               "past can count more than once.",
+               _num(totals.get("ended_inside_thinking")))
     last = reqs[0] if reqs else {}
     metric("last_hit_rate", "gauge", "The last request's expert cache hit rate (requests[0].hit_rate).",
            last.get("hit_rate"))

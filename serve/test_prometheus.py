@@ -97,6 +97,16 @@ class Units(unittest.TestCase):
         self.assertEqual(got[("strata:ram_total_bytes", lab)], 64 << 30)
 
 
+    def test_the_literal_think_total_is_absent_until_the_guard_reports(self):
+        """#1814: the series is absent while the flag is off (the total is never set) and present once the guard counts."""
+        m = {"engine": {"model": "m", "max_context": 1000}, "live": {}, "totals": {}}
+        lab = 'model_name="m"'
+        self.assertNotIn(("strata:totals_ended_inside_thinking_total", lab),
+                         parse(render(m, Latencies().snapshot())))
+        m["totals"]["ended_inside_thinking"] = 2
+        self.assertEqual(parse(render(m, Latencies().snapshot()))[("strata:totals_ended_inside_thinking_total", lab)], 2)
+
+
 class Endpoint(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -133,6 +143,20 @@ class Endpoint(unittest.TestCase):
         self.assertGreaterEqual(json.loads(text)["totals"]["requests"], 1)
         ctype, _ = self.get("/metrics?format=prometheus", "*/*")
         self.assertTrue(ctype.startswith("text/plain"))
+
+    def test_the_literal_think_total_is_on_the_llamacpp_names_too(self):
+        """#1814: /metrics/prometheus is the llama.cpp-named renderer (Service.prometheus); the guard's total is there
+        too, and absent while the guard has not counted (a default server's /metrics carries no such series)."""
+        ctype, text = self.get("/metrics/prometheus", "*/*")
+        self.assertTrue(ctype.startswith("text/plain"))
+        self.assertNotIn("ended_inside_thinking", text)
+        self.svc.totals["ended_inside_thinking"] = 3
+        try:
+            _, text = self.get("/metrics/prometheus", "*/*")
+            self.assertIn("# TYPE strata:totals_ended_inside_thinking_total counter", text)
+            self.assertIn("strata:totals_ended_inside_thinking_total 3", text)
+        finally:
+            del self.svc.totals["ended_inside_thinking"]
 
 
 class BatchEngine(MockEngine):
