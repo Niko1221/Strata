@@ -304,6 +304,17 @@ measured, **18.52 GiB free -> 216 slots/layer before, 25.28 GiB -> 297 after**. 
 200-token run, the last 30 tokens) went from a 97.4 ms pool to 83.1 ms (the expert uploads 76.2 -> 62.0 ms),
 and a 15-token prompt from 14.0 s to 12.2 s.
 
+**What the expert FFN's time is made of, and two things that did not work.**  `strata-exl3-moe` on layer 0 at
+k = 1, 2, 5, 10 measures 0.108, 0.130, 0.214, 0.332 ms/layer, so the marginal cost is 0.0249 ms per expert and
+the **fixed part is 0.083 ms/layer, 25% of it**: the memsets, the silu and the accumulators are ~6 small
+kernels and each costs ~14 us of launch and execution, which is where the next win is (fuse them, or capture
+the sequence).  Two attempts that measured worse and are not in the tree: staging the trellis tiles in shared
+memory (coalesced staging plus a barrier, 0.462-0.487 ms/layer against 0.308 - the barrier and the extra
+addressing cost more than the scattered loads they remove), and raising the k-group count (x2 0.330, x4 0.543).
+`__launch_bounds__` 256x4 / 256x6 / 256x8 all measure the same (0.311 / 0.313 / 0.309), so occupancy is not
+the limit; a 128x8 bound is invalid for a 256-thread launch and its 0.057 ms/layer is a failed launch, not a
+speedup.
+
 **The expert GEMV's geometry, swept on the real layer.**  `strata-exl3-moe` runs the whole expert FFN (gate,
 up, down, both scale transforms, the silu) on layer 0 with 10 experts, and the tiles per block was swept on it:
 T=1 0.534 ms/layer, T=2 0.385 (what it was), T=3 0.321, **T=4 0.308**, T=5 0.319, T=6 0.327, T=7 0.342,
