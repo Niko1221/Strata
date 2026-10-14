@@ -53,11 +53,31 @@ def quiet(fn, *args, **kw):
 class HuggingFacePins(unittest.TestCase):
     def test_every_model_url_is_pinned(self):
         for name, fam in setup.FAMILIES.items():
+            if fam.get("ready"):                       # ready-made packs: pinned per file (test_ready_packs_pinned)
+                continue
             for key in ("hf", "mmproj_hf"):
                 with self.subTest(family=name, key=key):
                     self.assertRegex(fam[key], SHA)
                     self.assertNotIn("/resolve/main/", fam[key])
         self.assertRegex(setup.HF, SHA)
+
+    def test_ready_packs_pinned(self):
+        """NVFP4: every size names a repository of NVFP4_REPOS, pinned by a commit; every file has a size and a
+        SHA-256, and the pack folder, dense GGUF, n-gram table and embedding are each there."""
+        sizes = [m for m, d in setup.MODELS.items() if d.get("repo")]
+        self.assertEqual(sorted(sizes), ["NVFP4", "NVFP4-NVIDIA"])
+        for m in sizes:
+            t = setup.NVFP4_REPOS[setup.MODELS[m]["repo"]]
+            self.assertRegex(t["revision"], r"^[0-9a-f]{40}$")
+            for path, (role, size, sha) in t["files"].items():
+                with self.subTest(model=m, path=path):
+                    self.assertIn(role, ("pack", "dense", "ple", "embd"))
+                    self.assertGreater(size, 0)
+                    self.assertRegex(sha, r"^[0-9a-f]{64}$")
+            p = setup.ready_paths(m, setup.Path("M"))
+            self.assertEqual(sorted(p), ["dense", "embd", "pack", "ple"])
+            self.assertEqual(p["pack"].name, "pack")
+            self.assertIn("experts.bin", t["files"] and [x.split("/")[-1] for x in t["files"]])
 
     def test_unpinned(self):
         url = setup.FAMILIES["swift"]["hf"] + "x.gguf"

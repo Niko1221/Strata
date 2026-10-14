@@ -61,6 +61,13 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
         tg->to_float(blob.data() + f.up_off + r * f.gu_row, U.data() + r * H, H);
     }
     for (int64_t r = 0; r < H; ++r) td->to_float(blob.data() + f.down_off + r * f.d_row, D.data() + r * FF, FF);
+    if (f.tail_off) {   // the blob's scales, as the engine applies them (gate and up as read, down on its output)
+        float tail[4];
+        std::memcpy(tail, blob.data() + f.tail_off, sizeof tail);
+        for (auto& v : G) v *= tail[0];
+        for (auto& v : U) v *= tail[1];
+        for (auto& v : D) v *= tail[2];
+    }
     std::mt19937 rng(11 + seed);
     std::normal_distribution<float> nd(0.f, 1.f);
     std::vector<float> x((size_t) NT * H);
@@ -404,6 +411,11 @@ std::vector<uint8_t> synthetic_blob(const cpu::NativeFmt& f, int seed) {
     quant(f.gu_type, FF, H, blob.data());
     quant(f.gu_type, FF, H, blob.data() + f.up_off);
     quant(f.d_type, H, FF, blob.data() + f.down_off);
+    if (f.tail_off) {   // NVFP4's {s_gate, s_up, s_down, 0}: non-unit for an NVFP4 projection, 1.0 for another format
+        const bool g4 = f.gu_type == 40, d4 = f.d_type == 40;
+        const float tail[4] = {g4 ? 0.75f : 1.f, g4 ? 1.25f : 1.f, d4 ? 0.5f : 1.f, 0.f};
+        std::memcpy(blob.data() + f.tail_off, tail, sizeof tail);
+    }
     return blob;
 }
 

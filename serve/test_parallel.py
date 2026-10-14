@@ -78,6 +78,7 @@ def window():        # one batch window: every active slot one token
         else:
             active[b] = [left, max_new, produced]
 log = open(args[args.index("--log") + 1], "a") if "--log" in args else None
+PPK = int(args[args.index("--pp-every") + 1]) if "--pp-every" in args else 1
 READF = "--readfield" in args   # DONE's 15th field: the prompt tokens the engine read (a continued prompt: the 1 it copies)
 REUSE = "--reuse" in args     # DONE's reused field as the engine gives it: a continued prompt is all held but its last
 def reused(ids):              # token (the request's own output included), a fresh one the first 3 tokens
@@ -105,6 +106,14 @@ while True:
         if bytes(int(x) & 255 for x in ids).find(b"REFUSEME") >= 0:   # #1059: refused up front, then idle (no DONE)
             print("ERR refused: images are not enabled", flush=True)
             continue
+        # #1994: the engine's own view of its slots differs: BUSYSLOT is refused once, BUSYALL always
+        pbx = bytes(int(x) & 255 for x in ids)
+        if slot is not None and (b"BUSYALL" in pbx or (b"BUSYSLOT" in pbx and "busyslot" not in fired)):
+            fired.add("busyslot")
+            print(f"ERR BGEN: no such free slot (--batch {slots}) or a bad max_new", flush=True)
+            if log:
+                log.write(f"REFUSED {slot}\n"); log.flush()
+            continue
         if log:
             log.write(f"{f[0]} {slot} {len(ids)} {max(len(active), 0)}\n"); log.flush()
         pb = bytes(int(x) & 255 for x in ids)
@@ -123,6 +132,8 @@ while True:
         given = None
         for q in range(CH, len(ids) - 1, CH):
             time.sleep(STEP / 2)
+            if (q // CH) % PPK:   # --pp-every K: a PP line and a boundary every K chunks (the pipelined groups' pieces)
+                continue
             print(f"PP {q} {len(ids)} 1 1", flush=True)
             held = []
             while True:
@@ -314,6 +325,46 @@ class ParallelService(unittest.TestCase):
         with urllib.request.urlopen(self.base + path, timeout=10) as r:
             return json.loads(r.read().decode())
 
+    def _two_at_once(self, text_b):
+        """A long request first, then one that has to go to a batch slot (the engine is busy with the first)."""
+        out = {}
+        def go(k, text):
+            try:
+                out[k] = ("ok", self.chat(text, max_tokens=64))
+            except urllib.error.HTTPError as e:
+                out[k] = ("http", e.code, e.read().decode(), dict(e.headers))
+        ta = threading.Thread(target=go, args=("a", "LONGREPLY please"))
+        ta.start()
+        time.sleep(0.15)
+        tb = threading.Thread(target=go, args=("b", text_b))
+        tb.start()
+        ta.join(30); tb.join(30)
+        return out
+
+    def test_bgen_refused_by_the_engine_is_retried_not_a_400(self):
+        """#1994: the engine refuses a BGEN ("no such free slot") although the server saw the slot free: the request
+        goes to another slot (or waits) and is answered; the same conversation's next turn works too."""
+        self.start(2)
+        self.engine.SLOT_PARK_S = 0.2
+        out = self._two_at_once("BUSYSLOT hello")
+        self.assertEqual(out["b"][0], "ok", out["b"])
+        self.assertIn("REFUSED", self.log.read_text())
+        again = self.chat("BUSYSLOT hello")                     # the conversation is not poisoned
+        self.assertEqual(again["choices"][0]["message"]["content"], "ok, done.")
+        time.sleep(0.5)
+        self.assertEqual(self.engine.slot_busy, [False, False])
+
+    def test_bgen_refused_for_good_is_a_retryable_503_and_frees_the_slots(self):
+        """#1994: when the engine keeps refusing, the answer is a 503 (retryable), never a 400, and no slot stays busy."""
+        self.start(2)
+        self.engine.SLOT_PARK_S = 0.05
+        out = self._two_at_once("BUSYALL hello")
+        self.assertEqual(out["b"][0], "http", out["b"])
+        self.assertEqual(out["b"][1], 503, out["b"])
+        time.sleep(0.5)
+        self.assertEqual(self.engine.slot_busy, [False, False])
+        self.assertEqual(self.chat("fine again")["choices"][0]["message"]["content"], "ok, done.")
+
     def test_engine_reports_fewer_slots(self):
         self.start(4, fit=2)
         self.assertEqual(self.engine.batch, 2)
@@ -449,6 +500,19 @@ class ParallelService(unittest.TestCase):
             self.assertEqual(len(self.svc.history), 2)
         self.assertFalse(any(self.engine.slot_busy))
 
+    def test_the_way_is_asked_between_far_apart_progress_lines(self):
+        """#656 when the PP lines come far apart (the pipelined groups' read in pieces of one chunk: one PP per piece,
+        at its end): the BYIELD goes out while the engine is quiet, so the read gives way at the first boundary after
+        the short request came.  Asked only at a PP line, it reached the engine after that boundary's check and the
+        read gave way one piece later."""
+        self.start(2, more=["--pp-every", "80"])   # a boundary every 80 chunks (~0.8 s): one in this read
+        long_q, short_q = "long " * 600, "short"
+        res = self.race(long_q, short_q)
+        self.assertEqual(res[long_q][0], "ok, done.")
+        self.assertEqual(res[short_q][0], "ok, done.")
+        yields = [x for x in self.log.read_text().splitlines() if x.startswith("YIELD ")]
+        self.assertEqual([int(x.split()[2]) for x in yields], [80 * 32], yields)
+
     def test_three_requests_long_long_short_do_not_deadlock(self):
         """ENGINE_REVIEW finding 1 (0.1.41 check): two long prompts fill both slots, a short one arrives a moment later
         and wants one of them (the yield path).  The reviewer's repro: long, long, short at 0.25 s steps.  Every
@@ -494,9 +558,35 @@ class ParallelService(unittest.TestCase):
         self.assertTrue(any(x.startswith("YIELD ") for x in log), log)
         self.assertFalse(any(self.engine.slot_busy))
 
+    def test_an_admission_is_asked_between_far_apart_progress_lines(self):
+        """As above for a read admitted beside a decoding slot (BGEN, `ask()`): with one PP line per 80 chunks the
+        short request's BYIELD still reaches the first boundary."""
+        self.start(3, more=["--pp-every", "80"])
+        bg = threading.Thread(target=lambda: self.chat("LONGREPLY background", max_tokens=60))
+        bg.start()
+        time.sleep(0.05)
+        long_q, short_q = "long " * 600, "short"
+        res = self.race(long_q, short_q)
+        bg.join(30)
+        self.assertEqual(res[long_q][0], "ok, done.")
+        self.assertEqual(res[short_q][0], "ok, done.")
+        log = self.log.read_text().splitlines()
+        admitted = [x.split() for x in log if x.startswith("BGEN ") and int(x.split()[2]) > 2600]
+        self.assertTrue(admitted, log)                                 # the long read was an admission
+        yields = [x.split()[1:] for x in log if x.startswith("YIELD ")]
+        self.assertEqual(yields[:1], [[admitted[0][1], str(80 * 32)]], log)
+        self.assertFalse(any(self.engine.slot_busy))
+
     def test_no_way_given_to_a_long_one(self):
         """Two prompts of about the same length: no BYIELD (it only goes to a much shorter one)."""
         self.start(2)
+        res = self.race("long " * 600, "lung " * 600)
+        self.assertEqual(sorted(r[0] for r in res.values()), ["ok, done."] * 2)
+        self.assertFalse(any(x.startswith("YIELD ") for x in self.log.read_text().splitlines()))
+
+    def test_no_way_given_to_a_long_one_between_far_apart_progress_lines(self):
+        """The ask between PP lines keeps the rule: a waiting request about as long gets no BYIELD there either."""
+        self.start(2, more=["--pp-every", "80"])
         res = self.race("long " * 600, "lung " * 600)
         self.assertEqual(sorted(r[0] for r in res.values()), ["ok, done."] * 2)
         self.assertFalse(any(x.startswith("YIELD ") for x in self.log.read_text().splitlines()))
