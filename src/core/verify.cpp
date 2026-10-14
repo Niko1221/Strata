@@ -2243,6 +2243,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const OnDevice on_device(device_);
     last_batch_ = false;
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
+    last_row_T_ = T;   // jev --jev-brow: the last accepted window's row count (brow_row reads its final row)
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
@@ -2637,6 +2638,53 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
     }
     std::fflush(out);
     return true;
+}
+
+bool Verifier::brow_row(const int32_t* tokens, int n, float* out, std::string& err) {
+    if (next_ != nullptr) return next_->brow_row(tokens, n, out, err);
+#if defined(STRATA_GPU_METAL)
+    // the head logits are the Metal window's (window_copy_logits, row by row)
+    if (n <= 0 || tokens == nullptr || out == nullptr || n_vocab_ <= 0 || last_row_T_ <= 0) {
+        err = "brow_row: no head logits for the last window";
+        return false;
+    }
+    for (int i = 0; i < n; ++i) {
+        if (tokens[i] < 0 || tokens[i] >= n_vocab_) {
+            err = "brow_row: a token id out of range";
+            return false;
+        }
+    }
+    {
+        std::vector<float> row((size_t) n_vocab_);
+        if (!strata::metal_engine::window_copy_logits(metal_, last_row_T_ - 1, row.data())) {
+            err = "brow_row: the head logits copy failed";
+            return false;
+        }
+        for (int i = 0; i < n; ++i) out[i] = row[(size_t) tokens[i]];
+    }
+    return true;
+#else
+    if (head_logits_ == nullptr || n_vocab_ <= 0 || last_row_T_ <= 0 || n <= 0 || tokens == nullptr || out == nullptr) {
+        err = "brow_row: no head logits for the last window";
+        return false;
+    }
+    for (int i = 0; i < n; ++i) {
+        if (tokens[i] < 0 || tokens[i] >= n_vocab_) {
+            err = "brow_row: a token id out of range";
+            return false;
+        }
+    }
+    // run() synchronized cs_ before returning, so the head of the last window is complete (same
+    // guarantee window_logprobs relies on).  One contiguous copy of the final row, then gather.
+    std::vector<float> row((size_t) n_vocab_);
+    if (cudaMemcpy(row.data(), head_logits_ + (size_t) (last_row_T_ - 1) * (size_t) n_vocab_,
+                   (size_t) n_vocab_ * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        err = "brow_row: the head logits copy failed";
+        return false;
+    }
+    for (int i = 0; i < n; ++i) out[i] = row[(size_t) tokens[i]];
+    return true;
+#endif
 }
 
 namespace { bool g_commit_async = false; }

@@ -576,6 +576,7 @@ struct Options {
     bool batch_groups_set = false;    ///< --batch-groups was given (a number or auto): no default then
     bool batch_groups_auto = false;   ///< --batch-groups auto (#417 stage 1): one group per stage of a layer split, if it divides --batch
     bool batch_mtp = false;      ///< --batch-mtp / STRATA_BATCH_MTP=1 (opt-in): one MTP proposal per batch slot
+    bool jev_brow = false;       ///< --jev-brow (opt-in): answer BROW between requests (jev systemone, M3.0)
     std::string spec_oracle;
     int spec_corrupt = 0;
     /// Benchmarks and A/B checks (eddoursul's fork, F19): the run emits this continuation (token ids) instead of
@@ -800,7 +801,9 @@ void usage() {
                  "  --batch N / --slots N  --serve (opt-in): up to N requests decode together in batch slots (2..8\n"
                  "                       normally; --batch-mtp waves more through eight-row windows),\n"
                  "                       each slot with its own session (VRAM like the main one); docs/BATCHING.md\n"
-                 "  --batch-mtp          --batch (opt-in, needs --mtp and --spec): each slot also verifies one MTP proposal per\n"
+                 "  --jev-brow            opt-in: answer BROW <tokens> between requests with BROWD (jev systemone readout,\n"
+                 "                       M3.0); the engine is never asked unless the server sends BROW\n"
+"  --batch-mtp          --batch (opt-in, needs --mtp and --spec): each slot also verifies one MTP proposal per\n"
                  "                       window (STRATA_BATCH_MTP=1 does the same); works on one GPU and on a layer split (the\n"
                  "                       slot drafters sit on the last stage's GPU; not with --batch-groups); needs VRAM per slot\n"
                  "  --batch-groups G     --batch with a layer split: the slots in G groups pipelined through the GPUs\n"
@@ -2082,6 +2085,7 @@ int main(int argc, char** argv) {
             else o.batch_groups = std::atoi(bgv);
         }
         else if (a == "--batch-mtp") o.batch_mtp = true;
+        else if (a == "--jev-brow") o.jev_brow = true;
         else if (a == "--spec-oracle") o.spec_oracle = next("--spec-oracle");
         else if (a == "--spec-corrupt") o.spec_corrupt = std::atoi(next("--spec-corrupt"));
         else if (a == "--spec-follow") o.spec_follow = next("--spec-follow");
@@ -10409,6 +10413,40 @@ int main(int argc, char** argv) {
             // (fingerprint file, state capture, file flush, rename + folder flush, validation, device transfer):
             // that step is allowed <seconds> (session_phase_limit_s) by the watchdog and by the server, no more.
             // (A verifier commit that fails before the command still answers ERR and exits, as for a request.)
+            // jev systemone (M3.0, --jev-brow): BROW <token...> between requests - the final row of the last
+            // verify window (the head row of the position after the last token the request read), gathered to
+            // the ids asked.  Answers BROWD <n> <tok>:<logit>...; ERR (and the engine stays in step) when the
+            // flag is off, a token is out of range, or no window has run yet.  The server holds the FIFO, so
+            // the last request's row is exactly what this answers.
+            if (o.jev_brow && line.rfind("BROW ", 0) == 0) {
+                std::vector<int32_t> toks;
+                {
+                    std::istringstream is(line.substr(5));
+                    int64_t v;
+                    while (is >> v) toks.push_back((int32_t) v);
+                    if (toks.empty() || toks.size() > 4096 || (is.eof() && !is.fail() ? false : !is.eof())) {
+                        std::printf("ERR BROW: bad token list\n");
+                        std::fflush(stdout);
+                        continue;
+                    }
+                }
+                std::vector<float> vals(toks.size());
+                std::string berr;
+                if (!ver.brow_row(toks.data(), (int) toks.size(), vals.data(), berr)) {
+                    std::printf("ERR BROW: %s\n", berr.c_str());
+                    std::fflush(stdout);
+                    continue;
+                }
+                std::string ans = "BROWD " + std::to_string(toks.size());
+                char field[48];
+                for (size_t i = 0; i < toks.size(); ++i) {
+                    std::snprintf(field, sizeof(field), " %d:%.6g", (int) toks[i], (double) vals[i]);
+                    ans += field;
+                }
+                std::printf("%s\n", ans.c_str());
+                std::fflush(stdout);
+                continue;
+            }
             if (line.rfind("SAVE ", 0) == 0 || line.rfind("RESTORE ", 0) == 0) {
                 const bool save = line[0] == 'S';
                 const std::string path = line.substr(save ? 5 : 8);

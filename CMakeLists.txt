@@ -1200,10 +1200,9 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(bf16_bits_test src/kernels/bf16_bits_test.cpp)
   target_include_directories(bf16_bits_test PRIVATE include)
   add_test(NAME bf16_bits_test COMMAND bf16_bits_test)
-  if(TARGET CUDA::cudart)   # verify.hpp pulls cuda_runtime.h: the brow test needs the toolkit
-    add_executable(verify_brow_test src/core/verify_brow_test.cpp src/core/verify.cpp)
-    target_include_directories(verify_brow_test PRIVATE include ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
-    target_link_libraries(verify_brow_test PRIVATE CUDA::cudart)
+  if(TARGET strata_core)   # verify.hpp pulls cuda_runtime.h and verify.cpp pulls the kernels: link the engine's core
+    add_executable(verify_brow_test src/core/verify_brow_test.cpp)
+    target_link_libraries(verify_brow_test PRIVATE strata_engine)
     add_test(NAME verify_brow_test COMMAND verify_brow_test)
   endif()
   # the batch window's row layout (a slot's group of proposed rows, the layer split's hand-off capacity; header-only, CPU)
