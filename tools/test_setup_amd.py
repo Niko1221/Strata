@@ -189,6 +189,30 @@ class GpuLists(unittest.TestCase):
                 for k, v in saved.items():
                     setattr(setup, k, v)
 
+    def test_switching_the_encoder_mode_compiles_it_again(self):
+        """A built engine whose encoder is the CPU one: --vision cpu is ready as it is, --vision gpu (Vulkan) builds the
+        other encoder (the stamp's mode is compared, not only the source hash).  A merge once dropped that check."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "engine").mkdir()
+            (root / "engine" / setup.EXE).write_text("engine")
+            (root / "engine" / setup.VEXE).write_text("encoder")
+            (root / "engine" / "BUILD.json").write_text(json.dumps(
+                {"backend": "hip", "src": "h", "archs": ["gfx1201"], "isa_floor": "", "vision_src": "h",
+                 "vision": "cpu"}))
+            with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "source_hash", lambda *a: "h"), \
+                    mock.patch.object(setup, "cpu_info", lambda: ("cpu", "")), \
+                    mock.patch.object(setup, "cpu_floor", lambda *a: ""), \
+                    mock.patch.object(setup, "stale_binary", lambda *a: False), mock.patch.object(setup, "ok", lambda *a: None), \
+                    mock.patch.object(setup, "build_vision_vulkan") as vulkan, \
+                    mock.patch.object(setup, "build_vision_cpu") as cpu:
+                setup.build_engine_hip({"arch": "gfx1201"}, "llama", "cpu")
+                vulkan.assert_not_called()
+                cpu.assert_not_called()                                    # ready as it is
+                setup.build_engine_hip({"arch": "gfx1201"}, "llama", "gpu")
+                vulkan.assert_called_once()                                # the other encoder
+                cpu.assert_not_called()
+
 
 class WindowsDetection(unittest.TestCase):
     """Windows: the AMD cards from the display adapters (mocked Win32_VideoController rows and display-class registry
