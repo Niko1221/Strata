@@ -10,7 +10,8 @@ static float sample(size_t i, unsigned salt) {
     return float(int((uint32_t(i)*131u + salt*17u) % 2047u)-1023)/256.0f;
 }
 
-int main() {
+int main(int argc, char** argv) {
+    const bool push=argc>1 && std::string(argv[1])=="--push";
     using namespace strata::core;
     constexpr int max_tokens=4096, width=2560, k=10;
     if(dpct::device_count()!=2) return 2;
@@ -20,7 +21,7 @@ int main() {
     EpRegion peer_rows, peer_sum;
     std::string err;
     if(!ep_region_alloc(1,0,size_t(max_tokens)*k*width*4,peer_rows,err) ||
-       !ep_region_alloc(1,0,size_t(max_tokens)*width*4,peer_sum,err)) {
+       !ep_region_alloc(push?0:1,push?1:0,size_t(max_tokens)*width*4,peer_sum,err)) {
         std::printf("FAIL %s\n",err.c_str());return 3;
     }
     auto* local=sycl::malloc_device<float>(size_t(max_tokens)*k*width,q0);
@@ -32,7 +33,7 @@ int main() {
     auto* w0=sycl::malloc_device<float>(max_tokens*k,q0);
     auto* w1=sycl::malloc_device<float>(max_tokens*k,q1);
     auto* pr=static_cast<float*>(peer_rows.local);
-    auto* ps=static_cast<float*>(peer_sum.local);
+    auto* ps=static_cast<float*>(push?peer_sum.remote:peer_sum.local);
     std::vector<int32_t> slots(max_tokens*k);
     std::vector<float> weights(max_tokens*k), gates(max_tokens), host(size_t(max_tokens)*width);
     double largest_abs=0,largest_scaled=0;
@@ -63,9 +64,9 @@ int main() {
             q0.memcpy(slot0,slots.data(),rows*4);q1.memcpy(slot1,slots.data(),rows*4);
             q0.memcpy(w0,weights.data(),rows*4);q1.memcpy(w1,weights.data(),rows*4);
             q0.memcpy(gate,gates.data(),tokens*4);
-            strata::kernels::ep_prefill_reduce(pr,slot1,w1,ps,tokens,local_rows,width,k,&q1);
+            strata::kernels::ep_prefill_reduce(pr,slot1,w1,ps,tokens,local_rows,width,k,&q1,push);
             q1.wait();
-            strata::kernels::ep_copy_uncached(out,peer_sum.remote,size_t(tokens)*width*4,&q0);
+            strata::kernels::ep_copy_uncached(out,push?peer_sum.local:peer_sum.remote,size_t(tokens)*width*4,&q0);
             strata::kernels::ep_prefill_finish(local,slot0,w0,shared,gate,out,tokens,local_rows,width,k,&q0);
             q0.memcpy(host.data(),out,size_t(tokens)*width*4).wait();
             size_t bad=0;

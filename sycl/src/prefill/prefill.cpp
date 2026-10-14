@@ -604,6 +604,7 @@ struct PeerPrefill {
     core::ExpertCache* ep = nullptr;
     core::EpRegion x_reg, rows_reg;
     bool reduce_rows = false;
+    bool reduce_push = false;
     core::EpRegion sum_reg;
     int32_t* reduce_slot = nullptr;
     float* reduce_weight = nullptr;
@@ -2135,10 +2136,13 @@ bool Prefill::set_ep_peer(int device, core::ExpertCache* cache, std::string& err
     const int primary = dpct::get_current_device_id();
     const char* reduce = std::getenv("STRATA_EP_PREFILL_REDUCE");
     pp->reduce_rows = reduce && reduce[0] == '1';
+    const char* push = std::getenv("STRATA_EP_PREFILL_PUSH");
+    pp->reduce_push = pp->reduce_rows && push && push[0] == '1';
     bool ok = core::ep_region_alloc(device, primary, (size_t) m.T_max * N * 2, pp->x_reg, err) &&
               core::ep_region_alloc(device, primary, (size_t) m.T_max * K * N * 4, pp->rows_reg, err);
     if (ok && pp->reduce_rows)
-        ok = core::ep_region_alloc(device, primary, (size_t) m.T_max * N * 4, pp->sum_reg, err);
+        ok = core::ep_region_alloc(pp->reduce_push ? primary : device, pp->reduce_push ? device : primary,
+                                   (size_t) m.T_max * N * 4, pp->sum_reg, err);
     if (!ok) return false;
     const core::OnDevice on(device);
     ok = DPCT_CHECK_ERROR(pp->s = dpct::get_current_device().create_queue(true)) == 0 &&
@@ -3916,7 +3920,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 }
                                 if (P.reduce_rows)
                                     strata::kernels::ep_prefill_reduce(rows, P.reduce_slot, P.reduce_weight,
-                                        (float*) P.sum_reg.local, T, rows_local, N, (int) K, ps);
+                                        (float*) (P.reduce_push ? P.sum_reg.remote : P.sum_reg.local),
+                                        T, rows_local, N, (int) K, ps, P.reduce_push);
                             } else if (P.compact) {
                                 // groups of up to MMQ_GROUP experts and at most G rows, each computed from its own rows
                                 P.groups.clear();
@@ -4714,7 +4719,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             m.pp->s->wait();
                         }
                         if (m.pp->reduce_rows)
-                            strata::kernels::ep_copy_uncached(m.bo, m.pp->sum_reg.remote, (size_t) T * N * 4, m.cs);
+                            strata::kernels::ep_copy_uncached(m.bo, m.pp->reduce_push ? m.pp->sum_reg.local : m.pp->sum_reg.remote,
+                                                             (size_t) T * N * 4, m.cs);
                         else
                             strata::kernels::ep_copy_uncached(m.Dm + (size_t) m.pp->back_at * N, m.pp->rows_reg.remote,
                                                               (size_t) m.pp->back_rows * N * 4, m.cs);

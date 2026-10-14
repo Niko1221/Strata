@@ -1032,3 +1032,32 @@ medians, output tokens identical in every arm):
 
 The B70's int8 expert kernels also build and pass the parity test as a SPIR-V JIT build and as an AOT build for `bmg-g21` (compile only: no
 G21 card here); an AOT build for another device (Alchemist, Xe-HPC) gets stubs (`STRATA_I8_NO_ESIMD`).
+
+### EP prefill PUSH return (opt-in follow-up)
+
+With `STRATA_EP_PREFILL_REDUCE=1`, `STRATA_EP_PREFILL_PUSH=1` makes the
+sum region primary-owned and the peer reducer writes its FP32 sum directly
+through the IPC mapping. Each producer work item fences at system scope;
+the existing host peer wait remains, and the primary still copies the sum
+uncached before consuming it. PUSH changes the transport, not the reduction
+math. Unset preserves the reduced peer-read path; reduction itself remains
+opt-in because its FP32 sum order differs from full-row combine.
+
+On the same two-B70 host, a 256235520-byte posted write takes22.837ms
+(11.22GB/s) versus77.249ms (3.317GB/s) for an uncached peer read. This
+microbenchmark excludes the later local uncached consumer copy. Matched
+full-model medians INCLUDE synchronization and consumption: IQ3_XXS,
+all24576 experts resident, int8KV, spec4/.5, two200k slots configured,
+reserve1024, exact workspace and12288-token chunks, timing on in both arms:
+4K1047.1 ->1214.4 tok/s (native3876.4 ->3342.4ms);32K1308.4 ->1530.9
+(native25013.0 ->21378.6ms; client TTFT25.077 ->21.444s). Three fresh
+requests per case, nine matched response pairs exactly equal. Coding decode
+88.9 tok/s in both arms. Concurrent arithmetic, reasoning, tool round trip,
+normal teardown and per-card/ten compiled collective health pass. This is
+short-context qualification, not a measured two-full200k or stability claim.
+
+Run the standalone reduction probe both without arguments and with `--push`.
+Both26-case suites pass (largest original-router-order error9.54e-7), with
+repeated IPC updates and a cached GPU consumer. Do not load a historical
+vLLM all-reduce binary into this runtime; this ports its posted-write source
+idea into Strata's one-way peer contribution return.

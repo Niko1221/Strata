@@ -33,7 +33,7 @@ void ep_copy_uncached(void* dst, const void* src, size_t bytes, void* stream);
 /// Opt-in prompt-only reduction: sum the peer-owned routed contributions into one row per token.
 /// slot maps original router order to grouped rows; peer rows start at local_rows. Changes FP32 addition order.
 void ep_prefill_reduce(const float* rows, const int32_t* slot, const float* weights, float* sum,
-                       int64_t tokens, int64_t local_rows, int64_t width, int k, void* stream);
+                       int64_t tokens, int64_t local_rows, int64_t width, int k, void* stream, bool push = false);
 /// Add the primary contributions and shared expert. `out` initially holds the peer sum, then is replaced in place.
 void ep_prefill_finish(const float* rows, const int32_t* slot, const float* weights,
                        const float* shared, const float* gate, float* out,

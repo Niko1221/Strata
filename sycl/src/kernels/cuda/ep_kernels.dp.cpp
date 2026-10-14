@@ -26,25 +26,34 @@ void ep_copy_uncached(void* dst, const void* src, size_t bytes, void* stream) {
     });
 }
 
-void ep_prefill_reduce(const float* rows, const int32_t* slot, const float* weights, float* sum,
-                       int64_t tokens, int64_t local_rows, int64_t width, int k, void* stream) {
+template<bool Push> class ep_prefill_reduce_kernel;
+template<bool Push>
+static void reduce_impl(const float* rows, const int32_t* slot, const float* weights, float* sum,
+                        int64_t tokens, int64_t local_rows, int64_t width, int k, void* stream) {
     constexpr size_t WG = 256;
     const size_t vectors = (size_t) tokens * (size_t) width / 4;
-    q_of(stream)->parallel_for<class ep_prefill_reduce_kernel>(
-        sycl::nd_range<1>(((vectors + WG - 1) / WG) * WG, WG), [=](sycl::nd_item<1> it) {
-            const size_t i = it.get_global_id(0);
-            if (i >= vectors) return;
-            const int64_t t = i / (width / 4), d = i % (width / 4) * 4;
-            sycl::float4 acc(0.0f);
-            for (int j = 0; j < k; ++j) {
-                const int64_t row = slot[t * k + j] - local_rows;
-                if (row >= 0) {
-                    const auto value = *reinterpret_cast<const sycl::float4*>(rows + row * width + d);
-                    acc = sycl::fma(sycl::float4(weights[t * k + j]), value, acc);
+    const size_t groups = Push ? std::min<size_t>((vectors + WG - 1) / WG, 64) : (vectors + WG - 1) / WG;
+    q_of(stream)->parallel_for<ep_prefill_reduce_kernel<Push>>(
+        sycl::nd_range<1>(groups * WG, WG), [=](sycl::nd_item<1> it) {
+            for (size_t i = it.get_global_id(0); i < vectors; i += groups * WG) {
+                const int64_t t = i / (width / 4), d = i % (width / 4) * 4;
+                sycl::float4 acc(0.0f);
+                for (int j = 0; j < k; ++j) {
+                    const int64_t row = slot[t * k + j] - local_rows;
+                    if (row >= 0) {
+                        const auto value = *reinterpret_cast<const sycl::float4*>(rows + row * width + d);
+                        acc = sycl::fma(sycl::float4(weights[t * k + j]), value, acc);
+                    }
                 }
+                reinterpret_cast<sycl::float4*>(sum)[i] = acc;
             }
-            reinterpret_cast<sycl::float4*>(sum)[i] = acc;
+            if constexpr (Push) sycl::atomic_fence(sycl::memory_order::release, sycl::memory_scope::system);
         });
+}
+void ep_prefill_reduce(const float* rows, const int32_t* slot, const float* weights, float* sum,
+                       int64_t tokens, int64_t local_rows, int64_t width, int k, void* stream, bool push) {
+    if (push) reduce_impl<true>(rows, slot, weights, sum, tokens, local_rows, width, k, stream);
+    else reduce_impl<false>(rows, slot, weights, sum, tokens, local_rows, width, k, stream);
 }
 
 void ep_prefill_finish(const float* rows, const int32_t* slot, const float* weights,
