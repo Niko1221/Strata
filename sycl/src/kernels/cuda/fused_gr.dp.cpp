@@ -861,8 +861,8 @@ void launch_gr_up_cols(dpct::queue_ptr st, const GrMulti& m, bool grf) {
         st->parallel_for<dpct_kernel_name<class gr_up_multi_cols_ilp, dpct_kernel_scalar<C>>>(r, exp_props,
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_up_multi_kernel<C, true>(m); });
     else
-        st->parallel_for<dpct_kernel_name<class gr_up_multi_cols, dpct_kernel_scalar<C>>>(r, exp_props,
-            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_up_multi_kernel<C>(m); });
+        st->parallel_for<dpct_kernel_name<class gr_up_multi_cols, dpct_kernel_scalar<C>>>(r, exp_props,   // lo written by
+            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_up_multi_kernel<C, false, true>(m); });   // block 0 only
 }
 inline void launch_gr_up_multi(dpct::queue_ptr st, const GrMulti& m, bool grf = false) {
     switch (gr_up_cols()) {
@@ -1978,9 +1978,11 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
                     });
         });
         const unsigned nred = unsigned((n_tok * GRS_ROWS + 127) / 128);
+        // 8 loads in flight (MORE): the same 80 adds in the same order, so the same bits; the one-at-a-time loop
+        // waits on each L2 load in turn
         st->parallel_for<dpct_kernel_name<class gr_down_reduce_k>>(
             sycl::nd_range<3>(sycl::range(1, 1, nred) * sycl::range(1, 1, 128), sycl::range(1, 1, 128)),
-            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_down_reduce_kernel(m); });
+            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_down_reduce_kernel<true>(m); });
     } else if (gr_down_direct()) {
         st->parallel_for<dpct_kernel_name<class gr_down_multi_direct>>(
             sycl::nd_range<3>(sycl::range(1, 1, DOWN_BLOCKS * DOWN_SPLIT + 1) * sycl::range(1, 1, THREADS),
