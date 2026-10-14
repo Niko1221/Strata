@@ -2297,7 +2297,10 @@ restarts the counters rather than failing the boot.
 — with `?from_ts=<epoch>&to_ts=<epoch>` — a custom window. Hourly buckets are kept for 31 days,
 so a custom range answers at hour resolution inside that window; a range that starts earlier is
 clamped to the oldest kept bucket and the view reports the window it actually summed. The Monitor
-tab's Usage panel shows the same numbers.
+tab's Usage panel shows the same numbers. The panel opens on the **7-day** view; the view you pick
+is kept in the browser (`localStorage`, key `strata.usage.view`) and restored on the next load, so
+a Custom range comes back with its dates prefilled. A stored value that is not a known view falls
+back to 7 days.
 
 ### Prompt buffers: `bo` shares `emb` (#1454)
 
