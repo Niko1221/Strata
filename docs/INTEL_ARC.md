@@ -161,6 +161,20 @@ Things that matter on an Arc (details in INTEL.md):
   `STRATA_*`, `ONEAPI_*`, `UR_*`, `IGC_*`, `SYCL_*` or `ZES_*` variable of the server's environment reach the engine
   through `strata-sycl.sh` (for example `STRATA_MIRROR_MIB`, `IGC_EnableDPEmulation`).
 
+## Optional IQ4_XS decode kernels
+
+```sh
+export STRATA_SYCL_IQ4_PAIR_REUSE=1
+export STRATA_SYCL_IQ4_Q8_SPLIT=1
+export STRATA_SYCL_IQ4_LOOKUP=1
+```
+
+The pair kernel reuses IQ4_XS weight data across 1–4 columns for input widths
+2560 and 6144, with aligned weight and Q8_1 buffers. The Q8 split variant selects
+specific projection and output-head shapes inside that route. The lookup switch
+provides an exact bit-select lookup for the wide-kernel fallback. Other types
+and shapes keep their existing dispatch. All three switches default to off.
+
 ## Windows
 
 There is no Windows path yet. `setup --backend sycl` on Windows stops and points here. oneAPI exists for Windows,
