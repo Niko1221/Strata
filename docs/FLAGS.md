@@ -135,3 +135,33 @@ battery covers, with the layer on) and what has not (a run with the layer **off*
 that battery never reached - `--head-device`, a layer split, `--batch-mtp`, cancellation, the GC's age and budget
 levers, compaction): [SPILL_AND_PROMPT_CACHE.md](SPILL_AND_PROMPT_CACHE.md), "Validation environment", "Measured
 benefit" and "Non-claims".
+## G. The per-segment tier (layer/segmentos-t3, opt-in)
+
+The segment tier replaces "one growing `.sess` per conversation" with independent, content-addressed segment files:
+each phase of a turn - the systemprompt(s), a file read, a file write/edit, a tool call and its result, the thinking
+block, the answer, the user turn - is its **own file**, named after the content address of the segment, and the
+conversation is the **ordered list of references** (the manifest `strata-conv-<serial>.segs`). The state is the
+**sum of the segments**, not a file that grows. An identical segment (the systemprompt, above all) is stored **once**
+and shared, with a **refcount** so the GC never removes a segment another conversation still references. The address
+folds in the segment that precedes it (`seg_id = H(previous ‖ kind ‖ domain ‖ tokens ‖ role_token ‖ model ‖ config)`),
+which is what makes the dedup correct under causal attention: a segment is reused **only** when its whole prefix chain
+matches.
+
+**Status / the D-7 inertia.** The module (`include/strata/core/conversation_segments.hpp`,
+`src/core/conversation_segments.cpp`) is implemented and covered by the host-only test
+`src/core/conversation_segment_test.cpp`. The engine **parses the three flags below** and, with
+`--conversation-cache-segments on` beside a live spill tier, opens the store on the **same** spill directory as the
+`.sess` tier. With every flag absent the tree behaves exactly as the ported layer, byte for byte (D-7). It is now a
+**writer and a reader**: at the point the disk tier writes a conversation (the eviction, and the park mirror) the
+parked image is split into its phase segments by `segment_plan_split()` (a `sys` segment at the first `--turn-token`,
+a prefix/`Other` segment, and the `effort+answer` tail at the last `--tail-role-token`), and `store_image()` writes
+each NEW segment as its own content-addressed `<seg_id>.seg` and the manifest `strata-conv-<serial>.segs` last. The
+restore path consults `best()`/`load()` exactly as the `.sess` tier does and reads only the segments `0..k`. The
+writer slices **one segment at a time** and skips any segment already on disk (idempotent), so a growing chat pays
+only for its new tail and a shared systemprompt is written once; the whole K/V is never copied on the write path.
+
+| Flag | Default | What it does | Scope (when it applies and when it does NOT) | Limit or non-claim | Since |
+| --- | --- | --- | --- | --- | --- |
+| `--conversation-cache-segments MODE` | `off` | Turns the per-segment tier on for a spill directory. `off` (default) is the ported layer byte for byte; `on` reads and writes the content-addressed `<seg_id>.seg` files and the manifests `<stem>.segs` beside the `.sess` copies. | `--serve`, inside the disk tier. Needs `--conversation-cache-spill-dir`; an unknown mode is refused at start. | **Off by default (D-7).** With `on` the engine splits each parked image into phase segments and writes them (`store_image`), replacing the conversation's manifest in place. A segment file is an ordinary session file: the identity rules that guard the `.sess` tier guard it too. The phase cuts are a heuristic over the token ids (`--turn-token`/`--tail-role-token`); with neither, one whole-prompt segment is written. | `layer/prod2-0441` / `layer/segwriter-t3` |
+| `--conversation-cache-segment-budget-mib N` | 0 | The segment tier's **own** byte budget (MiB), separate from `--conversation-cache-disk-mib`. `0` = no own budget. The GC removes a segment only when its refcount is ≤ 1 (orphan first, then `think`/`answer`/`tool` before `read`/`write`); a shared segment is never removed. It runs at shutdown. | inside the segment tier. | A **separate** budget and GC: it never touches the `.sess` tier's `bytes_` or `disk_evictions_`, and it does not bound the `.sess` copies. It is not a disk reservation. With `0` nothing is ever removed by this GC. | `layer/prod2-0441` |
+| `--conversation-cache-segment-min-tokens N` | 0 | The materialization threshold: a non-system segment shorter than N tokens is fused with the one before it (as an `Other` segment), so a short chat does not pay one file per message. | inside the segment tier, on the **write** path (`store`/`store_image`). `0` = materialize every segment. | A **policy**, not a correctness lever: it only decides how many files the chain is cut into. | `layer/prod2-0441` |

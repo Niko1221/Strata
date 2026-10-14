@@ -288,6 +288,61 @@ Measured `int8` anchors: **~14,029 B (≈13.7 KB) per context token** for the KV
 
 Sizes are powers of 1024 (MiB, GiB) except the measured 1.20 GB, which is the decimal figure upstream reports.
 
+## The per-segment tier (layer/segmentos-t3, opt-in)
+
+The disk tier above writes **one growing `.sess` per conversation**: every park rewrites the whole state (63 025
+tokens ≈ 1.20 GB). The per-segment tier removes that: each phase of a turn is its **own file** and the conversation is
+the **ordered list of references** to those files - the state is the **sum of the segments**, not a file that grows.
+
+- **Layout.** Beside the `.sess` files two families live in the same folder: the manifest
+  `strata-conv-<serial>.segs` (the list of refs) and the segment files `<seg_id>.seg` (and `<seg_id>.stage<k>.seg`
+  with `--layer-split`). A segment file is an ordinary session file (`session_file_write`), byte-for-byte a `.sess`
+  of its own slice. The name `<seg_id>` **is** the content address, so two conversations that share a segment point
+  at the **same** file - that is the deduplication, materialized in the tree. The old scan never indexes a
+  `<seg_id>.seg` (it only takes names starting with `strata-conv-`) and counts `<stem>.segs` as an unknown file it
+  **never deletes**, so running the ported tree beside these files is safe (the `.sess` + `.meta` v2 path is the
+  compatibility path and is read unchanged).
+- **The address includes the precedent.** `seg_id = H(prev_frontier ‖ kind ‖ domain ‖ tokens ‖ role_token ‖ model ‖
+  config)`, with `prev_frontier(0) = H(model ‖ config)`. The tokens and the model/config are **not enough**:
+  attention is causal and the GDN/QSA/PLE state is *all-or-nothing*, so a segment with the same tokens after a
+  **different** history is a different segment. Folding the previous address in makes the dedup **correct by
+  construction** - it fires where the prefix chain coincides (the systemprompt, a resume, sister prefixes) and
+  **not** where it does not.
+- **Restore by frontier.** `best()` matches from the manifests alone (no K/V read): it hashes the prompt's tokens at
+  each ref's range and compares them to the stored address. The longest contiguous run from the head that is an
+  exact prefix of the prompt is the reusable prefix; a divergence, a hole, or a missing segment file cuts the run
+  there (and everything after is re-prefilled). `load()` reads **only** the segments `0..k` (the sum) and never
+  opens the later ones.
+- **The sum is of the attention K/V, not of the recurrence.** The attention K/V of the prefix is the concatenation
+  of the segments' slices; the recurrent state is **the last segment's snapshot** (a running summary, not a sum),
+  valid only under its exact chain.
+- **Budget and GC are the tier's own.** `segment_bytes_` and `segment_evictions_` are separate from the `.sess`
+  tier's `bytes_` and `disk_evictions_`. The refcount is recomputed on `open()` from the union of the manifests (it
+  is never persisted). The GC removes a segment only when its refcount is ≤ 1: an orphan (0) first, then the
+  volatile kinds (`think`/`answer`/`tool`) before `read`/`write`; a shared systemprompt (refcount > 1) is **never**
+  removed.
+
+**The thinking-effort case (the measurable criterion).** For two prompts `P = [sys][pre][effort][answer]` that differ
+only in the effort turn and its answer, the restore's frontier is `len(sys)+len(pre)` and the tokens re-read are
+`read_tokens = len(effort) + len(answer)`, **independent of the prefix**. The host-only test fixes this: with a small
+and a large `pre`, `read_tokens` is the same, and `best()` does **not** return the whole live. If the design were
+reverted (the frontier computed after the effort turn, or `best()` matching the whole live), `read_tokens` would jump
+to `len(effort)+len(answer)+len(pre)` and the test would fail.
+
+**Status.** `include/strata/core/conversation_segments.hpp`, `src/core/conversation_segments.cpp` and
+`src/core/conversation_segment_test.cpp`. The engine now **parses the three flags** (`docs/FLAGS.md`, section G) and,
+with `--conversation-cache-segments on` beside a live spill tier, opens the store on the **same** spill directory as
+the `.sess` tier. With every flag absent the tree is the ported layer, byte for byte (D-7). It is a **writer and a
+reader** (`layer/segwriter-t3`): at the point the disk tier writes a conversation (the eviction in `spill_evicted`,
+and the park mirror) `mirror_segments()` splits the captured image with `segment_plan_split()` and `store_image()`
+writes each phase as its own content-addressed `<seg_id>.seg`, the manifest last; the restore path matches a chain
+from the manifest alone and reads only the segments `0..k`. The writer slices **one segment at a time** and skips any
+segment already on disk, so a growing chat pays only for its new tail and a shared systemprompt is written once. The
+host-only test (174 checks) covers the effort and systemprompt invariants red/green, the exact reconstruction of the
+image from the sum, idempotency and the incremental write. The recurrent snapshot travels with its own frontier: the
+last segment carries the captured live state and a segment whose end is a checkpoint of the image carries that
+checkpoint, so the effort frontier restores with state.
+
 ## Non-claims
 
 - **The live run is a functional pass, not a benchmark.** The non-claim that used to sit here - that no instance of
@@ -321,6 +376,39 @@ Sizes are powers of 1024 (MiB, GiB) except the measured 1.20 GB, which is the de
   present on `v0.1.41` as it was on `v0.1.40.1`. The test that reproduces it (red on the base, green under the fix)
   was written against the sibling base `v0.1.40.1`, **not** against `v0.1.41`, and has not been re-run here. The fix
   is deliberately not backported into this delta: it arrives as a separate stacked PR against this branch.
+
+**The per-segment tier (layer/segmentos-t3) adds its own non-claims.**
+
+- **Wired as a writer and a reader, not measured end-to-end.** The module and its host-only test exist (174 checks).
+  The engine parses `--conversation-cache-segments`, opens the store on the spill directory, **writes** the phase
+  segments and the manifest at the park/eviction point (`store_image`, slicing one segment at a time so the whole K/V
+  is never copied), and the restore path consults `best()` and `load()`. What is **unmeasured** is everything that
+  needs a live run with a model: the dedup **rate**, the tokens saved and the latency. There is **no live run of the
+  segment tier** with a model on this base. The phase cuts are a **heuristic** over the token ids
+  (`--turn-token`/`--tail-role-token`); with neither present the writer emits one whole-prompt segment, so the effort
+  frontier does not exist for that request.
+- **It does not improve the hot path.** When the conversation is warm in RAM, upstream's in-RAM checkpoint already
+  resolves a change that only touches the tail; the segment gains appear only when the state is **on disk**.
+- **The dedup is real only where the prefix chain coincides.** A conversation with a unique history and no
+  repetition does **not** deduplicate: it pays one (small) file per segment, bounded by the materialization threshold.
+  It is **not** claimed that total disk always falls; what is claimed is that the file rewritten each turn stops
+  growing and that a shared systemprompt or a repeated-prefix block is stored once.
+- **The recurrent state is not a sum.** "The state is the sum of files" holds for the attention K/V; the recurrent
+  state (GDN/QSA/PLE) is the last segment's snapshot, valid only under its chain.
+- **No non-prefix reuse**, and the effort case is not cheaper than upstream while the conversation is warm.
+- **The per-segment K/V slice is a declared convention, not yet exercised with a model.** A captured image is sliced
+  at the byte boundary `size * token / cells` (`cells` = the image's page-aligned row count, the row count the buffer
+  holds), computed once per boundary so the slices tile the buffer **exactly** and the last segment keeps the buffer
+  tail (the partial page and the indexer's moving spare row). This is exact for the attention K/V parts; the
+  indexer/`pooled` part is sliced by the same proportional rule. The host test builds images whose K/V is proportional
+  to `cells` and proves the sum reconstructs the image byte for byte, but the mapping is **not** validated against a
+  live model here - a per-request live check is a later node.
+- **The RAG-file association is not in this delivery.** Only the identity and the manifest are left stable
+  (`seg_id`, `kind`, `domain`, the token ranges, the frontier hashes); writing per-segment evidence tied to RAG files
+  is a later wave.
+- **The two tiers are independent copies.** The segment tier never removes, counts or bounds a `.sess` file, and the
+  `.sess` GC never touches a `.seg`/`.segs` file (the `.sess` scan reads only `strata-conv-*` names it understands).
+  A `.sess`+`.meta` pair with no manifest is read by the `.sess` tier unchanged - the compatibility path.
 
 ## Credits
 

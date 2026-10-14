@@ -27,6 +27,7 @@
 #include "strata/core/session_save_reclaim.hpp"
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/conversation_spill.hpp"
+#include "strata/core/conversation_segments.hpp"   // layer/segmentos-t3: the opt-in per-segment tier (N16 wiring)
 #include "strata/core/conversation_prompt_cache.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
@@ -688,6 +689,17 @@ struct Options {
     /// time at all; positive = the archive's own GC drops copies older than that, oldest first). Mirrors the tier's
     /// --conversation-cache-spill-max-age-days, but for the archive.
     int64_t conversation_cache_archive_max_age_days = 0;
+    /// --conversation-cache-segments (layer/segmentos-t3, opt-in, off by default): the per-segment tier. It lives in
+    /// the SAME spill directory as the .sess tier and turns the "one growing .sess per conversation" into an ordered
+    /// list of content-addressed segment files (the manifest "<stem>.segs"). It has its OWN budget and its OWN GC,
+    /// none of them shared with the .sess tier. With the mode off nothing is read, created or written.
+    std::string conversation_cache_segments = "off";
+    /// --conversation-cache-segment-budget-mib: the segment tier's OWN byte budget (MiB), separate from
+    /// --conversation-cache-disk-mib. 0 = no own budget (nothing is ever removed by this GC).
+    int64_t conversation_cache_segment_budget_mib = 0;
+    /// --conversation-cache-segment-min-tokens: the materialization threshold - a non-system segment shorter than N
+    /// tokens is fused with the one before it. 0 = materialize every segment (a policy, not a correctness lever).
+    int64_t conversation_cache_segment_min_tokens = 0;
     /// --system-prompt-cache (F5, opt-in): persist the checkpoint root that ends the system prompt (the one
     /// --prompt-cache-root builds in RAM) as an ordinary session file, and reload it at start so a NEW chat reads
     /// only the tokens after it. Off by default: no directory is created and no byte is written.
@@ -881,6 +893,15 @@ void usage() {
                  "                       newest first (default 4; 0 = no per-conversation cap)\n"
                  "  --conversation-cache-archive-max-age-days N  --serve: prune archived copies older than N days,\n"
                  "                       oldest first (default 0 = off; no retention by time at all)\n"
+                 "  --conversation-cache-segments MODE  --serve: the per-segment tier in the SAME spill directory -\n"
+                 "                       on = read content-addressed segment files (the manifest <stem>.segs) beside the\n"
+                 "                       .sess copies; off (default) = the .sess tier byte for byte (needs an active\n"
+                 "                       --conversation-cache-spill-dir). Its budget and GC are its OWN\n"
+                 "  --conversation-cache-segment-budget-mib N  --serve: the segment tier's OWN byte budget, separate\n"
+                 "                       from --conversation-cache-disk-mib; its GC removes unshared segments over it\n"
+                 "                       (default 0 = no own budget)\n"
+                 "  --conversation-cache-segment-min-tokens N  --serve: a non-system segment shorter than N tokens is\n"
+                 "                       fused with the one before it (default 0 = materialize every segment)\n"
                  "  --system-prompt-cache  --serve: persist the system-prompt checkpoint root (--prompt-cache-root) to\n"
                  "                       disk and reload it at start, so a new chat of the same client reads only the\n"
                  "                       tokens after it (default off; needs --system-prompt-cache-dir)\n"
@@ -2299,6 +2320,26 @@ int main(int argc, char** argv) {
             if (a == "--conversation-cache-archive-mib") o.conversation_cache_archive_mib = number;
             else if (a == "--conversation-cache-archive-keep") o.conversation_cache_archive_keep = number;
             else o.conversation_cache_archive_max_age_days = number;
+        }
+        else if (a == "--conversation-cache-segments") {
+            const std::string value = next("--conversation-cache-segments");
+            if (value != "off" && value != "on") {
+                std::fprintf(stderr, "--conversation-cache-segments takes off or on\n");
+                return 2;
+            }
+            o.conversation_cache_segments = value;
+        }
+        else if (a == "--conversation-cache-segment-budget-mib" || a == "--conversation-cache-segment-min-tokens") {
+            const std::string value = next(a.c_str());
+            int64_t number = 0;
+            const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
+            const int64_t limit = a == "--conversation-cache-segment-min-tokens" ? INT32_MAX : INT64_MAX / (1024 * 1024);
+            if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || number < 0 || number > limit) {
+                std::fprintf(stderr, "%s needs a nonnegative integer within range\n", a.c_str());
+                return 2;
+            }
+            if (a == "--conversation-cache-segment-budget-mib") o.conversation_cache_segment_budget_mib = number;
+            else o.conversation_cache_segment_min_tokens = number;
         }
         else if (a == "--system-prompt-cache") o.system_prompt_cache = true;
         else if (a == "--system-prompt-cache-dir") o.system_prompt_cache_dir = next("--system-prompt-cache-dir");
@@ -8486,12 +8527,69 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        // The per-segment tier (layer/segmentos-t3, opt-in, off by default). It lives in the SAME spill directory as
+        // the .sess tier and shares no counter with it (its own budget, its own GC). With the mode off nothing is
+        // created, read or written: the tree is the ported layer, byte for byte (D-7). With the mode on and no live
+        // spill tier it reports itself off rather than opening a directory of its own.
+        strata::core::SegmentStore segment_store;
+        if (o.serve && o.conversation_cache_segments == "on") {
+            if (!conversation_spill.enabled() || o.conversation_cache_spill_dir.empty()) {
+                std::fprintf(stderr, "strata serve: conversation cache: segment tier off (needs an active "
+                             "--conversation-cache-spill-dir and --conversation-cache-disk-mib)\n");
+            } else {
+                strata::core::SegmentStoreConfig segment_config;
+                segment_config.directory = o.conversation_cache_spill_dir;   // the SAME directory as the .sess tier
+                segment_config.budget_bytes = (uint64_t) o.conversation_cache_segment_budget_mib * 1024 * 1024;
+                segment_config.min_tokens = (size_t) o.conversation_cache_segment_min_tokens;
+                segment_config.turn_token = o.turn_token;
+                std::string segment_error;
+                if (!segment_store.open(segment_config, spill_identity, segment_error)) {
+                    std::fprintf(stderr, "strata serve: conversation cache: segment tier off (%s)\n", segment_error.c_str());
+                } else if (segment_store.enabled()) {
+                    if (o.conversation_cache_segment_budget_mib == 0)
+                        std::fprintf(stderr, "strata serve: conversation cache: segment tier has no own budget "
+                                     "(--conversation-cache-segment-budget-mib 0): its GC removes nothing\n");
+                    std::fprintf(stderr, "strata serve: conversation cache: segment tier ready (%zu manifests, %zu segment "
+                                 "files, %llu MiB, budget=%lld MiB, min-tokens=%lld, %zu stale kept, %zu foreign kept, "
+                                 "%zu orphan kept)\n",
+                                 segment_store.size(), segment_store.segment_count(),
+                                 (unsigned long long) (segment_store.bytes() >> 20),
+                                 (long long) o.conversation_cache_segment_budget_mib,
+                                 (long long) o.conversation_cache_segment_min_tokens,
+                                 segment_store.stale_files_kept(), segment_store.foreign_files_kept(),
+                                 segment_store.orphan_files_kept());
+                }
+            }
+        }
         // Delta 2 / R3: with --conversation-cache-spill-on park the tier is a mirror, not overflow. The park writer
         // holds one cell per conversation (only the newest state) and a background thread drains it, so a turn with
         // five tool calls writes once. It is inert without a spill directory.
         const bool spill_on_park = conversation_spill.enabled() && o.conversation_cache_spill_on == "park";
         strata::core::ConversationSpillWriter park_writer;
         if (spill_on_park) park_writer.start(&conversation_spill, o.conversation_cache_spill_park_throttle_s);
+        // The per-segment tier's WRITER (layer/segwriter-t3, opt-in): at the SAME point the disk tier writes a
+        // conversation to disk - the eviction (spill_evicted) and the park mirror - the parked image is split into
+        // its phase segments (segment_plan_split: sys / prefix / effort+answer, cut at --turn-token and
+        // --tail-role-token) and each segment is written as its OWN content-addressed file, the manifest last.
+        // store_image() slices ONE segment at a time and skips any segment whose file is already on disk, so a
+        // growing chat pays only for its new tail, a shared systemprompt is written once, and the peak extra RAM is
+        // one slice - the whole K/V is never copied. Inert unless --conversation-cache-segments on opened the store.
+        auto mirror_segments = [&](const strata::core::SavedConversation& image) {
+            if (!segment_store.enabled() || image.live.ids.empty()) return;
+            try {
+                const std::vector<strata::core::SegmentPlan> plan = strata::core::segment_plan_split(
+                        image.live.ids, o.turn_token, o.tail_role_token);
+                if (plan.empty()) return;
+                const uint64_t key = strata::core::conversation_key(image.live.ids, o.turn_token);
+                std::string segment_error, segment_path;
+                if (!segment_store.store_image(key, o.turn_token, image.cvec, image, plan, segment_error,
+                                               &segment_path))
+                    std::fprintf(stderr, "strata serve: segment tier: could not write the segment chain (%s)\n",
+                                 segment_error.c_str());
+            } catch (...) {
+                std::fprintf(stderr, "strata serve: segment tier: segment write failed\n");
+            }
+        };
         // The system-prompt prefill cache (F5): the checkpoint root that ends the system prompt (--prompt-cache-root)
         // persisted as ordinary session files and reloaded at start, so a NEW chat of the same client reads only
         // the tokens after it.  Its own directory, its own budget, its own variant count.  Off unless
@@ -8529,6 +8627,7 @@ int main(int argc, char** argv) {
                 std::string spill_error;
                 std::string stored;
                 if (conversation_spill.spill(evicted, spill_error, &stored)) {
+                    mirror_segments(evicted);   // the per-segment tier mirrors the same conversation (opt-in)
                     // park mode: an eviction confirms what the mirror already wrote, so the older copy of this
                     // conversation goes once the new one is on disk (one copy per conversation, never two).
                     if (spill_on_park)
@@ -8717,6 +8816,8 @@ int main(int argc, char** argv) {
                     return true;
                 }
                 const size_t snapshot_bytes = image.bytes();
+                // The per-segment tier (opt-in): mirror the captured image's phase segments now (inert unless on).
+                if (!provisional) mirror_segments(image);
                 // R3: mirror the parked state to disk (asynchronous, collapsed). The writer takes a copy - put()
                 // below takes the original, and the writer's cell must not alias the RAM cache's entry. wants()
                 // keeps the copy from being built when the writer would only discard it.
@@ -11495,6 +11596,72 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // The per-segment tier (layer/segwriter-t3, opt-in): a manifest chain in the SAME spill directory can
+            // beat the .sess disk tier. It is matched from the manifest alone (no K/V read) exactly as
+            // conversation_spill's best() is, and read back only up to the frontier (the segments 0..k, never the
+            // later ones). The store is WRITTEN at the park/eviction point (mirror_segments above): each phase is
+            // its own content-addressed file and the manifest is the ordered list of references. With the flag off
+            // this block is dead and nothing is read or written.
+            if (!incoming && segment_store.enabled()) {
+                const strata::core::SegmentMatch segment_match = segment_store.best(
+                        ids, want_cvec, o.conversation_cache_similarity, o.conversation_cache_n_min);
+                if (segment_match && segment_match.tokens > std::max(resume, std::max(slot_tokens, parked.tokens))) {
+                    constexpr uint64_t admission_extra = 1ull << 20;
+                    const uint64_t estimate = segment_match.bytes > UINT64_MAX - segment_match.bytes / 8 - admission_extra
+                                                  ? UINT64_MAX
+                                                  : segment_match.bytes + segment_match.bytes / 8 + admission_extra;
+                    const uint64_t ram_budget = o.conversation_cache_mib > 0
+                                                    ? (uint64_t) o.conversation_cache_mib * 1024 * 1024 : UINT64_MAX;
+                    const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
+                    if (estimate > ram_budget || estimate > SIZE_MAX) {
+                        std::fprintf(stderr, "strata serve: segment tier: hit needs %llu MiB; RAM budget is %llu MiB\n",
+                                     (unsigned long long) (estimate >> 20), (unsigned long long) (ram_budget >> 20));
+                    } else if (!conversations.make_room((size_t) estimate, 0, spill_evicted)) {
+                        std::fprintf(stderr, "strata serve: segment tier: hit does not fit the RAM cache budget\n");
+                    } else if (!strata::core::conversation_memory_admit(strata::core::available_host_bytes(),
+                                   estimate, floor)) {
+                        std::fprintf(stderr, "strata serve: segment tier: hit skipped (physical RAM admission; "
+                                     "need %llu MiB plus a %lld MiB floor, or telemetry unavailable)\n",
+                                     (unsigned long long) (estimate >> 20), (long long) o.conversation_cache_min_free_mib);
+                    } else {
+                        // One read limit per stage file, exactly as the .sess path: a segment under --layer-split is
+                        // one file per stage, so each file is bounded by the stage it restores into before it is read.
+                        std::vector<strata::core::SessionReadLimits> limits(1 + stages.size());
+                        for (auto& l : limits) l.admit = [floor](uint64_t need, std::string& why) {
+                            const auto avail = strata::core::available_host_bytes();
+                            if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
+                            why = "not enough RAM to read it";
+                            return false;
+                        };
+                        std::string limits_error;
+                        bool limits_ok = strata::core::conversation_session_read_limits(
+                                limits[0], ss, g, mtp.kv_state(), (uint64_t) o.max_context,
+                                (uint64_t) std::max(o.prompt_cache, 1), limits_error);
+                        for (size_t i = 0; limits_ok && i < stages.size(); ++i)
+                            limits_ok = strata::core::conversation_session_read_limits(
+                                    limits[i + 1], stages[i]->ss, g, mtp.kv_state(), (uint64_t) o.max_context,
+                                    (uint64_t) std::max(o.prompt_cache, 1), limits_error);
+                        if (!limits_ok) {
+                            std::fprintf(stderr, "strata serve: segment tier: hit skipped (%s)\n", limits_error.c_str());
+                        } else {
+                            strata::core::SavedConversation restored;
+                            std::string segment_error;
+                            if (!segment_store.load(segment_match, restored, limits, segment_error)) {
+                                // the store's scan never deletes: an unreadable chain is left for its own GC
+                                std::fprintf(stderr, "strata serve: segment tier: unreadable chain kept for the GC (%s)\n",
+                                             segment_error.c_str());
+                            } else if (restored.bytes() > ram_budget) {
+                                std::fprintf(stderr, "strata serve: segment tier: chain exceeds the RAM cache budget after loading\n");
+                            } else {
+                                incoming.emplace(std::move(restored));
+                                parked = {0, segment_match.tokens, segment_match.live};
+                                std::fprintf(stderr, "strata serve: segment tier: hit %lld tokens%s\n",
+                                             (long long) segment_match.tokens, segment_match.live ? " (whole live)" : "");
+                            }
+                        }
+                    }
+                }
+            }
             // F5: the system-prompt prefill cache. A stored variant whose EXACT system-prompt prefix this prompt
             // begins with is the checkpoint root of a new chat: loading it parks the outgoing session and this request
             // reads only the tokens after the root. CAUSALITY: the key is the hash of the prefix's own tokens, and the
@@ -13851,6 +14018,12 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: conversation cache: park mirror: %zu writes, %zu collapsed, %zu skipped, "
                              "%zu throttled, %zu refused\n", park_writer.writes(), park_writer.collapsed(),
                              park_writer.skipped(), park_writer.throttled(), park_writer.refused());
+        }
+        if (segment_store.enabled()) {   // the segment tier's OWN GC (its own budget), never the .sess tier's counters
+            segment_store.enforce_budget();
+            std::fprintf(stderr, "strata serve: conversation cache: segment tier: shutdown: %zu manifests, %zu segment "
+                         "files, %llu MiB, %zu evictions\n", segment_store.size(), segment_store.segment_count(),
+                         (unsigned long long) (segment_store.bytes() >> 20), segment_store.segment_evictions());
         }
         if (system_prompt_cache.enabled())   // F5: the system prompt cache's own accounting, at shutdown
             std::fprintf(stderr, "strata serve: system prompt cache: shutdown: %zu variants, %llu MiB, hits=%llu misses=%llu, "
