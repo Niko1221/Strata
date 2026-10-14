@@ -117,6 +117,49 @@ def post(base, path, body):
         return e.code, json.loads(e.read())
 
 
+from serve.server import StrataEngine  # noqa: E402
+from serve.test_slots import FakeEngine  # noqa: E402
+
+
+class BrowWire(unittest.TestCase):
+    """StrataEngine.final_row_logits: BROW <tokens> -> BROWD <tok:logit>..., between requests."""
+
+    @classmethod
+    def setUpClass(cls):
+        eng = FakeEngine()
+        eng.script = ["BROWD 2 78:0.5 89:4.25\n"]
+        cls.eng = eng
+        cls.svc = Service(eng, ByteTokenizer(), ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def test_brow_roundtrip(self):
+        row = self.eng.final_row_logits([1, 2, 3], [78, 89])
+        self.assertEqual(row, {78: 0.5, 89: 4.25})
+        self.assertEqual(self.eng.proc.sent[-1], "BROW 78 89\n")
+
+    def test_brow_answer_beyond_requested_tokens_fails_closed(self):
+        self.eng.script = ["BROWD 2 78:0.5 999:4.0\n"]      # 999 was never asked for
+        try:
+            self.eng.final_row_logits([1, 2, 3], [78])
+            self.fail("expected EngineDied")
+        except Exception as e:
+            self.assertIn("BROWD", str(e))
+
+    def test_brow_nonfinite_fails_closed(self):
+        self.eng.script = ["BROWD 1 78:nan\n"]
+        try:
+            self.eng.final_row_logits([1], [78])
+            self.fail("expected EngineDied")
+        except Exception as e:
+            self.assertIn("BROWD", str(e))
+
+
 class SystemOneValidation(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
