@@ -646,8 +646,8 @@ struct Options {
     /// is written to this folder instead of dropped, and read back when a request continues it.  Empty = off.
     std::string conversation_disk_dir;
     int64_t conversation_disk_mib = 32768;    ///< --conversation-disk-mib: at most this many MiB of files
-    /// --conversation-disk-persist: off = the files end with the engine; on = they outlive it (budget only) and QUIT
-    /// writes the current and the parked conversations; exit-only = the same, but nothing is written while the engine runs
+    /// --conversation-disk-persist: off = the files end with the engine; on = they outlive it and QUIT writes the
+    /// current and the parked conversations; exit-only = the same, but nothing is written while the engine runs
     std::string conversation_disk_persist = "off";
     /// --memory-limit-mib N / STRATA_MEMORY_LIMIT_MIB: the total RAM this engine's container or cgroup may use, for a
     /// container that cannot see its real limit (0 or unset = none; the flag wins over the variable)
@@ -806,9 +806,9 @@ void usage() {
                  "                       back when a request continues it (needs --conversation-cache-mib; default off)\n"
                  "  --conversation-disk-mib N  --serve: at most N MiB of such files (default 32768)\n"
                  "  --conversation-disk-persist off|on|exit-only  --serve: keep the disk's conversations for the next start:\n"
-                 "                       off (default) removes them at the end; on keeps them (budget only, no time\n"
-                 "                       limit) and QUIT writes the current and the parked ones there first; exit-only\n"
-                 "                       writes at QUIT alone, nothing while the engine runs (an eviction drops a conversation)\n"
+                 "                       off (default) removes them at the end; on keeps them and QUIT writes the\n"
+                 "                       current and the parked ones there first; exit-only writes at QUIT alone,\n"
+                 "                       nothing while the engine runs (an eviction drops a conversation)\n"
                  "  --conversation-cache-min-tokens N  --serve: park only conversations of at least N tokens, so\n"
                  "                       short side requests do not take the slots a long one needs (default 0 = park any)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
@@ -8442,7 +8442,7 @@ int main(int argc, char** argv) {
                 size_t evicted = 0;
                 std::optional<strata::core::HostMemoryReading> mem;
                 if (!make_ram(additional, floor, evicted, mem)) {
-                    if (conv_disk.enabled() && park_streamed()) return true;
+                    if (disk_writes && park_streamed()) return true;
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked)\n",
                                  additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
                                  evicted, conversations.size());
