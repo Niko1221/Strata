@@ -132,13 +132,17 @@ def parse_questions(questions) -> tuple[list | None, dict]:
                 return None, _err(f"questions.{qid}.instructions", "required")
             ins = ins_text
         criteria = v.get("criteria")
+        descriptions: list[str] = []
         if qtype == "choice":
             if criteria is None:
                 return None, _err(f"questions.{qid}.criteria", "required for choice")
             if isinstance(criteria, dict):
                 labels = list(criteria.keys())
+                descriptions = [": " + str(criteria[k]) if criteria[k] is not None else ""
+                                for k in labels]
             elif isinstance(criteria, list):
                 labels = [str(x) for x in criteria]
+                descriptions = [""] * len(labels)
             else:
                 return None, _err(f"questions.{qid}.criteria", "must be object or array")
             if len(labels) < 2:
@@ -151,31 +155,53 @@ def parse_questions(questions) -> tuple[list | None, dict]:
             if not isinstance(criteria, list) or len(criteria) < 2 or len(criteria) > 10:
                 return None, _err(f"questions.{qid}.criteria", "must be an array of 2..10 levels")
             labels = [str(x) for x in criteria]
+            descriptions = [""] * len(labels)
             render_labels = [str(i) for i in range(len(labels))]
         else:
             labels, render_labels = ["No", "Yes"], ["No", "Yes"]
+            if isinstance(criteria, dict):
+                true_d = criteria.get("true")
+                false_d = criteria.get("false")
+                descriptions = [": " + str(false_d) if false_d is not None else "",
+                                ": " + str(true_d) if true_d is not None else ""]
+            else:
+                descriptions = ["", ""]
         qdefs.append({"id": qid, "type": qtype, "instructions": ins,
-                      "labels": labels, "render_labels": render_labels})
+                      "labels": labels, "render_labels": render_labels,
+                      "descriptions": descriptions})
     return qdefs, (200, {})
 
 
 def render_state(state) -> str:
-    """The state's serialized text.  Deterministic (sorted keys); the donor's exact render is
-    pinned by the golden battery when the engine-side port lands."""
+    """The state's serialized text - the DONOR'S render (server.cpp:266-268):
+    string states pass through verbatim; objects pretty-print as sorted JSON."""
+    if isinstance(state, str):
+        return state
     return json.dumps(state, indent=2, sort_keys=True, ensure_ascii=False)
 
 
 def question_block(qdef) -> str:
-    """The question's rendered suffix.  M3.0 frozen shape (letters for choice, digits for
-    score, Yes/No for noul); the D3 render is pinned by the golden battery."""
-    q = f"{qdef['instructions']}"
-    rl = qdef["render_labels"]
+    """The question's rendered suffix - the DONOR'S render (server.cpp render_qblock),
+    frozen D3 shape: the full option list is always shown to the model."""
+    q = f"Question: {qdef['instructions']}\n"
     if qdef["type"] == "choice":
-        q += "\nAnswer with a single letter: " + ", ".join(rl) + "."
+        q += "Options:\n"
+        for letter, label, desc in zip(LETTERS, qdef["labels"], qdef["descriptions"]):
+            q += f"{letter}. {label}{desc}\n"
+        q += "Reply with the label of the best option.\n"
     elif qdef["type"] == "score":
-        q += "\nAnswer with a single digit: " + ", ".join(rl) + "."
+        q += "Levels (0 is lowest):\n"
+        for i, label in enumerate(qdef["labels"]):
+            q += f"{i}. {label}\n"
+        q += "Reply with the level number.\n"
     else:
-        q += "\nAnswer Yes or No."
+        true_d, false_d = qdef["descriptions"]
+        if true_d:
+            q += f"Yes means: {true_d}\n"
+        if false_d:
+            q += f"No means: {false_d}\n"
+        q += "Reply Yes or No.\n"
+    q += "Answer:"
     return q
 
 
@@ -202,7 +228,8 @@ def handle(svc, req: dict) -> tuple[int, dict]:
             prompt = svc.template.render(
                 [{"role": "system", "content": SYSTEM_V1},
                  {"role": "user", "content": state_text + "\n\n" + question_block(qdef)}],
-                add_generation_prompt=True)
+                add_generation_prompt=True,
+                enable_thinking=False)   # D3 (frozen): the readout position must predict the label, not open <think>
             ids = svc.tok.encode(prompt, parse_special=True)
             if not ids:
                 return _err("state", "tokenization failed")
