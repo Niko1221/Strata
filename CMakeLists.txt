@@ -1455,6 +1455,12 @@ if(STRATA_NATIVE_EXPERTS)
     endif()
     target_link_libraries(strata_mmq_w4a4 PUBLIC ggml-base ${_strata_gpu_runtime_target})
     target_link_libraries(strata_mmq PRIVATE strata_mmq_w4a4)
+    # gfx906 / HIP: this unit includes ggml-cuda's common.cuh, which only takes vendors/hip.h when
+    # GGML_USE_HIP is defined (strata_mmq gets it in the HIP branches below).  Without it the CUDA
+    # vendor headers (<cuda.h>, <cuda_bf16.h>) are pulled in and the HIP build fails.
+    if(STRATA_HIP_GFX906 OR STRATA_ENABLE_HIP)
+      target_compile_definitions(strata_mmq_w4a4 PRIVATE GGML_USE_HIP)
+    endif()
     target_include_directories(strata_mmq PRIVATE ${_strata_gg}/include ${_strata_gg}/src ${_strata_mmq}
                                PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_compile_options(strata_mmq PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda -use_fast_math>)
