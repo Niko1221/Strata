@@ -3851,6 +3851,18 @@ class Service:
         prompt; with thinking, Service.run writes it once the thinking is over."""
         # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
         # between pictures and raise ClientGone
+        # Cached tool images are references in browser history, never arbitrary file paths or huge base64 strings.
+        for message in messages:
+            for part in message.get("content", []) if isinstance(message.get("content"), list) else []:
+                source = part.get("source", "") if isinstance(part, dict) else ""
+                if isinstance(part, dict) and part.get("type") == "image" and isinstance(source, str) and source.startswith("strata-tool-media:"):
+                    name = source[len("strata-tool-media:"):]
+                    if not re.fullmatch(r"[0-9a-f]{64}\.(png|jpg|webp)", name) or self.mcp is None or self.mcp.media_dir is None:
+                        raise ValueError("invalid tool image reference")
+                    image = Path(self.mcp.media_dir) / name
+                    if not image.is_file():
+                        raise ValueError("cached tool image is no longer available")
+                    part["source"] = str(image)
         fetched = self._note_unreadable_tool_images(messages, cancel)
         ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
@@ -4688,8 +4700,10 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             r = box["r"]
             print(f"[strata] tool {c.name}: {'ok' if r['ok'] else 'error'}, {r['chars']:,} characters in "
                   f"{r['ms'] / 1000:.1f} s{' (truncated for the model)' if r['truncated'] else ''}", flush=True)
-            results.append(r["text"])
-            yield "mcp", {"event": "result", "id": c.id, **{k: r[k] for k in ("ok", "text", "chars", "truncated", "ms")}}
+            results.append(r.get("model_content", r["text"]) if svc.vision is not None else r["text"])
+            yield "mcp", {"event": "result", "id": c.id,
+                          **({"images": r["images"], "vision": svc.vision is not None} if r.get("images") else {}),
+                          **{k: r[k] for k in ("ok", "text", "chars", "truncated", "ms")}}
         if cancel.is_set() or len(results) < len(calls):
             done = {**done, "finish": "cancel"}
             break
@@ -5248,6 +5262,28 @@ def make_handler(svc: Service):
 
         def do_GET(self):
             path = self.path.split("?")[0].rstrip("/")
+            if path.startswith("/tool-media/"):
+                if not self._authorized():
+                    return
+                name = path[len("/tool-media/"):]
+                hub = svc.mcp
+                if not re.fullmatch(r"[0-9a-f]{64}\.(png|jpg|webp)", name) or not hub or not hub.media_dir:
+                    self._json(404, {"error": {"message": "not found"}})
+                    return
+                file = Path(hub.media_dir) / name
+                if not file.is_file():
+                    self._json(404, {"error": {"message": "not found"}})
+                    return
+                body = file.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}[file.suffix])
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Cache-Control", "private, max-age=86400")
+                self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if path.startswith("/fonts/"):
                 # the web app's font (Outfit, OFL: serve/web/fonts); the page falls back to the system font
                 name = path[len("/fonts/"):]
@@ -6911,6 +6947,8 @@ def main() -> int:
     if hub is not None:
         import atexit
         svc.mcp = hub
+        if hub.settings["image_results"]:
+            hub.media_dir = Path(a.config).with_suffix(".tool-media") if a.config else Path.cwd() / ".tool-media"
         print(f"[strata] starting {len(hub.servers)} MCP server{'s' * (len(hub.servers) != 1)} for the web app's "
               f"chat: {', '.join(hub.servers)}", flush=True)
         hub.start()
