@@ -155,7 +155,9 @@ function setMetric(key, value, unit, sub) {
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
 let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
-let usageRange = "1d";    // the Usage panel's selected view: 1d | 7d | 30d | all | custom (opt-in usage_stats)
+const USAGE_VIEWS = ["1d", "7d", "30d", "all", "custom"];   // the Usage panel's views (opt-in usage_stats)
+const savedUsageView = store.get("usage.view", "");         // the browser remembers which view was last picked
+let usageRange = USAGE_VIEWS.includes(savedUsageView) ? savedUsageView : "7d";   // 7 days, unless the browser says otherwise
 function localTs(dateStr, timeStr) {  // "2026-10-10" + optional "14:30" -> epoch seconds, time defaulting to 00:00
   if (!dateStr) return null;
   const t = new Date(dateStr + "T" + (timeStr || "00:00"));
@@ -481,6 +483,7 @@ document.addEventListener("click", (e) => {
 $("req-all").addEventListener("click", () => { reqShowAll = !reqShowAll; if (lastMetrics) render(lastMetrics); });
 for (const b of document.querySelectorAll(".usage-range")) b.addEventListener("click", () => {
   usageRange = b.dataset.range;
+  store.set("usage.view", usageRange);   // remember the pick for the next page load
   if (usageRange === "custom") { prefillCustomRange(); refreshMetrics(); }   // the custom window comes from the server
   else if (lastMetrics) render(lastMetrics);
 });
@@ -1175,6 +1178,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawe
 // ------------------------------------------------------------------ start
 setBusy(false);
 renderChat();
+if (usageRange === "custom") prefillCustomRange();   // a remembered Custom view needs its dates before the first poll
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
