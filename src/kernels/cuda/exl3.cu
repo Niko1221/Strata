@@ -187,7 +187,13 @@ __global__ void prescale_had_kernel(const uint16_t* __restrict__ x, const uint16
 // atomicAdd per column folds the block's k-group into z.  This replaced 16-thread blocks that
 // atomicAdd-ed per k-tile: 16-thread blocks cap at ~24 blocks/CU (≈19% occupancy) and every k-tile
 // serialized on the same z, which is what pinned the GEMV at ~11 tok/s.
-constexpr int GEMV_T = 2;
+// **4 OUTPUT TILES PER BLOCK, MEASURED.**  The expert FFN is 48 layers x (gate, up, down) over 10 experts
+// and it was the largest compute block of a saturated token (18.5 ms/token).  Sweeping the tiles per block on
+// the real layer (`strata-exl3-moe`, layer 0, 10 experts): T=1 0.534 ms/layer, T=2 0.385 (the old value),
+// T=3 0.321, **T=4 0.308**, T=5 0.319, T=6 0.327, T=7 0.342, T=8 0.325.  Sweeping the k-group count up from
+// (ki+15)/16 only lost (x2 0.330, x4 0.543).  So 4, and the split stays as it is: -20% on the expert FFN,
+// 3.7 ms/token, on every machine.
+constexpr int GEMV_T = 4;
 
 // The dense (single-matrix) GEMV: 256 threads (16 sub-groups of 16 output columns) and `GEMV_T` output
 // tiles per block, like the batched kernel, but with the matrix's geometry as scalars.

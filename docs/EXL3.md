@@ -297,6 +297,12 @@ what makes the same model's prefill 447-966 tok/s on a 64 GB machine (docs/AMD_H
 whole expert set is resident in RAM, not the batch size.  This model's experts are 45 GB and the machine has
 24.5 GiB of free VRAM plus ~20 GB of usable RAM, so they do not fit and the reads are structural.
 
+**The expert GEMV's geometry, swept on the real layer.**  `strata-exl3-moe` runs the whole expert FFN (gate,
+up, down, both scale transforms, the silu) on layer 0 with 10 experts, and the tiles per block was swept on it:
+T=1 0.534 ms/layer, T=2 0.385 (what it was), T=3 0.321, **T=4 0.308**, T=5 0.319, T=6 0.327, T=7 0.342,
+T=8 0.325.  Sweeping the k-group count up from `(ki+15)/16` only lost (x2 0.330, x4 0.543).  T=4 is what the
+kernel uses, -20% on the expert FFN, 3.7 ms/token of a saturated token, on every machine and every GPU.
+
 Two more passes after the cache:
 
 - **the dense GEMV** (`gemv_kernel`) recomputed each weight's window geometry (3 multiplies and two integer
