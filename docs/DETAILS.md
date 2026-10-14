@@ -1727,12 +1727,17 @@ None of these changes the default answers; each was measured against the default
 engine runs (a fresh engine per side, warmed, 200-token greedy answers on three fixed prompts, medians; "pairs faster" counts
 the pairs in which the switched arm won). They are here so you can try them on your own card.
 
-- **`STRATA_GDN_CHUNKED=1`: the DeltaNet recurrence of the prompt in chunks of 32 tokens** (sergiywith, #1372; WY form, FP32,
+- **`STRATA_GDN_CHUNKED=1`: the DeltaNet recurrence of the prompt, opt-in**. On CUDA it runs in chunks of 32 tokens
+  (sergiywith, #1372; WY form, FP32,
   other bits than the default: first-token KL against the default was 0.002-0.009 nats on average, the same top token in
   every prompt tried). The kernel needs 128 SMs in one wave, so by itself it runs only on a card with 128 or more
   (RTX 5090: 1.8x on the recurrence). On smaller cards `STRATA_GDN_CHUNKED=2` forces it for a measurement, and it is
   slower there: 0.73x on an RTX 3060 (28 SMs) and 0.87x on an RTX 5070 (48 SMs) at 2K-32K tokens (`gdn_rec_parity --bench`),
   and the prompt time did not improve: RTX 5070 2K 1.01x, 8K 1.00x of the default's time; RTX 3060 2K, 8K, 16K 1.01x, no pair faster.
+  On HIP, gfx1100-gfx1103, gfx1150 and gfx1151 use 16-token WMMA chunks with FP16 operands and a fused output norm; other cards and short
+  chunks keep the existing path. It changes rounding too (first-token KL against the default 0.006-0.007 on average, the same top
+  token in 12 of 12 prompts); on a Radeon 8060S (gfx1151) the layer's recurrence is 1.6x faster and a 4K-128K prompt after a warm-up prompt 1.1-2.5%; see
+  [the HIP conditions and numerical checks](AMD_HIP.md#opt-in-chunked-prompt-gdn-on-gfx11).
 - **`STRATA_FS_SLOTS=N`: the Foresight swap space** (q8atnight, #1348): N VRAM slots per layer, refilled on a copy stream
   with the experts that just missed and with the ones the next layer's router predicts (`STRATA_FS_AHEAD=0` for the
   misses only), so that an expert the cache lacks can be computed on the GPU instead of by the CPU. The model's own router

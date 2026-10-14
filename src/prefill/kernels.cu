@@ -1469,6 +1469,340 @@ __global__ void __launch_bounds__(S) gdn_out_norm_loop_kernel(const float* __res
         }
     }
 }
+// STRATA_GDN_CHUNKED=1 on the gfx11 matrix cores: the recurrence in chunks of 16 tokens (the WY form of the CUDA
+// chunked path above), FP16 operands and FP32 accumulation, the output norm fused.  Per value head, gamma_t the
+// gate's sum from the chunk's start to t (inclusive; the code's sg) and S0 the state before the chunk:
+//   A[t][i] = beta_t exp(gamma_t - gamma_i) k_t.k_i (i < t),  T = (I + A)^-1,  P[t][i] = exp(gamma_t - gamma_i) q_t.k_i (i <= t),
+//   Y = beta (V - exp(gamma) K S0),  D = T Y,  o = exp(gamma) Q S0 + P D,
+//   S = exp(gamma_last) S0 + K^T (exp(gamma_last - gamma) D).
+// gdn_wmma_prep_kernel computes T and P of every chunk at once (they do not depend on the state); gdn_wmma_scan_kernel
+// walks the chunks, a block per value head and a wave per 16 value columns, the state in the waves' WMMA accumulators
+// (FP32), each product a 16 x 16 x 16 WMMA: k, q, T, P, D and the state as an operand are rounded to FP16 (relative
+// 2^-11), so the output differs from the FP32 kernels by more than their rounding (tests/hip/gdn_chunked.cpp holds it
+// to the bounds of its Error::ok).  The norm and the z gate run in the scan.
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
+#define STRATA_GDN_WMMA 1   // device pass with the gfx11 WMMA intrinsic (the list of gfx_arch_is_gfx11_wmma)
+#endif
+constexpr int GW_CK = 16;          // tokens per chunk (a WMMA tile)
+constexpr int GW_NW = S / 16;      // the scan's waves per block: one per 16 value columns
+constexpr int GW_VPK = HV / HK;    // value heads per key head: the prep's waves per block
+constexpr int GW_KP = S + 8;       // the scan's padded FP16 k / q rows
+constexpr int GW_AHEAD = 3;        // the scan warms the cache this many chunks ahead
+constexpr int64_t kGdnWmmaMin = 64;   // STRATA_GDN_CHUNKED=1 takes prompt chunks of this many tokens and more
+typedef _Float16 gw_h16 __attribute__((ext_vector_type(16)));
+typedef _Float16 gw_h8 __attribute__((ext_vector_type(8)));
+typedef _Float16 gw_h2 __attribute__((ext_vector_type(2)));
+typedef float gw_f8 __attribute__((ext_vector_type(8)));
+typedef float gw_f4 __attribute__((ext_vector_type(4)));   // (HIP's float4 copies through memcpy, which kept a staged
+                                                           // copy in scratch: a store that waits for the load)
+__device__ __forceinline__ gw_f8 gw_mma(gw_h16 a, gw_h16 b, gw_f8 c) {
+#if defined(STRATA_GDN_WMMA)
+    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
+#else
+    (void) a; (void) b; (void) c;
+    __builtin_trap();   // not a gfx11 device pass: the runtime gate never launches it
+#endif
+}
+// An accumulator tile (lane l: rows 2v + (l >> 4) for v = 0..7, column l & 15) as a B operand (lane l: column l & 15,
+// rows 0..15, both halves of the wave alike): pairs of rows rounded to FP16 and packed, the other half's pairs fetched
+// across (permlanex16), then interleaved by a byte permute whose selector depends on the lane's half (gw_sel).
+struct GwSel { unsigned even, odd; };
+__device__ __forceinline__ GwSel gw_sel(int hi) { return hi ? GwSel{0x01000504u, 0x03020706u} : GwSel{0x05040100u, 0x07060302u}; }
+__device__ __forceinline__ gw_h16 gw_acc_to_b(gw_f8 x, GwSel ps) {
+    unsigned wd[8];
+#pragma unroll
+    for (int m = 0; m < 4; ++m) {
+        const gw_h2 p = {(_Float16) x[2 * m], (_Float16) x[2 * m + 1]};
+        const unsigned own = __builtin_bit_cast(unsigned, p);
+#if defined(STRATA_GDN_WMMA)
+        const unsigned other = __builtin_amdgcn_permlanex16(own, own, 0x76543210u, 0xfedcba98u, false, false);
+#else
+        const unsigned other = own;
+#endif
+        wd[2 * m] = __builtin_amdgcn_perm(other, own, ps.even);
+        wd[2 * m + 1] = __builtin_amdgcn_perm(other, own, ps.odd);
+    }
+    return __builtin_bit_cast(gw_h16, wd);
+}
+__device__ __forceinline__ gw_h16 gw_ld(const _Float16* p) {   // 32 bytes of LDS, 16-byte aligned
+    const uint4 a = *reinterpret_cast<const uint4*>(p), b = *reinterpret_cast<const uint4*>(p + 8);
+    const uint4 ab[2] = {a, b};
+    return __builtin_bit_cast(gw_h16, ab);
+}
+// The wave's own LDS writes complete (read back across its lanes).  A gfx11 instruction: gfx12 device passes never run these kernels.
+__device__ __forceinline__ void gw_lds_wait() {
+#if defined(STRATA_GDN_WMMA)
+    __asm__ volatile("s_waitcnt lgkmcnt(0)" ::: "memory");
+#endif
+}
+// A barrier over LDS only.  __syncthreads() is a workgroup fence over all memory, which on gfx11 also waits for every
+// global load in flight: the scan's loads of the next chunk would have to land before each barrier.
+__device__ __forceinline__ void gw_lds_barrier() {
+#if defined(STRATA_GDN_WMMA)
+    __asm__ volatile("s_waitcnt lgkmcnt(0)\n\ts_barrier" ::: "memory");
+#else
+    __syncthreads();   // the gfx11-only instruction must not reach a gfx12 device pass
+#endif
+}
+
+// A block per (key head, chunk) - the grid's x the key head, so the blocks in flight read the same token rows (blocks
+// that walked the key heads' slices of far-apart rows took 14 ms against 2.2 ms for 16K tokens on gfx1151) - and a wave per value head of the key head.
+// T then P, FP16 row-major (1 KB), at tp[(chunk * HV + value head) * 512].
+__global__ void __launch_bounds__(32 * GW_VPK) gdn_wmma_prep_kernel(const float* __restrict__ h, const float* __restrict__ gate,
+                                                                 const float* __restrict__ beta, _Float16* __restrict__ tp,
+                                                                 int64_t T) {
+    __shared__ float sa[GW_VPK][GW_CK * GW_CK], sg[GW_VPK][GW_CK], sb[GW_VPK][GW_CK];
+    const int qh = blockIdx.x, ch = blockIdx.y, w = threadIdx.x >> 5, l = threadIdx.x & 31, c = l & 15, hi = l >> 4;
+    const int vh = qh + w * HK;
+    const int64_t t0 = (int64_t) ch * GW_CK;
+    gw_f8 kk = {}, qk = {};   // k_t.k_i and q_t.k_i (lane: column i = c, rows t = 2v + hi)
+    {
+        const bool ok = t0 + c < T;   // past the end: zero rows
+        const float* ht = h + (ok ? t0 + c : 0) * C;
+#pragma unroll
+        for (int j = 0; j < S / 16; ++j) {
+            gw_h16 ka, qa;
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                const gw_f4 k4 = *reinterpret_cast<const gw_f4*>(ht + HK * S + qh * S + 16 * j + 4 * i);
+                const gw_f4 q4 = *reinterpret_cast<const gw_f4*>(ht + qh * S + 16 * j + 4 * i);
+#pragma unroll
+                for (int e = 0; e < 4; ++e) {
+                    ka[4 * i + e] = (_Float16) (ok ? k4[e] : 0.0f);
+                    qa[4 * i + e] = (_Float16) (ok ? q4[e] : 0.0f);
+                }
+            }
+            kk = gw_mma(ka, ka, kk);   // B = K^T: lane i holds column i of K^T, row i of K - the A operand itself
+            qk = gw_mma(qa, ka, qk);
+        }
+    }
+    if (l < GW_CK) {   // past the end: gate 0, beta 0
+        const bool ok = t0 + l < T;
+        float g = ok ? gate[(t0 + l) * HV + vh] : 0.0f;
+#pragma unroll
+        for (int o = 1; o < GW_CK; o <<= 1) {
+            const float u = __shfl_up(g, o, GW_CK);
+            if (l >= o) g += u;
+        }
+        sg[w][l] = g;
+        sb[w][l] = ok ? beta[(t0 + l) * HV + vh] : 0.0f;
+    }
+    gw_lds_wait();   // the wave's own LDS writes, read across its lanes
+    _Float16* out = tp + ((int64_t) ch * HV + vh) * (2 * GW_CK * GW_CK);
+#pragma unroll
+    for (int v = 0; v < 8; ++v) {
+        const int t = 2 * v + hi;
+        sa[w][t * GW_CK + c] = c < t ? sb[w][t] * __expf(sg[w][t] - sg[w][c]) * kk[v] : 0.0f;
+        out[GW_CK * GW_CK + t * GW_CK + c] = (_Float16) (c <= t ? __expf(sg[w][t] - sg[w][c]) * qk[v] : 0.0f);
+    }
+    gw_lds_wait();
+    if (l < GW_CK) {   // lane c: column c of T = (I + A)^-1 by forward substitution
+        float tc[GW_CK];
+#pragma unroll
+        for (int t = 0; t < GW_CK; ++t) {
+            float v = t == c ? 1.0f : 0.0f;
+#pragma unroll
+            for (int k = 0; k < t; ++k) v = fmaf(-sa[w][t * GW_CK + k], tc[k], v);
+            tc[t] = v;
+            out[t * GW_CK + c] = (_Float16) v;
+        }
+    }
+}
+
+// A thread's slice of a chunk in the scan (token threadIdx / 16, columns (threadIdx % 16) * 8 .. + 7): k, q and v,
+// loaded a chunk ahead, and one word of the chunk's T and P; lanes 0..15 of wave 0 also gate and beta of token l.
+// Rows past the end read the last row (finite: their gate and beta become 0 at staging, which keeps them out of the
+// state, of the real rows' products and of the output) - no select on the loaded values, which would wait for them.
+struct GwChunk {
+    gw_f4 k0, k1, q0, q1, v0, v1;
+    float g, b;
+    unsigned tp;
+};
+__device__ __forceinline__ void gw_load(GwChunk& in, const float* __restrict__ h, const float* __restrict__ gate,
+                                        const float* __restrict__ beta, const unsigned* __restrict__ tp, int64_t t0,
+                                        int64_t T, int vh, int qh) {
+    const int t = threadIdx.x >> 4, r = (threadIdx.x & 15) * 8;
+    const float* ht = h + std::min<int64_t>(t0 + t, T - 1) * C;
+    in.tp = tp[((t0 / GW_CK) * HV + vh) * (GW_CK * GW_CK) + threadIdx.x];
+    in.k0 = *reinterpret_cast<const gw_f4*>(ht + HK * S + qh * S + r);
+    in.k1 = *reinterpret_cast<const gw_f4*>(ht + HK * S + qh * S + r + 4);
+    in.q0 = *reinterpret_cast<const gw_f4*>(ht + qh * S + r);
+    in.q1 = *reinterpret_cast<const gw_f4*>(ht + qh * S + r + 4);
+    in.v0 = *reinterpret_cast<const gw_f4*>(ht + 2 * HK * S + vh * S + r);
+    in.v1 = *reinterpret_cast<const gw_f4*>(ht + 2 * HK * S + vh * S + r + 4);
+    if (threadIdx.x < GW_CK) {
+        const int64_t tl = std::min<int64_t>(t0 + threadIdx.x, T - 1);
+        in.g = gate[tl * HV + vh];
+        in.b = beta[tl * HV + vh];
+    }
+}
+// Brings a later chunk's lines (this block's k, q, v and z rows: 256 lines of 128 bytes, one a thread) into the cache
+// with a load whose result is not used, so the real loads of that chunk hit the cache.  An ordinary load: the compiler
+// tracks it, and the result is consumed (by an empty asm) one chunk later, after the store of the previous chunk's output
+// rows, where the wait for the loads issued before that point also covers it.
+__device__ __forceinline__ unsigned gw_touch(const float* __restrict__ h, const float* __restrict__ z, int64_t t0,
+                                             int64_t T, int vh, int qh) {
+    const int t = threadIdx.x >> 4, part = threadIdx.x & 15, kind = part >> 2;
+    if (t0 + t >= T) return 0u;
+    const float* p = kind == 0 ? h + (t0 + t) * C + HK * S + qh * S
+                   : kind == 1 ? h + (t0 + t) * C + qh * S
+                   : kind == 2 ? h + (t0 + t) * C + 2 * HK * S + vh * S
+                               : z + (t0 + t) * HV * S + vh * S;
+    return __float_as_uint(p[32 * (part & 3)]);
+}
+// Per chunk: stage it (k / q FP16, k also transposed, v, the gate's running sum, beta, T and P); barrier (1); store
+// the previous chunk's output rows (the z gate on its normed output, 16 bytes a thread); X = K S0, QS = Q S0; Y, D,
+// o and the wave's sums of o^2; the state update; barrier (2); the norm.  LDS is single-buffered: an array written in
+// the staging of chunk c + 1 or after its barrier (2) was last read before that wave reached barrier (1) of c + 1.
+__global__ void __launch_bounds__(GW_NW * 32) gdn_wmma_scan_kernel(float* __restrict__ state, const float* __restrict__ h,
+                                                                   const float* __restrict__ gate, const float* __restrict__ beta,
+                                                                   const float* __restrict__ z, const float* __restrict__ gamma,
+                                                                   const unsigned* __restrict__ tp, float eps,
+                                                                   uint16_t* __restrict__ y16, int64_t T, int64_t ld16) {
+    __shared__ __attribute__((aligned(16))) _Float16 sk[GW_CK * GW_KP], sq[GW_CK * GW_KP], skt[S * GW_CK],
+        stp[2 * GW_CK * GW_CK];
+    __shared__ __attribute__((aligned(16))) float sv[GW_CK * S], so[GW_CK * S], sn[GW_CK * GW_NW];
+    __shared__ float sg[GW_CK], sb[GW_CK], sgam[S];
+    const _Float16 *st_ = stp, *sp_ = stp + GW_CK * GW_CK;   // T, P
+    const int vh = blockIdx.x, qh = vh % HK, w = threadIdx.x >> 5, l = threadIdx.x & 31, c = l & 15, hi = l >> 4;
+    const int col = 16 * w + c;                                       // this lane's column in the products
+    const int st = threadIdx.x >> 4, sr = (threadIdx.x & 15) * 8;    // this thread's staging slice
+    const size_t rs = (size_t) HV * S;
+    const GwSel ps = gw_sel(hi);
+    gw_f8 s[S / 16];   // the state: rows 16j + 2v + hi, column col
+#pragma unroll
+    for (int j = 0; j < S / 16; ++j)
+#pragma unroll
+        for (int v = 0; v < 8; ++v) s[j][v] = state[(size_t) (16 * j + 2 * v + hi) * rs + (size_t) vh * S + col];
+    if (threadIdx.x < S) sgam[threadIdx.x] = gamma[threadIdx.x];
+    const float out_scale = rsqrtf((float) S);
+    GwChunk cur;
+    gw_load(cur, h, gate, beta, tp, 0, T, vh, qh);
+    unsigned touched = 0;
+    gw_f4 z0 = {}, z1 = {};   // the z slice of the chunk whose output rows are stored next
+    auto store_rows = [&](int64_t c0) {   // the output rows of the chunk at c0 (its norm in so): z gate, FP16
+        if (c0 + st >= T) return;
+        const float* o = &so[st * S + sr];
+        gw_h8 r;
+#pragma unroll
+        for (int i = 0; i < 8; ++i) r[i] = (_Float16) (o[i] * sigm(i < 4 ? z0[i] : z1[i - 4]));
+        *reinterpret_cast<uint4*>(y16 + (c0 + st) * ld16 + vh * S + sr) = __builtin_bit_cast(uint4, r);
+    };
+    for (int64_t t0 = 0; t0 < T; t0 += GW_CK) {
+        {   // stage this chunk
+            gw_h8 kh, qq;
+#pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                kh[i] = (_Float16) (i < 4 ? cur.k0[i] : cur.k1[i - 4]);
+                qq[i] = (_Float16) (i < 4 ? cur.q0[i] : cur.q1[i - 4]);
+                skt[(sr + i) * GW_CK + st] = kh[i];
+            }
+            *reinterpret_cast<uint4*>(&sk[st * GW_KP + sr]) = __builtin_bit_cast(uint4, kh);
+            *reinterpret_cast<uint4*>(&sq[st * GW_KP + sr]) = __builtin_bit_cast(uint4, qq);
+            *reinterpret_cast<gw_f4*>(&sv[st * S + sr]) = cur.v0;
+            *reinterpret_cast<gw_f4*>(&sv[st * S + sr + 4]) = cur.v1;
+            reinterpret_cast<unsigned*>(stp)[threadIdx.x] = cur.tp;
+            if (threadIdx.x < GW_CK) {   // past the end: gate 0, beta 0
+                const bool ok = t0 + l < T;
+                float g = ok ? cur.g : 0.0f;
+#pragma unroll
+                for (int o = 1; o < GW_CK; o <<= 1) {
+                    const float u = __shfl_up(g, o, GW_CK);
+                    if (l >= o) g += u;
+                }
+                sg[l] = g;
+                sb[l] = ok ? cur.b : 0.0f;
+            }
+        }
+        if (t0 + GW_CK < T) gw_load(cur, h, gate, beta, tp, t0 + GW_CK, T, vh, qh);   // lands during this chunk
+        const unsigned touch_now = gw_touch(h, z, t0 + GW_AHEAD * GW_CK, T, vh, qh);
+        gw_lds_barrier();   // (1) this chunk staged; the previous chunk's norm in so
+        if (t0 > 0) store_rows(t0 - GW_CK);
+        __asm__ volatile("" ::"v"(touched));   // the previous touch, consumed here
+        touched = touch_now;
+        {   // this chunk's z slice, for its output rows after barrier (1) of the next chunk
+            const int64_t tz = std::min<int64_t>(t0 + st, T - 1);
+            z0 = *reinterpret_cast<const gw_f4*>(z + tz * HV * S + vh * S + sr);
+            z1 = *reinterpret_cast<const gw_f4*>(z + tz * HV * S + vh * S + sr + 4);
+        }
+        gw_f8 x = {}, qs = {};   // K S0 and Q S0, this wave's columns
+#pragma unroll
+        for (int j = 0; j < S / 16; ++j) {
+            const gw_h16 b = gw_acc_to_b(s[j], ps);
+            x = gw_mma(gw_ld(sk + c * GW_KP + 16 * j), b, x);
+            qs = gw_mma(gw_ld(sq + c * GW_KP + 16 * j), b, qs);
+        }
+        gw_f8 y;
+#pragma unroll
+        for (int v = 0; v < 8; ++v) {
+            const int t = 2 * v + hi;
+            y[v] = sb[t] * (sv[t * S + col] - __expf(sg[t]) * x[v]);
+        }
+        const gw_f8 d = gw_mma(gw_ld(st_ + c * GW_CK), gw_acc_to_b(y, ps), gw_f8{});
+        gw_f8 o;
+#pragma unroll
+        for (int v = 0; v < 8; ++v) o[v] = __expf(sg[2 * v + hi]) * qs[v];
+        o = gw_mma(gw_ld(sp_ + c * GW_CK), gw_acc_to_b(d, ps), o);
+#pragma unroll
+        for (int v = 0; v < 8; ++v) {   // the wave's 16 columns of o^2 per token, then the 8 waves' through LDS
+            o[v] *= out_scale;
+            float p = o[v] * o[v];
+#pragma unroll
+            for (int m = 1; m < 16; m <<= 1) p += __shfl_xor(p, m);
+            if (c == 0) sn[(2 * v + hi) * GW_NW + w] = p;
+        }
+        const float gl = sg[GW_CK - 1];
+        gw_f8 dd;
+#pragma unroll
+        for (int v = 0; v < 8; ++v) dd[v] = __expf(gl - sg[2 * v + hi]) * d[v];
+        const gw_h16 db = gw_acc_to_b(dd, ps);
+        const float eg = __expf(gl);
+#pragma unroll
+        for (int j = 0; j < S / 16; ++j) s[j] = gw_mma(gw_ld(skt + (16 * j + c) * GW_CK), db, s[j] * eg);
+        gw_lds_barrier();   // (2) the sums of o^2
+        const float g_col = sgam[col];
+#pragma unroll
+        for (int v = 0; v < 8; ++v) {
+            const int t = 2 * v + hi;
+            const gw_f4 n0 = *reinterpret_cast<const gw_f4*>(&sn[t * GW_NW]), n1 = *reinterpret_cast<const gw_f4*>(&sn[t * GW_NW + 4]);
+            const float ss = n0[0] + n0[1] + n0[2] + n0[3] + n1[0] + n1[1] + n1[2] + n1[3];
+            so[t * S + col] = o[v] * rsqrtf(ss * (1.0f / S) + eps) * g_col;
+        }
+    }
+    __asm__ volatile("" ::"v"(touched));
+    gw_lds_barrier();
+    store_rows((T - 1) / GW_CK * GW_CK);
+    __asm__ volatile("" : "+s"(state));   // the state's addresses recomputed here, not kept (spilled) since the start
+#pragma unroll
+    for (int j = 0; j < S / 16; ++j)
+#pragma unroll
+        for (int v = 0; v < 8; ++v) state[(size_t) (16 * j + 2 * v + hi) * rs + (size_t) vh * S + col] = s[j][v];
+}
+// The opt-in chunked recurrence on gfx11 (STRATA_GDN_CHUNKED=1): false (nothing launched) on another part.  y, the
+// FP32 scratch of the other kernels (T x 6144 floats), holds T and P (1 KB per chunk and value head: T x 3 KB).
+bool gdn_rec_wmma(float* state, const float* h, const float* gate, const float* beta, const float* z, const float* gamma,
+                  float eps, float* y, uint16_t* y16, int64_t T, cudaStream_t s, int64_t ld16) {
+    if (T < kGdnWmmaMin || ld16 % 8 != 0) return false;   // the rows are stored 16 bytes at a time
+    // A layer-split worker can change devices: a process-wide answer for the first card can launch a trapping
+    // gfx11 kernel on a later gfx12 card.  Cache only the current thread's last device, as properties are not cheap.
+    static thread_local int last_device = -1;
+    static thread_local bool gfx11 = false;
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return false;
+    if (dev != last_device) {
+        cudaDeviceProp p{};
+        if (cudaGetDeviceProperties(&p, dev) != cudaSuccess) return false;
+        gfx11 = strata::kernels::gfx_arch_is_gfx11_wmma(p.gcnArchName);
+        last_device = dev;
+    }
+    if (!gfx11) return false;
+    const int64_t nch = (T + GW_CK - 1) / GW_CK;
+    _Float16* tp = reinterpret_cast<_Float16*>(y);
+    gdn_wmma_prep_kernel<<<dim3(HK, (unsigned) nch), 32 * GW_VPK, 0, s>>>(h, gate, beta, tp, T);
+    gdn_wmma_scan_kernel<<<HV, GW_NW * 32, 0, s>>>(state, h, gate, beta, z, gamma, reinterpret_cast<const unsigned*>(tp),
+                                                   eps, y16, T, ld16);
+    return true;
+}
 #endif   // __HIPCC__
 __global__ void __launch_bounds__(S) gdn_out_norm_kernel(const float* __restrict__ z, const float* __restrict__ gamma,
                                                          float eps, float* __restrict__ y, uint16_t* __restrict__ y16,
@@ -1939,7 +2273,17 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
                             const float* z, const float* gamma, float eps, float* y, uint16_t* y16, int64_t T,
                             void* stream, int64_t ld16) {
     if (ld16 <= 0) ld16 = (int64_t) HV * S;
+    static const bool serial = std::getenv("STRATA_GDN_REC_HEADS") != nullptr;   // the one-block-per-head kernel (A/B)
 #if defined(__HIPCC__)
+    if (variant == 0 || variant == 1) {
+        // STRATA_GDN_CHUNKED=1 (opt-in): the chunked recurrence on the gfx11 matrix cores, FP16 operands (other bits;
+        // a shorter chunk or another part takes the kernels below)
+        static const bool chunked = [] { const char* v = std::getenv("STRATA_GDN_CHUNKED"); return v != nullptr && std::atoi(v) != 0; }();
+        if (chunked && !serial && gdn_rec_wmma(state, h, gate, beta, z, gamma, eps, y, y16, T, (cudaStream_t) stream, ld16)) {
+            check("gdn_recurrence (chunked, WMMA)");
+            return;
+        }
+    }
     if (variant == 3) {   // diagnostics: the quad recurrence + the old norm kernel
         if (T > 0) {
             gdn_rec_quad_kernel<<<HV * (S / QCB), QTH, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
@@ -1982,7 +2326,6 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
 #else
     (void) variant;   // the quad recurrence kernels are AMD-only
 #endif
-    static const bool serial = std::getenv("STRATA_GDN_REC_HEADS") != nullptr;   // the one-block-per-head kernel (A/B)
     if (serial || T <= 0 || variant == 2) {
         gdn_rec_kernel<<<HV, dim3(S, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, z, gamma, eps, y, y16, T, ld16);
     } else {
