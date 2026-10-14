@@ -304,6 +304,21 @@ measured, **18.52 GiB free -> 216 slots/layer before, 25.28 GiB -> 297 after**. 
 200-token run, the last 30 tokens) went from a 97.4 ms pool to 83.1 ms (the expert uploads 76.2 -> 62.0 ms),
 and a 15-token prompt from 14.0 s to 12.2 s.
 
+**The native bf16 projections, on by default here.**  The SSM gates, the router and the indexer are bf16 rows
+staged in the engine's own form on this path too, so the EXL3 loader now takes the same kernels the native pack
+does (`STRATA_EXL3_NATIVE_BF16=0` keeps the old ones).  With `--stage-timing` the dense token drops
+**38.798 -> 35.572 ms**: `moe_route` 2.202 -> 1.333, `gdn alpha/beta/gate` 1.831 -> 0.803.  The answer is
+unchanged.
+
+**Where the dense token's time is, measured with `--stage-timing`, and the next target.**  Of the 35.6 ms:
+the attention block 15.1 (the GDN's sub-stages sum to 9.5, the QSA layers the rest), **the hyper-connection
+reads 8.1** (`gr_read (attn)` 4.1 + `gr_read (ffn)` 4.0), the router 1.3, the writes 0.8, everything else
+under 1.  The hyper-connections are the single biggest fixable block and the reason is concrete: `gr_down_kernel`
+stages the whole `xn` (D = 10,240 floats, 40 KB) in shared memory, which caps it at one block per compute unit
+against 121 blocks for 70 units, and the kernels measure 8.1 ms against the ~2.6 ms their 1.27 GB/token of bf16
+weights would cost at bandwidth.  Splitting their k dimension (a smaller `xn` per block, partial sums) is the
+change; it is in `fused_gr.cu`, which the native pack shares, so it needs that path's selftest as well.
+
 **Four kernels fewer, folded into their neighbours.**  The three `cudaMemsetAsync` that zero the GEMV's
 accumulator now ride along in the prescale that already runs immediately before it on the same stream (one
 strided store per thread), and the accumulator's f32 buffer, which nothing else read, is written as the f16
