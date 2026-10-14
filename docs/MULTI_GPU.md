@@ -118,17 +118,30 @@ card, 24-35 on the second, 36-41 on the third and 42-47 on the last. The server 
 is wrong.
 
 **Giving one card's VRAM to another program (#533, opt-in, 0.1.39).** With `"vram_elastic": true` every card's expert
-cache is allocated in 512 MiB segments, so `POST /v1/vram {"reserve_mib": 16000, "gpu": 1}` (the engine's own line is
-`VRAM 16000 1`) shrinks GPU 1's cache between requests until 16 GB is free on that card - the Qwen-Image 2.1 peak
-measured on a 3090 was 15.39 GiB at 1024x1024 - and `{"reserve_mib": null, "gpu": 1}` takes it back; without `"gpu"`
-every card of the run moves together. The layers of a card whose cache shrank compute their experts on the CPU, so
-that card's decode slows and the others run as before; a cache never goes below 128 slots plus the smallest prompt
-chunk's buffers, and the chunk drops to the largest one every card can still lend. The split itself never moves: the
-card keeps its dense weights, its session and its KV, and nothing is reloaded. `min_free_vram_mib` reads every card
-the run will use, so a split is not started into a card another program has filled. Measured on a split (2x RTX 3090,
-Swift 1.5 IQ3_XXS, layers 0-23 / 24-47, `"parallel": 2`, `--vram-reserve-mib 700`, 512-token greedy decode): with the
-cache whole on both cards `"vram_elastic": true` and `false` give the same cache (20 091 slots, 33 037 MiB) and
-106.6 vs 106.4 tok/s - the segments cost nothing while nothing is handed away.
+cache is allocated in 512 MiB segments, so `POST /v1/vram {"reserve_mib": 16640, "gpu": 1}` (the engine's own line is
+`VRAM 16640 1`) shrinks GPU 1's cache between requests until that much VRAM is free on that card.  Measured on 2x RTX
+3090 with ComfyUI's Qwen-Image 2.1 on the second card: it took GPU 1 from 16380 to 1024 MiB of cache (559 of 8833
+experts, the prompt chunk 8192 -> 512) and left 15200 MiB free, where the image model's measured peak at 1024x1024
+with DynamicVRAM is 15240 MiB.  `{"reserve_mib": null, "gpu": 1}` takes it back - the line `VRAM - 1`, the dash
+standing for the start's reserve, because a number in that slot IS the reserve: `VRAM 1` is a 1 MiB reserve on every
+card of the run, not device 1.  Without `"gpu"` every card of the run moves together. The layers of a card whose
+cache shrank compute their experts on the CPU, so that card's decode slows and the others run as before; a cache
+never goes below 128 slots plus the smallest prompt chunk's buffers, and the chunk drops to the largest one every
+card can still lend. The split itself never moves: the card keeps its dense weights, its session and its KV, and
+nothing is reloaded. `min_free_vram_mib` reads every card the run will use, so a split is not started into a card
+another program has filled. Measured on the 2x 3090 split: with ComfyUI holding 15240 MiB on GPU 1 and that card's
+cache at 3072 MiB, the engine answered a request in 1.1 s.  With the cache whole on both cards, `"vram_elastic":
+true` and `false` give the same cache (20 091 slots, 33 037 MiB) and 106.6 vs 106.4 tok/s (512-token greedy decode,
+`"parallel": 2`) - the segments cost nothing while nothing is handed away.
+
+**Sizing the reserve for a CUDA program on the other card (measured on 2x RTX 3090, driver 595.71.05).** A second
+CUDA client costs 305 MiB before it allocates anything: `torch.cuda.init()` and its first tensor took the card from
+23505 to 23810 MiB used.  It fails in `cuDevicePrimaryCtxRetain` with CUDA_ERROR_OUT_OF_MEMORY at 80 MiB free and
+attaches at 613.  A reserve that lands under that cannot host a program at all, and the reserve under-arrives by up
+to one segment (the cache unmaps whole segments, so a keep inside a segment keeps it), so size it above what the
+other program peaks at: ComfyUI's Qwen-Image 2.1 needs 15240 MiB and `{"reserve_mib": 16640}` is what delivered it.
+`nvidia-smi` reports 450 MiB `memory.reserved` on a 3090, so a card has 24126 MiB to share: free is total - used -
+reserved, not total - used.
 
 **`auto`** tries every placement for two, three or four cards (proportional to free VRAM beyond that) and keeps the one whose
 caches hold the most of the expert profile, hottest pairs weighted most. Ties go to the placement that leaves the fullest card

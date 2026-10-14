@@ -1607,15 +1607,15 @@ class StrataEngine:
             return self._vram(reserve_mib, gpu, timeout)
 
     def _vram(self, reserve_mib: int | None, gpu: int | None = None, timeout: float = 120.0) -> dict:
-        """#533: `VRAM <reserve_mib> [device]` between requests (the caller holds the service's FIFO): the engine
+        """#533: `VRAM <reserve_mib|- [device]` between requests (the caller holds the service's FIFO): the engine
         shrinks an expert cache until that much VRAM is free, or grows it back when more is free; None: back to the
-        reserve it started with.  `gpu` is the engine's GPU number (0 = the main card, the --split-device numbering);
-        None: every GPU of the run.  -> the engine's figures, summed over the GPUs it moved, with one entry per GPU
-        in "gpus"; raises ValueError with the engine's reason (e.g. it was not started with --vram-elastic),
-        EngineDied when it ended."""
+        reserve it started with, sent as the dash the engine's grammar needs to put a device after it.  `gpu` is the
+        engine's GPU number (0 = the main card, the --split-device numbering); None: every GPU of the run.  -> the
+        engine's figures, summed over the GPUs it moved, with one entry per GPU in "gpus"; raises ValueError with the
+        engine's reason (e.g. it was not started with --vram-elastic), EngineDied when it ended."""
         if not self.alive():
             raise EngineDied("the engine is not running")
-        line = "VRAM" + ("" if reserve_mib is None else f" {int(reserve_mib)}")
+        line = "VRAM" + (" -" if reserve_mib is None else f" {int(reserve_mib)}")
         if gpu is not None:
             line += f" {int(gpu)}"
         self.proc.stdin.write(line + "\n")

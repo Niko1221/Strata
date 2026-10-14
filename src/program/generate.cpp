@@ -1122,10 +1122,10 @@ void usage() {
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
                  "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE needs RAM (opt-in)\n"
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
-                 "                       default 512), so the command `VRAM <reserve_mib> [device]` (the server's POST\n"
-                 "                       /v1/vram) can give VRAM back to other programs between requests and take it\n"
-                 "                       back later; with a layer split every GPU has its own cache and `device`\n"
-                 "                       (0 = the main card) picks which one moves\n"
+                 "                       default 512), so the command `VRAM <reserve_mib|- [device]` (the server's POST\n"
+                 "                       /v1/vram) can give VRAM back to other programs between requests and take it back\n"
+                 "                       later; with a layer split every GPU has its own cache and `device` (0 = the main\n"
+                 "                       card) picks which one moves\n"
                  "  --batch N / --slots N  --serve (opt-in): up to N requests decode together in batch slots (2..8\n"
                  "                       normally; --batch-mtp waves more through eight-row windows),\n"
                  "                       each slot with its own session (VRAM like the main one); docs/BATCHING.md\n"
@@ -14116,21 +14116,30 @@ int main(int argc, char** argv) {
         // what each cache gave up, per target: (residency index, slot) the shrinks took, so a grow puts them back
         std::vector<std::vector<std::pair<int32_t, int32_t>>> vram_evicted(1 + stages.size());
         auto vram_command = [&](const std::string& cmd, std::string& e) -> bool {
-            // `VRAM` alone: the reserve the engine started with (--vram-reserve-mib), on every card of the run
-            char* end = nullptr;
-            const bool bare = cmd.find_first_not_of(' ', 4) == std::string::npos;
-            const long long reserve = bare ? (long long) o.vram_reserve_mib : std::strtoll(cmd.c_str() + 4, &end, 10);
-            if (!bare && (end == cmd.c_str() + 4 || reserve < 0)) { e = "expected: VRAM [reserve_mib [device]]"; return false; }
+            // `VRAM` alone: the reserve the engine started with (--vram-reserve-mib), on every card of the run.
+            // `VRAM - [device]`: that reserve named so a device can follow it.  The dash is the only way to say
+            // "the start's reserve, on this one card": a number in the first slot IS the reserve, so the server's
+            // `reserve_mib: null` with a `gpu` used to send `VRAM 1` and set a 1 MiB reserve on EVERY card.
+            const long long start_reserve = (long long) o.vram_reserve_mib;
+            const char* p = cmd.c_str() + 4;
+            while (*p == ' ') ++p;
+            long long reserve = start_reserve;
             int want_dev = -1;   // -1: every GPU of this run
-            if (!bare && end != nullptr) {
-                const char* p = end;
+            if (*p != '\0') {
+                if (*p == '-' && (p[1] == '\0' || p[1] == ' ')) ++p;
+                else {
+                    char* end = nullptr;
+                    reserve = std::strtoll(p, &end, 10);
+                    if (end == p || reserve < 0) { e = "expected: VRAM [reserve_mib|- [device]]"; return false; }
+                    p = end;
+                }
                 while (*p == ' ') ++p;
                 if (*p != '\0') {
                     char* q = nullptr;
                     const long long d = std::strtoll(p, &q, 10);
                     while (q != nullptr && *q == ' ') ++q;
                     if (q == p || q == nullptr || *q != '\0' || d < 0) {
-                        e = "expected: VRAM [reserve_mib [device]]";
+                        e = "expected: VRAM [reserve_mib|- [device]]";
                         return false;
                     }
                     want_dev = (int) d;
@@ -14190,6 +14199,12 @@ int main(int argc, char** argv) {
                     if (keep < floor_b) {
                         keep = floor_b;
                         notes[k] = " (the cache keeps its smallest size: the prompt path's buffers)";
+                    } else {
+                        // `shrink` keeps whole segments and rounds its keep UP, so a keep inside a segment keeps
+                        // that segment: the reserve arrives up to one segment short of what was asked (measured on
+                        // the 2x 3090: a 12000 reserve from 8292 free freed 3584 MiB, not the 3708 it needed).
+                        // Rounding the keep DOWN to a segment boundary takes the whole segments the reserve needs.
+                        keep = std::max(floor_b, xc.segment_floor(keep));
                     }
                     if (!xc.shrink(keep, e)) return false;
                     // slot numbers are per cache: only this cache's layers can lose one

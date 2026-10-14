@@ -391,7 +391,9 @@ the helper caches, `--peer-device` or the resident low-RAM mode.
 card: `POST /v1/vram {"reserve_mib": 16000, "gpu": 1}` shrinks only the cache of GPU 1 - the engine's numbering,
 0 = the main card, the same numbers as `--split-device`, so with `"gpu": [0, 1]` its 1 is the card `nvidia-smi -i 1`
 shows - and leaving `"gpu"` out moves every card of the run. The answer carries one entry per card in `"gpus"` plus
-the totals over the cards it moved; the engine's own stdin line is `VRAM <reserve_mib> [device]`. Only that card's
+the totals over the cards it moved; the engine's own stdin line is `VRAM <reserve_mib|- [device]`, the dash standing
+for the reserve the engine started with - a number in that slot IS the reserve, so `VRAM 1` is a 1 MiB reserve on
+every card, not device 1. Only that card's
 layers lose their cached experts, so its decodes fall to the CPU for them and the other cards are untouched. The
 cache keeps 128 slots plus what the smallest prompt chunk needs, and the chunk drops to the largest one every card
 can still lend (`--prefill auto`'s share cap applies to each card as it is now). A card's dense weights, session and

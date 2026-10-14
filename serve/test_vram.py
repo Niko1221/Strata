@@ -13,6 +13,7 @@ from unittest import mock
 from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, EngineDied, Service, StrataEngine, engine_args, serve
 from serve.test_lifecycle import ResidentEngine
+from serve import runconfig
 
 
 class VramEngine(ResidentEngine):
@@ -78,7 +79,7 @@ class EngineCommand(unittest.TestCase):
         self.assertEqual(e.info["expert_slots"], 1200)
         e = self.engine(["VRAM reserve_mib=700 gpu=0 expert_slots=3700\n", "VRAM-DONE\n"])
         e.vram(None)
-        self.assertEqual(e.proc.stdin.getvalue(), "VRAM\n")
+        self.assertEqual(e.proc.stdin.getvalue(), "VRAM -\n")     # the dash: no number in the reserve slot
 
     def test_one_device_in_the_line(self):
         e = self.engine(["VRAM reserve_mib=16000 gpu=1 expert_slots=512 expert_slots_full=5632 "
@@ -88,6 +89,18 @@ class EngineCommand(unittest.TestCase):
         self.assertEqual(e.proc.stdin.getvalue(), "VRAM 16000 1\n")
         self.assertEqual(out["gpu"], 1)
         self.assertEqual(out["vram_free_mib"], 16100)
+
+    def test_the_start_reserve_with_a_device(self):
+        """`reserve_mib: None` with a `gpu`: the start's reserve on one card.  The reserve slot cannot be left
+        empty - a number there IS the reserve - so the line names the start's reserve with a dash.  Without it
+        `VRAM 1` asked for a 1 MiB reserve on every card of the run, not for device 1."""
+        e = self.engine(["VRAM reserve_mib=700 gpu=1 expert_slots=3700 expert_slots_full=5632 "
+                         "expert_cache_mib=4900 expert_cache_full_mib=8448 vram_free_mib=700 prompt_chunk=2048\n",
+                         "VRAM-DONE\n"])
+        out = e.vram(None, 1)
+        self.assertEqual(e.proc.stdin.getvalue(), "VRAM - 1\n")
+        self.assertEqual(out["gpu"], 1)
+        self.assertEqual(out["reserve_mib"], 700)
 
     def test_every_gpu_of_a_split(self):
         e = self.engine(["VRAM reserve_mib=16000 gpu=0 expert_slots=1200 expert_cache_mib=4800 vram_free_mib=100\n",
@@ -123,6 +136,19 @@ class EngineCommand(unittest.TestCase):
         self.assertEqual(engine_args({**cfg, "vram_elastic": True, "vram_segment_mib": 256}),
                          ["--max-context", "8192", "--vram-elastic", "--vram-segment-mib", "256"])
         self.assertEqual(engine_args({**cfg, "vram_elastic": "yes"}), ["--max-context", "8192"])
+
+    def test_the_elastic_keys_are_editable(self):
+        """POST /config can turn elasticity on: the handoff to an image model on the second card is a run-config
+        decision, and hand-editing the JSON is the kind of step that gets missed."""
+        cfg = {"args": ["--max-context", "8192"]}
+        self.assertEqual(runconfig.check("vram_elastic", True, cfg), True)
+        self.assertEqual(runconfig.check("vram_segment_mib", 256, cfg), 256)
+        with self.assertRaises(ValueError):
+            runconfig.check("vram_elastic", "yes", cfg)
+        new, changed = runconfig.apply(cfg, {"vram_elastic": True, "vram_segment_mib": 256})
+        self.assertEqual(changed, ["vram_elastic", "vram_segment_mib"])
+        self.assertEqual(engine_args(new), ["--max-context", "8192", "--vram-elastic", "--vram-segment-mib", "256"])
+        self.assertEqual(runconfig.view(new, "strata-x.json")["keys"][-2]["key"], "vram_elastic")
 
 
 class Route(unittest.TestCase):
@@ -166,6 +192,16 @@ class Route(unittest.TestCase):
         code, body = self.request("/v1/vram", {"reserve_mib": None})   # back to the start's reserve
         self.assertEqual(code, 200)
         self.assertEqual(self.engine.calls, [(4000, None), (None, None)])
+
+    def test_the_start_reserve_on_one_card(self):
+        """null + gpu: the named card takes its VRAM back, the other card is left alone."""
+        self.engine.loaded = True
+        self.assertEqual(self.request("/v1/vram", {"reserve_mib": 4000, "gpu": 1})[0], 200)
+        code, body = self.request("/v1/vram", {"reserve_mib": None, "gpu": 1})
+        self.assertEqual(code, 200, body)
+        per = {p["gpu"]: p["expert_cache_mib"] for p in body["gpus"]}
+        self.assertEqual(per, {0: 6000, 1: 5000})           # only the named card grew back
+        self.assertEqual(self.engine.calls, [(4000, 1), (None, 1)])
 
     def test_bad_input_busy_and_foreign_pages(self):
         self.engine.loaded = True
