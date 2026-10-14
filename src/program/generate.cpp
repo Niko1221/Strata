@@ -11040,10 +11040,12 @@ int main(int argc, char** argv) {
                     checks.clear();   // the main session's checkpoints were of the conversation it held before
                     // a read that gave way, the same request again (into its own slot): on with it - its segments and
                     // checkpoints as if it had not stopped
+                    bool took_checks = false;
                     if (slot_ck == nullptr && bs[(size_t) slot_source].partial && admit_slot == slot_source) {
                         resumed_from0 = bs[(size_t) slot_source].partial_from0;
                         for (const ConvCheckpoint& c : bs[(size_t) slot_source].checks) checks.push_back(c);
                         bs[(size_t) slot_source].partial = false;
+                        took_checks = true;
                     }
                     if (slot_ck != nullptr) {
                         live = slot_ck->ids;
@@ -11051,6 +11053,17 @@ int main(int argc, char** argv) {
                         checks.back().used = ++check_clock;
                     } else {
                         live = bs[(size_t) slot_source].ids;
+                        // #1906: the slot's turn checkpoints come along with its conversation.  The main session now holds
+                        // all of it, so each one is still a valid place to continue from - and the client's next turn,
+                        // sent back without this reply's thinking, matches only up to the turn boundary.  Without them
+                        // a request that moved slot -> solo -> slot (#857) kept none, and its next turn read its whole
+                        // history again.
+                        if (!took_checks)
+                            for (const ConvCheckpoint& c : bs[(size_t) slot_source].checks)
+                                if (c.ids.size() < live.size() && std::equal(c.ids.begin(), c.ids.end(), live.begin())) {
+                                    checks.push_back(c);
+                                    checks.back().used = ++check_clock;
+                                }
                     }
                     live_imgs.clear();
                     resume = slot_tokens;
