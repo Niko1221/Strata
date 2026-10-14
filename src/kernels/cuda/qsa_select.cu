@@ -1345,7 +1345,13 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
     const int64_t reach = counted && active_blocks < max_blocks ? active_blocks : max_blocks;
     const int64_t fit = (int64_t) TK_T * (counted ? TK_PER_MAX : TK_PER);
 #if defined(__HIPCC__)
-    constexpr int64_t kRegMinBlocks = 7168;   // gfx1201: below ~28K cells the 1,024-thread kernel's fixed cost loses to the ref
+    // gfx1201: below ~28K cells (7,168 blocks) the 1,024-thread kernel's fixed cost loses to the ref.  STRATA_TOPK_REG_MIN_BLOCKS
+    // moves the line (0 removes it; STRATA_TOPK_OLD and the capacity check still apply); gfx1151's table sets 4096 (16K
+    // cells), where the register kernel with the cooperative scan was measured faster than the ref
+    static const int64_t kRegMinBlocks = [] {
+        const char* v = std::getenv("STRATA_TOPK_REG_MIN_BLOCKS");
+        return v != nullptr ? (int64_t) std::atoll(v) : (int64_t) 7168;
+    }();
     const bool too_small = counted && reach < kRegMinBlocks;
     if (old || too_small || reach > fit) {
 #else
