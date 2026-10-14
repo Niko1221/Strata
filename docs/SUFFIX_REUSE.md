@@ -1,6 +1,6 @@
 # Suffix-Reuse: KV Cache Splicing for Edited Contexts
 
-**Design and benchmark document** for the `--cache-suffix-reuse` feature and its adaptive-cadence extension (`--prompt-cache-dense-tail`). Covers branch `sfx-043-fixed` (all-quant splice, base v0.1.43) plus `sfx-future` @ `fd64fdf6` (dense-tail cadence, partial-prefix engagement, per-request checkpoint gate — 11 commits, review-clean).
+**Design and benchmark document** for the `--cache-suffix-reuse` feature and its adaptive-cadence extension (`--prompt-cache-dense-tail`). Covers three stacked, independently reviewed layers on base v0.1.43: `sfx-043-fixed` (all-quant splice), `sfx-future` @ `fd64fdf6` (dense-tail cadence, partial-prefix engagement, per-request checkpoint gate — 11 commits, review-clean), and `sfx-fw2b` (state-cadence checkpoints, §5.9 — range review APPROVE, 0 blocking).
 All numbers measured on: RTX 3090 (24 GB), Qwen3.8-Flash-Next abliterated GSQ-RCO IQ3_XXS (2-file pack + PLE), 131k context, MTP spec-4, unless noted. Probes deterministic (temperature 0).
 
 ---
