@@ -67,6 +67,7 @@ Experimental, written and tested by community members on their own machines:
 - **Older graphics cards** (Tesla P40 / V100, GTX 10, Radeon VII / MI50, RX 6700 XT, RX 5500 XT): [Older GPUs](docs/OLDER_GPUS.md).
 - **Intel Arc**, built from source on Linux: [Intel Arc](docs/INTEL_ARC.md).
 - **AMD Ryzen AI Max (Strix Halo)**, built from source on Linux: [Strix Halo](docs/STRIX_HALO.md).
+- **NVIDIA DGX Spark (GB10, ARM)**, built from source: [DGX Spark](docs/DGX_SPARK.md). Tested with IQ2_XS and UD-Q4_K_XL; every expert fits on the GPU (decode about 56-64 tok/s, prefill about 957-1,548 tok/s on IQ2_XS).
 - **Older processors without AVX2**: they work, but slowly. [Older CPUs](docs/INSTALL.md#older-cpus-experimental).
 
 The full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).

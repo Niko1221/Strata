@@ -65,6 +65,10 @@ int main() {
                 (int) cpu::cpu_avx1_ok());
     if (cpu::cpu_avx2_ok()) run("avx2", cpu::bf16_rows_dot_multi);
     if (cpu::cpu_avx1_ok()) run("avx", cpu::bf16_rows_dot_multi_avx1);
+#if defined(__aarch64__)
+    // portable.cpp's NEON dot is the router kernel on this build (the AVX ones are not linked).
+    if (!cpu::cpu_avx2_ok() && !cpu::cpu_avx1_ok()) run("neon", cpu::bf16_rows_dot_multi);
+#endif
     std::printf("router_dot_parity: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }

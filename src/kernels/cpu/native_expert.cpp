@@ -33,6 +33,11 @@ bool native_experts_available() noexcept { return true; }
 // compiled for AVX-512 and iq_avx2.cpp / kq_avx2.cpp for AVX2, and native_gu_rows asks these on every CPU before it
 // has checked what the CPU can run.  A function in a wide-ISA file may use that ISA anywhere in its body, so an
 // answer that is only a comparison must not come from one (#795).
+//
+// DGX Spark GB10 (aarch64): the AVX-2 / AVX-512 i-quant and k-quant kernel files are not built there (CMake
+// excludes them), so portable.cpp provides these three "supported" answers — every one false, so native_gu_rows
+// falls through to ggml-cpu's NEON vec_dot. This guard keeps native_expert.cpp's x86 answers out of that build.
+#if defined(__x86_64__) || defined(_M_X64)
 bool iq512_supported(int type) noexcept {
     return type == 16 || type == 17 || type == 18 || type == 21 || type == 22;
 }
@@ -42,6 +47,7 @@ bool iq256_supported(int type) noexcept {
 }
 
 bool kq256_supported(int type) noexcept { return type == 12 || type == 7 || type == 8; }
+#endif  // __x86_64__
 
 bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err) {
     init_once();
@@ -82,6 +88,9 @@ bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt
     return true;
 }
 
+// DGX Spark GB10 (aarch64): q8k_quant_avx2 (an AVX-2 kernel) does not exist there; native_quant_act/native_quant_h
+// below skip this block on that CPU and always use ggml-cpu's from_float. cpu_avx2_ok() is false there anyway.
+#if defined(__x86_64__) || defined(_M_X64)
 namespace {
 // Q8_K (the activations of every i-quant row): ggml-cpu's x86 quantizer is the scalar reference, ~3 us per token
 // and layer on the host before the pool can start; q8k_quant_avx2 writes the same bytes.  cpu_avx2_ok() too:
@@ -92,14 +101,19 @@ bool q8k_avx2(int type) {
     return on && type == (int) GGML_TYPE_Q8_K;
 }
 }  // namespace
+#endif  // __x86_64__
 
 void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
+#if defined(__x86_64__) || defined(_M_X64)
     if (q8k_avx2(f.gu_act)) { q8k_quant_avx2(x, dst, f.n_embd); return; }
+#endif  // __x86_64__
     traits(f.gu_act)->from_float(x, dst, f.n_embd);
 }
 
 void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
+#if defined(__x86_64__) || defined(_M_X64)
     if (q8k_avx2(f.d_act)) { q8k_quant_avx2(h, dst, f.n_ff); return; }
+#endif  // __x86_64__
     traits(f.d_act)->from_float(h, dst, f.n_ff);
 }
 
