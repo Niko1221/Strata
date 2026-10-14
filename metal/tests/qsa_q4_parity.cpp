@@ -3,7 +3,9 @@
 // and q4 packing).  qsa_parity.cpp stays the fc-off gate; this drives the same kernels with fc 25 on:
 //
 //   qsa_q4_parity [P]   a context of P cells (default 37) built by the fc=25 qsa_prep, then a window of 3 tokens:
-//                       prep, score, top-k, attention, merge.  Checked:
+//                       prep, score, top-k, attention, merge.  The default invocation also runs an internal
+//                       P = 2051 pass, so the >budget radix-selection regime is covered without arguments (a CLI
+//                       P already past the budget replaces it).  Checked:
 //                         * the V pool's 18-byte blocks BIT-LEVEL against q4_block_ref(fwht256_ref(vcur)) - the
 //                           fused cross-simdgroup FWHT + q4 pack chain.  The v rows skip norm/RoPE, so the kernel's
 //                       * input bits are known exactly.  One cell's v rows are all zero: its blocks pin the
@@ -51,6 +53,11 @@ struct Err {
 int main(int argc, char** argv) {
     int P = 37;
     for (int i = 1; i < argc; ++i) P = std::atoi(argv[i]);
+    // two regimes in the default invocation: the CLI P (default 37: n_kv <= the 2051 budget, the identity ids)
+    // and an internal P = 2051 pass (the window's tokens see n_kv > 2051: qsa_topk's radix selection, the score
+    // bias of a partial tail block).  A CLI P already past the budget exercises selection itself and the second
+    // pass is skipped.  Everything below is parameterized on P; the fixed RNG seeds each case identically.
+    auto run_case = [&](int P) -> int {
     const int MAXT = 8, MAXC = std::max(4096, (P + 64) / 4 * 4 + 64), MB = MAXC / 4 + 2, NC = P + MAXT;
     mtl::Context cx;
     // kv_q4.metal first: its shared prelude is qsa.metal's q4 numerics (metal/'s concatenation convention)
@@ -114,7 +121,7 @@ int main(int argc, char** argv) {
     }
     const int NT = 3;
     std::printf("device %s, context %d cells, QSA_KV_Q4 (fc 25) on\n", cx.device_name().c_str(), P);
-    int fails = 0;
+    int fails = 0;   // this case's failures
 
     // ---- the norm + RoPE reference (qsa_parity.cpp's, double precision); rope = false gives the indexer forms
     auto normrope = [&](const float* x, const float* g, int w, int absp, bool rope, std::vector<double>& out) {
@@ -336,6 +343,11 @@ int main(int argc, char** argv) {
         std::printf("attention + inverse rotation + gate: rel L2 %.2e                %s\n", eo.l2(), ok ? "PASS" : "FAIL");
         std::printf("  (contrast: gate-then-rotate, the wrong placement, is off by %.2e)\n", ew.l2());
     }
+    return fails;
+    };
+    int fails = 0;
+    fails += run_case(P);
+    if (P + 1 <= 2051) fails += run_case(2051);   // the selection regime, unless the CLI P already covers it
     std::printf("%s\n", fails ? "SOME FAILED" : "ALL PASS");
     return fails ? 1 : 0;
 }

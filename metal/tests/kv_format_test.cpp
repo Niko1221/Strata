@@ -118,7 +118,7 @@ int main() {
                     kq4 = A((size_t) MAXC * q4b.pool), vq4 = A((size_t) MAXC * q4b.pool),
                     sc_none = A(16);   // the engine's placeholder for the unallocated scale pools
         auto run = [&](const mtl::Pipeline* p, const mtl::Buffer& kq, const mtl::Buffer& vq, const mtl::Buffer& ksc,
-                       const mtl::Buffer& vsc) {
+                       const mtl::Buffer& vsc, const mtl::Buffer& mtab) {
             QsaArgs a{0, 0, (uint32_t) MAXC, 1, 1e-6f};
             mtl::Dispatch d;
             d.p = p;
@@ -126,13 +126,24 @@ int main() {
                       mtl::Arg::B(qn), mtl::Arg::B(kn), mtl::Arg::B(iqn), mtl::Arg::B(ikn), mtl::Arg::B(cs),
                       mtl::Arg::B(qcur), mtl::Arg::B(qidx), mtl::Arg::B(kq), mtl::Arg::B(vq), mtl::Arg::B(ksc),
                       mtl::Arg::B(vsc), mtl::Arg::B(tail), mtl::Arg::B(dead), mtl::Arg::B(pooled), mtl::Arg::V(a),
-                      mtl::Arg::B(sc_none) /* mtab, fc 24 off */};
+                      mtl::Arg::B(mtab)};
             d.grid[0] = 33;
             d.grid[1] = 1;
             d.tg[0] = 256;
             cx.run({d});
         };
-        run(p8, kq8, vq8, ksc8, vsc8);
+        // q4 of an all-zero row: d = -0.0 (bits 0x8000), every qs byte 0x88 - both heads, all 8 blocks
+        auto q4_zero_bits = [&](const mtl::Buffer& pool) {
+            long bad = 0;
+            for (int h = 0; h < QKV; ++h)
+                for (int b = 0; b < 8; ++b) {
+                    const uint16_t* d = (const uint16_t*) ((const uint8_t*) pool.ptr + (size_t) h * 144) + b * 9;
+                    bad += *d != 0x8000;
+                    for (int j = 0; j < 16; ++j) bad += ((const uint8_t*) pool.ptr + (size_t) h * 144)[b * 18 + 2 + j] != 0x88;
+                }
+            return bad;
+        };
+        run(p8, kq8, vq8, ksc8, vsc8, sc_none);
         {
             // int8 of an all-zero row: every code byte 0 and every fp16 scale 0
             long bad = 0;
@@ -140,19 +151,21 @@ int main() {
             for (int i = 0; i < (int) (MAXC * i8b.scale / 2); ++i) bad += vsc8.as<uint16_t>()[i] != 0;
             check(bad == 0, "the int8-keyed pipeline writes the int8 pools (zero codes, zero scales)");
         }
-        run(p4, kq4, vq4, sc_none, sc_none);
-        {
-            // q4 of an all-zero row: d = -0.0 (bits 0x8000), every qs byte 0x88 - both heads, all 8 blocks
-            long bad = 0, n = 0;
-            for (int h = 0; h < QKV; ++h)
-                for (int b = 0; b < 8; ++b, ++n) {
-                    const uint16_t* d = (const uint16_t*) ((const uint8_t*) vq4.ptr + (size_t) h * 144) + b * 9;
-                    bad += *d != 0x8000;
-                    for (int j = 0; j < 16; ++j) bad += ((const uint8_t*) vq4.ptr + (size_t) h * 144)[b * 18 + 2 + j] != 0x88;
-                }
-            (void) n;
-            check(bad == 0, "the q4-keyed pipeline writes the q4 pools (d = 0x8000, qs = 0x88) at the 144-byte rows");
-        }
+        run(p4, kq4, vq4, sc_none, sc_none, sc_none);
+        check(q4_zero_bits(vq4) == 0, "the q4-keyed pipeline writes the q4 pools (d = 0x8000, qs = 0x88) at the 144-byte rows");
+        // the combined specialization (M-RoPE + q4: a vision prompt under --kv q4_0), compiled and dispatched in
+        // tree so the pair is not first exercised at runtime.  fc 24 makes prep read the M-RoPE table (buffer
+        // 20); with every axis's position the cell's own, the rotation is the plain one - and the v rows (raw,
+        // never RoPE'd) keep the same all-zero q4 bits.  The pool is scribbled first, so the check proves the
+        // dispatch wrote it, not that an old result survived.
+        mtl::Buffer mtab = A(4 * 3 * (size_t) (MAXC + 16));
+        for (int c = 0; c < MAXC + 16; ++c)
+            for (int i = 0; i < 3; ++i) mtab.as<int32_t>()[(size_t) c * 3 + i] = c;
+        const mtl::Pipeline* pmq = P("qsa_prep", qsa_prep_constants(true, true), qsa_prep_key(true, true));
+        check(cache.size() == 3 && pmq != p8 && pmq != p4, "mrope+q4: a third key, a third specialization");
+        std::memset(vq4.ptr, 0xAA, (size_t) MAXC * q4b.pool);
+        run(pmq, kq4, vq4, sc_none, sc_none, mtab);
+        check(q4_zero_bits(vq4) == 0, "the mrope+q4 pipeline compiles and writes the same q4 pool bits");
     }
 
     std::printf("%s\n", fails ? "SOME FAILED" : "ALL PASS");

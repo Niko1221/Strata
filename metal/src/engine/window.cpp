@@ -2077,6 +2077,9 @@ bool Window::prompt_gemm_init(std::string& err) {
     p.lib = cx_->compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "moe_mm.metal", "gr.metal", "gemv.metal",
                           "prompt.metal"});
     p.lgdn = cx_->compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+    // kv_q4.metal first (as the decode window's compile): qsa.metal's optional q4 mode (fc 25) uses its shared
+    // prelude; a dropped prepend is a LOUD MSL compile error (qsa.metal's static_assert needs the prelude's
+    // QK4 / kv_q4_blk), never a silent int8 fallback
     p.lqsa = cx_->compile({"kv_q4.metal", "qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
     p.k4 = ::coop_k4(*cx_);
     const char* eg = std::getenv("STRATA_METAL_PROMPT_EXPERTS");   // v2 | v3 (default: v3 with the M5's layout)
@@ -2147,6 +2150,11 @@ bool Window::prompt_gemm_init(std::string& err) {
 }
 
 bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::string& err) {
+    if (kv_q4_) {   // defense in depth beside prompt_run_rows' guard (the only caller): this chain's kernels are
+                    // int8-only; the fused q4 prompt is M2's
+        err = "metal prompt: the prompt fast path is int8-only; --kv q4_0 runs prompts on the window path (M2)";
+        return false;
+    }
     PromptGemm& p = *pg_;
     p.meta.as<uint32_t>()[2] = p.gu_v3 ? NFF / (32 * 4) : NFF / 64;
     p.meta.as<uint32_t>()[5] = p.dn_v3 ? N / (64 * 2) : N / 64;
