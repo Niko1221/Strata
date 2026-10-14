@@ -5014,6 +5014,111 @@ class StopStrings(unittest.TestCase):
         self.assertEqual(m.push("more"), "")
 
 
+class FinalAssistantContinuation(unittest.TestCase):
+    """#1950: a request whose last message is an assistant one continues that text.  The prompt ends inside the
+    assistant's turn, at the end of the prefill, and the model's own continuation is served - so a stop string
+    matches text the model writes, never the prefill's own (whose restated copy used to end the reply with
+    finish=stop).  The byte tokenizer gives one token per byte, so the stop strings here are split across
+    tokens, as in StopStrings."""
+    PREFILL = "Here:\n```python\nfrom typing import List\n\ndef f(x):\n    pass\n"
+
+    def setUp(self):
+        self.tok = tok = ByteTokenizer()
+        self.engine = MockEngine(tok, "BODY\n", max_context=CTX)
+        self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self.addCleanup(self.httpd.shutdown)
+        self.addCleanup(self.httpd.server_close)
+
+    def post(self, messages, script=None, stream=False, **extra):
+        """-> (status, body); `script` replaces what the model writes.  A stream comes back as the joined chunks in
+        body["choices"][0]["message"]["content"], so both shapes can be asserted the same way."""
+        if script is not None:
+            end = self.tok.encode("<|im_end|>", parse_special=True)
+            self.engine.script = self.tok.encode(script, parse_special=True) + end
+        body = {"model": "x", "max_tokens": 200, "messages": messages, "stream": stream, **extra}
+        req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                raw = r.read().decode()
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+        if not stream:
+            return 200, json.loads(raw)
+        evs = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
+        pieces = [e["choices"][0]["delta"].get("content") or "" for e in evs]
+        finish = evs[-1]["choices"][0]["finish_reason"]
+        return 200, {"choices": [{"message": {"content": "".join(pieces)}, "finish_reason": finish}]}
+
+    def prefill_messages(self):
+        return [{"role": "user", "content": "Write the body."},
+                {"role": "assistant", "content": self.PREFILL}]
+
+    def prefill_as_rendered(self):
+        """The prefill as the template renders it (its text is trimmed, as any message's is)."""
+        return self.PREFILL.rstrip()
+
+    def test_the_prompt_ends_with_the_prefill_inside_the_turn(self):
+        code, body = self.post(self.prefill_messages())
+        self.assertEqual(code, 200, body)
+        prompt = self.tok.decode(self.engine.last_prompt)
+        self.assertTrue(prompt.endswith(self.prefill_as_rendered()), prompt[-120:])
+        self.assertEqual(prompt.count("<|im_start|>assistant"), 1)     # no fresh turn was opened
+        # the closed thinking is in the prompt, the reply's own text starts at once
+        self.assertIn("<think>\n\n</think>\n\n" + self.prefill_as_rendered(), prompt)
+
+    def test_a_stop_string_in_the_prefill_never_ends_the_reply(self):
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                code, body = self.post(self.prefill_messages(), stream=stream, stop=["\ndef"])
+                self.assertEqual(code, 200, body)
+                c = body["choices"][0]
+                self.assertEqual(c["message"]["content"], "BODY\n")    # not cut at the prefill's own "\ndef"
+                self.assertEqual(c["finish_reason"], "stop")
+                self.assertNotIn("reasoning_content", c["message"] or {})
+
+    def test_a_stop_string_still_cuts_the_continuation(self):
+        code, body = self.post(self.prefill_messages(), script="\n\ndef g(x):\n    pass\n", stop=["\ndef"])
+        self.assertEqual(code, 200, body)
+        c = body["choices"][0]
+        self.assertEqual(c["message"]["content"], "\n")                # cut where the model wrote "\ndef"
+        self.assertEqual(c["finish_reason"], "stop")
+
+    def test_a_user_turn_opens_the_assistant_header_as_before(self):
+        code, body = self.post([{"role": "user", "content": "hi"}])
+        self.assertEqual(code, 200, body)
+        prompt = self.tok.decode(self.engine.last_prompt)
+        self.assertEqual(prompt[-len("<|im_start|>assistant\n<think>\n"):], "<|im_start|>assistant\n<think>\n")
+
+    def test_a_final_call_and_an_empty_prefill_are_not_continued(self):
+        messages = self.prefill_messages()
+        messages[1] = {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]}
+        code, body = self.post(messages)
+        self.assertEqual(code, 200, body)
+        prompt = self.tok.decode(self.engine.last_prompt)
+        self.assertEqual(prompt[-len("<|im_start|>assistant\n<think>\n"):], "<|im_start|>assistant\n<think>\n")
+        code, body = self.post([{"role": "user", "content": "hi"}, {"role": "assistant", "content": "  "}])
+        self.assertEqual(code, 200, body)
+        prompt = self.tok.decode(self.engine.last_prompt)
+        self.assertEqual(prompt[-len("<|im_start|>assistant\n<think>\n"):], "<|im_start|>assistant\n<think>\n")
+
+    def test_anthropic_prefill_continues_too(self):
+        body = {"model": "x", "max_tokens": 200, "messages": [
+            {"role": "user", "content": "Write the body."}, {"role": "assistant", "content": self.PREFILL}]}
+        req = urllib.request.Request(self.base + "/v1/messages", data=json.dumps(body).encode(), headers={
+            "Content-Type": "application/json", "anthropic-version": "2023-06-01"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            out = json.loads(r.read())
+        self.assertTrue(self.tok.decode(self.engine.last_prompt).endswith(self.prefill_as_rendered()))
+        text = "".join(x.get("text", "") for x in out["content"] if x["type"] == "text")
+        self.assertEqual(text, "BODY\n")
+        self.assertEqual(out["stop_reason"], "end_turn")               # the model's own <|im_end|>, not a stop match
+
+
 class ConnectionClose(unittest.TestCase):
     """The server is HTTP/1.0 and closes the connection after every response.  Without saying so, .NET's pooled
     HttpClient put its next request on the closing socket and got "response ended prematurely" (2026-10-03)."""

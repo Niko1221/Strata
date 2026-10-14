@@ -3787,13 +3787,31 @@ class Service:
         tail = "" if off else EFFORT_TURN.format(EFFORT_TEXT.get(effort, EFFORT_TEXT["medium"]))
         return history + tail + full[len(mine):]
 
+    def continues_final(self, messages) -> bool:
+        """#1950: True when the request leaves the reply unfinished and the engine is to continue it - the last
+        message is an assistant one with plain, non-empty text and no tool calls (the Anthropic API's prefill, and
+        the OpenAI clients that do the same).  Such a prompt ends inside the assistant's turn, at the end of that
+        text, so the model extends it instead of writing a new reply that restates it from the top; a stop string
+        then matches text the model writes, never the prefill's own.  With "effort_position": "end" the prompt is
+        built another way (an effort turn and a fresh header follow the history), so those keep the old shape."""
+        if self.effort_end:
+            return False
+        last = messages[-1] if messages else {}
+        return (last.get("role") == "assistant" and not last.get("tool_calls")
+                and isinstance(last.get("content"), str) and bool(last["content"].strip()))
+
     def encode_prompt(self, messages, tools, kwargs) -> list[int]:
         """The request's prompt: the template rendered and tokenized.  #537: a <think> / </think> written inside a
         message's text is encoded as the text it is, not as the model's reasoning markers (the template's own are).
         A control token's text (<|im_start|>, <|im_end|>, <|endoftext|>, ...) inside a message is text as well: only
-        the control tokens the template writes are control tokens."""
+        the control tokens the template writes are control tokens.  #1950: when the last message is an assistant
+        one to continue, the template is rendered without its generation prompt and that turn's closing <|im_end|>
+        is left off, so the prompt ends with the text to continue."""
         marked, marked_tools, changed = mark_think_literals(messages, tools, self.literals)
-        prompt = self.render_prompt(marked, marked_tools, kwargs)
+        kw = {**kwargs, "add_generation_prompt": False} if self.continues_final(messages) else kwargs
+        prompt = self.render_prompt(marked, marked_tools, kw)
+        if kw is not kwargs and prompt.endswith(IM_END + "\n"):
+            prompt = prompt[: -len(IM_END) - 1]
         if not changed:
             return self.tok.encode(prompt, parse_special=True)
         prompt, plain = unmark_think_literals(prompt, self.literals)
@@ -3939,7 +3957,9 @@ class Service:
             write_temporary(combined, [p for p, _ in encoded])
         if req is not None and req.get("strata_prefix") is not None:
             req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
-        return ids, kwargs.get("enable_thinking", True) is not False, max_new
+        # #1950: a continued prefill carries its (closed) thinking block in the prompt, so the reply's own text
+        # starts at once: there is no reasoning phase to parse.
+        return ids, kwargs.get("enable_thinking", True) is not False and not self.continues_final(messages), max_new
 
     PREFIX_END = "\u0001strata-prefix-end\u0001"          # marks where a message's shared part ends in the rendered prompt
 
