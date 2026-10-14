@@ -1,928 +1,316 @@
-# Saved-state codec: bfloat16 running state in parked images and session files
+# BF16 conversation checkpoints and session files
 
-Branch: `feat/state-snapshot-bf16`. One change: a conversation's **running state** can be stored as bfloat16
-instead of float32, in parked conversation-cache images and in session files. Off by default; with the flag off the
-written bytes are byte-identical to today.
+`--session-state-codec bf16` stores conversation running-state copies as bfloat16 instead of float32.
+For the tested model, this halves the state arrays in retained checkpoints, parked conversations and session files.
+The option is off by default. The engine still computes on FP32 state; restoration widens a selected stored state
+before computation resumes. Encoding is lossy, so restored values can differ from the original FP32 values.
 
-Nothing here touches a kernel. The GDN recurrence keeps reading and writing its fp32 state exactly as now; only the
-**copy** of that state that goes into an image or onto disk is coded, and the copy a restore puts back is widened to
-fp32 before any kernel sees it.
+The measured benefits are smaller session files, lower retained-state storage and faster parking. Continuing
+parked resumes cost approximately 2–6 ms more in the tested workloads. At 32K context, BF16 with 8K checkpoint
+spacing delivered comparable complete-turn latency to FP32 with the default 16K spacing.
 
-## Why the state is the expensive part
+The [public benchmark repository](https://github.com/sumomomomomo/strata-bf16-bench-artifacts) contains the harness,
+raw JSON and engine logs. Its [manifest](https://github.com/sumomomomomo/strata-bf16-bench-artifacts/blob/main/MANIFEST.md)
+maps results to claims, distinguishes historical runs and records provenance gaps.
 
-`plan.hpp` derives it, and the numbers are geometry, not measurement:
+## Usage and scope
 
-```
-include/strata/plan/plan.hpp:77-78
-//   recurrence    (S, h_v, S) fp32  = 128 * 48 * 128 * 4 = 3,145,728 B per layer
-//   conv history  (d_conv-1, C) fp32 =     3 * 10240 * 4 =   122,880 B per layer
-```
+Add the option to the engine arguments used by the server:
 
-Derived from `conversation_state_sizes` (`src/core/conversation_state.cpp:155-177`) at this model's geometry
-(36 GDN layers, 12 QSA layers, `ssm_state_size` 128, `ssm_v_heads` 48, `ssm_conv_channels` 10240, `ssm_d_conv` 4,
-`idx_key_dim` 128, `idx_block` 4, `NG_HIST` 9, `NG_HC_DIM` 10240):
-
-| array | what it is | fp32 bytes | coded bytes | coded? |
-| --- | --- | ---: | ---: | --- |
-| `gdn` | 36 × (786,432 + 30,720) floats | 117,669,888 | 58,834,944 | yes |
-| `ple` | 9 × 10,240 floats | 368,640 | 184,320 | yes |
-| `tails` | 12 × 3 × 128 floats | 18,432 | 9,216 | yes |
-| `dead` | 12 × 128 floats | 6,144 | 3,072 | yes |
-| `block_pos` | 12 × `int32` | 48 | 48 | **no — indices, not values** |
-| **one running state** | | **118,063,152** | **59,031,600** | −49.99% |
-
-`ConversationCheckpoint` already holds these as `std::vector<uint8_t>` (`conversation_cache.hpp:26`), so the codec
-writes into byte buffers that already exist. It is not a struct change.
-
-Against the session-file example in `docs/DETAILS.md:1115` (63,025 tokens, 1,198,691,396 B written):
-
-| | bytes | per token |
-| --- | ---: | ---: |
-| that file today | 1,198,691,396 | 19,019 |
-| its state part (live + the deepest checkpoint, `session_checkpoints_to_save`) | 236,126,304 | 3,747 |
-| its K/V part (includes the indexer's pooled rows) | 962,565,092 | 15,273 |
-| **expected with bf16** | **1,080,628,292** | **17,146** (−9.8%) |
-
-A parked image carries the whole checkpoint chain, not one checkpoint (`generate.cpp:7992` passes `checks`, while the
-SAVE path passes only the deepest), so the saving scales with the chain: a parked conversation holding four
-checkpoints plus the live state stores 590,315,760 B of state today and would store 295,158,000 B — **281.5 MiB back
-per parked conversation**, in RAM as well as on disk.
-
-And the reason the spacing is 16,384 in the first place: `checkpoint_save` (`generate.cpp:1513`) copies the whole
-fp32 state, so a checkpoint costs 118 MB of RAM. Halving a stored state is what makes a finer spacing affordable.
-
-## Why bfloat16 and not int8 or fp8
-
-| codec | encoder to write | decoder | scale stored | saturation | per-value error |
-| --- | --- | --- | --- | --- | --- |
-| **bf16** | ~10 lines (shift + round-to-nearest-even) | **exists, exact** | none | none (same 8-bit exponent as fp32) | 0.39% max, 0.17% rms |
-| fp8 E4M3 | ~120 lines + a scale policy | exists | per layer/row/head | required, 448 max | 6.25% max |
-| int8 | ~60 lines + a scale policy | ~10 lines | per row/head | required | 0.23% of row max, tails arbitrary |
-
-bf16 keeps fp32's exponent range, so there is no scale to choose, no value that can overflow, and no subnormal cliff.
-The repo already relies on this exact property:
-
-```
-include/strata/kernels/ngram.hpp:134
-/// One BF16 row -> 160 floats, EXACTLY: bfloat16 is the top half of a float32, so this is a
-/// shift and a copy with no rounding anywhere. ... There is no scale, because BF16 values are the values.
-void bf16_dequant_row(const uint8_t* row, float* out160);
+```text
+--session-state-codec bf16
 ```
 
-int8 was rejected for the first cut because its error is relative to the *group max*: at a channel `max/RMS` of 8 it
-is ~1.8% of RMS, at 30 it is ~6.8% and the small values are gone. fp8 was rejected because the repo has an fp8
-**decoder only** (`src/kernels/ngram.cpp:163`); the PLE table's fp8 bytes ship pre-quantized in the GGUF and
-`tools/ple_fp8_pack.py` only copies them with one global scale chosen offline for fixed data. State range is
-per-conversation and unknown, so that scale policy would have to be written and characterised from scratch. bf16 is
-both the smaller change and ~16x more accurate. fp8 can be added later as a second codec member, behind the same
-flag, if the bf16 quality numbers leave headroom and 4,096-token spacing is wanted.
+The default is `fp32`. Unknown codec names are rejected at startup.
 
-## Scope
+The option governs newly captured retained checkpoints and newly written parked images and session files.
+Every existing checkpoint is read using its own recorded codec, independently of the configured write codec.
+Turning the option off does not recover precision already lost in a BF16 snapshot.
 
-**In:** the codec; the file format; `conversation_checkpoint_save` / `_restore` / `_validate`; parked images
-(`conversation_snapshot_save`); session files; one engine flag; tests; this document.
+The codec covers GDN recurrence and convolution history, PLE history, and QSA indexer tails and dead keys.
+Integer block positions and K/V storage are unchanged. Temporary transfers of working state remain FP32.
+No model-computation kernel is changed, and checkpoint spacing and retention defaults remain unchanged.
 
-**Out, and left alone:**
+## State size
 
-- the state the engine computes on is never coded, and no kernel is touched. What **is** coded is every stored copy
-  of it: the image a parked conversation holds, the file a `SAVE` writes, and - since the lazy-restoration change
-  below - the retained checkpoints of a resumed conversation, which keep the codec they were parked in instead of
-  being widened at the mount. Denser checkpoints is a separate change with a different risk (it is on every turn).
-- no kernel, no CUDA/HIP/SYCL code, no device-side encode. The touched files are host code; build CUDA and HIP
-  anyway.
-- **the SYCL port does not implement the flag.** `sycl/` keeps hand-ported copies of `conversation_state.cpp` and
-  `conversation_snapshot.cpp` that predate this change and contain no codec code, and its `generate.cpp` has no
-  `--session-state-codec`, so a SYCL build never writes coded state and passes `StateCodec::Fp32` to the SAVE
-  preflight. It does share `src/core/conversation_file.cpp`, which reads the codec byte, so `src/core/state_codec.cpp`
-  is in that build's engine list. What a SYCL build does with a file written bf16 elsewhere has not been run here
-  (no oneAPI on this box); its own `conversation_checkpoint_validate` still expects fp32 array sizes, which is the
-  check that would have to catch it.
-- no int8/fp8, no per-channel scales, no rotation/Hadamard preprocessing.
-- no disk tier, no chunking, no prefix objects. This PR only makes the state half the size; where those bytes go is
-  a later change.
-- no change to K/V quantization, `--prompt-cache`, `--prompt-cache-every`, or the defaults of anything.
-- no server/Python change: `/slots/0?action=save|restore` reports `n_written`/`n_read` as it does now, just smaller.
+These sizes follow from the tested model's geometry: 36 GDN layers, 12 QSA layers, state size 128,
+48 value heads, 10,240 convolution channels, convolution width 4 and indexer key dimension 128.
+They describe one full-model running state, excluding token lists, image metadata and K/V buffers.
+Layer-split states contain only the arrays owned by their stage.
 
-## Design
+| Array | FP32 bytes | BF16 bytes | Encoding |
+| --- | ---: | ---: | --- |
+| GDN recurrence and convolution history | 117,669,888 | 58,834,944 | BF16 |
+| PLE history | 368,640 | 184,320 | BF16 |
+| QSA indexer tails | 18,432 | 9,216 | BF16 |
+| QSA indexer dead keys | 6,144 | 3,072 | BF16 |
+| Integer block positions | 48 | 48 | Unchanged |
+| **Total** | **118,063,152** | **59,031,600** | **Approximately 50% smaller** |
 
-### 1. The codec
+A parked image carries its live state and retained checkpoint chain. A session SAVE selects the deepest retained
+checkpoint rather than writing the whole chain. The file-size measurements below include one live state and one
+saved checkpoint. State storage is largely fixed per checkpoint, while K/V storage grows with context; consequently,
+the percentage saved in a complete file falls as the conversation grows.
 
-New `include/strata/core/state_codec.hpp` + `src/core/state_codec.cpp`:
+## Implementation
 
-```cpp
-enum class StateCodec : uint8_t { Fp32 = 0, Bf16 = 1 };   // Fp8E4m3 = 2 lands later, same interface
+### Representation and numerical behavior
 
-size_t state_codec_size(size_t fp32_bytes, StateCodec codec);       // 0 and unknown codes are refused
-bool   state_encode_f32(const float* src, size_t floats, StateCodec codec, uint8_t* dst, std::string& error);
-bool   state_decode_f32(const uint8_t* src, size_t floats, StateCodec codec, float* dst, std::string& error);
-```
+[`state_codec.hpp`](../include/strata/core/state_codec.hpp) and
+[`state_codec.cpp`](../src/core/state_codec.cpp) define `Fp32` and `Bf16` codecs.
+FP32 copies the existing bytes. BF16 encoding rounds to nearest even; decoding widens the 16-bit representation
+exactly into FP32. BF16 requires no per-array scale and retains FP32's eight exponent bits.
 
-`Fp32` is a `memcpy`. `Bf16` encode is round-to-nearest-even on the top 16 bits; decode is a shift into fp32.
-`block_pos` never goes through the codec (it is `int32` positions). Encode and decode must be range-safe on
-Inf/NaN and on the one RNE edge that can carry a finite value into infinity — that case is a test, not a comment.
+For values in the normal range that do not overflow on rounding, the relative rounding error is bounded by
+2^-8, approximately 0.39%. This is a representation bound, not an output-quality guarantee. In the subnormal range
+the absolute rounding error is bounded by half a BF16 subnormal step; sufficiently small values round to signed zero.
+Values near FP32's maximum can round to infinity. Signed zeros and infinities are preserved; NaNs remain NaNs,
+with payload quieting as needed. Tests cover these cases.
 
-### 2. The codec travels with the checkpoint, and the file says which one it used
+INT8 and FP8 codecs are outside this change. They would require separate range, scaling and quality decisions.
 
-`ConversationCheckpoint` gains `uint8_t state_codec = 0`. It is a property of the bytes in that checkpoint, like the
-state sizes already are. `conversation_checkpoints_split` (`conversation_cache.hpp:82`) must carry it into
-`stage0` / `parts` / `rest`.
+### Capture, parking and restoration
 
-Session file header v1 is `magic[8] version:u32 header_size:u32 model:u64 config:u64 payload:u64 reserved:u64[2]`
-(`src/core/conversation_file.cpp:804`). Use `reserved[0]` as `state_codec:u64`, and bump `kVersion` (line 48) to 2 on
-write while accepting 1 and 2 on read; version 1 means `Fp32`.
+[`conversation_state.cpp`](../src/core/conversation_state.cpp) captures retained checkpoints under their requested
+codec immediately, including layer-stage parts. It builds replacement arrays separately and publishes them only
+after all copies succeed. A failed capture preserves the checkpoint's existing arrays and does not modify live state.
 
-Two reasons for that shape:
+A coded device-to-host capture uses slices of at most `kStateCodecChunkFloats` FP32 values: 4 MiB of staging memory.
+It encodes each slice directly into the stored destination, avoiding a full-size FP32 staging array.
 
-- an old engine reading a coded file must **refuse**, not misread. Bumping the version makes it say
-  `session file: unsupported version 2` (line 1207). Without the bump it would read the half-size arrays and fail
-  only later, on a size mismatch, with a confusing message.
-- existing user files must still read. Accepting v1 keeps that.
+Parking copies retained checkpoints into the destination codec. An already-BF16 checkpoint parked as BF16 takes
+a byte copy, without widening and re-encoding. Host-to-host conversion uses `state_transcode_bytes` directly;
+copies and conversions retain the existing progress reporting.
 
-The codec deliberately does **not** go into `SessionConfig` / `session_config_fingerprint`. A file says how its own
-bytes are stored; the flag governs what the engine *writes*. Binding it into the identity would make a file unreadable
-the moment the user turned the flag off, which is the opposite of what a self-describing file is for. An unknown codec
-value in a v2 header is refused as `invalid`, before the payload is parsed.
+When a parked conversation resumes, its retained chain stays in the codecs it already holds. Only the selected
+checkpoint is decoded into the session's FP32 buffers. Other checkpoints remain compressed and unmodified.
+This applies to continuing resumes as well as rewinds: restoring the parked live state also requires a decode.
+Mixed chains are supported, and stage split/merge preserves each part's codec identity.
 
-### 3. Read limits stay the fp32 maxima
+A selected checkpoint restore uses at most a 4 MiB FP32 staging slice for the large arrays. Indexer tails and dead
+keys are widened separately, totaling 24 KiB for this geometry. These are conversion temporaries, not a bound on
+the memory of an entire disk RESTORE operation, which also reads and retains conversation data.
 
-`conversation_session_read_limits` runs before the file's codec is known, and
-`SessionReadLimits::max_state_bytes` is a ceiling. A coded file is smaller, so the fp32 ceiling is a valid superset —
-leave it. The exact per-array size check belongs in `conversation_checkpoint_validate`
-(`src/core/conversation_state.cpp:138-152`), which knows the codec:
+Allocation and transfer failures are reported through the existing serve/batch error paths. Capture publication is
+atomic; restoration writes live buffers and is not transactional. The serve path treats a failed checkpoint restore
+as fatal because live state may already have been partially written.
 
-```cpp
-if (c.gdn.size() != state_codec_size(z.gdn, c.state_codec) || ...)   // today: != z.gdn
-```
+### File format and compatibility
 
-### 4. Where encode and decode happen
+[`conversation_file.cpp`](../src/core/conversation_file.cpp) writes version 1 when the image is entirely FP32,
+preserving the existing format. An image containing coded state uses version 2.
 
-**Encode** — `conversation_checkpoint_save` (`conversation_state.cpp:209`) builds the five arrays beside the
-checkpoint at the codec the caller names and moves them in once every one of them has been copied, so a capture
-that cannot allocate refuses with the checkpoint exactly as it was instead of publishing a truncated one
-(`conversation_capture_codec_test`). One call serves three things: since `3f04cc72` the serve loop names the codec
-on the checkpoint it is capturing into its retained chain, so that copy is coded when it is taken and not only when
-the conversation is later parked or SAVE'd. Under a codec the destination is half-size, so the state does not cross
-the device boundary as one fp32 block: `copy_state_out` (`conversation_state.cpp:55-67`) moves it in slices of at
-most `kStateCodecChunkFloats` floats (4 MiB), each read into a reused scratch and coded straight into the
-destination. **The transient is that 4 MiB scratch, not a staging copy of the whole state** - the only full-size
-allocation is the destination vector, which the image or the file has to hold either way. The preflight that admits a
-park is `conversation_snapshot_bytes` (`conversation_state.cpp:330-369`), which charges every state at the write codec
-and adds `min(gdn, 4 MiB)` for the slice when the codec is not fp32. `session_save_peak_bytes`
-(`conversation_file.cpp:1184-1199`) is the SAVE's own bound: the deepest checkpoint twice over, plus the widening on
-top when the file will hold it wider than the chain does, plus the 16 MiB write buffer.
+Version 2 adds a `u64` codec value at the start of **each checkpoint record**, including the live-state record.
+The file header's reserved fields remain zero. This supports mixed-codec files. Version 1 has no codec field and
+is interpreted as FP32 throughout.
 
-An array already under the target codec is copied, never coded twice: `convert_state` (`conversation_copy.hpp:89-110`)
-takes the plain beating copy when `from == to`, so a chain that is already coded is not widened and re-coded on its
-way into an image written in the same codec.
+Codec-aware engines read both versions and reject unknown codec values. Older engines reject version 2.
+The codec is not part of the model/configuration fingerprint: the flag selects how new copies are written, while
+the file describes its own representation. Other model and configuration compatibility checks still apply.
 
-**Decode** — `conversation_checkpoint_restore` (`conversation_state.cpp:250`) writes into the session's own fp32
-buffers (`ss.gdn_state`, `ss.ple_hist`, each owned QSA layer's `idx_tail` / `idx_dead` / `idx_block_pos`), so the
-running state needs no destination temporary: `copy_state_in` (`conversation_state.cpp:69-81`) widens it a slice at a
-time into the same 4 MiB scratch. The two indexer arrays are the exception - `tails` and `dead` are widened into fp32
-vectors beside the coded originals (18 KiB and 6 KiB at the geometry below), because the loop that fans them out to
-the owned layers reads fp32 either way. A coded restore therefore asks the heap for 24 KiB and one 4 MiB slice, and
-that is the allocation whose failure the serve path reports as a refusal instead of letting it escape
-(`strata/core/conversation_report.hpp`).
+Read limits retain the FP32 array ceilings. Checkpoint validation checks exact sizes against the checkpoint's codec
+before writing session state. Split/merge and cross-codec serialization have unit coverage.
 
-`SavedConversation::bytes()` / `ConversationCheckpoint::bytes()` count `capacity()`, so parked-image accounting
-follows the smaller vectors with no change.
+### Memory accounting
 
-### 5. Cost, measured
+Park admission estimates the destination state at the write codec and includes bounded coding scratch.
+SAVE admission accounts for the selected checkpoint copies, live-state storage, serialization buffers and any
+additional widening needed when a coded checkpoint is written as FP32.
 
-See **Measured** below. The arithmetic was right: one running state is 118,063,152 B, bf16 stores it in 59,031,600 B,
-and a session file holds the live state plus the deepest checkpoint in the chain (`session_save_checkpoints`,
-`conversation_file.cpp:1202` - not every checkpoint the RAM chain keeps), so the saving is a multiple of 59 MB and
-does not depend on the conversation's length.
+Cache accounting uses allocated buffer capacity, which can exceed payload size. Neither halving state arrays nor
+reducing a serialized payload establishes an equivalent reduction in total process RAM or an equivalent increase
+in conversations admitted by a fixed cache budget.
 
-### 6. Stored-to-stored conversion goes in one pass
+## Benchmark setup and provenance
 
-`convert_state` (the host-to-host conversion a park and a mount do on stored state) first went through an fp32
-scratch: decode a slice into it, encode the slice out of it. Neither direction needs that. bf16 to fp32 is a shift,
-so the second operation was a full-size `memcpy`; fp32 to bf16 round-to-nearest-even reads one value and writes one
-value, so the first operation was a `memcpy` in. `state_transcode_bytes` (`state_codec.hpp`) does the whole
-conversion between the two byte buffers: fixed-size `memcpy` loads and stores, `bf16_of` for the rounding and
-`bf16_bits_of` for the shift, so the rounding, NaN quieting, signed zeros, subnormal flush and the ceiling behave
-exactly as they did. A `from` that is already the `to` copies the bytes that array occupies; a codec with no pair of
-paths here is refused rather than treated as one of the two.
+All engine results below were taken on the same machine:
 
-The chunking, the beats and the `STRATA_TEST_SLOW_COPY_US` hook stay at the slice boundary in `convert_state`, which
-still builds the destination beside the source and swaps it in only once every slice has converted - a mount calls it
-with one vector on both sides. `copy_state_in` / `copy_state_out` keep their staging buffers: those exist because a
-coded array cannot cross the device boundary in the shape the engine runs on, which is a different problem.
+| Component | Configuration |
+| --- | --- |
+| Model GPU | Tesla V100-PCIE-32GB; engine runs were single-GPU |
+| Other GPU | RTX 2080 Ti, not used by these engine benchmarks |
+| CPU | 24 cores / 32 threads; recorded as `Genuine Intel(R) 0000` |
+| RAM | 93 GB reported |
+| OS / toolkit | Linux Mint 22.1, kernel 6.14.0-33-generic; CUDA 12.8 |
+| Session-file storage | Samsung 990 EVO Plus 4TB, ext4 |
+| Engine / model | Engine 0.1.43.1; Qwen3.8-Flash-Next IQ3_S |
+| Context / K/V | Maximum context 262,144; INT8 K/V; 32,768 resident K/V tokens |
+| Conversation cache | 16,384 MiB; 12 slots; 8,192 MiB minimum free RAM |
+| Checkpoint defaults | `--prompt-cache 6 --prompt-cache-every 16384` |
 
-The destination is still a sized `std::vector<uint8_t>`, so its bytes are still initialised before the conversion
-writes them. Removing that would need a different buffer storage, not a different conversion.
+Latency comparisons use the same `strata.head` binary for FP32 and BF16, with runs recorded at `e79abfc0` after
+capture-time encoding was added. They pin `--adapt-swaps 0 --pcie-frac 0`, reverse arm order across two rounds,
+and use two warm-ups plus ten measured repetitions per workload per round. Reported latency figures are medians
+of the two round medians. The checkpoint-spacing sweep uses a fresh server per configuration and round.
 
-## Measured
+Memory measurements use the binary recorded at `79955461`, fresh engine processes per arm, and the ordinary
+benchmark configurations rather than the pinned latency configuration. The engine arguments differ in the codec.
+Disk RESTORE uses nine repetitions per size; the first SAVE after prefill is recorded separately from later saves.
 
-> **The harness is not committed yet.** Every script named below — `bench-state-codec/bench_convert_host.cpp`,
-> `bench_ab_convert.py`, `bench_run.py`, `bench_lazy_resume.py`, its README and the raw JSON each phase wrote — is on
-> the machine that took these measurements and is not in this pull request. The tables are the record until the
-> harness is added; the recipes are in `bench-state-codec/README.md`, which is likewise local for now. Nothing here
-> used an instrumented build: every millisecond is what a normal build reports.
+Recorded commits are working-tree HEADs at run time, not automatically proof of the source used to build a binary.
+The artifact manifest identifies binary names and known provenance differences. Historical session-file results
+come from `d178753d`, before lazy restoration and capture-time encoding; they are labeled accordingly below.
 
-**One pass instead of two** (same box, `d178753d` plus this change; the pre-change binary built from the same tree).
+## Measured results
 
-Host, allocation inside the timed region, one real conversation's state (29,417,472 fp32 values), both paths in one
-binary, the two paths alternating who goes first so allocator warmth cannot favour either — 12 reps, median:
+### Checkpoint spacing and turn latency
 
-| conversion | before (scratch) | after (one pass) | change |
+[`capture_codec.json`](https://github.com/sumomomomomo/strata-bf16-bench-artifacts/blob/main/results/capture_codec.json):
+one fresh 31,813-token document followed by short turns. Each timed turn captures a retained checkpoint.
+The retained chain contains three checkpoints at 16K spacing and five at 8K.
+
+| Codec / spacing | Fresh prefill | Turn prompt phase | Complete turn |
 | --- | ---: | ---: | ---: |
-| one whole checkpoint stored bf16 (4 arrays) | 36.4 ms | 28.4 ms | −8.0 ms, −22% |
-| one whole checkpoint widened to fp32 | 44.1 ms | 39.9 ms | −4.2 ms, −9.5% |
-| `gdn` alone, fp32 to bf16 | 33.8 ms | 28.1 ms | −5.7 ms, −16.7% |
-| `gdn` alone, bf16 to fp32 | 44.7 ms | 40.7 ms | −4.0 ms, −9.0% |
+| FP32 / 16K | 21.717 s | 736.5 ms | 1.074 s |
+| BF16 / 16K | 21.703 s | 687.5 ms | 1.027 s |
+| FP32 / 8K | 21.796 s | 806.0 ms | 1.135 s |
+| BF16 / 8K | 21.868 s | 721.0 ms | 1.054 s |
 
-Order bias, measured on a build where both paths are the same code and the medians therefore must agree: at most
-2.3 ms on the largest pair, under 1.5 ms elsewhere. Every gap above is bigger than that. `bench-state-codec/
-bench_convert_host.cpp` prints them.
+BF16 at 8K spacing delivered comparable complete-turn latency to FP32 at 16K in this workload. Changing spacing
+from 16K to 8K added 69.5 ms to the FP32 turn prompt phase and 33.5 ms to BF16's. The corresponding same-arm
+round-to-round prompt-phase spreads were 0–3 ms. This is evidence about the whole request, not isolated capture cost.
 
-Engine, both binaries in one session on one pair of conversations, alternating which build goes first, both arms with
-`--adapt-swaps 0 --pcie-frac 0` (`docs/DETAILS.md:108`), 10 reps per operation, median of the two rounds:
+Complete-turn wall time includes parking, resumption and generation; it is not TTFT. Fresh prefill is measured once
+per configuration per round. The turns generate about 24 tokens, so their wall times also depend on generation.
 
-| operation | before | after | change |
+The sweep's `ok` field is not a valid recall score: its turn prompt discourages quoting the document and the
+code-word check returns 0/10 in every cell. This table uses timing only; explicit recall is evaluated separately.
+
+### Parking and continuing resumes
+
+[`lazy_resume_head_parity.json`](https://github.com/sumomomomomo/strata-bf16-bench-artifacts/blob/main/results/lazy_resume_head_parity.json):
+FP32 and BF16 at default 16K spacing. Context labels round the original document lengths.
+The continuing-resume column uses `append_only`; the parking and request columns use `older_ckpt`.
+
+| Original context | Continuing resume, FP32 → BF16 | Parking on rewind, FP32 → BF16 | Complete rewind request, FP32 → BF16 |
 | --- | ---: | ---: | ---: |
-| park, 63K/32K pair | 233.7 ms | 202.1 ms | **−31.6 ms, −13.5%** |
-| resume, same pair | 328.0 ms | 307.4 ms | **−20.6 ms, −6.3%** |
-| park, 121K/63K pair | 233.5 ms | 201.8 ms | **−31.7 ms, −13.6%** |
-| resume, same pair | 374.4 ms | 354.7 ms | **−19.7 ms, −5.3%** |
-| `SAVE` | 383.8-586.8 ms | 358.2-503.1 ms | positive, too noisy to quote |
-| `RESTORE` | 386.2-770.0 ms | 389.1-684.2 ms | **unchanged within noise** |
+| 32K | 49.25 → 51.48 ms | 142.13 → 90.78 ms | 0.329 → 0.283 s |
+| 63K | 71.15 → 77.05 ms | 163.98 → 104.90 ms | 0.344 → 0.295 s |
+| 121K | 121.98 → 127.53 ms | 198.33 → 101.25 ms | 0.432 → 0.333 s |
 
-Park and resume hold the same gap in both order positions at both size pairs. The sizes match the host arithmetic: a
-park does one store-conversion per state in the image and a resume one widen per state, and the chain here holds 3-6.
-A `RESTORE` is dominated by reading 0.6-2 GB off the drive and the D2H K/V copies; the one or two states it converts
-getting 4-8 ms faster does not move it, and one round's −65 ms did not repeat in the matched round, so it is reported
-as unchanged. `bench-state-codec/bench_ab_convert.py` and `results/ab_convert*.json`.
+BF16 adds approximately 2–6 ms to continuing parked resumes while reducing parking time in these requests.
+The result is specific to the tested conversations, cache settings and machine; it does not establish a universal
+speedup or eliminate the cost of decoding a selected state.
 
-**The default path is still byte-identical, and still as fast.** Same alternation with `--session-state-codec fp32`
-(`results/ab_convert-fp32.json`): both builds wrote 721,777,476 B files with sha256 `2f92a766f002...` in both rounds,
-`cmp` clean. Timings, best of the two rounds per arm: `park` 237.1 vs 233.7 ms, `resume` 70.3-71.1 vs 72.3-72.9 ms,
-`SAVE` 381.1-395.7 vs 387.2-505.2 ms, `RESTORE` 533.5-568.7 vs 540.7-568.8 ms. Nothing on that path calls a
-conversion at all - `convert_state` takes its copy branch when the codec already matches - so this is confirmation,
-not a surprise.
+### SAVE / RESTORE RSS
 
-**Sampled memory did not move.** `VmRSS` windows, fresh engine per arm, same phase, median of 3: `SAVE` +240.8 MiB
-before against +236.8 MiB after at 32K (+241.2 against +241.2 at 63K), `RESTORE` +351.0 against +350.2 (+804.6 against
-+804.6), a park/resume switch +48.0 against +56.2 (0.0 against 2.8). That is what was expected: the scratch the patch
-removes is `kStateCodecChunkFloats`, 4 MiB, not a running state. Read the `SAVE` column as a matched pair, not as a
-level: it is a median of 3, and the re-measurement under **Parked images, 4K and 128K, cold reads, and RAM** below
-shows why a median of 3 cannot describe that operation. The `RESTORE` pair stands, and on the current build the same
-`RESTORE` window reads +406.5 MiB rather than +351.0.
+[`memory-fp32.head.json`](https://github.com/sumomomomomo/strata-bf16-bench-artifacts/blob/main/results/memory-fp32.head.json)
+and [`memory-bf16.head.json`](https://github.com/sumomomomomo/strata-bf16-bench-artifacts/blob/main/results/memory-bf16.head.json):
+observed RSS growth above the operation's baseline, in MiB.
 
-## Files to change
-
-| file | change | ~lines |
-| --- | --- | ---: |
-| `include/strata/core/state_codec.hpp`, `src/core/state_codec.cpp` | new: the enum, the size rule, encode, decode | 140 |
-| `src/core/state_codec_test.cpp` | new: round-trip bound, special values, RNE edge, odd counts | 220 |
-| `include/strata/core/conversation_cache.hpp` | `state_codec` on `ConversationCheckpoint`; carry it through the split | 15 |
-| `include/strata/core/conversation_snapshot.hpp`, `src/core/conversation_state.cpp` | codec parameter on checkpoint save/restore/validate (default `Fp32`), sizes through `state_codec_size`, capture-threaded codec in `conversation_snapshot_save` / `_bytes` / `_validate` / `_restore` | 120 |
-| `src/core/conversation_file.cpp` | `kVersion` 2, `reserved[0]` as `state_codec`, v1 read path, per-checkpoint codec on write, unknown-codec refusal | 70 |
-| `src/program/generate.cpp` | `--session-state-codec`, help text, the codec handed to the capture and the mount, one start-up log line | 60 |
-| `CMakeLists.txt` | two targets, the pattern at lines 108-119 | 6 |
-| `docs/DETAILS.md` | the measured section, and the format note next to the session-file example | 40 |
-| `docs/STATE_SNAPSHOT_BF16.md` | this document | — |
-
-**~670 lines, ~220 of them tests.** No backend file is touched.
-
-Added after the first measurements, from the parked-resume numbers above (section 6):
-
-| file | change | ~lines |
-| --- | --- | ---: |
-| `include/strata/core/state_codec.hpp`, `src/core/state_codec.cpp` | `state_transcode_bytes`, and `bf16_bits_of` pulled out of `f32_of_bf16` so the shift has one home | 50 |
-| `src/core/conversation_copy.hpp` | `convert_state` calls it; the fp32 scratch and the decode-then-encode pair go away | 12 |
-| `src/core/state_codec_test.cpp` | byte-for-byte against the two-step path, both directions, ties / zeros / subnormals / infinities / NaNs / random words, odd counts, refusals | 85 |
-| `src/core/conversation_snapshot_test.cpp` | widening one vector in place gives the same bytes as widening a buffer of its own, over every slice | 14 |
-
-## Flag
-
-```
---session-state-codec NAME   --serve: store a saved conversation's running state as fp32 or bf16
-                             (default fp32; bf16 halves the state, restores widen it back)
-```
-
-`o.session_state_codec` beside `o.session_min_free_mib` (`generate.cpp:633`), parsed beside line 2119, help text beside
-line 785, config key `session_state_codec` in the same style as `slot_save_path`. An unrecognised name is a start-up
-error, not a silent default. Default `fp32` keeps every written byte identical to today.
-
-## Tests
-
-`state_codec_test` (new):
-
-1. round trip of a ramp, a random block, and every bf16-representable value: decode(encode(x)) within 2^-8 = 0.39% relative
-   of x, exactly equal for values bf16 already holds.
-2. `+Inf`, `-Inf`, `NaN`, `±0`, denormals, and the largest finite fp32 — no crash, and the RNE-carry-to-infinity case
-   asserted explicitly.
-3. `state_codec_size` for 0 bytes, non-multiples of 4, and an unknown codec: refused.
-4. `Fp32` is a byte-for-byte `memcpy` both ways.
-
-`conversation_file_test` (extend):
-
-5. write with `Fp32` → the file is bit-identical to today's writer (the byte-identical-default check).
-6. write with `Bf16` → version 2, `reserved[0]` = 1, the state arrays are half size, the payload hash covers them.
-7. read a v1 file → accepted, decoded as fp32. **This is the back-compat test; it is the one that protects existing
-   user files.**
-8. read a v2 file with an unknown codec value → `SessionError::invalid`, nothing allocated.
-9. read a v2 file whose array sizes do not match its codec → refused.
-10. `SessionReadLimits::max_state_bytes` as fp32 maxima still bounds a coded file (no over-allocation).
-
-`conversation_snapshot_test` / `conversation_validation_test` (extend):
-
-11. save with `Bf16` → `conversation_checkpoint_validate` accepts it and rejects the same image re-labelled `Fp32`.
-12. save → restore → the session's fp32 buffers match the originals within 2^-8 = 0.39% per value, and `block_pos`
-    bit-exact.
-13. a checkpoint already coded is not coded twice (idempotence).
-14. `bytes()` reports the coded capacity; `session_save_peak_bytes` charges more than two copies of the deepest
-    checkpoint (the live state, its lists and the write buffer on top) and refuses when the `admit` callback does.
-15. layer split: `conversation_checkpoints_split` carries `state_codec` into every part, and a stage image validates.
-
-`session_save_reclaim_test` (extend):
-
-16. SAVE with the flag on → the file is ~10% smaller, RESTORE succeeds, and the next token equals the fp32 run's.
-
-End to end, on the box:
-
-17. 63K prompt → `action=save` with the flag off and on; record `n_written`, `save_ms`, `restore_ms`; restore both and
-    compare the generated continuation token-for-token against the fp32 file.
-
-Added with lazy restoration (`conversation_snapshot_test`, `conversation_cache_test`):
-
-18. park a chain of three coded checkpoints, mount it the way the resume path does (move the image's checkpoints into
-    the active chain, no widen): every snapshot keeps its bytes, its size and its `state_codec`.
-19. an append-only continuation captures its own checkpoint and leaves every older retained snapshot byte-for-byte
-    as it was, same codec, same `bytes()`. Left at the API default the capture is fp32 and only then; the serve loop
-    asks for its own coding by setting `state_codec` first, which `fresh_capture()` then checks under both codecs.
-20. selecting an older coded checkpoint puts values within 2^-8 of the fp32 originals into the session's buffers
-    (`block_pos` bit-exact) and leaves the retained snapshot coded — restoring does not permanently widen it.
-21. a chain holding fp32 and coded snapshots together is estimable, parks under either codec, validates as a mixed
-    image, restores, and is written to disk both ways: an all-fp32 write of it is still a **version 1** file, a coded
-    write is version 2, and a mixed image on disk comes back with each checkpoint's own coding.
-22. `session_save_checkpoints` keeps the checkpoint it selects as the chain holds it and `session_save_peak_bytes`
-    prices the widening an fp32 file still has to do; `conversation_snapshot_sources` then writes fp32 bytes.
-23. layer-stage split and merge carry a checkpoint's own coding and each stage part's separately, and a coded stage
-    part restores into its stage's fp32 buffers (`conversation_cache_test` does the same split/merge host-only).
-24. a retained snapshot naming an unknown codec, or whose arrays are not its codec's size, is refused before any
-    state write — the session still holds what the last capture saw.
-25. re-parking a mixed chain under a real `RLIMIT_AS` is refused with an error and not thrown, and leaves the active
-    chain exactly as it was. (`conversation_checkpoints_widen` keeps its own pressure test.)
-
-## Measured
-
-One Tesla V100 32 GB (model) plus one RTX 2080 Ti (ComfyUI idle), 93 GB system RAM, Linux, CUDA 12.8, engine built
-from this branch. Model Qwen3.8-Flash-Next IQ3_S, `--kv int8`, `--max-context 262144`, `--kv-resident 32768`,
-`--conversation-cache-mib 16384 --conversation-cache-slots 12 --conversation-cache-min-free-mib 8192`. The two A/B
-configs are the same `args` list with only `--session-state-codec fp32` / `bf16` differing (same pack, same model
-files, same `--vision`), so the two arms' session-file identities match — each arm restored the other's file, shown
-below.
-
-The conversation is `tools/needle_bench.py`'s haystack (this repository's own docs and source, in a fixed order) with
-a code word inserted at the midpoint, asked greedily through `/v1/chat/completions`. Same text in every run.
-
-**63,459 tokens**
-
-| | `fp32` (default) | `bf16` | change |
-| --- | ---: | ---: | ---: |
-| session file | 1,205,289,012 B | 1,087,225,924 B | −118,063,088 B, −9.8% |
-| `save_ms` | 546.4 | 503.2 | −7.9% |
-| `restore_ms` | 759.5 | 714.3 | −6.0% |
-| next turn on the resumed state | 0.47 s, right word | 0.45 s, right word | — |
-
-**32,650 tokens**: 734,789,228 → 616,726,140 B (−16.1%), `save_ms` 444.1 → 315.5 (−29%), `restore_ms`
-468.5 → 400.3 (−15%). Short conversations gain the most, because the state in a file is set by the checkpoint
-spacing and not by the length: a 37-token conversation still writes 236,738,756 B, of which two running states are
-236,126,304 B, and coded the same file is 118.7 MB.
-
-**What bf16 costs the state, measured on the file's own values** — no model, no GPU, so nothing but the codec is in
-these numbers. bf16 encode and decode applied to the 29,417,472 GDN floats of the 63K conversation's live state:
-
-| array | values | worst relative | rms relative | worst absolute | mean absolute | state rms |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| GDN recurrence | 29,417,472 | 0.3891% | 0.166% | 0.0623 | 4.6e-5 | 0.2598 |
-| PLE history | 92,160 | 0.3890% | 0.166% | 0.0156 | 2.5e-4 | 0.3171 |
-| QSA indexer tails | 4,608 | 0.3891% | 0.167% | 0.0156 | 1.0e-3 | 0.9855 |
-| QSA dead keys | 1,536 | 0.3743% | 0.161% | 0.0076 | 9.3e-4 | 0.9835 |
-
-The worst relative error sits just under the 2^-8 = 0.3906% bound, as it must: bf16 has eight significant bits. No
-value's sign flipped, none became zero, none became non-finite. `block_pos` is int32 positions and is never coded.
-
-For scale, the same 63K prompt through two separate engine runs, both fp32, both put on the bf16 grid so only the
-run-to-run difference shows: max 1.641, mean 0.00228 on the GDN state. **The engine's own run-to-run difference is
-26x the codec's worst error** — the adaptive expert tier and a shared PCIe link move the rounding, as
-`docs/DETAILS.md` records for #152 and #410.
-
-**Round trip.** A coded file restored by an engine started with `--session-state-codec fp32`, then saved again, is
-bit-identical to the state the coded file held, in all five arrays (`gdn`, `ple`, `tails`, `dead`, `block_pos`).
-
-**The default path is untouched.** With the flag off, a 63,459-token conversation writes 1,205,289,012 B at file
-version 1, and that file is byte-identical to the one the previous engine build (this branch's parent, `a0116b27`, same
-`args`) wrote for the same conversation: same 232-byte header, same token ids, same bytes in all five state arrays.
-
-**Compatibility.** A version-2 coded file restores on an engine configured `fp32`, and a version-1 file restores on an
-engine configured `bf16`; both resumed conversations answered the code word correctly. An engine that does not know
-version 2 refuses the file and says so.
-
-**Text, with the rounding pinned.** Left at its defaults the engine is not repeatable on this box — the adaptive
-expert tier and a shared PCIe link move the rounding (`docs/DETAILS.md:106`, and `docs/DETAILS.md:108` names
-`--adapt-swaps 0 --pcie-frac 0` as the way to get byte-identical repeats) — and the same fp32 file restored twice gave
-different continuations. With those two switches pinned off, two separate engine runs of the same 32,650-token
-conversation produced states that differ by exactly the codec and nothing else: `gdn` max 0.0620 / mean 4.51e-5,
-`ple` 0.0178 / 2.4e-4, `tails` 0.0156 / 1.1e-3, `dead` 0.0076 / 9.3e-4, `block_pos` identical — the same magnitudes as
-the codec's own error table above, with no drift left on top. One engine then restored both files, alternating, twice
-each, and generated the same four continuations:
-
-| continuation | fp32 state | bf16 state |
-| --- | --- | --- |
-| the code word | `da454b02b470` | `da454b02b470` |
-| what the document is made of | `d2c0d2cde25b` | `d2c0d2cde25b` |
-| count to five, name the word | `e00a9fc3f733` | `e00a9fc3f733` |
-| a haiku about it | `cded6cce8fb4`, `ede0a43fecf2` | `ede0a43fecf2`, `ede0a43fecf2` |
-
-Three of the four are byte-identical between the coded and the uncoded restore. The fourth — free creative generation,
-the one place a small state perturbation can send the greedy path down a different line — varied **on the fp32 file
-too**: the same uncoded file gave two different haikus in two passes, and the coded file matched its later answer both
-times. So on this box the codec did not add variation that the engine's own fp32 path did not already have.
-
-Without those switches pinned, text identity cannot be used at all: two fp32 runs of the same file differ by 26x more
-in the state than bf16 does.
-
-### Parked images, 4K and 128K, cold reads, and RAM
-
-A second pass over both configurations, on the same box and the same build, with the harness in `bench-state-codec/`
-— scripts, raw JSON per phase, and a README saying how each number was taken, none of it committed yet (see the note
-at the head of **Measured**). Every number below is
-the median of 10 measured operations after 2 warm-ups, from the normal build, with nothing instrumented.
-
-`--session-state-codec` is read once at start-up, so each configuration is its own engine process from the same
-binary; the two configs differ in the codec, the log path, and `slot_save_path` (which only enables `SAVE`/`RESTORE`
-and is on for both). Same prompts, same files, same order.
-
-**Session files, 4K and 128K added to the 32K and 63K above:** (the token counts differ from the first pass by a few
-hundred — that table is one hand-built conversation, this one is the harness's own fixed prompts, and the harness's two
-arms get identical token counts because they send identical text)
-
-| tokens | file `fp32` | file `bf16` | saved | `save_ms` | `restore_ms` |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 4,223 | 300,697,908 B | 182,634,820 B | −39.3% | 341.0 → 185.2 | 347.0 → 128.9 |
-| 31,797 | 721,838,564 B | 603,775,476 B | −16.4% | 538.9 → 336.2 | 737.0 → 420.3 |
-| 63,026 | 1,198,752,588 B | 1,080,689,500 B | −9.8% | 547.1 → 457.9 | 915.3 → 701.6 |
-| 121,614 | 2,093,508,528 B | 1,975,445,440 B | −5.6% | 916.5 → 906.7 | 1592.0 → 1388.7 |
-
-Every saving is exactly two stored states — the live state plus the one checkpoint a `SAVE` writes — at 59,031,544 B
-apiece, which is why the percentage shrinks as the conversation grows. `SAVE` writes version 1 configured `fp32` and
-version 2 configured `bf16`; both engines read both.
-
-**Cold page cache, separately.** `posix_fadvise(POSIX_FADV_DONTNEED)` on that one session file (no root, no global
-cache drop, no other file's pages touched), then one restore, 3 repetitions: 721,838,564 B read in 443.4 ms configured
-`fp32` against 603,775,476 B in 319.7 ms configured `bf16`; 1,198,752,588 B in 785.6 ms against 1,080,689,500 B in
-468.4 ms; 2,093,508,528 B in 1423.5 ms against 1,975,445,440 B in 986.1 ms. Fewer bytes off the drive, less to wait for.
-
-**Parked conversation images**, two conversations alternated so every turn parks one and resumes the other
-(20/20 switches answered right in every size in both configurations):
-
-| tokens | image `fp32` | image `bf16` | saved | `park_ms` | resume `ms` | first-turn `prompt_ms` | images per 16,384 MiB |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 31,798 | 1.414 GiB | 1.194 GiB | −15.5% | 142.2 → 136.5 | 52.3 → 186.1 | 252.9 → 381.2 | 11.31 → 13.40 |
-| 63,027 | 2.192 GiB | 1.862 GiB | −15.0% | 211.3 → 200.5 | 86.5 → 300.4 | 357.3 → 561.1 | 7.30 → 8.59 |
-| 121,615 | 3.189 GiB | 2.804 GiB | −12.1% | 94.7 → 154.4 | 125.8 → 248.9 | 280.7 → 464.2 | 5.02 → 5.71 |
-
-The saving is the state arrays and nothing else, and the count comes out of the bytes: divided by one state's saving
-(59,031,552 B) the three deltas are 4, 6 and 7 coded states, which is the image's live state plus its retained
-checkpoint chain of 3, 5 and 6 - the last one being the `--prompt-cache 6` cap. Predicted and measured bytes agree to
-8 bytes. This is also where the cost was, on that build (`2274c1c`, eager restoration): a resume widened every state
-in the chain back to fp32, so resume went 52 → 186 ms at 32K and the first turn's `prompt_ms` 253 → 381 ms. Under a
-fifth of a second, but it grew with the chain. **These two columns are superseded for the resume side by
-"Lazy restoration" below**; the parked-image bytes and `park_ms` are unchanged by that change. At long context K/V
-(15,271 B/token here) is 79% of an image, so the byte saving flattens toward −16%.
-
-**RAM.** `VmRSS` polled at 20 ms from outside the process, fresh engine per arm, two configs differing only in
-`--session-state-codec`, median of 9, build at `79955461`. `SAVE` splits on whether the allocator has already admitted
-its scratch. The **first** save after a prefill grows RSS by +353.2 MiB configured `fp32` against +180.5 MiB configured
-`bf16` at 32K (+354.0 against +181.2 at 63K): the same figure to 1 MiB at both sizes, so it is not token-sized, and the
-`bf16` one is 0.51× the `fp32` one, consistent with `bf16` being half the bytes. No further attribution is claimed —
-this PR does not instrument the allocator. Every
-later save reuses it, so its increment is nothing — median −1.5 MiB `fp32` and −66.7 MiB `bf16` at 32K, and negative at
-63K (−392.5 against −490.2) as the kernel writes back page cache while the image goes to disk. An earlier revision of
-this section read `SAVE` as +353.2 against +240.8 MiB from a median of 3. That median mixed "caught the allocation" with
-"reused it": the per-rep values were 353.2, −107.2, −12.2, and the run it came from lived in a file the harness keyed
-on codec alone, which a second size then overwrote.
-
-A `bf16` `RESTORE` is *bigger* than an `fp32` one, and by a constant: +406.5 against +350.3 MiB at 32K, +861.3 against
-+805.1 at 63K — **+56.2 MiB at both sizes**. The constancy is the mechanism. Widening allocates the fp32 array the
-engine runs on beside the coded original still held in the cache, so `bf16` pays live fp32 (112.6 MiB) plus its own
-coded state (56.3 MiB) where `fp32` pays the live array alone; the delta is the coded `bf16` state, 59,031,600 B,
-predicted to 0.1 MiB. At 63K K/V dominates the transient on top of it, which is why both arms read ~2.2× larger there
-(2.30× `fp32`, 2.12× `bf16`).
-
-Steady RSS with conversations parked, both arms at 32K: 54,325.6 → 56,527.0 MiB `bf16` (+2,201.4) against 54,673.3 →
-57,314.4 MiB `fp32` (+2,641.1), the cache's own accounting 3,077,756,360 B against 3,727,103,432 B over 4 parked images.
-Two limits on these numbers: `VmRSS` misses pages the kernel already wrote out
-and most parked state is pageable, so they are lower bounds; and once the cache is at its budget every increment reads
-zero, because the allocator already owns the blocks — which is why this runs on a fresh process.
-
-**Encode and decode, host only.** The 117,669,888 B `gdn` array pulled out of a session file this build wrote for the
-63,026-token conversation, then `state_encode`/`state_decode` with no GPU and no engine in the way: encode 16.2 ms
-(7.3 GB/s of fp32 read), decode 10.0 ms (11.9 GB/s of fp32 written), 6 repetitions, encode 16.1-17.4 ms and decode
-9.7-10.6 ms, worst relative error against the file's own values 0.3891% — inside the 2^-8 bound, and every value the
-decoder produced was checked back against the input.
-
-## Lazy restoration of the retained chain
-
-**What changed.** Up to and including `2274c1c` the parked-resume path called `conversation_checkpoints_widen()` on
-the whole checkpoint chain the moment a parked conversation was resumed: every retained snapshot was allocated an
-fp32 array and converted, whether or not the conversation ever went back to it. That made the active chain uniform
-fp32 — which is what this document said until it was rewritten — and it made the resume cost grow with the chain.
-
-Now the mount moves the parked image's checkpoints into the active chain **as they are**, buffers and `state_codec`
-bytes included. The chain is mixed from that point on: coded snapshots imported from parking beside the fp32 ones the
-session captures itself. `conversation_checkpoint_restore()` decodes the **one** snapshot a rewind selects into the
-session's own fp32 buffers and leaves the stored snapshot untouched, so the same checkpoint can be restored again,
-re-parked, or written to a file in a third codec. `conversation_checkpoints_widen()` is kept — it is still the way to
-put a whole chain in fp32 up front, and it is still tested — but the resume path no longer calls it.
-
-Nothing else moved. At this commit a newly captured checkpoint was still fp32 — `3f04cc72` changed
-that afterwards, so a retained checkpoint now takes the configured codec at the moment it is
-captured rather than when the conversation is parked, and §4 above says what that did to the capture
-path. What did not move in either commit is that every existing snapshot is still read by the codec
-it names for itself, and that the configured option decides only how a *new* copy is written. The
-file formats and the fingerprints are unchanged (an all-fp32 write of a mixed chain is still a
-version 1 file — `any_coded()` looks at what the image actually holds); layer-stage split and merge
-already carried a checkpoint's own coding and each stage part's separately, and still do; no kernel,
-no new flag, no new worker, and the checkpoint interval is untouched.
-
-**What it costs the reader.** The deferred decode allocates host memory the eager path did not: the widened
-`tails`/`dead` arrays (18 KiB + 6 KiB at this geometry) and one fp32 slice of `gdn`/`ple` crossing the device
-boundary, bounded by `kStateCodecChunkFloats` — 4 MiB. The serve loop has no handler around the restore, so
-`checkpoint_restore()` in `generate.cpp` turns a `bad_alloc` there into the reported `ERR restoring a conversation
-checkpoint failed: not enough RAM to widen the checkpoint's running state` the same way it reports any other restore
-failure (the session may be half written, so the engine ends and the server starts it again), and the batch slot path
-`copy_from_slot()` reports a refusal and lets the caller read the prompt from token 0 as it already did. Neither
-handler may build its own message: assembling `"checkpoint restore failed: " + e.what()` wants a heap block on the one
-path that has none, so a second `bad_alloc` escaped the catch and ended the engine. The message is a literal or
-`what()` read while the exception is alive, and the copy into the caller's string is attempted inside a try
-(`strata/core/conversation_report.hpp`); `conversation_report_test` arms the allocator to fail and checks both halves
-of that. Re-parking a mixed chain is the unbounded allocation and it was already refused rather than thrown; that is
-tested under a real address-space limit.
-
-**Engine lines added.** `retained N checkpoints beside the live state, B bytes … (C coded, X bytes of it)` on the
-mount, and `resumed through the checkpoint at T tokens (widened into the session's fp32 buffers; its stored bytes are
-kept as they are) in M ms; the other K retained checkpoints were not touched` at the restore. The second is printed
-only when the chain actually holds coded snapshots, so the default fp32 path is as quiet as it was.
-
-### Files the two commits touch
-
-| file | change | lines |
-| --- | --- | ---: |
-| `src/program/generate.cpp` | the mount keeps the parked chain as it is; the deferred restore's failure reporting; `checkpoint_at()` takes a stage part's coding from the part it moves in; two codec-gated log lines | +133 / −56 with the comments |
-| `include/strata/core/state_codec.hpp`, `conversation_cache.hpp`, `conversation_snapshot.hpp`, `src/core/conversation_copy.hpp`, `src/core/conversation_state.cpp` | comments and the two engine strings: the active chain can be mixed, and only the working state is fp32 | 53 |
-| `src/core/conversation_snapshot_test.cpp` | the mixed-chain tests listed above | 244 |
-| `src/core/conversation_cache_test.cpp` | the split and merge carry each part's own coding | 54 |
-| `include/strata/core/conversation_report.hpp` | the guarded report: a literal or `what()`, never an assembled message | 27 |
-| `src/core/conversation_report_test.cpp` | the same, with the allocator armed to refuse requests of a given size | 230 |
-| `CMakeLists.txt` | one host-only test target, the pattern at lines 108-119 | 4 |
-
-No backend file is touched, and the only change outside a header or a test is host C++ in `generate.cpp`.
-
-### Measured: eager (`2274c1c`) against lazy, both `bf16`
-
-> **The eager-against-lazy table below predates `3f04cc72`.** It was taken on the build at `e2983e98`, when a
-> retained checkpoint was captured fp32 and coded only when the conversation was parked, and it compares two
-> *restoration* builds, so `3f04cc72` does not undo its result: what it measures (one conversion per retained
-> checkpoint at the mount, removed) is the same on both sides of that later commit. What the later commit does
-> change is three of the quantities recorded in its rows — a conversation that never parks now holds a coded
-> chain too, a park converts nothing, and capture itself codes — so read its retained-byte, `VmRSS` and `park`
-> columns as the pre-capture-coding case. The FP32-against-BF16 comparison and the capture-and-turn-latency
-> sweep further down were both re-taken on HEAD after `3f04cc72` and carry their own provenance. Retained
-> bytes before the first park and a memory-tight conversation that used to refuse and now fits are still **not
-> measured**. HIP is unbuilt, and `conversation_state.cpp` and `generate.cpp` are shared with it.
-
-Same box and configuration as the tables above (Tesla V100 32 GB model GPU, RTX 2080 Ti idle, 93 GB RAM, Linux, CUDA
-12.8 build, IQ3_S, `--kv int8`, 262144 context, `--conversation-cache-mib 16384 --conversation-cache-slots 12
---conversation-cache-min-free-mib 8192`, `--prompt-cache 6 --prompt-cache-every 16384`), with
-`--adapt-swaps 0 --pcie-frac 0` pinned (`docs/DETAILS.md:108`). Two engine binaries from the same tree — HEAD
-(`engine-cuda12/strata.eager-2274c1c`) and this change (`engine-cuda12/strata.lazy`) — each its own server process,
-because both the codec and the executable are read once at start-up. **Two rounds, the arms alternating which goes
-first; 2 warm-ups then 10 measured repetitions of each operation in every arm-session.** Every figure is the median of
-the 20 measured operations, with the low and high of the two rounds' medians after it. `engine prompt_ms` is the
-engine's own number for the prompt phase; `client wall` is the client's own clock around the HTTP request and includes
-the queue, the park, the prompt and the decode — they are not the same measurement and are never mixed.
-`bench-state-codec/bench_lazy_resume.py` (local, not committed yet), raw JSON `bench-state-codec/results/lazy_resume.json`
-on the machine that ran it.
-
-Actual token counts, identical in both arms: prefill **31,801 / 63,029 / 121,441** tokens; the continuing prompt
-**31,821 / 63,050 / 121,462**; the edited prompt **19,090 / 19,091**. Retained checkpoints after the continuation:
-**3 / 5 / 6**.
-
-**Append-only continuation** — the conversation simply carries on, so the mount is most of the cost. One checkpoint is
-still restored — the newest, at the length being resumed, `selected … 31821` — and under `bf16` that one is coded, so
-this workload pays the single deferred decode too:
-
-| tokens | resume `ms` | engine `prompt_ms` | client wall `s` | retained checkpoint bytes | parked image |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 31,821 | 174.3 (173.8–174.8) → **53.5** (53.0–53.9) | 411.4 → **284.9** | 0.64 → **0.52** | 354.5 MB → **177.4 MB** | 0.41 GiB both |
-| 63,050 | 229.6 (229.0–230.2) → **76.8** (76.8–77.0) | 415.5 → **257.9** | 0.61 → **0.45** | 591.2 MB → **296.1 MB** | 0.41 GiB both |
-| 121,462 | 266.4 (257.2–275.6) → **126.8** (126.3–127.3) | 420.4 → **276.5** | 0.67 → **0.52** | 710.6 MB → **356.4 MB** | 0.41 GiB both |
-
-The lazy column is not zero because the mount still restores the image's *live* running state, which it always has:
-53 ms at 32K, 77 at 63K, 127 at 121K is that restore plus the K/V. What went away is one conversion per retained
-checkpoint. The eager byte figures are arithmetic on the engine's own count — `n × 118,063,152 B` plus the token and
-image lists — the lazy ones are the `retained=` line the build prints.
-
-**Older-checkpoint resume** — the prompt is an edit that ends at 19,090 tokens, well behind the conversation's live
-state, so the mount and one checkpoint restore both happen (the engine's own line names the checkpoint: `resumed
-through the checkpoint at 19083 tokens`, `reused: 19083`):
-
-| tokens | resume `ms` | engine `prompt_ms` | client wall `s` | retained checkpoint bytes | parked image |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 31,821 | 124.2 (123.7–124.8) → **40.2** (40.2–40.3) | 305.8 → **197.4** | 0.39 → **0.28** | 225.3 MB → **118.2 MB** | 1.19 GiB both |
-| 63,029 | 75.0 (74.5–75.6) → **39.4** (39.1–39.6) | 310.6 → **208.2** | 0.39 → **0.29** | 225.3 MB → **118.2 MB** | 1.86 GiB both |
-| 121,441 | 71.5 (70.5–72.5) → **37.4** (37.2–37.5) | 318.5 → **201.4** | 0.44 → **0.33** | 225.3 MB → **118.2 MB** | 2.80 GiB both |
-
-**Deep rewind** — the prompt ends at ~18,000 tokens and asks a different question every repetition, so no parked
-copy's near-tail checkpoint matches it and the engine mounts through the periodic checkpoint at **16,384** tokens
-every time. No parked image is mounted at all (`reused: 16384` in both arms, `resume` reported by neither): this is
-the deferred restore on the active chain alone, with the park of the outgoing conversation in the same request.
-
-| tokens | engine `prompt_ms` | `park_ms` | selected checkpoint |
-| --- | ---: | ---: | ---: |
-| 31,801 | 1372.5 (1371.8–1373.2) → **1353.3** (1350.3–1356.2) | 93.0 → **73.7** | 16,384 both arms |
-| 63,029 | 1314.9 (1314.1–1315.8) → **1302.7** (1301.8–1303.7) | 59.7 → **39.5** | 16,384 both arms |
-| 121,441 | 1312.2 (1311.5–1312.9) → **1296.0** (1292.9–1299.0) | 59.3 → **39.0** | 16,384 both arms |
-
-**What the one deferred decode costs.** The engine times it: **14.6–17.2 ms** for the selected snapshot, the same at
-32K, 63K and 121K and in all three workloads (the state is one running state whatever the conversation's length).
-Against the 121–153 ms the mount no longer spends, one 15 ms decode is what every resume pays — a rewind through an
-older snapshot and a plain continuation alike, because the newest checkpoint in a parked image is coded too and the
-turn that continues still restores it (`selected … 31821` on the append-only rows). What lazy restoration removes is
-the widen of every checkpoint the conversation never goes back to, not the decode of the one it does: that is why the
-continuing turn runs a few milliseconds behind `fp32` in the parity table below. The deep-rewind rows are
-*faster* under lazy despite doing that decode, because the park in the same request copies a chain that is already
-bf16 instead of converting an fp32 one.
-
-**Quality on the same runs.** With `--adapt-swaps 0 --pcie-frac 0` pinned, the two builds answered **byte-identically
-in every size and every workload**: the same single answer string per workload across all 20 measured repetitions of
-each arm (`ember` / `velvet` / `tundra` for the two rewinds, and the same one-sentence continuation for the
-append-only turn). Needle recall — the code word placed at 10% of each document — was **20/20 in every arm, every
-size and every workload**, 120 measured continuations and rewinds. Two notes on that column: the append-only turn asks
-for "one short sentence about it", so its check only bites when the sentence happens to name the word (on a separate
-run of this same build configured `fp32` the same prompt produced a sentence that described the document instead, and
-`ok` read 0/3 there while both explicit "what is the code word?" turns stayed 3/3) — the two rewind columns are the
-recall checks, the append-only column is an answer-identity check. The resumed prompts came back with the same byte
-counts in both arms.
-
-**Sampled memory.** `VmRSS` polled at 20 ms from outside the process, increment above the steady baseline (median of
-the last 5 samples), median of 10: append-only at 32K +529.8 MiB eager against +529.9 lazy, at 63K +261.7 against
-+167.6, at 121K +0.0 against +0.0. Two limits, stated as they are in the RAM section above: `VmRSS` misses pages the
-kernel has already written out and most parked state is pageable, and once the conversation cache is at its budget the
-allocator owns the blocks, so several windows read 0 and some read negative. These are observed lower bounds, not
-high-water marks; the retained-bytes columns above are the trustworthy figure for what the chain holds.
-
-**What was not measured.** No HIP build (no `hipcc` on this box) and no SYCL build (no oneAPI): the header changes
-here are comments and the only code change outside a header is in `src/program/generate.cpp`, which is plain host C++
-shared by the CUDA and HIP builds and not used by the SYCL port, but neither backend was compiled. The layer-split
-park/restore path is covered by unit tests and not by these engine runs, which are single-GPU. The KL / top-1-flip
-curve across tokens-since-resume is still not available through this build's API, as recorded in the quality gate.
-
-**The default path.** The same harness against this build configured `fp32` (`results/lazy_resume-fp32-default.json`,
-one arm, 1 warm-up + 3 measured, 32K): `reused: 16384` on the deep rewind, and **neither new log line printed** — both
-are gated on the chain actually holding coded snapshots, so a default park/resume logs what it logged before. The
-resume figures that pass printed (50.2 ms append-only, 52.2 ms rewind) are 3 repetitions on one arm and are not the
-comparison; the fp32 numbers this document compares against are the matched ones below.
-
-**FP32 against BF16: one engine, two configs, +2.2 to +5.9 ms on a continuing turn.** fp32 enters no codec in
-either build, so neither the one-pass conversion nor lazy restoration changes what that path does — but an
-unchanged code path is not a benchmark, and this is one. `engine-cuda12/strata.head`, built from HEAD
-(`e79abfc0`, which carries capture-time coding), serves both arms; the two arm configs differ in
-`--session-state-codec` alone. Same prompts, same token counts, same order of workloads within a size, 2
-warm-ups + 10 measured repetitions per workload, **two rounds with the arm order reversed** (fp32 first in
-round 0, bf16 first in round 1), `--adapt-swaps 0 --pcie-frac 0` pinned
-(`results/lazy_resume_head_parity.json`). Figures are the median of the two rounds' medians; the last column
-is how far the *same* arm moved between its two rounds, which is this harness's noise floor on that path.
-
-| parked resume, ms | `fp32` | `bf16` | difference | round-to-round spread |
+| Context | First SAVE, FP32 | First SAVE, BF16 | Disk RESTORE, FP32 | Disk RESTORE, BF16 |
 | --- | ---: | ---: | ---: | ---: |
-| 32K, continuing turn | 49.25 | 51.48 | **+2.2** | 1.6 / 0.25 |
-| 32K, older checkpoint | 40.12 | 40.3 | **+0.2** | 1.55 / 0.1 |
-| 63K, continuing turn | 71.15 | 77.05 | **+5.9** | 0.7 / 0.5 |
-| 63K, older checkpoint | 36.42 | 40.9 | **+4.5** | 0.55 / 0.5 |
-| 121K, continuing turn | 121.97 | 127.53 | **+5.6** | 1.35 / 0.35 |
-| 121K, older checkpoint | 40.42 | 38.17 | −2.3 | 1.55 / 1.05 |
+| 32K | 353.2 | 180.5 | 350.3 | 406.5 |
+| 63K | 354.0 | 181.2 | 805.1 | 861.3 |
 
-Four of the five positive deltas are larger than that noise floor, so bf16 really does cost 2–6 ms on a parked
-resume — 4.5 % at 32K and 8 % at 63K on the continuing turn. The exception is the 32K rewind: +0.2 ms against a
-1.55 ms spread, indistinguishable from nothing. The sixth cell, the 121K rewind, reads −2.3 ms — bf16 measured
-*faster* — and is no more separable: fp32's own two rounds there moved 1.55 ms and its repetitions ranged
-29.3–48.4 ms. The cost is the
-one deferred decode, which the engine times at **14.95 / 16.2 / 15.7 ms** for the selected snapshot at 32K /
-63K / 121K (12, 11 and 12 timed continuations); the mount that carries it is cheaper than fp32's by most of
-that, because the image's live running state arrives as 59,031,600 B instead of 118,063,152 B, so what reaches
-the client is a few milliseconds and not fifteen. The same A/B run on the build at `e2983e98`, before
-capture-time coding, gave **+3.0 / +0.0 / +6.5 / +3.2 / +5.1 / −3.9 ms** on the same six cells
-(`results/lazy_resume_codec_parity2.json`): same signs, same size, so `3f04cc72` did not move the resume path
-— which is what it should do, since it changes when a checkpoint is coded and not how one is widened.
+First SAVE and later saves are different allocation states. Later saves reuse allocations and their median
+increments are near zero or negative; combining first and later saves into one median obscures that distinction.
+The roughly halved first-SAVE growth is observed behavior, not an allocator-level attribution to the 4 MiB codec scratch.
 
-What bf16 gives back on the same requests, all from the HEAD run:
+BF16 disk RESTORE grows RSS by 56.2 MiB more at both sizes. That is consistent with retaining a coded state alongside
+FP32 state during restoration: one BF16 state is approximately 56.3 MiB. The experiment does not instrument individual
+allocations, so this agreement is not an allocation trace.
 
-| | 32K | 63K | 121K |
+`VmRSS` is polled every 20 ms. Pageable data can leave RSS, and sampling can miss short peaks; these figures are
+observed increments, not guaranteed high-water bounds. Negative increments do not mean SAVE has no memory requirement.
+
+### Parked allocation and steady RSS
+
+The same memory rerun records four parked images at 32K:
+
+| Metric | FP32 | BF16 |
+| --- | ---: | ---: |
+| Cache-accounted allocation | 3,727,103,432 B | 3,077,756,360 B |
+| Steady RSS before parking cycle | 54,673.3 MiB | 54,325.6 MiB |
+| Steady RSS after parking cycle | 57,314.4 MiB | 56,527.0 MiB |
+| Within-arm RSS increase | 2,641.1 MiB | 2,201.4 MiB |
+
+Cache-accounted allocation falls by 17.4% in this run. The two arms have different initial RSS, so their final RSS
+difference alone is not the memory saved by parking.
+
+The [allocation trace](https://github.com/sumomomomomo/strata-bf16-bench-artifacts/blob/main/logs/strata-trace.log)
+shows pre-existing K/V-reuse capacity overhead: 184.7 MiB of payload occupied 184.7 MiB on a fresh park and 554.1 MiB
+after reuse. `parked= bytes=` and `image_bytes` therefore represent allocated capacity, not simply payload.
+Payload arithmetic must not be used by itself to predict the number of conversations a fixed budget admits.
+
+### Session-file sizes
+
+Historical size measurements from `d178753d`, in
+[`save_restore-fp32.json`](https://github.com/sumomomomomo/strata-bf16-bench-artifacts/blob/main/results/save_restore-fp32.json)
+and [`save_restore-bf16.json`](https://github.com/sumomomomomo/strata-bf16-bench-artifacts/blob/main/results/save_restore-bf16.json).
+Their SAVE/RESTORE timing fields predate the current capture and restoration paths and are not quoted as current performance.
+
+| Prompt tokens | FP32 file | BF16 file | Reduction |
 | --- | ---: | ---: | ---: |
-| park, rewind turn, `ms` | 142.12 → **90.78** | 163.98 → **104.9** | 198.32 → **101.25** |
-| park, continuing turn, `ms` | 190.5 → **154.82** | 136.32 → **102.75** | 87.95 → **68.15** |
-| engine `prompt_ms`, rewind turn | 243.65 → **198.32** | 261.95 → **212.55** | 301.57 → **203.22** |
-| client wall, rewind turn, `s` | 0.33 → **0.28** | 0.34 → **0.29** | 0.43 → **0.33** |
-| parked image, rewind turn | 1,518,609,848 → **1,282,483,636** (−15.5 %) | 2,354,017,928 → **1,999,828,616** (−15.0 %) | 3,420,290,804 → **3,007,069,940** (−12.1 %) |
-| parked image, continuing turn | 615,533,092 → **438,438,436** (−28.8 %) | 615,539,244 → **438,444,588** (−28.8 %) | 615,594,168 → **438,499,512** (−28.8 %) |
-| retained chain in RAM after a park, 3 / 5 / 6 checkpoints | 354.5 MB → **177,414,796 B** | 591.2 MB → **296,055,504 B** | 710.6 MB → **356,405,752 B** |
-| observed `VmRSS` step, rewind turn | 449.5 → **224.8 MiB** | 449.0 → **225.0 MiB** | 453.8 → **196.1 MiB** |
+| 4,223 | 300,697,908 B | 182,634,820 B | 39.3% |
+| 31,797 | 721,838,564 B | 603,775,476 B | 16.4% |
+| 63,026 | 1,198,752,588 B | 1,080,689,500 B | 9.8% |
+| 121,614 | 2,093,508,528 B | 1,975,445,440 B | 5.6% |
 
-The `park` rows are where `3f04cc72` shows up, and the honest way to read them is **within each arm across the
-two builds**, not as one size's fp32-against-bf16 gap. Before that commit a bf16 park still converted the retained
-chain on the way into the image; after it, nothing converts and the park is a write of half the bytes. So the bf16
-park should get faster and the fp32 park should not move, which is what the continuing-turn medians show:
+Each pair saves 118,063,088 bytes: two state reductions of 59,031,552 bytes, less the two version-2 codec fields
+of eight bytes each. The fixed state contribution explains both the larger percentage at short contexts and why
+even a very short conversation can have a large session file.
 
-| continuing-turn park, `ms` | `e2983e98` `fp32` | `e2983e98` `bf16` | HEAD `fp32` | HEAD `bf16` | bf16 moved |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 32K, 3 checkpoints | 190.52 | 164.77 | 190.5 | **154.82** | **−9.95** |
-| 63K, 5 checkpoints | 136.9 | 112.6 | 136.32 | **102.75** | **−9.85** |
-| 121K, 6 checkpoints | 84.15 | 79.15 | 87.95 | **68.15** | **−11.0** |
+## Correctness and failure-path validation
 
-The fp32 column is flat within its own round spread (190.52→190.5, 136.9→136.32, 84.15→87.95 against spreads of
-3.2, 1.85 and 2.5 ms) and the bf16 column drops about 10 ms at every size. That consistency across three sizes is
-the evidence; a single cell is not, and the 121K cell on the old build is a good example of why — its fp32 rounds
-were 78.85 and 89.45, an 11 ms spread, so on that build alone the 84.15-against-79.15 gap would not have separated
-the arms. The retained chain is half-size from its first checkpoint, not from the park: the
-`retained=` line the build prints is the engine's own count. The fp32 chain figure is arithmetic on that count
-(`n × 118,063,152 B` plus the token and image lists). The `VmRSS` column is an observed lower bound and not a
-high-water mark — see the note at the head of **Measured**. Answers and recall on these runs were 20/20 in
-every cell of both arms on the two workloads that ask for the code word — including after restores from
-checkpoints that were captured in bf16, which is the recall question `3f04cc72` left open — except one: the
-32K append-only cell scored 0/20 on `fp32` and 20/20 on `bf16`, which is the free-form-sentence artifact
-recorded under the quality gate and not a codec effect, since that turn asks for the code word in prose and
-the check looks for the word in the answer.
+The explicit `older_ckpt` and `deep_rewind` code-word workloads in `lazy_resume_head_parity.json` scored
+20/20 per workload, context size and codec across the two rounds, at 32K, 63K and approximately 121K.
+These runs include restoration from checkpoints captured directly as BF16.
 
-One correction, because an earlier draft of this section carried a wrong number: a partial pass interrupted
-mid-run logged fp32 rewind resume at 29.8 / 30.55 / 38.95 ms. That round carried another load on the box, and
-the matched fp32 figures — 39.8 / 36.45 / 41.3 on `e2983e98`, 40.12 / 36.42 / 40.42 on HEAD — are about 10 ms
-slower. The interrupted pass made bf16 look worse against fp32 than it is.
+The free-form `append_only` answer check is excluded from recall claims. In its 32K cell FP32 scored 0/20 while
+BF16 scored 20/20; this is not sufficient evidence of a BF16 quality improvement.
 
-### Measured: capture and turn latency, `--prompt-cache-every` 16384 against 8192
+Earlier disk-restore needle tests at approximately 121K scored 3/3 for each codec, at depths 10%, 50% and 90%:
+[`needle-125000-fp32.json`](https://github.com/sumomomomomo/strata-bf16-bench-artifacts/blob/main/results/needle-125000-fp32.json)
+and [`needle-125000-bf16.json`](https://github.com/sumomomomomo/strata-bf16-bench-artifacts/blob/main/results/needle-125000-bf16.json).
+These are the historical `d178753d` disk path, separately from the later captured-checkpoint tests.
 
-`3f04cc72` put coding on the capture, and the engine has no timing line for a capture, so this measures what a
-client can see around it. `engine-cuda12/strata.head` at HEAD, both codecs, `--adapt-swaps 0 --pcie-frac 0`
-pinned, a fresh server per cell, **two rounds with the arm order reversed** (`results/capture_codec.json`).
-Each cell prefills one 31,813-token document and then makes 12 short turns on it (2 warm-ups + 10 measured);
-the engine captures a retained checkpoint at the start of every new assistant turn, so every timed turn
-carries one capture. The spacing decides how many periodic checkpoints the chain holds alongside it: **3** at
-the default 16384 and **5** at 8192, which the engine's own `checkpoints=` count confirms in every turn of
-every cell. Figures are the median of the two rounds' medians; the spread column is the same arm's movement
-between its rounds.
+The PR's reported CUDA validation is 125/126 tests passing. `ple_parity` requires a missing model artifact and
+also fails before this change. Reported fault-injection coverage includes 43 capture checks and 25 reporting checks,
+including sanitizer runs. Relevant coverage includes:
 
-| `--prompt-cache-every` | codec | prefill `prompt_ms` | turn `prompt_ms` | turn generated `ms` | turn client wall `s` | round spread (prefill / turn) |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| 16384 (default) | `fp32` | 21,716.5 | 736.5 | 311.0 | 1.07 | 5.0 / 0.0 |
-| 16384 (default) | `bf16` | 21,702.5 | **687.5** | 311.5 | **1.03** | 3.0 / 3.0 |
-| 8192 | `fp32` | 21,796.0 | 806.0 | 296.5 | 1.14 | 22.0 / 0.0 |
-| 8192 | `bf16` | 21,867.5 | **721.0** | 305.5 | **1.05** | 133.0 / 2.0 |
+| Test area | Coverage |
+| --- | --- |
+| State codec | Round-to-nearest-even, representable values, signed zeros, subnormals, Inf/NaN, overflow, direct transcode parity and unknown codecs |
+| Session files | Version 1/2, mixed codecs, payload validation, read limits, cross-codec writes and FP32 serialization |
+| Checkpoints and snapshots | Capture/restore, retained compressed chains, stage split/merge, memory accounting and invalid snapshots |
+| SAVE admission and reclaim | Selected-checkpoint preservation, codec-aware estimates, widening cost and refusal under pressure |
+| Capture/report failures | Destination and staging allocation failures, preserved prior state, recovery and reporting while allocation fails |
 
-Three things fall out of it, and the third is the one `3f04cc72` was about.
+Default FP32 serialization was checked against the parent build. These checks protect representation and integration;
+they do not establish unchanged model output after lossy restoration.
 
-**Coding does not reach the prefill or the token path.** The first prompt of a 31,813-token conversation reads
-the whole cache and takes 21.7 s in every cell: 21,716.5 ms configured `fp32` against 21,702.5 configured
-`bf16` at the default spacing, and 21,796 against 21,867.5 at 8192 — inside the 3–22 ms round-to-round spread
-of the arm's own two rounds, and far inside the 133 ms one outlier 8192 `bf16` round produced. Generation is
-the same story: the 24 tokens a turn produces take 311 ms either codec at the default spacing (spread 9 ms and
-7.5 ms) and 296.5 against 305.5 at 8192 (spread 3.5 ms and 3 ms), about 77 tok/s in all four cells. No codec
-code is on either path, and these are the numbers that says so on this build.
+## Limits and remaining validation
 
-**A turn is cheaper under `bf16`, by 49 ms at the default spacing and 84 ms at 8192.** Every timed turn mounts
-the parked conversation and writes an image, and under a codec both move half the bytes of the state; the
-engine's per-turn `prompt_ms` is where that lands. The medians sit 687.5 against 736.5 and 721 against 806
-with a round-to-round spread of 0–3 ms. Over the 20 measured repetitions of a cell the bf16 turns span 685–715
-ms at the default spacing and 718–745 at 8192 (30 ms and 27 ms) against fp32's 733–777 and 802–825 (44 ms and
-23 ms) — the two distributions do not overlap at either spacing. The client sees 1.03 s against 1.07 s and
-1.05 s against 1.14 s.
+- **Quality:** recall is established for the tested workloads. Logit KL, top-1 changes across tokens since resume,
+  broader long-continuation quality and cumulative effects of repeated lossy restores remain unmeasured.
+  This build's chat API does not supply the logits needed for those comparisons; an engine-level harness is needed.
+- **Memory and capture:** retained bytes before the first park, isolated capture latency, capture during prefill,
+  equivalent-history total RAM at 8K/16K spacing, and a memory-tight conversation that newly fits remain unmeasured.
+  Chains tens of checkpoints deep are also untested; the default retention limit is six.
+- **HIP:** shares the changed host engine code, but was not built or run for these results.
+- **SYCL:** has separate conversation-state sources and does not implement the BF16 option. This PR adds the shared
+  codec source to its build and passes FP32 to its SAVE preflight. The build and handling of BF16 files produced
+  elsewhere remain unverified; its checkpoint validator still expects FP32 array sizes.
+- **Windows and multi-GPU:** Windows remains untested. Stage split/merge has unit coverage, but all engine
+  benchmarks here are single-GPU; real layer-split park/restore remains untested.
 
-**Halving the spacing costs a turn 69.5 ms in fp32 and 33.5 ms in bf16 — and the gap is the chain.** Going
-16384 → 8192 adds two periodic checkpoints to a 31,813-token conversation, and a parked image carries the
-whole chain, so every turn's park and mount gets bigger. fp32 pays +69.5 ms per turn for those two
-checkpoints, bf16 pays +33.5 ms: 48 % of the penalty, which is the codec doing what it claims on bytes that
-scale with chain length rather than with the conversation. Neither figure is noise — the arms' own rounds move
-0–3 ms — and neither is on the token path.
+Keeping computation FP32 does not erase the perturbation introduced by encoding a stored state. The measurements
+support an opt-in storage tradeoff on the tested system; they do not establish quality equivalence or justify
+changing the default codec.
 
-What this cell does **not** cover: a conversation long enough that the chain is tens of checkpoints deep,
-where the spacing term would dominate everything above; capture during a prefill rather than between turns;
-and a park whose image no longer fits the cache budget.
+To stop writing new BF16 state, use `--session-state-codec fp32`. Codec-aware builds can still restore existing
+BF16 files. An older build cannot read version 2, and widening a BF16 snapshot does not restore its original precision.
 
-## Quality gate
+## Reproducing and interpreting the evidence
 
-This is the part that decides whether the feature ships, and it is a higher bar than K/V quantization faced:
-`--prompt-cache` and session restore are byte-exact fp32 copies today, so a coded state introduces error where there
-was none. The repo's precedent for accepting a quantization trade with numbers is `docs/DETAILS.md:88`
-("perplexity +8-12%; needle tests still pass. 8-bit stays the default").
+Start with the artifact [manifest](https://github.com/sumomomomomo/strata-bf16-bench-artifacts/blob/main/MANIFEST.md)
+and [harness README](https://github.com/sumomomomomo/strata-bf16-bench-artifacts/blob/main/harness/README.md).
+Reproduction needs a compatible engine build, model/pack/tokenizer files and local FP32/BF16 configurations;
+machine-specific configurations are intentionally not included. Results contain recorded engine arguments and
+hardware metadata where available. Latency comes from normal engine builds; RSS is sampled externally.
 
-Run, with the flag off and on, on the same box and the same build:
-
-1. `tools/needle_bench.py` — 32K at depths 10/50/90, after a restore, not just cold. **Done, and through the restore
-   path rather than cold:** each depth is read once, saved, restored, then continued, so the answer comes from the
-   state that came off disk. 3 of 3 right configured `fp32`, 3 of 3 right configured `bf16`, same words, same box,
-   same build:
-
-   ```
-   depth  10%: read 32646 tok 22.3s answer='amber'  | bytes=734789228 save=363.6 restore=460.6 | after restore OK 0.77s
-   depth  50%: read 32646 tok 21.9s answer='falcon' | bytes=734789228 save=383.6 restore=524.1 | after restore OK 0.41s
-   depth  90%: read 32646 tok 22.0s answer='quartz' | bytes=734789228 save=329.1 restore=490.3 | after restore OK 0.39s
-   depth  10%: read 32646 tok 22.4s answer='amber'  | bytes=616726140 save=305.1 restore=411.9 | after restore OK 0.74s
-   depth  50%: read 32646 tok 22.0s answer='falcon' | bytes=616726140 save=314.6 restore=414.6 | after restore OK 0.43s
-   depth  90%: read 32646 tok 22.1s answer='quartz' | bytes=616726140 save=437.3 restore=390.2 | after restore OK 0.39s
-   ```
-
-   (`fp32` first, then `bf16`; the wanted word is the one the filler was seeded with.)
-2. `tools/ab_engine.py` — the two engines A/B'd on the same prompts. **Done:** 2 rounds, arms differing only in the
-   codec, identical answer text in 7 of 8 paired requests, decode medians within 2.8 tok/s, prefill medians
-   80.1/74.4/83.2/1422.0 tok/s `fp32` against 81.0/76.8/83.3/1422.7 tok/s `bf16`. The one differing pair is round 0's
-   long request; the same request matched in round 1, and this box's own run-to-run drift (max 1.641, mean 0.00228 on
-   the same prompt twice with no codec change) is about 26x the codec's error, so one mismatched pair is drift.
-3. **error vs tokens-since-resume** — restore a coded state, then measure logit KL and top-1 flips against an fp32
-   restore at 1, 10, 100, 1,000 tokens after the resume. This is the decisive measurement: the GDN gate decays old
-   state, so a perturbation at the resume point should shrink. If it is flat or grows, bf16 is wrong for this and the
-   PR stops here. **Not available through this build's API** — `/v1/chat/completions` ignores `logprobs` and returns
-   no logits, so there is nothing to take a KL or a top-1 flip from. It needs a host-side harness that runs both
-   restores in one process, which is a change in its own right. Offered in place of it: the value-by-value error
-   table above, which bounds the perturbation exactly (every state value moves by at most 2^-8 of itself), and the
-   measurement showing the same prompt in two fp32 runs moves that state 26x more.
-4. resume at several depths (4K, 32K, 128K) and at several checkpoint ages, since the older the checkpoint the more
-   the resumed state matters. **Done at 32K and 121,581 tokens** (needle across a disk restore: 9/9 at 32K over depths
-   10/50/90 x 3 seeds, 3/3 at 121,581 over three depths, both configurations, and the same 9 needles 9/9 when the
-   resume comes from a parked image instead of a file). Older checkpoint ages **done**: editing a 63,027-token prompt
-   back to 20,934 and to 38,498 tokens makes the engine continue from the checkpoint at 16,384 and at 32,768 tokens
-   (`reused:` in the engine's own prompt log), and the code word placed before both points is recalled in both
-   configurations. A parked chain holding several coded states is covered by the parked-image table above (3, 5 and 6
-   checkpoints). 4K was not run as a needle case: a 4K conversation cannot hold a checkpoint older than its live state.
-
-Acceptance: needle recall unchanged, token-for-token identity on the short continuations, and a measured decay curve
-reported with the machine it was measured on. **Recall: met. Token-for-token identity: not achievable on this box
-even between two fp32 runs of the same file, so the value-by-value bound is offered instead. Decay curve: not
-measurable through the API, see 3.**
-
-## Measurements the PR must report
-
-State the machine (CPU, GPU, RAM, OS, engine version, model, flags) next to every number, as `docs/DETAILS.md` does.
-
-- session file bytes, `save_ms`, `restore_ms`, flag off vs on, at 4K / 32K / 63K / 128K. **Done at all four** (the
-  4K / 32K / 63K / 128K table above), plus cold-page-cache restores measured separately.
-- parked image bytes and `parked=` / `bytes=` log lines, flag off vs on, with the chain length stated. **Done:** the
-  parked-image table above, at 31,798 / 63,027 / 121,615 tokens, with chains of 3, 5 and 6 checkpoints plus the live
-  state, and the byte deltas agreeing with the arithmetic to 8 bytes.
-- encode and decode wall time per running state, and their effect on the request that triggers them. **Both sides
-  done:** inside `save_ms` / `restore_ms` as above, and measured on their own host-only — 16.2 ms to code one running
-  state, 10.0 ms to widen it. On the request path the cost was visible in the parked resume of the eager build
-  (`2274c1c`): 52 → 186 ms at 32K, 86 → 300 ms at 63K, because a resume widened the whole chain. Lazy restoration
-  removes that per-chain multiplication; see **Lazy restoration** below.
-- decode tok/s and prefill tok/s before and after, to show the codec does not land on the token path. **Done for
-  prefill:** the same 63,455-token prompt read in 44.8 s configured `fp32`, 44.6 s configured `bf16`, 44.7 s on the
-  previous engine build — the same rate — and `tools/ab_engine.py` medians matching to within 2.8 tok/s on decode over
-  2 rounds. Re-taken on HEAD after capture-time coding, which put coding on the capture path: a 31,813-token prompt
-  read in 21.7 s either codec (21,716.5 ms `fp32` against 21,702.5 `bf16` at the default spacing, 21,796 against
-  21,867.5 at `--prompt-cache-every` 8192, inside the arms' own 3–22 ms round spread), and the 24 tokens of a turn
-  produced at ~77 tok/s either way. No codec code is on the token path.
-- peak RAM during SAVE, flag off vs on, to show the capture scratch is admitted and not a surprise. **Done, and
-  re-measured on `79955461` after an earlier pair of figures proved unreproducible.** The *first* `SAVE` after a
-  prefill grows `VmRSS` by +353.2 MiB configured `fp32` against +180.5 MiB configured `bf16` at 32K (+354.0 against
-  +181.2 at 63K); every later save reuses it and reads ~0, or negative at 63K as page cache is written back. That
-  admission is not the codec scratch — the coding pass chunks at `kStateCodecChunkFloats`, 4 MiB, not 118 MB, and the
-  preflight admits it — and it is not token-sized, since 32K and 63K give the same figure to 1 MiB. It scales with the
-  codec (0.51× at `bf16`), which is what arrays sized by state look like, but this PR does not instrument the allocator
-  and no further attribution is claimed. A bf16 `RESTORE` is the one operation that grows *more*, by a constant
-  **+56.2 MiB at both 32K and 63K** (+406.5 against +350.3, +861.3 against +805.1), because widening allocates the fp32
-  array beside the coded original: the delta is the coded bf16 state, 59,031,600 B, to 0.1 MiB.
-
-## What this unlocks (not in this PR)
-
-State is the term that limits how often a conversation can be snapshotted: at 16,384-token spacing the state is
-7,206 B/token of the 19,019 B/token this file costs. At bf16, 8,192-token spacing costs the same 7,206 B/token — same
-bytes, half the worst case. Using `docs/DETAILS.md:38`'s IQ3_S row (RTX 5070 12 GB, Ryzen 5 7600, 64 GB DDR5-5200,
-Windows, engine 0.1.26 — re-measure on the target box), re-reading 16,383 tokens at the 32K tier's 1,624 tok/s is
-10.1 s against 5.0 s for 8,191. The same arithmetic at 4,096 needs fp8, which is why the codec interface is written
-for a second member now.
-
-## Risk and rollback
-
-- **One-way door:** once a v2 file exists, an engine older than this change refuses it. It fails closed with a clear
-  message; no silent misread. Documented in the flag's help text and in `docs/DETAILS.md`.
-- **Quality risk** is the real one and it is front-loaded: the gate above can stop the PR before any user sees a
-  coded file.
-- **Rollback:** turn the flag off. New writes are v1 again; existing v2 files still restore.
-- **RAM:** a coded capture or restore holds one 4 MiB slice plus, on a restore, the widened `tails` and `dead` arrays
-  (24 KiB at the geometry below) - not a copy of the 118 MB state. It goes through the existing `admit` preflight, so
-  a box that cannot spare it refuses the SAVE instead of degrading, exactly as it does today.
-
-## PR description checklist
-
-Per `AGENTS.md`:
-
-- [ ] one change; say what it leaves alone (the live checkpoint chain, K/V quantization, all defaults)
-- [ ] "how I checked" — the test list above, the quality gate, and the measurement table with its machine
-- [ ] CUDA **and** HIP builds clean (host-only change, both must be built)
-- [ ] default path byte-identical: test 5 proves it
-- [ ] new behaviour opt-in, default `fp32`
-- [ ] v1 session files still restore: test 7
-- [ ] `docs/DETAILS.md` updated with measured numbers, plain words, no claim without a measurement
+Historical eager-versus-lazy and stored-conversion comparisons remain in the artifact repository, rather than being
+mixed into the current tables. Five historical files (`ab_convert*` and `cold_restore*`) lack recorded commit provenance.
+The manifest also explains superseded RSS figures and the distinction between first and later SAVE operations.
+Use the explicitly identified result files above when quoting this report.
