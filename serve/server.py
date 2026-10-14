@@ -6695,6 +6695,8 @@ def make_handler(svc: Service):
                     mode = self.headers.get("X-Jev-Mode", "L")   # A2.6: "V" = choice readout override
                     if isinstance(req, dict) and req.get("image_b64"):
                         code, body = jev.handle_image(svc, req, mode)   # M3.8: image two-call
+                    elif isinstance(req, dict) and isinstance(req.get("then"), dict):
+                        code, body = jev.handle_then(svc, req, mode)    # M3.9: decide-then-generate
                     else:
                         code, body = jev.handle(svc, req, mode)
                     self._json(code, body)
@@ -6996,6 +6998,49 @@ def make_handler(svc: Service):
 
         def _openai(self, req):
             req = svc.with_shared(req, "openai")
+            # ---- A3.4 (M3.3): "jev" extension - the decision readout on the chat surface ----
+            jev_ext = req.get("jev")
+            if isinstance(jev_ext, dict) and jev_ext:
+                if not isinstance(jev_ext.get("questions"), dict) or not jev_ext["questions"]:
+                    self._json(400, {"error": {"type": "invalid_request_error",
+                                               "param": "jev.questions", "message": "jev.questions is required"}})
+                    return
+                has_state = "state" in jev_ext
+                has_msgs = isinstance(req.get("messages"), list) and req["messages"]
+                if has_state and has_msgs:
+                    self._json(400, {"error": {"type": "invalid_request_error", "param": "messages",
+                                               "message": "messages must be empty when jev.state is given"}})
+                    return
+                if not has_state and not has_msgs:
+                    self._json(400, {"error": {"type": "invalid_request_error", "param": "jev.state",
+                                               "message": "jev.state or messages is required"}})
+                    return
+                if req.get("stream"):
+                    self._json(400, {"error": {"type": "invalid_request_error", "param": "stream",
+                                               "message": "stream is not supported with the jev extension"}})
+                    return
+                svc.load()
+                if has_state:
+                    dreq = {"state": jev_ext["state"], "questions": jev_ext["questions"]}
+                else:
+                    # v1-chat: the conversation IS the state (donor §3.5)
+                    conv = []
+                    for m in req["messages"]:
+                        if not isinstance(m, dict) or not m.get("role"):
+                            continue
+                        c = m.get("content")
+                        text = c if isinstance(c, str) else "".join(
+                            p.get("text", "") for p in (c or [])
+                            if isinstance(p, dict) and p.get("type") == "text")
+                        conv.append(f"{m['role']}: {text}")
+                    dreq = {"state": "\n".join(conv), "questions": jev_ext["questions"]}
+                mode = self.headers.get("X-Jev-Mode", "L")
+                code, body = jev.handle(svc, dreq, mode)
+                out = {"id": f"jev-{int(time.time() * 1000)}", "object": "jev.response",
+                       "created": int(time.time()), "model": svc.model,
+                       "jev": body}
+                self._json(code, out)
+                return
             bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
             messages, tools, kw = openai_to_messages(req)
             self._no_local_images(messages)
