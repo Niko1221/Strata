@@ -1,0 +1,160 @@
+{
+  "public_base_commit": "ca3533157d066a13b128f3daa61f56411dcf3155",
+  "public_source_sha256": "5fc5d78c6155fa0987dee751a875ab714516c88209b0938db17699061cc7de1a",
+  "source_patch_sha256": "aeba2986cfd4086e79d2ef9532af405886a695d2144017ed46159105a6472b2a",
+  "public_correctness_processes": 46,
+  "public_timing_processes": 8,
+  "public_all_correctness_passed": true,
+  "component": [
+    {
+      "device": 0,
+      "mode": 1,
+      "A_ms": 0.1907362265,
+      "B_ms": 0.141653739,
+      "A_run_medians": [
+        0.190732449,
+        0.190740004
+      ],
+      "B_run_medians": [
+        0.141629979,
+        0.141677499
+      ],
+      "latency_reduction_pct": 25.733175286447217,
+      "all_B_faster_than_all_A": true,
+      "engineering_gate_pct": 30,
+      "status": "public_reproduction_measurement",
+      "original_30pct_discovery_gate_passed": false
+    },
+    {
+      "device": 1,
+      "mode": 1,
+      "A_ms": 0.1951325085,
+      "B_ms": 0.14428252,
+      "A_run_medians": [
+        0.194770008,
+        0.195495009
+      ],
+      "B_run_medians": [
+        0.144222558,
+        0.144342482
+      ],
+      "latency_reduction_pct": 26.059209145051298,
+      "all_B_faster_than_all_A": true,
+      "engineering_gate_pct": null,
+      "first_gpu_gate_passed": null,
+      "status": "public_reproduction_measurement",
+      "original_30pct_discovery_gate_passed": null
+    }
+  ],
+  "model_scope": "Separate qualified integration binary; not full public upstream engine",
+  "model": {
+    "fixed-draft-model": {
+      "all1024_ids_equal": true,
+      "all_counters_equal": true,
+      "method": "separate suffix-disabled workload; same c183 binary FIT17=0/1/1/0 fresh-process ABBA; no default-profile gain claim",
+      "PP": {
+        "control_mean": 646.6891943206998,
+        "candidate_mean": 646.6773885354453,
+        "gain_pct": -0.001825573298297467,
+        "paired_gain_pct": [
+          0.011150978325646932,
+          -0.014800357971334055
+        ]
+      },
+      "TG": {
+        "control_mean": 53.19259597282947,
+        "candidate_mean": 53.94430142685643,
+        "gain_pct": 1.413176853430742,
+        "paired_gain_pct": [
+          1.333550941330075,
+          1.4928284143442383
+        ]
+      },
+      "screen_gate": "direct mean TG >=1%, both TG pairs positive; PP >=-1%; exact IDs/counters",
+      "passes_cost_gate": true
+    },
+    "adaptive-profile-model-v2": {
+      "all1024_ids_equal": true,
+      "all_topology_equal": true,
+      "all_counters_equal": false,
+      "constant_workload_claim": false,
+      "counter_equality_scope": "available numeric fields only; null optional fields are unavailable, not measured zeros",
+      "unavailable_counter_fields": [
+        "decode_windows",
+        "lookup_chain_accepted",
+        "lookup_chain_offered",
+        "native_suffix_accepted",
+        "native_suffix_offered"
+      ],
+      "method": "predeclared default adaptive-profile practical end-to-end test including timing-trained DraftPolicy response; no constant-workload attribution",
+      "paired_counter_deltas": [
+        {
+          "pair": "B1/A1",
+          "candidate_minus_control": {
+            "accepted": 0,
+            "offered": 0,
+            "cache_hits": 0,
+            "lookups": 0,
+            "prompt_reused": 0,
+            "prompt_read": 0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_read_mb": 0.0,
+            "offloaded_experts": 0,
+            "lookup_chain_accepted": null,
+            "lookup_chain_offered": null,
+            "native_suffix_accepted": null,
+            "native_suffix_offered": null,
+            "decode_windows": null,
+            "suffix_windows": 0,
+            "suffix_accepted": 0,
+            "suffix_offered": 0
+          }
+        },
+        {
+          "pair": "B2/A2",
+          "candidate_minus_control": {
+            "accepted": 0,
+            "offered": 2,
+            "cache_hits": 939,
+            "lookups": 960,
+            "prompt_reused": 0,
+            "prompt_read": 0,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_read_mb": 0.0,
+            "offloaded_experts": 0,
+            "lookup_chain_accepted": null,
+            "lookup_chain_offered": null,
+            "native_suffix_accepted": null,
+            "native_suffix_offered": null,
+            "decode_windows": null,
+            "suffix_windows": 1,
+            "suffix_accepted": 2,
+            "suffix_offered": 4
+          }
+        }
+      ],
+      "PP": {
+        "control_mean": 646.2881070724436,
+        "candidate_mean": 646.8353854200993,
+        "gain_pct": 0.08468024425434262,
+        "paired_gain_pct": [
+          0.09216571672165941,
+          0.0771990372825826
+        ]
+      },
+      "TG": {
+        "control_mean": 53.14734420156438,
+        "candidate_mean": 53.838212538466976,
+        "gain_pct": 1.299911307482149,
+        "paired_gain_pct": [
+          1.4047765558518277,
+          1.1951939956480917
+        ]
+      },
+      "screen_gate": "direct mean TG >=1%, both TG pairs positive; PP >=-1%; exact IDs/topology; counters reported, not equality-gated",
+      "passes_cost_gate": true
+    }
+  }
+}

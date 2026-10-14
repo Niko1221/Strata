@@ -3,9 +3,12 @@
 //
 // A case is a context under a capacity (the engine's --max-context; max_blocks = capacity / 4 + 2, and without an
 // active-block count the dispatch follows it), with consecutive queries at the context's end so that the tail block
-// holds 0 to 3 cells.  Three score sets per case: continuous, 64 levels (many ties at the threshold) and all equal
-// (the rule's ties go to the lowest index).  The dispatch is called as a decode window calls it (no block count) and as
-// the prompt path does (with the call's largest block count).  The reference and the dispatched kernel are also timed.
+// holds 0 to 3 cells. Score sets cover continuous values, 64 levels (many ties at the threshold), all equal
+// (ties go to the lowest index), and NaNs / signed zero with high scores outside the active blocks. The dispatch
+// is called as a decode window calls it (no block count) and as the prompt path does (with the call's largest block
+// count). The reference and the dispatched kernel are also timed.
+// Decode windows of up to eight queries under a 204800-cell capacity additionally replay a captured graph across
+// context growth, the gfx906 24576-cell guard boundary, and a restore to a short context. Output canaries are checked.
 //
 // Usage: qsa_topk_parity --selftest
 //        qsa_topk_parity CONTEXT [QUERIES=256] [REPS=10] [CAPACITY=CONTEXT] [COUNT=1]   (COUNT=0: no block count)
@@ -19,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -57,11 +61,11 @@ bool run_case(int64_t ctx, int64_t nq, int reps, int64_t capacity, bool counted)
     float* d_scores = nullptr;
     ck(cudaMalloc(&d_steps, steps.size() * 4), "malloc");
     ck(cudaMalloc(&d_scores, scores.size() * 4), "malloc");
-    ck(cudaMalloc(&ids_ref, (size_t) (nq * cap) * 4), "malloc");
-    ck(cudaMalloc(&ids_new, (size_t) (nq * cap) * 4), "malloc");
+    ck(cudaMalloc(&ids_ref, ((size_t) (nq * cap) + 16) * 4), "malloc");
+    ck(cudaMalloc(&ids_new, ((size_t) (nq * cap) + 16) * 4), "malloc");
     ck(cudaMemcpy(d_steps, steps.data(), steps.size() * 4, cudaMemcpyHostToDevice), "upload");
     const int64_t active = counted ? steps[(size_t) ((nq - 1) * k::kStepCount + k::kStepNBid)] + 1 : -1;
-    std::vector<int32_t> a((size_t) (nq * cap)), b(a.size());
+    std::vector<int32_t> a((size_t) (nq * cap) + 16), b(a.size());
     auto same = [&](const std::vector<float>& sc) -> int64_t {
         ck(cudaMemcpy(d_scores, sc.data(), sc.size() * 4, cudaMemcpyHostToDevice), "upload");
         ck(cudaMemset(ids_ref, 0xff, a.size() * 4), "memset");
@@ -76,8 +80,23 @@ bool run_case(int64_t ctx, int64_t nq, int reps, int64_t capacity, bool counted)
             const int64_t w = steps[(size_t) (i * k::kStepCount + k::kStepWidth)];
             n += std::equal(a.begin() + i * cap, a.begin() + i * cap + w, b.begin() + i * cap);
         }
+        for (size_t j = (size_t) (nq * cap); j < a.size(); ++j)
+            if (a[j] != -1 || b[j] != -1) return -1;
         return n;
     };
+
+    std::vector<float> adversarial = scores;
+    for (int64_t i = 0; i < nq; ++i) {
+        const int64_t nb = steps[(size_t) (i * k::kStepCount + k::kStepNBid)] + 1;
+        for (int64_t j = 0; j < max_blocks; ++j) {
+            float& v = adversarial[(size_t) (i * max_blocks + j)];
+            if (j >= nb) v = std::numeric_limits<float>::infinity();
+            else if (j % 97 == 0) v = std::numeric_limits<float>::quiet_NaN();
+            else if (j % 53 == 0) v = -0.0f;
+            else if (j % 47 == 0) v = 0.0f;
+        }
+    }
+    const int64_t same_special = same(adversarial);
     const int64_t same_tied = same(tied), same_equal = same(equal), same_cont = same(scores);   // d_scores: continuous
     cudaEvent_t e0, e1;
     ck(cudaEventCreate(&e0), "event");
@@ -93,15 +112,57 @@ bool run_case(int64_t ctx, int64_t nq, int reps, int64_t capacity, bool counted)
     };
     const float t_ref = timed([&] { k::qsa_block_topk_ref(d_scores, d_steps, nq, max_blocks, cap, s, ids_ref, nullptr); });
     const float t_new = timed([&] { k::qsa_block_topk(d_scores, d_steps, nq, max_blocks, cap, s, ids_new, nullptr, active); });
+
+    const bool graph_ran = !counted && nq <= 8 && capacity == 204800;
+    bool graph_ok = true;
+    if (graph_ran) {
+        cudaStream_t stream;
+        cudaGraph_t graph;
+        cudaGraphExec_t exec;
+        ck(cudaStreamCreate(&stream), "stream");
+        ck(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal), "capture");
+        k::qsa_block_topk(d_scores, d_steps, nq, max_blocks, cap, s, ids_new, stream, active);
+        ck(cudaStreamEndCapture(stream, &graph), "capture end");
+        ck(cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0), "instantiate");
+        // Include windows straddling the threshold: every row must take the same arm, using the last query.
+        for (int64_t next_ctx : {4096ll, 24575ll, 24576ll, 24577ll, 65536ll, 131072ll, 200000ll, 204800ll, 4096ll}) {
+            for (int64_t i = 0; i < nq; ++i) {
+                int32_t* st = steps.data() + i * k::kStepCount;
+                const int64_t pos = next_ctx - nq + i;
+                st[k::kStepPos] = (int32_t) pos;
+                st[k::kStepNKv] = (int32_t) (pos + 1);
+                st[k::kStepNBid] = (int32_t) ((pos + 1) / s.idx_block);
+                st[k::kStepWidth] = (int32_t) k::qsa_selection_width(pos + 1, s);
+            }
+            ck(cudaMemcpy(d_steps, steps.data(), steps.size() * 4, cudaMemcpyHostToDevice), "new steps");
+            ck(cudaMemset(ids_ref, 0xff, a.size() * 4), "reset ref");
+            ck(cudaMemset(ids_new, 0xff, a.size() * 4), "reset new");
+            k::qsa_block_topk_ref(d_scores, d_steps, nq, max_blocks, cap, s, ids_ref, stream);
+            ck(cudaGraphLaunch(exec, stream), "replay");
+            ck(cudaStreamSynchronize(stream), "replay sync");
+            ck(cudaMemcpy(a.data(), ids_ref, a.size() * 4, cudaMemcpyDeviceToHost), "read ref");
+            ck(cudaMemcpy(b.data(), ids_new, b.size() * 4, cudaMemcpyDeviceToHost), "read new");
+            bool replay_ok = a == b;
+            for (size_t j = (size_t) (nq * cap); j < a.size(); ++j)
+                replay_ok = replay_ok && a[j] == -1 && b[j] == -1;
+            if (!replay_ok) std::fprintf(stderr, "graph parity failed at context %lld\n", (long long) next_ctx);
+            graph_ok = replay_ok && graph_ok;
+        }
+        ck(cudaGraphExecDestroy(exec), "exec destroy");
+        ck(cudaGraphDestroy(graph), "graph destroy");
+        ck(cudaStreamDestroy(stream), "stream destroy");
+    }
     cudaEventDestroy(e0); cudaEventDestroy(e1);
     cudaFree(d_steps); cudaFree(d_scores); cudaFree(ids_ref); cudaFree(ids_new);
-    const bool ok = same_cont == nq && same_tied == nq && same_equal == nq;
+    const bool ok = same_cont == nq && same_tied == nq && same_equal == nq && same_special == nq && graph_ok;
     std::printf("%s context %lld under a capacity of %lld (%lld blocks), %lld queries %s: reference %.3f ms, "
                 "dispatched %.3f ms (%.1fx); identical ids: continuous %lld/%lld, 64 levels %lld/%lld, equal scores "
                 "%lld/%lld\n", ok ? "PASS" : "FAIL", (long long) ctx, (long long) capacity, (long long) max_blocks,
                 (long long) nq, counted ? "with their block count" : "without a block count", t_ref, t_new, t_ref / t_new,
                 (long long) same_cont, (long long) nq, (long long) same_tied,
                 (long long) nq, (long long) same_equal, (long long) nq);
+    std::printf("adversarial=%lld/%lld changed-step-graph=%s\n", (long long) same_special, (long long) nq,
+                graph_ran ? (graph_ok ? "PASS" : "FAIL") : "SKIP");
     return ok;
 }
 }  // namespace

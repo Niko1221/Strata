@@ -1,0 +1,1070 @@
+{
+  "cases": [
+    {
+      "tag": "g0-ctest",
+      "exit_code": 0,
+      "elapsed_s": 4.4225937239971245,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0"
+      ],
+      "program": "ctest",
+      "arguments": [
+        "--test-dir",
+        "build-906",
+        "--output-on-failure",
+        "-R",
+        "^qsa_topk_(parity|gfx906_guarded)$"
+      ]
+    },
+    {
+      "tag": "g0-selftest-mode0",
+      "exit_code": 0,
+      "elapsed_s": 4.022284124992439,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=0"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "--selftest"
+      ]
+    },
+    {
+      "tag": "g0-selftest-mode2",
+      "exit_code": 0,
+      "elapsed_s": 3.9223228649934754,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "--selftest"
+      ]
+    },
+    {
+      "tag": "g0-nq1-ctx4096",
+      "exit_code": 0,
+      "elapsed_s": 0.8659537640050985,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "4096",
+        "1",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq1-ctx24575",
+      "exit_code": 0,
+      "elapsed_s": 0.86608731400338,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24575",
+        "1",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq1-ctx24576",
+      "exit_code": 0,
+      "elapsed_s": 0.8661396530078491,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24576",
+        "1",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq1-ctx24577",
+      "exit_code": 0,
+      "elapsed_s": 0.865849772002548,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24577",
+        "1",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq1-ctx65536",
+      "exit_code": 0,
+      "elapsed_s": 0.9162502410035813,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "65536",
+        "1",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq1-ctx200000",
+      "exit_code": 0,
+      "elapsed_s": 0.9161216829961631,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "200000",
+        "1",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq6-ctx4096",
+      "exit_code": 0,
+      "elapsed_s": 0.816141293005785,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "4096",
+        "6",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq6-ctx24575",
+      "exit_code": 0,
+      "elapsed_s": 0.8661230970028555,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24575",
+        "6",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq6-ctx24576",
+      "exit_code": 0,
+      "elapsed_s": 0.8659721309959423,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24576",
+        "6",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq6-ctx24577",
+      "exit_code": 0,
+      "elapsed_s": 0.8658230310102226,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24577",
+        "6",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq6-ctx65536",
+      "exit_code": 0,
+      "elapsed_s": 0.9160552480025217,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "65536",
+        "6",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq6-ctx200000",
+      "exit_code": 0,
+      "elapsed_s": 0.9664884849917144,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "200000",
+        "6",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq8-ctx4096",
+      "exit_code": 0,
+      "elapsed_s": 0.866273348001414,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "4096",
+        "8",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq8-ctx24575",
+      "exit_code": 0,
+      "elapsed_s": 0.8662575399939669,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24575",
+        "8",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq8-ctx24576",
+      "exit_code": 0,
+      "elapsed_s": 0.9160322070092661,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24576",
+        "8",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq8-ctx24577",
+      "exit_code": 0,
+      "elapsed_s": 0.9164206209970871,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24577",
+        "8",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq8-ctx65536",
+      "exit_code": 0,
+      "elapsed_s": 0.9164008660009131,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "65536",
+        "8",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq8-ctx200000",
+      "exit_code": 0,
+      "elapsed_s": 0.9663486019999254,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "200000",
+        "8",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq9-ctx4096",
+      "exit_code": 0,
+      "elapsed_s": 0.8662098899949342,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "4096",
+        "9",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq9-ctx24575",
+      "exit_code": 0,
+      "elapsed_s": 0.9162869470019359,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24575",
+        "9",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq9-ctx24576",
+      "exit_code": 0,
+      "elapsed_s": 0.9664054390013916,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24576",
+        "9",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq9-ctx24577",
+      "exit_code": 0,
+      "elapsed_s": 0.8663012460019672,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24577",
+        "9",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq9-ctx65536",
+      "exit_code": 0,
+      "elapsed_s": 0.9163096039992524,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "65536",
+        "9",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-nq9-ctx200000",
+      "exit_code": 0,
+      "elapsed_s": 0.9663547769887373,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "200000",
+        "9",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-old-override",
+      "exit_code": 0,
+      "elapsed_s": 0.9161848700023256,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2",
+        "STRATA_TOPK_OLD=1"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "65536",
+        "6",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-capacity-fallback",
+      "exit_code": 0,
+      "elapsed_s": 0.8660496140073519,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "65536",
+        "6",
+        "100",
+        "524288",
+        "0"
+      ]
+    },
+    {
+      "tag": "g0-counted-regression",
+      "exit_code": 0,
+      "elapsed_s": 0.8661488319921773,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=0",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "65536",
+        "6",
+        "100",
+        "204800",
+        "1"
+      ]
+    },
+    {
+      "tag": "g1-ctest",
+      "exit_code": 0,
+      "elapsed_s": 4.373190108992276,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1"
+      ],
+      "program": "ctest",
+      "arguments": [
+        "--test-dir",
+        "build-906",
+        "--output-on-failure",
+        "-R",
+        "^qsa_topk_(parity|gfx906_guarded)$"
+      ]
+    },
+    {
+      "tag": "g1-selftest-mode0",
+      "exit_code": 0,
+      "elapsed_s": 3.9724089660012396,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=0"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "--selftest"
+      ]
+    },
+    {
+      "tag": "g1-selftest-mode2",
+      "exit_code": 0,
+      "elapsed_s": 3.972267461998854,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "--selftest"
+      ]
+    },
+    {
+      "tag": "g1-nq1-ctx4096",
+      "exit_code": 0,
+      "elapsed_s": 0.8661294829944381,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "4096",
+        "1",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq1-ctx24575",
+      "exit_code": 0,
+      "elapsed_s": 0.8660868290025974,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24575",
+        "1",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq1-ctx24576",
+      "exit_code": 0,
+      "elapsed_s": 0.9160172169940779,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24576",
+        "1",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq1-ctx24577",
+      "exit_code": 0,
+      "elapsed_s": 0.8662481130013475,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24577",
+        "1",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq1-ctx65536",
+      "exit_code": 0,
+      "elapsed_s": 0.8662764759938,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "65536",
+        "1",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq1-ctx200000",
+      "exit_code": 0,
+      "elapsed_s": 0.9161838899890427,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "200000",
+        "1",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq6-ctx4096",
+      "exit_code": 0,
+      "elapsed_s": 0.8662213920033537,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "4096",
+        "6",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq6-ctx24575",
+      "exit_code": 0,
+      "elapsed_s": 0.8660696419974556,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24575",
+        "6",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq6-ctx24576",
+      "exit_code": 0,
+      "elapsed_s": 0.9161673260095995,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24576",
+        "6",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq6-ctx24577",
+      "exit_code": 0,
+      "elapsed_s": 0.8661707720020786,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24577",
+        "6",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq6-ctx65536",
+      "exit_code": 0,
+      "elapsed_s": 0.9161137899936875,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "65536",
+        "6",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq6-ctx200000",
+      "exit_code": 0,
+      "elapsed_s": 1.0163806500058854,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "200000",
+        "6",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq8-ctx4096",
+      "exit_code": 0,
+      "elapsed_s": 0.8660198239958845,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "4096",
+        "8",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq8-ctx24575",
+      "exit_code": 0,
+      "elapsed_s": 0.8661346370063256,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24575",
+        "8",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq8-ctx24576",
+      "exit_code": 0,
+      "elapsed_s": 0.9162291399989044,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24576",
+        "8",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq8-ctx24577",
+      "exit_code": 0,
+      "elapsed_s": 0.8661196059983922,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24577",
+        "8",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq8-ctx65536",
+      "exit_code": 0,
+      "elapsed_s": 0.9163435429945821,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "65536",
+        "8",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq8-ctx200000",
+      "exit_code": 0,
+      "elapsed_s": 0.9665053770004306,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "200000",
+        "8",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq9-ctx4096",
+      "exit_code": 0,
+      "elapsed_s": 0.8660360590001801,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "4096",
+        "9",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq9-ctx24575",
+      "exit_code": 0,
+      "elapsed_s": 0.8660600720031653,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24575",
+        "9",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq9-ctx24576",
+      "exit_code": 0,
+      "elapsed_s": 0.8660253590060165,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24576",
+        "9",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq9-ctx24577",
+      "exit_code": 0,
+      "elapsed_s": 0.8661421830038307,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "24577",
+        "9",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq9-ctx65536",
+      "exit_code": 0,
+      "elapsed_s": 0.9161376519914484,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "65536",
+        "9",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-nq9-ctx200000",
+      "exit_code": 0,
+      "elapsed_s": 0.9664421630004654,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "200000",
+        "9",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-old-override",
+      "exit_code": 0,
+      "elapsed_s": 0.916325008001877,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2",
+        "STRATA_TOPK_OLD=1"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "65536",
+        "6",
+        "100",
+        "204800",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-capacity-fallback",
+      "exit_code": 0,
+      "elapsed_s": 0.9163231840066146,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "65536",
+        "6",
+        "100",
+        "524288",
+        "0"
+      ]
+    },
+    {
+      "tag": "g1-counted-regression",
+      "exit_code": 0,
+      "elapsed_s": 0.8659810940007446,
+      "environment": [
+        "HIP_VISIBLE_DEVICES=1",
+        "STRATA_GFX906_TOPK_REG=2"
+      ],
+      "program": "qsa_topk_parity",
+      "arguments": [
+        "65536",
+        "6",
+        "100",
+        "204800",
+        "1"
+      ]
+    }
+  ],
+  "logs": {
+    "g0-capacity-fallback.log": "PASS context 65536 under a capacity of 524288 (131074 blocks), 6 queries without a block count: reference 0.272 ms, dispatched 0.272 ms (1.0x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=SKIP\n",
+    "g0-counted-regression.log": "PASS context 65536 under a capacity of 204800 (51202 blocks), 6 queries with their block count: reference 0.274 ms, dispatched 0.150 ms (1.8x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=SKIP\n",
+    "g0-ctest.log": "Test project build-906\n    Start 48: qsa_topk_parity\n1/2 Test #48: qsa_topk_parity ..................   Passed    3.73 sec\n    Start 49: qsa_topk_gfx906_guarded\n2/2 Test #49: qsa_topk_gfx906_guarded ..........   Passed    0.13 sec\n\n100% tests passed out of 2\n\nTotal Test time (real) =   3.86 sec\n",
+    "g0-nq1-ctx200000.log": "PASS context 200000 under a capacity of 204800 (51202 blocks), 1 queries without a block count: reference 0.540 ms, dispatched 0.381 ms (1.4x); identical ids: continuous 1/1, 64 levels 1/1, equal scores 1/1\nadversarial=1/1 changed-step-graph=PASS\n",
+    "g0-nq1-ctx24575.log": "PASS context 24575 under a capacity of 204800 (51202 blocks), 1 queries without a block count: reference 0.113 ms, dispatched 0.112 ms (1.0x); identical ids: continuous 1/1, 64 levels 1/1, equal scores 1/1\nadversarial=1/1 changed-step-graph=PASS\n",
+    "g0-nq1-ctx24576.log": "PASS context 24576 under a capacity of 204800 (51202 blocks), 1 queries without a block count: reference 0.119 ms, dispatched 0.118 ms (1.0x); identical ids: continuous 1/1, 64 levels 1/1, equal scores 1/1\nadversarial=1/1 changed-step-graph=PASS\n",
+    "g0-nq1-ctx24577.log": "PASS context 24577 under a capacity of 204800 (51202 blocks), 1 queries without a block count: reference 0.114 ms, dispatched 0.095 ms (1.2x); identical ids: continuous 1/1, 64 levels 1/1, equal scores 1/1\nadversarial=1/1 changed-step-graph=PASS\n",
+    "g0-nq1-ctx4096.log": "PASS context 4096 under a capacity of 204800 (51202 blocks), 1 queries without a block count: reference 0.088 ms, dispatched 0.086 ms (1.0x); identical ids: continuous 1/1, 64 levels 1/1, equal scores 1/1\nadversarial=1/1 changed-step-graph=PASS\n",
+    "g0-nq1-ctx65536.log": "PASS context 65536 under a capacity of 204800 (51202 blocks), 1 queries without a block count: reference 0.225 ms, dispatched 0.152 ms (1.5x); identical ids: continuous 1/1, 64 levels 1/1, equal scores 1/1\nadversarial=1/1 changed-step-graph=PASS\n",
+    "g0-nq6-ctx200000.log": "PASS context 200000 under a capacity of 204800 (51202 blocks), 6 queries without a block count: reference 0.555 ms, dispatched 0.462 ms (1.2x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=PASS\n",
+    "g0-nq6-ctx24575.log": "PASS context 24575 under a capacity of 204800 (51202 blocks), 6 queries without a block count: reference 0.137 ms, dispatched 0.135 ms (1.0x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=PASS\n",
+    "g0-nq6-ctx24576.log": "PASS context 24576 under a capacity of 204800 (51202 blocks), 6 queries without a block count: reference 0.138 ms, dispatched 0.136 ms (1.0x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=PASS\n",
+    "g0-nq6-ctx24577.log": "PASS context 24577 under a capacity of 204800 (51202 blocks), 6 queries without a block count: reference 0.136 ms, dispatched 0.124 ms (1.1x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=PASS\n",
+    "g0-nq6-ctx4096.log": "PASS context 4096 under a capacity of 204800 (51202 blocks), 6 queries without a block count: reference 0.089 ms, dispatched 0.088 ms (1.0x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=PASS\n",
+    "g0-nq6-ctx65536.log": "PASS context 65536 under a capacity of 204800 (51202 blocks), 6 queries without a block count: reference 0.275 ms, dispatched 0.189 ms (1.5x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=PASS\n",
+    "g0-nq8-ctx200000.log": "PASS context 200000 under a capacity of 204800 (51202 blocks), 8 queries without a block count: reference 0.557 ms, dispatched 0.492 ms (1.1x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=PASS\n",
+    "g0-nq8-ctx24575.log": "PASS context 24575 under a capacity of 204800 (51202 blocks), 8 queries without a block count: reference 0.135 ms, dispatched 0.133 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=PASS\n",
+    "g0-nq8-ctx24576.log": "PASS context 24576 under a capacity of 204800 (51202 blocks), 8 queries without a block count: reference 0.145 ms, dispatched 0.143 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=PASS\n",
+    "g0-nq8-ctx24577.log": "PASS context 24577 under a capacity of 204800 (51202 blocks), 8 queries without a block count: reference 0.141 ms, dispatched 0.136 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=PASS\n",
+    "g0-nq8-ctx4096.log": "PASS context 4096 under a capacity of 204800 (51202 blocks), 8 queries without a block count: reference 0.094 ms, dispatched 0.091 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=PASS\n",
+    "g0-nq8-ctx65536.log": "PASS context 65536 under a capacity of 204800 (51202 blocks), 8 queries without a block count: reference 0.276 ms, dispatched 0.197 ms (1.4x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=PASS\n",
+    "g0-nq9-ctx200000.log": "PASS context 200000 under a capacity of 204800 (51202 blocks), 9 queries without a block count: reference 0.572 ms, dispatched 0.572 ms (1.0x); identical ids: continuous 9/9, 64 levels 9/9, equal scores 9/9\nadversarial=9/9 changed-step-graph=SKIP\n",
+    "g0-nq9-ctx24575.log": "PASS context 24575 under a capacity of 204800 (51202 blocks), 9 queries without a block count: reference 0.136 ms, dispatched 0.136 ms (1.0x); identical ids: continuous 9/9, 64 levels 9/9, equal scores 9/9\nadversarial=9/9 changed-step-graph=SKIP\n",
+    "g0-nq9-ctx24576.log": "PASS context 24576 under a capacity of 204800 (51202 blocks), 9 queries without a block count: reference 0.132 ms, dispatched 0.132 ms (1.0x); identical ids: continuous 9/9, 64 levels 9/9, equal scores 9/9\nadversarial=9/9 changed-step-graph=SKIP\n",
+    "g0-nq9-ctx24577.log": "PASS context 24577 under a capacity of 204800 (51202 blocks), 9 queries without a block count: reference 0.141 ms, dispatched 0.141 ms (1.0x); identical ids: continuous 9/9, 64 levels 9/9, equal scores 9/9\nadversarial=9/9 changed-step-graph=SKIP\n",
+    "g0-nq9-ctx4096.log": "PASS context 4096 under a capacity of 204800 (51202 blocks), 9 queries without a block count: reference 0.093 ms, dispatched 0.093 ms (1.0x); identical ids: continuous 9/9, 64 levels 9/9, equal scores 9/9\nadversarial=9/9 changed-step-graph=SKIP\n",
+    "g0-nq9-ctx65536.log": "PASS context 65536 under a capacity of 204800 (51202 blocks), 9 queries without a block count: reference 0.280 ms, dispatched 0.280 ms (1.0x); identical ids: continuous 9/9, 64 levels 9/9, equal scores 9/9\nadversarial=9/9 changed-step-graph=SKIP\n",
+    "g0-old-override.log": "PASS context 65536 under a capacity of 204800 (51202 blocks), 6 queries without a block count: reference 0.275 ms, dispatched 0.275 ms (1.0x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=PASS\n",
+    "g0-selftest-mode0.log": "PASS context 9000 under a capacity of 9000 (2252 blocks), 8 queries without a block count: reference 0.105 ms, dispatched 0.092 ms (1.1x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 9000 under a capacity of 9000 (2252 blocks), 64 queries with their block count: reference 0.113 ms, dispatched 0.112 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 135160 under a capacity of 135160 (33792 blocks), 8 queries without a block count: reference 0.424 ms, dispatched 0.280 ms (1.5x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 135160 under a capacity of 135160 (33792 blocks), 64 queries with their block count: reference 0.577 ms, dispatched 0.723 ms (0.8x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 135176 under a capacity of 135176 (33796 blocks), 8 queries without a block count: reference 0.467 ms, dispatched 0.464 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 135176 under a capacity of 135176 (33796 blocks), 64 queries with their block count: reference 0.628 ms, dispatched 0.935 ms (0.7x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 2100 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 0.097 ms, dispatched 0.097 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 2100 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 0.102 ms, dispatched 0.101 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 9000 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 0.106 ms, dispatched 0.106 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 9000 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 0.112 ms, dispatched 0.111 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 32768 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 0.171 ms, dispatched 0.172 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 32768 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 0.243 ms, dispatched 0.218 ms (1.1x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 262144 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 1.023 ms, dispatched 0.981 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 262144 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 2.608 ms, dispatched 1.683 ms (1.5x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 300001 under a capacity of 524288 (131074 blocks), 8 queries without a block count: reference 0.953 ms, dispatched 0.956 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 300001 under a capacity of 524288 (131074 blocks), 64 queries with their block count: reference 1.462 ms, dispatched 1.455 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 524288 under a capacity of 524288 (131074 blocks), 8 queries without a block count: reference 2.779 ms, dispatched 2.584 ms (1.1x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 524288 under a capacity of 524288 (131074 blocks), 64 queries with their block count: reference 6.486 ms, dispatched 6.533 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nqsa_topk_parity: PASS\n",
+    "g0-selftest-mode2.log": "PASS context 9000 under a capacity of 9000 (2252 blocks), 8 queries without a block count: reference 0.108 ms, dispatched 0.094 ms (1.1x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 9000 under a capacity of 9000 (2252 blocks), 64 queries with their block count: reference 0.113 ms, dispatched 0.112 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 135160 under a capacity of 135160 (33792 blocks), 8 queries without a block count: reference 0.425 ms, dispatched 0.283 ms (1.5x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 135160 under a capacity of 135160 (33792 blocks), 64 queries with their block count: reference 0.576 ms, dispatched 0.720 ms (0.8x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 135176 under a capacity of 135176 (33796 blocks), 8 queries without a block count: reference 0.464 ms, dispatched 0.358 ms (1.3x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 135176 under a capacity of 135176 (33796 blocks), 64 queries with their block count: reference 0.627 ms, dispatched 0.931 ms (0.7x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 2100 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 0.096 ms, dispatched 0.095 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 2100 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 0.102 ms, dispatched 0.101 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 9000 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 0.105 ms, dispatched 0.103 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 9000 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 0.112 ms, dispatched 0.111 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 32768 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 0.170 ms, dispatched 0.156 ms (1.1x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 32768 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 0.230 ms, dispatched 0.217 ms (1.1x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 262144 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 0.923 ms, dispatched 0.726 ms (1.3x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 262144 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 2.581 ms, dispatched 1.691 ms (1.5x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 300001 under a capacity of 524288 (131074 blocks), 8 queries without a block count: reference 0.957 ms, dispatched 0.946 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 300001 under a capacity of 524288 (131074 blocks), 64 queries with their block count: reference 1.434 ms, dispatched 1.436 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 524288 under a capacity of 524288 (131074 blocks), 8 queries without a block count: reference 2.860 ms, dispatched 2.835 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 524288 under a capacity of 524288 (131074 blocks), 64 queries with their block count: reference 6.312 ms, dispatched 6.532 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nqsa_topk_parity: PASS\n",
+    "g1-capacity-fallback.log": "PASS context 65536 under a capacity of 524288 (131074 blocks), 6 queries without a block count: reference 0.273 ms, dispatched 0.273 ms (1.0x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=SKIP\n",
+    "g1-counted-regression.log": "PASS context 65536 under a capacity of 204800 (51202 blocks), 6 queries with their block count: reference 0.275 ms, dispatched 0.150 ms (1.8x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=SKIP\n",
+    "g1-ctest.log": "Test project build-906\n    Start 48: qsa_topk_parity\n1/2 Test #48: qsa_topk_parity ..................   Passed    3.64 sec\n    Start 49: qsa_topk_gfx906_guarded\n2/2 Test #49: qsa_topk_gfx906_guarded ..........   Passed    0.13 sec\n\n100% tests passed out of 2\n\nTotal Test time (real) =   3.77 sec\n",
+    "g1-nq1-ctx200000.log": "PASS context 200000 under a capacity of 204800 (51202 blocks), 1 queries without a block count: reference 0.540 ms, dispatched 0.381 ms (1.4x); identical ids: continuous 1/1, 64 levels 1/1, equal scores 1/1\nadversarial=1/1 changed-step-graph=PASS\n",
+    "g1-nq1-ctx24575.log": "PASS context 24575 under a capacity of 204800 (51202 blocks), 1 queries without a block count: reference 0.113 ms, dispatched 0.112 ms (1.0x); identical ids: continuous 1/1, 64 levels 1/1, equal scores 1/1\nadversarial=1/1 changed-step-graph=PASS\n",
+    "g1-nq1-ctx24576.log": "PASS context 24576 under a capacity of 204800 (51202 blocks), 1 queries without a block count: reference 0.118 ms, dispatched 0.118 ms (1.0x); identical ids: continuous 1/1, 64 levels 1/1, equal scores 1/1\nadversarial=1/1 changed-step-graph=PASS\n",
+    "g1-nq1-ctx24577.log": "PASS context 24577 under a capacity of 204800 (51202 blocks), 1 queries without a block count: reference 0.114 ms, dispatched 0.095 ms (1.2x); identical ids: continuous 1/1, 64 levels 1/1, equal scores 1/1\nadversarial=1/1 changed-step-graph=PASS\n",
+    "g1-nq1-ctx4096.log": "PASS context 4096 under a capacity of 204800 (51202 blocks), 1 queries without a block count: reference 0.088 ms, dispatched 0.086 ms (1.0x); identical ids: continuous 1/1, 64 levels 1/1, equal scores 1/1\nadversarial=1/1 changed-step-graph=PASS\n",
+    "g1-nq1-ctx65536.log": "PASS context 65536 under a capacity of 204800 (51202 blocks), 1 queries without a block count: reference 0.224 ms, dispatched 0.153 ms (1.5x); identical ids: continuous 1/1, 64 levels 1/1, equal scores 1/1\nadversarial=1/1 changed-step-graph=PASS\n",
+    "g1-nq6-ctx200000.log": "PASS context 200000 under a capacity of 204800 (51202 blocks), 6 queries without a block count: reference 0.555 ms, dispatched 0.468 ms (1.2x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=PASS\n",
+    "g1-nq6-ctx24575.log": "PASS context 24575 under a capacity of 204800 (51202 blocks), 6 queries without a block count: reference 0.137 ms, dispatched 0.135 ms (1.0x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=PASS\n",
+    "g1-nq6-ctx24576.log": "PASS context 24576 under a capacity of 204800 (51202 blocks), 6 queries without a block count: reference 0.138 ms, dispatched 0.136 ms (1.0x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=PASS\n",
+    "g1-nq6-ctx24577.log": "PASS context 24577 under a capacity of 204800 (51202 blocks), 6 queries without a block count: reference 0.136 ms, dispatched 0.123 ms (1.1x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=PASS\n",
+    "g1-nq6-ctx4096.log": "PASS context 4096 under a capacity of 204800 (51202 blocks), 6 queries without a block count: reference 0.089 ms, dispatched 0.088 ms (1.0x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=PASS\n",
+    "g1-nq6-ctx65536.log": "PASS context 65536 under a capacity of 204800 (51202 blocks), 6 queries without a block count: reference 0.274 ms, dispatched 0.189 ms (1.4x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=PASS\n",
+    "g1-nq8-ctx200000.log": "PASS context 200000 under a capacity of 204800 (51202 blocks), 8 queries without a block count: reference 0.552 ms, dispatched 0.495 ms (1.1x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=PASS\n",
+    "g1-nq8-ctx24575.log": "PASS context 24575 under a capacity of 204800 (51202 blocks), 8 queries without a block count: reference 0.135 ms, dispatched 0.133 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=PASS\n",
+    "g1-nq8-ctx24576.log": "PASS context 24576 under a capacity of 204800 (51202 blocks), 8 queries without a block count: reference 0.145 ms, dispatched 0.143 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=PASS\n",
+    "g1-nq8-ctx24577.log": "PASS context 24577 under a capacity of 204800 (51202 blocks), 8 queries without a block count: reference 0.141 ms, dispatched 0.136 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=PASS\n",
+    "g1-nq8-ctx4096.log": "PASS context 4096 under a capacity of 204800 (51202 blocks), 8 queries without a block count: reference 0.094 ms, dispatched 0.091 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=PASS\n",
+    "g1-nq8-ctx65536.log": "PASS context 65536 under a capacity of 204800 (51202 blocks), 8 queries without a block count: reference 0.276 ms, dispatched 0.198 ms (1.4x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=PASS\n",
+    "g1-nq9-ctx200000.log": "PASS context 200000 under a capacity of 204800 (51202 blocks), 9 queries without a block count: reference 0.568 ms, dispatched 0.568 ms (1.0x); identical ids: continuous 9/9, 64 levels 9/9, equal scores 9/9\nadversarial=9/9 changed-step-graph=SKIP\n",
+    "g1-nq9-ctx24575.log": "PASS context 24575 under a capacity of 204800 (51202 blocks), 9 queries without a block count: reference 0.136 ms, dispatched 0.136 ms (1.0x); identical ids: continuous 9/9, 64 levels 9/9, equal scores 9/9\nadversarial=9/9 changed-step-graph=SKIP\n",
+    "g1-nq9-ctx24576.log": "PASS context 24576 under a capacity of 204800 (51202 blocks), 9 queries without a block count: reference 0.132 ms, dispatched 0.132 ms (1.0x); identical ids: continuous 9/9, 64 levels 9/9, equal scores 9/9\nadversarial=9/9 changed-step-graph=SKIP\n",
+    "g1-nq9-ctx24577.log": "PASS context 24577 under a capacity of 204800 (51202 blocks), 9 queries without a block count: reference 0.141 ms, dispatched 0.141 ms (1.0x); identical ids: continuous 9/9, 64 levels 9/9, equal scores 9/9\nadversarial=9/9 changed-step-graph=SKIP\n",
+    "g1-nq9-ctx4096.log": "PASS context 4096 under a capacity of 204800 (51202 blocks), 9 queries without a block count: reference 0.093 ms, dispatched 0.093 ms (1.0x); identical ids: continuous 9/9, 64 levels 9/9, equal scores 9/9\nadversarial=9/9 changed-step-graph=SKIP\n",
+    "g1-nq9-ctx65536.log": "PASS context 65536 under a capacity of 204800 (51202 blocks), 9 queries without a block count: reference 0.279 ms, dispatched 0.279 ms (1.0x); identical ids: continuous 9/9, 64 levels 9/9, equal scores 9/9\nadversarial=9/9 changed-step-graph=SKIP\n",
+    "g1-old-override.log": "PASS context 65536 under a capacity of 204800 (51202 blocks), 6 queries without a block count: reference 0.276 ms, dispatched 0.276 ms (1.0x); identical ids: continuous 6/6, 64 levels 6/6, equal scores 6/6\nadversarial=6/6 changed-step-graph=PASS\n",
+    "g1-selftest-mode0.log": "PASS context 9000 under a capacity of 9000 (2252 blocks), 8 queries without a block count: reference 0.105 ms, dispatched 0.094 ms (1.1x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 9000 under a capacity of 9000 (2252 blocks), 64 queries with their block count: reference 0.112 ms, dispatched 0.112 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 135160 under a capacity of 135160 (33792 blocks), 8 queries without a block count: reference 0.425 ms, dispatched 0.283 ms (1.5x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 135160 under a capacity of 135160 (33792 blocks), 64 queries with their block count: reference 0.580 ms, dispatched 0.721 ms (0.8x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 135176 under a capacity of 135176 (33796 blocks), 8 queries without a block count: reference 0.467 ms, dispatched 0.460 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 135176 under a capacity of 135176 (33796 blocks), 64 queries with their block count: reference 0.626 ms, dispatched 0.932 ms (0.7x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 2100 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 0.096 ms, dispatched 0.094 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 2100 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 0.102 ms, dispatched 0.102 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 9000 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 0.106 ms, dispatched 0.106 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 9000 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 0.112 ms, dispatched 0.111 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 32768 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 0.173 ms, dispatched 0.172 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 32768 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 0.231 ms, dispatched 0.217 ms (1.1x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 262144 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 1.058 ms, dispatched 0.981 ms (1.1x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 262144 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 2.593 ms, dispatched 1.698 ms (1.5x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 300001 under a capacity of 524288 (131074 blocks), 8 queries without a block count: reference 0.965 ms, dispatched 0.953 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 300001 under a capacity of 524288 (131074 blocks), 64 queries with their block count: reference 1.462 ms, dispatched 1.469 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 524288 under a capacity of 524288 (131074 blocks), 8 queries without a block count: reference 2.796 ms, dispatched 3.129 ms (0.9x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 524288 under a capacity of 524288 (131074 blocks), 64 queries with their block count: reference 7.209 ms, dispatched 7.321 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nqsa_topk_parity: PASS\n",
+    "g1-selftest-mode2.log": "PASS context 9000 under a capacity of 9000 (2252 blocks), 8 queries without a block count: reference 0.107 ms, dispatched 0.093 ms (1.2x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 9000 under a capacity of 9000 (2252 blocks), 64 queries with their block count: reference 0.113 ms, dispatched 0.112 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 135160 under a capacity of 135160 (33792 blocks), 8 queries without a block count: reference 0.423 ms, dispatched 0.283 ms (1.5x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 135160 under a capacity of 135160 (33792 blocks), 64 queries with their block count: reference 0.584 ms, dispatched 0.724 ms (0.8x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 135176 under a capacity of 135176 (33796 blocks), 8 queries without a block count: reference 0.467 ms, dispatched 0.360 ms (1.3x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 135176 under a capacity of 135176 (33796 blocks), 64 queries with their block count: reference 0.619 ms, dispatched 0.930 ms (0.7x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 2100 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 0.098 ms, dispatched 0.096 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 2100 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 0.102 ms, dispatched 0.101 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 9000 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 0.107 ms, dispatched 0.104 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 9000 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 0.112 ms, dispatched 0.111 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 32768 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 0.171 ms, dispatched 0.156 ms (1.1x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 32768 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 0.244 ms, dispatched 0.217 ms (1.1x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 262144 under a capacity of 262144 (65538 blocks), 8 queries without a block count: reference 0.981 ms, dispatched 0.728 ms (1.3x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 262144 under a capacity of 262144 (65538 blocks), 64 queries with their block count: reference 2.568 ms, dispatched 1.682 ms (1.5x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 300001 under a capacity of 524288 (131074 blocks), 8 queries without a block count: reference 0.958 ms, dispatched 0.947 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 300001 under a capacity of 524288 (131074 blocks), 64 queries with their block count: reference 1.468 ms, dispatched 1.457 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nPASS context 524288 under a capacity of 524288 (131074 blocks), 8 queries without a block count: reference 3.052 ms, dispatched 2.944 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8\nadversarial=8/8 changed-step-graph=SKIP\nPASS context 524288 under a capacity of 524288 (131074 blocks), 64 queries with their block count: reference 6.989 ms, dispatched 6.696 ms (1.0x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64\nadversarial=64/64 changed-step-graph=SKIP\nqsa_topk_parity: PASS\n"
+  }
+}
