@@ -75,6 +75,7 @@ from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
 from serve import jev  # noqa: E402
+from serve import jev_calib  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve import lifeline  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
@@ -6575,6 +6576,15 @@ def make_handler(svc: Service):
             if path == "/config":
                 self._config_post()
                 return
+            if path == "/admin/calib":                     # M3.2: hot calibrator reload (Bearer admin key)
+                key = jev_calib.ADMIN_KEY
+                auth = self.headers.get("Authorization", "")
+                if key and auth != "Bearer " + key:
+                    self._json(401, {"error": {"message": "admin key required"}})
+                    return
+                jev_calib.swap()
+                self._json(200, jev_calib.state_json())
+                return
             if path in ("/unload", "/load") and not self._control_body():
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
@@ -8447,6 +8457,13 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     bound_port = httpd.server_address[1]               # --port 0: report the port the OS actually assigned
     svc.start_idle_unload()
     svc.start_vision_idle()
+    # M3.2: calib startup load + background log flusher (daemon; exits with the process)
+    import atexit  # noqa: E402 - local, like the MCP hub's use above
+    jev_calib.swap()
+    _calib_flush_stop = threading.Event()
+    threading.Thread(target=jev_calib.log_thread, args=(_calib_flush_stop,), daemon=True,
+                     name="jev-calib-log").start()
+    atexit.register(lambda: (_calib_flush_stop.set(), jev_calib.log_flush()))
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
     print(f"ready: http://{here}:{bound_port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
           f"context {engine.max_context} tokens{', images on' if vision else ''}"

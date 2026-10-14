@@ -13,6 +13,9 @@ from __future__ import annotations
 import json
 import math
 import threading
+import time
+
+from serve import jev_calib
 
 # jevcpp's frozen decision prompt (DECISIONS.md D3; byte-frozen - reopening forces recalibration).
 SYSTEM_V1 = ("You are a precise decision engine. Read the state, then answer the question "
@@ -72,6 +75,7 @@ def readout_scores(row: dict, variants: list[list[int]]) -> list[float]:
 
 
 def answers_from_scores(qtype: str, scores: list[float]) -> dict:
+    """Identity (uncalibrated) answers - kept for the battery and offline replay."""
     if qtype == "noul":
         d = scores[1] - scores[0]                       # [No, Yes] order
         return {"type": "noul", "noul": sigmoid(d)}
@@ -83,6 +87,25 @@ def answers_from_scores(qtype: str, scores: list[float]) -> dict:
         sc = sum(i * pi for i, pi in enumerate(p))
         return {"type": "score", "score": sc, "probabilities": p, "confidence": confidence(p)}
     raise ValueError(qtype)
+
+
+def answers_from_calibrated(qtype: str, pr: list[float], calib_id: str) -> dict:
+    """Answers from calibrated label probabilities (donor order: rounded pr -> calib ->
+    answers).  `pr` is already calibrated and renormalized; `scores` for noul is
+    recovered as the pair's log-odds so the sigmoid path stays exact."""
+    if qtype == "noul":
+        p = min(max(pr[1] if len(pr) > 1 else 0.0, 1e-9), 1 - 1e-9)
+        return {"type": "noul", "noul": p, "calib": calib_id}
+    best = max(range(len(pr)), key=lambda i: pr[i])
+    if qtype == "choice":
+        return {"type": "choice", "choice": best, "probabilities": pr,
+                "confidence": confidence(pr), "calib": calib_id}
+    if qtype == "score":
+        sc = sum(i * pi for i, pi in enumerate(pr))
+        return {"type": "score", "score": sc, "probabilities": pr,
+                "confidence": confidence(pr), "calib": calib_id}
+    raise ValueError(qtype)
+
 
 
 # ---- request validation (the donor's 422-with-field contract) ----
@@ -193,7 +216,23 @@ def handle(svc, req: dict) -> tuple[int, dict]:
                 scores = readout_scores(row, variants)
             except ValueError as e:
                 return _err("state", f"logits readout failed: {e}")
-            answers[qdef["id"]] = answers_from_scores(qdef["type"], scores)
+            # ---- donor order (server.cpp:1134-1142): round 4dp, renormalize, THEN calibrate ----
+            pr_raw = softmax(scores)                     # unrounded, for the calib log
+            pr = [round(x * 10000.0) / 10000.0 for x in pr_raw]
+            t = sum(pr)
+            if t > 0:
+                pr = [x / t for x in pr]
+            calib_id = None
+            pr, calib_id = jev_calib.apply(qdef["type"], pr)
+            answers[qdef["id"]] = answers_from_calibrated(qdef["type"], pr, calib_id)
+            # M2 B1.1 log row (unrounded raw_p; donor schema minus label_mass, BROW is sparse)
+            jev_calib.log_enqueue({
+                "ts": int(time.time()),
+                "tuple": jev_calib.tuple_of("L", qdef["type"]),
+                "qid": qdef["id"],
+                "type": qdef["type"],
+                "raw_p": pr_raw,
+            })
             in_tokens += len(ids)
             readouts += 1
     return 200, {"answers": answers,

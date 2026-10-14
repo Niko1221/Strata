@@ -218,8 +218,12 @@ class SystemOneAnswers(unittest.TestCase):
         ans = body["answers"]["q1"]
         self.assertEqual(ans["type"], "noul")
         logps, _ = log_softmax_masked([0.0, 4.0, -1.0])
-        exp_d = logps[1] - logps[0]
-        self.assertAlmostEqual(ans["noul"], sigmoid(exp_d), places=6)
+        p = softmax([logps[0], logps[1]])
+        # M3.2 donor order: round 4dp, renormalize (server.cpp:1134-1142)
+        r = [round(x * 10000.0) / 10000.0 for x in p]
+        t = sum(r)
+        self.assertAlmostEqual(ans["noul"], r[1] / t, places=6)
+        self.assertEqual(ans.get("calib"), "identity")
 
     def test_choice_answer(self):
         st, body = post(self.base, "/v1/systemone", {"state": {"k": 1}, "questions": {
@@ -230,10 +234,13 @@ class SystemOneAnswers(unittest.TestCase):
         self.assertEqual(ans["type"], "choice")
         logps, _ = log_softmax_masked([0.0, 4.0, -1.0])
         p = softmax([logps[i] for i in range(3)])
+        r = [round(x * 10000.0) / 10000.0 for x in p]     # M3.2: donor 4dp rounding
+        t = sum(r)
+        e = [x / t for x in r]
         self.assertEqual(ans["choice"], 1)
-        for got, exp in zip(ans["probabilities"], p):
+        for got, exp in zip(ans["probabilities"], e):
             self.assertAlmostEqual(got, exp, places=6)
-        self.assertAlmostEqual(ans["confidence"], confidence(p), places=6)
+        self.assertAlmostEqual(ans["confidence"], confidence(e), places=6)
 
     def test_score_answer(self):
         st, body = post(self.base, "/v1/systemone", {"state": {"k": 1}, "questions": {
@@ -244,7 +251,10 @@ class SystemOneAnswers(unittest.TestCase):
         self.assertEqual(ans["type"], "score")
         logps, _ = log_softmax_masked([0.0, 4.0, -1.0])
         p3 = softmax([logps[i] for i in range(3)])
-        sc = sum(i * pi for i, pi in enumerate(p3))
+        r = [round(x * 10000.0) / 10000.0 for x in p3]    # M3.2: donor 4dp rounding
+        t = sum(r)
+        e = [x / t for x in r]
+        sc = sum(i * pi for i, pi in enumerate(e))
         self.assertAlmostEqual(ans["score"], sc, places=6)
 
     def test_render_uses_frozen_system_prompt(self):
