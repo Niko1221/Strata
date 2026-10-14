@@ -6,12 +6,35 @@
 // only falls back to the unrestricted best when no such placement can start the prompt path.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
 namespace strata::program::split_rules {
 
 constexpr int64_t kMinStageLayers = 3;
+
+/// Score one candidate's per-stage work. Decode windows visit the stages in series, while a long prompt flows through
+/// them as a pipeline and is limited by its slowest stage. The caller supplies stage costs that already include the
+/// stage's layer work and expected missed-expert transfer.
+inline double stage_objective(const double* stage_ms, std::size_t count, bool prompt_pipeline) {
+    double serial = 0.0;
+    double bottleneck = 0.0;
+    for (std::size_t i = 0; i < count; ++i) {
+        serial += stage_ms[i];
+        if (stage_ms[i] > bottleneck) bottleneck = stage_ms[i];
+    }
+    return prompt_pipeline ? bottleneck : serial;
+}
+
+inline double stage_objective(const std::vector<double>& stage_ms, bool prompt_pipeline) {
+    return stage_objective(stage_ms.data(), stage_ms.size(), prompt_pipeline);
+}
+
+/// Keep an interactive prompt candidate only when its predicted serial decode cost does not regress.
+inline bool decode_guard(double candidate_ms, double reference_ms, double epsilon_ms = 1e-6) {
+    return candidate_ms <= reference_ms + epsilon_ms;
+}
 
 /// The restriction only makes sense when the model has the layers for it.
 inline bool restriction_possible(int64_t n_layers, int stages) {

@@ -614,6 +614,9 @@ struct Options {
     /// --serve, multi-GPU layer split: "K" or "K1,K2,.." (the first layer of each later stage) or "auto" (placed
     /// from each GPU's free VRAM); empty = one GPU
     std::string layer_split;
+    /// Objective for --layer-split auto: interactive keeps the decode prediction from the legacy choice while
+    /// improving the prompt bottleneck; prompt is the unconstrained prompt objective; decode adds all stage work.
+    std::string layer_split_objective = "interactive";
     /// the later stages' devices "D1,D2,.." (default: the next visible GPUs; "0" with one K: both stages on this
     /// GPU, sharing everything - the bit-exact A/B of the hand-off)
     std::string split_device;
@@ -809,6 +812,9 @@ void usage() {
                  "                       with the GPUs overlapped - 1 = the prompt's short reads, 2 = decode as well\n"
                  "                       (stage 0 runs the next window while stage 1 verifies this one); docs/MULTI_GPU.md\n"
                  "  --trim-stage-weights an explicit --layer-split: each GPU loads only its own layers' dense weights\n"
+                 "  --layer-split-objective interactive|prompt|decode  --layer-split auto ranking (default interactive:\n"
+                 "                       improve the prompt bottleneck without a predicted decode regression; prompt is\n"
+                 "                       unconstrained, decode keeps the serial-window ranking)\n"
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
                  "  --prompt-cache-tail  --serve, single GPU: one extra checkpoint near the prompt's end, at an existing\n"
                  "                       chunk boundary (default off; requires --prompt-cache and --prompt-cache-every > 0)\n"
@@ -2097,6 +2103,14 @@ int main(int argc, char** argv) {
         else if (a == "--stop-eos") o.stop_eos = true;
         else if (a == "--spec-split") o.spec_split = true;
         else if (a == "--layer-split") o.layer_split = next("--layer-split");
+        else if (a == "--layer-split-objective") {
+            o.layer_split_objective = next("--layer-split-objective");
+            if (o.layer_split_objective != "interactive" && o.layer_split_objective != "prompt" &&
+                o.layer_split_objective != "decode") {
+                std::fprintf(stderr, "strata generate: --layer-split-objective expects interactive, prompt, or decode\n");
+                return 2;
+            }
+        }
         else if (a == "--split-device") o.split_device = next("--split-device");
         else if (a == "--split-skip-if-fits") o.split_skip_if_fits = true;
         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
@@ -3701,10 +3715,13 @@ int main(int argc, char** argv) {
     // CUDA0's pairs in `profile` below).  Empty without --expert-profile-save.
     std::vector<std::pair<int32_t, int32_t>> profile_loaded;
     if (!o.expert_profile_save.empty()) profile_loaded = profile;
-    // ---- layer split across GPUs: "auto" places the split points by a cost model of one decode window, measured on
-    // the 5080 + 3090 rig (bench/results/2026-09-29-layer-split):
+    // ---- layer split across GPUs: "auto" uses a decode-safe prompt-pipeline objective by default
+    // (or an unconstrained prompt pipeline / serial decode window with --layer-split-objective prompt|decode),
+    // measured on the 5080 + 3090 rig
+    // (bench/results/2026-09-29-layer-split):
     //   - every layer costs its GPU a time inversely proportional to SMs x clock (0.33 ms on an RTX 5080, 0.50 on a
-    //     3090: the per-layer round trip and kernels, not the bytes - both cards have ~950 GB/s);
+    //     3090: the per-layer round trip and kernels, not the bytes - both cards have ~950 GB/s); the prompt objective
+    //     takes the slowest stage after adding its miss cost, while decode sums the stages;
     //   - an expert no cache holds costs ~190 ms per unit of routed mass: the CPU pool in decode and the PCIe stream
     //     in prompts (fitted: the sweep's best K, 26-28, is where one more layer on the faster card stops paying
     //     for the ~0.1% of the mass it pushes out of its cache);
@@ -3854,6 +3871,11 @@ int main(int argc, char** argv) {
                          i == 0 ? 0 : stages[(size_t) i - 1]->dev, bw, link_scale[(size_t) i]);
         }
         const double miss_ms = std::getenv("STRATA_SPLIT_MISS_MS") ? std::atof(std::getenv("STRATA_SPLIT_MISS_MS")) : 190.0;
+        const bool decode_objective = o.layer_split_objective == "decode";
+        const bool interactive_objective = o.layer_split_objective == "interactive";
+        // Interactive mode first finds the legacy serial-decode choice, then minimizes the prompt bottleneck only
+        // among candidates whose predicted serial decode cost is no worse than that reference.
+        bool score_prompt = !decode_objective;
         // ---- THE COVERAGE CURVE: HOW MUCH ROUTED MASS A CACHE HOLDS, AND WHY IT IS NO LONGER A POWER LAW.
         //
         // `mass[r]` used to be (r+1)^-1.2, fitted to the 5080+3090 sweep.  That fit is still right ON THE RIG IT
@@ -3898,14 +3920,14 @@ int main(int argc, char** argv) {
         auto cost = [&](int64_t l) -> int64_t {
             return native_pack ? ((int64_t) lay.blob_bytes(l) + 255) / 256 * 256 : (int64_t) lay.max_blob;
         };
-        // the predicted window time (ms) of a placement, and the routed mass its caches hold
+        // the predicted objective time (ms) of a placement, and the routed mass its caches hold
         std::vector<int64_t> held_cnt((size_t) ns, 0);   // per-stage fill count, for the startability gate
         const int64_t kAutoLendPct = [] {
             const char* v = std::getenv("STRATA_PREFILL_LEND_PCT");
             return v ? (int64_t) std::atoi(v)
                      : (int64_t) (strata::prefill::Prefill::pinned_share() >= 0.9 ? 90 : 85);
         }();
-        auto predict = [&](const std::vector<int64_t>& at, double& held_mass, int64_t& held) -> double {
+        auto predict = [&](const std::vector<int64_t>& at, double& held_mass, int64_t& held, double& decode_ms) -> double {
             // THE CARVE, PRICED: a placement gives stage i the layers [lb, le), and that range's session is a
             // real cost on its device - subtracted here so the search knows what it leaves for experts.  This
             // is why the sessions are allocated after the search: `session_bytes` is pure arithmetic.
@@ -3935,24 +3957,27 @@ int main(int argc, char** argv) {
                 ++held_cnt[(size_t) st];
             }
             held_mass /= std::max(total_mass, 1e-9);
-            // Each stage's misses on its own link (link_scale; 1.0 everywhere = the fitted single-constant formula).
-            double ms = 0.0;
-            for (int i = 0; i < ns; ++i)
-                ms += miss_ms * link_scale[(size_t) i] * std::max(0.0, mass_i[(size_t) i] - held_i[(size_t) i]) /
-                      std::max(total_mass, 1e-9);
+            // A prompt flows through the stages as a pipeline, so its time is set by the slowest stage. Decode
+            // windows visit the stages serially, so the interactive guard compares the old sum.
+            std::vector<double> stage_ms((size_t) ns);
             for (int i = 0; i < ns; ++i) {
                 const int64_t lb = i == 0 ? 0 : at[(size_t) i - 1], le = i + 1 < ns ? at[(size_t) i] : g.n_layers;
-                ms += (double) (le - lb) * layer_ms[(size_t) i];
+                const double miss = miss_ms * link_scale[(size_t) i] *
+                                    std::max(0.0, mass_i[(size_t) i] - held_i[(size_t) i]) /
+                                    std::max(total_mass, 1e-9);
+                stage_ms[(size_t) i] = (double) (le - lb) * layer_ms[(size_t) i] + miss;
             }
-            return ms;
+            decode_ms = strata::program::split_rules::stage_objective(stage_ms, false);
+            return strata::program::split_rules::stage_objective(stage_ms, score_prompt);
         };
         std::vector<int64_t> best, at((size_t) ns - 1);
         double best_ms = 1e30, best_mass = 0;
         int64_t best_held = 0, tried = 0;
         // TIES GO TO THE BALANCED PLACEMENT.  When every placement holds the whole profile (the model fits the cards,
-        // as IQ3_S does on two or more 32 GB cards) the predicted decode window is the same for all of them - the
-        // layers' times just add - and which one "won" was floating-point noise in the sum: 3 layers on the first
-        // card, 30 on the second.  A prompt flows through the stages as a pipeline, so its speed is the slowest stage's:
+        // as IQ3_S does on two or more 32 GB cards) the predicted objective is the same for all of them - the
+        // layers' times either add or share a bottleneck - and which one "won" was floating-point noise in the sum:
+        // 3 layers on the first card, 30 on the second.  A prompt flows through the stages as a pipeline, so its speed is the
+        // slowest stage's:
         // measured on 4x R9700 with --trim-stage-weights, 6,36,41 read a 32K prompt at 1,750 tok/s and 12,24,36 at 2,780,
         // same decode speed, same tokens.  Among placements whose window time agrees to 1e-6 ms the one with the
         // smallest slowest stage (layers x ms per layer) is kept; an earlier one stays on a second tie.
@@ -4087,20 +4112,25 @@ int main(int argc, char** argv) {
         // #1428: 2 and 3 GPUs - every placement priced, kept (a few hundred) so the near-tie warning below can name the
         // best placement that is really a different one (not the neighbour one layer over)
         std::vector<std::pair<double, std::vector<int64_t>>> priced;
+        double decode_limit = 1e30;
+        double best_decode_ms = 1e30;
         auto consider = [&]() {
             if (min_stage_layers > 1 && strata::program::split_rules::smallest_stage(at, g.n_layers) < min_stage_layers)
                 return;
             double hm = 0;
             int64_t held = 0;
-            const double ms = predict(at, hm, held);
+            double decode_ms = 0;
+            const double ms = predict(at, hm, held, decode_ms);
             ++tried;
+            if (interactive_objective && !strata::program::split_rules::decode_guard(decode_ms, decode_limit)) return;
             if (ns <= 3) priced.emplace_back(ms, at);
             const double mx = stage_max(at);
             if (ms < best_ms - tie_eps || (ms <= best_ms + tie_eps && mx < best_max - tie_eps)) {
                 // feasibility gate: mirrors the serve path (`fits_one` + own_fits) for the 512-token last resort;
                 // a placement the prompt path cannot start is not chosen (#1094) - unless nothing can start, below
                 if (gate_on && !can_start(parts_of(at))) return;
-                best = at; best_ms = std::min(ms, best_ms); best_mass = hm; best_held = held; best_max = mx;
+                best = at; best_ms = std::min(ms, best_ms); best_decode_ms = decode_ms;
+                best_mass = hm; best_held = held; best_max = mx;
             }
         };
         const int64_t L = g.n_layers;
@@ -4174,23 +4204,38 @@ int main(int argc, char** argv) {
                 return key;
             };
             const double denom = std::max(total_mass, 1e-9);
+            std::vector<double> mass_prefix((size_t) L + 1, 0.0);
+            for (size_t r = 0; r < profile.size(); ++r) {
+                const int64_t l = profile[r].first;
+                if (l >= 0 && l < L) mass_prefix[(size_t) l + 1] += mass[r];
+            }
+            for (int64_t l = 0; l < L; ++l) mass_prefix[(size_t) l + 1] += mass_prefix[(size_t) l];
             for (int64_t k1 = 2; k1 + 2 < L; ++k1)
                 for (int64_t k2 = k1 + 1; k2 + 1 < L; ++k2)
                     for (int64_t k3 = k2 + 1; k3 < L; ++k3) {
                         const size_t a = range_hold(0, 0, k1), b = range_hold(1, k1, k2);
                         const size_t c = range_hold(2, k2, k3), d = range_hold(3, k3, L);
                         const double hm = held_mass_at[a] + held_mass_at[b] + held_mass_at[c] + held_mass_at[d];
-                        const double ms = miss_ms * (1.0 - hm / denom) +
-                                          (double) k1 * layer_ms[0] + (double) (k2 - k1) * layer_ms[1] +
-                                          (double) (k3 - k2) * layer_ms[2] + (double) (L - k3) * layer_ms[3];
+                        const int64_t lbs[4] = {0, k1, k2, k3};
+                        const int64_t les[4] = {k1, k2, k3, L};
+                        std::array<double, 4> stage_ms{};
+                        for (int i = 0; i < 4; ++i) {
+                            const double stage_mass = mass_prefix[(size_t) les[i]] - mass_prefix[(size_t) lbs[i]];
+                            const size_t key = i == 0 ? a : i == 1 ? b : i == 2 ? c : d;
+                            const double miss = miss_ms * link_scale[(size_t) i] *
+                                                std::max(0.0, stage_mass - held_mass_at[key]) / denom;
+                            stage_ms[(size_t) i] = (double) (les[i] - lbs[i]) * layer_ms[(size_t) i] + miss;
+                        }
+                        const double decode_ms = strata::program::split_rules::stage_objective(stage_ms.data(), 4, false);
+                        const double ms = strata::program::split_rules::stage_objective(stage_ms.data(), 4, score_prompt);
                         if (min_stage_layers > 1 &&
                             strata::program::split_rules::smallest_stage({k1, k2, k3}, L) < min_stage_layers) continue;
                         ++tried;
+                        if (interactive_objective && !strata::program::split_rules::decode_guard(decode_ms, decode_limit))
+                            continue;
                         const double mx = stage_max({k1, k2, k3});
                         if (!(ms < best_ms - tie_eps || (ms <= best_ms + tie_eps && mx < best_max - tie_eps))) continue;
                         if (gate_on) {   // the same startability gate as `consider`, over the memoised fills
-                            const int64_t lbs[4] = {0, k1, k2, k3};
-                            const int64_t les[4] = {k1, k2, k3, L};
                             std::vector<PartStat> parts((size_t) ns);
                             for (int i = 0; i < ns; ++i) {
                                 const size_t key = i == 0 ? a : i == 1 ? b : i == 2 ? c : d;
@@ -4204,6 +4249,7 @@ int main(int argc, char** argv) {
                         }
                         best = {k1, k2, k3};
                         best_ms = std::min(ms, best_ms);
+                        best_decode_ms = decode_ms;
                         best_max = mx;
                         best_mass = hm / denom;
                         best_held = held_at[a] + held_at[b] + held_at[c] + held_at[d];
@@ -4217,7 +4263,40 @@ int main(int argc, char** argv) {
             proportional();
         }
         };
+        std::vector<int64_t> decode_reference;
+        double decode_reference_ms = 1e30, decode_reference_mass = 0, decode_reference_max = 1e30;
+        int64_t decode_reference_held = 0;
+        if (interactive_objective) score_prompt = false;
         search();
+        if (interactive_objective) {
+            if (!best.empty()) {
+                decode_reference = best;
+                decode_reference_ms = best_ms;
+                decode_reference_mass = best_mass;
+                decode_reference_held = best_held;
+                decode_reference_max = best_max;
+                score_prompt = true;
+                decode_limit = decode_reference_ms;
+                best.clear();
+                best_ms = 1e30; best_decode_ms = 1e30; best_max = 1e30; best_mass = 0; best_held = 0;
+                tried = 0;
+                search();
+                if (best.empty()) {
+                    best = decode_reference;
+                    best_ms = decode_reference_ms; best_decode_ms = decode_reference_ms;
+                    best_max = decode_reference_max; best_mass = decode_reference_mass; best_held = decode_reference_held;
+                    std::fprintf(stderr, "strata generate: layer split auto: no prompt improvement stays within the "
+                                         "predicted decode cost; keeping the serial-decode choice\n");
+                }
+            } else {
+                // If the startability gate rejects every decode reference, let the existing no-startable fallback
+                // choose a placement and report the shortfall below.
+                score_prompt = true;
+                decode_limit = 1e30;
+                tried = 0;
+                search();
+            }
+        }
         // ---- #1616: a stage with one or two layers holds a handful of expert slots (a 12 GB 3060: 512), and the
         // prompt chunk of every card is clamped to what the smallest cache can lend.  When the pick has such a
         // stage, look again among placements that give every stage at least kMinStageLayers layers; keep the new
@@ -4226,8 +4305,9 @@ int main(int argc, char** argv) {
             strata::program::split_rules::has_tiny_stage(best, g.n_layers)) {
             const std::vector<int64_t> first = best;
             const double first_ms = best_ms;
+            const double first_decode_ms = best_decode_ms;
             best.clear();
-            best_ms = 1e30; best_max = 1e30; best_mass = 0; best_held = 0;
+            best_ms = 1e30; best_decode_ms = 1e30; best_max = 1e30; best_mass = 0; best_held = 0;
             min_stage_layers = strata::program::split_rules::kMinStageLayers;
             search();
             min_stage_layers = 1;
@@ -4237,17 +4317,18 @@ int main(int argc, char** argv) {
                 return s;
             };
             if (best.empty()) {
-                best = first; best_ms = first_ms;
+                best = first; best_ms = first_ms; best_decode_ms = first_decode_ms;
                 std::fprintf(stderr, "strata generate: layer split auto: K=%s gives a stage fewer than %lld layers (a "
                                      "tiny expert cache clamps the prompt chunk, #1616), but no placement with at least "
                                      "that many layers can start; keeping it\n", fmt(first).c_str(),
                              (long long) strata::program::split_rules::kMinStageLayers);
             } else {
+                const char* tiny_objective = decode_objective ? "decode window" : "prompt pipeline";
                 std::fprintf(stderr, "strata generate: layer split auto: K=%s would give a stage fewer than %lld layers "
                                      "(a tiny expert cache there clamps the prompt chunk of every card, #1616); chose "
-                                     "K=%s instead (%.1f ms per decode window, not %.1f)\n", fmt(first).c_str(),
+                                     "K=%s instead (%.1f ms per %s, not %.1f)\n", fmt(first).c_str(),
                              (long long) strata::program::split_rules::kMinStageLayers, fmt(best).c_str(), best_ms,
-                             first_ms);
+                             tiny_objective, first_ms);
             }
         }
         // ---- no startable placement: fall back to proportional, and if that too is impossible, say what is short
@@ -4270,7 +4351,8 @@ int main(int argc, char** argv) {
             // recommend, never force: with nothing startable on paper the search runs again without the gate, so the
             // run is as it was before the gate, and what is short is said
             std::fprintf(stderr, "strata generate: layer split auto: no placement can start the prompt path on the "
-                                 "figures here; choosing by decode speed alone\n");
+                                 "figures here; choosing by the requested %s objective anyway\n",
+                         decode_objective ? "decode" : interactive_objective ? "interactive" : "prompt");
             gate_on = false;
             search();
             if (!best.empty()) split_diagnosis(best);
@@ -4287,12 +4369,22 @@ int main(int argc, char** argv) {
         split_at = best;
         std::string ks;
         for (const int64_t k : split_at) ks += (ks.empty() ? "" : ",") + std::to_string(k);
-        std::fprintf(stderr, "strata generate: layer split auto: K=%s - predicted %.1f ms per decode window; the caches "
-                             "hold %lld of %zu profiled pairs (~%.1f%% of the routed mass), best of %lld placements\n",
-                     ks.c_str(), best_ms, (long long) best_held, profile.size(), 100.0 * best_mass, (long long) tried);
-        // #1428: a near tie on a mixed pair.  The model prices a decode window only (the prompt path is not in it), and on
-        // cards of different speed or link the winner can flip within a few percent of error: say which other split is
-        // almost as good, so the user can try it.  Recommend, never force: this only prints.
+        const char* objective_name = decode_objective ? "decode window" : "prompt pipeline";
+        if (interactive_objective) {
+            std::fprintf(stderr, "strata generate: layer split auto: K=%s - predicted %.1f ms per prompt pipeline, "
+                                 "%.1f ms per decode window (guard <= %.1f); the caches hold %lld of %zu profiled pairs "
+                                 "(~%.1f%% of the routed mass), best of %lld placements\n",
+                         ks.c_str(), best_ms, best_decode_ms, decode_limit, (long long) best_held, profile.size(),
+                         100.0 * best_mass, (long long) tried);
+        } else {
+            std::fprintf(stderr, "strata generate: layer split auto: K=%s - predicted %.1f ms per %s; the caches "
+                                 "hold %lld of %zu profiled pairs (~%.1f%% of the routed mass), best of %lld placements\n",
+                         ks.c_str(), best_ms, objective_name, (long long) best_held, profile.size(), 100.0 * best_mass,
+                         (long long) tried);
+        }
+        // #1428: a near tie on a mixed pair.  The objective is still a model, not a measurement, and on cards of
+        // different speed or link the winner can flip within a few percent of error: say which other split is almost as
+        // good, so the user can try it.  Recommend, never force: this only prints.
         {
             const double lo = *std::min_element(layer_ms.begin(), layer_ms.end());
             const double hi = *std::max_element(layer_ms.begin(), layer_ms.end());
@@ -4316,10 +4408,11 @@ int main(int argc, char** argv) {
                 if (alt != nullptr) {
                     std::string as;
                     for (const int64_t k : *alt) as += (as.empty() ? "" : ",") + std::to_string(k);
-                    std::fprintf(stderr, "strata generate: layer split auto: NEAR TIE - K=%s is predicted %.1f ms per decode "
-                                         "window, within %.1f%% of K=%s (%.1f ms); the cards differ, so the prediction may not "
-                                         "rank them (it prices decode, not the prompt). To try the other: --layer-split %s\n",
-                                 as.c_str(), alt_ms, 100.0 * (alt_ms / best_ms - 1.0), ks.c_str(), best_ms, as.c_str());
+                    std::fprintf(stderr, "strata generate: layer split auto: NEAR TIE - K=%s is predicted %.1f ms per %s, "
+                                         "within %.1f%% of K=%s (%.1f ms); the cards differ, so the prediction may not rank "
+                                         "them. To try the other: --layer-split %s\n",
+                                 as.c_str(), alt_ms, objective_name, 100.0 * (alt_ms / best_ms - 1.0), ks.c_str(), best_ms,
+                                 as.c_str());
                 }
             }
         }
