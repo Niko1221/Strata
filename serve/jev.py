@@ -205,7 +205,23 @@ def question_block(qdef) -> str:
     return q
 
 
-def handle(svc, req: dict) -> tuple[int, dict]:
+def question_head(qdef) -> str:
+    """V-mode shared head (donor render_qhead, server.cpp:337-347): the option list as
+    plain bullets - the branches below it each propose one option."""
+    q = f"Question: {qdef['instructions']}\nOptions:\n"
+    for label, desc in zip(qdef["labels"], qdef["descriptions"]):
+        q += f"- {label}{desc}\n"
+    return q
+
+
+def v_branch(qdef, key: str) -> str:
+    """V-mode per-option branch (donor render_vbranch, server.cpp:349-353)."""
+    return (f"Proposed answer: {key}\n"
+            f"Is the proposed answer the best option? Reply Yes or No.\n"
+            f"Answer:")
+
+
+def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     """POST /v1/systemone -> (HTTP status, body).  The whole inference holds the engine turn
     (svc.fifo), like every other engine-touching path."""
     if not isinstance(req, dict) or "state" not in req:
@@ -222,9 +238,60 @@ def handle(svc, req: dict) -> tuple[int, dict]:
                                            "(the M3.0 engine commit adds BROW)"}}
 
     state_text = render_state(req["state"])
+    v_mode = mode == "V"
     answers, in_tokens, readouts = {}, 0, 0
     with svc.fifo:                                       # the engine turn: one request at a time
         for qdef in qdefs:
+            use_v = v_mode and qdef["type"] == "choice"   # X-Jev-Mode scopes to choice (donor :767)
+            if use_v:
+                # ---- V mode (A2.6): shared head, one yes/no branch per option ----
+                head = question_head(qdef)
+                yes_no = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in ("No", "Yes")]
+                d_scores = []
+                for key in qdef["labels"]:
+                    prompt = svc.template.render(
+                        [{"role": "system", "content": SYSTEM_V1},
+                         {"role": "user", "content": state_text + "\n\n" + head + v_branch(qdef, key)}],
+                        add_generation_prompt=True,
+                        enable_thinking=False)
+                    ids = svc.tok.encode(prompt, parse_special=True)
+                    if not ids:
+                        return _err("state", "tokenization failed")
+                    cancel = threading.Event()
+                    for _ in engine.generate(ids, 1, {}, cancel):
+                        pass
+                    tokens = sorted({t for v in yes_no for t in v})
+                    row = engine.final_row_logits(ids, tokens)
+                    try:
+                        s = readout_scores(row, yes_no)    # [logp(No), logp(Yes)]
+                    except ValueError as e:
+                        return _err("state", f"logits readout failed: {e}")
+                    d_scores.append(s[1] - s[0])           # d_i = s_yes - s_no
+                    in_tokens += len(ids)
+                    readouts += 1
+                # p = softmax(d) (donor :1150-1163: round 4dp, renormalize)
+                mx = max(d_scores)
+                pr_raw = [math.exp(x - mx) for x in d_scores]
+                z = sum(pr_raw)
+                pr_raw = [x / z for x in pr_raw]
+                pr = [round(x * 10000.0) / 10000.0 for x in pr_raw]
+                t = sum(pr)
+                if t > 0:
+                    pr = [x / t for x in pr]
+                # donor V applies the choice temperature to softmax(d) (calib_apply :617)
+                pr, calib_id = jev_calib.apply("choice", pr)
+                best = max(range(len(pr)), key=lambda i: pr[i])
+                probs = {name: pr[i] for i, name in enumerate(qdef["labels"])}
+                answers[qdef["id"]] = {
+                    "type": "choice", "choice": qdef["labels"][best],
+                    "probabilities": probs, "confidence": confidence(pr),
+                    "calib": calib_id}
+                jev_calib.log_enqueue({
+                    "ts": int(time.time()),
+                    "tuple": jev_calib.tuple_of("V", "choice"),
+                    "qid": qdef["id"], "type": "choice",
+                    "raw_p": pr_raw, "v_d": d_scores})
+                continue
             prompt = svc.template.render(
                 [{"role": "system", "content": SYSTEM_V1},
                  {"role": "user", "content": state_text + "\n\n" + question_block(qdef)}],

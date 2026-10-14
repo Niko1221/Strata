@@ -5589,7 +5589,8 @@ def make_handler(svc: Service):
                 elif path == "/v1/messages":
                     self._anthropic(req)
                 elif path == "/v1/systemone":
-                    code, body = jev.handle(svc, req)
+                    mode = self.headers.get("X-Jev-Mode", "L")   # A2.6: "V" = choice readout override
+                    code, body = jev.handle(svc, req, mode)
                     self._json(code, body)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
