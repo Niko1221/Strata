@@ -1,6 +1,47 @@
-<h1 align="center">Strata</h1>
+<h1 align="center">Strata Arabic · AMD · Abliterated</h1>
 
 **English** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
+
+## About this fork / عن هذه النسخة
+
+**[Strata-Arabic-AMD-Abliterated](https://github.com/almshary/Strata-Arabic-AMD-Abliterated)** is a fork of
+[Niko1221/Strata](https://github.com/Niko1221/Strata), maintained by [almshary](https://github.com/almshary).
+It adds an optional Arabic interface, Windows AMD monitoring, and installer support for SC117's abliterated
+GSQ-RCO models. AMD engine support and the other features described below come from upstream unless stated here.
+
+هذه النسخة تضيف التعديلات التالية إلى Strata الأصلي:
+
+| الإضافة | ما تغيّر |
+| --- | --- |
+| **واجهة عربية اختيارية** | اختيار العربية أو الإنجليزية من الواجهة، واتجاه من اليمين إلى اليسار، مع الحفاظ على اتجاه الأكواد والقيم التقنية وحفظ اختيار اللغة في المتصفح. |
+| **مراقبة AMD على Windows** | قراءة حمل البطاقة وذاكرتها وحرارتها والطاقة ورابط PCIe عبر مكتبة ADL في التعريف، بحسب المستشعرات المتاحة. الإضافة تخص المراقبة؛ دعم تشغيل المحرك على AMD موجود في المستودع الأصلي. |
+| **موديلات SC117 Abliterated** | إضافة العائلة `abliterated` إلى التثبيت وMCP وفحص ملفات GGUF، بأحجام `Q2_0` و`IQ2_XS` و`IQ3_XXS` و`IQ3_S`، مع روابط مثبتة وفحص SHA-256. لكل مودل إعداد وحزمة مستقلة عن الموديلات الأصلية. |
+
+[صورة الواجهة العربية](docs/media/arabic-monitor.png) ·
+[تفاصيل موديلات SC117](docs/MODELS.md#sc117-gsq-rco-abliterated) ·
+[مصدر أوزان SC117](https://huggingface.co/SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF)
+
+لتثبيت نسخة Abliterated بحجم `IQ3_XXS` بجانب الموديلات الأخرى، شغّل من مجلد هذه النسخة:
+
+```bat
+START-HERE.bat --setup --family abliterated --model IQ3_XXS
+```
+
+على Linux:
+
+```bash
+./setup.sh --setup --family abliterated --model IQ3_XXS
+```
+
+ملفات `IQ3_XXS` تبلغ نحو **76.14 GB** وفق بيانات المستودع المثبتة بتاريخ 2026-10-13؛ يلزم أيضًا حيز للتجهيز.
+طبقة MTP مشتركة من مودل Qwen الأصلي وليست Abliterated. الاختبارات الآلية تتحقق من التثبيت والتكامل،
+ولا تثبت تطابق جودة الإجابات أو السرعة مع المودل الأصلي. أرقام الأداء في بقية هذه الصفحة تخص قياسات
+المستودع الأصلي والأجهزة المذكورة معه.
+
+عند تحديث هذه النسخة من المستودع الأصلي، تُحفظ هذه الإضافات. مجلد التثبيت المحلي مثل `C:\Strata` وأوامر
+التشغيل واسم المحرك تظل كما هي؛ الاسم الجديد يخص مستودع GitHub.
+
+---
 
 <p align="center"><b>Run a 125-billion-parameter AI model on your own gaming PC</b><br>
 NVIDIA or AMD graphics card (12 GB or more) · Windows or Linux · free and open source</p>
@@ -79,7 +120,7 @@ The full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
 Do you use an AI coding assistant (Claude Code, Cursor, Codex, GitHub Copilot, ...)? Paste this into it:
 
 ```text
-Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow docs/AI_SETUP.md in that repository.
+Set up Strata on this PC for me: https://github.com/almshary/Strata-Arabic-AMD-Abliterated - follow docs/AI_SETUP.md in that repository.
 ```
 
 It checks your graphics card, RAM and disk and picks the model that fits. Then it installs and starts it and tells
@@ -88,7 +129,7 @@ you how to connect your apps. AI tools can also install, start and stop Strata t
 
 ### Or do it yourself
 
-[Download Strata](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
+[Download this fork](https://github.com/almshary/Strata-Arabic-AMD-Abliterated/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
 **Windows:** double-click **`START-HERE.bat`**. **Linux:** run **`./setup.sh`** in the Strata folder.
 
 **Mac (Apple Silicon, M1 to M5, macOS 15 or newer):** install Apple's Command Line Tools once

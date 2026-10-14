@@ -432,5 +432,83 @@
    "Q3_K",
    "Q8_0"
   ]
+ },
+ "abliterated/Q2_0": {
+  "arch": "qwen4exp",
+  "tensors": 1224,
+  "bytes": 66810493440,
+  "expert_bytes": {
+   "Q2_0": 33973862400
+  },
+  "experts_bpw": 2.25,
+  "bpw": 3.021,
+  "files": [
+   "Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-Q2_0-00001-of-00002.gguf",
+   "Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-Q2_0-00002-of-00002.gguf"
+  ],
+  "repo": "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF",
+  "revision": "eec4e10a2c29b440a2ae85591fa11569ce752963"
+ },
+ "abliterated/IQ2_XS": {
+  "arch": "qwen4exp",
+  "tensors": 1224,
+  "bytes": 68454128640,
+  "expert_bytes": {
+   "IQ1_M": 1101004800,
+   "IQ2_S": 18271436800,
+   "IQ2_XXS": 4757913600,
+   "Q2_0": 11324620800
+  },
+  "experts_bpw": 2.348,
+  "bpw": 3.095,
+  "files": [
+   "IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00001-of-00002.gguf",
+   "IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00002-of-00002.gguf"
+  ],
+  "repo": "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF",
+  "revision": "eec4e10a2c29b440a2ae85591fa11569ce752963"
+ },
+ "abliterated/IQ3_XXS": {
+  "arch": "qwen4exp",
+  "tensors": 1224,
+  "bytes": 76131258880,
+  "expert_bytes": {
+   "IQ2_S": 5373952000,
+   "IQ2_XS": 4849664000,
+   "IQ2_XXS": 3892838400,
+   "IQ3_S": 9371648000,
+   "IQ3_XXS": 3853516800,
+   "IQ4_NL": 8493465600,
+   "Q2_0": 7077888000
+  },
+  "experts_bpw": 2.842,
+  "bpw": 3.442,
+  "files": [
+   "IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-00001-of-00002.gguf",
+   "IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-00002-of-00002.gguf"
+  ],
+  "repo": "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF",
+  "revision": "eec4e10a2c29b440a2ae85591fa11569ce752963"
+ },
+ "abliterated/IQ3_S": {
+  "arch": "qwen4exp",
+  "tensors": 1224,
+  "bytes": 83852561920,
+  "expert_bytes": {
+   "IQ2_S": 10747904000,
+   "IQ3_S": 7208960000,
+   "IQ3_XXS": 10918297600,
+   "IQ4_NL": 18402508800,
+   "IQ4_XS": 891289600,
+   "Q2_0": 2123366400
+  },
+  "experts_bpw": 3.331,
+  "bpw": 3.791,
+  "files": [
+   "IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf",
+   "IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf"
+  ],
+  "repo": "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF",
+  "revision": "eec4e10a2c29b440a2ae85591fa11569ce752963"
  }
 }

@@ -20,7 +20,7 @@ What the first run does (each step is skipped when it is already done):
   6. prepares the model for Strata and fetches the MTP draft layer (~5 GB, from the original Qwen checkpoint)
   7. writes run-<model>.bat / run-<model>.sh and starts the model
 
-Options: --family qwen|swift, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S, --context 32768, --rope-scaling none|linear|yarn
+Options: --family qwen|swift|coder|unsloth|abliterated, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S, --context 32768, --rope-scaling none|linear|yarn
 (--rope-scale F; past the trained 262144 the setup adds yarn and the factor is the final context over 262144,
 at least 1 - an explicit --rope-scaling none is refused for such a context), --vision yes|no|gpu|cpu, --port
 8080, --yes (recommended
@@ -64,6 +64,7 @@ WIN = os.name == "nt"
 # https://huggingface.co/api/models/<repo> when this was pinned), so a checkout installs the same files on any
 # day.  A revision the repository no longer has falls back to its current files, with a message (download()).
 HF_REVISIONS = {
+    "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF": "eec4e10a2c29b440a2ae85591fa11569ce752963",  # 2026-10-13
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",        # 2026-09-29
     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "b22d729eae29b5796f76fb70f91aef549b9fc52c",   # 2026-09-24
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": "5348543e0147355ac9cbcb031184a3546350988e",  # 2026-09-29
@@ -131,6 +132,8 @@ def model_source() -> str:
 
 def source_hint(url: str) -> str:
     """The recommendation that goes with a failed download from Hugging Face: ModelScope, by an explicit choice."""
+    if "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF" in url:
+        return "; check your Hugging Face connection or use HF_ENDPOINT for a mirror"
     if "huggingface" in url or "hf-mirror" in url:
         return ("; if huggingface.co does not reach you (mainland China), the same files are on ModelScope: run setup "
                 "with --source modelscope (docs/INSTALL.md)")
@@ -241,16 +244,16 @@ NVFP4_REPOS = {
 NVFP4_ENGINE = (0, 1, 44)
 
 MODELS = {
-    # the original model only for now: Swift 1.5's Q2_0 files split one layer's experts across the two shards, which
+    # Qwen and SC117 use the canonical Q2_0 layout; Swift 1.5's Q2_0 files split one layer's experts across the two shards, which
     # the pack tool (tools/iq_pack.py) cannot prepare yet (#171)
-    "Q2_0": {"about": "2-bit, the fastest", "download_gb": 66.4, "ram_gb": 48, "arena_gb": 34.0, "families": ("qwen",)},
+    "Q2_0": {"about": "2-bit, the fastest", "download_gb": 66.4, "ram_gb": 48, "arena_gb": 34.0, "families": ("qwen", "abliterated")},
     "IQ2_XS": {"about": "2-bit i-quant, a little better quality, close in speed", "download_gb": 68.0, "ram_gb": 48,
-               "arena_gb": 35.5},
+               "arena_gb": 35.5, "families": ("qwen", "swift", "abliterated")},
     "IQ3_XXS": {"about": "3-bit i-quant, better quality, slower (more CPU work per token)", "download_gb": 75.8,
-                "ram_gb": 60, "arena_gb": 42.9},
+                "ram_gb": 60, "arena_gb": 42.9, "families": ("qwen", "swift", "abliterated")},
     # matches the full BF16 model on the published benchmarks; Swift 1.5 got an IQ3_S tier of its own (#1651)
     "IQ3_S": {"about": "3.5-bit i-quant, the best quality (matches the full model), the slowest; needs a 64 GB PC "
-                       "with little else running", "download_gb": 83.6, "ram_gb": 62, "arena_gb": 50.3},
+                       "with little else running", "download_gb": 83.6, "ram_gb": 62, "arena_gb": 50.3, "families": ("qwen", "swift", "abliterated")},
     # the Coder release: 256 of the 512 experts kept (the ones code, tools and vision use), IQ2_S-IQ4_XS like IQ3_S
     "IQ1_M": {"about": "the Coder's only size: half the experts, stored like IQ3_S (3.5 bits)", "download_gb": 58.4,
               "ram_gb": 32, "arena_gb": 23.4, "families": ("coder",)},
@@ -380,6 +383,27 @@ UNSLOTH_MIN_RAM_GB = 48         # the RAM-budget mode below which setup says an 
 # costs ~2.8 GB of 8-bit KV with IQ3_S (vs ~3.6 GB at 256K) - a middle step for PCs that cannot hold 256K.
 CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 # The model families: the same architecture, weights in the same three GSQ-RCO sizes, different files.
+# SC117 shard sizes and SHA-256 at the pinned Hub revision (2026-10-13).
+ABLITERATED_SHARDS = {
+    'Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00001-of-00002.gguf':
+        (39665015072, '4acc3ebb5050d20117bdc77fc39200e709dfe2b2367f3522c95b9112a30aff81'),
+    'Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ2_XS-00002-of-00002.gguf':
+        (28800138432, '316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113'),
+    'Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf':
+        (55063448064, '40f369eca301ec6ea318dbb671b3132c26a2f0b89aa5458a7051b33215ee296c'),
+    'Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf':
+        (28800138432, '316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113'),
+    'Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-00001-of-00002.gguf':
+        (47342144896, '03b11926b41a3d7f7a008882b1bc7a6330a3c9c43d3cad4598d31dc73042fdc5'),
+    'Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_XXS-00002-of-00002.gguf':
+        (28800138432, '316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113'),
+    'Qwen3.8-Flash-Next-GSQ-RCO-abliterated-Q2_0-00001-of-00002.gguf':
+        (38021379872, '1620faf21c845524cbe38dcbbaf850b8d155c2299df05d8b7bfb43b642c4647e'),
+    'Qwen3.8-Flash-Next-GSQ-RCO-abliterated-Q2_0-00002-of-00002.gguf':
+        (28800138432, '316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113'),
+}
+ABLITERATED_DOWNLOAD_GB = {'Q2_0': 66.821518304, 'IQ2_XS': 68.465153504, 'IQ3_XXS': 76.142283328, 'IQ3_S': 83.863586496}
+
 FAMILIES = {
     "qwen": {"title": "Qwen3.8-Flash-Next", "by": "Qwen; GSQ-RCO quants by ISTA-DASLab",
              "about": "the original model",
@@ -421,6 +445,17 @@ FAMILIES = {
               "tag": "nvfp4-", "name": "qwen3.8-flash-next-nvfp4", "ready": True,
               "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"), "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf",
               "mmproj_sha256": (907543008, "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0")},
+    # Separate model files and packs; the stock base MTP head is shared, as for Swift.
+    "abliterated": {"title": "Qwen3.8-Flash-Next Abliterated", "by": "SC117's GSQ-RCO tensor transplant",
+                   "about": "SC117's abliterated variant; Q2_0, IQ2_XS, IQ3_XXS and IQ3_S",
+                   "hf": hf("SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF") + "{q}/",
+                   "file": "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-{q}-0000{i}-of-00002.gguf",
+                   "tag": "abliterated-", "name": "qwen3.8-flash-next-abliterated",
+                   "mmproj_hf": hf("SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF"),
+                   "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+                   "download_gb": ABLITERATED_DOWNLOAD_GB, "sha256": ABLITERATED_SHARDS,
+                   "model_about": {q: f"{q} GSQ-RCO weights; speed and response quality not measured here"
+                                   for q in ("Q2_0", "IQ2_XS", "IQ3_XXS", "IQ3_S")}, "huggingface_only": True},
 }
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
 # Qwen3.6-35B-A3B (GGUF architecture qwen35moe), Unsloth's GGUFs with the MTP block: a family with an engine path of its
@@ -1345,6 +1380,11 @@ def split_mmap(cfg: dict) -> bool:
     return True
 
 
+def model_download_gb(fam: dict, model: str) -> float:
+    """Published shard bytes for this family, or the existing size estimate."""
+    return fam.get("download_gb", {}).get(model, MODELS[model]["download_gb"])
+
+
 def model_file(fam: dict, model: str, i: int) -> str:
     """Shard i's file name: the family's pattern, or the model's own (#621: UD-IQ4_XS has three shards, not four)."""
     return MODELS.get(model, {}).get("file", fam["file"]).format(q=model, i=i)
@@ -1738,7 +1778,8 @@ GGUF_QUANT = re.compile(r"(?<![A-Za-z0-9])((?:UD-)?(?:I?Q\d+(?:_[A-Za-z0-9]+)*|B
                         r"(?=-\d{5}-of-\d{5}\.gguf$|\.gguf$)", re.I)
 SUPPORTED_GGUFS = ("Strata runs ISTA-DASLab's GSQ-RCO files (Qwen3.8-Flash-Next Q2_0, IQ2_XS, IQ3_XXS, IQ3_S; Swift "
                    "1.5's; the Coder's IQ1_M) and Unsloth's UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 "
-                   "only: other GGUFs (Unsloth's UD-IQ3_XXS or UD-Q2_K_XL, other K-quant files) cannot be used")
+                   "only: other GGUFs (Unsloth's UD-IQ3_XXS or UD-Q2_K_XL, other K-quant files) cannot be used"
+                   ". SC117's abliterated GSQ-RCO files (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S) are also available")
 
 
 def gguf_unsupported(name: str) -> str | None:
@@ -5707,7 +5748,7 @@ def main() -> int:
         return mac_setup(sys.argv[1:])
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES),
-                    help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5 (qwen36 = Qwen3.6-35B-A3B: download only, the "
+                    help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, abliterated = SC117 GSQ-RCO (qwen36 = Qwen3.6-35B-A3B: download only, the "
                          "engine does not run it yet)")
     ap.add_argument("--model", choices=list(dict.fromkeys([*MODELS, *(m for f in PREVIEW_FAMILIES.values()
                                                                        for m in f["models"])])))
@@ -6140,6 +6181,8 @@ def main() -> int:
     if family in OWN_PATH_FAMILIES:                    # Qwen3.6: its own engine path, its own steps 2-7
         return install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted)
     fam = FAMILIES[family]
+    if fam.get("huggingface_only") and model_source() == "modelscope":
+        fail("SC117's abliterated files are configured from Hugging Face only", "use --source huggingface")
     if fam.get("ready") and hip:
         # not a risk the user could take: the HIP engine has no NVFP4 expert kernels at all, so it would not start
         fail(f"{fam['title']} runs on NVIDIA cards only: the AMD engine has no NVFP4 kernels",
@@ -6162,7 +6205,8 @@ def main() -> int:
              + (f".\n       {SUPPORTED_GGUFS}" if a.gguf_dir else ""))
     installed = installed_size(family, names, have)
     for i, m in enumerate(names, 1):
-        d = MODELS[m]
+        d = dict(MODELS[m], download_gb=model_download_gb(fam, m),
+                 about=fam.get("model_about", {}).get(m, MODELS[m]["about"]))
         fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
         if d.get("budget"):
             keeps = (f"~{resident_budget_gib(m, ram)} GB" if unsloth_budget(m, ram, gpu, a.resident_budget_gib)
@@ -6408,7 +6452,7 @@ def main() -> int:
     # #425 (jctaborda): a download that resumes needs room only for what is still missing - the finished shards and
     # the .part files already on the disk count
     on_disk = sum(f.stat().st_size for s in shards for f in (s, s.with_name(s.name + ".part")) if f.is_file()) / 1e9
-    to_fetch = 0 if a.gguf_dir or have_model else max(MODELS[model]["download_gb"] - on_disk, 0)
+    to_fetch = 0 if a.gguf_dir or have_model else max(model_download_gb(fam, model) - on_disk, 0)
     # count only what step 6 will still write: a pack whose experts.bin is already there (the AVX-512 Q2_0
     # conversion, or the low-RAM mode's copy) and an existing MTP draft layer need no new room
     pack_now = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
@@ -6471,7 +6515,8 @@ def main() -> int:
                 ok(f"{s.name} already downloaded")
                 continue
             # the original's shard 2 is the same file for all its sizes and the Coder: reuse one that is already here
-            other = [p for p in Path(a.models_dir).glob("*/Qwen3.8-Flash-Next-GSQ-RCO-*-00002-of-00002.gguf") if done(p)]
+            other = [p for p in Path(a.models_dir).glob("*/Qwen3.8-Flash-Next-GSQ-RCO-*-00002-of-00002.gguf")
+                     if done(p) and "-abliterated-" not in p.name]
             if family in ("qwen", "coder") and s.name.endswith("00002-of-00002.gguf") and other and not s.exists():
                 try:
                     os.link(other[0], s)
