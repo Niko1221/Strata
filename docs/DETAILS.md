@@ -192,6 +192,20 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
   layer has two (the share otherwise rounds to 0 at 1-2 misses). RTX 3090 + Ryzen 5 5600X: prompt read +5-7 % at 56K-117K
   tokens; decode level alone, +2-3 % with `--adapt-async 1` and `--pcie-frac 0.6`
   ([report](../bench/results/2026-10-11-community-rtx3090-5600x-arena-pin-by-need/README.md)).
+**The arena is reserved first (`STRATA_ARENA_FIRST`, default on; `=0` is the A/B arm):** the expert arena's
+`VirtualAlloc(MEM_LARGE_PAGES)` (2 MiB pages) is attempted the instant the expert layout gives its size - *before*
+the PLE shard (`--ple-gguf`, ~46 GiB) and the model's GGUF (103.7 GiB) are mapped. Those mappings are what leaves the
+large-page pool (the contiguous budget) short, and the live refusal is `VirtualAlloc error 1450` (`ERROR_NO_SYSTEM_RESOURCES`,
+no contiguous block), not 1314 (the privilege, which the engine already enables). The size is known from the layout
+alone (`index.txt`/`manifest.json` plus `native_experts.txt`, or the canonical geometry), so no model or pack byte
+has to be mapped to compute it, and the early reservation is a raw `VirtualAlloc`/`mmap` with **no CUDA call in it**:
+`cudaHostRegister` and the working-set lock still run at their usual point, so the registration order - and what WDDM
+charges to it - is unchanged. When the early attempt does not fit either, nothing changes: the arena is reserved
+exactly where it always was, and the run is the old one. Only the plain path reserves early; `--mmap-experts`,
+`STRATA_PIN_BY_NEED` (whose padded stride is chosen at open from the post-weights free VRAM), a shared expert arena
+and `STRATA_ARENA_MMAP` all reserve where they did. `STRATA_ARENA_FIRST=0` restores the old order without recompiling.
+The startup log says which order it took (`expert arena reserved first, before the PLE and the model's GGUF: ...`).
+Not yet measured on a live start (the order and the mechanism are; the effect on the 1450 refusal is the pending A/B).
 - `STRATA_EXCHANGE_ROTATE=1` (opt-in): an adaptive swap hands buffer ownership over instead of copying the evicted
   blob into the RAM copy (equal-size blobs, fully page-locked copy). Same tokens, fewer host copies; it works with
   `--adapt-async 1` too. Details and the measurement: [EXCHANGE_ROTATION.md](EXCHANGE_ROTATION.md).

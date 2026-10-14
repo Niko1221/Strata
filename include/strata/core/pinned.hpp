@@ -22,18 +22,74 @@
 
 namespace strata::core {
 
-enum class PageBacking { LargePages, NormalPages, PinnedByCuda };
+enum class PageBacking {
+    LargePages,          ///< every page is 2 MiB (one single piece, or every chunk of a chunked arena)
+    NormalPages,         ///< 4 KB pages
+    PinnedByCuda,        ///< reserved by the CUDA runtime, not by this code
+    PartialLargePages    ///< Windows chunked arena (STRATA_ARENA_LP_CHUNKS): some chunks 2 MiB, the rest 4 KB, one
+                         ///< contiguous virtual block.  It exists so the startup print cannot claim "large pages"
+                         ///< for an arena that is only partly backed by them.
+};
+
+/// Windows chunked large pages (STRATA_ARENA_LP_CHUNKS=1, opt-in): the arena is ONE contiguous virtual block
+/// [base, base + bytes) but it is backed by SEVERAL VirtualAlloc allocations, one per chunk, each placed at its
+/// own explicit 2 MiB-aligned base (the measurements behind this are in the comment on reserve() in
+/// src/core/pinned.cu).  Nothing that CONSUMES the arena needs any of this - the arena is still `base` plus
+/// offsets - it exists so `release` can free piece by piece and the working-set lock can lock ONLY the 4 KB
+/// pieces (large pages cannot be paged out, so locking them is pointless, #779).
+struct ArenaPieces {
+    struct Piece {
+        uint64_t off;   ///< offset from the arena base
+        uint64_t len;
+        bool large;     ///< true: committed with MEM_LARGE_PAGES; false: 4 KB pages
+    };
+    std::vector<Piece> v;          ///< sorted by off, tiling [0, bytes)
+    uint64_t bytes = 0;            ///< the arena bytes the pieces tile
+    uint64_t large_bytes = 0;      ///< bytes backed by 2 MiB pages
+    int large_pieces = 0;
+    int normal_pieces = 0;
+    int chunks_total = 0;          ///< chunk slots of STRATA_ARENA_LP_CHUNK_MIB the arena was split into
+    int chunks_with_large = 0;     ///< how many of those got at least one 2 MiB piece (drive the log line)
+    bool empty() const { return v.empty(); }
+    void clear() {
+        v.clear();
+        bytes = large_bytes = 0;
+        large_pieces = normal_pieces = chunks_total = chunks_with_large = 0;
+    }
+};
 
 /// #243: STRATA_ARENA_PIN_GIB, the cap on the expert arena's CUDA registration in GiB.  -1 when unset (the engine
 /// decides, as in 0.1.30), 0 = no cap (the whole arena, or as many slices as the driver takes), N > 0 = at most N GiB,
 /// -2 for "auto" (Windows: the sliced pin stays below the GPU's shared-memory budget).
 int arena_pin_cap_gib();
 
+/// Plan v0.3 arena-first: the arena's raw reservation, made BEFORE the PLE shard and the model's GGUF are mapped
+/// (see ArenaExpertSource::reserve_first).  It is the SAME `reserve()` the PinnedArena constructors call - the same
+/// 2 MiB VirtualAlloc(MEM_LARGE_PAGES) attempt, the same note - but done early and held: no CUDA touches it.  A
+/// constructor takes it only when it asks for the same `bytes` (and its own registration/lock still runs at its own
+/// time, so the registration order is unchanged); whatever no constructor took, the caller releases.
+struct ArenaPreReservation {
+    void* base = nullptr;
+    PageBacking backing = PageBacking::NormalPages;
+    std::string note;              ///< what backing it got and why, exactly as `reserve` reports it
+    void* mapping_base = nullptr;  ///< for a shared-file backing (never the anonymous case): 0 here
+    uint64_t mapping_bytes = 0;
+    uint64_t bytes = 0;            ///< the bytes reserved; a constructor consumes it only when it asks for the same
+    ArenaPieces pieces;            ///< chunked backing (Windows, opt-in); empty on every other path
+    bool valid() const { return base != nullptr; }
+};
+/// reserve() NOW, for `bytes`, exactly as the constructors would.  Nothing CUDA runs.  An invalid result (no block
+/// for the large-page pool AND no 4 KB block) is the caller's cue to reserve as before.
+ArenaPreReservation reserve_arena_first(uint64_t bytes);
+/// Releases a pre-reservation no constructor consumed (a different path, or a size that did not match).
+void release_arena_pre_reservation(ArenaPreReservation& r);
+
 struct PinnedArena {
     void* base = nullptr;
     uint64_t capacity = 0;
     PageBacking backing = PageBacking::NormalPages;
     std::string note;              // why the backing is what it is, for the startup print
+    ArenaPieces pieces;            // chunked backing: `release` frees piece by piece, the lock sees the 4 KB ones
     uint64_t locked_bytes = 0;     // resident via the working-set lock when CUDA could not pin it
     /// Plan v0.3 P5: when the whole arena cannot be registered, it is registered in `slice`-byte pieces from the
     /// start; this is the pinned prefix (a copy that stays inside one slice can then DMA straight from the arena).
@@ -51,8 +107,11 @@ struct PinnedArena {
     /// `shared_pack_hash` identifies the pack that is allowed to populate that backing.  The file carries a
     /// small header and is refused when its stored hash does not match.  Empty `shared_file` preserves the
     /// existing allocation path.  Population/coordination and backing-file lifetime remain the caller's job.
+    /// `pre` (optional): an early reservation (reserve_arena_first) this constructor consumes when it asks for the
+    /// same bytes and has no shared-file backing - the registration/lock below is unchanged and still runs here.
     PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, uint64_t max_pinned_bytes = 0,
-                const std::string& shared_file = {}, uint64_t shared_pack_hash = 0);
+                const std::string& shared_file = {}, uint64_t shared_pack_hash = 0,
+                ArenaPreReservation* pre = nullptr);
     /// Pin by need (STRATA_PIN_BY_NEED=1): register only the given byte ranges (offset, length), in the given order
     /// (the caller's priority: the hottest experts the GPU does not hold first), each rounded out to 4 KiB pages and
     /// trimmed against the ranges already registered; stops at the first refusal of the driver (the WDDM budget is
@@ -62,14 +121,15 @@ struct PinnedArena {
     /// `pin_ranges`.
     struct ByNeed {};
     PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
-                uint64_t max_pinned_bytes = 0, const std::string& shared_file = {}, uint64_t shared_pack_hash = 0);
+                uint64_t max_pinned_bytes = 0, const std::string& shared_file = {}, uint64_t shared_pack_hash = 0,
+                ArenaPreReservation* pre = nullptr);
     bool by_need = false;
     std::vector<std::pair<uint64_t, uint64_t>> pin_ranges;    ///< registered (offset, length), sorted by offset, page-rounded
     std::vector<std::pair<uint64_t, uint64_t>> locked_ranges; ///< the holes locked resident (offset, length)
     /// #285: reserve only; the caller registers the slices with register_slices(), on a thread, while its readers
     /// fill the ones already registered (one registration of the whole arena cost ~2.5 s at 33 GiB of 4 KB pages).
     struct Deferred {};
-    PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred);
+    PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred, ArenaPreReservation* pre = nullptr);
     /// Registers the deferred slices in order, publishing how many are done in `ready`, and INT_MAX once it
     /// returns (a slice CUDA refuses ends the registration, and the rest is kept resident by the working-set lock).
     void register_slices(std::atomic<int>& ready);

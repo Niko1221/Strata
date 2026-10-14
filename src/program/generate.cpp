@@ -3079,6 +3079,48 @@ int main(int argc, char** argv) {
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
+    // ---- THE ARENA, RESERVED FIRST (STRATA_ARENA_FIRST, default on) ------------------------------------
+    //
+    // The expert arena's 2 MiB `VirtualAlloc(MEM_LARGE_PAGES)` is attempted HERE, the instant the layout gives its
+    // size, and NOT at `arena_src.open` two thousand lines below: by then the PLE shard (46 GiB, --ple-gguf) and the
+    // model's GGUF (103.7 GiB) are already mapped, and those mappings are what leaves the large-page pool - the
+    // contiguous budget - short.  The live refusal is error 1450 (no contiguous block), not 1314 (privilege).
+    //
+    // Reserving first costs nothing when it does not fit: the early reservation is a raw VirtualAlloc/mmap with no
+    // CUDA call in it, and `open` still runs cudaHostRegister/lock at the SAME point it does today, so the
+    // registration order - and everything WDDM charges to it - is unchanged.  STRATA_ARENA_FIRST=0 restores the old
+    // order for an A/B on one boot.  Only the plain path reserves here (not --mmap-experts, STRATA_PIN_BY_NEED -
+    // whose padded size is chosen at open - a shared arena, or a native build's STRATA_ARENA_MMAP): each of those
+    // falls back to reserving where it always did.  The size is known from the layout alone (index/manifest and
+    // native_experts.txt or the canonical geometry), so NO pack or GGUF byte has to be mapped to compute it.
+    strata::core::ArenaExpertSource arena_src;   // declared here so the arena can be reserved before the PLE/GGUF
+    {
+        const char* af = std::getenv("STRATA_ARENA_FIRST");
+        const bool arena_first = af == nullptr || af[0] == '\0' || af[0] != '0';
+        const char* pbn = std::getenv("STRATA_PIN_BY_NEED");
+        const bool pin_by_need = pbn != nullptr && pbn[0] != '\0' && pbn[0] != '0';
+        const char* amm = std::getenv("STRATA_ARENA_MMAP");
+        const bool arena_mmap = amm != nullptr && std::strcmp(amm, "1") == 0;
+        if (!arena_first) {
+            std::fprintf(stderr, "strata generate: STRATA_ARENA_FIRST=0: the arena is reserved where it was, after the "
+                                 "PLE and the model's GGUF (the A/B arm)\n");
+        } else if (o.mmap_experts || arena_mmap) {
+            // no resident arena to reserve: the experts come from the mapped file
+        } else if (pin_by_need) {
+            std::fprintf(stderr, "strata generate: STRATA_PIN_BY_NEED: the arena is reserved where it was (its padded "
+                                 "size is chosen at open, from the post-weights free VRAM)\n");
+        } else if (!o.shared_expert_arena.empty()) {
+            std::fprintf(stderr, "strata generate: a shared expert arena is in use: it is reserved where it was\n");
+        } else {
+            std::string arena_first_err;
+            if (arena_src.reserve_first(arena_first_err))
+                std::fprintf(stderr, "strata generate: expert arena reserved first, before the PLE and the model's "
+                                     "GGUF: %s\n", arena_src.pre_note().c_str());
+            else
+                std::fprintf(stderr, "strata generate: the arena-first reservation found nothing to reserve (%s); the "
+                                     "arena is reserved, as before, after the PLE and the GGUF\n", arena_first_err.c_str());
+        }
+    }
     // STRATA_EARLY_REMOTE_CONTEXTS=1: create EVERY secondary context here, like CUDA1's.  Under WSL2 the driver's
     // pinned/mapped host budget (dxg gpadl, ~1 GiB) is spent by CUDA0's weights and MTP before the later loop runs,
     // and a new context then fails with cudaErrorMemoryAllocation (CUDA2: "cudaSetDevice(2) failed: out of memory").
@@ -5066,8 +5108,7 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    strata::core::ArenaExpertSource arena_src;
-    strata::core::ExpertSource* srcp = nullptr;
+    strata::core::ExpertSource* srcp = nullptr;   // (arena_src is declared above, so the arena could be reserved first)
     if (o.mmap_experts) {
         // FileExpertSource maps the pack's experts.bin: a canonical pack has it; a native (IQ) pack has it when
         // built with `tools/iq_pack.py --experts-bin` (the per-layer blob sizes of its layout, PR #121).  The low-RAM
