@@ -1,11 +1,15 @@
 {
   "checks": [
     {
-      "claim": "10 local files, 20 local effort arms, 18 local tool arms",
+      "claim": "10 local files, 20 local effort arms, 20 local tool arms",
       "passed": true
     },
     {
-      "claim": "Hosted GPT-6-luna role remains external-reference-only",
+      "claim": "Both hosted identities remain external-reference-only",
+      "passed": true
+    },
+    {
+      "claim": "First-upload GPT-6.1-SOL source and Five Bugs selection are pinned",
       "passed": true
     },
     {
@@ -13,11 +17,19 @@
       "passed": true
     },
     {
-      "claim": "Hosted HE+ reference row matches source without placeholders",
+      "claim": "Both hosted HE+ rows match their source, omit incomparable fields and contain no placeholders",
       "passed": true
     },
     {
-      "claim": "iq3_s/low final/count/first/repairs/wall",
+      "claim": "GPT-6-luna MAX HE+ fields and engine provenance",
+      "passed": true
+    },
+    {
+      "claim": "GPT-6.1-SOL ultra HE+ fields and engine provenance",
+      "passed": true
+    },
+    {
+      "claim": "iq3_s/low final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -25,11 +37,11 @@
       "passed": true
     },
     {
-      "claim": "iq3_s/low blank-final count",
+      "claim": "iq3_s/low blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "iq3_s/xhigh final/count/first/repairs/wall",
+      "claim": "iq3_s/xhigh final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -37,11 +49,11 @@
       "passed": true
     },
     {
-      "claim": "iq3_s/xhigh blank-final count",
+      "claim": "iq3_s/xhigh blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "q2_0/low final/count/first/repairs/wall",
+      "claim": "q2_0/low final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -49,11 +61,11 @@
       "passed": true
     },
     {
-      "claim": "q2_0/low blank-final count",
+      "claim": "q2_0/low blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "q2_0/xhigh final/count/first/repairs/wall",
+      "claim": "q2_0/xhigh final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -61,11 +73,11 @@
       "passed": true
     },
     {
-      "claim": "q2_0/xhigh blank-final count",
+      "claim": "q2_0/xhigh blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "base-iq3_xxs/low final/count/first/repairs/wall",
+      "claim": "base-iq3_xxs/low final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -73,11 +85,11 @@
       "passed": true
     },
     {
-      "claim": "base-iq3_xxs/low blank-final count",
+      "claim": "base-iq3_xxs/low blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "base-iq3_xxs/xhigh final/count/first/repairs/wall",
+      "claim": "base-iq3_xxs/xhigh final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -85,11 +97,11 @@
       "passed": true
     },
     {
-      "claim": "base-iq3_xxs/xhigh blank-final count",
+      "claim": "base-iq3_xxs/xhigh blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "ista-iq2_xs/low final/count/first/repairs/wall",
+      "claim": "ista-iq2_xs/low final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -97,11 +109,11 @@
       "passed": true
     },
     {
-      "claim": "ista-iq2_xs/low blank-final count",
+      "claim": "ista-iq2_xs/low blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "ista-iq2_xs/xhigh final/count/first/repairs/wall",
+      "claim": "ista-iq2_xs/xhigh final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -109,11 +121,11 @@
       "passed": true
     },
     {
-      "claim": "ista-iq2_xs/xhigh blank-final count",
+      "claim": "ista-iq2_xs/xhigh blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "swift-iq3_xxs/low final/count/first/repairs/wall",
+      "claim": "swift-iq3_xxs/low final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -121,11 +133,11 @@
       "passed": true
     },
     {
-      "claim": "swift-iq3_xxs/low blank-final count",
+      "claim": "swift-iq3_xxs/low blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "swift-iq3_xxs/xhigh final/count/first/repairs/wall",
+      "claim": "swift-iq3_xxs/xhigh final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -133,11 +145,11 @@
       "passed": true
     },
     {
-      "claim": "swift-iq3_xxs/xhigh blank-final count",
+      "claim": "swift-iq3_xxs/xhigh blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "swift-iq2_xs/low final/count/first/repairs/wall",
+      "claim": "swift-iq2_xs/low final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -145,11 +157,11 @@
       "passed": true
     },
     {
-      "claim": "swift-iq2_xs/low blank-final count",
+      "claim": "swift-iq2_xs/low blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "swift-iq2_xs/xhigh final/count/first/repairs/wall",
+      "claim": "swift-iq2_xs/xhigh final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -157,11 +169,11 @@
       "passed": true
     },
     {
-      "claim": "swift-iq2_xs/xhigh blank-final count",
+      "claim": "swift-iq2_xs/xhigh blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "swift-iq3_s/low final/count/first/repairs/wall",
+      "claim": "swift-iq3_s/low final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -169,11 +181,11 @@
       "passed": true
     },
     {
-      "claim": "swift-iq3_s/low blank-final count",
+      "claim": "swift-iq3_s/low blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "swift-iq3_s/xhigh final/count/first/repairs/wall",
+      "claim": "swift-iq3_s/xhigh final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -181,11 +193,11 @@
       "passed": true
     },
     {
-      "claim": "swift-iq3_s/xhigh blank-final count",
+      "claim": "swift-iq3_s/xhigh blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "swift-q2_0/low final/count/first/repairs/wall",
+      "claim": "swift-q2_0/low final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -193,11 +205,11 @@
       "passed": true
     },
     {
-      "claim": "swift-q2_0/low blank-final count",
+      "claim": "swift-q2_0/low blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "swift-q2_0/xhigh final/count/first/repairs/wall",
+      "claim": "swift-q2_0/xhigh final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -205,11 +217,11 @@
       "passed": true
     },
     {
-      "claim": "swift-q2_0/xhigh blank-final count",
+      "claim": "swift-q2_0/xhigh blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "gyro-s/low final/count/first/repairs/wall",
+      "claim": "gyro-s/low final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -217,11 +229,11 @@
       "passed": true
     },
     {
-      "claim": "gyro-s/low blank-final count",
+      "claim": "gyro-s/low blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "gyro-s/xhigh final/count/first/repairs/wall",
+      "claim": "gyro-s/xhigh final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -229,11 +241,11 @@
       "passed": true
     },
     {
-      "claim": "gyro-s/xhigh blank-final count",
+      "claim": "gyro-s/xhigh blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "gyro-m/low final/count/first/repairs/wall",
+      "claim": "gyro-m/low final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -241,11 +253,11 @@
       "passed": true
     },
     {
-      "claim": "gyro-m/low blank-final count",
+      "claim": "gyro-m/low blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "gyro-m/xhigh final/count/first/repairs/wall",
+      "claim": "gyro-m/xhigh final/count/first/repairs/infra",
       "passed": true
     },
     {
@@ -253,15 +265,23 @@
       "passed": true
     },
     {
-      "claim": "gyro-m/xhigh blank-final count",
+      "claim": "gyro-m/xhigh blank-final failures stay scored and denominator matches harness exclusions",
       "passed": true
     },
     {
-      "claim": "All 18 local tool arms printed exactly once",
+      "claim": "All 20 local tool arms printed exactly once",
       "passed": true
     },
     {
-      "claim": "Hosted TEB row has all supported metrics and no placeholders",
+      "claim": "Both hosted TEB rows have every common metric and no placeholders",
+      "passed": true
+    },
+    {
+      "claim": "GPT-6-luna MAX TEB common values and engine label",
+      "passed": true
+    },
+    {
+      "claim": "GPT-6.1-SOL ultra TEB common values and engine label",
       "passed": true
     },
     {
@@ -461,6 +481,30 @@
       "passed": true
     },
     {
+      "claim": "gyro-s/low tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "gyro-s/low independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "gyro-s/low printed tool headline and warnings",
+      "passed": true
+    },
+    {
+      "claim": "gyro-s/xhigh tool mean, SD and 460 evaluations",
+      "passed": true
+    },
+    {
+      "claim": "gyro-s/xhigh independently counted floor/ceiling",
+      "passed": true
+    },
+    {
+      "claim": "gyro-s/xhigh printed tool headline and warnings",
+      "passed": true
+    },
+    {
       "claim": "gyro-m/low tool mean, SD and 460 evaluations",
       "passed": true
     },
@@ -489,11 +533,23 @@
       "passed": true
     },
     {
-      "claim": "Hosted sampled-suite reference row matches sanitized source",
+      "claim": "Both hosted sampled-suite rows match their source and keep Needle token bases explicit",
       "passed": true
     },
     {
-      "claim": "Sampled-suite table places hosted reference inline by hidden-debug score",
+      "claim": "GPT-6-luna MAX sampled-suite values and engine provenance",
+      "passed": true
+    },
+    {
+      "claim": "GPT-6.1-SOL ultra sampled-suite values and engine provenance",
+      "passed": true
+    },
+    {
+      "claim": "Sampled-suite table places both hosted references inline by hidden-debug score",
+      "passed": true
+    },
+    {
+      "claim": "Knowledge/debugging top is the disclosed 20/25 three-way tie, with local-first deterministic order",
       "passed": true
     },
     {
@@ -573,7 +629,7 @@
       "passed": true
     },
     {
-      "claim": "gyro-s/low unavailable malformed profile labeled n/a",
+      "claim": "gyro-s/low all decode, first-token rates, depths and deep TTFT",
       "passed": true
     },
     {
@@ -613,7 +669,7 @@
       "passed": true
     },
     {
-      "claim": "gyro-s/xhigh unavailable malformed profile labeled n/a",
+      "claim": "gyro-s/xhigh all decode, first-token rates, depths and deep TTFT",
       "passed": true
     },
     {
@@ -629,79 +685,431 @@
       "passed": true
     },
     {
-      "claim": "One recommendation registry with six aligned roles",
+      "claim": "One recommendation registry with seven aligned roles",
       "passed": true
     },
     {
-      "claim": "Composite excludes all fork and partial arms",
+      "claim": "All 20 unique local effort rows appear without score or numeric rank",
       "passed": true
     },
     {
-      "claim": "Composite q2_0/xhigh",
+      "claim": "Decision policy has no weights and identifies stock default with broad coverage",
       "passed": true
     },
     {
-      "claim": "Composite swift-iq2_xs/xhigh",
+      "claim": "Matrix measured coding/tool evidence swift-iq3_s/low",
       "passed": true
     },
     {
-      "claim": "Composite swift-iq2_xs/low",
+      "claim": "Matrix sampled domain evidence swift-iq3_s/low",
       "passed": true
     },
     {
-      "claim": "Composite ista-iq2_xs/low",
+      "claim": "Matrix measured coding/tool evidence base-iq3_xxs/low",
       "passed": true
     },
     {
-      "claim": "Composite ista-iq2_xs/xhigh",
+      "claim": "Matrix sampled domain evidence base-iq3_xxs/low",
       "passed": true
     },
     {
-      "claim": "Composite q2_0/low",
+      "claim": "Matrix measured coding/tool evidence iq3_s/low",
       "passed": true
     },
     {
-      "claim": "Composite iq3_s/xhigh",
+      "claim": "Matrix sampled domain evidence iq3_s/low",
       "passed": true
     },
     {
-      "claim": "Composite base-iq3_xxs/xhigh",
+      "claim": "Matrix measured coding/tool evidence ista-iq2_xs/low",
       "passed": true
     },
     {
-      "claim": "Composite swift-iq3_xxs/low",
+      "claim": "Matrix sampled domain evidence ista-iq2_xs/low",
       "passed": true
     },
     {
-      "claim": "Composite swift-iq3_xxs/xhigh",
+      "claim": "Matrix measured coding/tool evidence q2_0/low",
       "passed": true
     },
     {
-      "claim": "Composite iq3_s/low",
+      "claim": "Matrix sampled domain evidence q2_0/low",
       "passed": true
     },
     {
-      "claim": "Composite swift-iq3_s/xhigh",
+      "claim": "Matrix measured coding/tool evidence swift-iq2_xs/low",
       "passed": true
     },
     {
-      "claim": "Composite swift-q2_0/low",
+      "claim": "Matrix sampled domain evidence swift-iq2_xs/low",
       "passed": true
     },
     {
-      "claim": "Composite swift-q2_0/xhigh",
+      "claim": "Matrix measured coding/tool evidence swift-iq3_xxs/low",
       "passed": true
     },
     {
-      "claim": "Registry ranks match the scoreboard",
+      "claim": "Matrix sampled domain evidence swift-iq3_xxs/low",
       "passed": true
     },
     {
-      "claim": "First pick is the same all-rounder as the scoreboard",
+      "claim": "Matrix measured coding/tool evidence swift-q2_0/low",
       "passed": true
     },
     {
-      "claim": "Composite rows ranked exactly",
+      "claim": "Matrix sampled domain evidence swift-q2_0/low",
+      "passed": true
+    },
+    {
+      "claim": "Matrix measured coding/tool evidence base-iq3_xxs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix sampled domain evidence base-iq3_xxs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix measured coding/tool evidence iq3_s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix sampled domain evidence iq3_s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix measured coding/tool evidence ista-iq2_xs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix sampled domain evidence ista-iq2_xs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix measured coding/tool evidence q2_0/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix sampled domain evidence q2_0/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix measured coding/tool evidence swift-iq2_xs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix sampled domain evidence swift-iq2_xs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix measured coding/tool evidence swift-iq3_s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix sampled domain evidence swift-iq3_s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix measured coding/tool evidence swift-iq3_xxs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix sampled domain evidence swift-iq3_xxs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix measured coding/tool evidence swift-q2_0/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix sampled domain evidence swift-q2_0/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix measured coding/tool evidence gyro-m/low",
+      "passed": true
+    },
+    {
+      "claim": "Matrix sampled domain evidence gyro-m/low",
+      "passed": true
+    },
+    {
+      "claim": "Matrix measured coding/tool evidence gyro-m/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix sampled domain evidence gyro-m/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix measured coding/tool evidence gyro-s/low",
+      "passed": true
+    },
+    {
+      "claim": "Matrix sampled domain evidence gyro-s/low",
+      "passed": true
+    },
+    {
+      "claim": "Matrix measured coding/tool evidence gyro-s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Matrix sampled domain evidence gyro-s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row swift-iq3_s/low",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool swift-iq3_s/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall swift-iq3_s/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row base-iq3_xxs/low",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool base-iq3_xxs/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall base-iq3_xxs/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row iq3_s/low",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool iq3_s/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall iq3_s/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row ista-iq2_xs/low",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool ista-iq2_xs/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall ista-iq2_xs/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row q2_0/low",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool q2_0/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall q2_0/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row swift-iq2_xs/low",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool swift-iq2_xs/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall swift-iq2_xs/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row swift-iq3_xxs/low",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool swift-iq3_xxs/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall swift-iq3_xxs/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row swift-q2_0/low",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool swift-q2_0/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall swift-q2_0/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row base-iq3_xxs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool base-iq3_xxs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall base-iq3_xxs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row iq3_s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool iq3_s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall iq3_s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row ista-iq2_xs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool ista-iq2_xs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall ista-iq2_xs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row q2_0/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool q2_0/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall q2_0/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row swift-iq2_xs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool swift-iq2_xs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall swift-iq2_xs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row swift-iq3_s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool swift-iq3_s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall swift-iq3_s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row swift-iq3_xxs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool swift-iq3_xxs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall swift-iq3_xxs/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row swift-q2_0/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool swift-q2_0/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall swift-q2_0/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row gyro-m/low",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool gyro-m/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall gyro-m/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row gyro-m/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool gyro-m/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall gyro-m/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row gyro-s/low",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool gyro-s/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall gyro-s/low",
+      "passed": true
+    },
+    {
+      "claim": "Printed all-test capability row gyro-s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Speed total wall = code+debug+tool gyro-s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Printed measured coding wall gyro-s/xhigh",
+      "passed": true
+    },
+    {
+      "claim": "Gyro-S valid rc2 auxiliary evidence imported; algebra scored offline, rc1 preserved",
+      "passed": true
+    },
+    {
+      "claim": "One default, experimental forks not recommended as daily defaults",
+      "passed": true
+    },
+    {
+      "claim": "Recommendation registry contains no overall ranks",
+      "passed": true
+    },
+    {
+      "claim": "Capability and deployment matrices include all 20 setups",
       "passed": true
     },
     {
@@ -717,15 +1125,15 @@
       "passed": true
     },
     {
-      "claim": "Reference baseline visible, provider identified, and non-recommendation",
+      "claim": "Both hosted references visible, provider-identified, and outside local ranks",
       "passed": true
     },
     {
-      "claim": "Hosted sampling caveat and unavailable matched performance are explicit",
+      "claim": "Both hosted sampling caveats, score-matrix limitation and unavailable matched performance are explicit",
       "passed": true
     },
     {
-      "claim": "Hard Mode table places hosted reference inline by mean score",
+      "claim": "Hard Mode table places both hosted references inline by mean score",
       "passed": true
     },
     {
@@ -733,7 +1141,7 @@
       "passed": true
     },
     {
-      "claim": "HumanEval+ table places hosted reference within score-ranked coverage tier",
+      "claim": "HumanEval+ table places both hosted references within score-ranked coverage tier",
       "passed": true
     },
     {
@@ -745,7 +1153,11 @@
       "passed": true
     },
     {
-      "claim": "PDF contains local provenance plus hosted baseline scores and scope",
+      "claim": "PDF contains local provenance plus both hosted scores, first-upload provenance and scope",
+      "passed": true
+    },
+    {
+      "claim": "PDF explicitly explains the sampled-suite hidden-score tie",
       "passed": true
     },
     {
@@ -801,30 +1213,37 @@
       "passed": true
     },
     {
+      "claim": "Whole table T12 stays on one PDF page",
+      "passed": true
+    },
+    {
       "claim": "No secret patterns in delivered PDF text/HTML",
       "passed": true
     }
   ],
-  "passed": 201,
+  "passed": 305,
   "failed": 0,
-  "pdf_sha256": "54f7790c08e4c1ecb615b082947a10a059d08bd5309c616bddb76b8eb6dcf380",
-  "pdf_bytes": 1914010,
-  "pages": 14,
+  "pdf_sha256": "d1fbd620a2030ac445734bf2dc53cff4d9924315cab37eb598409e7235b31698",
+  "pdf_bytes": 2207672,
+  "pages": 17,
   "page_fill": [
-    0.725,
-    0.867,
-    0.778,
-    0.93,
+    0.807,
+    0.889,
+    0.788,
+    0.648,
+    0.923,
+    0.644,
+    0.53,
+    0.824,
+    0.947,
     0.937,
-    0.605,
-    0.793,
-    0.841,
-    0.899,
-    0.726,
-    0.598,
-    0.721,
-    0.715,
-    0.578
+    0.762,
+    0.612,
+    0.639,
+    0.646,
+    0.709,
+    0.805,
+    0.662
   ],
   "figures": 10,
   "table_pages": {
@@ -838,28 +1257,31 @@
       4
     ],
     "T04": [
-      5
+      6
     ],
     "T05": [
-      7
-    ],
-    "T06": [
       8
     ],
-    "T07": [
+    "T06": [
       9
     ],
+    "T07": [
+      10
+    ],
     "T08": [
-      11
-    ],
-    "T09": [
-      11
-    ],
-    "T10": [
       12
     ],
-    "T11": [
+    "T09": [
+      12
+    ],
+    "T10": [
       14
+    ],
+    "T11": [
+      15
+    ],
+    "T12": [
+      17
     ]
   }
 }

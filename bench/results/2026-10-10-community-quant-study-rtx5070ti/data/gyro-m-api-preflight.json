@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-12T12:33:58+02:00",
+  "model_ids": [
+    "gyro-m-strata"
+  ],
+  "model_ok": true,
+  "plain_exact_string_ok": true,
+  "forced_tool_ok": true,
+  "forced_tool_args": {
+    "a": 19,
+    "b": 23
+  },
+  "plain_finish_reason": "stop",
+  "tool_finish_reason": "tool_calls"
+}

@@ -1,0 +1,1631 @@
+{
+  "schema": "hosted-quality-reference-v1",
+  "run_id": "gpt-6.1-sol-codex-cli-ultra-first-upload-20261013",
+  "assembled_on": "2026-10-13",
+  "role": "external_baseline_reference_only",
+  "recommendation": null,
+  "eligible_for_local_composite": false,
+  "display_name": "GPT-6.1-SOL ultra (OpenAI-hosted Codex reference)",
+  "model": "gpt-6.1-sol",
+  "provider_route": "OpenAI-hosted Codex service via Codex CLI",
+  "reasoning_effort": "ultra",
+  "cli_version": "0.162.1",
+  "source_commit": "a48292f5766f66efcdb1e23396569b0907c44c04",
+  "source_urls": {
+    "readme": "https://github.com/Jhacarreiro/Strata/blob/a48292f5766f66efcdb1e23396569b0907c44c04/bench/results/2026-10-13-community-codex-quality-baseline/README.md",
+    "scores": "https://github.com/Jhacarreiro/Strata/blob/a48292f5766f66efcdb1e23396569b0907c44c04/bench/results/2026-10-13-community-codex-quality-baseline/benchmark-scores.json",
+    "commit": "https://github.com/Jhacarreiro/Strata/commit/a48292f5766f66efcdb1e23396569b0907c44c04"
+  },
+  "source_artifacts": {
+    "first_upload_readme": {
+      "sha256": "7fb22abfb40253ca835c4a4d4009a51c0051debf8868e2258ed8ffb17470b84b",
+      "git_blob_sha": "e208e427427db2d54d3e268ad09eda126e09c053",
+      "url": "https://github.com/Jhacarreiro/Strata/blob/a48292f5766f66efcdb1e23396569b0907c44c04/bench/results/2026-10-13-community-codex-quality-baseline/README.md"
+    },
+    "first_upload_benchmark_scores": {
+      "sha256": "bb040b5e27d0602730638dc3f511a02f1f9e9abd0b46969c543becffd7b1d7d8",
+      "git_blob_sha": "dedab225cc07e9ddf0b7008713dfe46588deccba",
+      "url": "https://github.com/Jhacarreiro/Strata/blob/a48292f5766f66efcdb1e23396569b0907c44c04/bench/results/2026-10-13-community-codex-quality-baseline/benchmark-scores.json"
+    },
+    "suite_inputs": {
+      "five-bugs": {
+        "sha256": "c67f0198e1c0559e3fd5c0421a29a7875e3e62d2a68db7c2eacd0f16453dc9e7"
+      },
+      "five-trial-tools": {
+        "sha256": "912aeb4ab7ccae18f0594efd4723bfb3d70919856eed75fa6c80e86cc95a024b"
+      },
+      "gsm8k": {
+        "sha256": "4486892c41d640f077bd55ce35911c5870fac0fd842227166e7ce714b8092d37"
+      },
+      "human-eval-plus": {
+        "sha256": "a8700e094a1a9446d4f223db2c8e7ed700d0429700262a73f5949ffa7e84c053"
+      },
+      "ifeval": {
+        "sha256": "19f00f20e064a378e259bfcb793805b3ba0412ebb91c0ec56f959f60657d97f4"
+      },
+      "merged-needle-grid": {
+        "sha256": "2ef68f59122873b408ba1069c183317820743a6299bc5cecce39ce554f8c78af"
+      },
+      "mmlu": {
+        "sha256": "915720a3f065ba81c94e8cff8a9d080236fb13cc975d04350b9f365d8beaa49c"
+      },
+      "needle-cell-20-retry": {
+        "sha256": "35bbcffd18c57f8d5aaa6e50f55f2ab0ed3ba1687bc4087780eae48ccfa183d5"
+      },
+      "needle-cell-21-retry": {
+        "sha256": "25ae410b7d85f758e2818c0ca2604f72364ed0c28da7d307a1b51ceaab399829"
+      },
+      "needle-cell-22-retry": {
+        "sha256": "9140ea02f36e8d855c46cf0df94df83f2c70692c71ca1790b451f972514f7046"
+      },
+      "needle-cell-23-retry": {
+        "sha256": "a557bec63149dadbdcbe0075d6008e2689b51aa0e1922e1d4fa0a2a94a63c1c0"
+      },
+      "needle-cell-24-retry": {
+        "sha256": "95e9cc154be1029eed101802301b0b825e3696db97fb28b33f0272c44c8b228a"
+      },
+      "official-linux-grading": {
+        "sha256": "5d5ae4f559d62b4ebb563b56311f73705972b52698fe43c9078fa179d93c0b86"
+      }
+    }
+  },
+  "protocol": {
+    "pins": {
+      "benchkit": "9636e3cd2f382ef1727984201f29baead56cfed8",
+      "evalplus": "0.3.1",
+      "tool_eval_bench": "f7c34a1303c6fe9bcb52bdfc348de19082912f48",
+      "five_bugs": "503d58367672841e0511c8e3180f40538c8c53a1"
+    },
+    "tool_parallelism": 4,
+    "study_tool_parallelism": 1,
+    "max_turns": 8,
+    "tool_call_transport": "Codex CLI answers were buffered and exposed through an OpenAI-compatible chat-completion adapter; tool calls used a JSON output-schema bridge, not native function-call transport.",
+    "requested_sampling_controls": "Temperature 0, seed 42 and output-token budgets were requested but are not enforced by Codex CLI.",
+    "measurement_limits": [
+      "Fresh benchmark sessions use the configured model and effort, not the existing chat context",
+      "Tool calls use a JSON output schema bridge rather than native function-call transport",
+      "Requested temperature,seed,and token budgets are not enforced by Codex CLI",
+      "Only raw quality scores; no GPU performance, model-speed, replay-latency or normalized OVERALL score",
+      "Original tracked BenchKit changes and local FiveBugs runner were unavailable",
+      "Knowledge seed42 is inferred because original sampling configuration was not retained",
+      "Tool trials used concurrency4; the reference study used concurrency1"
+    ],
+    "fresh_sessions": true
+  },
+  "comparability_note": "Separate OpenAI-hosted quality reference for the Strata quant study; not a local Strata run, not an RTX performance run, not included in local model/file counts, ranks, recommendations or composites. The Codex CLI adapter, control enforcement and tool concurrency differ from the other hosted reference and local harnesses.",
+  "sampling_caveat": "GSM8K used seed 42, but the original study sampling seed was not retained, so exact sample identity is unverified. MMLU is only the first 100 abstract_algebra questions (5-shot); IFEval is only the first 50 prompts. Tool trials used concurrency 4 versus the reference study concurrency 1. Requested temperature, seed and token budgets are not enforced by Codex CLI.",
+  "metrics": {
+    "human_eval_plus": {
+      "task_total": 164,
+      "first_passes": 156,
+      "first_percent": 95.121951,
+      "final_passes": 160,
+      "final_percent": 97.560976,
+      "repair_attempted": 8,
+      "repair_successes": 4,
+      "base_first_passes": 163,
+      "base_final_passes": 163,
+      "final_failure_ids": [
+        "HumanEval/32",
+        "HumanEval/91",
+        "HumanEval/99",
+        "HumanEval/141"
+      ],
+      "infra_excluded": 0,
+      "grader": "Stock EvalPlus0.3.1",
+      "dataset_version": "HumanEvalPlus-v0.1.10",
+      "dataset_sha256": "b6ed6a3a7e560bad75038eb9e72029ace2d26592e04b3f0596b4b75a55529465",
+      "linux_verification": {
+        "attempts": 172,
+        "pass_fail_agreement": 172,
+        "exact_status_agreement": 171,
+        "model_calls": 0
+      },
+      "raw_task_records_included_in_upload": false
+    },
+    "tool_eval_bench": {
+      "revision": "f7c34a1303c6fe9bcb52bdfc348de19082912f48",
+      "scenarios": 92,
+      "trials": 5,
+      "trial_points": [
+        165,
+        168,
+        165,
+        165,
+        166
+      ],
+      "trial_max_points": 184,
+      "trial_scores": [
+        90,
+        91,
+        90,
+        90,
+        90
+      ],
+      "mean": 90.2,
+      "stddev": 0.4,
+      "ci95": [
+        90,
+        90.6
+      ],
+      "pass_at_5_count": 81,
+      "pass_at_5_percent": 88.0,
+      "pass_all5_count": 77,
+      "pass_all5_percent": 83.7,
+      "reliability_gap_percent": 4.3,
+      "hard_mode_mean_percent": 85.4,
+      "hard_mode_stddev_percent": 2.6,
+      "hard_mode_trial_scores": [
+        83,
+        89,
+        83,
+        85,
+        87
+      ],
+      "hard_mode_max_turns": 8,
+      "primary_trial": 5,
+      "primary_score": 90,
+      "final_trial_safety_warnings": 0,
+      "primary_critical_percent": 100,
+      "infrastructure_recoveries": [
+        {
+          "trial": 2,
+          "scenario_id": "TC-56",
+          "original_failure_kind": "timeout",
+          "original_points": 0,
+          "recovered_points": 2,
+          "validated": true,
+          "preserved_prefix_turns": 2,
+          "fresh_inference_calls": 1,
+          "original_max_turns": 8,
+          "original_result_sha256": "fede6ea2301912da3b9819595173ce9fc1982d3dfafc0c9d68c1528bf4dbd0ce",
+          "protocol_sha256": "cedca38c4fb636d2e91ff3a6ae90d88d6dc042f8b5ad1c67ccb78d87ba5645ea",
+          "protocol_descriptor": "Original battery tool-suite protocol metadata",
+          "bridge_protocol_sha256": "a863df130c5dbe7b3274b73e3037554bb4e8e7095ae03ce04780df2ee407c8ed",
+          "bridge_protocol_descriptor": "Codex CLI benchmark developer-instruction scaffold",
+          "supplement_sha256": "e7c1d0a77a8b43acdf965b6aad2de6bf2445370cbd01319f666d77ff1c554e46",
+          "timeout_qualification": {
+            "original_case_elapsed_seconds": 331.09,
+            "deadline_controls_seconds": {
+              "original_transport_timeout_seconds": 300.0,
+              "recovery_transport_timeout_seconds": 600
+            },
+            "note": "Original infrastructure failure recovered after primary trials; valid original prefix reused"
+          }
+        }
+      ],
+      "scenarios_by_trial": [
+        {
+          "scenario_id": "TC-01",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-02",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-03",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-04",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-05",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-06",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-07",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-08",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-09",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-10",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-11",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-12",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-13",
+          "points": [
+            2,
+            2,
+            2,
+            0,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-14",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-15",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-16",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-17",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-18",
+          "points": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-19",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-20",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-21",
+          "points": [
+            1,
+            1,
+            0,
+            1,
+            1
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-22",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-23",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-24",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-25",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-26",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-27",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            1
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-28",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-29",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-30",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-31",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-32",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-33",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-34",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-35",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-36",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-37",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-38",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-39",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-40",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-41",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-42",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-43",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-44",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-45",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-46",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-47",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-48",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-49",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-50",
+          "points": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-51",
+          "points": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-52",
+          "points": [
+            0,
+            0,
+            1,
+            1,
+            0
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-53",
+          "points": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-54",
+          "points": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-55",
+          "points": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-56",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-57",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-58",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-59",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-60",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-61",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-62",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-63",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-64",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-65",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-66",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-67",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-68",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-69",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-70",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-71",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-72",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-73",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-74",
+          "points": [
+            0,
+            2,
+            0,
+            0,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-75",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-76",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-77",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-78",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-79",
+          "points": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-80",
+          "points": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-81",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-82",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-83",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-84",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-85",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-86",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-87",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-88",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-89",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-90",
+          "points": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-91",
+          "points": [
+            1,
+            2,
+            1,
+            2,
+            1
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-92",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        }
+      ],
+      "reconstruction_before_recovery": {
+        "scenarios": 92,
+        "trials": 5,
+        "scored_cells": 460,
+        "trial_points": [
+          165,
+          166,
+          165,
+          165,
+          166
+        ],
+        "trial_max_points": 184,
+        "trial_scores": [
+          90,
+          90,
+          90,
+          90,
+          90
+        ],
+        "mean_pct": 90,
+        "sample_sd_pct": 0.0,
+        "ci95_pct": [
+          90,
+          90
+        ],
+        "pass_at5_count": 81,
+        "pass_at5_pct": 88.0,
+        "pass_all5_count": 76,
+        "pass_all5_pct": 82.6,
+        "hard_mode_trial_points": [
+          38,
+          41,
+          38,
+          39,
+          40
+        ],
+        "hard_mode_max_points": 46,
+        "hard_mode_trial_scores": [
+          83,
+          89,
+          83,
+          85,
+          87
+        ],
+        "hard_mode_mean_pct": 85.4,
+        "hard_mode_sample_sd_pct": 2.6,
+        "primary_trial": 5,
+        "primary_score": 90
+      }
+    },
+    "five_bugs": {
+      "scope": "first-upload independent candidate runs only",
+      "tasks": 5,
+      "runs_per_task": 5,
+      "runs": 25,
+      "visible_passes": 25,
+      "visible_total": 25,
+      "hidden_passes": 20,
+      "hidden_total": 25,
+      "raw_task_level_results_included": false,
+      "post_feedback_validation_included": false,
+      "provenance": [
+        {
+          "artifact": "five-bugs",
+          "sha256": "c67f0198e1c0559e3fd5c0421a29a7875e3e62d2a68db7c2eacd0f16453dc9e7"
+        }
+      ]
+    },
+    "sampled_knowledge_and_recall": {
+      "gsm8k": {
+        "correct": 98,
+        "total": 100,
+        "accuracy_percent": 98.0,
+        "shots": 8,
+        "seed": 42,
+        "shuffled": true,
+        "sample_selection": "100 sampled GSM8K test questions",
+        "original_study_seed_retained": false
+      },
+      "mmlu": {
+        "correct": 96,
+        "total": 100,
+        "accuracy_percent": 96.0,
+        "subjects": [
+          "abstract_algebra"
+        ],
+        "shots": 5,
+        "sample": "First100"
+      },
+      "ifeval": {
+        "prompt_correct": 45,
+        "prompt_total": 50,
+        "prompt_accuracy_percent": 90.0,
+        "instruction_correct": 70,
+        "instruction_total": 76,
+        "instruction_accuracy_percent": 92.105263,
+        "sample": "first 50 prompts"
+      },
+      "needle": {
+        "correct": 25,
+        "total": 25,
+        "accuracy_percent": 100.0,
+        "effective_context_target_tokens": 260096,
+        "actual_input_tokens_for_largest_cells": [
+          221680,
+          221877,
+          221595,
+          221816,
+          221731
+        ],
+        "actual_max_input_tokens": 221877,
+        "largest_prompt_transport_note": "Last five preserve exact logical prompt with one inference; transport differs",
+        "grid": [
+          {
+            "index": 0,
+            "target_tokens": 1024,
+            "depth_fraction": 0,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 1,
+            "target_tokens": 1024,
+            "depth_fraction": 0.25,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 2,
+            "target_tokens": 1024,
+            "depth_fraction": 0.5,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 3,
+            "target_tokens": 1024,
+            "depth_fraction": 0.75,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 4,
+            "target_tokens": 1024,
+            "depth_fraction": 1,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 5,
+            "target_tokens": 65792,
+            "depth_fraction": 0,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 6,
+            "target_tokens": 65792,
+            "depth_fraction": 0.25,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 7,
+            "target_tokens": 65792,
+            "depth_fraction": 0.5,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 8,
+            "target_tokens": 65792,
+            "depth_fraction": 0.75,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 9,
+            "target_tokens": 65792,
+            "depth_fraction": 1,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 10,
+            "target_tokens": 130560,
+            "depth_fraction": 0,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 11,
+            "target_tokens": 130560,
+            "depth_fraction": 0.25,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 12,
+            "target_tokens": 130560,
+            "depth_fraction": 0.5,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 13,
+            "target_tokens": 130560,
+            "depth_fraction": 0.75,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 14,
+            "target_tokens": 130560,
+            "depth_fraction": 1,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 15,
+            "target_tokens": 195328,
+            "depth_fraction": 0,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 16,
+            "target_tokens": 195328,
+            "depth_fraction": 0.25,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 17,
+            "target_tokens": 195328,
+            "depth_fraction": 0.5,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 18,
+            "target_tokens": 195328,
+            "depth_fraction": 0.75,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 19,
+            "target_tokens": 195328,
+            "depth_fraction": 1,
+            "found": true,
+            "valid": true,
+            "transport": "CLI-chat-completion bridge"
+          },
+          {
+            "index": 20,
+            "target_tokens": 260096,
+            "depth_fraction": 0,
+            "found": true,
+            "valid": true,
+            "transport": "Same-role history injection; one inference",
+            "actual_input_tokens": 221680
+          },
+          {
+            "index": 21,
+            "target_tokens": 260096,
+            "depth_fraction": 0.25,
+            "found": true,
+            "valid": true,
+            "transport": "Same-role history injection; one inference",
+            "actual_input_tokens": 221877
+          },
+          {
+            "index": 22,
+            "target_tokens": 260096,
+            "depth_fraction": 0.5,
+            "found": true,
+            "valid": true,
+            "transport": "Same-role history injection; one inference",
+            "actual_input_tokens": 221595
+          },
+          {
+            "index": 23,
+            "target_tokens": 260096,
+            "depth_fraction": 0.75,
+            "found": true,
+            "valid": true,
+            "transport": "Same-role history injection; one inference",
+            "actual_input_tokens": 221816
+          },
+          {
+            "index": 24,
+            "target_tokens": 260096,
+            "depth_fraction": 1,
+            "found": true,
+            "valid": true,
+            "transport": "Same-role history injection; one inference",
+            "actual_input_tokens": 221731
+          }
+        ]
+      }
+    },
+    "performance": {
+      "status": "not_measured",
+      "valid": false,
+      "rates_published": false,
+      "reason": "The first upload reports quality scores only; it contains no GPU, throughput, inference-speed, latency or matched performance measurements."
+    }
+  }
+}

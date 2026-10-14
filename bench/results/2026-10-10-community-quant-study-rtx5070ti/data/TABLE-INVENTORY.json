@@ -31,7 +31,7 @@
   {
     "id": "T03",
     "title": "Integrated tool reliability \u2014 sorted by Pass^5 floor",
-    "rows": 19,
+    "rows": 22,
     "headers": [
       "Arm / lab",
       "Mean +/- SD",
@@ -45,7 +45,7 @@
   {
     "id": "T04",
     "title": "Multi-step tool-chain results \u2014 sorted by Hard Mode mean",
-    "rows": 19,
+    "rows": 22,
     "headers": [
       "Arm / lab",
       "Hard Mode mean",
@@ -57,24 +57,21 @@
   {
     "id": "T05",
     "title": "Integrated coding results \u2014 sorted by final score",
-    "rows": 21,
+    "rows": 22,
     "headers": [
       "Arm / lab",
       "First %",
       "Final %",
       "Solved / scored",
       "Repairs",
-      "Wall",
-      "tok/s",
-      "Blank finals",
-      "Infra excluded",
-      "Engine"
+      "Infra / harness excluded",
+      "Run / protocol"
     ]
   },
   {
     "id": "T06",
     "title": "Integrated sampled suites \u2014 sorted by hidden debugging passes",
-    "rows": 11,
+    "rows": 12,
     "headers": [
       "File / lab",
       "GSM8K /100",
@@ -82,7 +79,7 @@
       "IFEval prompt / instruction %",
       "Bugs visible",
       "Bugs hidden",
-      "Needle % @ tokens",
+      "Needle % @ measured context",
       "Engine"
     ]
   },
@@ -128,17 +125,36 @@
   },
   {
     "id": "T10",
-    "title": "One recommendation registry \u2014 all-rounder versus specialists",
-    "rows": 6,
+    "title": "All-test capability matrix \u2014 no overall score",
+    "rows": 20,
     "headers": [
-      "Decision",
-      "File / effort",
-      "OVERALL rank",
-      "Why this agrees with the board"
+      "Setup / effort",
+      "Code first/final %",
+      "Tool mean\u00b1SD / floor",
+      "Hard Mode",
+      "Math / algebra %",
+      "IFE prompt / instr %",
+      "Bugs visible / hidden",
+      "Needle % @ tokens",
+      "Speed (Total Wall)"
     ]
   },
   {
     "id": "T11",
+    "title": "Time-to-result, reliability and deployment decision matrix",
+    "rows": 20,
+    "headers": [
+      "Setup / effort",
+      "Code wall",
+      "Debug wall",
+      "5-run tool wall",
+      "Code tokens",
+      "Stored rating / warnings",
+      "Decision / deployment caveat"
+    ]
+  },
+  {
+    "id": "T12",
     "title": "Version-pinned provenance",
     "rows": 8,
     "headers": [

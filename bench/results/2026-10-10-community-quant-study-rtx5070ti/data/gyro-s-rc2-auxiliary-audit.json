@@ -1,0 +1,76 @@
+{
+  "run_id": "gyro-s-fullbattery-20261013g",
+  "identity": {
+    "model_revision": "2cd4f24bcb0fa053149a4e4ec15506ecc64cafab",
+    "model_sha256": "c6ea1b08ca312f99095b27588ba35976b53f948268e7f91e7761926aa01d9c87",
+    "engine_commit": "9ff02c9fa9c86a88088370925b3c9131cc5d6c26",
+    "engine_sha256": "08d70e30b9176dee5273ba74bd67c4d4c435bef92d449323168d7a8a3497585f",
+    "context": 131072,
+    "kv": "int8"
+  },
+  "source_hashes": {
+    "manifest.json": "139c602c16371b9bee3120978363953eaaf14cf85d183db247e2dccbb87b4ce4",
+    "results/done.json": "791caa14027b43de74515a4aa4f93427f5b67341234fc31009f764697751e3b5",
+    "results/steps.jsonl": "9d9742e1f9bc4073728bc21531815df014212aa6a21475dd081a62a6c7f91c2d"
+  },
+  "validated_slices": {
+    "plugin-gsm8k": {
+      "valid": true,
+      "report_sha256": "4576aafbc57e6795e16abbd183c44d024106f6ec303daa90e5053580842f8b7e",
+      "wall_s": 350.94
+    },
+    "plugin-ifeval": {
+      "valid": true,
+      "report_sha256": "3fd861c7311074faf3684e6a1190ecab3cff9d4dedae13493a9f1fcb5a9d5ff6",
+      "wall_s": 581.41
+    },
+    "plugin-needle": {
+      "valid": true,
+      "report_sha256": "1f5084a9ca3b1b6f870220cf490b9faa52960befda3d4edaedf3010c32c14fa8",
+      "wall_s": 516.14
+    },
+    "fivebugs": {
+      "valid": true,
+      "verdict_source": "retained checker matrix; no generated code re-executed",
+      "visible": 21,
+      "hidden": 16,
+      "records": 25,
+      "wall_s": 441.19,
+      "jsonl_sha256": "503933801797c16ccf64863a434f423cb3f45e98005bae680241138412dc93b2",
+      "matrix_sha256": "9ac8b6571b55260c7265dd921d3052c8825c9ee2762bf8c650187871d2d884a7"
+    }
+  },
+  "unavailable_slice": {
+    "name": "plugin-mmlu",
+    "reason": "dataset download HTTP 429",
+    "failure_log_sha256": "0e0097dd034e6e19fcb721b66ac516ceb8e648b94c73090fd5f0332ab4b7b6a4"
+  },
+  "overall_outcome_preserved": "aborted_or_invalid",
+  "sample_protocol": "xhigh once per file; not two independent low/xhigh suite repeats",
+  "artifacts": {
+    "data/2026-10-13T13-36-54.534187Z_7983c08e--gyro-s-rc2-gyro-s-fullbattery-20261013g-gsm8k-retry1.md": {
+      "original_sha256": "4576aafbc57e6795e16abbd183c44d024106f6ec303daa90e5053580842f8b7e",
+      "packaged_sha256": "4576aafbc57e6795e16abbd183c44d024106f6ec303daa90e5053580842f8b7e"
+    },
+    "data/2026-10-13T13-48-14.410689Z_b82a0d7b--gyro-s-rc2-gyro-s-fullbattery-20261013g-ifeval.md": {
+      "original_sha256": "3fd861c7311074faf3684e6a1190ecab3cff9d4dedae13493a9f1fcb5a9d5ff6",
+      "packaged_sha256": "3fd861c7311074faf3684e6a1190ecab3cff9d4dedae13493a9f1fcb5a9d5ff6"
+    },
+    "data/2026-10-13T13-56-48.708839Z_742f62e7--gyro-s-rc2-gyro-s-fullbattery-20261013g-needle.md": {
+      "original_sha256": "1f5084a9ca3b1b6f870220cf490b9faa52960befda3d4edaedf3010c32c14fa8",
+      "packaged_sha256": "1f5084a9ca3b1b6f870220cf490b9faa52960befda3d4edaedf3010c32c14fa8"
+    },
+    "data/gyro-s-rc2-fivebugs.jsonl": {
+      "original_sha256": "503933801797c16ccf64863a434f423cb3f45e98005bae680241138412dc93b2",
+      "packaged_sha256": "503933801797c16ccf64863a434f423cb3f45e98005bae680241138412dc93b2"
+    },
+    "data/gyro-s-rc2-fivebugs-matrix.json": {
+      "original_sha256": "9ac8b6571b55260c7265dd921d3052c8825c9ee2762bf8c650187871d2d884a7",
+      "packaged_sha256": "9ac8b6571b55260c7265dd921d3052c8825c9ee2762bf8c650187871d2d884a7"
+    },
+    "data/gyro-s-rc2-mmlu-failure.log": {
+      "original_sha256": "0e0097dd034e6e19fcb721b66ac516ceb8e648b94c73090fd5f0332ab4b7b6a4",
+      "packaged_sha256": "0e0097dd034e6e19fcb721b66ac516ceb8e648b94c73090fd5f0332ab4b7b6a4"
+    }
+  }
+}

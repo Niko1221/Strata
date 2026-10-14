@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "adjudication_id": "swift-iq3s-low-stock01403-20261013",
+  "adjudicated_at": "2026-10-13T08:16:37+02:00",
+  "status": "accepted_complete_scored_run",
+  "run_id": "full-rc2-parent-utf8",
+  "source": {
+    "raw_results_path": "<study-home>/benchkit/results/2026-10-13_00-05-07/results.json",
+    "raw_results_sha256": "4eb91416cdf5f9394e2974e88477a86a7ee950fe091337e16005a2fece72b27f",
+    "raw_results_bytes": 816402,
+    "raw_artifact_modified": false,
+    "run_log_path": "<study-home>/teb-campaign/rank-completion-20261012/controller/runs/full-rc2-parent-utf8/stock-he-low.log"
+  },
+  "setup": {
+    "display_name": "Swift-1.5 IQ3_S (UkisAI)",
+    "model_id": "swift-1.5-iq3_s",
+    "engine": "Strata stock runtime v0.1.40.3",
+    "engine_sha256": "34cde150b21148e6cf192dbf2242e5544d3456c09ab0010837aaacfda11eca5b",
+    "context_tokens": 262144,
+    "reasoning_effort": "low",
+    "temperature": 0.0,
+    "presence_penalty": 1.0,
+    "client_timeout_seconds": 300,
+    "repair_attempts": 1,
+    "concurrency": 1,
+    "generation_budget": "uncapped by BenchKit; live first-request monitor showed server max_tokens 261907 with 229 prompt tokens",
+    "benchmark": "humaneval-plus",
+    "expected_tasks": 164
+  },
+  "scores": {
+    "task_ids_unique": 164,
+    "task_ids_scored": 164,
+    "first_attempt_passes": 152,
+    "first_attempt_percent": 92.7,
+    "final_passes": 157,
+    "final_percent": 95.7,
+    "repair_tasks": 11,
+    "repair_successes": 5,
+    "nonpassing_task_ids": [
+      "HumanEval/9",
+      "HumanEval/32",
+      "HumanEval/39",
+      "HumanEval/91",
+      "HumanEval/93",
+      "HumanEval/132",
+      "HumanEval/163"
+    ],
+    "wall_seconds": 831.7,
+    "aggregate_decode_tokens_per_second": 100.2,
+    "output_tokens": 61395,
+    "scored_timeouts": 0,
+    "harness_errors": 0,
+    "scored_blank_responses": 1
+  },
+  "task_level_adjudication": {
+    "task_id": "HumanEval/132",
+    "classification": "scored model capability failure; counted as one of the seven failures",
+    "reason": "BenchKit stopped generation on a directly observed active reasoning cycle before an evaluation-attempt record could be materialized. The immutable task row records outcome/done_reason=loop_killed, loop_state=looping, loop_evidence=exact_cycle, active_cycle=true, loop and kill scores 1.0, 14 cycle repetitions and 2,285 repeated-suffix tokens. It has no harness_error and is included in the 164-task denominator, not excluded as infrastructure.",
+    "repair_attempted": false,
+    "validator_rule": "Accept an empty attempt list only for a failed, zero-score, explicitly confirmed exact-cycle loop termination with no harness error; reject unproven empty-attempt rows."
+  },
+  "audit": {
+    "complete": true,
+    "unique_tasks": 164,
+    "infra_count": 0,
+    "decision": "Complete matched low-effort measurement; no retry splicing or raw-result edits.",
+    "execution_controller_sha256": "dc974369c8b8c6b15290e4ef4aa5768bc033619b32ee33fa55deb83f2b9abccf",
+    "adjudication_controller_sha256": "f910183849f78d66bf30a1d87db61ebbefde6a07fc782e39b4f11c7544f26ca7",
+    "controller_test_suite": "37 passed for initial audit; 39 passed after the verified-reuse path was added",
+    "post_adjudication_validation": {
+      "controller_sha256": "c6c7d9fc16ab84da3b2042f1ed535cc8e36ff68df2af1130d07da0e8141b2cb3",
+      "test_controller_sha256": "24659b949e733a41a110e995dfa599e4034e3efc16fe7c12ee3a5d8720723102",
+      "controller_test_suite": "39 passed"
+    },
+    "benchkit_source_sha256": {
+      "client.py": "51f6d5de3a13863d2eef5c265a42db633f605fcf40dd65b77651c03493b4e1fc",
+      "engine.py": "905c4b46b99ddf3150c33ac84ddd6d8733e0472c78ba221c7fce9efbbeca0eb5",
+      "evaluation.py": "8d619d758caba4d6af48898c2f7d9d8bfe8ecca9541d1a741ed07d8813e9a3ed",
+      "benchmarks/evalplus.py": "1988d0f4d51df60bc4bd894add0a8ea271a1e4de94e0d6563a98fb4d64533445",
+      "benchmarks/__init__.py": "b93c3a5f4349184a41c9a4b77f2904a906029aef91d69ef80acc87ec302c11e4"
+    }
+  },
+  "controller_closeout": {
+    "original_main_status": "exit code 2: its stricter post-run attempt validator rejected the explicit empty-attempt exact-cycle row",
+    "production_restored": true,
+    "independent_guard_restored": true,
+    "restore_chain_up": true,
+    "restore_health": {
+      "status": "ok",
+      "model": "swift-1.5-iq3_s",
+      "context_tokens": 262144,
+      "images": true,
+      "exact_keyed_chat": true,
+      "tool": true,
+      "vision": true,
+      "production_digests_unchanged": true
+    },
+    "updater_enabled": true,
+    "scheduled_tasks_current_snapshot": [
+      {
+        "name": "Strata-Win-Srv",
+        "state": "Ready",
+        "enabled": true
+      },
+      {
+        "name": "Strata-Watchdog",
+        "state": "Ready",
+        "enabled": true
+      },
+      {
+        "name": "Strata-StallWatch",
+        "state": "Ready",
+        "enabled": true
+      }
+    ],
+    "current_snapshot_at": "2026-10-13T08:16:37+02:00",
+    "current_snapshot_model": "swift-1.5-iq3_s",
+    "current_snapshot_context_tokens": 262144
+  }
+}

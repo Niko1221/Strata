@@ -1,0 +1,506 @@
+{
+  "schema_version": "gyro-s-speed-audit/1",
+  "status": "eligible_engine_log_speed_cells",
+  "run_id": "gyro-s-fullbattery-20261013g",
+  "identity": {
+    "model": "gyro-s-rc2-ranking",
+    "model_file": "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
+    "model_revision": "2cd4f24bcb0fa053149a4e4ec15506ecc64cafab",
+    "model_sha256": "c6ea1b08ca312f99095b27588ba35976b53f948268e7f91e7761926aa01d9c87",
+    "engine": "AgentionAI Strata rc2",
+    "engine_commit": "9ff02c9fa9c86a88088370925b3c9131cc5d6c26",
+    "engine_sha256": "08d70e30b9176dee5273ba74bd67c4d4c435bef92d449323168d7a8a3497585f",
+    "engine_version": "0.1.40.3",
+    "context_window": 131072,
+    "kv": "int8"
+  },
+  "route": {
+    "client_endpoint": "http://127.0.0.1:8097/v1",
+    "controller_forward": "127.0.0.1:8097 -> WSL loopback 127.0.0.1:8096",
+    "server_config_endpoint": "127.0.0.1:8096",
+    "proxy_used": false,
+    "evidence_basis": "runner BASE + controller SSH tunnel mapping + server config; code-traced, not packet-captured"
+  },
+  "protocol": {
+    "tool": "llama-benchy 0.4.0",
+    "concurrency": 1,
+    "prompt_size_target": 2048,
+    "response_size_target": 256,
+    "requested_depths_tokens": [
+      0,
+      32768,
+      122880
+    ],
+    "runs_per_profile": 3,
+    "warmups_per_profile": 1,
+    "sample_statistic": "mean and sample standard deviation (n=3), warmup excluded",
+    "prompt_labels": "Use observed full prompt token counts from the engine log; requested depth is not the observed full prompt.",
+    "excluded_client_metrics": [
+      "TG used stream-usage token fallback because no complete token_ids were returned; not promoted.",
+      "Tokenizer JSON failed to load; llama-benchy fell back to GPT-2 approximation, so client PP and nominal-context rate labels are not promoted."
+    ],
+    "retained_client_timing": "End-to-end TTFT values are retained as client timing (tokenizer/usage fallbacks do not define timing). Effective first-token rate uses the paired engine-log full prompt count divided by client TTFT; it includes network, queue and reasoning overhead, so it is not pure engine prefill."
+  },
+  "source_files": [
+    {
+      "name": "results/manifest.json",
+      "sha256": "139c602c16371b9bee3120978363953eaaf14cf85d183db247e2dccbb87b4ce4"
+    },
+    {
+      "name": "results/perf-low.json",
+      "sha256": "1349b48d1ee19f1dbc63dec9c606899b32f3fba88fb336601527be4dce979c76"
+    },
+    {
+      "name": "results/perf-xhigh.json",
+      "sha256": "6fbfea7fc6ff122170acdb70e12cf5724e26c3f0613e5a0dd29b3f83494d4a12"
+    },
+    {
+      "name": "results/steps.jsonl",
+      "sha256": "9d9742e1f9bc4073728bc21531815df014212aa6a21475dd081a62a6c7f91c2d"
+    },
+    {
+      "name": "logs/strata-engine.log (local-only; raw not packaged)",
+      "sha256": "0898ecc51468018fb2a42614d887b0e478436acdccd1953dd009d0395edc9953"
+    },
+    {
+      "name": "logs/perf-low.log",
+      "sha256": "ecd5e3bab7f949b1c93109257cc0e5076c7565c9f6b35ad7cea97514111775e6"
+    },
+    {
+      "name": "logs/perf-xhigh.log",
+      "sha256": "b32537015f939b480e569c8ea8f62bf203150580c5fccd2ab08faecb5edd3355"
+    }
+  ],
+  "source_metadata": {
+    "engine_log": {
+      "sha256": "0898ecc51468018fb2a42614d887b0e478436acdccd1953dd009d0395edc9953",
+      "bytes": 1217653,
+      "lines": 8598,
+      "session_starts": [
+        {
+          "line": 32,
+          "version": "0.1.40.3"
+        },
+        {
+          "line": 91,
+          "version": "0.1.40.3"
+        }
+      ],
+      "other_256_generated_line_numbers": [
+        628,
+        3278,
+        4366,
+        5266,
+        7728
+      ]
+    },
+    "perf_json_hashes": {
+      "low": "1349b48d1ee19f1dbc63dec9c606899b32f3fba88fb336601527be4dce979c76",
+      "xhigh": "6fbfea7fc6ff122170acdb70e12cf5724e26c3f0613e5a0dd29b3f83494d4a12"
+    }
+  },
+  "runner_steps": {
+    "low": {
+      "started_at": "2026-10-13T15:09:00+02:00",
+      "wall_s": 576.4,
+      "exit_code": 0,
+      "harness_profile_valid": true
+    },
+    "xhigh": {
+      "started_at": "2026-10-13T15:18:37+02:00",
+      "wall_s": 290.37,
+      "exit_code": 0,
+      "harness_profile_valid": true
+    }
+  },
+  "profiles": {
+    "low": {
+      "0": {
+        "requested_depth_tokens": 0,
+        "observed_full_prompt_tokens": {
+          "min": 1908,
+          "max": 1986,
+          "samples": [
+            1908,
+            1986,
+            1950
+          ]
+        },
+        "generated_tokens_per_sample": 256,
+        "warmup": {
+          "line": 7954,
+          "full_prompt_tokens": 1884,
+          "decode_tps": 97.4,
+          "excluded": true
+        },
+        "decode_tps": {
+          "mean": 99.033,
+          "sample_sd": 16.144,
+          "samples": [
+            117.6,
+            88.3,
+            91.2
+          ]
+        },
+        "engine_prefill_tps": {
+          "mean": 1038.233,
+          "sample_sd": 35.76,
+          "samples": [
+            1006.0,
+            1032.0,
+            1076.7
+          ]
+        },
+        "e2e_ttft_ms": {
+          "mean": 1787.807,
+          "sample_sd": 60.315,
+          "samples": [
+            1809.7142890328541,
+            1834.1066639404744,
+            1719.5994129870087
+          ]
+        },
+        "effective_e2e_first_token_tps": {
+          "mean": 1090.37,
+          "sample_sd": 40.371,
+          "samples": [
+            1054.3100706905905,
+            1082.8159774160524,
+            1133.9850346964104
+          ]
+        },
+        "measured_log_lines": [
+          7957,
+          7960,
+          7963
+        ],
+        "n_measured_runs": 3,
+        "metric_source": "Decode and engine prefill from Strata engine log; E2E TTFT from direct llama-benchy timing; effective first-token rate uses observed prompt tokens / E2E TTFT.",
+        "eligible_for_zero_context_decode_composite": true
+      },
+      "32768": {
+        "requested_depth_tokens": 32768,
+        "observed_full_prompt_tokens": {
+          "min": 31454,
+          "max": 31605,
+          "samples": [
+            31454,
+            31605,
+            31484
+          ]
+        },
+        "generated_tokens_per_sample": 256,
+        "warmup": {
+          "line": 7966,
+          "full_prompt_tokens": 31518,
+          "decode_tps": 85.3,
+          "excluded": true
+        },
+        "decode_tps": {
+          "mean": 88.633,
+          "sample_sd": 3.912,
+          "samples": [
+            91.6,
+            84.2,
+            90.1
+          ]
+        },
+        "engine_prefill_tps": {
+          "mean": 1984.267,
+          "sample_sd": 204.028,
+          "samples": [
+            1774.9,
+            1995.4,
+            2182.5
+          ]
+        },
+        "e2e_ttft_ms": {
+          "mean": 15066.651,
+          "sample_sd": 1514.229,
+          "samples": [
+            16636.41645910684,
+            14948.675323044881,
+            13614.860115922056
+          ]
+        },
+        "effective_e2e_first_token_tps": {
+          "mean": 2105.793,
+          "sample_sd": 211.027,
+          "samples": [
+            1890.6715924860102,
+            2114.2341590145934,
+            2312.473263179595
+          ]
+        },
+        "measured_log_lines": [
+          7969,
+          7971,
+          7974
+        ],
+        "n_measured_runs": 3,
+        "metric_source": "Decode and engine prefill from Strata engine log; E2E TTFT from direct llama-benchy timing; effective first-token rate uses observed prompt tokens / E2E TTFT.",
+        "eligible_for_zero_context_decode_composite": false
+      },
+      "122880": {
+        "requested_depth_tokens": 122880,
+        "observed_full_prompt_tokens": {
+          "min": 113172,
+          "max": 113575,
+          "samples": [
+            113172,
+            113492,
+            113575
+          ]
+        },
+        "generated_tokens_per_sample": 256,
+        "warmup": {
+          "line": 7977,
+          "full_prompt_tokens": 112876,
+          "decode_tps": 97.3,
+          "excluded": true
+        },
+        "decode_tps": {
+          "mean": 96.0,
+          "sample_sd": 6.139,
+          "samples": [
+            96.8,
+            89.5,
+            101.7
+          ]
+        },
+        "engine_prefill_tps": {
+          "mean": 2229.0,
+          "sample_sd": 250.491,
+          "samples": [
+            2155.2,
+            2508.1,
+            2023.7
+          ]
+        },
+        "e2e_ttft_ms": {
+          "mean": 48362.102,
+          "sample_sd": 5190.068,
+          "samples": [
+            49549.4756110711,
+            42681.2344660284,
+            52855.59682396706
+          ]
+        },
+        "effective_e2e_first_token_tps": {
+          "mean": 2363.953,
+          "sample_sd": 264.365,
+          "samples": [
+            2284.020135517103,
+            2659.0608594119403,
+            2148.7790664488357
+          ]
+        },
+        "measured_log_lines": [
+          7980,
+          7983,
+          7986
+        ],
+        "n_measured_runs": 3,
+        "metric_source": "Decode and engine prefill from Strata engine log; E2E TTFT from direct llama-benchy timing; effective first-token rate uses observed prompt tokens / E2E TTFT.",
+        "eligible_for_zero_context_decode_composite": false
+      }
+    },
+    "xhigh": {
+      "0": {
+        "requested_depth_tokens": 0,
+        "observed_full_prompt_tokens": {
+          "min": 1854,
+          "max": 1962,
+          "samples": [
+            1962,
+            1854,
+            1910
+          ]
+        },
+        "generated_tokens_per_sample": 256,
+        "warmup": {
+          "line": 8001,
+          "full_prompt_tokens": 1832,
+          "decode_tps": 91.4,
+          "excluded": true
+        },
+        "decode_tps": {
+          "mean": 89.3,
+          "sample_sd": 3.02,
+          "samples": [
+            92.5,
+            88.9,
+            86.5
+          ]
+        },
+        "engine_prefill_tps": {
+          "mean": 1512.533,
+          "sample_sd": 104.396,
+          "samples": [
+            1578.9,
+            1566.5,
+            1392.2
+          ]
+        },
+        "e2e_ttft_ms": {
+          "mean": 1211.951,
+          "sample_sd": 89.997,
+          "samples": [
+            1190.84150204435,
+            1134.3860760098323,
+            1310.6266868999228
+          ]
+        },
+        "effective_e2e_first_token_tps": {
+          "mean": 1579.752,
+          "sample_sd": 106.237,
+          "samples": [
+            1647.5744224834132,
+            1634.3642073969977,
+            1457.3181052171299
+          ]
+        },
+        "measured_log_lines": [
+          8004,
+          8007,
+          8010
+        ],
+        "n_measured_runs": 3,
+        "metric_source": "Decode and engine prefill from Strata engine log; E2E TTFT from direct llama-benchy timing; effective first-token rate uses observed prompt tokens / E2E TTFT.",
+        "eligible_for_zero_context_decode_composite": true
+      },
+      "32768": {
+        "requested_depth_tokens": 32768,
+        "observed_full_prompt_tokens": {
+          "min": 31486,
+          "max": 31821,
+          "samples": [
+            31821,
+            31486,
+            31677
+          ]
+        },
+        "generated_tokens_per_sample": 256,
+        "warmup": {
+          "line": 8013,
+          "full_prompt_tokens": 31486,
+          "decode_tps": 84.6,
+          "excluded": true
+        },
+        "decode_tps": {
+          "mean": 89.133,
+          "sample_sd": 4.356,
+          "samples": [
+            85.6,
+            87.8,
+            94.0
+          ]
+        },
+        "engine_prefill_tps": {
+          "mean": 2402.833,
+          "sample_sd": 159.047,
+          "samples": [
+            2235.4,
+            2421.2,
+            2551.9
+          ]
+        },
+        "e2e_ttft_ms": {
+          "mean": 12476.093,
+          "sample_sd": 872.049,
+          "samples": [
+            13436.269138008356,
+            12258.714528987184,
+            11733.296644990332
+          ]
+        },
+        "effective_e2e_first_token_tps": {
+          "mean": 2545.501,
+          "sample_sd": 166.919,
+          "samples": [
+            2368.291351799819,
+            2568.4585382543673,
+            2699.7527598967563
+          ]
+        },
+        "measured_log_lines": [
+          8016,
+          8019,
+          8022
+        ],
+        "n_measured_runs": 3,
+        "metric_source": "Decode and engine prefill from Strata engine log; E2E TTFT from direct llama-benchy timing; effective first-token rate uses observed prompt tokens / E2E TTFT.",
+        "eligible_for_zero_context_decode_composite": false
+      },
+      "122880": {
+        "requested_depth_tokens": 122880,
+        "observed_full_prompt_tokens": {
+          "min": 113561,
+          "max": 113591,
+          "samples": [
+            113591,
+            113561,
+            113585
+          ]
+        },
+        "generated_tokens_per_sample": 256,
+        "warmup": {
+          "line": 8025,
+          "full_prompt_tokens": 113513,
+          "decode_tps": 83.1,
+          "excluded": true
+        },
+        "decode_tps": {
+          "mean": 87.367,
+          "sample_sd": 1.343,
+          "samples": [
+            86.4,
+            88.9,
+            86.8
+          ]
+        },
+        "engine_prefill_tps": {
+          "mean": 2136.067,
+          "sample_sd": 55.694,
+          "samples": [
+            2091.2,
+            2198.4,
+            2118.6
+          ]
+        },
+        "e2e_ttft_ms": {
+          "mean": 50102.937,
+          "sample_sd": 1192.477,
+          "samples": [
+            51012.716854107566,
+            48752.93444597628,
+            50543.15859696362
+          ]
+        },
+        "effective_e2e_first_token_tps": {
+          "mean": 2267.774,
+          "sample_sd": 54.28,
+          "samples": [
+            2226.7192771728173,
+            2329.316199947684,
+            2247.2873313228906
+          ]
+        },
+        "measured_log_lines": [
+          8028,
+          8031,
+          8034
+        ],
+        "n_measured_runs": 3,
+        "metric_source": "Decode and engine prefill from Strata engine log; E2E TTFT from direct llama-benchy timing; effective first-token rate uses observed prompt tokens / E2E TTFT.",
+        "eligible_for_zero_context_decode_composite": false
+      }
+    }
+  },
+  "notes": [
+    "The raw engine log is local-only and is not included in the distributable package; this JSON contains only derived metrics, line references and hashes.",
+    "The engine log contains two session-start blocks; the selected 24 profile samples occur after the second (line 91), with no later session start before the last selected sample.",
+    "Five other 256-token engine samples outside the six profile groups are excluded; see source_metadata.engine_log.other_256_generated_line_numbers.",
+    "Each profile group has one engine-log warmup sample followed by the three measured runs recorded in the corresponding perf log."
+  ]
+}

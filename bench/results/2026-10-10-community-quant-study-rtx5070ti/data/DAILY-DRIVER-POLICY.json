@@ -1,0 +1,11 @@
+{
+  "method": "Evidence-based daily-driver decision matrix; no master score or numeric rank",
+  "default": {
+    "key": "swift-iq3_s",
+    "effort": "low"
+  },
+  "weights": null,
+  "recommendation_confidence": "provisional, benchmark-backed recommendation for this rig; not long-term stability certification",
+  "coverage_policy": "Use every tested family; never mix Gyro-S rc1 sampled suites into rc2 evidence, impute missing data, double-count shared per-file samples as effort repetitions, or equate tool warnings with safety certification. TPS stays in separate diagnostics.",
+  "deployment_policy": "A capability result alone cannot override observed memory, campaign-validity, safety-gate and matched-coverage caveats. Existing stock evidence is preferred over experimental fork-only wins for the default recommendation. This report does not change the deployed model."
+}
