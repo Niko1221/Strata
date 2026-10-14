@@ -85,7 +85,7 @@ class DecisionEngine(MockEngine):
 
     ROW = {78: 0.0, 89: 4.0,          # noul: No, Yes
            65: 0.0, 66: 4.0, 67: -1.0,   # choice: A, B, C
-           48: 0.0, 49: 4.0, 50: -1.0}   # score: 0, 1, 2
+           48: 0.0, 49: 4.0, 50: -1.0, 51: -2.0}   # score: 0, 1, 2, 3
 
     def __init__(self, tokenizer, script, max_context=32768):
         super().__init__(tokenizer, script, max_context=max_context)
