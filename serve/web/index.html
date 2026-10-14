@@ -126,6 +126,29 @@
         </div>
       </div>
 
+      <div class="st-card usage-card" id="usage-card">
+        <div class="req-head"><span class="card-title">Usage</span>
+          <span class="usage-ranges" id="usage-ranges">
+            <button class="st-btn st-btn--secondary usage-range" data-range="1d">1 day</button>
+            <button class="st-btn st-btn--secondary usage-range" data-range="7d">7 days</button>
+            <button class="st-btn st-btn--secondary usage-range" data-range="30d">30 days</button>
+            <button class="st-btn st-btn--secondary usage-range" data-range="all">Lifetime</button>
+            <button class="st-btn st-btn--secondary usage-range" data-range="custom">Custom</button>
+            <span class="usage-custom" id="usage-custom" hidden>
+              <label class="usage-custom-l">From
+                <input class="usage-custom-d" id="usage-from-d" type="date" aria-label="Custom range start date">
+                <input class="usage-custom-t" id="usage-from-t" type="time" aria-label="Custom range start time, optional, defaults to 00:00">
+              </label>
+              <label class="usage-custom-l">To
+                <input class="usage-custom-d" id="usage-to-d" type="date" aria-label="Custom range end date">
+                <input class="usage-custom-t" id="usage-to-t" type="time" aria-label="Custom range end time, optional, defaults to 00:00">
+              </label>
+            </span>
+          </span></div>
+        <div class="usage-grid" id="usage-grid"></div>
+        <p class="muted small" id="usage-note" hidden></p>
+      </div>
+
       <div class="st-card cc-card" id="cc-card">
         <div class="req-head"><span class="card-title">Conversation cache</span><span class="muted small" id="cc-sum"></span></div>
         <div class="cc-bars" id="cc-bars" hidden>
