@@ -591,6 +591,8 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
 
 void FileExpertSource::close() {
     inputs_.clear();
+    for (uint8_t* c : complement_chunks_) (void) DPCT_CHECK_ERROR(sycl::free(c, dpct::get_in_order_queue()));
+    complement_chunks_.clear();
     if (complement_arena_ != nullptr) {
         if (complement_pinned_ && !complement_partial_)(void) DPCT_CHECK_ERROR(
             sycl::free(complement_arena_, dpct::get_in_order_queue()));
@@ -1828,7 +1830,12 @@ bool FileExpertSource::pin_cache_complement(
     uint64_t partial_pin = 0;   ///< CS-T: a registered prefix of a locked arena
     uint64_t lock_off = 0;      ///< where the working-set lock starts (after the registered prefix)
     std::string note;
+    std::vector<uint8_t*> chunks;   // the pinned copy in chunks (see complement_chunks_)
+    bool chunked = false;
     auto release = [&]() {
+        for (uint8_t* c : chunks) (void) DPCT_CHECK_ERROR(sycl::free(c, dpct::get_in_order_queue()));
+        chunks.clear();
+        chunked = false;
         try {
     if (arena == nullptr) return;
         if (pinned_ok)(void)
@@ -1908,7 +1915,43 @@ bool FileExpertSource::pin_cache_complement(
                 arena = nullptr;
             }
         }
-        if (arena == nullptr) {
+        // A770 (DG2): one pinned host allocation of 4 GiB or more is refused, but 2 GiB pieces are not (sycl/probe/a770/
+        // pinned_probe.cpp: 7 x 2 GiB pinned, the GPU copies from them at 17 GB/s; the pageable copy's copies ran at
+        // 2.4-4 GB/s).  So the copy is laid out with no blob across a 2 GiB boundary and pinned chunk by chunk, as the
+        // GGUF mirror is (gguf_expert_source.cpp).  STRATA_RESIDENT_CHUNKED=0 keeps the pageable fallback.
+        static const bool chunk_on = [] { const char* v = std::getenv("STRATA_RESIDENT_CHUNKED"); return !(v && v[0] == '0'); }();
+        if (pin && arena == nullptr && chunk_on) {
+            std::vector<size_t> order;
+            for (size_t i = 0; i < offsets.size(); ++i) if (offsets[i] != kNoComplement) order.push_back(i);
+            std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return offsets[a] < offsets[b]; });
+            std::vector<uint64_t> relaid = offsets;
+            uint64_t at = 0;
+            for (size_t i : order) {
+                const uint64_t b = layer_blob_bytes_[i / (size_t) n_expert_];
+                if (at % kComplementChunk + b > kComplementChunk) at = (at / kComplementChunk + 1) * kComplementChunk;
+                relaid[i] = at;
+                at += b;
+            }
+            const uint64_t cbytes = at;
+            bool ok_chunks = cbytes > 0;
+            for (uint64_t c = 0; ok_chunks && c < cbytes; c += kComplementChunk) {
+                uint8_t* q = (uint8_t*) sycl::malloc_host((size_t) std::min(kComplementChunk, cbytes - c), dpct::get_in_order_queue());
+                if (q == nullptr) ok_chunks = false; else chunks.push_back(q);
+            }
+            if (ok_chunks) {
+                offsets = std::move(relaid);
+                bytes = cbytes;
+                chunked = true;
+                pinned_ok = true;
+                device = chunks[0];   // USM host: each chunk's device address is its host address (complement_at)
+                note = "page-locked in " + std::to_string(chunks.size()) + " chunks of 2 GiB (one allocation refused)";
+            } else {
+                for (uint8_t* c : chunks) (void) DPCT_CHECK_ERROR(sycl::free(c, dpct::get_in_order_queue()));
+                chunks.clear();
+                note += (note.empty() ? "" : "; ") + std::string("2 GiB pinned chunks refused too");
+            }
+        }
+        if (arena == nullptr && !chunked) {
             if (!note.empty()) {
                 std::fprintf(stderr, "FileExpertSource: %s; trying pageable memory\n", note.c_str());
                 log_complement_memory("before pageable allocation", bytes);
@@ -2007,7 +2050,7 @@ bool FileExpertSource::pin_cache_complement(
                 note += (note.empty() ? "" : "; ") + lr.note;
             }
         }
-        host = (const uint8_t*) arena;
+        host = chunked ? (const uint8_t*) chunks[0] : (const uint8_t*) arena;
     }
 
     // Copied layer by layer on a few threads: the page faults of the mapped file are the cost, and they overlap.
@@ -2060,7 +2103,8 @@ bool FileExpertSource::pin_cache_complement(
                     fail("FileExpertSource: invalid blob bounds while building the cache complement");
                     return;
                 }
-                uint8_t* dst = (uint8_t*) host + (size_t) offset;
+                uint8_t* dst = chunked ? chunks[(size_t) (offset / kComplementChunk)] + (size_t) (offset % kComplementChunk)
+                                       : (uint8_t*) host + (size_t) offset;
                 if (!direct_.empty()) {
                     batch.push_back({0, layer, expert, dst});
                     if (batch.size() == 32 && !flush()) {
@@ -2128,6 +2172,8 @@ bool FileExpertSource::pin_cache_complement(
 #endif
 
     complement_arena_ = arena;
+    complement_chunks_ = chunks;
+    chunks.clear();
     complement_host_ = host;
     complement_device_ = device;
     complement_bytes_ = bytes;
@@ -2175,6 +2221,8 @@ catch (sycl::exception const &exc) {
 
 const uint8_t* FileExpertSource::resident_blob(size_t index) const {
     if (exchange_storage_.active()) return exchange_storage_.resident(index).host;
+    if (!complement_chunks_.empty())
+        return index < complement_offsets_.size() && complement_offsets_[index] != kNoComplement ? complement_at(complement_offsets_[index]) : nullptr;
     return detail::cache_complement_blob_or_fallback(index, complement_offsets_, complement_host_, nullptr);
 }
 
@@ -2209,7 +2257,7 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err) {
     const bool requested = rotate_env && std::strcmp(rotate_env, "1") == 0;
     const bool uniform = std::all_of(layer_blob_bytes_.begin(), layer_blob_bytes_.end(),
                                     [blob](uint64_t b) { return b == blob; });
-    const bool eligible = requested && uniform && complement_pinned_ && !complement_partial_ &&
+    const bool eligible = requested && uniform && complement_pinned_ && !complement_partial_ && complement_chunks_.empty() &&
                           complement_host_ && complement_device_ && complement_bytes_ > 0;
     const size_t total = (size_t) n * (size_t) blob;
     void* p = nullptr;
@@ -2305,7 +2353,7 @@ int64_t FileExpertSource::commit_exchanges() {
         const uint64_t at = complement_offsets_[x.in];
         if (src != nullptr && at != kNoComplement && at <= complement_bytes_ && x.bytes <= complement_bytes_ - at &&
             complement_host_ != nullptr) {
-            std::memcpy((uint8_t*) complement_host_ + (size_t) at, src, (size_t) x.bytes);
+            std::memcpy(complement_at(at), src, (size_t) x.bytes);
             if (detail::exchange_cache_complement(complement_offsets_, x.in, x.out)) ++n;
         }
         override_[x.out] = nullptr;
@@ -2322,7 +2370,7 @@ void FileExpertSource::commit_copies() {
         const uint64_t at = complement_offsets_[x.in];
         if (src != nullptr && at != kNoComplement && at <= complement_bytes_ && x.bytes <= complement_bytes_ - at &&
             complement_host_ != nullptr)
-            std::memcpy((uint8_t*) complement_host_ + (size_t) at, src, (size_t) x.bytes);
+            std::memcpy(complement_at(at), src, (size_t) x.bytes);
     }
 }
 
@@ -2403,6 +2451,7 @@ const uint8_t* FileExpertSource::device_alias(int64_t layer, int64_t expert) con
     if (!pinned(layer, expert) || complement_device_ == nullptr) return nullptr;
     const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
     if (exchange_storage_.active()) return exchange_storage_.resident(index).device;
+    if (!complement_chunks_.empty()) return complement_at(complement_offsets_[index]);
     return complement_device_ + (size_t) complement_offsets_[index];
 }
 

@@ -673,6 +673,14 @@ private:
     uint64_t complement_lock_off_ = 0;        ///< the working-set lock covers [lock_off, lock_off + locked)
     bool complement_ready_ = false;
     uint64_t complement_locked_ = 0;          ///< bytes held in the working set (pin refused)
+    /// the RAM-resident copy as pinned chunks of kComplementChunk bytes (no blob crosses one) when one pinned allocation
+    /// of the whole copy is refused (DG2 refuses one of 4 GiB or more); empty = one allocation (complement_host_)
+    std::vector<uint8_t*> complement_chunks_;
+    static constexpr uint64_t kComplementChunk = 1ull << 31;
+    uint8_t* complement_at(uint64_t off) const {
+        return complement_chunks_.empty() ? (uint8_t*) complement_host_ + off
+                                          : complement_chunks_[(size_t) (off / kComplementChunk)] + (size_t) (off % kComplementChunk);
+    }
     int64_t complement_lent_slots_ = 0;
     std::vector<const uint8_t*> override_;    ///< staged exchanges: an evicted expert read from its exchange buffer
     struct Exchange { size_t in, out; int64_t q; uint64_t bytes; };
