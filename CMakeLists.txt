@@ -1465,6 +1465,9 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(batch_groups_test src/program/batch_groups_test.cpp)
   target_include_directories(batch_groups_test PRIVATE include)
   add_test(NAME batch_groups_test COMMAND batch_groups_test)
+  add_executable(pipeline_rows_test tests/core/pipeline_rows_test.cpp)
+  target_include_directories(pipeline_rows_test PRIVATE include)
+  add_test(NAME pipeline_rows_test COMMAND pipeline_rows_test)
 endif()
 
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
