@@ -41,6 +41,17 @@ EDITABLE = [
      "Folder the RAM cache writes the conversations it evicts to (giving it turns the disk tier on)"),
     ("conversation_cache_disk_mib", ("arg", "--conversation-cache-disk-mib"),
      "The spill folder's limit in MiB (engine default 8192; 0 = off)"),
+    # delta 6, the cascade: a WARM level between the RAM cache and the cold one. The parking writes there, and what
+    # that level's own GC would remove it MOVES down to the cold level instead - the cold one is the only one that
+    # deletes. Off unless both keys are set: with no warm folder the disk tier is exactly what it was.
+    ("conversation_cache_warm_dir", ("arg", "--conversation-cache-warm-dir", "str"),
+     "Folder of the WARM level of the cascade (the parking writes there and degrades to the cold level)"),
+    ("conversation_cache_warm_mib", ("arg", "--conversation-cache-warm-mib"),
+     "The warm level's limit in MiB (0 or empty = no warm level, and then there is no cascade)"),
+    ("conversation_cache_cold_dir", ("arg", "--conversation-cache-cold-dir", "str"),
+     "Folder of the COLD level - the canonical name of the same field as conversation_cache_spill_dir"),
+    ("conversation_cache_cold_mib", ("arg", "--conversation-cache-cold-mib"),
+     "The cold level's limit in MiB - the canonical name of the same field as conversation_cache_disk_mib"),
     ("conversation_cache_spill_when_full", ("arg", "--conversation-cache-spill-when-full",
                                             ("enum", ["evict-oldest", "reject"])),
      "When the spill folder is full: evict-oldest (the default) or reject (keep it all, save nothing new)"),

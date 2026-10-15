@@ -448,6 +448,48 @@ cannot fail later - there is no second validation path to drift. With the flag o
 is the one that shipped. The discard messages carry the numbers (reason and the two counts) whether or not the flag is
 on, so a failed restore is readable from the log without reconstructing it by hand.
 
+## The cascade (RAM -> warm -> cold, `aporte/cascada-t5`, opt-in)
+
+The disk tier stops being one folder and becomes a **hierarchy**: `--conversation-cache-warm-dir DIR` with a nonzero
+`--conversation-cache-warm-mib` opens a **warm** level between the RAM cache and the disk tier of always, and that
+tier becomes the **cold** level (`--conversation-cache-cold-dir` / `-cold-mib` are its canonical names;
+`-spill-dir` / `-disk-mib` stay accepted and write the same field, so a config that names the old pair names the cold
+level and the folder keeps what it already holds without moving a byte).
+
+- **The parking writes to the warm level** (the park writer and the RAM cache's evictions both target it), and a
+  conversation is read from **whichever level has it** - a hit from the cold level is not copied up on the read path,
+  because that would be a second full write while the decode is stopped. It comes back to the warm level by itself:
+  a restored conversation is live again and its next park writes it there.
+- **A capacity eviction degrades, it does not delete.** The warm level's budget GC and its age GC (`--conversation-cache-spill-max-age-days`, which is a capacity lever too) **move** the oldest conversation down to the cold
+  level. The cold level is the last one, and the only one that **removes**.
+- **A correction discard still discards**, wherever the copy is: a compaction (`--conversation-cache-spill-divergence-tokens`), the copy a re-park supersedes, a cancelled request's provisional state, an image the engine
+  cannot read. A copy that can never be a hit is not pushed into a level that is a reuse candidate.
+- **FIFO at every frontier**, by the order an entry was *written to that level* - position in the level's own list,
+  never last access, and no read reorders it (the same rule `evict-oldest` always used). A degraded conversation is
+  the **newest** entry of the level that receives it, whatever its age above, and its stamp is re-sealed to the moment
+  it arrived (in memory **and** on the file), so the cold level's own age retention does not prune it on sight.
+- **All-or-nothing.** The copy reaches the cold level *before* it leaves the warm one. If the cold level refuses it
+  (`--conversation-cache-spill-when-full reject`, no room, a failed move, no space) the entry **stays in the warm
+  level** and the GC moves on: the degradation can never leave a level worse off than the deletion it replaced.
+- **`when-full=reject` in the warm level** therefore rejects the new spill *and* blocks the degradation: `reject`
+  means "this level removes nothing", and a degradation is a removal by another name.
+
+Two consequences to keep in mind: the same conversation **can be in both levels at once** (it is a hierarchy, not a
+set), so the bytes are read and reported **per level and never summed**; and with `--conversation-cache-segments on`
+the per-segment store stays in the **cold** folder, because it shares the tier's directory
+(`SegmentStoreConfig.directory`) - the cascade does not move it in this change.
+
+The Monitor draws one row per level that exists: `RAM`, `SSD 1` (the warm level) and `SSD 2` (the cold level). With
+no warm level the row is the single `SSD 1` it always was, and no row is invented for a level that is not
+configured.
+
+**Compatibility.** The cascade is opt-in by the **mere presence** of the warm folder: with no warm level the cold
+level's GC removes as before, reads come from the single disk tier, every log line is the one above, and the whole
+path is byte-for-byte the tier of always (the flag-off case is asserted in `conversation_spill_test.cpp`,
+`serve/test_monitor.py` and `serve/test_runconfig.py`). And do not bump the engine version in the same step that
+declares the inheritance: `STRATA_VERSION` is part of the identity of a parked file, so a bump makes the existing
+folder `foreign` (kept, never matched) - check `foreign kept=0` in the start log.
+
 ## Measured on this machine (2026-10-14)
 
 One machine, one model (`qwen3.8-flash-next-unsloth-ud-q4_k_xl`, ctx 196608, `parallel=4`), one pass per cell unless

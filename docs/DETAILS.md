@@ -1213,6 +1213,24 @@ segment or system-prompt cache, a streamed restore, a session save - reads under
 transient. The engine logs spill, restore and disk-budget events. The disk tier works with `--layer-split` (one file
 per stage).
 
+**The cascade (RAM -> warm -> cold, opt-in).** The disk tier can be a hierarchy instead of a single folder:
+`--conversation-cache-warm-dir DIR` with `--conversation-cache-warm-mib N` opens a **warm** level below the RAM
+cache, and the spill folder of always (`--conversation-cache-spill-dir`, whose canonical name is now
+`--conversation-cache-cold-dir`) becomes the **cold** level. The parking writes to the warm level, and when its own
+GC (budget, or age with `--conversation-cache-spill-max-age-days`) would have **deleted** the oldest conversation it
+**moves** it down to the cold level instead; the cold level is the last one and the only one that removes. A
+correction discard (a compaction, a superseded copy, a cancelled request, an unreadable image) still discards
+wherever it is. FIFO at every frontier, by write order; a degraded copy is the newest entry of the level that
+receives it and its stamp is re-sealed to the moment it arrived. Degrading is all-or-nothing - the copy reaches the
+cold level **before** it leaves the warm one, and a cold level that refuses leaves it in the warm level, so a failed
+degradation is never worse than the deletion it replaced. Reads take the copy from the level that has it (no
+promotion on the read path; a restored conversation comes back to the warm level by being parked again). The same
+conversation can be in both levels, so the bytes are shown per level and never summed, and with
+`--conversation-cache-segments on` the per-segment store stays in the cold folder (it shares the tier's directory).
+Requires the engine that carries the flag (an unknown flag is fatal), and `STRATA_VERSION` is part of the identity
+of the parked files, so do not bump the version in the same step that declares the inheritance: check
+`foreign kept=0` in the start log.
+
 **System-prompt prefill cache (opt-in).** `--system-prompt-cache` persists the checkpoint root that ends the
 system prompt - the one `--prompt-cache-root` builds in RAM - as an ordinary session file in
 `--system-prompt-cache-dir`, and reloads it at the next start, so a NEW chat of the same client reads only the
