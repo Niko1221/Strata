@@ -6552,6 +6552,9 @@ def make_handler(svc: Service):
                             delta = item["choices"][0]["delta"]
                             content, reasoning = delta.get("content", ""), delta.get("reasoning_content", "")
                             usage, timings = item.get("usage"), item.get("timings")
+                        elif api == "completions":
+                            content, reasoning = item["choices"][0]["text"], ""
+                            usage, timings = item.get("usage"), None
                         elif api == "responses":
                             kind = item["type"]
                             content = item["delta"] if kind == "response.output_text.delta" else ""
@@ -6632,13 +6635,19 @@ def make_handler(svc: Service):
             except (EngineDied, EngineStuck) as e:
                 err = {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}}
                 self._note(error=err["error"])
-
                 try:
                     self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
                 except OSError:
                     self._note(outcome="disconnected")
             except QueueWaitExpired as e:
                 err = {"error": {"type": "rate_limit_error", "code": "queue_wait_timeout", "message": str(e)}}
+                self._note(error=err["error"])
+                try:
+                    self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
+                except OSError:
+                    self._note(outcome="disconnected")
+            except StructuredOutputError as e:
+                err = {"error": {"type": "structured_output_failed", "code": "structured_output_failed", "message": str(e)}}
                 self._note(error=err["error"])
                 try:
                     self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
@@ -6684,7 +6693,7 @@ def make_handler(svc: Service):
             if thinking is False:                        # passthrough stays untouched when thinking is on; asked off,
                 tail = svc.tok.encode(svc.template.gen_prompt_tail(False), parse_special=True)   # the prompt gets the tail
                 tail_on = svc.tok.encode(svc.template.gen_prompt_tail(True), parse_special=True)  # a chat render adds
-                if tail and ids[-len(tail):] != tail and ids[-len(tail_on):] != tail_on:
+                if tail and ids[-len(tail):] != tail and (not tail_on or ids[-len(tail_on):] != tail_on):
                     ids = ids + tail
             try:
                 max_new = int(req.get("max_tokens") or 0)
@@ -6717,34 +6726,34 @@ def make_handler(svc: Service):
                 max_new = room
 
             def chunks():
-                completion_tokens = 0
-                content = []
                 try:
+                    if req.get("echo"):
+                        yield {"id": cid, "object": "text_completion", "created": created, "model": model,
+                               "choices": [{"text": prompt, "index": 0, "logprobs": None, "finish_reason": None}]}
                     for kind, value in svc.run(ids, thinking, None, max_new, req, cancel):
                         if kind == "ping":
                             yield None
                         elif kind == "event":
                             if value.kind in ("content", "reasoning") and value.text:
-                                content.append(value.text)
                                 yield {"id": cid, "object": "text_completion", "created": created, "model": model,
                                        "choices": [{"text": value.text, "index": 0, "logprobs": None,
                                                     "finish_reason": None}]}
                         elif kind == "done":
                             completion_tokens = value["completion_tokens"]
-                            text = "".join(content)
                             yield {"id": cid, "object": "text_completion", "created": created, "model": model,
-                                   "choices": [{"text": (prompt if req.get("echo") else "") + text, "index": 0,
+                                   "choices": [{"text": "", "index": 0, "logprobs": None,
                                                 "finish_reason": {"cancel": "stop"}.get(value["finish"], value["finish"])}],
                                    "usage": {"prompt_tokens": len(ids), "completion_tokens": completion_tokens,
                                              "total_tokens": len(ids) + completion_tokens}}
                 finally:
                     cancel.set() if self.watch_done is None else None
 
+            stream_chunks = self._capture(chunks(), "completions")
             stream = bool(req.get("stream"))
             if not stream:
                 text = []
                 last = None
-                for item in chunks():
+                for item in stream_chunks:
                     if item is not None:
                         if "usage" in item:
                             last = item
@@ -6753,11 +6762,10 @@ def make_handler(svc: Service):
                 result = last or {"id": cid, "object": "text_completion", "created": created, "model": model,
                                   "choices": [{"index": 0, "text": "", "logprobs": None, "finish_reason": "length"}],
                                   "usage": {"prompt_tokens": len(ids), "completion_tokens": 0, "total_tokens": len(ids)}}
-                result["choices"][0]["text"] = (prompt if req.get("echo") else "") + "".join(text)
+                result["choices"][0]["text"] = "".join(text)
                 self._json(200, result)
                 return
             self._sse()
-            stream_chunks = chunks()
             try:
                 for item in stream_chunks:
                     if item is None:
@@ -6772,14 +6780,6 @@ def make_handler(svc: Service):
                 stream_chunks.close()
             except (EngineDied, EngineStuck) as e:           # mid-stream: say so, then end the stream properly
                 err = {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}}
-                self._note(error=err["error"])
-                try:
-                    self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
-                except OSError:
-                    self._note(outcome="disconnected")
-
-            except StructuredOutputError as e:
-                err = {"error": {"type": "structured_output_failed", "code": "structured_output_failed", "message": str(e)}}
                 self._note(error=err["error"])
                 try:
                     self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")

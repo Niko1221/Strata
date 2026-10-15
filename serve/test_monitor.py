@@ -108,6 +108,23 @@ class Monitor(unittest.TestCase):
                     else:
                         self.assertNotIn("response", record)
 
+    def test_legacy_completions_capture_output_and_usage(self):
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                code, reply = self.request("/v1/completions", {
+                    "prompt": "raw prompt", "max_tokens": 128, "enable_thinking": False, "stream": stream})
+                self.assertEqual(code, 200)
+                if stream:
+                    chunks = [json.loads(line[6:]) for line in reply.splitlines() if line.startswith("data: {")]
+                    text = "".join(c["choices"][0]["text"] for c in chunks)
+                    usage = chunks[-1]["usage"]
+                else:
+                    text, usage = reply["choices"][0]["text"], reply["usage"]
+                record = self.latest()
+                self.assertTrue(text)
+                self.assertEqual(record["output"], text)
+                self.assertEqual(record["usage"], usage)
+
     def test_error_and_engine_death_are_not_successes(self):
         # a request the server refuses is an error record: the strict mode (fit_max_tokens off) refuses a max_tokens
         # that overshoots the context, the default shortens it (serve/test_server.py MaxTokens)
