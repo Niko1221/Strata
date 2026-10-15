@@ -1704,6 +1704,9 @@ def whole_shard(s: Path) -> bool:
     from gguf_reader import GGUFFile
     try:
         g = GGUFFile(s)
+        # No tensor payload: the aligned data start need not exist on disk.
+        if not g.tensors:
+            return True        
         return s.stat().st_size >= g.data_start + max((t.offset + (t.expected_bytes() or 0) for t in g.tensors),
                                                      default=0)
     except (OSError, ValueError, struct.error):
@@ -1952,6 +1955,10 @@ def check_shards(shards):
             g = GGUFFile(s)
         except (ValueError, struct.error) as e:
             fail(f"{s.name} is not a whole GGUF shard ({e})", "delete it and run setup again")
+        # No tensor payload: the aligned data start need not exist on disk.
+        # GGUF parsing above and any subsequent pinned size/hash checks still apply.
+        if not g.tensors:
+            continue        
         need = g.data_start + max((t.offset + (t.expected_bytes() or 0) for t in g.tensors), default=0)
         have = s.stat().st_size
         if have < need:
