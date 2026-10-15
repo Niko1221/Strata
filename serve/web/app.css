@@ -85,9 +85,16 @@ main { flex: 1; min-height: 0; display: flex; }
 .badges { display: flex; gap: var(--st-s-2); flex-wrap: wrap; }
 .badges .st-badge { opacity: .38; transition: opacity var(--st-dur); }
 .badges .st-badge.on { opacity: 1; }
-.state-card__row { display: flex; justify-content: space-between; gap: var(--st-s-4); font-size: var(--st-fs-sm);
-                   font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
-.state-slots { font-size: var(--st-fs-xs); font-variant-numeric: tabular-nums; }   /* per-slot decode speed, a step smaller */
+.state-card__row { display: flex; justify-content: space-between; align-items: baseline; gap: var(--st-s-4);
+                   font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
+/* The right side of that row: the per-slot texts on top, the running total under them, both against the card's
+   right edge.  The phase text keeps the left of the row, where it was. */
+.state-card__tail { display: flex; flex-direction: column; align-items: flex-end; gap: var(--st-s-2); }
+/* One entry per configured slot, on the top right: each in its own element so the flex gap - and nothing else -
+   spaces them, evenly for every width.  A step smaller than the row it sits in, and as wide as it needs. */
+.state-slots { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--st-s-4);
+               font-size: var(--st-fs-xs); font-variant-numeric: tabular-nums; }
+.state-slots[hidden] { display: none; }                                        /* the class would beat [hidden] alone */
 .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--st-s-4); }
 .metric-card { padding: var(--st-s-4) var(--st-s-5); }
 .st-metric__value small { font-size: var(--st-fs-md); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin-left: 4px; }
@@ -108,15 +115,18 @@ main { flex: 1; min-height: 0; display: flex; }
 .ctx-gauge__label { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
                     font-size: var(--st-fs-xs); }
 .ctx-gauge__pct { font-weight: var(--st-fw-black); font-size: var(--st-fs-xl); line-height: 1.1; font-variant-numeric: tabular-nums; }
-/* Context fill: one small clock per batch slot under the aggregate one; its "s#N" sits over the slot's share. */
-.ctx-slots { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--st-s-3); margin-bottom: var(--st-s-2); }
-.ctx-mini { position: relative; width: 54px; height: 54px; }
-.ctx-mini__gauge { width: 54px; height: 54px; }
+/* Context fill: one small clock per batch slot under the aggregate one; its "s#N" sits over the slot's share.
+   The clock is 1.5x the 54px it was drawn at (no token is that size, so the factor is written down) and its two
+   lines grew with it, 12px -> --st-fs-lg, which is exactly 1.5x: the ring stays round and the label readable at
+   the size the ring now gives it.  The wider gap keeps the clocks apart in the four cases, 1 to 4 slots. */
+.ctx-slots { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--st-s-4); margin-bottom: var(--st-s-2); }
+.ctx-mini { position: relative; width: calc(54px * 1.5); height: calc(54px * 1.5); }
+.ctx-mini__gauge { width: calc(54px * 1.5); height: calc(54px * 1.5); }
 .ctx-mini .st-gauge__fill { transition: stroke-dasharray 400ms var(--st-ease); }
 .ctx-mini__label { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
                    line-height: 1.05; font-variant-numeric: tabular-nums; }
-.ctx-mini__slot { font-size: var(--st-fs-xs); color: var(--st-ink-muted); }
-.ctx-mini__pct { font-size: var(--st-fs-xs); font-weight: var(--st-fw-bold); color: var(--st-ink); }
+.ctx-mini__slot { font-size: var(--st-fs-lg); color: var(--st-ink-muted); }
+.ctx-mini__pct { font-size: var(--st-fs-lg); font-weight: var(--st-fw-bold); color: var(--st-ink); }
 .bar-row { display: flex; justify-content: space-between; font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium);
            margin-top: var(--st-s-2); font-variant-numeric: tabular-nums; }
 .req-card { display: flex; flex-direction: column; gap: var(--st-s-3); min-width: 0; }

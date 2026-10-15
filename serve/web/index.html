@@ -108,8 +108,14 @@
             <span class="st-badge st-badge--error" data-s="error">Error</span>
           </span>
         </div>
-        <div class="state-card__row"><span id="state-label">Waiting for a request</span><span class="muted" id="state-detail"></span></div>
-        <div class="state-slots muted" id="state-slots" hidden></div>
+        <div class="state-card__row">
+          <span id="state-label">Waiting for a request</span>
+          <!-- the right side of that row, against the card's edge: the per-slot texts over the running total -->
+          <span class="state-card__tail">
+            <span class="state-slots muted" id="state-slots" hidden></span>
+            <span class="muted" id="state-detail"></span>
+          </span>
+        </div>
         <div class="st-progress" id="state-progress"><div class="st-progress__bar" id="state-bar" style="width:0%"></div></div>
       </div>
 

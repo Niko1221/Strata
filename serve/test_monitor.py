@@ -649,5 +649,56 @@ class SlotsOnTheCards(unittest.TestCase):
         self.assertIn("wrap.hidden = !list.length", js)
 
 
+class TheAggregateClockAndTheSlotTexts(unittest.TestCase):
+    """The two shape fixes on those cards. Context fill: the big clock is the SUM of the small ones - the same
+    live.slots entries, over the capacity the same list declares - so its percentage and the `used / capacity`
+    under it explain the small clocks instead of contradicting them (43 + 0 + 0 + 0 % is 11%). Model state: the
+    per-slot texts sit on the card's top right, right aligned and evenly spaced by a flex gap, each in its own
+    element; the phase text keeps the left of the row. The small clocks are 1.5x the 54px they were drawn at,
+    label included."""
+
+    WEB = Path(__file__).parent / "web"
+
+    def _files(self):
+        return ((self.WEB / "app.js").read_text(encoding="utf-8"),
+                (self.WEB / "app.css").read_text(encoding="utf-8"),
+                (self.WEB / "index.html").read_text(encoding="utf-8"))
+
+    def test_the_big_clock_adds_the_slots_up(self):
+        js, _, _ = self._files()
+        # both clocks call the same slotContextTokens, and the aggregate's denominator follows the same list: the
+        # slots it drew, times one context each
+        self.assertIn("used = slots.reduce((sum, s) => sum + slotContextTokens(s), 0)", js)
+        self.assertIn("capacity = ctx * slots.length", js)
+        self.assertIn('$("ctx-sub").textContent = capacity ?', js)
+        self.assertIn("${kfmt(used)} / ${ctxfmt(capacity)}", js)
+        # an engine without slots still shows the single request's own fill: the same sum with nothing to add
+        self.assertIn('else if (live.state !== "idle") used = (live.prompt_tokens || 0) + (live.generated || 0);', js)
+
+    def test_the_slot_texts_are_evenly_spaced_against_the_right_edge(self):
+        js, css, html = self._files()
+        # one element per entry: the gap spaces them, evenly for every width - a joined string would collapse to
+        # single spaces (HTML) and read as one run
+        self.assertIn("slotsLine.replaceChildren(...parts.map", js)
+        self.assertNotIn('parts.join(" · ")', js)
+        self.assertIn("display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--st-s-4);", css)
+        self.assertRegex(css, r"\.state-slots\[hidden\] \{ display: none; \}")   # the class would beat [hidden] alone
+        # the row keeps what was on its left: the phase text first, then the right side, slots over the running total
+        row = html[html.index('class="state-card__row"'):html.index('id="state-progress"')]
+        self.assertLess(row.index('id="state-label"'), row.index("state-card__tail"))
+        self.assertLess(row.index('id="state-slots"'), row.index('id="state-detail"'))
+
+    def test_the_small_clocks_grew_one_and_a_half_times(self):
+        _, css, _ = self._files()
+        tokens = (self.WEB / "tokens.css").read_text(encoding="utf-8")
+        self.assertIn("--st-fs-xs:12px;", tokens)
+        self.assertIn("--st-fs-lg:18px;", tokens)                          # 12 x 1.5, a token, not a number
+        self.assertIn(".ctx-mini { position: relative; width: calc(54px * 1.5); height: calc(54px * 1.5); }", css)
+        self.assertIn(".ctx-mini__gauge { width: calc(54px * 1.5); height: calc(54px * 1.5); }", css)
+        self.assertIn(".ctx-mini__slot { font-size: var(--st-fs-lg);", css)   # the label grew with the ring
+        self.assertIn(".ctx-mini__pct { font-size: var(--st-fs-lg);", css)
+        self.assertIn(".ctx-slots { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--st-s-4);", css)
+
+
 if __name__ == "__main__":
     unittest.main()

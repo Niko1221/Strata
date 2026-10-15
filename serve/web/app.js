@@ -338,9 +338,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     return `${slot} ${s.tok_s != null ? `${fmt(s.tok_s, 1)} t/s` : "0 t/s"}`;
   });
   if (waiting > 0) parts.push(`${fmt(waiting)} queued`);
+  // one element per entry, on the card's top right: the flex gap separates them, evenly for every width, so the
+  // four read at a glance. Joined as one string they would collapse to single spaces and read as a single run.
   const slotsLine = $("state-slots");
   slotsLine.hidden = !parts.length;
-  slotsLine.textContent = parts.join(" · ");
+  slotsLine.replaceChildren(...parts.map((part) => { const item = document.createElement("span"); item.textContent = part; return item; }));
 
   // the eight cards
   const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
@@ -383,18 +385,26 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   }
   spark("sp-disk", h.disk_read_mb);
 
-  // context fill: the running request, else the last one
+  // Context fill: the big clock is the SUM of the small ones, and it says so in its own numbers - what the slots
+  // hold together over the capacity the same list declares (one context per slot). The four small clocks at 43, 0,
+  // 0 and 0 % are 43% of ONE slot's context out of four: 11%, and the figure under the percentage reads the tokens
+  // added up (85k) of the whole (768K). So the big one can never contradict the small ones: it is their sum, and
+  // both sides come from the same live.slots entries (each slot's own prompt+written, or held tokens while idle).
+  // An engine without slots draws no small clocks and keeps the single request's own fill - that same sum with
+  // nothing to add: the running request, else the last one.
   const ctx = eng.max_context || 0;
-  let used = 0;
-  if (live.state !== "idle") used = (live.prompt_tokens || 0) + (live.generated || 0);
+  let used = 0, capacity = ctx;
+  if (slots.length) {
+    used = slots.reduce((sum, s) => sum + slotContextTokens(s), 0);
+    capacity = ctx * slots.length;                   // the slots the small clocks are drawn for, x one context each
+  } else if (live.state !== "idle") used = (live.prompt_tokens || 0) + (live.generated || 0);
   else if (last) used = (last.prompt_tokens || 0) + (last.output_tokens || 0);
-  const frac = ctx ? Math.min(1, used / ctx) : 0;
+  const frac = capacity ? Math.min(1, used / capacity) : 0;
   $("ctx-fill").setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
   $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";         // a near-zero arc would draw just its round cap
   $("ctx-pct").textContent = `${Math.round(frac * 100)}%`;
-  $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
-  // ...and one small clock per batch slot, the big one staying the aggregate. Same degrade as the state line: no
-  // live.slots, no clocks.
+  $("ctx-sub").textContent = capacity ? `${kfmt(used)} / ${ctxfmt(capacity)}` : "–";
+  // ...and one small clock per batch slot under it. Same degrade as the state line: no live.slots, no clocks.
   renderCtxSlots(slots, ctx);
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
   $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
