@@ -10,7 +10,8 @@ MAX_CACHE_TOKENS = 262144
 PROTECTION_WAIT_S = 5.0      # STRATA_SLOT_PROTECT_WAIT_S: wait when every idle history is still protected
 PARK_MIN_TOKENS = 8192       # STRATA_SLOT_PARK_MIN_TOKENS: a shorter main-session conversation is not parked
 EXPIRED_KEEP_SCORE = 0.01    # STRATA_SLOT_EXPIRED_KEEP_SCORE: an expired history scoring at least this (retention at
-                             # freshness 0; 0.01 is about 2.5K tokens) is overwritten only when nothing else is free
+                             # expiry, then decayed; 0.01 is about 2.5K tokens at expiry) goes last
+EXPIRED_HALF_LIFE_S = 120.0  # STRATA_SLOT_EXPIRED_HALF_LIFE_S: seconds after expiry to halve its value; 0 disables decay
 TTL_MAX_S = 120.0            # STRATA_SLOT_TTL_MAX_S: protection at 262144 tokens; the whole curve scales with it
 _TTL_SHAPE = ((0, 0.0), (500, 0.1), (2000, 2.0), (8000, 10.0),
               (32000, 45.0), (50000, 65.0), (100000, 90.0), (MAX_CACHE_TOKENS, 120.0))
@@ -19,7 +20,7 @@ TTL_POINTS = _TTL_SHAPE
 
 def configure(env) -> dict:
     """Read the tunables from `env` (the engine's environment); bad or missing values keep the defaults."""
-    global PROTECTION_WAIT_S, PARK_MIN_TOKENS, TTL_MAX_S, TTL_POINTS, EXPIRED_KEEP_SCORE
+    global PROTECTION_WAIT_S, PARK_MIN_TOKENS, TTL_MAX_S, TTL_POINTS, EXPIRED_KEEP_SCORE, EXPIRED_HALF_LIFE_S
 
     def value(name, default):
         try:
@@ -29,6 +30,7 @@ def configure(env) -> dict:
             return default
     TTL_MAX_S = value("STRATA_SLOT_TTL_MAX_S", 120.0)
     EXPIRED_KEEP_SCORE = value("STRATA_SLOT_EXPIRED_KEEP_SCORE", 0.01)
+    EXPIRED_HALF_LIFE_S = value("STRATA_SLOT_EXPIRED_HALF_LIFE_S", 120.0)
     TTL_POINTS = tuple((n, s * TTL_MAX_S / 120.0) for n, s in _TTL_SHAPE)
     PROTECTION_WAIT_S = value("STRATA_SLOT_PROTECT_WAIT_S", 5.0)
     PARK_MIN_TOKENS = int(value("STRATA_SLOT_PARK_MIN_TOKENS", 8192))
@@ -37,7 +39,8 @@ def configure(env) -> dict:
 
 def settings() -> dict:
     return {"ttl_max_s": TTL_MAX_S, "protect_wait_s": PROTECTION_WAIT_S,
-            "park_min_tokens": PARK_MIN_TOKENS, "expired_keep_score": EXPIRED_KEEP_SCORE}
+            "park_min_tokens": PARK_MIN_TOKENS, "expired_keep_score": EXPIRED_KEEP_SCORE,
+            "expired_half_life_s": EXPIRED_HALF_LIFE_S}
 
 
 def cache_ttl(tokens: int) -> float:
@@ -48,10 +51,16 @@ def cache_ttl(tokens: int) -> float:
     return TTL_POINTS[-1][1]
 
 
-def stale_retention(tokens: int) -> float:
-    """The retention score at freshness 0 (the same formula): orders expired histories - lowest is reclaimed first."""
+def stale_retention(tokens: int, age_s: float = 0.0) -> float:
+    """Value at expiry, halved for each EXPIRED_HALF_LIFE_S spent past the TTL. Age is time since last use.
+
+    Before expiry this is the projected value at expiry; a zero half-life keeps the old length-only value.
+    Expiry changes replacement priority, never whether a history can match.
+    """
     n = min(MAX_CACHE_TOKENS, max(0, tokens))
-    return (n / 50000.0) ** 0.7 * (n / (n + 2000.0)) ** 2 * 0.25
+    base = (n / 50000.0) ** 0.7 * (n / (n + 2000.0)) ** 2 * 0.25
+    overdue = max(0.0, age_s - cache_ttl(tokens))
+    return base * 2.0 ** (-overdue / EXPIRED_HALF_LIFE_S) if EXPIRED_HALF_LIFE_S > 0 else base
 
 
 def cache_state(tokens: int, last_used: float, now: float, valid: bool = True) -> dict:
@@ -133,11 +142,12 @@ def park_destination(main: list[int], busy: list[bool], held: list[list[int]], u
     free = [b for b in order if not busy[b] and b not in exclude and b in blank]
     if free:
         return min(free, key=lambda b: (loads[b - b % gs], positions[b]))
-    # The main session's conversation is at least PARK_MIN_TOKENS long; an expired one below EXPIRED_KEEP_SCORE is
-    # a short side chat: worth less than what parking keeps.  The least loaded group, then the lowest score.
+    # The main session is at least PARK_MIN_TOKENS long; give up a short side chat or a long history left unused
+    # until its value decays below EXPIRED_KEEP_SCORE. The least loaded group, then the lowest current score.
+    scores = {b: stale_retention(len(held[b]), states[b]["age_s"]) for b in order}
     worthless = [b for b in order if not busy[b] and b not in exclude and states[b]["expired"] and
-                 stale_retention(len(held[b])) < EXPIRED_KEEP_SCORE]
-    return min(worthless, key=lambda b: (loads[b - b % gs], stale_retention(len(held[b])), positions[b]))         if worthless else None
+                 scores[b] < EXPIRED_KEEP_SCORE]
+    return min(worthless, key=lambda b: (loads[b - b % gs], scores[b], positions[b])) if worthless else None
 
 
 def place(prompt: list[int], busy: list[bool], held: list[list[int]], used: list[float],
@@ -193,7 +203,7 @@ def place(prompt: list[int], busy: list[bool], held: list[list[int]], used: list
     safe = [b for b in free if states[b]["expired"] and collateral(b) == 0]
 
     def stale(b):
-        return 0.0 if b in blank else stale_retention(len(held[b]))
+        return 0.0 if b in blank else stale_retention(len(held[b]), states[b]["age_s"])
 
     def worthy(b):
         return stale(b) >= EXPIRED_KEEP_SCORE and stale(b) > 0
