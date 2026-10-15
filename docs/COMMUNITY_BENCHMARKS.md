@@ -64,6 +64,8 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-15: RX 7900 XT 20 GB (gfx1100) on Linux, EPYC 7K62 container with 48 CPUs and 128 GiB](../bench/results/2026-10-15-community-rx-7900-xt-ud-q5-k-xl/README.md):
+  v0.1.44.1 source build on a system ROCm 7.2.3, Unsloth UD-Q5_K_XL at 262K, all experts in RAM; setup's configuration vs the same plus `--vram-reserve-mib 1024 --prefill auto:32768`, same day: decode 17.2 → 22.7 tok/s, prompt 335/565/1019 → 577/888/1116 tok/s at 4K/16K/32K, agent follow-up first token 7.2 → 5.4 s; needles 6/6 at 32K and 125K. Screening runs: `STRATA_PREFILL_MMQ=1`, `--pool-workers 47` and `--adapt-every 0` slower here; one `verify: timed out` engine stop (#2065 pattern).
 
 ## Run the benchmark
 
