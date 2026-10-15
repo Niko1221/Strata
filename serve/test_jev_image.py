@@ -14,6 +14,11 @@ import base64
 import json
 import sys
 import unittest
+# JEV_TEST_MODES_BOOTSTRAP: the suite exercises a deployment that has OPTED IN
+# to decisions (chat-only is the default posture since the flip); set before
+# any serve.jev_calib import resolves MODES at module load.
+import os as _os
+_os.environ.setdefault("STRATA_JEV_MODES", "chat,decision")
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -190,7 +195,7 @@ class DirectVMode(unittest.TestCase):
         cls.httpd.server_close()
 
     def test_direct_rejects_v_header(self):
-        st, body = self.post(REQ, headers={"X-Jev-Mode": "V"})
+        st, body = self.post({**REQ, "image_mode": "direct"}, headers={"X-Jev-Mode": "V"})
         self.assertEqual(st, 422)
         self.assertEqual(body["error"]["field"], "X-Jev-Mode")
         self.assertIn("not supported", body["error"]["message"])
