@@ -62,7 +62,10 @@ The M2-b format-aware prompt fast path (prompts on the matrix units) answering t
 The prompt fast path under q4_0 never flips the argmax on these 20 prompts; its full-vocab KL is the same
 magnitude as the decode window's (0.036 vs 0.034 mean). The `first.*` float files (~20 MB per run) are not
 committed; both runs regenerate them with the commands in *Reproducing* (`data/prompt-path/` keeps the
-indexes, stderr summaries and the pcompare table).
+indexes, stderr summaries and the pcompare table). `data/prompt-path/per-prompt.tsv` is the offline check:
+the 20 per-prompt top-1/KL rows from a regeneration on 2026-10-15 (the original run's raw logits lived in
+/tmp and are gone); the regenerated aggregates are identical to the table above — worst row agent@768
+tokens, KL 0.1955.
 
 ## Speed (same-day pairs, `speed.sh`, logs in `logs/speed-*.log`)
 
@@ -73,7 +76,7 @@ only `--kv` differs. "none" = no `--kv` flag (the fp16 default).
 | cell | q4_0 | int8 | none | q4_0 vs int8 |
 |---|---:|---:|---:|---:|
 | decode tok/s (4-id prompt, --max-new 64) | 20.84 | 21.09 | 20.82 | −1.2% |
-| prefill tok/s (2200-id prompt, --max-new 16) | 213.15 | 215.54 | | −1.1% |
+| prefill tok/s (2200-id prompt, 2199 tokens prefilled, --max-new 16) | 213.15 | 215.54 | | −1.1% |
 | time to first token, 2200-id prompt | 10.71 s | 10.60 s | | +1.0% |
 | decode tok/s after the 2200-id prompt | 19.84 | 19.87 | | −0.2% |
 
@@ -81,7 +84,9 @@ The noise scale: `none` and `int8` run the same code on this backend (see above)
 delta is pure run-to-run noise. The q4_0 deltas (−1.2% decode, −1.1% prefill) sit at that noise edge: q4_0
 is, at worst, a ~1% cost on this machine — the dequant arithmetic roughly pays for itself against the halved
 KV traffic, and the KV saving shows up as resident experts instead (next section). Single runs per cell, no
-repeats; the 2200-id prompt is `data/long-prompt-2200.ids` (ids 100..2299, the M1 baseline file).
+repeats; the 2200-id prompt (2199 tokens prefilled; the last id seeds generation) is
+`data/long-prompt-2200.ids` (ids 100..2299, the M1 baseline file; the engine's own line reads "prefill 2199
+tokens in 1 chunks").
 
 ## KV bytes and arena (`kvmem.sh`, logs in `logs/kvmem-*.log`)
 
@@ -99,7 +104,8 @@ The arithmetic and the log agree to 0.01 GB at both sizes. The planner spends th
 experts: the planned resident footprint is 31.2–31.3 GB in all four runs (cap 43.8 GB), and under q4_0 the
 expert arena holds 241 more expert slots at 32K, 494 more at 64K. RAM lines, copied as logged:
 32768: q4_0 "RAM 51.5 GB (30.6 GB available, 7.7 GB kept for macOS)" vs int8 30.3; 65536: q4_0 30.0 vs
-int8 29.3 — q4_0 leaves ~0.3–0.7 GB more available.
+int8 29.3 — q4_0 leaves ~0.3–0.7 GB more available (the Metal logs carry no watchdog line; the RAM planning
+lines are what was copied).
 
 ## Needles (`needle.py`, results in `needle-results.tsv`, logs in `logs/needle-*.log`)
 
@@ -122,6 +128,13 @@ injection and refused to repeat it (full reply in `needle-results.tsv`) — a be
 retrieval; every retrieved answer was the exact codeword. No partial retrievals in this pass. (A first pass
 at full-budget prompt lengths — before the 256-id margin fix — had one partial `MARBLE-7742` and one
 injection-suspicion miss at 16K; that pass is superseded and its per-case outcomes are in the task report.)
+
+Two disclosures on the needle form. The question ends with "The access code is" — a completion cue: the
+model completes that phrase rather than answers a neutral question; all arms share it, so the q4-vs-int8
+comparison is internally fair, but the 8/9 is under an easier phrasing than a neutral QA form. And the one
+miss has no int8 control at 90% depth (the controls ran at 50%), so it cannot be excluded the shared path
+would refuse there too; its reply was also cut at the 64-token budget mid-sentence — the injection-suspicion
+reasoning is explicit, a final refusal sentence is not.
 
 The q4_0 50%-depth engine logs were lost to a log-name collision with the int8 controls (same tag) and are
 not in `logs/`; those three cases' outcomes and replies are recorded in `needle-results.tsv`. The script
@@ -173,8 +186,10 @@ replaces FIXED's fp16 pin when passed. Without it the constructed engine args ar
 
 - `speed.sh`, `kvmem.sh`, `needle.py` — the runners (engine args = the `strata-q2_0.json` template).
 - `data/teacher-forced/` — the three LOGPOS TSVs + seg indexes + compare table/JSON + run logs.
-- `data/prompt-path/` — prompt-run indexes, stderr summaries, pcompare table (float logits not committed).
+- `data/prompt-path/` — prompt-run indexes, stderr summaries, pcompare table, `per-prompt.tsv` (float
+  logits not committed).
 - `data/speed-runs.txt`, `data/kvmem-runs.txt` — the tok/s and init lines the scripts print.
-- `data/long-prompt-2200.ids` — the 2200-id prefill prompt (ids 100..2299).
+- `data/long-prompt-2200.ids` — the 2200-id prefill prompt (ids 100..2299; 2199 tokens prefilled, the last
+  id seeds generation).
 - `logs/` — full engine logs for the speed, kvmem and needle runs.
 - `needle-run.txt`, `needle-results.tsv` — the needle matrix outcome.
