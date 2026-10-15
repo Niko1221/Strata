@@ -16229,7 +16229,7 @@ int main(int argc, char** argv) {
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
                                        " batch_groups=" + std::to_string(o.batch_groups) +
                                        " slot_read=" + std::to_string(slot_read_cap ? 1 : 0) +
-                                       (pipeline_active_rows ? " slot_padding_safe=1" : "")).c_str() : "");
+                                       (pipeline_active_rows ? " slot_padding_safe=1 slot_park=1" : "")).c_str() : "");
             if (strata::core::manifest::enabled()) {   // STRATA_MANIFEST: engine choice and budgets (a diagnostic; off by default)
                 auto& M = strata::core::manifest::instance();
                 M.engine("version", STRATA_VERSION);
@@ -18870,6 +18870,10 @@ int main(int argc, char** argv) {
             // (</think>) came first, with the session at exactly what was emitted (serve_hold_remaining); DONE says "hold".
             // Absent = as before.  An older engine skips the key (unknown keys are skipped), and says no "hold" in READY.
             long long req_hold_n = -1, req_hold_id = -1;
+            // STRATA_PIPELINE_ACTIVE_ROWS=1: park=B - when this request replaces the main session with another
+            // conversation, first copy the outgoing one into idle batch slot B (chosen by the server), so a short side
+            // request between two turns of a long solo conversation does not cost that conversation its cache
+            int req_park = -1;
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
@@ -18912,6 +18916,7 @@ int main(int argc, char** argv) {
                             if (ie != he + 1 && *ie == '\0' && hid >= 0) { req_hold_n = hn; req_hold_id = hid; }
                         }
                     }
+                    else if (key == "park") req_park = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
                     else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
@@ -19724,6 +19729,44 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: conversation cache: the reply this request replaces is not parked (%lld "
                                      "tokens past the turn checkpoint at %lld)\n", (long long) ((int64_t) live.size() - resume),
                              (long long) resume);
+            // park=B (see req_park).  Only when this prompt is another conversation (it continues less than
+            // half of what the main session holds), never into the slot this request restores from or runs in.
+            if (pipeline_active_rows && req_park >= 0 && req_park < (int) bs.size() && !bs[(size_t) req_park].active &&
+                req_park != admit_slot && req_park != slot_source && live_ok && !live.empty() &&
+                resume * 2 < (int64_t) live.size() && (!from_live || incoming || slot_source >= 0) && !pin_sibling) {
+                const auto t0 = Clock::now();
+                BSlot& sl = bs[(size_t) req_park];
+                if (copy_to_slot(req_park, live, err)) {
+                    sl = BSlot{};
+                    sl.cached = true;
+                    sl.ids = live;
+                    sl.cvec = cvec_cached;
+                    sl.img = !live_imgs.empty();   // pictures: not matched again by tokens alone
+                    const ConvCheckpoint* best = nullptr;
+                    for (const ConvCheckpoint& c : checks)
+                        if (c.ids.size() < live.size() && (best == nullptr || c.ids.size() > best->ids.size()) &&
+                            std::equal(c.ids.begin(), c.ids.end(), live.begin()))
+                            best = &c;
+                    if (best != nullptr && !sl.img) sl.checks.push_back(*best);
+                    std::fprintf(stderr, "strata batch: slot %d keeps the previous conversation (%zu tokens, copied in "
+                                         "%.1f ms)\n", req_park, live.size(),
+                                 std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+                    std::printf("PARKED %d %zu\n", req_park, sl.img ? (size_t) 0 : live.size());
+                } else {
+                    std::fprintf(stderr, "strata batch: parking into slot %d failed (%s)\n", req_park, err.c_str());
+                    err.clear();
+                    sl.cached = false;   // its sessions may be half written
+                    sl.checks.clear();
+                    std::printf("PARKED %d 0\n", req_park);
+                }
+                std::fflush(stdout);
+            } else if (req_park >= 0) {
+                std::fprintf(stderr, "strata batch: park=%d not used (rows=%d live_ok=%d live=%zu resume=%lld "
+                                     "from_live=%d source=%d admit=%d active=%d)\n", req_park,
+                             pipeline_active_rows ? 1 : 0, live_ok ? 1 : 0, live.size(), (long long) resume,
+                             from_live ? 1 : 0, slot_source, admit_slot,
+                             req_park < (int) bs.size() && bs[(size_t) req_park].active ? 1 : 0);
+            }
             // --conversation-cache-park-gain N: a park now would supersede the entry parked_prefix_tokens() reports (the copy
             // this conversation wrote last), so a conversation that advanced fewer than N tokens since then keeps it:
             // it still holds this conversation's prefix, and re-parking writes the whole snapshot only for the next
