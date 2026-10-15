@@ -315,13 +315,16 @@ __global__ void k_attn_prep(const float* qg, const float* kx, const float* vx, c
 /// cells [0, *pos0 + t].  Writes the chunk's partial accumulator, max and sum; chunks past the query's cells write
 /// nothing (the merge stops before them).  grid (n_chunk, n_rows), block 256, HD == 256.  KI8 / VI8 (--kv): the K / V
 /// cells dequantized with their group's FP16 scale on the fly (kc / vc the int8 codes, ks / vs the scales; a FP32
-/// store passes its scales as null).
+/// store passes its scales as null).  The int8 reads are vectorized (one uint2 per 8 K codes, one scale per kKVG
+/// group) and the V weights are pre-multiplied into shared memory once per block: the long-context decode is
+/// instruction-bound and this is where it shows.
 template <bool KI8, bool VI8>
 __global__ void k_attn_part(const float* q, const void* kc, const void* vc, const __half* ks, const __half* vs,
                             const int32_t* pos0, int t0, int H, int HKV, int ctx, float scale, int n_chunk,
                             float* pacc, float* pm, float* pl) {
     constexpr int HD = 256;
     __shared__ float qs[HD], sc[kChunkCells], sh[kThreads];
+    __shared__ float wv[HD / kKVG][kChunkCells];   // VI8: sc[k] * the V group's scale, once per block
     const int c = blockIdx.x, row = blockIdx.y;
     const int t = t0 + row / H, h = row % H, kvh = h / (H / HKV);
     const int npos = *pos0 + t + 1;
@@ -337,7 +340,14 @@ __global__ void k_attn_part(const float* q, const void* kc, const void* vc, cons
         if (KI8) {
             const int8_t* kp = ((const int8_t*) kc) + ((size_t) kvh * ctx + p) * HD;
             const __half* ksp = ks + ((size_t) kvh * ctx + p) * (HD / kKVG);
-            for (int i = 0; i < HD; ++i) a += (qs[i] * __half2float(ksp[i / kKVG])) * (float) kp[i];
+#pragma unroll 4
+            for (int i0 = 0; i0 < HD; i0 += 8) {   // one uint2 (8 int8 codes) and one scale per kKVG group
+                const uint2 raw = *reinterpret_cast<const uint2*>(kp + i0);
+                const int8_t* c8 = reinterpret_cast<const int8_t*>(&raw);
+                const float sg = __half2float(ksp[i0 / kKVG]);
+#pragma unroll
+                for (int x = 0; x < 8; ++x) a = fmaf(qs[i0 + x] * sg, (float) c8[x], a);
+            }
         } else {
             const float* kp = ((const float*) kc) + ((size_t) kvh * ctx + p) * HD;
             for (int i = 0; i < HD; ++i) a += qs[i] * kp[i];
@@ -353,9 +363,15 @@ __global__ void k_attn_part(const float* q, const void* kc, const void* vc, cons
     if (VI8) {
         const int8_t* vp = ((const int8_t*) vc) + ((size_t) kvh * ctx + p0) * HD;
         const __half* vsp = vs + ((size_t) kvh * ctx + p0) * (HD / kKVG);
-        const int grp = j / kKVG;
-        for (int k = 0; k < n; ++k)
-            acc += (sc[k] * __half2float(vsp[(size_t) k * (HD / kKVG) + grp])) * (float) vp[(size_t) k * HD + j];
+        __syncthreads();   // sc[] is complete; the weight table takes its per-cell values now
+        for (int x = j; x < (HD / kKVG) * n; x += kThreads) {
+            const int g = x / n, k = x - g * n;
+            wv[g][k] = sc[k] * __half2float(vsp[(size_t) k * (HD / kKVG) + g]);
+        }
+        __syncthreads();
+        const float* wr = wv[j / kKVG];
+        const int8_t* vj = vp + j;
+        for (int k = 0; k < n; ++k) acc = fmaf(wr[k], (float) vj[(size_t) k * HD], acc);
     } else {
         const float* vp = ((const float*) vc) + ((size_t) kvh * ctx + p0) * HD + j;
         for (int k = 0; k < n; ++k) acc += sc[k] * vp[(size_t) k * HD];
