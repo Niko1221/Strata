@@ -190,7 +190,7 @@ class SystemOneCalibrated(unittest.TestCase):
         self.assertEqual(st, 200)
         n = jev_calib.log_flush(self.dir)                 # the background flusher's exact drain
         self.assertGreaterEqual(n, 1)
-        log = (self.dir / "data" / "log.jsonl").read_text().strip().splitlines()
+        log = (self.dir / "data" / "log-L.jsonl").read_text().strip().splitlines()
         rows = [json.loads(x) for x in log]
         row = [r for r in rows if r["qid"] == "q4"][-1]
         self.assertIn("ts", row)
@@ -209,7 +209,7 @@ class SystemOneCalibrated(unittest.TestCase):
                                   {"Authorization": "Bearer k1"})
             self.assertEqual(st, 200)
             self.assertTrue(body["loaded"])
-            self.assertEqual(body["tuple"], "p-jevport-3090|iq3_xxs|none|v1|L|all")
+            self.assertEqual(body["modes"]["text(legacy)"]["tuple"], "p-jevport-3090|iq3_xxs|none|v1|L|all")
         finally:
             jev_calib.ADMIN_KEY = ""
 
@@ -219,7 +219,7 @@ class SystemOneCalibrated(unittest.TestCase):
             "T_choice": 1.0, "T_score": 1.0, "a_noul": 1.0, "c_noul": 0.0}))
         st, body = self._post("/admin/calib", {})
         self.assertEqual(st, 200)
-        self.assertEqual(body["tuple"], "hot|iq3_xxs|none|v1|L|all")
+        self.assertEqual(body["modes"]["text(legacy)"]["tuple"], "hot|iq3_xxs|none|v1|L|all")
         # identity now: choice answer back at raw softmax
         st, body = self._post("/v1/systemone", {
             "state": {"k": 1},
@@ -256,10 +256,12 @@ class PerTupleCalib(unittest.TestCase):
         pr, cid = jev_calib.apply("choice", [0.9, 0.1], "D")     # image D: its own T
         self.assertEqual(cid, "T_choice_v1")
 
-    def test_mode_without_fit_falls_back_to_text(self):
+    def test_L_falls_back_to_text_and_S_does_not(self):
         jev_calib._set_for_test(jev_calib.Calib(loaded=True, T_score=2.0), "")
-        pr, cid = jev_calib.apply("score", [0.8, 0.2], "S")      # S has no own fit
+        pr, cid = jev_calib.apply("score", [0.8, 0.2], "L")      # L shares the legacy fit
         self.assertEqual(cid, "T_score_v1")
+        _, cid = jev_calib.apply("score", [0.8, 0.2], "S")       # S: strict, no fallback
+        self.assertEqual(cid, "identity")
 
     def test_swap_loads_per_mode_files(self):
         import tempfile
@@ -275,3 +277,60 @@ class PerTupleCalib(unittest.TestCase):
             pr, cid = jev_calib.apply("choice", [0.9, 0.1], "D")
             self.assertEqual(cid, "T_choice_v1")
             self.assertGreater(pr[1], 0.1 / 0.9 * 0.5)  # T=4 flattens toward uniform
+
+
+class OpusPrereviewFixes(unittest.TestCase):
+    """R1/G3/G13 from /opt/data/reviews/jevport-prereview-opus.md (2026-10-15)."""
+
+    def setUp(self):
+        for m in ("", "L", "V", "D", "S"):
+            jev_calib._set_for_test(None, m)
+
+    def tearDown(self):
+        for m in ("", "L", "V", "D", "S"):
+            jev_calib._set_for_test(None, m)
+
+    def test_r1_image_modes_never_inherit_text_fit(self):
+        jev_calib._set_for_test(jev_calib.Calib(loaded=True, T_score=2.0), "")  # legacy text fit
+        _, cid = jev_calib.apply("score", [0.8, 0.2], "S")
+        self.assertEqual(cid, "identity")      # S: NO fallback to the text fit
+        _, cid = jev_calib.apply("score", [0.8, 0.2], "D")
+        self.assertEqual(cid, "identity")      # D: no own file -> identity
+        _, cid = jev_calib.apply("score", [0.8, 0.2], "")   # text legacy: falls back
+        self.assertEqual(cid, "T_score_v1")
+        _, cid = jev_calib.apply("score", [0.8, 0.2], "L")
+        self.assertEqual(cid, "T_score_v1")    # L shares the legacy fit
+
+    def test_g13_tuple_mismatch_refused(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "calib-S.json").write_text(
+                json.dumps({"T_score": 3.0, "tuple": "x|q|none|v1|D|image-direct"}))
+            loaded = jev_calib.swap(Path(td))
+            self.assertFalse(loaded["S"])          # D-tuple file refused for S
+            self.assertNotIn(True, [v for k, v in loaded.items() if k == "S"])
+
+    def test_g13_matching_tuple_accepted(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "calib-S.json").write_text(
+                json.dumps({"T_score": 3.0, "tuple": "x|q|none|v1|S|image-summary"}))
+            loaded = jev_calib.swap(Path(td))
+            self.assertTrue(loaded["S"])
+
+    def test_g3_log_flush_splits_by_tuple(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            jev_calib.log_enqueue({"tuple": "a|q|none|v1|L|noul", "qid": "x1", "type": "noul", "raw_p": [0.5, 0.5]})
+            jev_calib.log_enqueue({"tuple": "a|q|none|v1|D|noul", "qid": "x2", "type": "noul", "raw_p": [0.5, 0.5]})
+            jev_calib.log_enqueue({"tuple": "a|q|none|v1|S|noul", "qid": "x3", "type": "noul", "raw_p": [0.5, 0.5]})
+            n = jev_calib.log_flush(Path(td))
+            self.assertEqual(n, 3)
+            data = Path(td, "data")
+            self.assertTrue((data / "log-L.jsonl").exists())
+            self.assertTrue((data / "log-D.jsonl").exists())
+            self.assertTrue((data / "log-S.jsonl").exists())
+            self.assertFalse((data / "log.jsonl").exists())   # no mixed file anymore

@@ -123,7 +123,7 @@ class VMode(unittest.TestCase):
         n = jev_calib.log_flush(jev_calib.CALIB_DIR)
         self.assertGreaterEqual(n, 1)
         rows = [json.loads(x) for x in
-                (jev_calib.CALIB_DIR / "data" / "log.jsonl").read_text().splitlines()]
+                (jev_calib.CALIB_DIR / "data" / "log-V.jsonl").read_text().splitlines()]
         row = [r for r in rows if r["qid"] == "q1"][-1]
         self.assertTrue(row["tuple"].endswith("|V|choice"))
         self.assertEqual(len(row["v_d"]), 4)
