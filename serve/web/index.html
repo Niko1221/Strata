@@ -126,16 +126,22 @@
       <div class="monitor-row">
         <div class="st-card ctx-card">
           <span class="card-title">Context fill</span>
-          <div class="ctx-gauge">
-            <svg class="st-gauge" viewBox="0 0 120 120" aria-hidden="true">
-              <circle class="st-gauge__track" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round"
-                      stroke-dasharray="235.6 314.2" transform="rotate(135 60 60)"/>
-              <circle class="st-gauge__fill" id="ctx-fill" cx="60" cy="60" r="50" fill="none" stroke-width="10"
-                      stroke-linecap="round" stroke-dasharray="0 314.2" transform="rotate(135 60 60)"/>
-            </svg>
-            <div class="ctx-gauge__label"><span class="ctx-gauge__pct" id="ctx-pct">0%</span><span class="muted" id="ctx-sub">&ndash;</span></div>
+          <!-- A tachometer: the aggregate clock keeps the middle and the small per-slot clocks flank it, one column a
+               side.  The left column takes the odd one (2 of 3, 1 of 2, the lone one of 1) so the pair reads evenly
+               around the centre; both columns are hidden - and the big clock stays centred alone - with no slots. -->
+          <div class="ctx-dials">
+            <div class="ctx-slots" id="ctx-slots" hidden></div>
+            <div class="ctx-gauge">
+              <svg class="st-gauge" viewBox="0 0 120 120" aria-hidden="true">
+                <circle class="st-gauge__track" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round"
+                        stroke-dasharray="235.6 314.2" transform="rotate(135 60 60)"/>
+                <circle class="st-gauge__fill" id="ctx-fill" cx="60" cy="60" r="50" fill="none" stroke-width="10"
+                        stroke-linecap="round" stroke-dasharray="0 314.2" transform="rotate(135 60 60)"/>
+              </svg>
+              <div class="ctx-gauge__label"><span class="ctx-gauge__pct" id="ctx-pct">0%</span><span class="muted" id="ctx-sub">&ndash;</span></div>
+            </div>
+            <div class="ctx-slots ctx-slots--right" id="ctx-slots-right" hidden></div>
           </div>
-          <div class="ctx-slots" id="ctx-slots" hidden></div>
           <div class="bar-row"><span>Experts in VRAM</span><span class="muted" id="slots-text">&ndash;</span></div>
           <div class="st-progress"><div class="st-progress__bar" id="slots-bar" style="width:0%"></div></div>
           <div class="bar-row"><span>System RAM</span><span class="muted" id="ram-text">&ndash;</span></div>

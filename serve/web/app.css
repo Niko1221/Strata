@@ -109,17 +109,24 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-metric__spark[data-tone="info"] { color: var(--st-info); }
 .monitor-row { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2.4fr); gap: var(--st-s-4); }
 .ctx-card { display: flex; flex-direction: column; gap: var(--st-s-2); }
-.ctx-gauge { position: relative; width: 150px; height: 150px; margin: var(--st-s-2) auto var(--st-s-3); }
+/* Context fill, the tachometer: the aggregate clock keeps the middle and the per-slot clocks flank it, one column a
+   side and vertically centred on the big one.  When the count is odd the left column takes the extra (2 of 3, 1 of
+   2, the lone one of 1), so the pair reads evenly around the centre instead of leaving a gap; with no slots both
+   columns are gone and the big clock, an only child, stays centred. */
+.ctx-dials { display: flex; align-items: center; justify-content: center; gap: var(--st-s-2);
+             margin: var(--st-s-2) auto var(--st-s-3); }
+.ctx-gauge { position: relative; width: 150px; height: 150px; flex: none; }
 .ctx-gauge .st-gauge { width: 150px; height: 150px; }
 .ctx-gauge .st-gauge__fill { transition: stroke-dasharray 400ms var(--st-ease); }
 .ctx-gauge__label { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
                     font-size: var(--st-fs-xs); }
 .ctx-gauge__pct { font-weight: var(--st-fw-black); font-size: var(--st-fs-xl); line-height: 1.1; font-variant-numeric: tabular-nums; }
-/* Context fill: one small clock per batch slot under the aggregate one; its "s#N" sits over the slot's share.
-   The clock is 1.5x the 54px it was drawn at (no token is that size, so the factor is written down) and its two
-   lines grew with it, 12px -> --st-fs-lg, which is exactly 1.5x: the ring stays round and the label readable at
-   the size the ring now gives it.  The wider gap keeps the clocks apart in the four cases, 1 to 4 slots. */
-.ctx-slots { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--st-s-4); margin-bottom: var(--st-s-2); }
+/* Context fill: one small clock per batch slot, in the column that flanks the aggregate one on each side; its "s#N"
+   sits over the slot's share.  The clock is 1.5x the 54px it was drawn at (no token is that size, so the factor is
+   written down) and its two lines grew with it, 12px -> --st-fs-lg, which is exactly 1.5x: the ring stays round and
+   the label readable at the size the ring now gives it.  A column stacks its clocks vertically, two at most a side. */
+.ctx-slots { display: flex; flex-direction: column; align-items: center; gap: var(--st-s-2); flex: none; }
+.ctx-slots--right[hidden] { display: none; }                                   /* the class would beat [hidden] alone */
 .ctx-mini { position: relative; width: calc(54px * 1.5); height: calc(54px * 1.5); }
 .ctx-mini__gauge { width: calc(54px * 1.5); height: calc(54px * 1.5); }
 .ctx-mini .st-gauge__fill { transition: stroke-dasharray 400ms var(--st-ease); }

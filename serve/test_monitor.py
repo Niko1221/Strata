@@ -646,7 +646,7 @@ class SlotsOnTheCards(unittest.TestCase):
         # batching), means "no slots" - the state line stays empty and no clocks are drawn, and nothing prints
         # "undefined" or throws
         self.assertIn("Array.isArray(live.slots) ? live.slots.filter((s) => s) : []", js)
-        self.assertIn("wrap.hidden = !list.length", js)
+        self.assertIn("left.hidden = !list.length", js)   # both flank columns hide together; the big clock stays
 
 
 class TheAggregateClockAndTheSlotTexts(unittest.TestCase):
@@ -697,7 +697,52 @@ class TheAggregateClockAndTheSlotTexts(unittest.TestCase):
         self.assertIn(".ctx-mini__gauge { width: calc(54px * 1.5); height: calc(54px * 1.5); }", css)
         self.assertIn(".ctx-mini__slot { font-size: var(--st-fs-lg);", css)   # the label grew with the ring
         self.assertIn(".ctx-mini__pct { font-size: var(--st-fs-lg);", css)
-        self.assertIn(".ctx-slots { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--st-s-4);", css)
+        # the clocks now live in a column that flanks the big one, not in the wrapped row that sat under it
+        self.assertIn(".ctx-slots { display: flex; flex-direction: column; align-items: center; gap: var(--st-s-2); flex: none; }", css)
+
+
+class TheTachometerLayout(unittest.TestCase):
+    """The Context fill card's disposition: the aggregate clock keeps the middle and the per-slot clocks flank it,
+    one column a side and vertically centred on it - a dashboard tachometer, not the row of clocks that sat under
+    the big one.  The left column takes the odd one (2 of 3, 1 of 2, the lone one of 1); a right column with
+    nothing to draw stays hidden, so the card never reserves a gap for a clock that is not there.  Sizes and
+    numbers are untouched: this is shape only."""
+
+    WEB = Path(__file__).parent / "web"
+
+    def _files(self):
+        return ((self.WEB / "app.js").read_text(encoding="utf-8"),
+                (self.WEB / "app.css").read_text(encoding="utf-8"),
+                (self.WEB / "index.html").read_text(encoding="utf-8"))
+
+    def test_the_small_clocks_flank_the_big_one(self):
+        js, css, html = self._files()
+        # the wrapper and its three cells: a left column, the big clock, a right column - in that order
+        self.assertIn('class="ctx-dials"', html)
+        self.assertIn('id="ctx-slots"', html) and self.assertIn('id="ctx-slots-right"', html)
+        dials = html[html.index('class="ctx-dials"'):html.index('class="bar-row"')]
+        self.assertLess(dials.index('id="ctx-slots"'), dials.index('class="ctx-gauge"'))
+        self.assertLess(dials.index('class="ctx-gauge"'), dials.index('id="ctx-slots-right"'))
+        # the row centres its three cells and holds their middles level; the columns are a stack a side
+        self.assertIn(".ctx-dials { display: flex; align-items: center; justify-content: center; gap: var(--st-s-2);", css)
+        self.assertIn(".ctx-slots { display: flex; flex-direction: column; align-items: center;", css)
+        self.assertIn(".ctx-slots--right[hidden] { display: none; }", css)   # a full column, hidden, leaves no gap
+
+    def test_the_left_column_takes_the_odd_slot(self):
+        js, _, _ = self._files()
+        # ceil(n/2) to the left: 1 -> 1|0, 2 -> 1|1, 3 -> 2|1, 4 -> 2|2, the pair even around the middle
+        self.assertIn("const mid = Math.ceil(list.length / 2);", js)
+        self.assertIn("fillCtxColumn(left, list.slice(0, mid), ctx);", js)
+        self.assertIn("fillCtxColumn(right, list.slice(mid), ctx);", js)
+        # a right column with nothing stays hidden; the left still blanks when the engine declares no slot at all
+        self.assertIn("left.hidden = !list.length;", js)
+        self.assertIn("right.hidden = !list.length;", js)
+
+    def test_no_slot_counts_still_draws_the_big_clock_alone(self):
+        js, _, _ = self._files()
+        # the degrade is untouched: no live.slots -> both columns hidden, the big clock an only child, centred
+        self.assertIn("if (!list.length) { left.textContent = \"\"; right.textContent = \"\"; return; }", js)
+        self.assertNotIn("wrap.hidden", js)                                 # the old single-container name is gone
 
 
 if __name__ == "__main__":

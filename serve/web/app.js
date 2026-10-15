@@ -253,20 +253,31 @@ function renderTotals(t) {
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
-// Context fill: one small clock per batch slot under the aggregate one. A slot's used tokens are its own - the
-// request it runs (prompt read + tokens written) or, while idle, the tokens it holds for a next turn.
+// Context fill: one small clock per batch slot, in the column that flanks the aggregate one - the left column when
+// the count is odd takes the extra. A slot's used tokens are its own - the request it runs (prompt read + tokens
+// written) or, while idle, the tokens it holds for a next turn.
 function slotContextTokens(s) {
   return s.state === "idle" ? (s.held_tokens || 0) : ((s.prompt_tokens || 0) + (s.generated || 0));
 }
 function renderCtxSlots(slots, ctx) {
-  const wrap = $("ctx-slots");
+  const left = $("ctx-slots"), right = $("ctx-slots-right");
   const list = slots || [];
-  wrap.hidden = !list.length;                      // no batch slots (an engine without them): no clocks at all
-  if (!list.length) { wrap.textContent = ""; return; }
-  const key = list.map((s) => s.slot).join(",");   // rebuilt only when the slots change, so the rings keep their transition
-  if (wrap.dataset.slots !== key) {
-    wrap.dataset.slots = key;
-    wrap.innerHTML = list.map((s) => `
+  left.hidden = !list.length;                      // no batch slots (an engine without them): no clocks at all
+  right.hidden = !list.length;
+  if (!list.length) { left.textContent = ""; right.textContent = ""; return; }
+  // The tachometer: the big clock keeps the middle and the small ones go to its sides, one column a side and centred
+  // on it. The left column takes the odd one - 2 of 3, 1 of 2, the lone one of 1 - so a pair reads evenly around the
+  // centre; a right column with nothing to draw stays hidden, leaving no gap for a clock that is not there.
+  const mid = Math.ceil(list.length / 2);
+  fillCtxColumn(left, list.slice(0, mid), ctx);
+  fillCtxColumn(right, list.slice(mid), ctx);
+}
+// One column of clocks: each rebuilt only when its slots change, so the rings keep their transition.
+function fillCtxColumn(el, items, ctx) {
+  const key = items.map((s) => s.slot).join(",");
+  if (el.dataset.slots !== key) {
+    el.dataset.slots = key;
+    el.innerHTML = items.map((s) => `
       <div class="ctx-mini">
         <svg class="st-gauge ctx-mini__gauge" viewBox="0 0 120 120" aria-hidden="true">
           <circle class="st-gauge__track" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round"
@@ -276,8 +287,8 @@ function renderCtxSlots(slots, ctx) {
         <div class="ctx-mini__label"><span class="ctx-mini__slot">s#${esc(s.slot + 1)}</span><span class="ctx-mini__pct"></span></div>
       </div>`).join("");
   }
-  list.forEach((s, i) => {
-    const mini = wrap.children[i];
+  items.forEach((s, i) => {
+    const mini = el.children[i];
     const frac = ctx ? Math.min(1, slotContextTokens(s) / ctx) : 0;
     const arc = mini.querySelector(".st-gauge__fill");
     arc.setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
