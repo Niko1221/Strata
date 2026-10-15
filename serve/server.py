@@ -2758,7 +2758,11 @@ class Vision:
         except Exception:
             return None                       # unreadable source: let encode() produce the proper error later
         with self.lock:
-            return self.cache.get(key)
+            entry = self.cache.get(key)
+            if entry is not None:
+                self.cache[key] = self.cache.pop(key)   # most recently used last, as encode() does on a hit: the
+            return entry                                # re-sent pictures this answers for are the ones that must
+                                                        # not be the first evicted when the 64 entries fill up
 
     def encode_all(self, sources: list, cancel=None) -> list[tuple[Path, int]]:
         """encode() for every image of one request: the files of this request's earlier images are never evicted to
@@ -4689,7 +4693,8 @@ class Service:
             # Pictures the encoder already know never wake it: the hash cache and its .sve files survive an elastic
             # unload, and most clients re-send every picture of the conversation on every turn - a text-only turn
             # would otherwise pay the elastic start (a few seconds + the VRAM the expert cache gives up) on a hit.
-            cached = [self.vision.cached(src) for src in images] if hasattr(self.vision, "cached") else [None] * len(images)
+            cached = ([self.vision.cached(src) for src in images] if getattr(self.vision, "elastic", False)
+                      and hasattr(self.vision, "cached") else [None] * len(images))
             if all(c is not None for c in cached):
                 encoded = cached
             else:
