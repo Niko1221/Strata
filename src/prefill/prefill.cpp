@@ -9,6 +9,7 @@
 #include "wmma_gemm.h"
 #include "strata/core/mtp.hpp"
 #include "strata/core/pinned_ring.hpp"
+#include "strata/prefill/prompt_uploads.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/core/on_device.hpp"
 #include "strata/platform/aux_cpus.hpp"
@@ -2733,7 +2734,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             if (row) {
                 // #1996: the picture's rows live in the caller's (pageable) memory.  A run of consecutive rows is
                 // gathered into one pinned slot and goes up as one copy; the slot is guarded by its event.
-                const int64_t row_bytes = N * 4, run_max = std::max<int64_t>(1, (4 << 20) / row_bytes);
+                const int64_t row_bytes = N * 4, run_max = picture_run_rows(row_bytes);
                 int64_t t1 = t + 1;
                 while (t1 < T && t1 - t < run_max && embd_rows[p0 + t1]) ++t1;
                 void* stage = m.up_ring.acquire((size_t) ((t1 - t) * row_bytes));
@@ -5033,19 +5034,18 @@ bool Prefill::drain_pipeline(std::string& err) {
     return ok;
 }
 
-bool Prefill::reserve_uploads(int64_t T) {
+bool Prefill::reserve_uploads(int64_t T, bool pictures) {
     bool ok = true;
     if (impl_ != nullptr && T > 0) {
         Impl& m = *impl_;
         const core::OnDevice on_device(m.device);   // (the ring is the device's that is current at its first use)
-        // a text chunk's largest pageable uploads through the ring: the routing tables (and their ids down, T x K
-        // each); the PLE rows when they could not be pinned (T x N).  A picture's rows are not covered.
-        size_t bytes = (size_t) (T * K) * sizeof(int32_t);
-        if (!m.ple_pageable[0].empty() || !m.ple_pageable[1].empty())
-            bytes = std::max(bytes, (size_t) (T * N) * sizeof(float));
-        ok = m.up_ring.reserve(bytes);
+        // a chunk's largest pageable upload through the ring: the routing tables (and their ids down, T x K each);
+        // the PLE rows when they could not be pinned (T x N); with pictures, a run of a picture's rows
+        const bool ple_pageable = !m.ple_pageable[0].empty() || !m.ple_pageable[1].empty();
+        ok = m.up_ring.reserve((size_t) prompt_upload_bytes(T, K, N, ple_pageable, pictures));
     }
-    if (next_ != nullptr) ok = next_->reserve_uploads(T) && ok;
+    // (a later stage reads the rows the stage before hands on, never a picture's)
+    if (next_ != nullptr) ok = next_->reserve_uploads(T, false) && ok;
     return ok;
 }
 

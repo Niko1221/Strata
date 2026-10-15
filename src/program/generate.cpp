@@ -13178,8 +13178,10 @@ int main(int argc, char** argv) {
                 // draft K/V, STRATA_SPLIT_MTP_BATCH: a free waits for the device), where serving a doorbell makes a
                 // CUDA call (--pcie-mode dma, the Foresight swap space STRATA_FS_SLOTS, the helper caches), and where
                 // the expert source recycles the buffers it hands out (the GGUF in place, an unbuffered source, the
-                // I/O read-ahead: one thread at a time).  Pictures are read the usual way (their rows go up through
-                // pinned slots of a size known only then).
+                // I/O read-ahead: one thread at a time).  A prompt with pictures is read this way too: its rows go up
+                // through the prompt path's pinned slots in runs of at most 4 MiB, and the slots are grown to that
+                // before the read (prompt_uploads.hpp).  It does not give way (give_way), so a BYIELD does not stop
+                // its run.  STRATA_PIPED_CONCURRENT_PICTURES=0 reads it the usual way (an A/B).
                 static const bool pr_conc = [&] {
                     const char* v = std::getenv("STRATA_PIPED_CONCURRENT");
                     if (v == nullptr || std::atoi(v) == 0) return false;
@@ -13203,13 +13205,18 @@ int main(int argc, char** argv) {
                     }
                     return true;
                 }();
-                if (piped && pr_conc && req_imgs.empty()) {   // (with no slot decoding it only watches for a BYIELD)
+                static const bool pr_conc_pics = [] {
+                    const char* v = std::getenv("STRATA_PIPED_CONCURRENT_PICTURES");
+                    return v == nullptr || std::atoi(v) != 0;
+                }();
+                // (with no slot decoding it only watches for a BYIELD)
+                if (piped && pr_conc && (req_imgs.empty() || pr_conc_pics)) {
                     // the drafter's prompt pass captures its graphs and grows its records at first use, and the
                     // prompt path's pinned upload slots grow at their first larger upload: done here, with nothing in
                     // flight (on the reader's thread a capture, an allocation or a free takes the driver's lock and
                     // can wait for the device, #31)
                     if (use_mtp && !mtp.reserve_prefill(C, e)) return false;
-                    if (!sp.reserve_uploads(C))
+                    if (!sp.reserve_uploads(C, !req_imgs.empty()))
                         std::fprintf(stderr, "strata batch: the prompt path's pinned upload slots could not be "
                                              "reserved (they grow at first use)\n");
                     // where the read's thread and the doorbell thread run: on Linux a thread inherits its creator's
@@ -13376,14 +13383,19 @@ int main(int argc, char** argv) {
                                     return done.load(std::memory_order_acquire) || in_lines.size() != seen;
                                 });
                             // a BSTOP that came meanwhile ends its slot at its next window; a BYIELD ends the read at
-                            // its next chunk
+                            // its next chunk (not one with pictures: it does not give way, give_way)
                             for (auto it = in_lines.begin(); it != in_lines.end();) {
                                 if (it->rfind("BSTOP ", 0) == 0) {
                                     const int b = std::atoi(it->c_str() + 6);
                                     if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
                                     it = in_lines.erase(it);
                                 } else if (it->rfind("BYIELD ", 0) == 0 && want_yield.load() < 0) {
-                                    want_yield.store(std::atoi(it->c_str() + 7), std::memory_order_release);
+                                    const int ys = std::atoi(it->c_str() + 7);
+                                    if (req_imgs.empty())
+                                        want_yield.store(ys, std::memory_order_release);
+                                    else
+                                        std::fprintf(stderr, "strata batch: BYIELD %d not taken: the prompt has "
+                                                             "pictures\n", ys);
                                     it = in_lines.erase(it);
                                 } else {
                                     ++it;

@@ -202,11 +202,12 @@ public:
     /// for its grouping on the host; a policy may count them. Not called on the paths that keep the ids on the GPU.
     std::function<void(int64_t layer, const int32_t* ids, int64_t n)> on_routes;
     int64_t stopped_at() const { return stopped_at_; }
-    /// Grows this stage's (and the later stages') pinned upload slots to what a text chunk of `T` tokens uploads, so
-    /// a run of such chunks allocates no pinned memory (STRATA_PIPED_CONCURRENT: an allocation or free on the read's
-    /// thread takes the driver's lock).  Before the run, with nothing of this path in flight.  False: a slot could
-    /// not be had (it then grows at first use, as before).
-    bool reserve_uploads(int64_t T);
+    /// Grows this stage's (and the later stages') pinned upload slots to what a chunk of `T` tokens uploads - with
+    /// `pictures`, a run of a picture's rows too (prompt_uploads.hpp) - so a run of such chunks allocates no pinned
+    /// memory (STRATA_PIPED_CONCURRENT: an allocation or free on the read's thread takes the driver's lock).  Before
+    /// the run, with nothing of this path in flight.  False: a slot could not be had (it then grows at first use, as
+    /// before).
+    bool reserve_uploads(int64_t T, bool pictures = false);
 
     /// The vision path: HOST rows (n_embd floats) indexed by absolute position, read in place of the token
     /// embedding where non-null (an image's <|image_pad|> cells).  Null (default): every position embeds its token.
