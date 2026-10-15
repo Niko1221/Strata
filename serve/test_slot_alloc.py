@@ -529,6 +529,20 @@ class ParkMainSession(unittest.TestCase):
         self.assertEqual(e._claim_park([1] * 60), "")
         self.assertFalse(any(e.slot_busy))
 
+    def test_an_expired_history_worth_less_than_the_keep_score_takes_the_park(self):
+        e = self.e()
+        e.slot_held = [[b] * 40000 for b in range(6)]     # every slot holds another conversation
+        e.slot_used = [self.NOW - 3600] * 6                # all expired
+        self.assertIsNone(self.dest(e))                    # each still worth keeping: nowhere to park
+        e.slot_held[1] = [1] * 1000                        # a short side chat, below EXPIRED_KEEP_SCORE
+        e.slot_held[4] = [4] * 2000
+        e.slot_busy[0] = True
+        self.assertEqual(self.dest(e), 4)                  # the less loaded group (slot 1 shares one with busy 0)
+        e.slot_busy[0] = False
+        self.assertEqual(self.dest(e), 1)                  # same load: the lowest score
+        e.slot_used[1] = self.NOW                          # protected: not a park target
+        self.assertEqual(self.dest(e), 4)
+
     def test_admission_slot_is_never_the_park_slot_and_claim_is_released(self):
         e = self.e()
         self.assertNotEqual(self.dest(e, exclude=(0,)), 0)
