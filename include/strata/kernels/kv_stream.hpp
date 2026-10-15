@@ -23,12 +23,17 @@
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 
+#include <cstddef>
 #include <cstdint>
 
 namespace strata::kernels {
 
 /// The host copy of one layer's K/V: device-mapped pointers (UVA) into pinned memory, identity layout
 /// `[block][kv_head][page_size][head_dim]`. All null when the layer is fully resident.
+///
+/// A shared KV pool (core/kv_pool.hpp) points every session's host copy at the same arrays and gives each session
+/// a chunk table: block b of the session is block `block(b)` of the arrays, where a chunk is `1 << chunk_shift`
+/// consecutive blocks. Without a table (`chunk == nullptr`) the layout is the identity, as above.
 struct KvHostPools {
     uint16_t* k_pool = nullptr;   ///< fp16 mode
     uint16_t* v_pool = nullptr;
@@ -38,7 +43,44 @@ struct KvHostPools {
     uint16_t* v_scale = nullptr;
     uint8_t* k_q4 = nullptr;      ///< q4_0 mode (kv_q4.hpp): block_q4_0 codes, 144 B per cell and head
     uint8_t* v_q4 = nullptr;
+    const int32_t* chunk = nullptr;       ///< pool: logical chunk -> physical chunk, device memory (kernels read it)
+    const int32_t* chunk_host = nullptr;  ///< the same table in host memory (the DMA movers read it)
+    int chunk_shift = 0;                  ///< log2 of the blocks in a chunk
     bool present() const { return k_pool != nullptr || k_q != nullptr || k_q4 != nullptr; }
+#if defined(__CUDACC__) || defined(__HIPCC__)
+    /// Block `b` of this session in the arrays (device code).
+    __device__ __forceinline__ long long block(long long b) const {
+        if (chunk == nullptr) return b;
+        return ((long long) chunk[b >> chunk_shift] << chunk_shift) | (b & ((1ll << chunk_shift) - 1));
+    }
+#endif
+    /// Block `b` of this session in the arrays (host code).
+    long long block_host(long long b) const {
+        if (chunk_host == nullptr) return b;
+        return ((long long) chunk_host[b >> chunk_shift] << chunk_shift) | (b & ((1ll << chunk_shift) - 1));
+    }
+    /// Consecutive blocks from `b` that stay consecutive in the arrays (to the end of b's chunk), at most `n`.
+    long long contiguous(long long b, long long n) const {
+        if (chunk_host == nullptr) return n;
+        const long long left = (1ll << chunk_shift) - (b & ((1ll << chunk_shift) - 1));
+        return left < n ? left : n;
+    }
+    /// Bytes [at, at + n) of one array as the session numbers them (block b at b * block_bytes), cut where a chunk
+    /// ends: f(offset in the array, bytes already given, piece length) for each piece, in order; false as soon as f
+    /// says false. Without a chunk table the bytes are one piece at `at`.
+    template <class F>
+    bool for_each_piece(std::size_t block_bytes, std::size_t at, std::size_t n, F&& f) const {
+        if (chunk_host == nullptr || block_bytes == 0) return n == 0 || f(at, std::size_t(0), n);
+        for (std::size_t done = 0; done < n;) {
+            const std::size_t pos = at + done, in = pos % block_bytes;
+            const long long b = (long long) (pos / block_bytes);
+            const std::size_t room = (std::size_t) contiguous(b, (long long) 1 << 40) * block_bytes - in;
+            const std::size_t len = room < n - done ? room : n - done;
+            if (!f((std::size_t) block_host(b) * block_bytes + in, done, len)) return false;
+            done += len;
+        }
+        return true;
+    }
 };
 
 /// The KV storage format, for the functions below that move whole blocks (`fmt`): fp16, int8 (+ scales), q4_0, and
@@ -51,14 +93,18 @@ enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3 };
 /// staging pool) is written by the same calls that write its VRAM pools: K is "int8 whose V is K", V is "q4_0 whose
 /// K is V" - the folded duplicate the hybrid appends already make (layer.cpp).  Both fields of a half point at the
 /// same array on purpose: the kernels test the K-side pointer for presence and pick K or V per lane.
+/// The halves carry the session's chunk table too (a shared KV pool, core/kv_pool.hpp): without it a pooled K8V4
+/// layer's cells would land in the pool at their session block numbers, in other sessions' chunks.
 inline KvHostPools kv_hybrid_k_half(const KvHostPools& h) {
     KvHostPools r;
     r.k_q = h.k_q; r.v_q = h.k_q; r.k_scale = h.k_scale; r.v_scale = h.k_scale;
+    r.chunk = h.chunk; r.chunk_host = h.chunk_host; r.chunk_shift = h.chunk_shift;
     return r;
 }
 inline KvHostPools kv_hybrid_v_half(const KvHostPools& h) {
     KvHostPools r;
     r.k_q4 = h.v_q4; r.v_q4 = h.v_q4;
+    r.chunk = h.chunk; r.chunk_host = h.chunk_host; r.chunk_shift = h.chunk_shift;
     return r;
 }
 

@@ -83,6 +83,17 @@ costs ~13.7 KB of RAM per context token (1.7 GB at 128K). Existing installs: run
 it on. Setup turns it on when the RAM has room for it; `--kv-streaming on|off` overrides that (on past the RAM test with a
 note; never under WSL, which cannot stream).
 
+**One KV pool for all the sessions (`--kv-pool-tokens N`, with `--kv-resident`; ported from PR #1011 by xdbxdbx):**
+KV streaming pins the whole context's K/V per session, so `--batch` slots plus the main session pin (slots + 1) x the
+context (15.5 GiB for four slots at 262,144 cells, 8-bit KV). With the pool, N cells per QSA layer are pinned once
+(524,288 cells: 6.2 GiB) and a session holds only the 4,096-cell chunks its conversation has reached; a conversation
+moves between the main session and a slot by swapping chunks (its checkpoint chain moves with them, so a prompt with an
+edited last message still resumes from a periodic checkpoint: both lanes of two 133k conversations reuse 118,784 tokens;
+at 256k per lane that needs `--conversation-cache-mib` of at least 4528), and when the pool is full an idle slot's cached
+conversation gives way, then a new request is refused (HTTP 503, `Retry-After`, `kv_pool_full`) or a decoding lane ends
+`length` with `"truncated": true`. It works across a layer split. Details and the behaviour when it is full:
+docs/BATCHING.md.
+
 **4-bit KV cache (engine 0.1.8, optional):** `START-HERE.bat --setup` asks above 8K context (or pass `--kv q4_0`). It
 halves the KV cache's memory with a Hadamard rotation before 4-bit rounding (PR #21), about 4% faster at 128K, but it
 is measurably less precise on long documents (perplexity +8-12%; needle tests still pass). 8-bit stays the default.
@@ -1033,6 +1044,13 @@ requests' length keeps the long conversation parked. The check runs before `make
 nothing and stores nothing; the log line is `conversation cache: skip parking (N tokens, below the M minimum;
 parked=P)`. 0 is the pre-flag behaviour and the flag leaves the answers untouched - it only decides which
 conversations keep a slot.
+
+The K/V retained after a restore belongs to the conversation it was restored from: the engine remembers that
+conversation's tokens and pictures, and a later parking may only reuse the bytes of the prefix two conversations
+actually share. When the session gives its conversation up - it moved into a batch slot (the shared KV pool,
+`--kv-pool-tokens`), the request was cancelled, the session was reset - the retained K/V is dropped with it
+instead of waiting to be mistaken for another conversation's.
+
 `--conversation-cache-min-free-mib N` (default 2560) additionally requires that
 RAM headroom remain available: the engine checks before allocation (against the
 snapshot's estimated size, less the K/V it already retains) and again after capture.

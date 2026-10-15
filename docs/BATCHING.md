@@ -97,7 +97,8 @@ the count the engine reports (`INFO batch_slots=N`), and `GET /v1/status` says i
 
 Every slot's session takes VRAM that the expert cache would otherwise hold: 0.56 GiB at a 32K context with 8-bit
 KV, more with a longer context unless the KV cache streams (`--kv-resident`: then only the attention's 32K window
-stays in VRAM, and each slot's whole KV cache takes pinned RAM - 1.6 GB at 128K). On a card whose experts mostly run
+stays in VRAM, and each slot's whole KV cache takes pinned RAM - 1.6 GB at 128K - unless `--kv-pool-tokens` makes the
+sessions share one pool, below). On a card whose experts mostly run
 on the CPU, a batch also reads about as many distinct experts as the requests one by one (different conversations
 route to different experts), so the gain is in **latency** (nobody waits for a whole answer), and a request alone
 runs slower (the smaller expert cache): 11-24 % on a 12 GB card, see the measurements below.
@@ -108,6 +109,93 @@ slots, and the slots may take at most a fifth of it, up to 4 slots. With Q2_0 at
 card, 4 from 32 GB or on a split such as 2 x 16 GB; IQ3_S needs 32 GB or a split. Everywhere else (any 12 or 16 GB
 card alone) it stays at one at a time and setup says: "parallel N reduces waiting for several users but costs
 about 10-25% speed per request on this card". `--parallel N` is honoured as asked either way.
+
+### One pinned KV pool for the lanes (`--kv-pool-tokens`)
+
+With KV streaming (`--kv-resident`) the whole KV cache of every session lives in pinned RAM, so the main session and
+each slot pin the **full** `--max-context` even when their conversations are short: at 262,144 cells and 8-bit KV that is
+about 3.1 GiB each, 15.5 GiB for four slots and the main session. `--kv-pool-tokens N` pins N cells per QSA layer
+**once** (about 12.7 KB a cell with `--kv int8`: 524,288 cells are 6.2 GiB), and a session holds only the 4,096-cell
+chunks its conversation has reached.
+
+```
+"args": [ ..., "--batch", "4", "--max-context", "262144", "--kv", "int8", "--kv-resident", "32768",
+           "--kv-pool-tokens", "524288" ]
+```
+
+- N must hold one whole context (`--max-context`) and needs `--kv-resident` with a context longer than the resident
+  cells; the engine refuses it otherwise at start. It works on one GPU and across the cards of a layer split: each
+  card pins its own QSA layers' share of the pool, and a conversation's chunks are the same on every card.
+- A conversation moves between the main session and a slot (a request admitted into a slot, a slot handing its
+  conversation back to the solo path) by **exchanging chunks**, not copying them: 52-79 ms for 140-151K tokens
+  against ~1.0-1.1 s copied (PR #1011, single RTX 4090); the pool never holds a conversation twice. A prompt read that
+  gives way to a short request (`BYIELD`) still copies.
+  The conversation's **checkpoint chain** (root, periodic and last-turn checkpoints) moves with its chunks, since a
+  checkpoint is only usable beside the K/V below it: a slot that takes a conversation keeps all of them, and a
+  conversation handed back to the solo path brings them along. Without that, a client that changes its last
+  question (or re-renders its history) in a later turn finds no checkpoint below the change and reads everything again.
+  What a changed last question needs, measured with two lanes on 2 x RTX 3080 20 GB: it resumes from the deepest
+  **periodic** checkpoint (one every `--prompt-cache-every` read tokens, 16,384 by default) below the change, so an edit
+  below the first periodic checkpoint reuses nothing (a 30k-token prompt: 0 on both lanes; a 60k one: 31,232), and the
+  idle lane's parked image has to fit `--conversation-cache-mib`. At about 133k tokens per lane the default 4096 is
+  enough: both lanes reuse 118,784 tokens and the first token comes after 24.5 s and 13.3 s instead of 142 s and 53 s.
+  At 256k per lane both lanes reuse (225,792 tokens) only with `--conversation-cache-mib` of at least 4528 (one parked
+  image with its 6 checkpoints; 4608 tested); at 4096 one lane reads its 256k again. Each cached slot now keeps up to
+  `--prompt-cache` (6) checkpoints, about 0.7 GB of host RAM per slot; they are moved from the main session, not
+  copied. A turn that only appends to the history needs none of this (133k per lane: 133,287 and 133,306 tokens
+  reused).
+- **When the pool is full**, in this order: an idle slot's cached conversation gives its K/V back (a slot holding
+  nothing worth keeping first, then the one used longest ago, a prompt read that gave way last - and nobody at all when
+  every idle slot together would not cover what is needed); then a **new request is refused** (`ERR KV pool full`:
+  the server answers **503 with `Retry-After: 10`**, `error.code: "kv_pool_full"`; in a stream the error event carries
+  that code, and on `/v1/messages` it is an `overloaded_error`, which Anthropic's clients retry); and a **decoding lane
+  that cannot grow ends** with `finish_reason: "length"` and `"truncated": true` (llama.cpp's field).
+- `GET /metrics` shows the pool as `live.kv_pool`: `cells` in all, `free`, `main` (cells the main session holds) and
+  `slots` (one count per slot), updated whenever a chunk moves. A request refused for a full pool is not in a slot:
+  it did not start.
+- The slot sessions borrow the main session's RoPE table (64 MiB each at 262K) with or without the pool.
+- The MTP drafter's K/V ring (the solo drafter's, and each `--batch-mtp` slot drafter's on a layer split) is not in the
+  pool: it keeps its own pinned-RAM copy, as without the pool.
+- Without `--kv-pool-tokens` nothing changes: each session pins its own copy, as before.
+- The conversation cache (`--conversation-cache-mib`, parked conversations in ordinary RAM) and the session files
+  (`SAVE`/`RESTORE`, single-session only) read and write the K/V through the same chunk tables; a restore reserves its
+  chunks first and is refused (retryable) when the lanes hold the pool.
+
+Measured on 2 x RTX 3080 20 GB (PCIe 3.0, no NVLink), a layer split, UD-Q4_K_XL, with
+`--max-context 262144 --kv int8 --kv-resident 32768 --kv-pool-tokens 524288`.
+
+Pool against per-session buffers, the same binary with and without `--kv-pool-tokens` (engine 0.1.41 plus our patches
+including the pool; `"parallel": 2`, `--batch-mtp`, a 90 GiB container; 3 restarts with the pool, 2 without, each
+restart measured separately):
+
+| | with the pool | without the pool |
+|---|---|---|
+| Pinned shared memory while serving | 72.0-72.2 GiB | 75.1 GiB (3.1 GiB more) |
+| Lowest `MemAvailable` | 11.1-12.2 GiB | 8.0 GiB |
+| Two streams decoding together (aggregate, median) | 89.2 tok/s (n=60) | 87.7 tok/s (n=40) |
+| One stream decoding (median) | 81.7 tok/s (n=72) | 82.5 tok/s (n=48) |
+| Prompt read at 25k / 51k / 104k tokens (the last pool restart against both restarts without) | 2048 / 2200 / 2638 tok/s | 2050 and 1980 / 2169 and 2202 / 2661 and 2655 tok/s |
+
+The engine accepted both layouts without a warning, and the expert caches came out the same size to within a few
+slots (4,209-4,211 on the second card; 4,136 in one restart with the pool). The two-stream
+difference is 1.7% (95% interval 0% to 3.6%) in favour of the pool and lies within the 2-3% spread of the same
+configuration across restarts: no change in speed was measured, in either direction. The 3.1 GiB is what the arithmetic
+gives for two slots and the main session: three sessions of 262,144 cells are 1.5 times the pool's 524,288 cells
+(6.24 GiB). Each further slot adds about that much without the pool and nothing with it (arithmetic; no run with three
+or more slots was made).
+
+Pool behaviour, measured earlier on engine 0.1.40.3 plus the pool (one run each):
+
+| | |
+|---|---|
+| Pinned for the pool | 6.24 GiB for 524,288 cells (both stages together) |
+| Two lanes (`"parallel": 2`), each up to 262,144 tokens | share the one pool |
+| Four lanes (`"parallel": 4`), four concurrent 133,865-token prompts (556K tokens against the 524K pool, a 233K conversation already held) | all answered 200, each lane returned its own needle; the "KV pool full: slot N gives back its cached conversation" path ran |
+| A 134K-token conversation moved between the main session and a slot | about 0.2 s (chunk-table swap, no copy) |
+
+Not measured: the move time and the pool-full paths on engine 0.1.41 (the comparison above did not exercise them),
+requests near 262K tokens in both lanes at once in the comparison, three or more slots, HIP, SYCL, three or more cards,
+a single 512K conversation (it needs `--rope-scaling yarn --rope-scale 2`).
 
 ## How the server uses the slots
 
@@ -133,11 +221,14 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
   half as long is waiting, the server sends `BYIELD`; at its next chunk boundary the long read stops, the part read
   so far is copied into a slot, the short request is admitted, and the long one then goes on from its slot with the
   same chunks (at most twice per request).
-- **Each slot is a conversation cache.** A finished slot keeps what it holds (the prompt, the answer, and the
-  checkpoint at the prompt's last turn boundary); the next turn of that conversation goes to that slot and the
-  engine copies its state back (50-60 ms for a short conversation) instead of reading the history again - also for
+- **Each slot is a conversation cache.** A finished slot keeps what it holds (the prompt, the answer, and its
+  checkpoints: all of its chain with `--kv-pool-tokens`, otherwise the one at the prompt's last turn boundary); the
+  next turn of that conversation goes to that slot and the engine copies its state back (50-60 ms for a short
+  conversation) instead of reading the history again - also for
   a client that drops the reply's thinking from the history (the checkpoint matches up to the new turn). A new
-  conversation takes an empty slot, else the one used longest ago.
+  conversation takes an empty slot, else the one used longest ago; a request whose prompt shares at least three
+  quarters of a slot's held tokens (a changed last question, a reply re-rendered without its thinking) counts as that
+  conversation's next turn even though the held tokens are no longer a prefix, so it never takes another lane's slot.
 - Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 
@@ -269,6 +360,13 @@ whose conversation was parked is restored on every stage before its admission, s
 several chats that alternate, come back without reading their history again. Measured on the same 4-GPU split,
 two long conversations alternating through the HTTP server: the first turns took 3.9 s and 5.7 s to the first token
 (their prompts read), the follow-ups 0.53 s and 0.46 s.
+
+With the shared KV pool (`--kv-pool-tokens`) a solo conversation moves into its slot when admitted (the main
+session keeps nothing of it), and a parked conversation's K/V is captured through the pool's chunk table and
+restored through the same table into chunks the returning request has reserved. The K/V a restore kept for the
+next parking belongs to the conversation it came from: when the session gives its conversation up, that retained
+storage is dropped, so a parked image never carries another conversation's bytes. This combination is reviewed
+and CPU-tested (`conversation_cache_test`); it has not yet been measured on GPUs.
 
 ## Testing
 
