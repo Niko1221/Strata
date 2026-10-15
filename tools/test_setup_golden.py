@@ -24,6 +24,10 @@ sys.path.insert(0, str(ROOT))
 import setup  # noqa: E402
 
 GOLDEN = Path(__file__).with_name("test_setup_golden.json")
+# The engine names without the platform's extension: the baseline holds whatever the platform that recorded it wrote,
+# so the compare has to match both spellings.  strata-vision.exe on Windows, strata-vision on Linux.
+EXE_BASE = setup.EXE[:-4] if setup.EXE.endswith(".exe") else setup.EXE
+VEXE_BASE = setup.VEXE[:-4] if setup.VEXE.endswith(".exe") else setup.VEXE
 
 
 def card(i, name, vram, arch):
@@ -49,6 +53,22 @@ class FakeGGUF:
         self.tensors = [types.SimpleNamespace(name=n) for n in names]
 
 
+def canonical(s: str) -> str:
+    """Either platform's spelling of an engine name to one placeholder: the baseline holds whatever the system that
+    recorded it wrote (strata-vision.exe from Windows, strata from Linux), and the compare runs on both."""
+    s = re.sub(rf"(?<![w.-]){re.escape(EXE_BASE)}(?:\.exe)?(?![w.-])", "<EXE>", s)   # #973: only the whole name, not "strata-x.log" on Linux
+    return re.sub(rf"(?<![w.-]){re.escape(VEXE_BASE)}(?:\.exe)?(?![w.-])", "<VEXE>", s)   # the vision encoder's exe too
+
+
+def canonical_all(v):
+    """canonical() through a config read back from the baseline, so a Windows-recorded file compares on Linux."""
+    if isinstance(v, dict):
+        return {k: canonical_all(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [canonical_all(x) for x in v]
+    return canonical(v) if isinstance(v, str) else v
+
+
 def normalize(v, t: Path):
     """The config with the temp folder and the platform's names taken out (it compares on Windows and Linux)."""
     if isinstance(v, dict):
@@ -56,7 +76,7 @@ def normalize(v, t: Path):
     if isinstance(v, list):
         return [normalize(x, t) for x in v]
     if isinstance(v, str):
-        return re.sub(rf"(?<![w.-]){re.escape(setup.EXE)}(?![w.-])", "<EXE>", v.replace(str(t), "<T>").replace("\\", "/"))   # #973: only the whole name, not "strata-x.log" on Linux
+        return canonical(v.replace(str(t), "<T>").replace("\\", "/"))
     return v
 
 
@@ -161,7 +181,7 @@ class Golden(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+        cls.golden = canonical_all(json.loads(GOLDEN.read_text(encoding="utf-8")))
 
     def cases(self):
         for prof, (ram, found) in PROFILES.items():
