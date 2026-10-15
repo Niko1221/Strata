@@ -11,7 +11,7 @@ PROTECTION_WAIT_S = 5.0      # STRATA_SLOT_PROTECT_WAIT_S: wait when every idle 
 PARK_MIN_TOKENS = 8192       # STRATA_SLOT_PARK_MIN_TOKENS: a shorter main-session conversation is not parked
 EXPIRED_KEEP_SCORE = 0.01    # STRATA_SLOT_EXPIRED_KEEP_SCORE: an expired history scoring at least this (retention at
                              # expiry, then decayed; 0.01 is about 2.5K tokens at expiry) goes last
-EXPIRED_HALF_LIFE_S = 120.0  # STRATA_SLOT_EXPIRED_HALF_LIFE_S: seconds after expiry to halve its value; 0 disables decay
+IDLE_VALUE_ZERO_S = 1800.0  # STRATA_SLOT_IDLE_VALUE_ZERO_S: idle age when expired value reaches zero; 0 disables decay
 TTL_MAX_S = 120.0            # STRATA_SLOT_TTL_MAX_S: protection at 262144 tokens; the whole curve scales with it
 _TTL_SHAPE = ((0, 0.0), (500, 0.1), (2000, 2.0), (8000, 10.0),
               (32000, 45.0), (50000, 65.0), (100000, 90.0), (MAX_CACHE_TOKENS, 120.0))
@@ -20,7 +20,7 @@ TTL_POINTS = _TTL_SHAPE
 
 def configure(env) -> dict:
     """Read the tunables from `env` (the engine's environment); bad or missing values keep the defaults."""
-    global PROTECTION_WAIT_S, PARK_MIN_TOKENS, TTL_MAX_S, TTL_POINTS, EXPIRED_KEEP_SCORE, EXPIRED_HALF_LIFE_S
+    global PROTECTION_WAIT_S, PARK_MIN_TOKENS, TTL_MAX_S, TTL_POINTS, EXPIRED_KEEP_SCORE, IDLE_VALUE_ZERO_S
 
     def value(name, default):
         try:
@@ -30,7 +30,7 @@ def configure(env) -> dict:
             return default
     TTL_MAX_S = value("STRATA_SLOT_TTL_MAX_S", 120.0)
     EXPIRED_KEEP_SCORE = value("STRATA_SLOT_EXPIRED_KEEP_SCORE", 0.01)
-    EXPIRED_HALF_LIFE_S = value("STRATA_SLOT_EXPIRED_HALF_LIFE_S", 120.0)
+    IDLE_VALUE_ZERO_S = value("STRATA_SLOT_IDLE_VALUE_ZERO_S", 1800.0)
     TTL_POINTS = tuple((n, s * TTL_MAX_S / 120.0) for n, s in _TTL_SHAPE)
     PROTECTION_WAIT_S = value("STRATA_SLOT_PROTECT_WAIT_S", 5.0)
     PARK_MIN_TOKENS = int(value("STRATA_SLOT_PARK_MIN_TOKENS", 8192))
@@ -40,7 +40,7 @@ def configure(env) -> dict:
 def settings() -> dict:
     return {"ttl_max_s": TTL_MAX_S, "protect_wait_s": PROTECTION_WAIT_S,
             "park_min_tokens": PARK_MIN_TOKENS, "expired_keep_score": EXPIRED_KEEP_SCORE,
-            "expired_half_life_s": EXPIRED_HALF_LIFE_S}
+            "idle_value_zero_s": IDLE_VALUE_ZERO_S}
 
 
 def cache_ttl(tokens: int) -> float:
@@ -52,15 +52,21 @@ def cache_ttl(tokens: int) -> float:
 
 
 def stale_retention(tokens: int, age_s: float = 0.0) -> float:
-    """Value at expiry, halved for each EXPIRED_HALF_LIFE_S spent past the TTL. Age is time since last use.
+    """Value at expiry times (1 - x*x), x = (age - TTL) / (IDLE_VALUE_ZERO_S - TTL), clamped to [0, 1].
 
-    Before expiry this is the projected value at expiry; a zero half-life keeps the old length-only value.
-    Expiry changes replacement priority, never whether a history can match.
+    Age is time since last actual use, including protection. Loss per second increases until value reaches zero.
+    Before expiry this is the projected value at expiry; zero disables decay. Protection takes precedence if a
+    configured zero age is shorter than the TTL. Replacement priority never changes whether a history can match.
     """
     n = min(MAX_CACHE_TOKENS, max(0, tokens))
     base = (n / 50000.0) ** 0.7 * (n / (n + 2000.0)) ** 2 * 0.25
-    overdue = max(0.0, age_s - cache_ttl(tokens))
-    return base * 2.0 ** (-overdue / EXPIRED_HALF_LIFE_S) if EXPIRED_HALF_LIFE_S > 0 else base
+    ttl = cache_ttl(tokens)
+    if IDLE_VALUE_ZERO_S == 0 or age_s < ttl:
+        return base
+    if age_s >= IDLE_VALUE_ZERO_S:
+        return 0.0
+    x = max(0.0, (age_s - ttl) / (IDLE_VALUE_ZERO_S - ttl))
+    return base * (1.0 - x * x)
 
 
 def cache_state(tokens: int, last_used: float, now: float, valid: bool = True) -> dict:
