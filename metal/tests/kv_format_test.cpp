@@ -208,6 +208,12 @@ int main() {
               "attn_mm: the k4 key and the k4#q4 key are two specializations of the one function");
         const mtl::Pipeline* cf4 = PP("qsa_flash", qsa_prompt_mm_constants(false, true), qsa_prompt_mm_key("qsa_flash", true));
         check(cf4 != cm4 && ppc.size() == 5, "flash: its q4 key compiles the !k4 layout's constant set (fc 7 false) as its own");
+        // flash's k4-hardware site (an M5's probe) binds {fc 7 true, fc 25} under the SAME qsa_prompt_mm_key -
+        // one process probes one layout, so the engine's cache never holds both sets under it (that is why the
+        // key carries no fc 7); compiled here BESIDE the cache, still the constant set that site binds
+        const mtl::Pipeline cfk4 = cx.pipeline(plib, "qsa_flash", qsa_prompt_mm_constants(true, true));
+        check(cfk4.handle != cf4->handle && cfk4.handle != cm4->handle && ppc.size() == 5,
+              "flash's k4-hardware constant set (fc 7 true beside fc 25): its own specialization under the shared key");
         const mtl::Pipeline* cg4 = PP("qsa_merge", qsa_q4_constants(true), qsa_q4_key("qsa_merge", true));
         check(cg4 != ca4 && ppc.size() == 6, "merge: its q4 key is its own specialization");
     }

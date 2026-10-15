@@ -293,7 +293,7 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
             cid[tid] = id;
             // q4 has no scale pool (d rides inside each 18-byte block): the host binds a placeholder, never read
             if (!qsa_kv_q4)
-                vs[tid] = id >= 0 ? float(vsc[(uint(id) * QKV + g) * 4 + sg * 0]) : 0.0f;   // (per-simdgroup scale below)
+                vs[tid] = id >= 0 ? float(vsc[(uint(id) * QKV + g) * 4 + sg * 0]) : 0.0f;   // (written but never read: the V arm below reads vsc directly)
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         // S partial over this simdgroup's 64 dims

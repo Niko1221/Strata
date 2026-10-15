@@ -269,6 +269,7 @@ int main(int argc, char** argv) {
             if (k4hw) run_case(pmm4k, pf4k, "q4 k4 layout");
             else std::printf("k4 layout (fc 7 = true) q4 pipelines compiled; numerics skipped: this device decodes !k4\n");
             if (pos0 == 0u && !noflash) {
+                // pos0 = 0 only: the placement error is the same arithmetic at any pos0 (the 30000 flash case stays covered by the rel-L2 reference check above)
                 // the flash epilogue's rotation placement: the double-precision reference of all three placements
                 // over the last three tokens' heads - rotate-then-gate (the kernel's) close, gate-then-rotate and
                 // no rotation off by far more than the 3e-3 bar (qsa_q4_parity's contrast, here asserted)
