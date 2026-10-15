@@ -144,11 +144,15 @@ now names logs `needle-<tag>-<kv>.log`.
 ## What was not tested
 
 - The M5 k4 numeric arm (fc-7 right-input layouts): this M4 Pro is !k4 hardware; the k4 specializations
-  compile but are never probed here.
+  compile but are never probed here (the two decode arms are pinned to one arithmetic by a host-level
+  equivalence check in qsa_prompt_parity, but no k4 dispatch ever ran).
 - MTP + q4 end to end: every run used the template's `--spec 2 --suffix-draft 0`; the MTP drafter over q4
   pools was not exercised.
 - PC consistency: no PC run this round; the 2026-09-27 PC table is a different backend and config.
 - `--kv k8v4`: not in the matrix (and refused by the Metal window: kv_format_check).
+- Long-context quality: every quality segment is 1,000 tokens - the PC round measured the q4_0 perplexity
+  cost GROWING with context (+8% at 1K to +12% at 8K on a document), so the +1.7% here is a short-context
+  number and must not be read as the format's cost at 32K.
 - Speed repeats: one run per cell (the same-code none-vs-int8 pair puts noise near 1%).
 - Needle breadth: one codeword, one filler corpus, one run per case; no distractor needles; int8 controls
   only at 50% depth.
@@ -156,7 +160,8 @@ now names logs `needle-<tag>-<kv>.log`.
 ## Reproducing
 
 Worktree `/Users/berton/Github/AI-Infra/Strata-metal-kv-q4` at 19b8b58b + this round's quant_quality.py; the
-venv `.venv` (python with numpy/regex). Engine loads: 26 accounted in the task report (plus 3 refused
+venv `.venv` (python with numpy/regex). Engine loads: 28 accounted in the task report - the round's 26 plus the
+prompt-path regeneration pair the fix round re-ran (plus 3 refused
 arg-guard startups and 6 superseded first-pass needle cases, also accounted there).
 
 ```sh

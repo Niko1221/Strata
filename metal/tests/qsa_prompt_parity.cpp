@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <random>
 #include <set>
 #include <string>
 #include <vector>
@@ -23,11 +24,48 @@ namespace {
 constexpr int QH = 24, QKV = 2, QD = 256, QB = 2051, NCH = 33;
 struct QsaArgs { uint32_t pos0, pos_base, max_cells, n_tok; float eps; };
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
+
+// the two q4 decode arms of qsa_attn_mm / qsa_flash (qsa_prompt.metal) transcribed to the host, pinned to the same
+// arithmetic: per-element (!k4: block v >> 5, byte qs[v & 15], low nibble below 16) and the 4-run (k4: k % 4 == 0
+// never crosses the 16-value nibble side of a 32-value block, so the four values are four consecutive bytes on one
+// side).  This host cannot dispatch the k4 layout (the cooperative tensor's index mapping is the hardware's), so
+// this is the in-tree equivalence pin: with the !k4 arm verified numerically against the fc-25 chain below, both
+// arms are anchored to one spec.  fp32 products, the scale from the block's own fp16 d - as in the kernels.
+int q4_host_decode_1(const uint8_t* blk, int v) {
+    const uint8_t b = blk[2 + (v & 15)];
+    const int nib = (v & 31) < 16 ? (b & 0xF) : (b >> 4);
+    return nib - 8;
+}
+void q4_decode_arms_equivalent() {
+    std::mt19937 r(97531);
+    int checked = 0;
+    for (int t = 0; t < 2000; ++t) {   // random d/qs plus the all-edges patterns, every value position both ways
+        uint8_t blk[18];
+        for (int i = 0; i < 18; ++i)
+            blk[i] = t < 5 ? (i < 2 ? uint8_t(0x80 >> (t & 1)) : uint8_t(t == 0 ? 0x00 : t == 1 ? 0xFF : t == 2 ? 0x0F : t == 3 ? 0xF0 : 0xAA))
+                           : uint8_t(r());
+        for (int k = 0; k < 256; k += 4) {   // the k4 arm's runs: starts at multiples of 4
+            // the 4-run reads its four values as bytes qs[(k & 15) + j], the nibble side by (k & 31) < 16 - assert
+            // that mapping equals the per-element formula for each of the four values (the nibble, not the
+            // product: an equal nibble gives an equal value for every fp16 d, and a random d can be NaN)
+            for (int j = 0; j < 4; ++j) {
+                const uint8_t b = blk[2 + ((k & 15) + j)];
+                const int nib = ((k & 31) < 16 ? (b & 0xF) : (b >> 4)) - 8;
+                if (nib != q4_host_decode_1(blk, k + j)) {   // the nibble, not the product: a random fp16 d can be
+                    std::printf("q4 k4/!k4 decode arms disagree: block %d value %d\n", t, k + j); std::exit(1);   // NaN, and NaN != NaN
+                }
+                ++checked;
+            }
+        }
+    }
+    std::printf("q4 decode arms (k4 runs vs !k4 per-element): %d values identical\n", checked);
+}
 }  // namespace
 
 int main(int argc, char** argv) {
     const bool bench = argc > 1 && std::string(argv[1]) == "--bench";
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
+    q4_decode_arms_equivalent();   // device-free, before any context: pins both q4 decode arms to one arithmetic
     const bool noflash = std::getenv("QSA_NOFLASH") != nullptr;
     mtl::Context cx;
     // kv_q4.metal first: qsa.metal's optional q4 mode (function constant 25) uses its shared prelude

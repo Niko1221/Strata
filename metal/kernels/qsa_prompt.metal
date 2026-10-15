@@ -18,6 +18,9 @@
 // self-inverse - the 1/16 scale), then divides by l and applies sigmoid(gate), which does not commute with the
 // rotation; the row's 256 dims span four simdgroups, so the butterflies cross them through sp as the staging
 // (dead since the chunk loop ended).
+// Cross-platform note, as qsa.metal:35-38 states for decode: the PC's prompt kernels apply the q4 scale in fp32
+// (prefill's mode 4); this file rounds the decoded operand to fp16, being a matmul2d right input - the same
+// half-rounding the int8 arm above has always had against qsa_attn's fp32.
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 using namespace mpp::tensor_ops;
 #ifndef STRATA_COOP_K4

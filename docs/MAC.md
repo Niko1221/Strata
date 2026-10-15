@@ -179,8 +179,9 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
   which the same-code fp16-vs-int8 pair puts near 1% (it measured −1.3%). Needles under q4_0: 8 of 9 (the shared path found its 3
   controls); the one miss is the deepest needle at the longest length (32K at 90% depth), a prompt-injection refusal, not a
   garbled retrieval. Not tested: the M5's k4-layout q4 kernels (they compile but an M4 Pro never dispatches them), MTP drafting
-  over q4_0 pools end to end, and other Macs. Every number, the scripts that reproduce it and the needle disclosures live in
-  `bench/results/2026-10-15-mac-kv-q4/`.
+  over q4_0 pools end to end, long contexts (every quality segment is 1,000 tokens; the PC's round measured the q4_0 cost
+  growing with context, so the +1.7% perplexity is a short-context number), and other Macs. Every number, the scripts that
+  reproduce it and the needle disclosures live in `bench/results/2026-10-15-mac-kv-q4/`.
 - **Same answers as on a PC:**
   - against the CUDA engine on a Tesla P100 (IQ3_XXS and IQ3_S), the first 200 tokens of a reply are identical on the short question;
   - on the story, the first IQ3_S tokens differ at token 1, a near-tie (margin 0.12). Following the CUDA engine's tokens, 4 of 200 picks differ, all at margins 0.06-0.21;

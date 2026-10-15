@@ -31,9 +31,17 @@ constexpr KvPoolBytes kv_pool_bytes(bool q4) { return q4 ? KvPoolBytes{2 * 144, 
 // today's path (the window's pools are the int8 ones either way), q4_0 takes the fused fc-25 path of this PR;
 // k8v4 is not implemented on Metal and is REFUSED here - before M1-b the flag was silently ignored (the int8 pools
 // were allocated whatever --kv said, M0's finding), and an explicit error beats a wrong-but-running engine.
+// STRATA_KV_ROT=1 (rotated int8/fp16 K/V, the env generate.cpp parses for the PC) is refused for the same reason:
+// the Metal window builds UNrotated pools while the shared snapshot tag adds +16 for the rotation
+// (conversation_snapshot.cpp: rotated = kv_rot && !q4 && !hybrid), so a saved session would lie about its bytes.
+// The env is parsed here exactly as generate.cpp does (there is no shared getter for the flag); with --kv q4_0 the
+// rotation is intrinsic and the tag never adds it, so the env next to q4_0 is a harmless no-op and stays allowed.
 inline std::string kv_format_check(bool q4, bool hybrid) {
-    (void) q4;   // generate.cpp's --kv sets q4 and hybrid mutually exclusive; hybrid is simply not built here
     if (hybrid) return "metal window: --kv k8v4 is not implemented on Metal (use fp16, int8 or q4_0)";
+    const char* rot = std::getenv("STRATA_KV_ROT");
+    if (!q4 && rot != nullptr && rot[0] == '1')
+        return "metal window: STRATA_KV_ROT=1 (rotated int8/fp16 K/V) is not implemented on Metal - use --kv q4_0, "
+               "the rotated format (the snapshot tag would otherwise claim a rotation the pools do not have)";
     return "";
 }
 

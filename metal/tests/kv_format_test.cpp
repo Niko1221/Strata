@@ -52,6 +52,16 @@ int main() {
         check(!e.empty() && e.find("k8v4") != std::string::npos && e.find("not implemented") != std::string::npos,
               "k8v4: an explicit startup error naming it");
         check(!kv_format_check(true, true).empty(), "hybrid refused whatever the q4 flag is (the flags are exclusive in generate.cpp)");
+        // STRATA_KV_ROT=1: the same explicit-refusal treatment (the env generate.cpp parses; there is no shared
+        // getter for the flag) - refused next to the non-q4 formats (the snapshot tag would add +16 for a rotation
+        // the pools lack), a no-op next to q4_0 (the rotation is intrinsic there, the tag never adds it)
+        ::setenv("STRATA_KV_ROT", "1", 1);
+        const std::string r = kv_format_check(false, false);
+        check(!r.empty() && r.find("STRATA_KV_ROT") != std::string::npos && r.find("not implemented") != std::string::npos,
+              "STRATA_KV_ROT=1 without q4_0: an explicit startup error naming the env");
+        check(kv_format_check(true, false).empty(), "STRATA_KV_ROT=1 next to q4_0: allowed (the rotation is intrinsic)");
+        ::unsetenv("STRATA_KV_ROT");
+        check(kv_format_check(false, false).empty(), "the env off again: no error");
     }
 
     // ---- 3. the key / Constants composition: every function constant in BOTH, and the keys pairwise apart
