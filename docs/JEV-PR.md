@@ -63,6 +63,7 @@ curl -s $URL/v1/systemone -d '{
 #                 {"urgency": {"type": "score", "score": 1.5928,
 #                              "probabilities": [0.103, 0.374, 0.376, 0.121, 0.026],
 #                              "confidence": 0.2201, "calib": "T_score_v1"}},
+#      "margin": top1−top2 present on every answer (cascade-routing number)}
 #     "usage": {"prompt_tokens": 303, "readout_tokens": 3}}
 # (live response, QFN; note each answer carries its OWN calibrator id)
 
@@ -85,6 +86,14 @@ curl -s $URL/v1/chat/completions -d '{
 
 Full surface + examples: `docs/JEV-SYSTEMONE.md`. Refit calibration:
 `calib/README.md` (the suite IS the procedure).
+
+Why logit readout instead of asking the model for confidence: verbalized
+confidence is systematically miscalibrated (ECE > 0.37 across GPT-3/3.5/Vicuna,
+predictions clustering at 90–100% regardless of accuracy — Groot et al., ACL
+TrustNLP 2024), while post-hoc calibration of logit readouts is the literature's
+standard fix (Platt/temperature on ~200 examples typically cuts ECE 30–60% —
+matching this PR's measured −53% on the score tuple). This design is the
+recommended one, not a workaround.
 
 ## 3. Test strategy
 
