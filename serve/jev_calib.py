@@ -167,9 +167,13 @@ ADMIN_KEY = os.environ.get("STRATA_JEV_ADMIN_KEY", "")
 
 # ---- mode gating (donor --modes chat,decision; A0.1) ----
 # Which capability surfaces this process exposes. Comma-separated env var:
-#   STRATA_JEV_MODES="decision"          -> decision-only (no chat, no then.generate)
-#   STRATA_JEV_MODES="chat,decision"     -> both (default)
-# Unknown tokens fail-closed at load (ValueError -> serve refuses to start).
+#   STRATA_JEV_MODES="chat"               -> DEFAULT: stock Strata posture,
+#                                           decisions NOT exposed (opt in!)
+#   STRATA_JEV_MODES="decision"           -> decision-only (no generation)
+#   STRATA_JEV_MODES="chat,decision"      -> both
+# Justin's ruling 2026-10-15: undefined = CHAT ONLY — a process that never
+# mentions jev behaves exactly like stock Strata; the decision surface must be
+# opted into. Unknown tokens fail-closed at load (serve refuses to start).
 # Surfaces: "decision" gates /v1/systemone + the chat jev extension;
 #           "chat"     gates plain /v1/chat generation + then.generate narration.
 def _parse_modes(raw: str) -> frozenset:
@@ -181,7 +185,7 @@ def _parse_modes(raw: str) -> frozenset:
         raise ValueError(f"STRATA_JEV_MODES: unknown mode(s) {bad}; valid: chat, decision")
     return frozenset(toks)
 
-MODES: frozenset = _parse_modes(os.environ.get("STRATA_JEV_MODES", "chat,decision"))
+MODES: frozenset = _parse_modes(os.environ.get("STRATA_JEV_MODES", "chat"))
 
 
 def log_enqueue(row: dict) -> None:
