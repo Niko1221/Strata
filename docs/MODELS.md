@@ -151,6 +151,10 @@ explicit packing conversion and is not an installer menu option.
 
 ## Adding or switching models
 
+For an opt-in browser table that downloads through official setup and switches installed models, see
+[Models in the browser](MODEL_MANAGER.md). Run `MODELS.bat` (Windows) or `sh models.sh` (Linux).
+
+
 You can add another model any time with `SETUP.bat` (the same as `START-HERE.bat --setup`; on Linux
 `./setup.sh --setup`). Files another model shares are not downloaded again (the Coder uses the original's shard 2 and
 vision encoder). With more than one model installed, `START-HERE.bat` asks which one to start; `run-<model>.bat`

@@ -322,6 +322,11 @@ def port_free(port: int, host="127.0.0.1") -> bool:
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        # Match serve.server.Server: POSIX can reuse a stopped listener's
+        # TIME_WAIT sockets. On Windows reuse can steal an active listener's
+        # address, so keep the exclusive default there.
+        if not WIN:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((host, port))
         return True
     except OSError:
@@ -1437,7 +1442,13 @@ class Tools:
                 if st == 409 and not force:
                     raise ToolError("Strata is busy (a request is running or queued); call again with force=true "
                                     "to stop anyway")
-                proc_terminate(tracked["pid"], tracked["ident"])   # POSIX: SIGTERM = the server's own Ctrl+C path
+                if WIN:
+                    # A venv's python.exe can be a launcher for another Python
+                    # process. End the owned tree after /unload, not just the
+                    # launcher, which can leave the actual listener alive.
+                    proc_kill_tree(tracked["pid"], tracked["ident"])
+                else:
+                    proc_terminate(tracked["pid"], tracked["ident"])   # SIGTERM = the server's own Ctrl+C path
                 clean = wait_gone(tracked["pid"], tracked["ident"], 30)
                 if not clean:
                     proc_kill_tree(tracked["pid"], tracked["ident"])

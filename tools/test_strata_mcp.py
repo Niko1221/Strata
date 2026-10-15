@@ -113,7 +113,10 @@ class H(BaseHTTPRequestHandler):
                           "timings": {"predicted_per_second": 61.5, "prompt_per_second": 400.0}})
         else:
             self.js(404, {})
-httpd = ThreadingHTTPServer(("127.0.0.1", port), H)
+class FakeServer(ThreadingHTTPServer):
+    allow_reuse_address = os.name != "nt"
+    allow_reuse_port = False
+httpd = FakeServer(("127.0.0.1", port), H)
 def term(*_):
     print("[strata] stopped (fake)", flush=True)
     os._exit(0)
@@ -162,6 +165,10 @@ class FakeRoot(unittest.TestCase):
         self.strata.health_timeout = 1.0
         self.strata._hardware = lambda: dict(FAKE_HW)
         self.strata.disk_free = lambda p: 1000.0
+        # Every server fixture uses an ephemeral port. Never discover or unload
+        # a real Strata instance running on the default port during these tests.
+        probe = self.strata.probe
+        self.strata.probe = lambda port, deep=True: None if port == M.DEFAULT_PORT else probe(port, deep)
         self.tools = M.Tools(self.strata)
         self.extra = []
 
@@ -545,6 +552,56 @@ class StartStop(FakeRoot):
 
 
 # ------------------------------------------------------------------------------------------------ helpers
+class PortAvailability(unittest.TestCase):
+    def test_unused_port_is_available(self):
+        self.assertTrue(M.port_free(free_port()))
+
+    def test_listening_port_is_not_available(self):
+        for reuse in (False, True):
+            with self.subTest(reuse=reuse), socket.socket() as listener:
+                if reuse and not M.WIN:
+                    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(("127.0.0.1", 0))
+                listener.listen()
+                self.assertFalse(M.port_free(listener.getsockname()[1]))
+
+    def test_probe_reuse_matches_platform_listener_policy(self):
+        for windows in (False, True):
+            with self.subTest(windows=windows):
+                probe = mock.Mock()
+                with mock.patch("socket.socket", return_value=probe), mock.patch.object(M, "WIN", windows):
+                    self.assertTrue(M.port_free(8080))
+                if windows:
+                    probe.setsockopt.assert_not_called()
+                else:
+                    probe.setsockopt.assert_called_once_with(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind.assert_called_once_with(("127.0.0.1", 8080))
+                probe.close.assert_called_once()
+
+    @unittest.skipIf(M.WIN, "POSIX listener TIME_WAIT reuse")
+    def test_server_closed_first_port_can_be_reused(self):
+        with socket.socket() as listener, socket.socket() as client:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+            listener.listen()
+            client.settimeout(3)
+            client.connect(("127.0.0.1", port))
+            accepted, _ = listener.accept()
+            with accepted:
+                accepted.settimeout(3)
+                accepted.shutdown(socket.SHUT_WR)
+                self.assertEqual(client.recv(1), b"")
+                client.close()
+                self.assertEqual(accepted.recv(1), b"")
+        # Prove the fixture actually left TIME_WAIT on the server's port: the
+        # old probe fails, while the probe matching Server's reuse policy works.
+        with socket.socket() as exclusive:
+            with self.assertRaises(OSError):
+                exclusive.bind(("127.0.0.1", port))
+        self.assertTrue(M.port_free(port))
+
+
 class Helpers(unittest.TestCase):
     def test_progress_from_setup_output(self):
         with tempfile.TemporaryDirectory() as d:
