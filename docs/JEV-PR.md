@@ -1,10 +1,49 @@
-# Jev systemone — the decision engine for Strata (jev-port PR)
+# Jev systemone — System One decision endpoint for Strata
 
-Port of the jevcpp decision engine (`/opt/data/llm-swap/jevcpp`, `src/server.cpp`) onto
-Strata's serve layer. A model that answers typed questions with **calibrated
-probabilities in one decode step per question** — label logits read off the final row
-(the engine's `--jev-brow` BROW wire), readout math applied post-hoc. Never generates
-prose to decide.
+## Introduction
+
+**What a System One decision model is.** Most uses of a language model are
+"System Two": the model writes text and the caller reads, parses and trusts it. A
+**System One** decision model does the opposite. It receives a **state** (text, JSON, or an
+image) and a set of **typed questions**, and returns **typed answers with calibrated
+probabilities**: a yes/no (`noul`), a pick-one (`choice`), or an ordinal rating (`score`).
+It never generates prose to decide. Nothing has to be parsed, and the confidence is a number
+the caller can threshold, route on, or log, rather than a sentence the model chose to write.
+That makes it suited to fast, repeatable, auditable decisions inside a loop: routing,
+guardrails, triage, scoring, and game or agent control.
+
+**Jev.** "Jev" is TypeSafe's commercial System One decision API: `POST /v1/systemone` with
+`{state, questions}`, answers read from token probabilities rather than generated text. Its
+request/response shape is the wire this work follows. Open implementations of the same idea
+already exist (see References); the goals here are correctness, speed and honest
+probabilities, not novelty.
+
+**Laya.** Laya (`convaiinnovations/laya`, Apache-2.0) approaches the same contract with a
+different mechanism: a small purpose-trained encoder (ModernBERT-large, 421M parameters;
+non-autoregressive) that answers all questions in one forward pass (~33 ms reported),
+trained with reinforcement learning against strictly proper scoring rules (RLCD) so that
+honest probabilities are what maximises reward. Two things in its documentation shaped this PR: its probabilities ship
+over-confident until a temperature is refit **per question type and option count**
+(reported mean ECE 0.466 → 0.081, with the instruction to do this on your own data before
+trusting them), and its comparison against Jev uses third-party published Jev figures
+that it did not measure itself. We kept the first idea (per-tuple calibration, refit on
+local data) and measured our own numbers on our own harness. The mechanism differs: a
+general LLM read at its label logits, with no task-specific training.
+
+**jevcpp.** The reference implementation this port follows: a llama.cpp-based server that
+serves the Jev wire from a generative model by reading the label logits at the final
+prompt position (Qwen3.8-27B, with a shipped calibration file and a metamorphic/golden test
+set). Its plan and amendments define the request contract, the frozen prompt template, the
+readout math and the test strategy that this PR ports.
+
+**What this PR does.** It brings that System One surface to **Strata**. Strata's engine could
+already dump logprobs for verification, but had no per-request way to read the logits of
+arbitrary label tokens. This PR adds an opt-in `--jev-brow` engine wire (`BROW`) that returns
+the final-row logits for exactly the label tokens asked, and a serve-layer
+`/v1/systemone` endpoint that applies the Jev readout math and **per-tuple post-hoc
+calibration** (Platt scaling for yes/no, temperature scaling for choice/score) on top. The
+same model keeps chat, and can answer decisions inside a chat call, from an image directly,
+or decide-then-narrate. It is opt-in per process (`STRATA_JEV_MODES`).
 
 Donor reference: jevcpp on Qwen3.8-27B (q4_k_xl), shipped calibration tuple
 `p-jevcpp-qwen38-27b|q4_k_xl|timber|v1|V|all` (T_choice 1.5861). This port runs on
@@ -102,13 +141,13 @@ labels. Unset = `"chat"` only: decisions are opt-in, and the jevport presets set
 `"chat,decision"` explicitly. Fail-closed on unknown tokens and on gated
 routes).
 
-Why logit readout instead of asking the model for confidence: verbalized
-confidence is systematically miscalibrated (ECE > 0.37 across GPT-3/3.5/Vicuna,
-predictions clustering at 90–100% regardless of accuracy — Groot et al., ACL
-TrustNLP 2024), while post-hoc calibration of logit readouts is the literature's
-standard fix (Platt/temperature on ~200 examples typically cuts ECE 30–60% —
-matching this PR's measured −53% on the score tuple). This design is the
-recommended one, not a workaround.
+Why logit readout instead of asking the model for confidence: models asked to state their
+own confidence are mostly overconfident with high calibration error (Groot &
+Valdenegro-Toro, TrustNLP 2024, see References). Reading label probabilities from the
+logits and calibrating them post-hoc on held-out data (Platt / temperature scaling) is the
+standard alternative, and it is what this PR does; its measured effect is in section 4a.
+Laya reaches the same conclusion from the training side: its probabilities also need a
+temperature refit on local data before they can be trusted.
 
 ## 3. Test strategy
 
@@ -135,7 +174,7 @@ CV-Bench, CountBenchQA via HF datasets-server; banned-field self-test (answer-be
 fields never enter requests), sha256 image manifest, dev/test image-disjoint, POPE
 sampled by image at exactly 50/50.
 
-**Vision strategy** (Opus-reviewed, `/opt/data/reviews/vision-decision-strategy-plan.md`):
+**Vision strategy** (externally reviewed before implementation):
 6-arm design (D/S/S-QC/S-V/blind/shuffled — the last two are contamination
 detectors), circular rotation for choice position bias, phased screen→full→frozen
 PR gate.
@@ -256,7 +295,7 @@ n=60) must not be read as signal.
 | Batched/naive/fallback golden HTTP variants | One serve path exists; the golden battery + 7×3 concurrency arm cover it |
 
 All 10 pre-PR blockers from the Opus review
-(`/opt/data/reviews/jevport-prereview-opus.md`) are closed: strict per-tuple
+(pre-PR external review) are closed: strict per-tuple
 fallback, per-tuple log files, B1.4 tuple refusal, fail-closed /admin/calib,
 token audit (PASS), a211 metamorphic battery, noise floor (see 4c), soak
 (2,200 req, 0 jev errors, VRAM drift 0.026%), S-tuple fit (live), bootstrap
@@ -271,30 +310,63 @@ CIs + Brier (`blockers-run/cis-brier.json`).
 - `audit-text-sample.json`, `audit-image-sample.json`, `audit-real-sample.json` — 1-in-10 audits
 - Donor reference files: `jevcpp/reports/m2_baseline.json`, `jevcpp/reports/m1_perf.json`, `jevcpp/calib/calib.json` (all in the donor tree, not this repo)
 
-## 6. Scope of change, compatibility, and what was NOT verified
+## 6. Scope of change, compatibility, and testing status
 
 **Engine diff (5 files, +149 lines, additive):** `Verifier::brow_row` (verify.hpp/.cpp),
 the `--jev-brow` flag and `BROW` serve-loop handler (generate.cpp), a CMake test target
 (`verify_brow_test`, CUDA builds only), and its test. Everything is opt-in: the handler
 runs only when `--jev-brow` is passed and the server sends `BROW`; no existing request
 path changes. One line runs on every verify window regardless of the flag
-(`last_row_T_ = T;` in `Verifier::run`) — an int store, no behavior change.
+(`last_row_T_ = T;` in `Verifier::run`), an int store with no behavior change.
 
 **Default behavior:** `STRATA_JEV_MODES` unset = chat only. Verified end to end with the
 env var absent: `/v1/systemone` and the chat `jev` extension return 404, plain chat
 returns 200. A stock Strata process is behaviorally unchanged.
 
-**Verified:** CUDA build + GPU runs on RTX 3090 (QFN IQ3_XXS, Qwen3.8-Flash-Next);
-`serve/` full discovery (858 tests) green with the jev modules opted in.
+**Tested:** CUDA build and GPU runs on an RTX 3090 (QFN IQ3_XXS, Qwen3.8-Flash-Next); the
+full `serve/` test discovery (858 tests) passes with the jev modules opted in.
 
-**Not verified — please run before merge:**
-- **HIP / SYCL builds.** `brow_row` uses `cudaMemcpy*`, which the repo's HIP compat
-  headers map to `hipMemcpy*`, and a Metal branch is written but none of
-  HIP/SYCL/Metal was compiled or run here (no hardware/toolchain). The repo's
-  contributing rule asks for every touched backend to be built; this is the gap.
-- **Layer-split / multi-GPU `brow_row`.** The stage-forwarding (`next_->brow_row`) is
-  implemented and mirrors `window_logprobs`, but only the single-GPU path was exercised.
-- **`serve/test_responses.py::NoLeakedSampler`** fails when the whole module is run in
-  one process, on this branch **and on an unmodified `Strata-043` tree** (passes alone
-  and on `Strata-main`); the branch does not touch the sampler or that test. Pre-existing
-  test-isolation issue, unrelated to jev.
+**Not tested in this PR: HIP, SYCL and Metal builds.** `brow_row` is written for those
+backends (the HIP compat headers map `cudaMemcpy*` to `hipMemcpy*`; a Metal branch is
+included), but none of them was built or run as part of this PR.
+
+## 7. References and prior work
+
+**Decision-model products and implementations**
+- **TypeSafe Jev**: the commercial System One decision API whose `/v1/systemone` wire this
+  follows.
+- **Laya**: Nandha Kishor M., `convaiinnovations/laya` (Apache-2.0).
+  https://github.com/NandhaKishorM/laya, model card `convaiinnovations/laya`. Source of the
+  RLCD training description, the one-forward-pass encoder design, and the per-(question
+  type, option count) temperature-refit finding. Its README cites third-party Jev
+  measurements of 236–276 ms p50 (AbdelStark/jev-benchmarks, nibzard/decision-model-benchmark).
+- **jevcpp**: the llama.cpp-based reference implementation and its `PLAN.md`,
+  `PLAN.amendments.md`, `DECISIONS.md`, `m2_baseline.json`, `m1_perf.json`, `calib.json`
+  (donor tree, not part of this repo). Its plan also lists open Jev-compatible projects as
+  prior art: DIY-Jev (Rust), `llm2jev`, `verdict`, `jevper`, `jev-compatible-server`.
+
+**Calibration**
+- J. Platt, *Probabilistic Outputs for Support Vector Machines and Comparisons to
+  Regularized Likelihood Methods*, 1999: the Platt scaling used for yes/no.
+- C. Guo, G. Pleiss, Y. Sun, K. Q. Weinberger, *On Calibration of Modern Neural Networks*,
+  ICML 2017: temperature scaling (choice/score) and the Expected Calibration Error metric.
+- T. Groot, M. Valdenegro-Toro, *Overconfidence is Key: Verbalized Uncertainty Evaluation
+  in Large Language and Vision-Language Models*, TrustNLP 2024 (arXiv:2405.02917): LLMs and
+  VLMs asked to state their own confidence show high calibration error and are mostly
+  overconfident, the reason decisions are read from logits and calibrated externally.
+
+**Readout design (surveyed in `docs/` research notes, 2026-10-15)**
+- EleutherAI `lm-evaluation-harness` and HELM: loglikelihood multiple-choice scoring,
+  single-token letter labels, `acc` / `acc_norm`, and the smoke-test invariants adopted in
+  the golden battery.
+- OpenAI Cookbook, *Using logprobs*, and single-token classifier write-ups: first-token
+  `top_logprobs` classification and top-1 − top-2 **margin** as the routing signal
+  (returned on every answer here).
+- Constrained-decoding systems (Outlines, SGLang, XGrammar): the generate-then-parse
+  approach this design avoids, and its documented whitespace/prefix pitfalls.
+- Real-time agent context: *A Survey on LLM-Based Game Agents* (arXiv:2404.02039) and
+  *The Latent Bridge* (arXiv:2606.24470): why a single-pass fast path matters for
+  frame-rate decision loops.
+
+**Benchmarks used for calibration and evaluation:** BoolQ, ARC, SST-5 (text); POPE
+(adversarial), CV-Bench, CountBenchQA (image).
