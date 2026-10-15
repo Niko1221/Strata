@@ -76,6 +76,7 @@ from serve import images as images_api  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
+VIDEO_PAD = "<|video_pad|>"
 
 
 def popen(what: str, args: list, **kw):
@@ -2916,7 +2917,7 @@ def vision_env(cfg: dict, env: dict) -> dict:
 
 class ByteTokenizer:
     """Tiny stand-in tokenizer for tests without the pack: one id per UTF-8 byte, specials as ids >= 256."""
-    SPECIALS = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|vision_start|>", "<|image_pad|>", "<|vision_end|>"]
+    SPECIALS = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|vision_start|>", "<|image_pad|>", "<|vision_end|>", "<|video_pad|>"]
 
     ALWAYS = ()                                     # specials matched without parse_special (type 4, as <think>)
 
@@ -3917,6 +3918,7 @@ class Service:
                                  "'vision'), so it cannot read images or videos")
             pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
             start = self.tok.encode(VISION_START, parse_special=True)[0]
+            video_pad = self.tok.encode(VIDEO_PAD, parse_special=True)[0]
             # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
             # for as long as urlopen waited.
             def fetch(src):
@@ -3948,8 +3950,12 @@ class Service:
             # expand: the same text inside a message (an agent reading these docs, #150) is kept plain, or it took
             # one's place and the counts no longer matched.
             literal = self.tok.encode(IMAGE_PAD, parse_special=False)
-            out, k, prev_start = [], 0, False
+            out, k, prev_start, skip = [], 0, False, 0
             for j, t in enumerate(ids):
+                if skip:
+                    # the video's pad placeholder: its start already expanded it - drop it
+                    skip -= 1
+                    continue
                 if t == pad and prev_start:
                     # the picture's place: the start before it, then its rows
                     if k == len(encoded):
@@ -3962,6 +3968,9 @@ class Service:
                         raise ValueError("the prompt and its media do not match")
                     out += [start] + [pad] * encoded[k][1]
                     k += 1
+                    # the template writes the video's pad placeholder after its start; consume it
+                    if j + 1 < len(ids) and ids[j + 1] == video_pad:
+                        skip = 1
                 elif t == pad:
                     out += literal
                 else:
