@@ -1,0 +1,93 @@
+# free -m with the model loaded, before the measurements
+               total        used        free      shared  buff/cache   available
+Mem:           78301       44506        1803        2213       34803       33795
+Swap:           8191        4213        3978
+# free -m after the measurements
+               total        used        free      shared  buff/cache   available
+Mem:           78301       45466         812        2263       34885       32835
+Swap:           8191        4210        3981
+# sha256sum of the two shards (2026-10-15, before setup)
+92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7  Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf
+316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113  Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf
+# setup.sh's own lines (step 5-7)
+=== Step 5: downloading Qwen3.8-Flash-Next IQ2_XS ===
+  [ok] Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf already downloaded
+  [ok] Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf already downloaded
+  [ok] model files present
+
+=== Step 6: preparing the model for Strata ===
+  > <strata>/.venv/bin/python <strata>/tools/iq_pack.py --gguf <data>/models/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --out <data>/packs/iq2_xs
+tokenizer/: vocab 248320, merges 247587, pre qwen35, specials {'tokenizer.ggml.eos_token_id': 248046, 'tokenizer.ggml.padding_token_id': 248044, 'tokenizer.ggml.bos_token_id': 248044}
+model shards: Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf
+index.txt: 1079 tensors, 302 served natively, 0 in extra.bin, arena 1.43 GiB
+  [ok] model prepared: <data>/packs/iq2_xs
+  [ok] MTP draft layer: <data>/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (0.9 GB), more experts fit in VRAM
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-iq2_xs.sh
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-iq2_xs.sh) - it starts right away
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+setup exit 0
+
+# --- system facts, captured 2026-10-15 after the runs (the card idle: lspci's link speed is the idle one; under load gpu-telemetry.csv shows gen 4 x16) ---
+# OS
+PRETTY_NAME="Ubuntu 26.04.1 2026.10.14 LTS (Cubic 2026-10-14 19:21)"
+VERSION_ID="26.04"
+7.0.0-38-generic
+# engine/BUILD.json written by setup
+{
+ "source": "local",
+ "version": "0.1.44.1",
+ "archs": [
+  120
+ ],
+ "vision": "none",
+ "cuda_dirs": [
+  "/usr/local/cuda-13.1/bin",
+  "/usr/local/cuda-13.1/lib64"
+ ],
+ "src": "7dfd34378bd2d32a",
+ "vision_src": null
+}
+# nvcc --version (the build's compiler)
+Cuda compilation tools, release 13.1, V13.1.115
+Build cuda_13.1.r13.1/compiler.37061995_0
+# nvidia-smi: driver, the driver's CUDA version, VBIOS, power limits, max clocks
+name, driver_version, vbios_version, power.limit [W], power.default_limit [W], power.max_limit [W], clocks.max.sm [MHz], clocks.max.memory [MHz]
+NVIDIA GeForce RTX 5070 Ti, 595.99.02, 98.03.58.00.E6, 300.00 W, 300.00 W, 300.00 W, 3120 MHz, 14001 MHz
+CUDA Version: 13.2
+# lspci -vv, GPU link
+		LnkCap:	Port #0, Speed 32GT/s, Width x16, ASPM L1, Exit Latency L1 unlimited
+		LnkSta:	Speed 2.5GT/s (downgraded), Width x16
+# DIMMs (dmidecode -t memory)
+	Size: 8 GB
+	Type: DDR4
+	Speed: 3200 MT/s
+	Configured Memory Speed: 3200 MT/s
+	Size: 32 GB
+	Type: DDR4
+	Speed: 3200 MT/s
+	Configured Memory Speed: 3200 MT/s
+	Size: 8 GB
+	Type: DDR4
+	Speed: 3200 MT/s
+	Configured Memory Speed: 3200 MT/s
+	Size: 32 GB
+	Type: DDR4
+	Speed: 3200 MT/s
+	Configured Memory Speed: 3200 MT/s
+# board, storage
+Micro-Star International Co., Ltd.
+MAG B550M MORTAR WIFI (MS-7C94)
+nvme0n1 SHGP31-1000GM-2 931.5G nvme
+# CPU
+CPU(s):                                  16
+Model name:                              AMD Ryzen 7 5800X3D 8-Core Processor
+CPU(s) scaling MHz:                      74%
+     16 avx2
