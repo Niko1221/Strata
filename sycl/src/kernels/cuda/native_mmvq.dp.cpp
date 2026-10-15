@@ -1708,6 +1708,14 @@ inline bool mmvq_large_grf(dpct::queue_ptr s) {
     }();
     return v;
 }
+// 1 column in large GRF too (Arc A-series default with mmvq_large_grf): the 128-register Q6_K kernel spilled 1.4 KB a
+// thread on the A770; dense_bench 1 column, the same hashes: qkv 288 -> 319, z 255 -> 292, QSA q 295 -> 325 GB/s (rows
+// up to 4096 wide: the 6144-wide out-proj is the same or slower).
+// STRATA_MMVQ_GRF1=0 keeps 1 column at 128 registers.
+inline bool mmvq_grf1() {
+    static const bool v = [] { const char* e = std::getenv("STRATA_MMVQ_GRF1"); return !(e && e[0] == '0'); }();
+    return v;
+}
 template <int NCOLS>
 void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, dpct::queue_ptr s) {
     const auto* w = static_cast<const Q6KBlock*>(weights);
@@ -1726,7 +1734,7 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
     }
     if (rpw == 1 && q6k_a2()) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
-        if constexpr (NCOLS > 1) {
+        if (NCOLS > 1 || (mmvq_grf1() && n_in <= 4096)) {
             if (mmvq_large_grf(s)) {
                 s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_a2_grf256, dpct_kernel_scalar<NCOLS>>>(
                     sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
@@ -1888,7 +1896,9 @@ void launch_wide(const void* weights, const void* x_q8_1, float* y, int n_in, in
     const auto* w = static_cast<const typename F::Block*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
     const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
-    if constexpr (NCOLS > 1) {
+    // 1 column too for rows up to 4096 (dense_bench: Q5_K / Q4_K 2560-wide +3-9%, k/v +30-40%; 6144-wide -10%), not for
+    // IQ4_XS (-1 to -8%)
+    if (NCOLS > 1 || (mmvq_grf1() && n_in <= 4096 && !std::is_same_v<F, WideIQ4XS>)) {
         if (mmvq_large_grf(s)) {
             s->parallel_for<dpct_kernel_name<class native_mmvq_wide_grf256, F, dpct_kernel_scalar<NCOLS>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
@@ -3735,5 +3745,6 @@ void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* 
     default: throw std::invalid_argument("unsupported native MMVQ GGML type");
     }
 }
+
 
 } // namespace strata::kernels
