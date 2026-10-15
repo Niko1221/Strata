@@ -54,7 +54,8 @@ class Files(unittest.TestCase):
     def test_the_sizes_belong_to_signal_alone(self):
         self.assertEqual([m for m in setup.MODELS if "signal" in setup.MODELS[m].get("families", ("qwen", "swift"))],
                          list(SIZES))
-        self.assertTrue(setup.MODELS["AP-Q4_K_XL"].get("nvidia_only"))   # Q4_K experts: no HIP prompt kernels
+        # every format has AMD kernels: Q4_K experts run on an R9700 (UD-Q4_K_XL), IQ3_S / IQ4_NL on a Strix Halo
+        self.assertFalse(setup.MODELS["AP-Q4_K_XL"].get("nvidia_only"))  # (docs/QUANTS.md), so neither size asks on AMD
         self.assertFalse(setup.MODELS["AP-IQ4_XS"].get("nvidia_only"))   # IQ3_S / IQ4_NL: UD-IQ4_XS's types
 
     def test_the_ram_budget_holds_at_most_its_experts(self):
