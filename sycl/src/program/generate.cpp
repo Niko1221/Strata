@@ -25,7 +25,6 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
-#include "strata/b70.hpp"
 #include "strata/sycl_doorbell.hpp"
 #include "strata/core/arch_defaults.hpp"
 #include "strata/core/dma_batch.hpp"
@@ -4970,9 +4969,11 @@ int main(int argc, char **argv) try {
         }
         // Select synchronous adaptation only for the validated complete-mirror configuration.
         // Unsupported configurations retain the existing adaptation/fallback behavior.
+        const char* mirror_adapt_env = std::getenv("STRATA_SYCL_MIRROR_ADAPT");
         const char* device_plan = std::getenv("STRATA_VERIFY_DEVICE_PLAN");
-        mirror_adapt = no_host && device_plan && std::atoi(device_plan) != 0 &&
-            strata::is_b70(nullptr) && o.serve && o.batch == 0 && o.stream_experts && srcp == &gguf_src &&
+        mirror_adapt = (!mirror_adapt_env || mirror_adapt_env[0] == '1') &&
+            no_host && device_plan && std::atoi(device_plan) != 0 &&
+            strata::intel_gpu_gen(strata::q_of(nullptr)->get_device()) == strata::IntelGpuGen::Battlemage && o.serve && o.batch == 0 && o.stream_experts && srcp == &gguf_src &&
             stages.empty() && o.peer_device < 0 && !remote_caches && o.no_prefill_borrow &&
             !o.vram_elastic && mirror_table_d && unmirrored_misses == 0 && n_true_miss > 0 &&
             o.adapt_every > 0 && o.adapt_swaps > 0 && o.adapt_swaps <= 96 && o.expert_profile_save.empty();

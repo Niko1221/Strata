@@ -2362,9 +2362,15 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         for (uint32_t count : expert_usage_counts_h_) total += count;
         if (total != (uint64_t)(le_ - lb_) * (uint64_t)T * (uint64_t)ss.k)
             throw std::runtime_error("mirror adaptive route histogram coverage mismatch");
-        // Rank presence in completed windows, without weighting longer speculative windows more heavily.
-        for (size_t i = 0; i < expert_usage_counts_h_.size(); ++i)
-            if (expert_usage_counts_h_[i]) (*expert_usage_counter_)[i] += 1.f;
+        // Default to window presence; the diagnostic override preserves scalar route-count accumulation.
+        static const bool presence = [] {
+            const char* v = std::getenv("STRATA_SYCL_ADAPT_WINDOW_PRESENCE");
+            return !v || v[0] == '1';
+        }();
+        for (size_t i = 0; i < expert_usage_counts_h_.size(); ++i) {
+            const uint32_t count = presence ? (expert_usage_counts_h_[i] > 0 ? 1u : 0u) : expert_usage_counts_h_[i];
+            for (uint32_t n = 0; n < count; ++n) (*expert_usage_counter_)[i] += 1.f;
+        }
     }
     if (no_host && std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {   // SYCL port: what the window left behind
         const int Gd = groups_[T] > 0 ? groups_[T] : 1;
