@@ -18,6 +18,11 @@ import sys
 import tempfile
 import time
 import unittest
+# JEV_TEST_MODES_BOOTSTRAP: the suite exercises a deployment that has OPTED IN
+# to decisions (chat-only is the default posture since the flip); set before
+# any serve.jev_calib import resolves MODES at module load.
+import os as _os
+_os.environ.setdefault("STRATA_JEV_MODES", "chat,decision")
 import urllib.error
 import urllib.request
 from pathlib import Path
