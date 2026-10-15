@@ -26,6 +26,7 @@ with 32 GB, where the experts stream from the SSD. Other chips and memory sizes 
 | UD-Q5_K_XL, UD-Q6_K_XL (Unsloth) | 103.9 / 114.8 GB | stream from the SSD on 128 GB | 128 GB, streamed |
 
 - **The n-gram table:** each pack also has a 28.8 GB n-gram table (the model's second file). It is read from the SSD a few rows at a time and does not count against the memory above.
+- **The KV cache** is part of that "needs about": 1,056 B per cell per QSA layer (12 layers), one cell per token of the context plus 128. `--kv q4_0` (opt-in, below) shrinks a cell to 576 B: measured on the M4 Pro, 48 GB, 0.19 GB less at 32K context and 0.38 GB at 64K, which a streaming Mac's planner spends on 241 and 494 more resident expert slots (the Quality section below has the rest of the measurement).
 - **Disk:** the download is 66-84 GB, plus about 7 GB for the pack and the draft layer. A Mac that streams also needs room for the experts' copy (below): 34-40 GB.
 - **A Mac whose memory cannot hold the pack (32-48 GB):** the engine streams the experts from the SSD instead. It decides this by itself when the experts are more than 60% of Metal's share.
   - It keeps the most-used experts in an arena: Metal's share, or the memory macOS reports as available less what it keeps for macOS, whichever is smaller. It keeps 7 GB, or 15% of the RAM when that is more, and it also keeps the n-gram table's share. It counts as free only what macOS can give without swapping (free and purgeable memory and the clean file cache, not other programs' idle memory). It checks again just before it takes the arena, and fills the arena in 1.5 GB steps, checking again before each one; it stops early rather than push macOS below what it keeps. On a Mac with 64 GB or more the arena, the Metal buffers and the host memory together also stay under 60% of the RAM (see "The engine's whole anonymous footprint" below).
@@ -57,7 +58,9 @@ The config uses the Mac defaults: `--spec 2` and the Q8_0 hyper-connection read 
 - the Anthropic API on `/v1/messages`;
 - the chat page on `http://127.0.0.1:8080/`.
 
-Options: `--model Q2_0|IQ3_XXS|IQ3_S|UD-Q4_K_XL|UD-Q5_K_XL|UD-Q6_K_XL` (the UD files are Unsloth's), `--vision yes|no`, `--context N`, `--port`, `--host` / `--api-key`, `--draft-vocab`, `--no-browser`,
+Options: `--model Q2_0|IQ3_XXS|IQ3_S|UD-Q4_K_XL|UD-Q5_K_XL|UD-Q6_K_XL` (the UD files are Unsloth's), `--vision yes|no`, `--kv q4_0`
+(a 4-bit K/V cache, opt-in; without it setup writes no `--kv` at all and the engine's default path is unchanged), `--context N`, `--port`,
+`--host` / `--api-key`, `--draft-vocab`, `--no-browser`,
 `--data-dir`, `--models-dir`, `--gguf-dir`, `--setup` (another model or new settings), `--no-start`, `--check` (only
 check the Mac), `--build` (build the engine again).
 
@@ -164,6 +167,20 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
   - The Mac engine is deterministic: two runs give identical numbers.
 - **The fast prompt path** (the prompt kernels) against reading the prompt through decode windows: mean KL 0.0004, top-1 99.4-99.6%.
 - **Needles:** a code word hidden in 8K, 16K and 32K tokens of text, at 10/50/90% depth. Found 9 of 9 with Q2_0 and with IQ3_XXS, both with Q8_0 and with BF16. With the fast prompt path (4K-32K) the answers are the same.
+- **`--kv q4_0` (opt-in): a 4-bit K/V cache, the same format the PC engine has.** On this engine there is no fp16-vs-int8
+  choice to make: `--kv fp16` and `--kv int8` are one path (the window's pools are the int8 ones either way; the engine's log
+  prints `KV int8` for both, and the two runs of the same harness came out byte-identical). q4_0 is the only smaller K/V format
+  on a Mac; `--kv k8v4` is refused at startup. Measured as q4_0 against that shared path, on the M4 Pro, 48 GB, Q2_0 streamed
+  from the SSD: teacher-forced over 4,995 positions (the harness above, five segments) top-1 agreement 94.45%, mean KL 0.034
+  (p99 0.4467), perplexity 4.517 against 4.442 (+1.7%; the worst segment, an agent transcript, +7.3%). The batched prompt fast
+  path under q4_0 answered 20 full-vocabulary prompts without one flipped argmax (top-1 100%, full-vocab KL 0.03565 mean /
+  0.00434 median / 0.19546 max). Same-day speed pairs, only `--kv` differing: decode 20.84 against 21.09 tok/s (−1.2%) and a
+  2,200-id prefill (2,199 tokens prefilled) 213.15 against 215.54 tok/s (−1.1%) — both at the edge of the run-to-run noise,
+  which the same-code fp16-vs-int8 pair puts near 1% (it measured −1.3%). Needles under q4_0: 8 of 9 (the shared path found its 3
+  controls); the one miss is the deepest needle at the longest length (32K at 90% depth), a prompt-injection refusal, not a
+  garbled retrieval. Not tested: the M5's k4-layout q4 kernels (they compile but an M4 Pro never dispatches them), MTP drafting
+  over q4_0 pools end to end, and other Macs. Every number, the scripts that reproduce it and the needle disclosures live in
+  `bench/results/2026-10-15-mac-kv-q4/`.
 - **Same answers as on a PC:**
   - against the CUDA engine on a Tesla P100 (IQ3_XXS and IQ3_S), the first 200 tokens of a reply are identical on the short question;
   - on the story, the first IQ3_S tokens differ at token 1, a near-tie (margin 0.12). Following the CUDA engine's tokens, 4 of 200 picks differ, all at margins 0.06-0.21;

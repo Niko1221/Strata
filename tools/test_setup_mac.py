@@ -109,6 +109,22 @@ class Config(unittest.TestCase):
         self.assertNotIn("--mtp", small)
         self.assertTrue(M.stream_mtp(False, 16) and M.stream_mtp(True, 128) and not M.stream_mtp(True, 64))
 
+    def test_kv_q4_0_is_opt_in_and_the_default_writes_no_flag(self):
+        # --kv q4_0 (a 4-bit K/V cache, docs/MAC.md): opt-in.  Without it no --kv is written at all, so the generated
+        # config's args are byte-identical to before the option existed; with it the flag pair is appended at the end.
+        base = M.engine_args(Path("/p"), [Path("/a1.gguf"), Path("/a2.gguf")], Path("/d/mtp/rt"), 32768)
+        self.assertNotIn("--kv", base)
+        q4 = M.engine_args(Path("/p"), [Path("/a1.gguf"), Path("/a2.gguf")], Path("/d/mtp/rt"), 32768, kv="q4_0")
+        self.assertEqual(q4[q4.index("--kv") + 1], "q4_0")
+        self.assertEqual(q4[:-2], base)
+        st = M.engine_args(Path("/p"), [Path("/a1.gguf"), Path("/a2.gguf")], Path("/d/mtp/rt"), 65536, stream=True,
+                           ram_gb=32, kv="q4_0")
+        self.assertEqual(st[st.index("--kv") + 1], "q4_0")          # streaming takes it too (more arena slots)
+        self.assertEqual(st[st.index("--suffix-draft") + 1], "0")
+        src = (ROOT / "metal" / "setup_mac.py").read_text(encoding="utf-8")
+        # q4_0 is the only choice: k8v4 is refused by the engine on Metal, and fp16/int8 are one path there
+        self.assertIn('ap.add_argument("--kv", choices=["q4_0"]', src)
+
     def test_config_is_a_model_config_with_the_metal_backend(self):
         cfg = M.mac_config(Path("/r/build-metal/strata"), ["--pack", "x"], Path("/p"), "qwen3.8-flash-next-q2_0",
                            "Q2_0", 8080)

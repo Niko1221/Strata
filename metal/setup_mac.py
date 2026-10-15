@@ -298,11 +298,13 @@ def stream_mtp(stream: bool, ram_gb: float) -> bool:
     return (not stream) or ram_gb >= STREAM_MTP_FROM_GB
 
 
-def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0) -> list[str]:
+def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0,
+                kv: str | None = None) -> list[str]:
     """The Metal defaults: --spec 2 with the MTP draft layer (measured best on the M5 Max, docs/MAC.md) and the Q8_0
     hyper-connection read (the engine's default on Metal; STRATA_HC_Q8=0 in the config's env gives the exact BF16
     read).  Streaming from the SSD: one token per step, no draft layer (measured faster on the 32 GB M4); a streaming
-    Mac with STREAM_MTP_FROM_GB or more keeps the draft layer and uses --spec STREAM_SPEC."""
+    Mac with STREAM_MTP_FROM_GB or more keeps the draft layer and uses --spec STREAM_SPEC.  kv: the opt-in 4-bit K/V
+    cache (--kv q4_0, docs/MAC.md); without it no --kv is written at all - the engine's own default, unchanged."""
     mtp = stream_mtp(stream, ram_gb)
     args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1])]
     if shards[0].name.endswith("-metal.gguf"):         # the repacked file: it is its own dense GGUF
@@ -312,8 +314,9 @@ def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = Fal
             "--prefill", "auto", "--spec", str(STREAM_SPEC if stream and mtp else 2)]
     args += ["--suffix-draft", "0"] if stream else []
     args += ["--mtp", str(rt)] if mtp else []
-    return args + ["--max-context", str(ctx),
-                   "--mmap-experts"]   # what the Metal engine does anyway (the GGUF mapped in place); the server says so
+    args += ["--max-context", str(ctx),
+             "--mmap-experts"]   # what the Metal engine does anyway (the GGUF mapped in place); the server says so
+    return args + ["--kv", kv] if kv else args
 
 
 # the image encoder's projector (setup.py's pinned revision): name -> (bytes, SHA-256)
@@ -505,6 +508,9 @@ def main(argv=None) -> int:
     ap.add_argument("--build", action="store_true", help="build the engine again even when it is current")
     ap.add_argument("--vision", choices=["yes", "no"],
                     help="let the model read images (the image encoder on the GPU, built here; default: asked, no)")
+    ap.add_argument("--kv", choices=["q4_0"],
+                    help="a 4-bit K/V cache: about half the KV memory, spent by the streaming planner on resident experts "
+                         "(opt-in, docs/MAC.md; without it no --kv is written and the engine's default path is unchanged)")
     a, rest = ap.parse_known_args(argv)
     if rest:
         S.warn("not used on a Mac: " + " ".join(rest))
@@ -670,7 +676,8 @@ def main(argv=None) -> int:
     # ---- 7. the config, the start script
     S.step(7, "writing the start script")
     port = a.port or 8080
-    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"]), pack, f"{fam['name']}-{model.lower()}", tag, port)
+    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"], kv=a.kv), pack,
+                     f"{fam['name']}-{model.lower()}", tag, port)
     cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0"}   # the engine follows setup's measured choice
     if vision == "yes":
         cfg["args"] += ["--vision"]
