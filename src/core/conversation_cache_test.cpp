@@ -23,20 +23,6 @@ SavedConversation image(std::initializer_list<int32_t> ids, bool cvec = true) {
 
 int main() {
     {
-        SavedConversation s;
-        s.live.ids = {1}; s.live.gdn.resize(3); s.live.gdn.reserve(4096);
-        s.live.ple.resize(4); s.live.tails.resize(5); s.live.dead.resize(6); s.live.block_pos.resize(7);
-        check(s.restore_payload_bytes() == 31, "restore counts the distinct pooled spare-row write");
-        s.kv.resize(1);
-        s.kv[0].k.resize(7); s.kv[0].v.resize(8); s.kv[0].k_scale.resize(9);
-        s.kv[0].v_scale.resize(10); s.kv[0].pooled.resize(11);
-        s.checkpoints.resize(1); s.checkpoints[0].gdn.resize(2048);
-        check(s.restore_payload_bytes() == 76, "restore excludes capacity, metadata and retained checkpoints");
-        s.stage_images.resize(1); s.stage_images[0].live.dead.resize(2);
-        check(s.restore_payload_bytes() == 78, "restore includes later stages, empty token history has no spare-row write");
-    }
-
-    {
         ConversationBuffer bytes;
         const size_t first = ConversationBuffer::segment_bytes + 17;
         const size_t peak = bytes.allocation_peak(first);

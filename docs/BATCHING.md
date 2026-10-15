@@ -312,11 +312,16 @@ On top of `GEN` / `GENI`:
 | `BGENI <slot> <max_new> [keys] <file> <ids>` | in | the same with images |
 | `BADM <slot> <1/0>` | out | after the admission's `DONE`: 1 = it continues in the slot, 0 = it ended |
 | `BT <slot> <id>` | out | a token of that slot |
-| `BDONE <slot> <generated> <stop/length/cancel> <ms>` | out | the slot is free again (it keeps its conversation) |
+| `BDONE <slot> <generated> <stop/length/cancel> <ms> [<accepted> <offered>]` | out | the slot is free again (it keeps its conversation); optional slot-leg draft counts |
 | `BSTOP <slot>` | in | end that slot at its next window |
 | `BYIELD <slot>` | in | the prompt being read gives way at its next chunk boundary; its part read waits in `<slot>` (the admission's own, or a free slot for a solo request) |
 | `YIELDED <slot> <tokens>` | out | before the `DONE cancel` of a read that gave way: the request is sent again later and goes on from there |
 | `INFO ... batch_slots=N` | out | the slots the engine runs (only with `--batch`) |
+
+The optional `BDONE` counts cover the slot leg: `offered` counts proposed drafts, and `accepted` counts drafts
+accepted by verification, including any accepted draft not emitted because the request then stops. Without
+`--batch-mtp` the slot counts are `0 0`. Older engines omit them; the server leaves any admission counts unchanged.
+For a request that moves between solo and slot paths, the server adds the reported counts across its legs.
 
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.
