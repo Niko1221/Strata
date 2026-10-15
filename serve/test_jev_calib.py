@@ -235,3 +235,43 @@ def httpd_server_port(httpd):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PerTupleCalib(unittest.TestCase):
+    """P0-1 (Opus plan): calibrators are keyed by readout letter."""
+
+    def setUp(self):
+        jev_calib._set_for_test(None, "")
+        jev_calib._set_for_test(None, "L")
+        jev_calib._set_for_test(None, "D")
+        jev_calib._set_for_test(jev_calib.Calib(loaded=True, T_choice=3.0, T_score=3.0), "D")
+
+    def tearDown(self):
+        for m in ("", "L", "V", "D", "S"):
+            jev_calib._set_for_test(None, m)
+
+    def test_image_fit_does_not_touch_text(self):
+        pr, cid = jev_calib.apply("choice", [0.9, 0.1], "")      # text: no fit -> identity
+        self.assertEqual(cid, "identity")
+        pr, cid = jev_calib.apply("choice", [0.9, 0.1], "D")     # image D: its own T
+        self.assertEqual(cid, "T_choice_v1")
+
+    def test_mode_without_fit_falls_back_to_text(self):
+        jev_calib._set_for_test(jev_calib.Calib(loaded=True, T_score=2.0), "")
+        pr, cid = jev_calib.apply("score", [0.8, 0.2], "S")      # S has no own fit
+        self.assertEqual(cid, "T_score_v1")
+
+    def test_swap_loads_per_mode_files(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "calib.json").write_text(json.dumps({"T_choice": 1.5}))
+            Path(td, "calib-D.json").write_text(json.dumps({"T_choice": 4.0}))
+            loaded = jev_calib.swap(Path(td))
+            self.assertTrue(loaded["text(legacy)"])
+            self.assertTrue(loaded["D"])
+            _, cid = jev_calib.apply("choice", [0.9, 0.1], "")
+            self.assertEqual(cid, "T_choice_v1")
+            pr, cid = jev_calib.apply("choice", [0.9, 0.1], "D")
+            self.assertEqual(cid, "T_choice_v1")
+            self.assertGreater(pr[1], 0.1 / 0.9 * 0.5)  # T=4 flattens toward uniform

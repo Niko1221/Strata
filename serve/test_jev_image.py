@@ -177,3 +177,20 @@ class ImageTwoCall(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DirectVMode(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.engine, cls.svc, cls.httpd, cls.post = start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def test_direct_rejects_v_header(self):
+        st, body = self.post(REQ, headers={"X-Jev-Mode": "V"})
+        self.assertEqual(st, 422)
+        self.assertEqual(body["error"]["field"], "X-Jev-Mode")
+        self.assertIn("not supported", body["error"]["message"])
