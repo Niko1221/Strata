@@ -64,7 +64,9 @@ Scheduler, it can be 24x slower: see [Running it at startup](DETAILS.md#running-
 On Linux the engine now asks the kernel to read the model files ahead (a cold start went from ~920 s to 70 s on one
 PC); `STRATA_READ_AHEAD=0` turns that off. On Linux with transparent huge pages on `always`, the arena no longer asks
 for `MADV_HUGEPAGE` on top (a fragmented machine spent minutes compacting memory, #771); `STRATA_NO_ARENA_THP=1` skips
-that request on any setting.
+that request on any setting. The server gives the engine 900 s to load; from a slow (rotational) disk it can need more,
+and then the start ends with `did not report READY within 900 s`: set `STRATA_ENGINE_READY_S=3600` (or 0, no limit) in
+the environment before starting (#2331).
 
 **Setup says the engine does not match GitHub's checksum.**
 Setup checks the downloaded ready-made engine against the SHA-256 GitHub publishes. On a mismatch the file is corrupt or was changed on the way, so setup deletes it and stops; run setup again to download it afresh. If GitHub gives no checksum (offline, rate limited, your own mirror), setup warns and installs anyway. `STRATA_SKIP_SHA256=1` skips the check, only if you insist.
