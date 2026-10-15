@@ -299,5 +299,149 @@ class ConversationCacheCard(unittest.TestCase):
             self.assertIn(f'"{el}"', js)
 
 
+class ParkingLifecycleAndAdmission(unittest.TestCase):
+    """The pieces the on-disk tier added under the card and that the series left untested: the engine's INFO line
+    into `info` (parse_info_line), the disk load / discard / park-mirror lines that move ConvCacheLog's `loading`
+    and its disk tier, `spill_on` (the park-mode mirror flag and its absence), and `live.admission` - the field that
+    says whether an admission is reading a new prompt or loading a parking back from disk, or nothing at all."""
+
+    LOAD = "strata serve: conversation cache: loading 4096 tokens from disk\n"
+    RESTORE = "strata serve: conversation cache: restored 4000 tokens (exact) in 30.0 ms; parked=1 bytes=104857600\n"
+    MIRROR = ("strata serve: conversation cache: park mirror queued (4000 tokens, copy 1.2 ms); writes=3 collapsed=1 "
+              "throttled=0 disk=420 MiB disk_evictions=4 conversations=2\n")
+
+    def test_parse_info_line_reads_the_engines_info_line(self):
+        from serve.server import parse_info_line
+        info = {}
+        parse_info_line(info, 'INFO logit_bias=1 context=16384 kv=int8 vram_free_mib=12000 '
+                              'conversation_cache_mib=8192 conversation_cache_disk_mib=2048 conversation_cache_disk=1 '
+                              'conversation_cache_spill_dir="D:\\Strata Cache\\spill" engine=0.1.99')
+        self.assertEqual(info["context"], 16384)                    # a number becomes an int
+        self.assertEqual(info["kv"], "int8")                        # a word stays a word
+        self.assertEqual(info["engine"], "0.1.99")                  # a version is not a number
+        self.assertEqual(info["conversation_cache_disk"], 1)
+        self.assertEqual(info["conversation_cache_spill_dir"], r"D:\Strata Cache\spill")   # the folder's spaces kept
+        # a key the parser was not written for still lands; three keys here prove it stops at the right tokens
+        parse_info_line(info, "INFO a_new_knob=17 context=4096 conversation_cache_mib=0")
+        self.assertEqual((info["a_new_knob"], info["context"], info["conversation_cache_mib"]), (17, 4096, 0))
+        # an engine with no spill folder quotes an empty one: the key right after it still parses
+        parse_info_line(info, 'INFO conversation_cache_spill_dir="" engine=0.1.100')
+        self.assertEqual((info["conversation_cache_spill_dir"], info["engine"]), ("", "0.1.100"))
+
+    def test_parse_info_line_leaves_a_short_line_alone(self):
+        from serve.server import parse_info_line
+        info = {"context": 4096}
+        before = dict(info)
+        parse_info_line(info, "")                                   # nothing to read at all
+        parse_info_line(info, "INFO")                              # the tag with no key=value after it
+        self.assertEqual(info, before)                              # nothing invented, nothing raised
+
+    def test_the_disk_load_sets_and_a_discard_clears_the_loading(self):
+        from serve.server import ConvCacheLog
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(self.LOAD, encoding="utf-8")
+            c = ConvCacheLog()
+            self.assertEqual(c.poll(str(log), 0)["loading"], 4096)   # a parking is streaming back from disk
+            with open(log, "a", encoding="utf-8") as f:              # the image was refused: no load runs now
+                f.write("strata serve: conversation cache: discard unreadable disk conversation (bad header)\n")
+            self.assertEqual(c.poll(str(log), 0)["loading"], 0)
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(self.LOAD)
+            self.assertEqual(c.poll(str(log), 0)["loading"], 4096)
+            with open(log, "a", encoding="utf-8") as f:              # the load's other close: it did not fit
+                f.write("strata serve: conversation cache: disk conversation exceeds the RAM cache budget "
+                        "after loading\n")
+            self.assertEqual(c.poll(str(log), 0)["loading"], 0)
+
+    def test_the_restored_line_ends_the_disk_load(self):
+        from serve.server import ConvCacheLog
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(self.LOAD, encoding="utf-8")
+            c = ConvCacheLog()
+            self.assertEqual(c.poll(str(log), 0)["loading"], 4096)
+            with open(log, "a", encoding="utf-8") as f:              # the load's own end: the parking is seated
+                f.write(self.RESTORE)
+            st = c.poll(str(log), 0)
+            self.assertEqual((st["loading"], st["restores"]), (0, 1))
+
+    def test_the_park_mirror_line_moves_the_disk_tier(self):
+        from serve.server import ConvCacheLog
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(self.MIRROR, encoding="utf-8")
+            disk = ConvCacheLog().poll(str(log), 0)["disk"]
+            self.assertTrue(disk["ready"])                           # the mirror line alone proves the tier is on
+            self.assertEqual((disk["bytes"], disk["evictions"]), (420 * 1048576, 4))
+            self.assertEqual((disk["conversations"], disk["spills"]), (2, 1))
+
+    def test_spill_on_is_read_and_the_older_line_leaves_it_absent(self):
+        from serve.server import ConvCacheLog, conversation_cache_view
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text("strata serve: conversation cache: spill dir ready (2 conversations, 300 MiB, "
+                           "when-full=evict-oldest, max-age=0 d, spill-on=park, divergence=64 tok, park-throttle=30 s, "
+                           "1 oversized kept, 0 stale kept, 0 foreign kept, 0 orphans kept, 3 disk evictions, "
+                           "0 age evictions)\n", encoding="utf-8")
+            st = ConvCacheLog().poll(str(log), 0)
+            self.assertEqual(st["disk"]["spill_on"], "park")         # the park-mode mirror flag
+            view = conversation_cache_view({"conversation_cache_mib": 8192, "conversation_cache_disk_mib": 8192,
+                                            "conversation_cache_spill_dir": r"D:\spill"}, [], {}, st)
+            self.assertEqual(view["disk"]["spill_on"], "park")       # the card and its disk-row both carry it
+            self.assertEqual((view["disk"]["when_full"], view["disk"]["max_age_days"]), ("evict-oldest", 0))
+            self.assertEqual(view["disk"]["kept"]["oversized"], 1)
+            disk_row = next(x for x in view["destinations"] if x["tier"] == "disk")
+            self.assertEqual((disk_row["spill_on"], disk_row["dir"]), ("park", r"D:\spill"))
+            # an engine from before --conversation-cache-spill-on writes the line with no spill-on=: it stays absent
+            log.write_text("strata serve: conversation cache: spill dir ready (0 conversations, 0 MiB, "
+                           "when-full=evict-oldest, max-age=0 d, 1 oversized kept, 0 stale kept, 0 foreign kept, "
+                           "0 orphans kept, 0 disk evictions, 0 age evictions)\n", encoding="utf-8")
+            self.assertIsNone(ConvCacheLog().poll(str(log), 0)["disk"]["spill_on"])
+
+    def test_live_admission_through_metrics(self):
+        from serve.server import admission_field
+        self.assertIsNone(admission_field("generating", {"loading": 4096}))   # the field is only about an admission
+        tok = ByteTokenizer()
+        engine = MockEngine(tok, "ok", max_context=4096)
+        svc = Service(engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            import tempfile
+            with tempfile.TemporaryDirectory() as d:
+                log = Path(d) / "strata.log"
+                log.write_text("", encoding="utf-8")
+                engine.log_path, engine.log_start = str(log), 0
+
+                def admission():
+                    with urllib.request.urlopen(base + "/metrics", timeout=10) as r:
+                        return json.loads(r.read())["live"]["admission"]
+
+                self.assertIsNone(admission())                       # idle: no admission, so nothing to be loading
+                svc.status["busy"] = True                            # an admission is running (before its first token)
+                self.assertEqual(admission(), "reading")             # ...a new prompt
+                with open(log, "a", encoding="utf-8") as f:          # ...or a parking streaming back from disk
+                    f.write(self.LOAD)
+                self.assertEqual(admission(), "loading")
+                with open(log, "a", encoding="utf-8") as f:
+                    f.write(self.RESTORE)                            # the load ended: the field must not stay stuck
+                self.assertEqual(admission(), "reading")
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_the_page_treats_a_missing_admission_field_as_no_admission(self):
+        js = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
+        # live.admission is read only when it is a string: null, or the field missing on an older shim, means "no
+        # word to add" and the slot keeps its own - it must never print "undefined" or throw
+        self.assertIn('typeof live.admission === "string"', js)
+        self.assertIn('admission === "loading" ? "loading" : "reading"', js)
+
+
 if __name__ == "__main__":
     unittest.main()
