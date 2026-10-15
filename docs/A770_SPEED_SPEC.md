@@ -596,7 +596,7 @@ porting effort, not parameter tuning.
 
 ### Grouped-expert lane count (`STRATA_EXPERT_LANES`)
 
-Added `-DSTRATA_SYCL_EXPERT_LANES=1|2|4|8|16|32` (default 8), applied to
+Added `-DSTRATA_EXPERT_LANES=1|2|4|8|16|32` (default 8), applied to
 `iq_kernels.dp.cpp`. The IQ grouped-expert decode kernel uses 8 lanes per row.
 
 - Interleaved A/B on the sustained gate, same session and config:
