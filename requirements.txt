@@ -13,6 +13,7 @@ cmake==4.4.3
 ninja==1.13.2
 pillow==12.3.0
 psutil==7.2.2
+llguidance==1.9.1
 
 # their dependencies
 markupsafe==3.0.3
