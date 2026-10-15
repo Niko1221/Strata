@@ -197,6 +197,46 @@ class Calibrate(unittest.TestCase):
         self.assertEqual(CAL.pick({"a": [50, 51, 49], "b": [51, 51.5, 51]}, "a"), "a")
         self.assertEqual(CAL.pick({}, "a"), "a")
 
+    def test_a_round_winner_the_config_does_not_carry_is_explained_2465(self):
+        # #2465: the sweep's arrows named PCIe share 1, draft floor 0.7 and the 160-swap tier, the saved config carried
+        # none of them, and nothing said why: each was within the 3% a setting must win by
+        said = []
+        def speed(f, p, w):
+            return 50.0 * (1.02 if f == 1.0 else 1.0) * (1.005 if abs(p - 0.7) < 1e-6 else 1.0)
+        res = CAL.measure(BASE, [[1, 2, 3]] * 3, lambda a: FakeEngine(a, speed, 6, adapt={"160": 1.02}),
+                          say=said.append)
+        self.assertEqual(res["settings"], {})
+        self.assertTrue(any("-> best 1" in x for x in said))                            # the PCIe sweep's arrow
+        stays = [x for x in said if "the default stays" in x]
+        self.assertTrue(any("PCIe share 1 and draft floor 0.7 measured +2.5% over the default (PCIe share 0.55 and "
+                            "draft floor 0.5), not more than the 3%" in x for x in stays), said)
+        self.assertTrue(any("every 1, 160 swaps, decay 0.97 measured +2.0%" in x for x in stays), said)
+        # a winner that is kept says so too
+        said = []
+        res = CAL.measure(BASE, [[1, 2, 3]] * 3, lambda a: FakeEngine(a, lambda f, p, w: 60.0 if w == 3 else 50.0, 6),
+                          say=said.append)
+        self.assertEqual(res["settings"].get("--pool-workers"), "3")
+        self.assertIn("    -> 3 workers: +20.0% over the default (6 workers): kept", said)
+        self.assertIn("    -> the engine's expert tier (the default) is the fastest: kept", said)
+        # the PCIe share and draft floor that win the confirm round
+        said = []
+        res = CAL.measure(BASE, [[1, 2, 3]] * 3, lambda a: FakeEngine(a, lambda f, p, w: 60.0 if f == 0.2 else 50.0, 6),
+                          say=said.append)
+        self.assertEqual(res["settings"].get("--pcie-frac"), "0.20")
+        self.assertIn("    -> PCIe share 0.2 and draft floor 0.3: +20.0% over the default (PCIe share 0.55 and draft floor "
+                      "0.5): kept", said)
+
+    def test_verdict(self):
+        name = str
+        self.assertIsNone(CAL.verdict({}, "a", "a", name))
+        self.assertIsNone(CAL.verdict({"b": [50]}, "a", "a", name))                     # the default did not start
+        self.assertIn("a (the default) is the fastest", CAL.verdict({"a": [50], "b": [49]}, "a", "a", name))
+        self.assertIn("b: +4.0% over the default (a): kept", CAL.verdict({"a": [50], "b": [52]}, "a", "b", name))
+        self.assertIn("b measured +2.0% over the default (a), not more than the 3% a setting must win by: the default "
+                      "stays", CAL.verdict({"a": [50], "b": [51]}, "a", "a", name))
+        # a default that measured no speed (no prompt gave enough tokens) is not divided by
+        self.assertIn("b: faster than the default (a): kept", CAL.verdict({"a": [0.0], "b": [5.0]}, "a", "b", name))
+
 
 class SetupIntegration(unittest.TestCase):
     def setUp(self):

@@ -108,6 +108,22 @@ def pick(measured: dict, default_key, min_gain: float = MIN_GAIN):
     return best if med[best] > med[default_key] * (1.0 + min_gain) else default_key
 
 
+def verdict(measured: dict, default_key, chosen, name, min_gain: float = MIN_GAIN) -> str | None:
+    """#2465: the line that says what `pick` did with the medians, so a round's "best" that the saved config does not
+    carry is explained: the best is kept only when it beats the default by more than min_gain."""
+    med = {k: statistics.median(v) for k, v in measured.items() if v}
+    if not med or default_key not in med:
+        return None
+    best = max(med, key=med.get)
+    if best == default_key:
+        return f"    -> {name(default_key)} (the default) is the fastest: kept"
+    over = f"{med[best] / med[default_key] - 1.0:+.1%} over" if med[default_key] > 0 else "faster than"
+    if chosen == best:
+        return f"    -> {name(best)}: {over} the default ({name(default_key)}): kept"
+    return (f"    -> {name(best)} measured {over} the default ({name(default_key)}), not more than the "
+            f"{min_gain:.0%} a setting must win by: the default stays")
+
+
 class Session:
     """One running engine: measure decode tok/s for a setting (the median of the prompts' rates)."""
 
@@ -228,6 +244,13 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
                 for k in (dflt, cand):
                     confirm[k].append(s.rate({"pcie_frac": k[0], "spec_min_p": k[1]}))
         chosen = pick(confirm, dflt) if cand != dflt else dflt
+        if cand != dflt:
+            pair = lambda k: f"PCIe share {k[0]:g} and draft floor {k[1]:g}"  # noqa: E731
+            say(f"    the best against the default, median of {SWEEP_ROUNDS}: the default ({pair(dflt)}) "
+                f"{statistics.median(confirm[dflt]):.1f}, the best ({pair(cand)}) {statistics.median(confirm[cand]):.1f}")
+            line = verdict(confirm, dflt, chosen, pair)
+            if line:
+                say(line)
         report.update(default={"pcie_frac": dflt[0], "spec_min_p": dflt[1], "pool_workers": d_workers},
                       pcie_sweep={str(k): v for k, v in by_pcie.items()},
                       min_p_sweep={str(k): v for k, v in by_minp.items()},
@@ -258,6 +281,9 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
                 close(e)
         report["workers"] = {str(k): v for k, v in by_workers.items()}
         w_best = pick(by_workers, d_workers) if by_workers else d_workers
+        line = verdict(by_workers, d_workers, w_best, lambda w: f"{w} workers")
+        if line:
+            say(line)
         if w_best != d_workers:
             settings["--pool-workers"] = str(w_best)
             base_rate = statistics.median(by_workers[w_best])
@@ -283,6 +309,10 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
         finally:
             close(e)
     a_best = pick(by_adapt, "default") if by_adapt else "default"
+    line = verdict(by_adapt, "default", a_best, lambda k: "the engine's expert tier" if k == "default"
+                   else "every {}, {} swaps, decay {}".format(*k.split("/")))
+    if line:
+        say(line)
     report["adapt"] = by_adapt
     if a_best != "default":
         for flag, v in zip(ADAPT_FLAGS, a_best.split("/")):

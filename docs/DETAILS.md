@@ -498,8 +498,9 @@ With more than one model installed, it asks which one to start. `run-<model>.bat
 
 The defaults were measured on a Ryzen 5 7600 with an RTX 5070. Setup offers to measure them on your PC after an
 install; `START-HERE.bat --calibrate` (Linux: `./setup.sh --calibrate`) does it any time. It measures the output
-speed with each setting and keeps one only when it is more than 3% faster. The result is remembered per PC and model
-(in the settings file next to the data folder's record), so updates keep it.
+speed with each setting and keeps one only when it is more than 3% faster; each step's last line says which value it
+kept, and that the default stays when a round's best was not more than 3% faster (#2465). The result is remembered per
+PC and model (in the settings file next to the data folder's record), so updates keep it.
 
 Measuring the worker count needs a fresh engine, so the model is loaded more than once: the PC is busy, and can
 stop responding for a minute or two, once per restart. It then starts the model, like a plain `START-HERE.bat`.
