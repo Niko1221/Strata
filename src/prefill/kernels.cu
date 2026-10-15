@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 namespace strata::prefill {
 namespace {
@@ -46,8 +47,8 @@ __device__ __forceinline__ uint16_t hf(float f) { return __half_as_ushort(__floa
 // NaN in the down projection (decode's q8_1 has room to ~8e6; FP16 ends at 65504).  A NaN stays NaN (fminf/fmaxf
 // would make it -65504 and hide where it came from); finite values below 65504 round exactly as before.
 __device__ __forceinline__ uint16_t hf_sat(float f) { return hf(isnan(f) ? f : fminf(fmaxf(f, -65504.0f), 65504.0f)); }
-// The prompt path's 16-bit activation image for the BF16-weight GEMMs: BF16, or FP16 where the GEMM library is fast
-// only in FP16 (prompt_f16() in gemm.cu: rocBLAS on gfx103x).  Set once per device before the first prompt.
+// The prompt path's 16-bit activation image for the BF16-weight GEMMs: BF16 by default, or FP16 on devices selected
+// by STRATA_HIP_PROMPT_F16 (prompt_f16() in gemm.cu). Set once per device before the first prompt.
 #if defined(__HIPCC__)   // HIP only (#835): the CUDA kernels stay exactly as they were, they never read the flag
 __device__ int g_act_f16 = 0;
 __device__ __forceinline__ uint16_t act16(float f) { return g_act_f16 ? hf_sat(f) : bf(f); }
@@ -68,9 +69,38 @@ __device__ float block_sum(float v, float* sh) {
     __syncthreads();
     return sh[0];
 }
-void check(const char* what) {
+#if defined(__HIPCC__)
+std::string hip_context(void* stream) {
+    int device = -1, stream_device = -1;
+    (void) hipGetDevice(&device);
+    std::string context = "HIP device " + std::to_string(device);
+    if (device >= 0) {
+        hipDeviceProp_t prop{};
+        if (hipGetDeviceProperties(&prop, device) == hipSuccess)
+            context += " " + std::string(prop.gcnArchName);
+    }
+    const hipError_t se = hipStreamGetDevice(static_cast<hipStream_t>(stream), &stream_device);
+    context += se == hipSuccess ? ", stream device " + std::to_string(stream_device)
+                                : ", stream device unavailable (" + std::string(hipGetErrorString(se)) + ")";
+    return context;
+}
+#endif
+void check(const char* what, void* stream = nullptr) {
     const cudaError_t e = cudaGetLastError();
-    if (e != cudaSuccess) { std::fprintf(stderr, "prefill %s: %s\n", what, cudaGetErrorString(e)); std::exit(1); }
+    if (e != cudaSuccess) {
+#if defined(__HIPCC__)
+        if (stream) {
+            std::fprintf(stderr, "prefill %s: HIP error %d (%s), %s\n", what, (int) e, cudaGetErrorString(e),
+                         hip_context(stream).c_str());
+        } else {
+            std::fprintf(stderr, "prefill %s: %s\n", what, cudaGetErrorString(e));
+        }
+#else
+        (void) stream;
+        std::fprintf(stderr, "prefill %s: %s\n", what, cudaGetErrorString(e));
+#endif
+        std::exit(1);
+    }
 }
 unsigned blocks_for(int64_t n, int t = 256) { return (unsigned) ((n + t - 1) / t); }
 
@@ -1895,8 +1925,17 @@ void gr_write_cvec_norm_rs(float* R, const float* bo, const float* inj, int64_t 
     check("gr_write_cvec_norm_rs");
 }
 void gr_silu(const float* lo, uint16_t* lo16, int64_t T, void* stream, uint16_t* lo16_lo) {
+#if defined(__HIPCC__)
+    // Surface a deferred hipBLAS failure before queueing this kernel, rather than blaming gr_silu for it.
+    const cudaError_t prior = cudaGetLastError();
+    if (prior != cudaSuccess) {
+        std::fprintf(stderr, "prefill gr_silu: pending HIP error before kernel launch: %d (%s), %s\n", (int) prior,
+                     cudaGetErrorString(prior), hip_context(stream).c_str());
+        std::exit(1);
+    }
+#endif
     gr_silu_kernel<<<blocks_for(T * LR), 256, 0, (cudaStream_t) stream>>>(lo, lo16, lo16_lo, T * LR);
-    check("gr_silu");
+    check("gr_silu", stream);
 }
 void gr_mix(const float* xn, const float* gated, float* mixed, uint16_t* mixed16, int64_t T, void* stream,
             uint16_t* mixed_h, uint16_t* mixed16_lo) {

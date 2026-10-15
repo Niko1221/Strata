@@ -772,7 +772,7 @@ struct Prefill::Impl {
     uint16_t *xn16 = nullptr, *lo16 = nullptr;
     float* mixed = nullptr;
     uint16_t *mixed_bf = nullptr, *mixed_h = nullptr;
-    bool f16_io = false;   // HIP, STRATA_HIP_PROMPT_F16=1: this stage's 16-bit GEMMs run FP16 in and out (set in init)
+    bool f16_io = false;   // HIP, STRATA_HIP_PROMPT_F16: this stage's precision is selected for its device (set in init)
     uint16_t *xn16_lo = nullptr, *lo16_lo = nullptr, *mixed_bf_lo = nullptr;   // bf16x2(): the BF16 GEMMs' low parts
     float* bo = nullptr;
     // GDN
@@ -2177,7 +2177,22 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
 
     for (int64_t c0 = 0; c0 < n; c0 += m.T) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
-        if (std::getenv("STRATA_TRACE")) { std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld\n", (long long) c0, (long long) n); std::fflush(stderr); }
+        if (std::getenv("STRATA_TRACE")) {
+#if defined(STRATA_USE_HIP)
+            int device = -1;
+            (void) cudaGetDevice(&device);
+            int stream_device = -1;
+            const cudaError_t se = hipStreamGetDevice(m.cs, &stream_device);
+            cudaDeviceProp prop{};
+            if (device >= 0) (void) cudaGetDeviceProperties(&prop, device);
+            std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld, HIP device %d %s, stream device %s%d\n",
+                         (long long) c0, (long long) n, device, device >= 0 ? prop.gcnArchName : "unknown",
+                         se == hipSuccess ? "" : "unknown/", se == hipSuccess ? stream_device : -1);
+#else
+            std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld\n", (long long) c0, (long long) n);
+#endif
+            std::fflush(stderr);
+        }
         const int64_t T = std::min(m.T, n - c0), p0 = pos0 + c0;
         core::progress_at("reading the prompt (batched): preparing the chunk from token", p0);   // #251
         ++stats_.chunks;

@@ -82,8 +82,9 @@ bool run(strata::prefill::Gemm& gemm, hipStream_t stream, bool bf16_w, int t, in
     for (size_t j = 0; j < got.size(); ++j)
         if (!active[j]) ok = ok && got[j] == initial[j];
     const double rel = std::sqrt(diff2 / std::max(ref2, 1e-300));
-    // one FP16 rounding of the output (beta = 0), or the ordinary FP32 path (beta = 1)
-    ok = ok && rel < (beta == 0.0f ? 2e-3 : 1e-4);
+    // CPU double-precision reference uses the quantized input values. Allow one FP16 output rounding at beta=0;
+    // beta=1 remains on the ordinary FP32-output path. The absolute bound also catches localized output errors.
+    ok = ok && rel < (beta == 0.0f ? 2e-3 : 1e-4) && maximum < 5e-3;
     ok = ok && ref2 > 0;   // an all-zero reference would pass anything
     std::printf("%s %s T=%d N=%d K=%d ldy=%d beta=%.1f rel_l2=%.3g max_abs=%.3g ref_rms=%.3g\n", ok ? "PASS" : "FAIL",
                 bf16_w ? "BF16W" : "F16", t, n, k, ldy, beta, rel, maximum, std::sqrt(ref2 / ((double) t * n)));

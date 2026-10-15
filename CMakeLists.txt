@@ -696,6 +696,35 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME hip_prefill_native_batch COMMAND hip_prefill_native_batch)
       list(APPEND _strata_hip_tests hip_prefill_native_batch)
     endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/hip/multigpu_prefill_dispatch.cpp")
+      add_executable(hip_multigpu_prefill_dispatch tests/hip/multigpu_prefill_dispatch.cpp)
+      target_link_libraries(hip_multigpu_prefill_dispatch PRIVATE strata_prefill strata_hip_runtime)
+      foreach(_prompt_f16 IN ITEMS 0 1 gfx103x)
+        add_test(NAME hip_multigpu_prefill_dispatch_${_prompt_f16}
+                 COMMAND hip_multigpu_prefill_dispatch ${_prompt_f16})
+        set_tests_properties(hip_multigpu_prefill_dispatch_${_prompt_f16}
+                             PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 RUN_SERIAL TRUE)
+      endforeach()
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/hip/multigpu_prefill_gemm_dispatch.cpp")
+      add_executable(hip_multigpu_prefill_gemm_dispatch tests/hip/multigpu_prefill_gemm_dispatch.cpp)
+      target_link_libraries(hip_multigpu_prefill_gemm_dispatch PRIVATE strata_prefill strata_hip_runtime)
+      foreach(_prompt_f16 IN ITEMS 0 1 gfx103x)
+        add_test(NAME hip_multigpu_prefill_gemm_reference_${_prompt_f16}
+                 COMMAND hip_multigpu_prefill_gemm_dispatch ${_prompt_f16} --reference-only)
+        set_tests_properties(hip_multigpu_prefill_gemm_reference_${_prompt_f16}
+                             PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 RUN_SERIAL TRUE)
+      endforeach()
+      add_test(NAME hip_multigpu_prefill_gemm_dispatch_gfx103x
+               COMMAND hip_multigpu_prefill_gemm_dispatch gfx103x)
+      set_tests_properties(hip_multigpu_prefill_gemm_dispatch_gfx103x
+                           PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 RUN_SERIAL TRUE)
+    endif()
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/hip/test_validate_mixed_prefill.py")
+      add_test(NAME hip_validate_mixed_prefill_python
+               COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/hip/test_validate_mixed_prefill.py)
+    endif()
     # Aurora: the prompt GDN recurrence's per-head kernel against the column-split + norm kernels, bitwise
     add_executable(hip_gdn_rec_head tests/hip/gdn_rec_head.cpp)
     target_link_libraries(hip_gdn_rec_head PRIVATE strata_prefill strata_hip_runtime)
