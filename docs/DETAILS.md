@@ -320,6 +320,22 @@ hits, the router, the head, ...). The GPU profile times every stage with events,
 use it to compare, not to measure speed. This works with every pack; `--gpu-stages` (a one-token replay of
 per-layer graphs) refuses a native (IQ) pack, which has no such graphs.
 
+`python tools/strata_profile.py` does this in one command: it starts the server from a temporary copy of your config
+with both switches, sends a few typical requests (three short questions, fresh 2K / 16K / 32K prompts, the bench's
+agent session of six requests), reads the engine's lines for each one, and writes
+`bench/results/<date>-profile-<gpu>-<model>/README.md`: the prompt read's GPU time by group (experts streamed over
+PCIe, their dequant, the expert GEMMs, attention, GDN, the rest), the decode window split into the wait for the
+card, the experts computed on the CPU, the draft and the adaptive tier, the hit rate and PCIe share per request, and
+findings in words that name the setting on each path. The engine's log goes to a temporary file, `--expert-profile-save`
+is dropped for the run (as the bench does) and nothing of yours is written. The tokens per second in that report were
+measured with the switches on: quote speeds from the bench. `--verify-profile` adds `STRATA_VERIFY_PROFILE=1`; `--url`
+with `--engine-log FILE` reads a server that is already running. An example from an RTX 5070 Ti 16 GB + Ryzen 7
+5800X3D (Swift 1.5 IQ3_S, 262K, INT8 KV, `--kv-resident 32768`):
+[`bench/results/2026-10-15-profile-rtx-5070-ti-swift-1-5-iq3-s`](../bench/results/2026-10-15-profile-rtx-5070-ti-swift-1-5-iq3-s/README.md)
+- the 2K read waits for expert copies over PCIe (43% + 15% dequant), the 16K and 32K reads are compute-bound, and the
+three merged decode rows are about 10 ms of card and 14-19 ms of experts computed on the CPU per window (hit rate
+73-81%; the agent session's single turns range from 13 to 28 ms).
+
 **How good the next-layer expert prediction is (measurement only):** `STRATA_LOOKAHEAD_STATS=1` runs the router look-ahead on any expert tier and
 scores it against the routing of the next layer: every 100 windows the engine log has a `strata lookahead stats:` line with the experts per layer
 outside the GPU cache, the recall and precision of the top-k / k+4 / k+10 guesses and of the vote-ranked top 4 / 8 / 12, how much of the PCIe share they
