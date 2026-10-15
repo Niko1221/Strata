@@ -336,6 +336,29 @@ with `--engine-log FILE` reads a server that is already running. An example from
 three merged decode rows are about 10 ms of card and 14-19 ms of experts computed on the CPU per window (hit rate
 73-81%; the agent session's single turns range from 13 to 28 ms).
 
+**The Profile page (`/profile`, opt-in).** `"profile": true` in `strata-<model>.json` (or `serve/server.py --profile`;
+also a switch in the About tab's Model settings, used from the next start) starts the engine with the two switches
+and serves a page that shows the last request's breakdown as it happens - the prompt read's GPU time by group, the
+decode window's milliseconds by what the host waited for, the hit rate, the PCIe share and this request's KV
+streaming reads - and a button that runs `tools/strata_profile.py` against the server and shows its tables and
+findings (the report is written to `bench/results/` as from the command line; other requests queue behind the run's
+own: 42-50 s on the RTX 5070 Ti with the model loaded, longer on a slower PC). Off, nothing is set and the page
+answers 404; with replicas every engine gets the switches but the page reads the first one's log. The switches have a
+cost: on the RTX 5070 Ti above (Swift 1.5 IQ3_S, release engine 0.1.44.1, 262K context, `tools/ab_engine.py`, 3
+alternating pairs with a restart per arm, greedy, 256 new tokens) an 8K-token prompt read was 3.9-4.7% slower with
+them on (2,699-2,710 -> 2,582-2,592 tok/s, 3 of 3 pairs), and the decode of 256-token answers moved within its noise
+(-7% to +7%, no consistent sign):
+[`bench/results/2026-10-15-timing-switches-rtx-5070-ti`](../bench/results/2026-10-15-timing-switches-rtx-5070-ti/README.md).
+Turn the page on while you look, off when you are done. The page's **Tune this PC** button runs setup's
+calibration (`setup.py --calibrate`, tools/calibrate.py: the PCIe share, the draft floor, the CPU workers and the
+adaptive expert tier measured on this PC; setup's own estimate is 15-30 minutes, longer on a slow card) with the
+model unloaded for it; the winners are written into `strata-<model>.json` and remembered in the settings file as
+from the command line, and the server puts them into the engine's start command, so the model loads with them on
+the next request. While it runs a request gets 503 with `Retry-After` (the server does not load its engine beside
+the calibration's), the Settings view cannot save, and the calibration's engines write to the same engine log, so
+the page's last-request view can show their lines. As setup, the page offers the tuning on NVIDIA only and not for
+replicas.
+
 **How good the next-layer expert prediction is (measurement only):** `STRATA_LOOKAHEAD_STATS=1` runs the router look-ahead on any expert tier and
 scores it against the routing of the next layer: every 100 windows the engine log has a `strata lookahead stats:` line with the experts per layer
 outside the GPU cache, the recall and precision of the top-k / k+4 / k+10 guesses and of the vote-ranked top 4 / 8 / 12, how much of the PCIe share they
@@ -932,7 +955,7 @@ print(r.choices[0].message.content)
 - **Model settings in the web page (0.1.39, #564).** The About tab's Model settings card shows and changes a few of
   the keys above in `strata-<model>.json`: the `sampling` defaults (temperature, top_p, top_k, min_p),
   `reasoning_budget_tokens`, `fit_max_tokens`, `anthropic_thinking`, `effort_position`, `aliases`, `idle_unload_s`,
-  `lazy_load`, `engine_silence_s`, `api_monitor`, `open_browser` and `--vram-reserve-mib`. An empty field removes the
+  `lazy_load`, `engine_silence_s`, `api_monitor`, `profile`, `open_browser` and `--vram-reserve-mib`. An empty field removes the
   key (its default). Every other key of the file stays as it is, the earlier file is kept as
   `strata-<model>.json.bak`, and the model uses the change from its next start. Only Strata's own page can save
   (JSON, the API key when one is set, as for the Chat settings); the network, key, MCP and program keys are not
