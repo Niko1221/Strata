@@ -8989,8 +8989,9 @@ int main(int argc, char** argv) {
                     stored = conversations.put(std::move(image), held, spill_evicted);
                 } else if (!posted) {
                     ++park_discards;
-                    std::fprintf(stderr, "strata serve: conversation cache: parking to disk dropped (the writer would not take it; discards=%zu)\n",
-                                 park_discards);
+                    std::fprintf(stderr, "strata serve: conversation cache: parking to disk not queued: the writer already holds this "
+                                 "conversation at >= these tokens (nothing new) or the park throttle postponed it; no RAM copy is "
+                                 "kept in disk mode (discards=%zu)\n", park_discards);
                 }
                 std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens in %.1f ms; parked=%zu bytes=%zu evictions=%zu archived=%zu archived_bytes=%zu snapshot_bytes=%zu reused_kv_bytes=%zu\n",
 
@@ -11122,6 +11123,7 @@ int main(int argc, char** argv) {
                             sl.kv_layers = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) + 1;
                         }
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
+                        const uint64_t disk_floor = (uint64_t) o.conversation_cache_park_min_free_mib << 20;
                         if (o.session_save_reclaim) {
                             const auto freed = strata::core::session_save_reclaim(
                                 checks, conversations, sl, floor, strata::core::available_host_bytes);
@@ -11138,10 +11140,13 @@ int main(int argc, char** argv) {
                         auto admit = [&](uint64_t need, std::string& why) {
                             const auto mem = strata::core::sample_host_memory();
                             const std::optional<uint64_t> avail = mem ? std::optional<uint64_t>(mem->available) : std::nullopt;
-                            if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
+                            // A save goes to disk and its host copy is transient, so it takes the transient floor
+                            // when the parking one does not hold (the same fallback the park and the disk hit take).
+                            if (strata::core::conversation_disk_placement(avail, need, floor, disk_floor) !=
+                                strata::core::ConversationParkPlacement::discard) return true;
                             why = "not enough RAM to save the session (" +
                                   (need == UINT64_MAX ? std::string("unknown") : std::to_string(need >> 20)) +
-                                  " MiB plus a floor of " + std::to_string((long long) o.conversation_cache_min_free_mib) +
+                                  " MiB plus a floor of " + std::to_string((long long) o.conversation_cache_park_min_free_mib) +
                                   " MiB needed, " + ram_note(mem) + ")";
                             return false;
                         };
@@ -11198,12 +11203,16 @@ int main(int argc, char** argv) {
                         strata::core::SessionReadLimits limits;
                         limits.progress = moving;
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
-                        limits.admit = [floor, &o](uint64_t need, std::string& why) {
+                        const uint64_t disk_floor = (uint64_t) o.conversation_cache_park_min_free_mib << 20;
+                        limits.admit = [floor, disk_floor, &o](uint64_t need, std::string& why) {
                             const auto mem = strata::core::sample_host_memory();
                             const std::optional<uint64_t> avail = mem ? std::optional<uint64_t>(mem->available) : std::nullopt;
-                            if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
+                            // The restore is a two-pass stream and never keeps the snapshot in RAM, so it takes the
+                            // transient disk floor when the parking one does not hold.
+                            if (strata::core::conversation_disk_placement(avail, need, floor, disk_floor) !=
+                                strata::core::ConversationParkPlacement::discard) return true;
                             why = "not enough RAM to read it (" + std::to_string(need >> 20) + " MiB plus a floor of " +
-                                  std::to_string((long long) o.conversation_cache_min_free_mib) + " MiB needed, " +
+                                  std::to_string((long long) o.conversation_cache_park_min_free_mib) + " MiB needed, " +
                                   ram_note(mem) + ")";
                             return false;
                         };
@@ -11709,14 +11718,15 @@ int main(int argc, char** argv) {
                         // does not hold the TRANSIENT disk floor is what decides - the copy beats being ignored,
                         // exactly as a rejected park now spills instead of discarding.
                         const std::optional<uint64_t> avail_hit = strata::core::available_host_bytes();
-                        if (strata::core::conversation_memory_admit(avail_hit, estimate, disk_floor) &&
-                            !strata::core::conversation_memory_admit(avail_hit, estimate, floor))
+                        const bool hit_ok = strata::core::conversation_disk_placement(avail_hit, estimate, floor, disk_floor) !=
+                                            strata::core::ConversationParkPlacement::discard;
+                        if (hit_ok && !strata::core::conversation_memory_admit(avail_hit, estimate, floor))
                             std::fprintf(stderr, "strata serve: conversation cache: disk hit under the transient RAM floor "
                                          "(need %llu MiB plus %lld MiB, not %lld MiB)\n",
                                          (unsigned long long) (estimate >> 20),
                                          (long long) o.conversation_cache_park_min_free_mib,
                                          (long long) o.conversation_cache_min_free_mib);
-                        if (!strata::core::conversation_memory_admit(avail_hit, estimate, disk_floor)) {
+                        if (!hit_ok) {
                             std::fprintf(stderr, "strata serve: conversation cache: disk hit skipped (physical RAM admission; "
                                          "need %llu MiB plus a %lld MiB floor, or telemetry unavailable)\n",
                                          (unsigned long long) (estimate >> 20), (long long) o.conversation_cache_park_min_free_mib);
@@ -11790,23 +11800,32 @@ int main(int argc, char** argv) {
                     const uint64_t ram_budget = o.conversation_cache_mib > 0
                                                     ? (uint64_t) o.conversation_cache_mib * 1024 * 1024 : UINT64_MAX;
                     const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
+                    const uint64_t disk_floor = (uint64_t) o.conversation_cache_park_min_free_mib << 20;
                     if (estimate > ram_budget || estimate > SIZE_MAX) {
                         std::fprintf(stderr, "strata serve: segment tier: hit needs %llu MiB; RAM budget is %llu MiB\n",
                                      (unsigned long long) (estimate >> 20), (unsigned long long) (ram_budget >> 20));
                     } else if (!conversations.make_room((size_t) estimate, 0, spill_evicted)) {
                         std::fprintf(stderr, "strata serve: segment tier: hit does not fit the RAM cache budget\n");
-                    } else if (!strata::core::conversation_memory_admit(strata::core::available_host_bytes(),
-                                   estimate, floor)) {
+                    } else if (strata::core::conversation_disk_placement(strata::core::available_host_bytes(),
+                                   estimate, floor, disk_floor) == strata::core::ConversationParkPlacement::discard) {
                         std::fprintf(stderr, "strata serve: segment tier: hit skipped (physical RAM admission; "
                                      "need %llu MiB plus a %lld MiB floor, or telemetry unavailable)\n",
-                                     (unsigned long long) (estimate >> 20), (long long) o.conversation_cache_min_free_mib);
+                                     (unsigned long long) (estimate >> 20), (long long) o.conversation_cache_park_min_free_mib);
                     } else {
+                        // The chain is read in a stream and never kept in RAM; say so when the parking floor did not
+                        // hold and the transient floor is what admitted it.
+                        if (!strata::core::conversation_memory_admit(strata::core::available_host_bytes(), estimate, floor))
+                            std::fprintf(stderr, "strata serve: segment tier: hit under the transient RAM floor "
+                                         "(need %llu MiB plus %lld MiB, not %lld MiB)\n",
+                                         (unsigned long long) (estimate >> 20),
+                                         (long long) o.conversation_cache_park_min_free_mib,
+                                         (long long) o.conversation_cache_min_free_mib);
                         // One read limit per stage file, exactly as the .sess path: a segment under --layer-split is
                         // one file per stage, so each file is bounded by the stage it restores into before it is read.
                         std::vector<strata::core::SessionReadLimits> limits(1 + stages.size());
-                        for (auto& l : limits) l.admit = [floor](uint64_t need, std::string& why) {
+                        for (auto& l : limits) l.admit = [disk_floor](uint64_t need, std::string& why) {
                             const auto avail = strata::core::available_host_bytes();
-                            if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
+                            if (strata::core::conversation_memory_admit(avail, need, disk_floor)) return true;
                             why = "not enough RAM to read it";
                             return false;
                         };
@@ -11872,22 +11891,31 @@ int main(int argc, char** argv) {
                         const uint64_t ram_budget = o.conversation_cache_mib > 0
                                                         ? (uint64_t) o.conversation_cache_mib * 1024 * 1024 : UINT64_MAX;
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
+                        const uint64_t disk_floor = (uint64_t) o.conversation_cache_park_min_free_mib << 20;
                         if (estimate > ram_budget || estimate > SIZE_MAX) {
                             std::fprintf(stderr, "strata serve: system prompt cache: hit is %llu MiB, over the RAM budget\n",
                                          (unsigned long long) (estimate >> 20));
                         } else if (conversations.enabled() && !conversations.make_room((size_t) estimate, 0, spill_evicted)) {
                             std::fprintf(stderr, "strata serve: system prompt cache: hit does not fit the RAM cache budget\n");
-                        } else if (!strata::core::conversation_memory_admit(strata::core::available_host_bytes(),
-                                       estimate, floor)) {
+                        } else if (strata::core::conversation_disk_placement(strata::core::available_host_bytes(),
+                                       estimate, floor, disk_floor) == strata::core::ConversationParkPlacement::discard) {
                             std::fprintf(stderr, "strata serve: system prompt cache: hit skipped (physical RAM admission)\n");
                         } else {
+                            // The variant is read in a stream and never kept in RAM; say so when the parking floor did
+                            // not hold and the transient floor is what admitted it.
+                            if (!strata::core::conversation_memory_admit(strata::core::available_host_bytes(), estimate, floor))
+                                std::fprintf(stderr, "strata serve: system prompt cache: hit under the transient RAM floor "
+                                             "(need %llu MiB plus %lld MiB, not %lld MiB)\n",
+                                             (unsigned long long) (estimate >> 20),
+                                             (long long) o.conversation_cache_park_min_free_mib,
+                                             (long long) o.conversation_cache_min_free_mib);
                             // One read limit per stage file (conversation_prompt_cache.hpp): the main image's carve,
                             // then each later stage's.  A layer split's variant is one session file per stage, so
                             // every file is bounded by the stage it restores into before it is read.
                             std::vector<strata::core::SessionReadLimits> limits(1 + stages.size());
-                            for (auto& l : limits) l.admit = [floor](uint64_t need, std::string& why) {
+                            for (auto& l : limits) l.admit = [disk_floor](uint64_t need, std::string& why) {
                                 const auto avail = strata::core::available_host_bytes();
-                                if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
+                                if (strata::core::conversation_memory_admit(avail, need, disk_floor)) return true;
                                 why = "not enough RAM to read it";
                                 return false;
                             };

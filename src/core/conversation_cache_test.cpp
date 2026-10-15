@@ -427,5 +427,24 @@ int main() {
         check(!conversation_park_fits_ram({}, 4, big, big), "auto: unknown telemetry resolves to disk, not RAM");
         check(conversation_park_fits_ram(4096 * mib, 0, big, big), "auto: no slots to reserve: RAM stays");
     }
+    {   // H1: the same fallback for the sibling disk tiers' hits - a segment chain and a system-prompt variant are
+        // read in a stream and never kept in RAM, so under the parking floor they are still read (transient floor),
+        // not skipped.  conversation_disk_placement is conversation_park_placement with the destination fixed to disk.
+        const uint64_t mib = 1ull << 20;
+        const uint64_t big = 2560 * mib, small = 512 * mib;
+        const uint64_t seg = 1800 * mib;   // a segment chain's estimate
+        const uint64_t sp = 2300 * mib;    // a system-prompt variant's estimate
+        // 4 GiB free: seg + big (4360 MiB) and sp + big (4860 MiB) do not fit; each + small (2312 / 2812) does
+        check(conversation_disk_placement(4096 * mib, seg, big, small) == ConversationParkPlacement::disk,
+              "segment-tier hit with the parking floor short: the chain is read under the transient floor, not skipped");
+        check(conversation_disk_placement(4096 * mib, sp, big, small) == ConversationParkPlacement::disk,
+              "system-prompt-cache hit with the parking floor short: the variant is read under the transient floor");
+        check(conversation_disk_placement(1024 * mib, seg, big, small) == ConversationParkPlacement::discard,
+              "a segment hit that even the transient floor cannot hold is still refused");
+        check(conversation_disk_placement({}, sp, big, small) == ConversationParkPlacement::discard,
+              "unknown telemetry: a system-prompt hit fails closed, no read");
+        check(conversation_disk_placement(6144 * mib, sp, big, small) == ConversationParkPlacement::disk,
+              "a read is admitted under the transient floor, whatever the parking floor would say");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }

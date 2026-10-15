@@ -115,4 +115,15 @@ inline bool conversation_park_fits_ram(std::optional<uint64_t> available, size_t
     return slots == 0 || snapshot_bytes <= room / slots;
 }
 
+// The READ/save side of the same rule: conversation_park_placement with the destination fixed to disk.  An
+// operation whose copy is destined to disk and whose RAM is transient - a conversation disk hit, a segment-tier
+// hit, a system-prompt-cache hit, a streamed session restore, a session the API saves to disk - is admitted under
+// the TRANSIENT floor when the parking floor does not hold; only when neither holds is it refused (discard).  The
+// same fallback the park takes, so a copy already on disk is never ignored for RAM it would not keep.
+inline ConversationParkPlacement conversation_disk_placement(std::optional<uint64_t> available, uint64_t allocation,
+                                                             uint64_t floor, uint64_t disk_floor) {
+    return conversation_park_placement(available, allocation, floor, disk_floor, /*disk_target=*/true,
+                                       /*disk_capable=*/true);
+}
+
 } // namespace strata::core
