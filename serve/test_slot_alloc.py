@@ -614,6 +614,25 @@ class ParkMainSession(unittest.TestCase):
         e._on_parked(b, 49999)
         self.assertEqual(e.slot_used[b], self.NOW - 1760)
 
+    def test_park_min_value_is_its_own_threshold(self):
+        # a 50K conversation idle for 25 minutes is worth about 0.07, for 20 minutes about 0.13
+        slot_policy.configure({"STRATA_SLOT_PARK_MIN_VALUE": "0.1"})
+        try:
+            self.assertEqual(slot_policy.EXPIRED_KEEP_SCORE, 0.01)      # slot reclaim keeps its own threshold
+            e = self.e()
+            e.main_used = self.NOW - 1500
+            self.assertLess(slot_policy.stale_retention(50000, 1500), 0.1)
+            self.assertGreater(slot_policy.stale_retention(50000, 1500), slot_policy.EXPIRED_KEEP_SCORE)
+            self.assertEqual(e._claim_park([1] * 60), '')
+            self.assertEqual(e.cache_events_view()[0]['reason'], 'main_low_value')
+            self.assertFalse(any(e.slot_busy))
+            e = self.e()
+            e.main_used = self.NOW - 1200
+            self.assertGreater(slot_policy.stale_retention(50000, 1200), 0.1)
+            self.assertTrue(e._claim_park([1] * 60).startswith(' park='))
+        finally:
+            slot_policy.configure({})
+
     def test_zero_value_main_can_still_continue_without_a_park_or_deletion(self):
         e = self.e()
         e.main_used = self.NOW - 3600
@@ -727,7 +746,8 @@ class PolicyTunables(unittest.TestCase):
         got = slot_policy.configure({"STRATA_SLOT_TTL_MAX_S": "240", "STRATA_SLOT_PROTECT_WAIT_S": "2",
                                      "STRATA_SLOT_PARK_MIN_TOKENS": "x"})
         self.assertEqual(got, {"ttl_max_s": 240.0, "protect_wait_s": 2.0, "park_min_tokens": 8192,
-                               "expired_keep_score": 0.01, "idle_value_zero_s": 1800.0, "park_value_ratio": 2.0})
+                               "expired_keep_score": 0.01, "idle_value_zero_s": 1800.0, "park_value_ratio": 2.0,
+                               "park_min_value": 0.01})
         self.assertAlmostEqual(slot_policy.cache_ttl(100000), 180.0)     # the whole curve doubles
         self.assertAlmostEqual(slot_policy.cache_ttl(10 ** 6), 240.0)
         self.assertEqual(slot_policy.configure({})["ttl_max_s"], 120.0)

@@ -14,6 +14,8 @@ EXPIRED_KEEP_SCORE = 0.01    # STRATA_SLOT_EXPIRED_KEEP_SCORE: an expired histor
 PARK_VALUE_RATIO = 2.0       # STRATA_SLOT_PARK_VALUE_RATIO: a park takes an expired history worth keeping only when the
                              # main session's conversation is worth at least this many times more; 0: never
 IDLE_VALUE_ZERO_S = 1800.0  # STRATA_SLOT_IDLE_VALUE_ZERO_S: idle age when expired value reaches zero; 0 disables decay
+PARK_MIN_VALUE = 0.01        # STRATA_SLOT_PARK_MIN_VALUE: the main session's conversation is parked only while its value
+                             # (stale_retention at its idle age) is at least this; 0.01 is EXPIRED_KEEP_SCORE's default
 TTL_MAX_S = 120.0            # STRATA_SLOT_TTL_MAX_S: protection at 262144 tokens; the whole curve scales with it
 _TTL_SHAPE = ((0, 0.0), (500, 0.1), (2000, 2.0), (8000, 10.0),
               (32000, 45.0), (50000, 65.0), (100000, 90.0), (MAX_CACHE_TOKENS, 120.0))
@@ -23,7 +25,7 @@ TTL_POINTS = _TTL_SHAPE
 def configure(env) -> dict:
     """Read the tunables from `env` (the engine's environment); bad or missing values keep the defaults."""
     global PROTECTION_WAIT_S, PARK_MIN_TOKENS, TTL_MAX_S, TTL_POINTS, EXPIRED_KEEP_SCORE, IDLE_VALUE_ZERO_S, \
-        PARK_VALUE_RATIO
+        PARK_VALUE_RATIO, PARK_MIN_VALUE
 
     def value(name, default):
         try:
@@ -38,13 +40,15 @@ def configure(env) -> dict:
     PROTECTION_WAIT_S = value("STRATA_SLOT_PROTECT_WAIT_S", 5.0)
     PARK_MIN_TOKENS = int(value("STRATA_SLOT_PARK_MIN_TOKENS", 8192))
     PARK_VALUE_RATIO = value("STRATA_SLOT_PARK_VALUE_RATIO", 2.0)
+    PARK_MIN_VALUE = value("STRATA_SLOT_PARK_MIN_VALUE", 0.01)
     return settings()
 
 
 def settings() -> dict:
     return {"ttl_max_s": TTL_MAX_S, "protect_wait_s": PROTECTION_WAIT_S,
             "park_min_tokens": PARK_MIN_TOKENS, "expired_keep_score": EXPIRED_KEEP_SCORE,
-            "idle_value_zero_s": IDLE_VALUE_ZERO_S, "park_value_ratio": PARK_VALUE_RATIO}
+            "idle_value_zero_s": IDLE_VALUE_ZERO_S, "park_value_ratio": PARK_VALUE_RATIO,
+            "park_min_value": PARK_MIN_VALUE}
 
 
 def cache_ttl(tokens: int) -> float:
