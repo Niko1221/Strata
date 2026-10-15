@@ -2805,6 +2805,22 @@ def child_env(cfg: dict) -> dict:
     return env
 
 
+def idle_unload_seconds(arg, cfg: dict, env=None) -> float:
+    """How long the model stays loaded without requests (0: for ever): --idle-unload, else the run config's
+    "idle_unload_s", else STRATA_IDLE_UNLOAD_S.  #1952: the container's IDLE_UNLOAD_S arrives as that variable, so it
+    holds for a config setup wrote (REINSTALL=1 rewrites the config and dropped a hand-edited key)."""
+    if arg is not None:
+        return arg
+    if cfg.get("idle_unload_s") not in (None, ""):
+        return float(cfg["idle_unload_s"] or 0)
+    v = (os.environ if env is None else env).get("STRATA_IDLE_UNLOAD_S", "").strip()
+    try:
+        return max(0.0, float(v or 0))
+    except ValueError:
+        print(f"[strata] STRATA_IDLE_UNLOAD_S={v!r} is not a number of seconds: the model stays loaded", flush=True)
+        return 0.0
+
+
 def _dir_writable(p: str) -> bool:
     try:
         with tempfile.TemporaryFile(dir=p):
@@ -6836,7 +6852,7 @@ def main() -> int:
         print(f"[strata] CORS on /v1/* for {', '.join(svc.cors_origins)}"
               + ("" if svc.api_key or "*" not in svc.cors_origins else
                  " - WARNING: any web page may use the model (no API key)"), flush=True)
-    svc.idle_unload_s = a.idle_unload if a.idle_unload is not None else float(cfg.get("idle_unload_s") or 0)
+    svc.idle_unload_s = idle_unload_seconds(a.idle_unload, cfg)
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)
     svc.before_load = a.before_load or cfg.get("before_load") or None

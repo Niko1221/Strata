@@ -30,7 +30,8 @@ class Entrypoint(unittest.TestCase):
         # the stub "python": setup.py --setup writes the config the way setup does; a plain start prints what it would load
         stub = self.opt / ".venv" / "bin" / "python"
         stub.write_text('#!/bin/sh\nif [ "$2" = "--setup" ]; then echo \'{"args": ["from-setup"]}\' > strata-iq3_s.json\n'
-                        'else echo "STARTED WITH: $(cat strata-iq3_s.json)"; fi\n', encoding="utf-8")
+                        'else echo "STARTED WITH: $(cat strata-iq3_s.json) IDLE=${STRATA_IDLE_UNLOAD_S:-}"; fi\n',
+                        encoding="utf-8")
         stub.chmod(0o755)
         script = (ROOT / "docker-entrypoint.sh").read_text(encoding="utf-8").replace("/opt/strata", str(self.opt))
         self.script = self.tmp / "entry.sh"
@@ -94,6 +95,12 @@ class Entrypoint(unittest.TestCase):
         out = self.run_entry("0")
         self.assertIn("by-model", out)
         self.assertIn(f"Config: {self.data}/config/strata-iq3_s.json", out)
+
+    def test_idle_unload_s_reaches_the_server_1952(self):
+        (self.data / "config" / "strata-iq3_s.json").write_text('{"args": ["x"]}\n')
+        self.assertIn("IDLE=120", self.run_entry("0", IDLE_UNLOAD_S="120"))
+        self.assertIn("IDLE=120", self.run_entry("1", IDLE_UNLOAD_S="120"))      # a config setup rewrites too
+        self.assertIn("IDLE=\n", self.run_entry("0", IDLE_UNLOAD_S="", STRATA_IDLE_UNLOAD_S=""))   # unset: as before
 
     def warning_for(self, flags):
         info = self.tmp / "cpuinfo"

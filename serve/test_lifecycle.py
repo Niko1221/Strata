@@ -12,6 +12,7 @@ from unittest import mock
 
 from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, EngineDied, EngineStuck, MockEngine, Service, StrataEngine, serve
+from serve.server import idle_unload_seconds
 
 
 class ResidentEngine(StrataEngine):
@@ -200,6 +201,25 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(self.request("/v1/unload", {})[0], 409)
         self.assertEqual(self.engine.closes, 0)
         self.assertEqual(self.request("/v1/load", {}, {"Content-Type": "text/plain"})[0], 415)
+
+
+class IdleUnloadSetting(unittest.TestCase):
+    """#1952: --idle-unload, else the config's "idle_unload_s", else STRATA_IDLE_UNLOAD_S (Docker's IDLE_UNLOAD_S)."""
+
+    def test_the_order(self):
+        env = {"STRATA_IDLE_UNLOAD_S": "120"}
+        self.assertEqual(idle_unload_seconds(30.0, {"idle_unload_s": 60}, env), 30.0)
+        self.assertEqual(idle_unload_seconds(None, {"idle_unload_s": 60}, env), 60.0)
+        self.assertEqual(idle_unload_seconds(None, {"idle_unload_s": 0}, env), 0.0)      # the config's "never" holds
+        self.assertEqual(idle_unload_seconds(None, {}, env), 120.0)
+        self.assertEqual(idle_unload_seconds(None, {"idle_unload_s": None}, env), 120.0)
+
+    def test_without_the_variable_nothing_changes(self):
+        self.assertEqual(idle_unload_seconds(None, {}, {}), 0.0)
+        self.assertEqual(idle_unload_seconds(None, {"idle_unload_s": 45}, {}), 45.0)
+        with mock.patch("builtins.print"):
+            self.assertEqual(idle_unload_seconds(None, {}, {"STRATA_IDLE_UNLOAD_S": "two minutes"}), 0.0)
+        self.assertEqual(idle_unload_seconds(None, {}, {"STRATA_IDLE_UNLOAD_S": "-5"}), 0.0)
 
 
 if __name__ == "__main__":

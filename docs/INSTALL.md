@@ -138,6 +138,9 @@ The same idea, in a container (NVIDIA cards).
    result as `<shard>.done` next to each shard; later starts skip setup, so `:ro` is fine then.
    `-e RESIDENT_BUDGET_GIB=N` and `-e KV_STREAMING=on|off|auto` pass setup's `--resident-budget-gib`
    and `--kv-streaming` (with `REINSTALL=1` for a model already set up).
+   `-e IDLE_UNLOAD_S=120` unloads the model after 120 s without requests, so other programs can use the VRAM; the
+   next request loads it again. It holds for every start, a config rewritten by `REINSTALL=1` too; an
+   `"idle_unload_s"` in the run config wins over it (`0` there keeps the model loaded).
    Stopping: the engine releases its page-locked RAM (tens of GB) on SIGTERM, which takes longer than
    Docker's default 10 s; give it time, or `docker stop` kills it (exit 137):
    `docker run --stop-timeout 60 ...`, `docker stop -t 60 <name>`, or `stop_grace_period: 60s` in Compose.

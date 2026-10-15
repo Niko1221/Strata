@@ -33,6 +33,7 @@ GGUF_DIR="${GGUF_DIR:-}"        # a mounted folder with GGUF files you already h
 RESIDENT_BUDGET_GIB="${RESIDENT_BUDGET_GIB:-}"   # UD-Q4_K_XL: GiB of experts kept in RAM (default: setup's pick)
 KV_STREAMING="${KV_STREAMING:-}" # auto | on | off; empty: setup.py's own default (auto)
 CONFIG="${CONFIG:-}"            # a config file to start with (wins over MODEL's /data/config/strata-<model>.json)
+IDLE_UNLOAD_S="${IDLE_UNLOAD_S:-}"   # unload the model after this many seconds without requests (#1952); empty: never
 
 # setup.py starts the newest strata-*.json it finds, so link in exactly the one
 # this family and model were set up with. The config is the recorded output of
@@ -100,6 +101,8 @@ fi
 # that names one card is offered once to a pair, on its own, when the host has two
 # cards that can share the model (setup.py's offer_together, docs/MULTI_GPU.md).
 set -- --port "$PORT"
+# the server reads it when the config has no "idle_unload_s" of its own (serve/server.py idle_unload_seconds)
+if [ -n "$IDLE_UNLOAD_S" ]; then export STRATA_IDLE_UNLOAD_S="$IDLE_UNLOAD_S"; fi
 if [ -n "$GPUS" ]; then set -- "$@" --gpus "$GPUS"; fi
 if [ -n "$GPU" ]; then set -- "$@" --gpu "$GPU"; fi
 if [ -n "$LAYER_SPLIT" ]; then set -- "$@" --layer-split "$LAYER_SPLIT"; fi

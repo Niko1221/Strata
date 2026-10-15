@@ -25,7 +25,8 @@
 # Setup choices are env vars, read by docker-entrypoint.sh: FAMILY, MODEL, CONTEXT,
 # VISION (no | yes | cpu), KV (int8 | q4_0 | k8v4), GPU (one card) or GPUS ("0,2"
 # or "all", with LAYER_SPLIT), LOW_RAM (auto | on | off), HOST, PORT, API_KEY,
-# GGUF_DIR (GGUF files you already have), RESIDENT_BUDGET_GIB, KV_STREAMING.
+# GGUF_DIR (GGUF files you already have), RESIDENT_BUDGET_GIB, KV_STREAMING; at run time
+# IDLE_UNLOAD_S (unload the model after that many seconds without requests).
 #
 # Only the model files, the prepared pack, the MTP layer and the install config
 # live in the /data volume; the engine is part of the image. Strata loads 32-62 GB
