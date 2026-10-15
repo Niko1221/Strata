@@ -19,5 +19,15 @@
     "related_discussion": "Niko1221/Strata#2393",
     "planner_pr_not_tested": "Niko1221/Strata#2385",
     "csv_newlines": "LF; parsed records unchanged"
+  },
+  "hardware_annotation_update": {
+    "reported_on": "2026-10-15",
+    "measurement_date": "2026-10-14",
+    "memory_setting": "DDR4-2800",
+    "memory_transfer_rate_mt_s": 2800,
+    "cpu_clock_ghz": 4.7,
+    "source": "Owner confirmed benchmark-time settings after measurement",
+    "independently_sampled_during_benchmark": false,
+    "memory_timings": "not recorded"
   }
 }

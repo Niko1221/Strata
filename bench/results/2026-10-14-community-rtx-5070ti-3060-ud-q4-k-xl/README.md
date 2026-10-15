@@ -31,8 +31,8 @@ A positive percentage means the candidate is faster. The saved tuning settings r
 
 | Item | Measured configuration |
 |---|---|
-| CPU / board | Intel Core i9-9900K, 8 cores / 16 threads, AVX2; MSI MEG Z390 ACE |
-| RAM / swap | 128 GiB nominal; Linux MemTotal 127,365,092 KiB (121.46 GiB); 8 GiB swap |
+| CPU / board | Intel Core i9-9900K at 4.7 GHz (owner-reported), 8 cores / 16 threads, AVX2; MSI MEG Z390 ACE |
+| RAM / swap | 128 GiB nominal, DDR4-2800 (2800 MT/s, owner-reported); Linux MemTotal 127,365,092 KiB (121.46 GiB); 8 GiB swap |
 | Physical GPU 0 | RTX 5070 Ti, 16,303 MiB, sm_120; no display |
 | Physical GPU 1 | RTX 3060, 12,288 MiB, sm_86; drives desktop |
 | Interconnect | Both cards physically installed in every arm; observed under-load PCIe 3.0 x8, no NVLink |
@@ -44,7 +44,7 @@ A positive percentage means the candidate is faster. The saved tuning settings r
 | Model revision | `38bb39ee97821de2c9009abb7e93950eec396e66`; four SHA-256-verified shards, 111,334,654,784 bytes (103.68 GiB) |
 | Pack | Native GGUF expert references; `iq_pack.py --compat-bf16`; no experts.bin; conversion metadata included |
 
-Model source: [pinned Hugging Face revision](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/38bb39ee97821de2c9009abb7e93950eec396e66). The NVIDIA utility’s “CUDA 13.2” field is a driver capability display, distinct from the 13.4 build toolkit. Build flags, binary/library hashes, every shard name/hash, MTP/tokenizer/expert-profile hashes and upstream script hashes are in [provenance.json](provenance.json). BF16 compatibility conversion is not a claim of lossless recovery of pre-quantization weights. RAM clock was not measured.
+Model source: [pinned Hugging Face revision](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/38bb39ee97821de2c9009abb7e93950eec396e66). The NVIDIA utility’s “CUDA 13.2” field is a driver capability display, distinct from the 13.4 build toolkit. Build flags, binary/library hashes, every shard name/hash, MTP/tokenizer/expert-profile hashes and upstream script hashes are in [provenance.json](provenance.json). BF16 compatibility conversion is not a claim of lossless recovery of pre-quantization weights. On 2026-10-15 the owner confirmed that the benchmark ran with DDR4-2800 (2800 MT/s) and the i9-9900K at 4.7 GHz. These are owner-reported operating settings; the original telemetry did not independently sample DDR4 rate or CPU frequency. Memory timings were not recorded.
 
 A graphical session remained active (GNOME and Chromium/ChatGPT). The 3060 continued driving the desktop even when excluded from inference. No other model or training job ran concurrently. The report includes this background activity; it is not an idle laboratory measurement.
 

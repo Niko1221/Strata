@@ -104,5 +104,15 @@
     "STRATA_PORTABLE:BOOL": "OFF",
     "STRATA_PREFILL_MMQ:BOOL": "OFF",
     "STRATA_WERROR:BOOL": "OFF"
+  },
+  "owner_reported_operating_settings": {
+    "reported_on": "2026-10-15",
+    "measurement_date": "2026-10-14",
+    "memory_setting": "DDR4-2800",
+    "memory_transfer_rate_mt_s": 2800,
+    "cpu_clock_ghz": 4.7,
+    "source": "Owner confirmed benchmark-time settings after measurement",
+    "independently_sampled_during_benchmark": false,
+    "memory_timings": "not recorded"
   }
 }
