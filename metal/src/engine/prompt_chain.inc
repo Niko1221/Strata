@@ -17,7 +17,7 @@ struct PcGemmArgs { int M, N, K, pad; };
 struct PcEpiArgs { uint32_t n_tok, n_embd, hc, hc_lr; };
 struct PcGdnPArgs { uint32_t n_tok, h_k, h_v, channels; float eps; uint32_t f32; };
 struct PcMmPlanArgs { uint32_t n_ent, topk, n_expert, tm, n_blocks; };
-struct PcMmArgs { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff; };
+struct PcMmArgs { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff, ebase, ecount; };
 int pc_unit_of(int t) {
     return t == ref::Q2_0 || t == ref::IQ3_S || t == ref::BF16 || t == ref::F32 || t == 18 || t == 16 || t == 17 || t == 22 ? 16 : 32;
 }
@@ -315,7 +315,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
             const std::string fn = "mm_down3_" + std::to_string(ed.type) + "_" + tl3(b.dn3);
             dn.p = P_(b.lib, fn, mtl::Constants().b(7, true), fn + "#k4");
         } else {
-            dn.p = P_(b.lib, "mm_down2_" + std::to_string(ed.type) + dn2_tile(ed.type));
+            dn.p = P_(b.lib, "mm_down2_" + std::to_string(ed.type) + dn2_tile(ed.type, 16));   // the bench plans 16-row tiles
         }
         dn.args = {mtl::Arg::B(W_), mtl::Arg::B(b.HS), mtl::Arg::B(b.YE), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};
         dn.tg[0] = b.k4 ? 32 * b.dn3[3] : 64;

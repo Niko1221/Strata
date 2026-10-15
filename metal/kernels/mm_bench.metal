@@ -24,7 +24,8 @@ kernel void mpp_mm(device T* A [[buffer(0)]], device T* B [[buffer(1)]], device 
 
 #define MPP(T, M, N, S) template [[host_name("mpp_mm_" #T "_" #M "_" #N "_" #S)]] kernel decltype(mpp_mm<T, M, N, S>) mpp_mm<T, M, N, S>;
 MPP(half, 64, 32, 4) MPP(half, 64, 64, 4) MPP(half, 128, 64, 4) MPP(half, 32, 64, 4) MPP(half, 64, 128, 4)
-MPP(half, 16, 64, 2) MPP(half, 128, 128, 4)
+MPP(half, 16, 64, 2) MPP(half, 128, 128, 4) MPP(half, 16, 128, 2) MPP(half, 16, 128, 4)
+MPP(half, 32, 128, 4) MPP(half, 32, 128, 2) MPP(half, 32, 64, 2)
 MPP(half, 64, 16, 2) MPP(half, 64, 16, 4) MPP(half, 128, 16, 4) MPP(half, 128, 32, 4) MPP(half, 64, 32, 2) MPP(half, 32, 16, 2)
 MPP(half, 32, 32, 2) MPP(half, 16, 32, 1) MPP(half, 16, 16, 1) MPP(half, 128, 48, 4) MPP(half, 64, 48, 4)
 MPP(float, 64, 32, 4) MPP(float, 64, 64, 4) MPP(float, 128, 64, 4)

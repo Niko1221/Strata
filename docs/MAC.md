@@ -197,6 +197,8 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 | `STRATA_METAL_LEAVE_SHARE=0.4` | Streaming, Macs with 64 GB or more: the share of the RAM left to macOS and its file cache when the footprint cap is set (for measuring) |
 | `STRATA_METAL_WIRE_ARENA=0` | Streaming, Macs with 64 GB or more: leave the filled arena pageable (default: wired with mlock) |
 | `STRATA_METAL_IGNORE_REPACK=1` | Start the engine although a model repack or setup's preparation is running beside it (the engine refuses by default: it froze this Mac) |
+| `STRATA_METAL_PROMPT_MOE=mpp` | Streaming prompt experts: each batch's experts are decoded to fp16 slabs once per chunk, and gate/up and down are single dynamic-K matmuls over them (the matrix units run at 6.2 TFLOP/s against the K-loop's 2.9). M1 Max, IQ3_S/IQ4_NL, interleaved with same-session anchors: a 4096-token chunk's GPU time 12243 -> 8818 ms (-28%), warm 4096 prefill 225.9 -> 256.6 tok/s (+13.6%). A short chunk loses a little (356 tokens 60.0 -> 55.8 tok/s): the decode pays whole experts, and a long chunk is where the saved dequantizing wins |
+| `STRATA_METAL_PROMPT_MOE_BATCH=N` | mpp: experts per slab batch, so the fp16 copy of the weights kept in the arena region (default 64 = 5.1 GB of buffers; 128 = 5.8). Untouched experts are never decoded, so a short chunk decodes only what it routes to |
 | `STRATA_METAL_KEEP_HOST_WEIGHTS=1` | Streaming: keep the host code's own copies of the weights (2-3 GB) instead of giving them back to macOS |
 | `STRATA_METAL_TRACE=1`, `STRATA_METAL_PROFILE=1`, `STRATA_METAL_KPROF=T` | Per-window traces, a time breakdown, per-kernel GPU times |
 

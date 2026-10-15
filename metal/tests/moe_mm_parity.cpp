@@ -20,7 +20,7 @@
 namespace {
 constexpr int N_EMBD = 2560, N_FF = 640, TOPK = 10;
 struct MmPlanArgs { uint32_t n_ent, topk, n_expert, tm, n_blocks; };
-struct MmArgs { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff; };
+struct MmArgs { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff, ebase, ecount; };
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
 int type_of(const std::string& s) {
     for (int t : {ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL, ref::IQ4_XS, ref::Q4_K, ref::Q5_K, ref::Q6_K, ref::Q8_0, ref::Q5_1})
@@ -32,7 +32,7 @@ float h16(float v) { return ref::f16_to_f32(ref::f32_to_f16(v)); }
 
 int main(int argc, char** argv) {
     int gu = ref::Q2_0, dn = ref::Q2_0, T = 256, TM = 16, TN = 64, TK = 16, SG = 2, DTN = -1, DTK = -1, DSG = -1;
-    bool bench = false, v2 = false, v3 = false, v4 = false, v5 = false;
+    bool bench = false, v2 = false, v3 = false, v4 = false, v5 = false, mpp = false;
     int MS = 1;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -43,6 +43,7 @@ int main(int argc, char** argv) {
         else if (a == "--dtile") std::sscanf(argv[++i], "%d,%d,%d", &DTN, &DTK, &DSG);   // the down kernel's TN,TK,SG
         else if (a == "--bench") bench = true;
         else if (a == "--v2") v2 = true;
+        else if (a == "--mpp") { v2 = true; mpp = true; }   // the fp16-slab path: mm_expand + one dynamic-K run each
         else if (a == "--v3") v2 = v3 = true;   // v2's gather + the register-operand GEMMs (TN per simdgroup)
         else if (a == "--v4") { v2 = v3 = v4 = true; MS = std::atoi(argv[++i]); }   // mm_gu4 with MS 16-row subtiles
         else if (a == "--v5") { v2 = v3 = true; v5 = true; }   // mm_gu5 (weight blocks staged in threadgroup memory)
@@ -68,11 +69,14 @@ int main(int argc, char** argv) {
     const int nent = T * TOPK, nblk = (nent + 1023) / 1024;
     const int maxrows = nent + NE * TM;
     mtl::Buffer x = cx.alloc(4 * (size_t)T * N_EMBD), ids = cx.alloc(4 * nent), w = cx.alloc(4 * nent),
-                bcnt = cx.alloc(4 * (size_t)nblk * NE), boff = cx.alloc(4 * (size_t)nblk * NE), eoff = cx.alloc(4 * NE),
+                bcnt = cx.alloc(4 * (size_t)nblk * NE), boff = cx.alloc(4 * (size_t)nblk * NE), eoff = cx.alloc(4 * (NE + 1)),
                 tiles = cx.alloc(8 * (size_t)(maxrows / TM + 1)), meta = cx.alloc(64), stok = cx.alloc(4 * (size_t)maxrows),
                 sw = cx.alloc(4 * (size_t)maxrows), pos = cx.alloc(4 * nent), H = cx.alloc(4 * (size_t)maxrows * N_FF),
                 YE = cx.alloc(4 * (size_t)maxrows * N_EMBD), y = cx.alloc(4 * (size_t)T * N_EMBD),
-                XS = cx.alloc(2 * (size_t)maxrows * N_EMBD), HS = cx.alloc(2 * (size_t)maxrows * N_FF);
+                XS = cx.alloc(2 * (size_t)maxrows * N_EMBD), HS = cx.alloc(2 * (size_t)maxrows * N_FF),
+                EG = cx.alloc((mpp ? (size_t)(NE < 128 ? NE : 128) : 1) * 2 * N_FF * N_EMBD * 2),
+                ED = cx.alloc((mpp ? (size_t)(NE < 128 ? NE : 128) : 1) * N_EMBD * N_FF * 2);
+    const int ECAP = mpp ? (NE < 128 ? NE : 128) : NE;
     ref::Rng r(7);
     for (size_t i = 0; i < (size_t)T * N_EMBD; ++i) x.as<float>()[i] = r.sym();
     for (int t = 0; t < T; ++t) {
@@ -97,15 +101,19 @@ int main(int argc, char** argv) {
     probe.i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0);
     const bool k4 = coop_k4(cx);
     if (v3) std::printf("right-input layout: %s\n", k4 ? "runs of 4 k" : "other (per-element decode)");
-    mtl::Pipeline pgu = v5 ? cx.pipeline(lib, "mm_gu5_" + std::to_string(gu) + "_" + std::to_string(TN) + "_" + std::to_string(SG),
+    mtl::Pipeline pgu = mpp ? cx.pipeline(lib, "mm_gu_mpp_16_128_4", probe)
+                      : v5 ? cx.pipeline(lib, "mm_gu5_" + std::to_string(gu) + "_" + std::to_string(TN) + "_" + std::to_string(SG),
                                          mtl::Constants().b(7, k4))
                       : v4 ? cx.pipeline(lib, "mm_gu4_" + std::to_string(gu) + "_" + std::to_string(MS) + tl.substr(tl.find('_')),
                                          mtl::Constants().b(7, k4).i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0))
                       : v3 ? cx.pipeline(lib, "mm_gu3_" + std::to_string(gu) + "_" + tl, mtl::Constants().b(7, k4).i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0).b(23, std::getenv("QUANT_CTAB") != nullptr))
                            : cx.pipeline(lib, (v2 ? "mm_gu2_" : "mm_gu_") + std::to_string(gu) + "_" + tl, probe),
-                  pdn = v3 ? cx.pipeline(lib, "mm_down3_" + std::to_string(dn) + "_" + dtl, mtl::Constants().b(7, k4))
-                           : cx.pipeline(lib, (v2 ? "mm_down2_" : "mm_down_") + std::to_string(dn) + "_" + (v2 ? dtl : tl)),
-                  pgat = cx.pipeline(lib, "mm_gather");
+                  pdn = mpp ? cx.pipeline(lib, "mm_dn_mpp_16_64_2", probe)
+                       : v3 ? cx.pipeline(lib, "mm_down3_" + std::to_string(dn) + "_" + dtl, mtl::Constants().b(7, k4))
+                            : cx.pipeline(lib, (v2 ? "mm_down2_" : "mm_down_") + std::to_string(dn) + "_" + (v2 ? dtl : tl)),
+                  pgat = cx.pipeline(lib, "mm_gather"),
+                  peg = cx.pipeline(lib, mpp ? "mm_expand_" + std::to_string(gu) : "mm_gather", probe),
+                  ped = cx.pipeline(lib, mpp ? "mm_expand_" + std::to_string(dn) : "mm_gather", probe);
     MmPlanArgs pa{(uint32_t)nent, TOPK, (uint32_t)NE, (uint32_t)TM, (uint32_t)nblk};
     auto encode = [&](int layer, std::vector<mtl::Dispatch>& ds, bool plan, bool gemm) {
         if (plan) {
@@ -124,12 +132,33 @@ int main(int argc, char** argv) {
                 mtl::Dispatch ga; ga.p = &pgat; ga.args = {mtl::Arg::B(x), mtl::Arg::B(stok), mtl::Arg::B(XS), mtl::Arg::V(ne)};
                 ga.grid[0] = meta.as<uint32_t>()[1]; ga.tg[0] = 256; ds.push_back(ga);
             }
+            if (mpp) {   // per expert batch: the two expands decode the slabs, the two runs multiply over them
+                for (uint32_t bb = 0; bb < (uint32_t)NE; bb += ECAP) {
+                    ma.ebase = bb; ma.ecount = NE - bb < ECAP ? NE - bb : ECAP;
+                    const uint32_t g4[4] = {0, 0, 0, 0}, d4[4] = {1, 0, 0, 0};
+                    mtl::Dispatch ex; ex.p = &peg;
+                    ex.args = {mtl::Arg::B(W), mtl::Arg::V(ma), mtl::Arg::B(EG), mtl::Arg::B(ED), mtl::Arg::V(g4)};
+                    for (int q = 5; q < 10; ++q) ex.args.push_back(mtl::Arg::B(eoff));   // pad the arena slots, then buffer(9)
+                    ex.grid[0] = N_FF / 64; ex.grid[1] = ma.ecount; ex.tg[0] = 64; ds.push_back(ex);
+                    mtl::Dispatch de; de.p = &ped;
+                    de.args = {mtl::Arg::B(W), mtl::Arg::V(ma), mtl::Arg::B(EG), mtl::Arg::B(ED), mtl::Arg::V(d4)};
+                    for (int q = 5; q < 10; ++q) de.args.push_back(mtl::Arg::B(eoff));
+                    de.grid[0] = N_EMBD / 64; de.grid[1] = ma.ecount; de.tg[0] = 64; ds.push_back(de);
+                    mtl::Dispatch g; g.p = &pgu;
+                    g.args = {mtl::Arg::B(XS), mtl::Arg::B(EG), mtl::Arg::B(HS), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
+                    g.grid[0] = N_FF / 64; g.grid[1] = meta.as<uint32_t>()[0]; g.tg[0] = 128; ds.push_back(g);
+                    mtl::Dispatch d; d.p = &pdn;
+                    d.args = {mtl::Arg::B(HS), mtl::Arg::B(ED), mtl::Arg::B(YE), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
+                    d.grid[0] = N_EMBD / 64; d.grid[1] = meta.as<uint32_t>()[0]; d.tg[0] = 64; ds.push_back(d);
+                }
+            } else {
             mtl::Dispatch g; g.p = &pgu;
             if (v2) g.args = {mtl::Arg::B(W), mtl::Arg::B(XS), mtl::Arg::B(HS), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
             else g.args = {mtl::Arg::B(W), mtl::Arg::B(x), mtl::Arg::B(H), mtl::Arg::B(stok), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
             g.grid[0] = N_FF / (v3 ? TN * SG : TN); g.grid[1] = meta.as<uint32_t>()[0]; g.tg[0] = 32 * SG; ds.push_back(g);
             mtl::Dispatch d; d.p = &pdn; d.args = {mtl::Arg::B(W), mtl::Arg::B(v2 ? HS : H), mtl::Arg::B(YE), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
             d.grid[0] = N_EMBD / (v3 ? DTN * DSG : v2 ? DTN : TN); d.grid[1] = meta.as<uint32_t>()[0]; d.tg[0] = 32 * (v2 ? DSG : SG); ds.push_back(d);
+            }
             const uint32_t ca[4] = {(uint32_t)T, N_EMBD, TOPK, 0};
             mtl::Dispatch cb; cb.p = &pcomb; cb.args = {mtl::Arg::B(YE), mtl::Arg::B(pos), mtl::Arg::B(sw), mtl::Arg::B(y), mtl::Arg::V(ca)};
             cb.grid[0] = (T * N_EMBD + 255) / 256; cb.tg[0] = 256; ds.push_back(cb);
@@ -229,8 +258,14 @@ int main(int argc, char** argv) {
         return median(t);
     };
     const int o = v2 ? 1 : 0;
-    const double tp = timeit(true, false, -1), tg = timeit(false, true, o), td = timeit(false, true, o + 1),
-                 tc = timeit(false, true, o + 2), ta = timeit(false, true, -1);
+    const double tp = timeit(true, false, -1), ta = timeit(false, true, -1);
+    double tg = 0, td = 0, tc = 0;
+    if (mpp) {   // parts: gather, (expand gate/up, expand down, gu run, dn run) per batch, combine
+        for (int b = 0; b < (NE + ECAP - 1) / ECAP; ++b) { tg += timeit(false, true, 1 + 4 * b + 2); td += timeit(false, true, 1 + 4 * b + 3); }
+        tc = timeit(false, true, 1 + 4 * ((NE + ECAP - 1) / ECAP));
+    } else {
+        tg = timeit(false, true, o); td = timeit(false, true, o + 1); tc = timeit(false, true, o + 2);
+    }
     if (v2) std::printf("gather %.1f us\n", timeit(false, true, 0) * 1e6);
     const double fgu = 2.0 * nent * 2.0 * N_FF * N_EMBD, fdn = 2.0 * nent * N_EMBD * N_FF;
     std::printf("per layer: plan %.1f us, gate/up %.1f us (%.1f TFLOP/s useful), down %.1f us (%.1f TFLOP/s), combine %.1f us;"
