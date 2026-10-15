@@ -77,7 +77,7 @@ By the PC's RAM (ask the user whether they mainly want it for code - then the Co
 
 `--family swift` (Swift 1.5, a fine-tune that thinks shorter; sizes Q2_0, IQ2_XS, IQ3_XXS) is the alternative to
 `qwen`. `--family signal` (agentionai's Signal, a fine-tune that thinks more directly) has two ~4-bit sizes for 48 GB
-or more: `AP-Q4_K_XL` (101 GB, NVIDIA only so far; part of the experts read from the SSD under ~90 GB of RAM) and
+or more: `AP-Q4_K_XL` (101 GB; part of the experts read from the SSD under ~90 GB of RAM) and
 `AP-IQ4_XS` (90 GB, under ~80 GB; not run by us yet). With `--yes` and no `--model`, setup picks the recommended size for the RAM itself. More: [MODELS.md](MODELS.md).
 
 ## 4. Run setup without questions

@@ -160,8 +160,9 @@ experts in RAM and reads the rest from the SSD while it answers. Setup also writ
 Qwen Community License 1.0 (see its page).
 
 AP-Q4_K_XL with the config setup wrote (32K context, 8-bit KV, images on), on an RTX 4090 with 93 GB of RAM: 59.9
-tokens/s for short answers and 71.2 tokens/s in an agent session (`tools/strata_bench.py`, medians of 3 runs). It is
-NVIDIA only so far: the AMD engine has no prompt kernels for its Q4_K experts, as with UD-Q4_K_XL. AP-IQ4_XS has not
+tokens/s for short answers and 71.2 tokens/s in an agent session (`tools/strata_bench.py`, medians of 3 runs). Neither
+size is NVIDIA-only: every format they use has AMD kernels (Q4_K experts run on an R9700 as UD-Q4_K_XL's, IQ3_S and
+IQ4_NL as UD-IQ4_XS's - [QUANTS.md](QUANTS.md)), but neither Signal file has run on an AMD card yet. AP-IQ4_XS has not
 been run; its file differs from AP-Q4_K_XL only in the experts' gate/up type, the one UD-IQ4_XS uses. Details and
 the manual steps: [Signal](SIGNAL_AP_Q4_K_XL.md).
 

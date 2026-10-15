@@ -156,8 +156,9 @@ verifies every draft, and a fine-tune's acceptance is not the base model's. It h
 `setup.py --family signal --model AP-Q4_K_XL` (or `AP-IQ4_XS`) does the steps above by itself: it downloads the file
 from a pinned revision and checks its SHA-256, packs it with `--compat-bf16`, writes the BF16 embedding beside the
 pack (`token-embd-bf16.gguf`) and adds `--embd-gguf` to the config. With images on, it downloads Signal's own encoder
-(`mmproj-F16.gguf`, 904 MB), saved as `mmproj-Signal-3.8-Flash-Next-F16.gguf`. On an AMD card setup asks before it
-installs AP-Q4_K_XL, as it does for UD-Q4_K_XL: the HIP engine has no prompt kernels for Q4_K experts.
+(`mmproj-F16.gguf`, 904 MB), saved as `mmproj-Signal-3.8-Flash-Next-F16.gguf`. Neither size asks on an AMD card: the
+HIP engine has kernels for every format the two use - Q4_K experts run on an R9700 as UD-Q4_K_XL's, IQ3_S gate/up and
+IQ4_NL downs as UD-IQ4_XS's ([QUANTS.md](QUANTS.md)) - though neither Signal file itself has run on AMD.
 
 Run on the machine above on 2026-10-11 with the file already downloaded:
 `./setup.sh --family signal --model AP-Q4_K_XL --gguf-dir <its folder> --vision gpu --build --yes --no-start`. It took
