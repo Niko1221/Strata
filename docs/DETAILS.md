@@ -87,7 +87,9 @@ note; never under WSL, which cannot stream).
 KV streaming pins the whole context's K/V per session, so `--batch` slots plus the main session pin (slots + 1) x the
 context (15.5 GiB for four slots at 262,144 cells, 8-bit KV). With the pool, N cells per QSA layer are pinned once
 (524,288 cells: 6.2 GiB) and a session holds only the 4,096-cell chunks its conversation has reached; a conversation
-moves between the main session and a slot by swapping chunks, and when the pool is full an idle slot's cached
+moves between the main session and a slot by swapping chunks (its checkpoint chain moves with them, so a prompt with an
+edited last message still resumes from a periodic checkpoint: both lanes of two 133k conversations reuse 118,784 tokens;
+at 256k per lane that needs `--conversation-cache-mib` of at least 4528), and when the pool is full an idle slot's cached
 conversation gives way, then a new request is refused (HTTP 503, `Retry-After`, `kv_pool_full`) or a decoding lane ends
 `length` with `"truncated": true`. It works across a layer split. Details and the behaviour when it is full:
 docs/BATCHING.md.
