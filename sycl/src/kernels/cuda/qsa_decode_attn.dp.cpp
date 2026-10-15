@@ -1277,7 +1277,7 @@ static void launch_normal_qsa_vector(int mode,const float* q,const QsaAttnPools&
     auto* pm=scratch+size_t(chunks)*sh.n_head*HD;
     auto* pl=pm+size_t(chunks)*sh.n_head;
     auto* queue=strata::q_of(stream);const float scale=1.f/sqrtf(float(HD));
-    auto props=sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+    auto props=sycl::ext::oneapi::experimental::properties{};
     queue->parallel_for<QsaVectorCodes>(
         sycl::nd_range<3>(sycl::range<3>(nq,sh.n_head_kv,size_t(chunks)*THREADS),sycl::range<3>(1,1,THREADS)),props,
         [=](sycl::nd_item<3>)[[sycl::reqd_sub_group_size(32)]]{
@@ -1307,7 +1307,7 @@ static void launch_qsa_chunk_down(int mode,const float* q,const QsaAttnPools& po
     auto* part_l=part_m+size_t(chunks)*s.n_head;
     auto* queue=strata::q_of(stream);
     const float scale=1.f/sqrtf(float(HD));
-    auto props=sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+    auto props=sycl::ext::oneapi::experimental::properties{};
     queue->parallel_for<QsaChunkDown>(
         sycl::nd_range<3>(sycl::range<3>(nq,s.n_head_kv,size_t(chunks)*THREADS),sycl::range<3>(1,1,THREADS)),props,
         [=](sycl::nd_item<3>)[[sycl::reqd_sub_group_size(32)]]{
