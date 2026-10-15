@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 import urllib.error
@@ -147,6 +148,31 @@ class Http(unittest.TestCase):
             status, _ = self.call("POST", {"set": {"fit_max_tokens": True}}, {"Authorization": "Bearer secret"})
         self.assertEqual(status, 200)
         self.assertIs(self.saved()["fit_max_tokens"], True)
+
+    @unittest.skipIf(os.name == "nt", "file modes are POSIX")
+    def test_a_config_with_an_api_key_stays_the_owner_s_only_1919(self):
+        """#1919: saving from the page wrote the config (and its .bak) with the default umask, readable by every user."""
+        old = os.umask(0o022)
+        self.addCleanup(os.umask, old)
+        self.path.write_text(json.dumps({**CFG, "api_key": "secret"}, indent=1), encoding="utf-8")
+        self.path.chmod(0o600)
+        self.svc.api_key = "secret"
+        with contextlib.redirect_stdout(io.StringIO()):
+            status, v = self.call("POST", {"set": {"sampling.temperature": 0.2}}, {"Authorization": "Bearer secret"})
+        self.assertEqual(status, 200, v)
+        self.assertEqual(self.saved()["api_key"], "secret")
+        for p in (self.path, self.path.parent / "strata-q2_0.json.bak"):
+            self.assertEqual(p.stat().st_mode & 0o777, 0o600, p.name)
+
+    @unittest.skipIf(os.name == "nt", "file modes are POSIX")
+    def test_a_config_without_a_key_is_saved_as_before(self):
+        old = os.umask(0o022)
+        self.addCleanup(os.umask, old)
+        with contextlib.redirect_stdout(io.StringIO()):
+            status, v = self.call("POST", {"set": {"sampling.temperature": 0.2}}, {"Origin": f"http://{self.host}"})
+        self.assertEqual(status, 200, v)
+        for p in (self.path, self.path.parent / "strata-q2_0.json.bak"):
+            self.assertEqual(p.stat().st_mode & 0o777, 0o644, p.name)
 
     def test_without_a_run_config(self):
         self.svc.config_path = None

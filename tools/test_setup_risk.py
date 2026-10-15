@@ -202,6 +202,30 @@ class BrokenEarlierConfig(unittest.TestCase):
                     setup.write_config(p, {"args": []})
             self.assertEqual(json.loads(p.read_text(encoding="utf-8")), {"args": ["--kv", "int8"]})   # kept whole
 
+    @unittest.skipIf(os.name == "nt", "file modes are POSIX")
+    def test_a_config_with_an_api_key_is_the_owner_s_only_1919(self):
+        """#1919: the run config holds the API key; with the default umask it was readable by every user of the PC."""
+        old = os.umask(0o022)
+        self.addCleanup(os.umask, old)
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "strata-iq3_s.json"
+            setup.write_config(p, {"args": [], "api_key": "secret"})
+            self.assertEqual(p.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(json.loads(p.read_text(encoding="utf-8"))["api_key"], "secret")
+            (Path(d) / "strata-iq3_s.json.tmp").write_text("left over")             # an earlier run's .tmp, 0644
+            setup.write_config(p, {"args": ["--kv", "int8"], "api_key": "secret"})
+            self.assertEqual(p.stat().st_mode & 0o777, 0o600)
+            q = Path(d) / "strata-q2_0.json"
+            setup.write_config(q, {"args": []})                                     # no key: as before
+            self.assertEqual(q.stat().st_mode & 0o777, 0o644)
+            # setup's own copy of the earlier config (write_setup_config's .bak) holds the key too
+            p.chmod(0o644)
+            with mock.patch.object(setup, "say"), mock.patch.object(setup, "ok"):
+                setup.write_setup_config(p, {"args": ["--kv", "k8v4"], "api_key": "secret"})
+            bak = Path(d) / "strata-iq3_s.json.bak"
+            self.assertEqual(json.loads(bak.read_text(encoding="utf-8"))["args"], ["--kv", "int8"])
+            self.assertEqual((bak.stat().st_mode & 0o777, p.stat().st_mode & 0o777), (0o600, 0o600))
+
 
 class LowRamGpus(unittest.TestCase):
     """S2/S3 (#364 #384): one GPU recommended in the low-RAM mode, all of them when asked for."""

@@ -161,13 +161,32 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
     return new, changed
 
 
+def _write_private(p: Path, data: bytes) -> None:
+    """`p` readable by its owner only (0600) from its first byte on (#1919: a run config that holds the API key)."""
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        os.fchmod(f.fileno(), 0o600)                   # a file left from before keeps its old mode otherwise
+        f.write(data)
+
+
 def save(path: str | Path, cfg: dict) -> Path:
-    """The config written whole (a temporary file moved over the old one), the earlier one kept as <name>.bak."""
+    """The config written whole (a temporary file moved over the old one), the earlier one kept as <name>.bak.  One
+    that holds an API key (the new or the earlier one) is written, .bak too, readable by its owner only (not on
+    Windows); one without a key as before."""
     path = Path(path)
     bak = path.with_name(path.name + ".bak")
-    shutil.copyfile(path, bak)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+    old = path.read_bytes()
+    try:
+        old_key = bool(json.loads(old.decode("utf-8-sig")).get("api_key"))
+    except (ValueError, AttributeError):
+        old_key = b'"api_key"' in old                  # not readable as a config: careful with it
+    if os.name != "nt" and (cfg.get("api_key") or old_key):
+        _write_private(bak, old)
+        _write_private(tmp, json.dumps(cfg, indent=1).encode("utf-8"))
+    else:
+        shutil.copyfile(path, bak)
+        tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
     os.replace(tmp, path)
     return bak
 

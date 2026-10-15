@@ -4404,10 +4404,24 @@ def data_folder(requested: str | None) -> tuple:
 
 def write_config(path: Path, cfg: dict):
     """A run config, written whole or not at all (#459): to a temporary file first, then moved over the old one, so
-    a setup stopped half-way (a closed window, a full disk) never leaves an empty strata-*.json behind."""
+    a setup stopped half-way (a closed window, a full disk) never leaves an empty strata-*.json behind.  #1919: one
+    that holds an API key is readable by its owner only (0600, not Windows), from its first byte on; one without a
+    key is written as before."""
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+    if cfg.get("api_key") and not WIN:
+        write_private(tmp, json.dumps(cfg, indent=1).encode("utf-8"))
+    else:
+        tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def write_private(p: Path, data: bytes) -> None:
+    """`p` readable by its owner only (0600) from its first byte on (#1919: a run config, or its .bak, with the API
+    key).  POSIX only; the caller skips it on Windows."""
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        os.fchmod(f.fileno(), 0o600)                   # a file left by an earlier run keeps its old mode otherwise
+        f.write(data)
 
 
 # #629: the run config's keys setup writes itself (and rewrites on every setup run); any other key is the user's - a
@@ -4513,7 +4527,10 @@ def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None) ->
     if cfg_path.is_file() and old != cfg:
         bak = cfg_path.with_name(cfg_path.name + ".bak")
         try:
-            shutil.copyfile(cfg_path, bak)
+            if (old or {}).get("api_key") and not WIN:  # #1919: the earlier key stays the owner's only in the copy
+                write_private(bak, cfg_path.read_bytes())
+            else:
+                shutil.copyfile(cfg_path, bak)
         except OSError as e:
             warn(f"could not keep a copy of the earlier {cfg_path.name} ({e.strerror or e})")
             bak = None
