@@ -153,7 +153,7 @@ Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). To add a
   - Codex CLI and other apps that use the OpenAI Responses API: `/v1/responses`
     ([setup](docs/DETAILS.md#the-responses-api-and-codex-cli)).
   - **ACP editors (Zed / JetBrains)** via [acp-bridge](https://github.com/BlakeHung/acp-bridge): a ~5MB static
-    Rust binary that turns Strata into an ACP agent — [setup](docs/DETAILS.md#acp-capable-editors-via-acp-bridge-0.1.x-any-release).
+    Rust binary that turns Strata into an ACP agent — [setup](docs/DETAILS.md#using-it).
 - **Thinking:** choose **off, low, medium or high** in the chat menu or in your app's "reasoning effort". Off is the
   fastest. High is best for hard questions.
 - **Pictures:** say yes to "Images?" in setup. Then click **Picture** in the chat, or attach pictures in your app.

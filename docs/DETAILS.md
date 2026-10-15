@@ -860,9 +860,11 @@ print(r.choices[0].message.content)
   `ANTHROPIC_MODEL` to a Claude model name it knows (it refuses names it doesn't; Strata ignores the name), plus any
   `ANTHROPIC_AUTH_TOKEN` (or your `api_key`, if you set one).
 - **Codex CLI** (0.1.39): see [the Responses API](#the-responses-api-and-codex-cli) below.
-- **ACP-capable editors via acp-bridge** (#0.1.x, any release): [acp-bridge](https://github.com/BlakeHung/acp-bridge) is
+- **ACP-capable editors via acp-bridge:** [acp-bridge](https://github.com/BlakeHung/acp-bridge) is
   a small static Rust binary that turns any OpenAI-compatible backend into an ACP (Agent Client Protocol) agent — the
-  protocol Zed and JetBrains speak to coding agents. Point it at Strata and the model shows up inside those editors:
+  protocol Zed and JetBrains speak to coding agents. Point it at Strata and the model shows up inside those editors.
+  For the full install-to-Zed walkthrough, see
+  [Strata: Run a 125B Model on Your Own PC — from Install to Coding Agent](https://wchung.tw/blog/strata-local-125b).
 
   ```yaml
   # acp-bridge config
