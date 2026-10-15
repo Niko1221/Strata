@@ -625,12 +625,12 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     const uint64_t TS = (uint64_t) (s.idx_block - 1) * ID;
     const int max_in = (int) std::max<uint64_t>(std::max<uint64_t>(N, ZV), NH * HD);
 
-    {   // STRATA_VERIFY_DEFER=1 or =check (opt-in): read before the allocations (one buffer more, see record_window)
-        const char* v = std::getenv("STRATA_VERIFY_DEFER");
+    {   // STRATA_VERIFY_DEFER_CPU=1 or =check (opt-in): read before the allocations (one buffer more, see record_window)
+        const char* v = std::getenv("STRATA_VERIFY_DEFER_CPU");
         defer_check_ = v != nullptr && std::strcmp(v, "check") == 0;
         defer_ = defer_check_ || (v != nullptr && std::strcmp(v, "1") == 0);
         if (!defer_ && v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0)
-            std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER=%s is not 1 or check: no deferral\n", v);
+            std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU=%s is not 1 or check: no deferral\n", v);
         const char* h = std::getenv("STRATA_VERIFY_DEFER_HEAVY");
         const float hv = defer_ && h != nullptr ? (float) std::atof(h) : 0.0f;
         defer_heavy_ = hv > 0.0f && hv <= 1.0f ? hv : 0.0f;
@@ -726,7 +726,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         one_ = b.take<int32_t>(4);
         hist_snap_ = b.take<float>(T * HS);
         ple_key_ = b.take<float>(T * (uint64_t) strata::kernels::NG_HC_DIM); ple_val_ = b.take<float>(T * N);
-        // STRATA_VERIFY_DEFER (record_window), after everything else: the default layout is unchanged
+        // STRATA_VERIFY_DEFER_CPU (record_window), after everything else: the default layout is unchanged
         if (defer_) def_parts_ = b.take<float>(T * K * N);
     };
     Bump count;
@@ -867,10 +867,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
                  (double) count.used / 1048576.0,
                  all_resident_ ? " (100% VRAM resident: zero-doorbell graph)" : "");
     if (defer_check_)
-        std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER=check (a check of the late addition): the CPU's expert "
+        std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU=check (a check of the late addition): the CPU's expert "
                              "rows of layer l are left out of its combine and added back right after it - no deferral\n");
     else if (defer_)
-        std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER=1 (changes the output): the CPU's expert rows of layer l "
+        std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU=1 (changes the output): the CPU's expert rows of layer l "
                              "join the residual before layer l+1's FFN-side read (its mixer runs without them; the "
                              "stage's last layer exact)\n");
     if (defer_heavy_ > 0.0f && device_plan_) {
@@ -933,7 +933,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     };
     bool sg_gated_[2] = {false, false};   // per group: the combine applies the shared gate
     if (!batch_rec_) groups_[T] = G;
-    // STRATA_VERIFY_DEFER=1 (opt-in, changes the output; defer_ok says which windows): post(l) of a deferred layer
+    // STRATA_VERIFY_DEFER_CPU=1 (opt-in, changes the output; defer_ok says which windows): post(l) of a deferred layer
     // combines without the CPU's rows (shared expert, VRAM hits and the PCIe share only) and does not wait for them, and
     // pre(l+1) adds them to the residual before its FFN-side read: the CPU computes layer l while the GPU runs layer
     // l+1's mixer, which is the only part that runs without them.  The addition is the pending write's own
@@ -950,7 +950,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     // weight >= defer_heavy_; late_add takes the others (copy_rows_by_weight, the plan's GPU rows zeroed as by
     // copy_rows_from_mapped).  The host's side is heavy_layer (the same layers).
     const bool heavy = dfr && defer_heavy_ > 0.0f;
-    // STRATA_VERIFY_DEFER: layer dl's CPU rows, the copy post(dl) would have made, weighted as its combine weights them
+    // STRATA_VERIFY_DEFER_CPU: layer dl's CPU rows, the copy post(dl) would have made, weighted as its combine weights them
     // and added to every stream as its pending write would have.  Where: pre(dl+1) before its FFN-side read (=1), or
     // post(dl) itself after its combine (=check: the default path's sums in another order, so a run that differs from
     // the default by more than its own run-to-run noise has a wrong copy or wrong arithmetic; it does not exercise the
@@ -1538,7 +1538,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             return false;
         }
         stamp(l, 15, grp);   // the profile: the mixer's out-projection ends here
-        // STRATA_VERIFY_DEFER=1: the previous layer's CPU rows join the residual here, before the FFN-side read (late_add;
+        // STRATA_VERIFY_DEFER_CPU=1: the previous layer's CPU rows join the residual here, before the FFN-side read (late_add;
         // the profile's "late rows", 15 to 16)
         if (!defer_check_ && l > lb_ && deferred(l - 1)) late_add(l - 1, grp);
         stamp(l, 16, grp);
@@ -1749,7 +1749,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             // pcie_frac 0), so its launch is kPcieGroupRows block rows striding over the groups, not cap of them
             grouped(p_ptr2, p_start2, p_counts + 2, kPcieGroupRows, hit_out);
             stamp(l, 22, grp);
-            // STRATA_VERIFY_DEFER: no wait, no CPU rows now (late_add adds them later): zeros, plus the hits
+            // STRATA_VERIFY_DEFER_CPU: no wait, no CPU rows now (late_add adds them later): zeros, plus the hits
             if (deferred(l)) {
                 if (heavy) wait_flag_ge(m_pflag_, ring, cs);   // STRATA_VERIFY_DEFER_HEAVY: the heavy rows (waitCPU)
                 stamp(l, 23, grp);   // (no wait without HEAVY: the zeroing counts as copy+combine, as the copy it replaces)
@@ -1814,7 +1814,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (remote_opt_) remote_opt_->combine(bo_ + tb * N, y_dummy_ + tb * N, tb, n,
                               device_plan_ ? skip_ + grp : nullptr, ring, cs);
         stamp(l, 24, grp);
-        // STRATA_VERIFY_DEFER=check (late_add): this layer's own rows, here; =1 adds them in pre(l + 1)
+        // STRATA_VERIFY_DEFER_CPU=check (late_add): this layer's own rows, here; =1 adds them in pre(l + 1)
         if (defer_check_ && deferred(l)) late_add(l, grp);
         if (l == g.n_layers - 1) {
             if (!fuse_head_gr) {
@@ -1986,7 +1986,7 @@ void Verifier::refresh_ar() {
     }
 }
 
-// STRATA_VERIFY_DEFER: the windows record_window may capture with deferral - one sequence's decode window, one token
+// STRATA_VERIFY_DEFER_CPU: the windows record_window may capture with deferral - one sequence's decode window, one token
 // group, CPU rows to defer and the plain combine and residual writes around them.  (STRATA_LFUSE's gated combine runs
 // only on the all-resident graph, so it never meets a deferred layer.)
 bool Verifier::defer_ok(int T, std::string* why) const {
@@ -1994,7 +1994,7 @@ bool Verifier::defer_ok(int T, std::string* why) const {
         if (why != nullptr) *why = w;
         return false;
     };
-    if (!defer_) return no("STRATA_VERIFY_DEFER is off");
+    if (!defer_) return no("STRATA_VERIFY_DEFER_CPU is off");
     if (batch_rec_) return no("a batch window");
     if (split_ && T >= 2) return no("--spec-split's two token groups");
     if (remote_opt_ != nullptr) return no("--remote-expert-opt");
@@ -2021,10 +2021,10 @@ bool Verifier::capture(int T, std::string& err) {
     cudaGraphExec_t& exec_t = ar_off_ ? exec_nr_[T] : exec_[T];
     if (exec_t != nullptr) return true;
     std::string dwhy;
-    const bool dfr = defer_ok(T, &dwhy);   // STRATA_VERIFY_DEFER (record_window decides the same)
+    const bool dfr = defer_ok(T, &dwhy);   // STRATA_VERIFY_DEFER_CPU (record_window decides the same)
     if (defer_ && !dfr && !defer_said_) {
         defer_said_ = true;
-        std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER: the %d-token window runs without deferral (%s)\n", T,
+        std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU: the %d-token window runs without deferral (%s)\n", T,
                      dwhy.c_str());
     }
     {   // said before the capture: a process that exits inside it (#1275: Windows, 313 MiB free) leaves this line as the trace
