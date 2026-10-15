@@ -213,20 +213,31 @@ class SystemOneCalibrated(unittest.TestCase):
         finally:
             jev_calib.ADMIN_KEY = ""
 
+    def test_admin_calib_404_when_no_key_configured(self):
+        """Opus G2: with no admin key the surface must not exist (fail-closed)."""
+        jev_calib.ADMIN_KEY = ""
+        st, body = self._post("/admin/calib", {})
+        self.assertEqual(st, 404)
+        self.assertIn("not found", body["error"]["message"])
+
     def test_admin_calib_hot_reload(self):
         (self.dir / "calib.json").write_text(json.dumps({
             "tuple": "hot|iq3_xxs|none|v1|L|all",
             "T_choice": 1.0, "T_score": 1.0, "a_noul": 1.0, "c_noul": 0.0}))
-        st, body = self._post("/admin/calib", {})
-        self.assertEqual(st, 200)
-        self.assertEqual(body["modes"]["text(legacy)"]["tuple"], "hot|iq3_xxs|none|v1|L|all")
-        # identity now: choice answer back at raw softmax
-        st, body = self._post("/v1/systemone", {
-            "state": {"k": 1},
-            "questions": {"q5": {"type": "choice", "instructions": "Pick.",
-                                 "criteria": {"a": 1, "b": 2, "c": 3}}}})
-        pr = body["answers"]["q5"]["probabilities"]
-        self.assertGreater(pr[1], 0.9)
+        jev_calib.ADMIN_KEY = "hot1"                    # fail-closed: key required now
+        try:
+            st, body = self._post("/admin/calib", {}, {"Authorization": "Bearer hot1"})
+            self.assertEqual(st, 200)
+            self.assertEqual(body["modes"]["text(legacy)"]["tuple"], "hot|iq3_xxs|none|v1|L|all")
+            # identity now: choice answer back at raw softmax
+            st, body = self._post("/v1/systemone", {
+                "state": {"k": 1},
+                "questions": {"q5": {"type": "choice", "instructions": "Pick.",
+                                     "criteria": {"a": 1, "b": 2, "c": 3}}}})
+            pr = body["answers"]["q5"]["probabilities"]
+            self.assertGreater(pr[1], 0.9)
+        finally:
+            jev_calib.ADMIN_KEY = ""
 
 
 def httpd_server_port(httpd):
