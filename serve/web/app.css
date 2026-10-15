@@ -46,6 +46,13 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-collapse__body.thinking { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; }
 .st-msg__meta .st-btn--icon { width: 28px; height: 28px; }
 .st-msg__meta .st-btn--icon .st-icon { width: 16px; height: 16px; }
+.history-actions, .history-editor__actions, .history-undo { display: flex; flex-wrap: wrap; gap: var(--st-s-2); align-items: center; }
+.history-actions .st-btn, .history-undo .st-btn { height: 30px; padding: 0 10px; font-size: var(--st-fs-xs); }
+.history-editor { width: 100%; display: flex; flex-direction: column; gap: var(--st-s-2); }
+.history-editor textarea { width: 100%; min-height: 140px; max-height: 50vh; resize: vertical; font: inherit; }
+.history-editor p { margin: 0; }
+.st-msg[data-editing="true"] > .st-bubble { display: none; }
+.history-undo { margin-bottom: var(--st-s-2); color: var(--st-ink-muted); font-size: var(--st-fs-sm); }
 .cursor::after { content: ""; display: inline-block; width: 8px; height: 1.1em; margin-left: 2px; vertical-align: -3px;
                  border-radius: 2px; background: var(--st-accent); animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: 0; } }

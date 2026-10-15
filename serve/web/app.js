@@ -565,6 +565,9 @@ let settings = {...DEFAULTS, ...store.get("sampling", {})};
 let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
+let historyEditing = store.get("editHistory", false) === true;
+let editState = null;
+let historyUndo = null;               // one history change, in memory until a new question or reload
 
 function saveChat() {
   store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
@@ -613,7 +616,146 @@ function msgEl(m, i) {
       `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>`;
     updateAssistant(el, m, false);
   }
+  if (historyEditing) {
+    const actions = document.createElement("div");
+    actions.className = "history-actions";
+    const button = (label, run, title = label) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "st-btn st-btn--secondary";
+      b.textContent = label;
+      b.title = title;
+      b.disabled = !!busy || !!editState;
+      b.onclick = run;
+      actions.appendChild(b);
+    };
+    button("Edit", () => editMessage(i));
+    if (m.role === "assistant" || i === messages.length - 1) {
+      button("Regenerate", () => retryMessage(i), "Replace the answer from this turn. Tools may run again.");
+    }
+    button("Remove from here", () => removeHistoryFrom(i), "Remove this message and every later message");
+    el.appendChild(actions);
+  }
   return el;
+}
+// History edits replace a suffix, never splice tool calls or leave later replies attached to a changed prompt.
+function historyReady() {
+  if (!historyEditing) return false;
+  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return false; }
+  if (editState) { toast("warn", "Finish editing first", "Save or cancel the current edit."); return false; }
+  return true;
+}
+function historyCanReplay(next) {
+  const missing = next.some((m) => m.role === "user" && ((m.images || []).some((x) => !x.url) ||
+    (m.files || []).some((x) => typeof x.text !== "string")));
+  if (missing) toast("warn", "Attachments need to be added again", "This browser kept their names, but not their contents. Start a new chat and attach the files again.", 6000);
+  return !missing;
+}
+function renderHistoryUndo() {
+  let el = $("history-undo");
+  if (!historyEditing || !historyUndo) { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "history-undo";
+    el.className = "history-undo";
+    el.setAttribute("role", "status");
+    el.innerHTML = '<span>Undo the last history change</span><button type="button" class="st-btn st-btn--secondary">Undo</button>';
+    el.querySelector("button").onclick = undoHistory;
+    $("composer").before(el);
+  }
+  el.querySelector("button").disabled = !!busy || !!editState;
+}
+function changeHistory(next) {
+  if (!historyReady()) return false;
+  historyUndo = messages;
+  messages = next;
+  saveChat();
+  renderChat();
+  renderHistoryUndo();
+  $("input").focus();
+  return true;
+}
+function undoHistory() {
+  if (!historyReady() || !historyUndo) return false;
+  messages = historyUndo;
+  historyUndo = null;
+  saveChat();
+  renderChat();
+  renderHistoryUndo();
+  $("input").focus();
+  return true;
+}
+function removeHistoryFrom(i) {
+  if (!Number.isInteger(i) || i < 0 || i >= messages.length) return false;
+  return changeHistory(messages.slice(0, i));
+}
+function cancelMessageEdit() {
+  if (!editState) return;
+  const {el} = editState;
+  el.querySelector(".history-editor").remove();
+  delete el.dataset.editing;
+  editState = null;
+  setBusy(!!busy);
+  const button = el.querySelector(".history-actions button");
+  if (button) button.focus();
+}
+function editMessage(i) {
+  if (!historyReady() || !Number.isInteger(i) || !messages[i]) return false;
+  const m = messages[i], el = $("chat").querySelector(`[data-i="${i}"]`);
+  const editor = document.createElement("div");
+  editor.className = "history-editor";
+  const label = m.role === "user" ? "Edit your message" : "Edit the answer";
+  const later = messages.length - i - 1;
+  editor.innerHTML = '<label></label><textarea class="st-input" rows="6"></textarea>' +
+    '<p class="muted small"></p><div class="history-editor__actions">' +
+    '<button type="button" class="st-btn st-btn--primary" data-edit-save></button>' +
+    '<button type="button" class="st-btn st-btn--secondary" data-edit-cancel>Cancel</button></div>';
+  editor.querySelector("label").textContent = label;
+  const input = editor.querySelector("textarea");
+  input.setAttribute("aria-label", label);
+  input.value = m.text || "";
+  editor.querySelector("p").textContent = `Saving removes ${later} later message${later === 1 ? "" : "s"}. ` +
+    (m.role === "user" ? "Attachments stay with this message. A new answer will be generated; tools may run again."
+                       : "The answer's old thinking and tool history are removed. No request is sent.");
+  const save = editor.querySelector("[data-edit-save]");
+  save.textContent = m.role === "user" ? "Save & regenerate" : "Save";
+  save.onclick = () => saveMessageEdit(i, input.value);
+  editor.querySelector("[data-edit-cancel]").onclick = cancelMessageEdit;
+  input.onkeydown = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); cancelMessageEdit(); }
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); save.click(); }
+  };
+  el.dataset.editing = "true";
+  el.appendChild(editor);
+  editState = {index: i, message: m, el};
+  setBusy(false);
+  input.focus();
+  input.scrollIntoView({block: "nearest"});
+  return true;
+}
+function saveMessageEdit(i, text) {
+  if (busy || !historyEditing || !editState || editState.index !== i || editState.message !== messages[i]) return false;
+  const m = messages[i];
+  if (typeof text !== "string" || (!text.trim() && !(m.role === "user" && ((m.images || []).some((x) => x.url) ||
+      (m.files || []).some((x) => x.text))))) {
+    toast("warn", "The message is empty", "Write a message before saving.");
+    return false;
+  }
+  const edited = m.role === "user" ? {...m, text} : {role: "assistant", text, time: m.time, meta: "Edited"};
+  const next = [...messages.slice(0, i), edited];
+  if (m.role === "user" && !historyCanReplay(next)) return false;
+  cancelMessageEdit();
+  if (!changeHistory(next)) return false;
+  if (m.role === "user") return generateReply();
+  return true;
+}
+function retryMessage(i) {
+  if (!historyReady() || !Number.isInteger(i) || !messages[i]) return false;
+  let user = i;
+  while (user >= 0 && messages[user].role !== "user") user--;
+  const next = messages.slice(0, user + 1);
+  if (user < 0 || !historyCanReplay(next) || !changeHistory(next)) return false;
+  return generateReply();
 }
 // One MCP tool call in the answer: a compact block (name, state, a one-line preview) that opens to the arguments and
 // the result as the model read it.  Its body is built only while open: a result can be 20,000 characters.
@@ -767,19 +909,28 @@ function assistantMessages(m) {
 
 function setBusy(on) {
   $("stop-btn").hidden = !on;
-  $("send-btn").disabled = on;
-  $("composer-hint").textContent = on ? "" : "Shift+Enter: new line";
+  $("send-btn").disabled = on || !!editState;
+  $("input").disabled = !!editState;
+  $("composer-hint").textContent = editState ? "Save or cancel the edit to continue" : on ? "" : "Shift+Enter: new line";
+  for (const b of document.querySelectorAll(".history-actions button")) b.disabled = on || !!editState;
+  $("s-edit-history").disabled = on || !!editState;
+  renderHistoryUndo();
 }
 
 async function send() {
   const text = $("input").value.trim();
-  if ((!text && !attachments.length) || busy) return;
+  if ((!text && !attachments.length) || busy || editState) return;
+  historyUndo = null;
+  renderHistoryUndo();
   messages.push({role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
                  files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
   attachments = [];
   renderAttachments();
   $("input").value = "";
   autosize();
+  return generateReply();
+}
+async function generateReply() {
   const m = {role: "assistant", text: "", reasoning: "", time: Date.now()};
   messages.push(m);
   renderChat();
@@ -881,12 +1032,19 @@ $("input").addEventListener("input", autosize);
 
 $("new-btn").onclick = () => {
   if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  if (editState) { toast("warn", "Finish editing first", "Save or cancel the current edit."); return; }
   if (!messages.length) return;
   const backup = messages;
   messages = [];
+  historyUndo = null;
+  renderHistoryUndo();
+  const cleared = messages, guardUndo = historyEditing;
   saveChat();
   renderChat();
-  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
+  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => {
+    if ((guardUndo || historyEditing) && (busy || editState || messages !== cleared || messages.length)) return;
+    messages = backup; saveChat(); renderChat();
+  }});
 };
 $("export-btn").onclick = () => {
   if (!messages.length) { toast("info", "Nothing to save yet"); return; }
@@ -995,6 +1153,7 @@ function loadDrawer(s = settings) {
   $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
   $("s-max").value = s.max; $("s-seed").value = s.seed;
   $("s-show").setAttribute("aria-checked", String(!!s.show));
+  $("s-edit-history").setAttribute("aria-checked", String(historyEditing));
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
   $("esp-row").hidden = !projectionLoaded();
   $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
@@ -1045,11 +1204,19 @@ function outputs() {
 for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
 $("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s-show").getAttribute("aria-checked") !== "true"));
+$("s-edit-history").onclick = () => $("s-edit-history").setAttribute("aria-checked", String($("s-edit-history").getAttribute("aria-checked") !== "true"));
 $("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
 $("s-mcp").onclick = () => $("s-mcp").setAttribute("aria-checked", String($("s-mcp").getAttribute("aria-checked") !== "true"));
 $("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($("s-share").getAttribute("aria-checked") !== "true"));
-$("s-reset").onclick = () => loadDrawer(DEFAULTS);
+$("s-reset").onclick = () => { loadDrawer(DEFAULTS); $("s-edit-history").setAttribute("aria-checked", "false"); };
 $("s-apply").onclick = async () => {
+  const editHistory = $("s-edit-history").getAttribute("aria-checked") === "true";
+  if (editHistory !== historyEditing && !busy && !editState) {
+    historyEditing = editHistory;
+    store.set("editHistory", historyEditing);
+    renderChat();
+    renderHistoryUndo();
+  }
   const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
   settings = {thinking: sel ? sel.dataset.v : "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
