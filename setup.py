@@ -5505,10 +5505,19 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision):
     return llama, eng, meta, lib_dirs, gpu, vision
 
 
-def engine_families(eng: Path) -> set:
-    """The model families an engine runs (`strata --families`; an engine from before it: Flash-Next's only)."""
+def engine_families(eng: Path, lib_dirs=()) -> set:
+    """The model families an engine runs (`strata --families`; an engine from before it: Flash-Next's only).  #2372:
+    started with the library folders the engine runs with first on the search path, as the server's child_env puts
+    them (PATH on Windows, LD_LIBRARY_PATH elsewhere): a ready-made engine's loader wants cuBLAS (CUDA, pip's wheels)
+    or hipBLAS (HIP, rocm/bin) before main, and without them --families printed nothing."""
+    env = None
+    dirs = [str(d) for d in lib_dirs if Path(d).is_dir()]
+    if dirs:
+        env, var = dict(os.environ), "PATH" if WIN else "LD_LIBRARY_PATH"
+        env[var] = os.pathsep.join(dirs + ([env[var]] if env.get(var) else []))
     try:
-        text = subprocess.run([str(eng / EXE), "--families"], capture_output=True, text=True, timeout=60).stdout
+        text = subprocess.run([str(eng / EXE), "--families"], capture_output=True, text=True, timeout=60,
+                              env=env).stdout
     except (OSError, subprocess.SubprocessError):
         return {"qwen4exp"}
     names = set(text.split())
@@ -5597,7 +5606,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
 
     step(4, "the Strata engine")
     llama, eng, meta, lib_dirs, gpu, _ = engine_step(a, gpu, hip, amd, cuda_tk, "none")
-    if fam["arch"] not in engine_families(eng):
+    if fam["arch"] not in engine_families(eng, lib_dirs):
         fail(f"this engine ({meta.get('version')}) does not run {fam['title']} yet",
              "update Strata, or compile the engine with --build, and run setup again")
     ok(f"engine: {eng / EXE}")

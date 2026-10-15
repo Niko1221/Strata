@@ -104,7 +104,8 @@ class InstallOwnPath(unittest.TestCase):
                    mock.patch.object(setup, "free_gb", lambda p: 500.0),
                    mock.patch.object(setup, "pip_install", lambda *a, **k: None),
                    mock.patch.object(setup, "engine_step", engine_step),
-                   mock.patch.object(setup, "engine_families", lambda e: self.families),
+                   mock.patch.object(setup, "engine_families",
+                                     lambda e, lib_dirs=(): self.calls.append(("families", lib_dirs)) or self.families),
                    mock.patch.object(setup, "run", lambda cmd, **k: self.calls.append(("run", cmd))),
                    mock.patch.object(setup, "data_folder", lambda d: (self.root / "data", [])),
                    mock.patch.object(setup, "write_setup_config", write_cfg),
@@ -130,6 +131,7 @@ class InstallOwnPath(unittest.TestCase):
         self.assertEqual(get[0][2], gguf)
         self.assertIn(("sha", gguf.name), self.calls)
         self.assertIn(("engine", "none"), self.calls)            # no image encoder for this family yet
+        self.assertIn(("families", ["/libs"]), self.calls)       # #2372: probed with the engine's library folders
         tok = [c for c in self.calls if c[0] == "run"]
         self.assertTrue(tok and "strata_tokenizer.py" in str(tok[0][1]))
         a = self.cfg["args"]
@@ -191,6 +193,39 @@ class InstallOwnPath(unittest.TestCase):
         self.assertEqual((ch["family"], ch["model"], ch["context"]), ("qwen36", "UD-Q6_K_XL", 65536))
         self.assertTrue(setup.own_path_config(self.cfg))
         self.assertEqual(setup.calibration_targets([p], None, None), [])   # the tuning is Flash-Next's
+
+
+class FamiliesProbe(unittest.TestCase):
+    """#2372: `strata --families` started with the engine's library folders first on the loader's search path (a
+    ready-made engine's loader wants cuBLAS / hipBLAS before main: without them the probe printed nothing)."""
+
+    def probe(self, lib_dirs, stdout="qwen4exp qwen35moe\n"):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen.update(kw, cmd=cmd)
+            return mock.Mock(stdout=stdout, returncode=0)
+        with mock.patch.object(setup.subprocess, "run", fake_run):
+            return setup.engine_families(Path("/eng"), lib_dirs), seen
+
+    def test_the_library_folders_come_first(self):
+        with tempfile.TemporaryDirectory() as d:
+            cu13 = Path(d) / "nvidia" / "cu13" / "bin"
+            cu13.mkdir(parents=True)
+            for win, var in ((True, "PATH"), (False, "LD_LIBRARY_PATH")):
+                with self.subTest(win=win), mock.patch.object(setup, "WIN", win), \
+                        mock.patch.dict(setup.os.environ, {var: "/usr/bin"}):
+                    fams, seen = self.probe([str(cu13), str(Path(d) / "missing")])
+                    self.assertEqual(fams, {"qwen4exp", "qwen35moe"})
+                    self.assertEqual(seen["env"][var].split(setup.os.pathsep), [str(cu13), "/usr/bin"])
+                    self.assertEqual(seen["cmd"], [str(Path("/eng") / setup.EXE), "--families"])
+
+    def test_without_library_folders_it_runs_as_before(self):
+        fams, seen = self.probe([])
+        self.assertEqual(fams, {"qwen4exp", "qwen35moe"})
+        self.assertIsNone(seen["env"])                             # the inherited environment, unchanged
+        fams, _ = self.probe(["/no/such/folder"], stdout="")
+        self.assertEqual(fams, {"qwen4exp"})                       # nothing printed: Flash-Next's only, as before
 
 
 if __name__ == "__main__":
