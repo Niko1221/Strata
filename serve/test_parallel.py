@@ -457,6 +457,10 @@ class ParallelService(FakeEngineCase):
         self.assertTrue(observed["solo_request_key"])
         self.assertTrue(all(s["state"] == "idle" for s in observed["slots"]))
         self.assertIn("reply", out)
+        # once it is answered, /metrics shows no solo request: no key or cache source left from it
+        live = self.get("/metrics")["live"]
+        self.assertEqual([live[k] for k in ("solo_peer_ip", "solo_request_key", "solo_cache_source_slot",
+                                            "solo_cache_reused_tokens")], [None] * 4)
 
     def test_bgen_refused_by_the_engine_is_retried_not_a_400(self):
         """#1994: the engine refuses a BGEN ("no such free slot") although the server saw the slot free: the request
