@@ -2075,7 +2075,7 @@ class StrataEngine:
         with self.slot_cv:
             b = slot_policy.park_destination(main, self.slot_busy, self.slot_held, self.slot_used, self.slot_order,
                                              self.slot_gs, now, getattr(self, "slot_cache_valid", None),
-                                             self.slot_padding_safe, exclude)
+                                             self.slot_padding_safe, exclude, main_value=value)
             if b is not None:
                 self.slot_busy[b] = True
                 self.slot_claims.add(b)
