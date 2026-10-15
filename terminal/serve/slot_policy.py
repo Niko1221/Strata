@@ -113,8 +113,9 @@ def park_destination(main: list[int], busy: list[bool], held: list[list[int]], u
                      order: list[int], group_size: int, now: float, valid: list[bool] | None = None,
                      padding_safe: bool = False, exclude=()) -> int | None:
     """An idle slot to keep the main session's conversation in before another request replaces it (engine park=):
-    its own older copy, else a blank slot of the least loaded group.  Never another conversation's history - parking
-    must not evict anything.  None: nowhere to keep it (or it is already kept)."""
+    its own older copy, else a blank slot of the least loaded group, else an expired history worth less than
+    EXPIRED_KEEP_SCORE (the ones place() overwrites first).  Never a history worth keeping.  None: nowhere to keep it
+    (or it is already kept)."""
     if not padding_safe or not main:
         return None
     gs = max(1, group_size)
@@ -122,7 +123,7 @@ def park_destination(main: list[int], busy: list[bool], held: list[list[int]], u
     for b, h in enumerate(held):   # already kept (all but a short tail) - in an idle slot or one decoding it
         if h and len(h) * 10 >= len(main) * 9 and (main[:len(h)] == h or h[:len(main)] == main):
             return None
-    _, blank = _blank(held, busy, used, now, reliable)
+    states, blank = _blank(held, busy, used, now, reliable)
     positions = {b: i for i, b in enumerate(order)}
     loads = {g: sum(busy[g:g + gs]) for g in range(0, len(busy), gs)}
     own = [b for b in order if not busy[b] and b not in exclude and held[b] and reliable[b] and
@@ -130,7 +131,13 @@ def park_destination(main: list[int], busy: list[bool], held: list[list[int]], u
     if own:
         return max(own, key=lambda b: (len(held[b]), -positions[b]))
     free = [b for b in order if not busy[b] and b not in exclude and b in blank]
-    return min(free, key=lambda b: (loads[b - b % gs], positions[b])) if free else None
+    if free:
+        return min(free, key=lambda b: (loads[b - b % gs], positions[b]))
+    # The main session's conversation is at least PARK_MIN_TOKENS long; an expired one below EXPIRED_KEEP_SCORE is
+    # a short side chat: worth less than what parking keeps.  The least loaded group, then the lowest score.
+    worthless = [b for b in order if not busy[b] and b not in exclude and states[b]["expired"] and
+                 stale_retention(len(held[b])) < EXPIRED_KEEP_SCORE]
+    return min(worthless, key=lambda b: (loads[b - b % gs], stale_retention(len(held[b])), positions[b]))         if worthless else None
 
 
 def place(prompt: list[int], busy: list[bool], held: list[list[int]], used: list[float],
