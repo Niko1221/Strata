@@ -64,6 +64,10 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-15: RTX 5090 D 32 GB, Ryzen 9 9950X, 96 GB DDR5-6000 (Windows 11)](../bench/results/2026-10-15-community-rtx-5090d-iq3s-500k/README.md):
+  Strata 0.1.44.1 (`4c51f0a3`), official Windows release engine 0.1.44.1; the abliterated Qwen3.8-Flash-Next GSQ-RCO build in IQ3_S (custom `sc117_iq3_s` native pack, two-shard native + PLE GGUFs, expert profile, vision on), a 500,000-token context (`--rope-scaling yarn --rope-scale 2`), `--kv int8` with `--kv-resident 32768`, `--batch 2 --spec 4 --mtp strata-rt --adapt-async 1 --vram-reserve-mib 1500` with `STRATA_PIN_BY_NEED=1`, elastic VRAM and `--resident-experts` (only the experts the GPU cache cannot hold are pinned in RAM);
+  chat decode 140.2 tok/s (median of 9, 115.4-157.2), agent follow-up turns 162.3 tok/s with 68.6% conversation-cache reuse, fresh-prompt prefill 4,022 / 5,668 / 5,650 tok/s at 4,019 / 16,058 / 32,049 tokens, 3-client burst 106.5 tok/s total (p50 TTFT 0.651 s, 0 errors). Correctness is covered separately on this install: a 336K needle check passes and greedy completions match the pre-calibration configuration (code prompt byte-identical).
+  **Tuning finding (reproducible):** the 12,288 MiB `--vram-reserve-mib` this install came with is over-conservative on a 32 GB card; at 1,500 the auto expert cache grows from ~5.6 GiB to ~18 GiB (9,384 slots) and same-prompt decode rises ~30%. Not zeroable: the run still starts with ~900 MiB free.
 
 ## Run the benchmark
 
