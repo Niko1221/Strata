@@ -185,7 +185,8 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
   engine copies its state back (50-60 ms for a short conversation) instead of reading the history again - also for
   a client that drops the reply's thinking from the history (the checkpoint matches up to the new turn). A new
   conversation takes an empty slot, else the one used longest ago.
-- Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
+- Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`) - with
+  `STRATA_SLOT_CACHE_AFFINITY=1`, by the conversations they hold (below).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 
 ## Reading a prompt beside pipelined groups (experimental, opt-in)
@@ -398,6 +399,37 @@ overwritten. With `STRATA_PIPELINE_ACTIVE_ROWS=1` the engine takes `park=B` on `
 when the prompt continues less than half of what the main session holds, it first copies the main session's
 conversation (and its last checkpoint) into idle slot B - never the slot it restores from or is admitted to - and says
 `PARKED B <tokens>`. Copying 36-37K tokens took 414-451 ms (five runs, the machine above).
+
+### Server: placement by what the slots hold (`STRATA_SLOT_CACHE_AFFINITY=1`)
+
+With `"env": {"STRATA_SLOT_CACHE_AFFINITY": "1"}` in the server config and pipelined groups, `pick_slot` asks the
+placement policy in `serve/slot_policy.py` instead of placing by the groups alone. The server side is the same for any
+policy:
+
+- The policy gets each slot's state: busy, the tokens it holds, when it was last used (counted from the request's real
+  end, `BDONE`), whether its state is intact, the spreading order, the group size, the observed prompt rate and
+  whether the engine runs active slots only (`slot_padding_safe=1`). Without that engine capability the server tracks
+  from the `BADM` / `BT` / `BDONE` lines which idle slot a later window of its group has padded over, and marks it.
+- An answer "protected" makes the admission wait - the control lines given back, the slots re-checked every 0.1 s -
+  at most `PROTECTION_WAIT_S` once per request, and then ask again allowing an eviction. A cancelled request leaves
+  every slot as it was.
+- With `INFO slot_park=1` the server tracks what the main session holds; when a request is another conversation (the
+  first half differs) and the held one has at least `PARK_MIN_TOKENS`, it asks the policy for a slot and sends
+  `park=B`; `PARKED` updates that slot's state. A claim the engine did not use is released.
+
+The policy's interface is `place`, `park_destination`, `cache_state`, `superseded_slots`, `reliable_flags`,
+`configure` / `settings` and the constants `PROTECTION_WAIT_S`, `PARK_MIN_TOKENS` (their docstrings say what they
+answer). This part ships them as an interface without a policy: with `STRATA_SLOT_CACHE_AFFINITY=1` (or
+`STRATA_CACHE_TRACE=1`) and no policy they raise `NotImplementedError`; with both off nothing changes.
+
+`/metrics` shows what happened: `live.cache_events` (the last 96: allocation, admission with the tokens reused and
+read, resume and cache source, park claims and `parked`, protection waits, expiries), each request's key, client
+address, slot and cache source in `requests[]`, `live.peer_ip` and `live.solo_*` (the request on the solo path and
+where its cache came from), and for slots the client of the conversation each one holds; with
+`STRATA_SLOT_CACHE_AFFINITY=1` also each idle slot's protection and scores and `live.slot_policy`; with
+`STRATA_CACHE_TRACE=1` each request's snapshot of how long a start every slot shared with its prompt (lengths only,
+`serve/cache_trace.py`). The client address is the socket's (behind a reverse proxy, the proxy's); `X-Forwarded-For`
+and request fields are not used. No prompt text or token ids are recorded.
 
 ## The VRAM expert tier keeps adapting in batch windows
 
