@@ -30,7 +30,8 @@ REPO = "unsloth/Qwen3.6-35B-A3B-MTP-GGUF"
 def args(**kw):
     base = dict(family="qwen36", model=None, check=False, yes=True, vision=None, models_dir=None, gguf_dir=None,
                 context=None, rope_scaling=None, rope_scale=None, kv=None, resident_budget_gib=None, low_ram="auto",
-                vram_reserve_mib=None, host=None, api_key=None, browser=None, no_start=True, data_dir=None, gpu=None)
+                vram_reserve_mib=None, host=None, api_key=None, browser=None, no_start=True, data_dir=None, gpu=None,
+                engine_args=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -143,6 +144,20 @@ class InstallOwnPath(unittest.TestCase):
         self.assertEqual(Path(self.cfg["exe"]).parent, self.root / "engine")
         self.assertIn(("config", "strata-qwen36-ud-q4_k_xl.json"), self.calls)
 
+    def test_engine_args_override_setup_flags(self):
+        rc, out = self.install(model="UD-Q4_K_XL", engine_args="--prefill 1024 --mtp 3 --ple-io ram")
+        self.assertEqual(rc, 0, out)
+        a = self.cfg["args"]
+        # the user's values replace setup's --prefill/--mtp (one occurrence each); the new flag is appended
+        self.assertEqual(a.count("--prefill"), 1)
+        self.assertEqual(a[a.index("--prefill") + 1], "1024")
+        self.assertEqual(a.count("--mtp"), 1)
+        self.assertEqual(a[a.index("--mtp") + 1], "3")
+        self.assertEqual(a[a.index("--ple-io") + 1], "ram")
+        self.assertGreater(a.index("--ple-io"), a.index("--mtp"))
+        # the raw extras are saved in the config, so a later setup run re-applies them without the flag
+        self.assertEqual(self.cfg["engine_args_extra"], "--prefill 1024 --mtp 3 --ple-io ram")
+
     def test_default_size_follows_the_ram(self):
         rc, out = self.install(ram=64.0)
         self.assertEqual(rc, 0, out)
@@ -191,6 +206,48 @@ class InstallOwnPath(unittest.TestCase):
         self.assertEqual((ch["family"], ch["model"], ch["context"]), ("qwen36", "UD-Q6_K_XL", 65536))
         self.assertTrue(setup.own_path_config(self.cfg))
         self.assertEqual(setup.calibration_targets([p], None, None), [])   # the tuning is Flash-Next's
+
+
+class EngineArgsMerge(unittest.TestCase):
+    def test_merge_appends_new_flags(self):
+        self.assertEqual(setup.merge_engine_args(["--kv", "q4_0"], ["--spec", "5"]),
+                         ["--kv", "q4_0", "--spec", "5"])
+
+    def test_merge_replaces_same_flag(self):
+        self.assertEqual(setup.merge_engine_args(["--max-context", "4096", "--prefill", "auto", "--mtp", "2"],
+                                                 ["--prefill", "1024", "--ple-io", "ram"]),
+                         ["--max-context", "4096", "--mtp", "2", "--prefill", "1024", "--ple-io", "ram"])
+
+    def test_merge_replaces_two_value_flag(self):
+        self.assertEqual(setup.merge_engine_args(["--control-vector-layer-range", "4", "44", "--cvec-mode", "project"],
+                                                 ["--control-vector-layer-range", "5", "40"]),
+                         ["--cvec-mode", "project", "--control-vector-layer-range", "5", "40"])
+
+    def test_merge_no_stray_token(self):
+        self.assertEqual(setup.merge_engine_args(["--control-vector-layer-range", "4", "44"],
+                                                 ["--control-vector-layer-range", "5", "40"]),
+                         ["--control-vector-layer-range", "5", "40"])
+
+    def test_merge_keeps_both_when_arity_differs(self):
+        self.assertEqual(setup.merge_engine_args(["--x", "1"], ["--x", "2", "3"]),
+                         ["--x", "1", "--x", "2", "3"])
+
+    def test_merge_appends_boolean_flag(self):
+        self.assertEqual(setup.merge_engine_args(["--kv", "q4_0"], ["--no-pool"]),
+                         ["--kv", "q4_0", "--no-pool"])
+
+    def test_reapply_puts_user_values_last(self):
+        # what CAL.apply leaves behind: its --spec-min-p appended last, the user's --pool-workers dropped
+        # (calibration's default is None) - re-merge puts the user's values back on top
+        cfg = {"args": ["--spec-min-p", "0.7", "--spec-min-p", "0.5"],
+               "engine_args_extra": "--spec-min-p 0.7 --pool-workers 8"}
+        setup.reapply_engine_args(cfg)
+        self.assertEqual(cfg["args"], ["--spec-min-p", "0.7", "--pool-workers", "8"])
+
+    def test_reapply_no_extras(self):
+        cfg = {"args": ["--spec-min-p", "0.5"]}
+        setup.reapply_engine_args(cfg)
+        self.assertEqual(cfg["args"], ["--spec-min-p", "0.5"])
 
 
 if __name__ == "__main__":

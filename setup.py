@@ -4767,6 +4767,7 @@ def calibrate_config(cfg_path: Path) -> bool:
             say(f"       the engine said: {why}")
         return False
     cfg["args"] = CAL.apply(cfg["args"], res["settings"])
+    reapply_engine_args(cfg)                     # the user's --engine-args stay on top of the calibration
     write_config(cfg_path, cfg)
     st = load_settings()
     st.setdefault("calibration", {})[hardware_key(cfg)] = {"settings": res["settings"], "tok_s": res["report"].get("tok_s"),
@@ -5557,19 +5558,43 @@ def engine_extra_list(a, cfg_path: Path) -> tuple[list, str]:
              "quote it as one string, e.g. --engine-args '--prefill 1024 --ple-io ram'")
 
 
+def _flag_values_after(args: list, i: int) -> int:
+    """How many value tokens follow args[i] (a --flag): until the next --flag or the end."""
+    n = 0
+    while i + 1 + n < len(args) and not args[i + 1 + n].startswith("--"):
+        n += 1
+    return n
+
+
 def merge_engine_args(args: list, extra_args: list) -> list:
-    """The engine arguments with the extras merged in: a same-named flag setup already wrote as a
-    'flag value' pair is replaced (so --engine-args '--prefill 1024' overrides setup's --prefill
-    instead of duplicating it). Anything else is appended; the engine takes the last occurrence of
-    a flag either way."""
+    """The engine arguments with the extras merged in: every occurrence of a same-named flag with the
+    same number of values is dropped (so --engine-args '--prefill 1024' overrides setup's --prefill
+    instead of duplicating it, and a two-value flag like --control-vector-layer-range is matched by
+    arity, not half-deleted into a stray token). Anything else is appended; the engine takes the last
+    occurrence of a flag either way."""
     out = list(args)
     for i, f in enumerate(extra_args):
         if not f.startswith("--") or i + 1 >= len(extra_args) or extra_args[i + 1].startswith("--"):
             continue                          # a boolean flag (or a lone token): just append
-        j = out.index(f) if f in out else -1
-        if j >= 0 and j + 1 < len(out) and not out[j + 1].startswith("--"):
-            del out[j:j + 2]                  # drop setup's 'flag value' pair
+        added = _flag_values_after(extra_args, i)
+        while True:
+            j = out.index(f) if f in out else -1
+            if j < 0 or _flag_values_after(out, j) != added:
+                break
+            del out[j:j + 1 + added]
     return out + extra_args
+
+
+def reapply_engine_args(cfg: dict) -> None:
+    """The user's --engine-args win over what CAL.apply just wrote (calibration resets every flag in
+    tools/calibrate.py DEFAULTS, dropping or moving the user's): re-merge the saved extras so the
+    user's values are the last occurrence of each flag, which the engine takes."""
+    try:
+        extra = shlex.split(cfg.get("engine_args_extra") or "")
+    except ValueError:
+        return
+    if extra:
+        cfg["args"] = merge_engine_args(cfg["args"], extra)
 
 
 def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted):
@@ -6866,6 +6891,7 @@ def main() -> int:
         sys.path.insert(0, str(ROOT / "tools"))
         import calibrate as CAL
         cfg["args"] = CAL.apply(cfg["args"], cal.get("settings") or {})
+        reapply_engine_args(cfg)                     # the user's --engine-args stay on top of the calibration
         ok("the settings tuned for this PC earlier are used" + (f" ({cal['date']})" if cal.get("date") else ""))
     else:                                              # #642: measured counts (a calibration) win over the rule
         cfg["args"] = recommend_pool_workers(cfg["args"])
