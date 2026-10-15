@@ -3170,11 +3170,22 @@ bool Verifier::sample_rows(int S, std::string& err) {
     bool any = false;
     for (int t = 0; t < S; ++t) {
         strata::kernels::SamplerParams sp = slot_sp_[(size_t) last_rows_[t]];
-        if (sp.greedy || sp.temperature <= 0.0f) continue;
+        // the slot's penalties (set_slot_history): its row is drawn on the host side even when greedy, as a solo
+        // window with penalties is; without them a greedy row keeps the graph's argmax pick, as before
+        const bool penalties = slot_hist_d_ != nullptr && slot_hist_len_ > 0 && sp.penalty_last_n > 0;
+        if (!penalties && (sp.greedy || sp.temperature <= 0.0f)) continue;
         sp.counter = (uint64_t) last_pos_b_[t];   // Philox(seed, position): the solo window's draw for this position
-        sp.penalty_last_n = 0;
-        strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, 1, (int) n_vocab_, nullptr, 0, sp,
-                                       m_out_ + t, cs_);
+        const int32_t* hist = nullptr;
+        int hist_len = 0;
+        if (penalties) {
+            hist = slot_hist_d_ + (size_t) t * (size_t) slot_hist_len_;
+            hist_len = slot_hist_len_;
+            sp.penalty_last_n = std::min(sp.penalty_last_n, slot_hist_len_);
+        } else {
+            sp.penalty_last_n = 0;
+        }
+        strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, 1, (int) n_vocab_, hist, hist_len,
+                                       sp, m_out_ + t, cs_);
         any = true;
     }
     if (any && cudaStreamSynchronize(cs_) != cudaSuccess) { err = "verify batch: the row sampling failed"; return false; }
