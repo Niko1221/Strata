@@ -612,6 +612,37 @@ class HostCompilers(unittest.TestCase):
             self.assertIn("-DCMAKE_CUDA_HOST_COMPILER=g++-14", defs, target)
 
 
+class StaleCachePins(unittest.TestCase):
+    """#2515: CMake does not rewrite an option already in CMakeCache.txt when its default changes, so a build/
+    configured before 465cd61d keeps STRATA_Q6K_EXPERTS and STRATA_MMQ_KQUANTS at their old OFF forever - the
+    recompile after a git pull silently drops the Q6_K expert kernels and the strata_kq K-quant library.  The
+    engine configure pins both ON on the command line, which overrides the stale entry."""
+
+    def test_the_cuda_engine_pins_both(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            eng = root / "engine"
+            eng.mkdir()
+            (eng / "BUILD.json").write_text(json.dumps({"source": "local", "archs": [86], "src": "old"}))
+            built = []
+
+            def cmake_build(src_dir, bdir, target, defs, vcvars, bat):
+                built.append((target, defs))
+                bdir.mkdir(parents=True, exist_ok=True)
+                (bdir / setup.EXE).write_bytes(b"engine")
+
+            with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "cmake_build", cmake_build), \
+                    mock.patch.object(setup, "source_hash", lambda p: "new"), \
+                    mock.patch.object(setup, "stale_binary", lambda p: False), \
+                    mock.patch.object(setup, "install_build_tools", lambda gpu, yes: (str(root / "nvcc"), None)), \
+                    mock.patch.object(setup, "source_version", lambda: "test"):
+                quiet(setup.build_engine, {"arch": "86"}, "none", True, "llama")
+        engine = [defs for target, defs in built if target == "strata"]
+        self.assertEqual(len(engine), 1)
+        for flag in ("-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON"):
+            self.assertIn(flag, engine[0])
+
+
 if __name__ == "__main__":
     unittest.main()
 

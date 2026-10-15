@@ -176,6 +176,8 @@ class GpuLists(unittest.TestCase):
                 setup.build_engine_hip({"arch": "gfx1201", "archs": ["gfx1201", "gfx1100", "gfx1201"]}, root)
                 self.assertEqual(calls["archs"], ["gfx1100", "gfx1201"])
                 self.assertIn("-DCMAKE_HIP_ARCHITECTURES=gfx1100;gfx1201", calls["defs"])
+                for flag in ("-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON"):
+                    self.assertIn(flag, calls["defs"])   # #2515: a stale build-hip cache must not drop them
                 import json
                 self.assertEqual(json.loads((root / "engine" / "BUILD.json").read_text())["archs"],
                                  ["gfx1100", "gfx1201"])
