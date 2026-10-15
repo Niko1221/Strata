@@ -78,6 +78,45 @@ class OneGroup(unittest.TestCase):
         e.slot_used = [5.0, 3.0, 9.0, 1.0]
         self.assertEqual(e.pick_slot([1, 2, 3]), 3)        # else the least recently used
 
+    def test_a_rewritten_tail_still_finds_its_own_slot(self):
+        # two lanes of one client each hold a long conversation; round 2 changes the last question, so neither
+        # slot's held tokens are a PREFIX of the new prompt - but each prompt shares nearly everything with ITS slot.
+        # It must take that one (the engine gives the conversation back from it), never the other lane's.
+        e = engine(2, 1, pipelined=False)
+        e.slot_group = [0, 0]
+        a = list(range(10_000, 40_000))                  # lane A: 30,000 tokens
+        b = list(range(50_000, 80_000))                  # lane B
+        e.slot_held = [a + [1, 2, 3, 4], b + [5, 6, 7]]  # each slot: the prompt and the answer
+        e.slot_used = [1.0, 2.0]                         # slot 0 is the least recently used
+        self.assertEqual(e.pick_slot(b[:-12] + [9, 9, 9, 9, 9]), 1)   # lane B's changed question: slot 1, not the LRU
+        self.assertEqual(e.pick_slot(a[:-12] + [9, 9, 9, 9, 9]), 0)
+        e.slot_busy[1] = True
+        self.assertEqual(e.pick_slot(b[:-12] + [9, 9, 9, 9, 9]), 0)   # its own slot is busy: the one that is left
+
+    def test_a_shared_system_prompt_is_not_a_conversation(self):
+        # a new conversation that only shares a long system prompt with the held ones takes the empty slot,
+        # not a held one (fewer than three quarters of its tokens are shared)
+        e = engine(3, 1, pipelined=False)
+        e.slot_group = [0, 0, 0]
+        system = list(range(1, 4001))
+        e.slot_held = [system + list(range(10_000, 22_000)), system + list(range(30_000, 42_000)), []]
+        self.assertEqual(e.pick_slot(system + list(range(60_000, 66_000))), 2)
+        e.slot_busy[2] = True
+        e.slot_used = [4.0, 3.0, 0.0]
+        self.assertEqual(e.pick_slot(system + list(range(60_000, 66_000))), 1)   # else the least recently used
+
+    def test_common_prefix_len(self):
+        from serve.server import common_prefix_len
+        self.assertEqual(common_prefix_len([], [1]), 0)
+        self.assertEqual(common_prefix_len([1, 2, 3], [1, 2, 3]), 3)
+        self.assertEqual(common_prefix_len([1, 2, 3], [1, 2, 3, 4]), 3)
+        self.assertEqual(common_prefix_len([1, 2, 9], [1, 2, 3, 4]), 2)
+        self.assertEqual(common_prefix_len([9], [1, 2]), 0)
+        long = list(range(100_000))
+        for cut in (1, 2, 4095, 50_000, 99_999):
+            other = long[:cut] + [-1] + long[cut + 1:]
+            self.assertEqual(common_prefix_len(long, other), cut)
+
 
 if __name__ == "__main__":
     unittest.main()
