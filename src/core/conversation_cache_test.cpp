@@ -329,6 +329,38 @@ int main() {
         check(conversation_checkpoints_merge(std::move(none), back) && back.empty(), "no checkpoints: nothing to do");
     }
     {
+        // --kv-pool-tokens: the chain moves with the K/V - every checkpoint that is a prefix of the conversation
+        // goes, in order; one of another conversation (or one past it) stays behind for the caller to drop
+        auto ck = [](std::vector<int32_t> ids, uint64_t used) {
+            ConversationCheckpoint c;
+            c.ids = std::move(ids);
+            c.used = used;
+            c.gdn.assign(8, 7);
+            return c;
+        };
+        std::vector<ConversationCheckpoint> from;
+        from.push_back(ck({1, 2}, 1));
+        from.push_back(ck({1, 2, 3, 4}, 2));
+        from.push_back(ck({1, 2, 9, 9}, 3));         // another branch
+        from.push_back(ck({1, 2, 3, 4, 5, 6, 7}, 4));  // past the conversation
+        from.push_back(ck({1, 2, 3, 4, 5}, 5));        // the whole conversation: a prefix
+        std::vector<ConversationCheckpoint> to;
+        to.push_back(ck({1}, 0));                      // what the receiver already holds stays first
+        check(conversation_checkpoints_carry(from, {1, 2, 3, 4, 5}, to) == 3, "carry: three checkpoints are prefixes");
+        check(to.size() == 4 && to[0].used == 0 && to[1].used == 1 && to[2].used == 2 && to[3].used == 5,
+              "carry: they arrive in order after what was there");
+        check(from.size() == 2 && from[0].used == 3 && from[1].used == 4, "carry: the others stay");
+        check(to[3].gdn.size() == 8 && to[3].gdn[0] == 7, "carry: the running state moved with it");
+        ConversationCheckpoint pic = ck({1, 2}, 6);
+        pic.imgs.push_back({1, 77});
+        std::vector<ConversationCheckpoint> with_picture, out;
+        with_picture.push_back(std::move(pic));
+        check(conversation_checkpoints_carry(with_picture, {1, 2, 3}, out) == 0 && out.empty(),
+              "carry: a checkpoint with a picture is not carried");
+        std::vector<ConversationCheckpoint> none, sink;
+        check(conversation_checkpoints_carry(none, {1, 2}, sink) == 0 && sink.empty(), "carry: nothing to move");
+    }
+    {
         // the later stages' retained K/V, kept with the first stage's and limited together
         auto kv = [](size_t n) {
             std::vector<ConversationKv> v(2);

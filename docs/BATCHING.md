@@ -130,6 +130,10 @@ chunks its conversation has reached.
   conversation back to the solo path) by **exchanging chunks**, not copying them: 52-79 ms for 140-151K tokens
   against ~1.0-1.1 s copied (PR #1011, single RTX 4090); the pool never holds a conversation twice. A prompt read that
   gives way to a short request (`BYIELD`) still copies.
+  The conversation's **checkpoint chain** (root, periodic and last-turn checkpoints) moves with its chunks, since a
+  checkpoint is only usable beside the K/V below it: a slot that takes a conversation keeps all of them, and a
+  conversation handed back to the solo path brings them along. Without that, a client that changes its last
+  question (or re-renders its history) in a later turn finds no checkpoint below the change and reads everything again.
 - **When the pool is full**, in this order: an idle slot's cached conversation gives its K/V back (a slot holding
   nothing worth keeping first, then the one used longest ago, a prompt read that gave way last - and nobody at all when
   every idle slot together would not cover what is needed); then a **new request is refused** (`ERR KV pool full`:
