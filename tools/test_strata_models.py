@@ -13,7 +13,6 @@ from http.client import HTTPConnection
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
-from http.server import ThreadingHTTPServer
 
 from tools import strata_models as W
 from tools import strata_mcp as M
@@ -40,7 +39,7 @@ if __name__ == "__main__":
     (root / ("strata-" + model + ".json")).write_text(json.dumps(cfg))
 '''
 FAKE_SERVER = r'''
-import argparse, json
+import argparse, json, os, subprocess, sys
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 ap = argparse.ArgumentParser()
@@ -49,6 +48,9 @@ a = ap.parse_args(); root = Path(__file__).resolve().parent.parent
 cfg = json.loads(Path(a.config).read_text())
 if cfg.get("fail_start"):
     raise SystemExit(2)
+if cfg.get("spawn_child"):
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    (root / "server-child.json").write_text(json.dumps({"pid":child.pid}))
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self):
@@ -61,7 +63,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(409); self.end_headers(); return
         b = b'{"status":"unloaded"}'; self.send_response(200); self.send_header("Content-Length",str(len(b)))
         self.end_headers(); self.wfile.write(b)
-HTTPServer(("127.0.0.1", a.port), Handler).serve_forever()
+class Server(HTTPServer):
+    allow_reuse_address = os.name != "nt"
+    allow_reuse_port = False
+Server(("127.0.0.1", a.port), Handler).serve_forever()
 '''
 HW = {"ram_gb":64, "cpu":{"avx2":True}, "gpus":[{"index":0, "name":"Fake GPU", "vram_gb":16,
                                                      "vendor":"nvidia", "usable":True}]}
@@ -93,7 +98,7 @@ class LauncherTests(unittest.TestCase):
         self.w = W.ModelManager(self.s, self.port)
         self.w.load_timeout = 8
         self.w.live = self.live
-        self.http = ThreadingHTTPServer(("127.0.0.1", 0), W.make_handler(self.w))
+        self.http = W.ModelsHTTPServer(("127.0.0.1", 0), W.make_handler(self.w))
         self.thread = threading.Thread(target=self.http.serve_forever, daemon=True)
         self.thread.start()
 
@@ -171,6 +176,10 @@ class LauncherTests(unittest.TestCase):
         with W.launcher_lock(self.root):
             pass
 
+    def test_second_launcher_cannot_share_http_port(self):
+        with self.assertRaises(OSError):
+            W.ModelsHTTPServer(self.http.server_address, W.make_handler(self.w))
+
     def test_cancel_can_resume(self):
         (self.root / "slow").touch()
         self.w.install(self.w.plan("iq3_xxs")["plan_id"])
@@ -184,6 +193,60 @@ class LauncherTests(unittest.TestCase):
         (self.root / "slow").unlink()
         self.w.install(self.w.plan("iq3_xxs")["plan_id"])
         self.assertEqual(self.finish()["state"], "done")
+
+    def test_cancel_before_installer_starts(self):
+        preparing, proceed = threading.Event(), threading.Event()
+        def preparing_model():
+            preparing.set()
+            if not proceed.wait(5):
+                raise RuntimeError("test did not release startup")
+        with mock.patch.object(self.w, "stop_owned", side_effect=preparing_model):
+            try:
+                self.w.install(self.w.plan("iq3_xxs")["plan_id"])
+                self.assertTrue(preparing.wait(5))
+                result = self.w.cancel()
+                self.assertIn("Cancellation requested", result["summary"])
+            finally:
+                proceed.set()
+            op = self.finish()
+        self.assertEqual(op["state"], "done", op)
+        self.assertIn("resume", op["message"])
+        self.assertFalse((self.root / "setup-args.json").exists())
+        self.assertFalse(self.s.state("install"))
+
+    def test_cancel_waits_for_job_and_recovery_record_publication(self):
+        (self.root / "slow").touch()
+        publishing, proceed, requested = (threading.Event() for _ in range(3))
+        original = self.w.tools.launch_install
+        errors = []
+        def launch(plan, args):
+            result = original(plan, args)
+            publishing.set()
+            if not proceed.wait(5):
+                raise RuntimeError("test did not release publication")
+            return result
+        def cancel():
+            requested.set()
+            try:
+                self.w.cancel()
+            except Exception as exc:
+                errors.append(exc)
+        with mock.patch.object(self.w.tools, "launch_install", side_effect=launch):
+            self.w.install(self.w.plan("iq3_xxs")["plan_id"])
+            try:
+                self.assertTrue(publishing.wait(5))
+                canceller = threading.Thread(target=cancel)
+                canceller.start()
+                self.assertTrue(requested.wait(5))
+            finally:
+                proceed.set()
+            canceller.join(10)
+            self.assertFalse(canceller.is_alive())
+            self.assertEqual(errors, [])
+            op = self.finish()
+        self.assertEqual(op["state"], "done", op)
+        self.assertIn("resume", op["message"])
+        self.assertFalse(self.s.state("web-install"))
 
     def test_catalog_uses_official_regular_models(self):
         rows, _ = self.w.catalog()
@@ -251,6 +314,34 @@ class LauncherTests(unittest.TestCase):
         self.w.stop()
         self.assertEqual(self.finish()["state"], "done")
         self.assertFalse(self.s.tracked_server())
+
+    def test_repeated_switches_reuse_the_same_port(self):
+        self.cfg(); self.cfg("iq3_xxs")
+        previous = None
+        for model in ("iq2_xs", "iq3_xxs") * 3:
+            self.w.start(model)
+            op = self.finish()
+            self.assertEqual(op["state"], "done", op)
+            if previous:
+                self.assertFalse(M.proc_alive(previous["pid"], previous["ident"]))
+            previous = self.s.state("server")
+            self.assertEqual(previous["port"], self.port)
+            self.assertEqual(previous["model"], model)
+
+    @unittest.skipUnless(M.WIN, "Windows launcher/descendant shutdown")
+    def test_windows_stop_ends_owned_descendants(self):
+        self.cfg(spawn_child=True)
+        self.w.start("iq2_xs")
+        self.assertEqual(self.finish()["state"], "done")
+        pid = json.loads((self.root / "server-child.json").read_text())["pid"]
+        ident = M.proc_identity(pid)
+        self.assertIsNotNone(ident)
+        self.addCleanup(M.proc_kill_tree, pid, ident)
+        self.w.stop()
+        op = self.finish()
+        self.assertEqual(op["state"], "done", op)
+        self.assertFalse(M.proc_alive(pid, ident))
+        self.assertIsNone(self.s.probe(self.port))
 
     def test_busy_model_is_preserved(self):
         self.cfg(); self.cfg("iq3_xxs")

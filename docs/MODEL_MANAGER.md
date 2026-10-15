@@ -105,3 +105,11 @@ The launcher tests use fake setup and server processes, without model downloads
 or GPU inference. They cover official catalog/default delegation, download plans,
 installation failures, disk rechecks, switching, busy requests, recovery of the
 previous model, lookup-path preservation and local browser access checks.
+
+The model-manager CI workflow runs these suites in virtual environments on
+Windows and Ubuntu with Python 3.10, 3.12 and 3.14. Regression cases exercise a
+server that closes first (leaving TIME_WAIT on Linux), repeated switches on one
+port, cancellation before setup starts and during job publication, and Windows
+shutdown of owned child processes. The POSIX port probe follows the server's
+SO_REUSEADDR policy; Windows keeps reuse disabled. Cancellation and setup's
+recovery record are synchronized so a fast child cannot lose the cancellation.

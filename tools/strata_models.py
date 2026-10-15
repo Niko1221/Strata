@@ -52,6 +52,7 @@ class ModelManager:
         self.token = secrets.token_urlsafe(32)
         self.lock = threading.RLock()
         self.operation = None
+        self.install_cancelled = threading.Event()
         self.plans = {}
         self.load_timeout = 600
         # Import before concurrent HTTP requests. Never authorize browser installs
@@ -195,6 +196,8 @@ class ModelManager:
         return tracked
 
     def begin(self, kind, model_id, task):
+        if kind == "install":
+            self.install_cancelled.clear()
         self.operation = {"kind": kind, "model": model_id, "state": "running", "message": "Starting..."}
         def work():
             try:
@@ -221,12 +224,21 @@ class ModelManager:
                 raise M.ToolError("Free disk space changed. Review the download again.")
             self.require_owned()
             def run():
+                if self.install_cancelled.is_set():
+                    return "Download stopped. Review the download again to resume it."
                 self.stop_owned()
-                with self.s.lock:
-                    self.tools.launch_install(plan, args)
-                pending = {"job": self.s.state("install")["job"], "model": plan["id"],
-                           "lookup": str(lookup) if lookup else None}
-                self.s.save_state("web-install", pending)
+                # Publish the job and its recovery/cancellation record together.
+                # A fast child can start before launch_install records its PID;
+                # cancel() must not observe that half-published state or have its
+                # cancellation marker overwritten by this worker.
+                with self.lock:
+                    if self.install_cancelled.is_set():
+                        return "Download stopped. Review the download again to resume it."
+                    with self.s.lock:
+                        self.tools.launch_install(plan, args)
+                    pending = {"job": self.s.state("install")["job"], "model": plan["id"],
+                               "lookup": str(lookup) if lookup else None}
+                    self.s.save_state("web-install", pending)
                 return self.finish_install(pending)
             return self.begin("install", plan["id"], run)
 
@@ -236,16 +248,17 @@ class ModelManager:
                 raise M.ToolError("The installer job changed. Refresh and review its output.")
             job = self.s.install_job()
             if job and not job["running"]:
-                try:
-                    if self.s.state("web-install").get("cancelled"):
-                        return "Download stopped. Review the download again to resume it."
-                    if job.get("exit_code") != 0:
-                        raise M.ToolError(job.get("error") or "Setup failed. Retry resumes downloads; see the output below.")
-                    if pending.get("lookup"):
-                        self.reuse_lookup(pending["model"], Path(pending["lookup"]))
-                    return "Installed. Select Start to load this model."
-                finally:
-                    self.s.save_state("web-install", None)
+                with self.lock:
+                    try:
+                        if self.install_cancelled.is_set() or self.s.state("web-install").get("cancelled"):
+                            return "Download stopped. Review the download again to resume it."
+                        if job.get("exit_code") != 0:
+                            raise M.ToolError(job.get("error") or "Setup failed. Retry resumes downloads; see the output below.")
+                        if pending.get("lookup"):
+                            self.reuse_lookup(pending["model"], Path(pending["lookup"]))
+                        return "Installed. Select Start to load this model."
+                    finally:
+                        self.s.save_state("web-install", None)
             time.sleep(1)
 
     def reuse_lookup(self, model_id, lookup):
@@ -346,12 +359,20 @@ class ModelManager:
         with self.lock:
             if not self.operation or self.operation["state"] != "running" or self.operation["kind"] != "install":
                 raise M.ToolError("There is no active download to stop.")
+            self.install_cancelled.set()
             job = self.s.install_job()
             if not job or not job["running"]:
-                raise M.ToolError("Setup is still starting. Wait a moment, then stop the download.")
+                return {"summary": "Cancellation requested; setup will not start if it is still preparing."}
             pending = self.s.state("web-install")
             self.s.save_state("web-install", {**pending, "cancelled": True})
             return self.tools.strata_install(cancel=True)
+
+
+class ModelsHTTPServer(ThreadingHTTPServer):
+    # Do not let another checkout silently share this launcher's port, including
+    # with HTTPServer defaults that enable address/port reuse in newer Python.
+    allow_reuse_address = os.name != "nt"
+    allow_reuse_port = False
 
 
 def make_handler(manager):
@@ -481,7 +502,7 @@ def main(argv=None):
     try:
         with launcher_lock(a.root):
             manager = ModelManager(M.Strata(a.root), a.model_port)
-            with ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(manager)) as server:
+            with ModelsHTTPServer(("127.0.0.1", a.port), make_handler(manager)) as server:
                 url = f"http://127.0.0.1:{a.port}/"
                 print(f"Strata Models: {url}", flush=True)
                 if a.open:
