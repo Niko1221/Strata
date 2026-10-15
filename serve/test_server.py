@@ -2367,6 +2367,92 @@ class StartFailureLog(unittest.TestCase):
             self.assertNotIn("an earlier start", text)
 
 
+class StartCrashReported(unittest.TestCase):
+    """#2324: an engine the system ends at the start (SIGILL on a CPU without AVX, a bad memory access, the OOM killer)
+    writes nothing to its log.  It used to be retried 3 times as "stopped while the GPU runtime was starting" and the
+    error showed only the launcher's own line.  Now a crash is not retried, and the error names how the process ended."""
+
+    def run_fake(self, code, retries=3):
+        import contextlib
+        import io
+        import serve.server as server
+        with tempfile.TemporaryDirectory() as d:
+            script, log = Path(d) / "fake_strata.py", Path(d) / "strata.log"
+            script.write_text(code, encoding="utf-8")
+            real = server.subprocess.Popen
+            out = io.StringIO()
+            with mock.patch.object(server.subprocess, "Popen",
+                                   lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)), \
+                    mock.patch.object(server, "narrate_start", lambda *a, **k: None), \
+                    mock.patch.object(server, "START_RETRIES", retries), \
+                    mock.patch.object(server.time, "sleep", lambda s: None), \
+                    contextlib.redirect_stdout(out):
+                with self.assertRaises(RuntimeError) as cm:
+                    StrataEngine("strata", [], log=str(log))
+            return str(cm.exception), out.getvalue()
+
+    def test_status_words(self):
+        from serve.server import engine_crashed, engine_exit_words
+        self.assertEqual(engine_exit_words(None), "")
+        self.assertEqual(engine_exit_words(2), "exit code 2")
+        self.assertIn("illegal instruction", engine_exit_words(0xC000001D).lower())
+        self.assertIn("DLL", engine_exit_words(0xC0000135))
+        self.assertTrue(engine_crashed(0xC000001D) and engine_crashed(0xC0000005))
+        self.assertFalse(engine_crashed(0) or engine_crashed(1) or engine_crashed(2) or engine_crashed(None))
+        if os.name != "nt":
+            import signal
+            self.assertIn("signal 4 (SIGILL", engine_exit_words(-int(signal.SIGILL)))
+            for sig in (signal.SIGILL, signal.SIGSEGV, signal.SIGBUS, signal.SIGFPE, signal.SIGKILL):
+                self.assertTrue(engine_crashed(-int(sig)), sig)
+            self.assertFalse(engine_crashed(-int(signal.SIGABRT)))     # the ROCm teardown abort stays a retry
+            self.assertFalse(engine_crashed(-int(signal.SIGTERM)))
+
+    def test_a_crash_is_not_a_transient_start(self):
+        from serve.server import transient_start_failure
+        d = tempfile.mkdtemp()
+        p = Path(d) / "engine.log"
+        p.write_text("[strata] 2026-10-13 17:49:15 engine started: /x/strata --serve\n", encoding="utf-8")
+        self.assertTrue(transient_start_failure(str(p), 0, 3.0, 0))         # a silent plain exit: the old retry
+        self.assertTrue(transient_start_failure(str(p), 0, 3.0, -6))        # SIGABRT (ROCm teardown)
+        self.assertFalse(transient_start_failure(str(p), 0, 3.0, 1))        # the engine's own error exit
+        self.assertFalse(transient_start_failure(str(p), 0, 3.0, 0xC000001D))
+        if os.name != "nt":
+            import signal
+            for sig in (signal.SIGILL, signal.SIGSEGV, signal.SIGBUS, signal.SIGKILL):
+                self.assertFalse(transient_start_failure(str(p), 0, 3.0, -int(sig)), sig)
+        # the runtime's own words keep it a retry whatever the status
+        p.write_text("[strata] x engine started\nterminate called after throwing an instance of "
+                     "'rocr::AMD::hsa_exception'\n", encoding="utf-8")
+        self.assertTrue(transient_start_failure(str(p), 0, 3.0, -6))
+
+    @unittest.skipIf(os.name == "nt", "signals")
+    def test_sigill_is_reported_not_retried(self):
+        text, said = self.run_fake("import os, signal\nos.kill(os.getpid(), signal.SIGILL)\n")
+        self.assertIn("exited before it was ready", text)
+        self.assertIn("the engine process ended: killed by signal 4 (SIGILL", text)
+        self.assertIn("An illegal instruction: the engine ran an instruction this CPU cannot execute", text)
+        self.assertIn("the engine itself wrote nothing", text)
+        self.assertNotIn("starting it again", said)                        # not retried
+        self.assertNotIn("GPU runtime", text + said)                       # and never called a GPU runtime start
+
+    @unittest.skipIf(os.name == "nt", "signals")
+    def test_a_silent_exit_is_retried_without_claiming_the_gpu_runtime(self):
+        text, said = self.run_fake("import sys\nsys.exit(0)\n", retries=2)
+        self.assertEqual(said.count("starting it again"), 2)
+        self.assertIn("the engine exited before it wrote anything to its log (exit code 0)", said)
+        self.assertNotIn("stopped while the GPU runtime was starting", said)
+        self.assertIn("the engine process ended: exit code 0", text)
+
+    @unittest.skipIf(os.name == "nt", "signals")
+    def test_the_runtimes_own_failure_is_named(self):
+        code = ("import os, sys\nsys.stderr.write(\"terminate called after throwing an instance of 'rocr::AMD::hsa_exception'"
+                "\\n\")\nsys.stderr.flush()\nos._exit(134)\n")
+        text, said = self.run_fake(code, retries=1)
+        self.assertEqual(said.count("starting it again"), 1)
+        self.assertIn("stopped while the GPU runtime was starting", said)
+        self.assertIn("hsa_exception", text)                               # the engine's own last line is in the error
+
+
 class StartNarrator(unittest.TestCase):
     """#505: the start's words say what happens to the experts - --mmap-experts loads nothing into RAM up front."""
 

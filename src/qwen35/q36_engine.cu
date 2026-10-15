@@ -798,6 +798,35 @@ float bf16_to_f32(uint16_t b) {
     return f;
 }
 
+// IEEE binary16 -> f32 by hand. __ushort_as_half is a __device__ intrinsic and
+// upload_f32 runs on the host, so a CUDA toolkit older than 12.5 refuses the
+// call; widen the bits here instead, the way bf16_to_f32 does.
+float f16_to_f32(uint16_t h) {
+    const uint32_t sign = (uint32_t) (h & 0x8000) << 16;
+    const uint32_t exponent = (h >> 10) & 0x1f;
+    const uint32_t mantissa = h & 0x3ff;
+    uint32_t u;
+    if (exponent == 0) {
+        if (mantissa == 0) {
+            u = sign;                                               // +-0
+        } else {
+            uint32_t m = mantissa, shift = 0;                        // subnormal: normalize it
+            while ((m & 0x400) == 0) {
+                m <<= 1;
+                ++shift;
+            }
+            u = sign | ((uint32_t) (127 - 14 - shift) << 23) | ((m & 0x3ff) << 13);
+        }
+    } else if (exponent == 0x1f) {
+        u = sign | 0x7f800000u | (mantissa << 13);                   // inf / nan
+    } else {
+        u = sign | ((exponent + (127 - 15)) << 23) | (mantissa << 13);
+    }
+    float f;
+    std::memcpy(&f, &u, 4);
+    return f;
+}
+
 /// A tensor as f32 on the device (F32 as it is, BF16 / F16 widened).
 float* upload_f32(const strata::TensorInfo& t, const uint8_t* src) {
     std::vector<float> h((size_t) t.elements());
@@ -806,12 +835,12 @@ float* upload_f32(const strata::TensorInfo& t, const uint8_t* src) {
         for (size_t i = 0; i < h.size(); ++i) h[i] = bf16_to_f32((uint16_t) (src[2 * i] | (src[2 * i + 1] << 8)));
     else if (t.type == 1)   // F16
         for (size_t i = 0; i < h.size(); ++i)
-            h[i] = __half2float(__ushort_as_half((unsigned short) (src[2 * i] | (src[2 * i + 1] << 8))));
+            h[i] = f16_to_f32((uint16_t) (src[2 * i] | (src[2 * i + 1] << 8)));
     else if (t.type == 8 && h.size() % 32 == 0) {
         // Q8_0 (the Q8_0 file stores ssm_alpha / ssm_beta so): blocks of an fp16 scale and 32 int8, widened here
         for (size_t b = 0; b < h.size() / 32; ++b) {
             const uint8_t* q = src + b * 34;
-            const float d = __half2float(__ushort_as_half((unsigned short) (q[0] | (q[1] << 8))));
+            const float d = f16_to_f32((uint16_t) (q[0] | (q[1] << 8)));
             for (int j = 0; j < 32; ++j) h[b * 32 + j] = d * (float) (int8_t) q[2 + j];
         }
     } else {
