@@ -114,14 +114,30 @@ public:
     // DELETES: a file of another model/config identity, an unreadable sidecar, a session file whose sidecar is gone,
     // an orphan session file and a leftover temporary are all ignored and counted, never removed - so a variant or a
     // newer format beside this one is left alone. Removal happens only in the GC (enforce_budget and enforce_age):
-    // budget plus age, oldest first, with counters. The GC also leaves a single conversation larger than the whole
-    // budget alone (removing it could not bring the directory under the budget), and reports it.
+    // budget plus age, oldest first, with counters - UNLESS a next level is wired (set_next), in which case both
+    // GC levers MOVE the entry down instead of removing it (delta 6, the cascade). The GC also leaves a single
+    // conversation larger than the whole budget alone (removing it could not bring the directory under the
+    // budget), and reports it.
     //   `when_full`  evict_oldest (default) = the GC drops the oldest to make room; reject = the GC removes nothing
     //                and a spill that would not fit is refused (nothing is ever removed for a full directory).
     //   `max_age_days`  0 = off: no deletion by time at all. A positive value prunes conversations older than that,
     //                oldest first, counted in age_evictions(). This age lever is independent of `when_full`.
     bool open(const std::filesystem::path& directory, SessionFileIdentity identity, uint64_t budget_bytes,
               std::string& error, SpillWhenFull when_full = SpillWhenFull::evict_oldest, int64_t max_age_days = 0);
+    // ---- Delta 6: the cascade (RAM -> warm -> cold).  A level's CAPACITY eviction degrades instead of removing. ----
+    // `set_next` wires the level this one's GC hands an over-budget (or over-age) conversation DOWN to.  With no
+    // next level - the default - every removal is a removal, byte for byte what the tier always did.  Only the two
+    // capacity levers (enforce_budget and enforce_age) travel down this wire; the correction paths (a compaction, a
+    // supersede pass, a cancelled request, an unreadable image) still DISCARD wherever they are: a copy that can
+    // never be a hit must not be pushed into a level that is a reuse candidate.  The next level must outlive this
+    // one and must already be open; it must not point back either (the lock order is this level's mutex, then the
+    // next one's), and a degradation that the next level refuses leaves the entry HERE, intact.
+    void set_next(ConversationSpillCache* next);
+    bool has_next() const;
+    // Conversations this level's GC handed to the next level (a degradation is NOT an eviction: disk_evictions()
+    // and age_evictions() count only what this level really removed).
+    size_t degraded() const;
+
     // Locked: the park writer drains the same directory from its own thread.
     bool enabled() const { std::lock_guard<std::mutex> lk(mu_); return enabled_; }
     SpillWhenFull when_full() const { std::lock_guard<std::mutex> lk(mu_); return when_full_; }
@@ -229,6 +245,17 @@ private:
     void enforce_budget();
     void enforce_age();
     bool remove_entry(size_t index);
+    // Drops the entry at `index` from the index and the byte count WITHOUT touching the disk: the caller has
+    // already dealt with the files (removed them, or moved them to the next level of the cascade).
+    void unindex(size_t index);
+    // The capacity GC's degrade: hand the entry at `index` to the next level and drop it here only once that level
+    // has taken it.  False (the entry STAYS here) when there is no next level or it would not take the copy - the
+    // degradation must never leave this level worse than a removal would have.
+    bool degrade_to_next(size_t index);
+    // The next level's side of a degradation: index a copy whose files the caller is about to MOVE in, and take
+    // them over.  All-or-nothing, exactly as archive_entry: the sidecar is written first, the session files move
+    // next, and any failure puts back what moved and drops the sidecar, so this level never keeps a half copy.
+    bool adopt(const Entry& source, std::string& error);
     // Delta 5a: the discard point shared by the compaction and the supersede pass. It MOVES the entry into the
     // archive when the archive is on, and removes it otherwise; false only when nothing left the index (a failed
     // move/removal, exactly as a failed removal left the entry before).
@@ -253,6 +280,11 @@ private:
     std::filesystem::path directory_;
     std::vector<Entry> entries_;   // oldest spill first
     std::string pinned_path_;
+    // Delta 6: the next level of the cascade.  Wiring, not state: open() does NOT clear it (the level is
+    // configured once, and an open() that ran the GC with no next level wired would delete what it should have
+    // degraded). `degraded_` counts what this level handed down instead of removing.
+    ConversationSpillCache* next_ = nullptr;
+    size_t degraded_ = 0;
     // Delta 5a: the archive (its own index, bytes and serial, none shared with the tier). The archive entries are
     // NOT in entries_, so best() can never return one - the archive is evidence, never a reuse candidate.
     bool archive_enabled_ = false;

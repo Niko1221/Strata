@@ -895,6 +895,302 @@ int main() {
 #endif
     }
 
+    // ============================ Delta 6: the cascade (RAM -> warm -> cold) ============================
+    // A level wired to a next one (set_next) does not remove what its two CAPACITY levers take: it MOVES the copy
+    // down.  One test per frontier.  T11 (a real cross-volume move) is NOT covered here: the harness has no second
+    // volume to mount, so the copy-then-remove half of relocate_file is left to the report's non-claims.  What IS
+    // covered is its consequence: a move that fails leaves nothing half-done on either side.
+
+    // The bytes of one conversation as it lands on disk: the budgets below are built from this, so "room for two"
+    // and "room for one" are exact rather than guessed.
+    auto measure_bytes = [&](const SavedConversation& c) -> uint64_t {
+        ConversationSpillCache p;
+        std::string e;
+        const fs::path pd = dir / ("probe-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+        if (!p.open(pd, id, 1ull << 30, e) || !p.spill(c, e)) return 0;
+        const uint64_t b = p.bytes();
+        fs::remove_all(pd);
+        return b;
+    };
+
+    // T1 + T4: the warm level degrades its OLDEST to the cold by BUDGET, in write order, and a read does not
+    // reorder that order.  `warm.disk_evictions()` stays 0: a degradation is not an eviction.
+    fs::remove_all(dir);
+    {
+        const fs::path warm_dir = dir / "warm", cold_dir = dir / "cold";
+        ConversationSpillCache cold, warm;
+        check(cold.open(cold_dir, id, 1ull << 30, error), "T1: open the cold level");
+        warm.set_next(&cold);
+        check(warm.has_next(), "T1: the warm level is wired to the cold one");
+        const uint64_t one = measure_bytes(conversation_with_ids(conv_ids(91000, 400)));
+        check(one > 0, "T1: one conversation has bytes");
+        check(warm.open(warm_dir, id, 2 * one, error), "T1: open the warm level with room for two");
+
+        const std::vector<int32_t> idsA = conv_ids(91000, 400), idsB = conv_ids(92000, 400), idsC = conv_ids(93000, 400);
+        check(warm.spill(conversation_with_ids(idsA), error), "T1: spill A");
+        check(warm.spill(conversation_with_ids(idsB), error), "T1: spill B");
+        check(warm.size() == 2 && cold.size() == 0, "T1: two in the warm, none in the cold");
+        check(warm.spill(conversation_with_ids(idsC), error), "T1: spill C (the warm overflows)");
+        check(warm.size() == 2 && warm.degraded() == 1, "T1: the oldest left the warm, degraded=1");
+        check(cold.size() == 1, "T1: it arrived in the cold level");
+        check(warm.disk_evictions() == 0 && warm.age_evictions() == 0, "T1: the warm level evicted nothing");
+
+        // the oldest is the one that went, and it is found in the cold by the same match rule
+        std::vector<int32_t> contA = idsA; contA.push_back(7777);
+        std::vector<int32_t> contB = idsB; contB.push_back(7777);
+        const auto coldA = cold.best(contA, {}, false, 0.0, 0);
+        check(bool(coldA) && coldA.tokens == (int64_t) idsA.size(), "T1: A resumes from the cold level");
+        check(!bool(warm.best(contA, {}, false, 0.0, 0)), "T1: A is no longer in the warm level");
+        const auto warmB = warm.best(contB, {}, false, 0.0, 0);
+        check(bool(warmB), "T1: B is still in the warm level");
+
+        // T4: a READ does not reorder the FIFO (no MRU anywhere).  best() and load() on B, then the next overflow
+        // must take B - the next one by INSERTION order, not the one that was just read (and not C, the newest).
+        SavedConversation read_back;
+        check(warm.load(warmB.path, read_back, {}, error), "T4: load B back");
+        check(read_back.live.ids == idsB, "T4: the loaded copy is B");
+        const std::vector<int32_t> idsD = conv_ids(94000, 400);
+        check(warm.spill(conversation_with_ids(idsD), error), "T4: spill D (a second overflow)");
+        std::vector<int32_t> contC = idsC; contC.push_back(7777);
+        std::vector<int32_t> contD = idsD; contD.push_back(7777);
+        check(bool(cold.best(contB, {}, false, 0.0, 0)), "T4: B went next: FIFO is write order, not last read");
+        check(bool(warm.best(contC, {}, false, 0.0, 0)), "T4: C is still in the warm level");
+        check(bool(warm.best(contD, {}, false, 0.0, 0)), "T4: D is in the warm level");
+        check(cold.size() == 2 && cold.degraded() == 0, "T4: the cold level received two and degraded nothing");
+    }
+
+    // T3: the COLD level is the last one: its GC REMOVES, oldest first, and counts it as a disk eviction.
+    fs::remove_all(dir);
+    {
+        const fs::path warm_dir = dir / "warm", cold_dir = dir / "cold";
+        ConversationSpillCache cold, warm;
+        const uint64_t one = measure_bytes(conversation_with_ids(conv_ids(95000, 400)));
+        check(cold.open(cold_dir, id, 2 * one, error), "T3: open the cold level with room for two");
+        warm.set_next(&cold);
+        check(warm.open(warm_dir, id, 2 * one, error), "T3: open the warm level with room for two");
+        const std::vector<int32_t> ids[5] = {conv_ids(95000, 400), conv_ids(96000, 400), conv_ids(97000, 400),
+                                             conv_ids(98000, 400), conv_ids(99000, 400)};
+        for (int k = 0; k < 5; ++k)
+            check(warm.spill(conversation_with_ids(ids[k]), error), "T3: spill through the cascade");
+        check(cold.size() == 2, "T3: the cold level holds its budget's worth");
+        check(cold.disk_evictions() >= 1, "T3: the cold level REMOVED the overflow (it is the last level)");
+        check(cold.degraded() == 0, "T3: the cold level has nothing below, so it degrades nothing");
+        std::vector<int32_t> cont0 = ids[0]; cont0.push_back(1);
+        check(!bool(cold.best(cont0, {}, false, 0.0, 0)), "T3: the OLDEST of the cold level is the one removed");
+        std::vector<int32_t> cont4 = ids[4]; cont4.push_back(1);
+        check(bool(cold.best(cont4, {}, false, 0.0, 0)) || bool(warm.best(cont4, {}, false, 0.0, 0)),
+              "T3: the newest conversation still resumes somewhere");
+    }
+
+    // T2: the AGE lever of the warm level degrades too, and the cold level RE-SEALS the arrival's stamp, so its own
+    // age retention does not prune it at once.
+    fs::remove_all(dir);
+    {
+        const fs::path warm_dir = dir / "warm", cold_dir = dir / "cold";
+        ConversationSpillCache cold, warm;
+        check(cold.open(cold_dir, id, 1ull << 30, error, SpillWhenFull::evict_oldest, 7), "T2: open the cold with max-age=7");
+        warm.set_next(&cold);
+        check(warm.open(warm_dir, id, 1ull << 30, error, SpillWhenFull::evict_oldest, 7), "T2: open the warm with max-age=7");
+        const std::vector<int32_t> idsA = conv_ids(20000, 400);
+        check(warm.spill(conversation_with_ids(idsA), error), "T2: spill one");
+        check(warm.size() == 1 && warm.age_evictions() == 0, "T2: young: nothing by age yet");
+        // age the copy in the WARM: the age lever now fires and must DEGRADE, not delete
+        const auto ten_days_ago = fs::file_time_type::clock::now() - std::chrono::hours(24 * 10);
+        for (const auto& e : fs::directory_iterator(warm_dir))
+            if (e.path().extension() == ".sess") fs::last_write_time(e.path(), ten_days_ago);
+        ConversationSpillCache warm2;
+        warm2.set_next(&cold);
+        check(warm2.open(warm_dir, id, 1ull << 30, error, SpillWhenFull::evict_oldest, 7), "T2: reopen the warm");
+        check(warm2.size() == 0 && warm2.degraded() >= 1, "T2: the aged copy DEGRADED, it was not deleted");
+        check(warm2.age_evictions() == 0, "T2: the warm level deleted nothing by age");
+        check(cold.size() == 1, "T2: it is in the cold level");
+        // re-sealed: a SECOND pass of the cold's own age GC does not take it (it arrived now, whatever its age above)
+        ConversationSpillCache cold2;
+        check(cold2.open(cold_dir, id, 1ull << 30, error, SpillWhenFull::evict_oldest, 7), "T2: reopen the cold");
+        check(cold2.size() == 1 && cold2.age_evictions() == 0, "T2: the arrival's stamp was re-sealed to now");
+    }
+
+    // T5: ALL-OR-NOTHING - the most dangerous path of the change.  The small conversation A fits the warm's
+    // budget, the big one B does not (so B is left alone by the GC's oversized rule and A is the candidate).  (a)
+    // the cold level in `reject` cannot take A: A STAYS in the warm with its bytes, and the GC finishes.  (b) the
+    // move itself fails: the same, and the cold level keeps no half copy.
+    const std::vector<int32_t> ids_small = conv_ids(30000, 200), ids_big = conv_ids(31000, 2000);
+    const uint64_t small_bytes = measure_bytes(conversation_with_ids(ids_small));
+    const uint64_t big_bytes = measure_bytes(conversation_with_ids(ids_big));
+    check(small_bytes > 1 && small_bytes < big_bytes, "T5: a small copy and a big one, both measurable");
+    const uint64_t warm_budget = big_bytes - 1;   // A fits, B is oversized and left alone: A is the degradation
+    fs::remove_all(dir);
+    {
+        const fs::path warm_dir = dir / "warm", cold_dir = dir / "cold";
+        ConversationSpillCache cold, warm;
+        check(cold.open(cold_dir, id, 1, error, SpillWhenFull::reject), "T5a: open the cold with a 1-byte budget, reject");
+        warm.set_next(&cold);
+        check(warm.open(warm_dir, id, warm_budget, error), "T5a: open the warm with room for the small one");
+        check(warm.spill(conversation_with_ids(ids_small), error), "T5a: spill A (it fits)");
+        check(warm.spill(conversation_with_ids(ids_big), error), "T5a: spill B (the warm overflows)");
+        check(warm.size() == 2 && warm.bytes() > 0, "T5a: A STAYED in the warm level");
+        check(warm.degraded() == 0 && warm.disk_evictions() == 0, "T5a: it was neither degraded nor removed");
+        check(cold.size() == 0 && cold.bytes() == 0, "T5a: the cold level took nothing");
+        check(d5a_count_ext(cold_dir, ".meta") == 0, "T5a: the cold level left no half copy");
+        std::vector<int32_t> contA = ids_small; contA.push_back(1);
+        check(bool(warm.best(contA, {}, false, 0.0, 0)), "T5a: A still resumes from the warm level");
+    }
+    fs::remove_all(dir);
+    {
+        const fs::path warm_dir = dir / "warm", cold_dir = dir / "cold";
+        ConversationSpillCache cold, warm;
+        check(cold.open(cold_dir, id, 1ull << 30, error), "T5b: open the cold level");
+        warm.set_next(&cold);
+        check(warm.open(warm_dir, id, warm_budget, error), "T5b: open the warm with room for the small one");
+        check(warm.spill(conversation_with_ids(ids_small), error), "T5b: spill A");
+        std::string held_path;
+        for (const auto& e : fs::directory_iterator(warm_dir))
+            if (e.path().extension() == ".sess") held_path = e.path().string();
+        check(!held_path.empty(), "T5b: the warm copy is on disk");
+#ifdef _MSC_VER
+        int hold = -1;
+        const errno_t held = _sopen_s(&hold, held_path.c_str(), _O_RDONLY | _O_BINARY, _SH_DENYRW, 0);
+        check(held == 0 && hold != -1, "T5b: the warm session file is held open exclusively");
+#endif
+        // the second spill overflows the warm: the degradation of A is attempted and the MOVE fails
+        check(warm.spill(conversation_with_ids(ids_big), error), "T5b: spill B (the warm overflows)");
+        check(warm.degraded() == 0 && warm.disk_evictions() == 0, "T5b: the refused move degraded nothing");
+        check(warm.size() == 2, "T5b: the warm level was not left worse off");
+        check(fs::exists(held_path), "T5b: the copy is still in the warm level");
+        check(d5a_count_ext(cold_dir, ".meta") == 0, "T5b: the cold level rolled its sidecar back");
+        check(d5a_count_ext(cold_dir, ".sess") == 0, "T5b: nothing half-moved reached the cold level");
+        std::vector<int32_t> contA = ids_small; contA.push_back(1);
+        check(bool(warm.best(contA, {}, false, 0.0, 0)), "T5b: A still resumes from the warm level");
+#ifdef _MSC_VER
+        if (hold != -1) _close(hold);
+#endif
+    }
+
+    // T6: a CORRECTION still discards.  A compaction and a supersede pass on the warm level must NOT push the copy
+    // down: a copy that can never be a hit is not promoted into a level that IS a reuse candidate.
+    fs::remove_all(dir);
+    {
+        const fs::path warm_dir = dir / "warm", cold_dir = dir / "cold";
+        ConversationSpillCache cold, warm;
+        check(cold.open(cold_dir, id, 1ull << 30, error), "T6: open the cold level");
+        warm.set_next(&cold);
+        check(warm.open(warm_dir, id, 1ull << 30, error), "T6: open the warm level");
+        D5aConv conv = d5a_conv();
+        check(warm.spill(conversation_with_ids(conv.ids), error), "T6: spill a long conversation");
+        check(warm.discard_diverged(conv.compacted, false, 4096, conv.turn) == 1, "T6: the compaction is discarded");
+        check(warm.size() == 0, "T6: the copy left the warm level");
+        check(cold.size() == 0 && cold.degraded() == 0, "T6: the compaction did NOT degrade into the cold");
+        // the supersede pass, the other correction path
+        const std::vector<int32_t> ids = conv_ids(33000, 2000);
+        SavedConversation img = conversation_with_ids(ids);
+        check(warm.spill(img, error), "T6: spill a conversation to supersede");
+        check(warm.drop_superseded(ids, {}, img.checkpoints, img.cvec) == 1, "T6: its own copy is superseded");
+        check(warm.size() == 0 && cold.size() == 0, "T6: the supersede discarded in place, not into the cold");
+        check(warm.degraded() == 0 && cold.degraded() == 0, "T6: no correction degraded anything");
+    }
+
+    // T7: the degraded copy keeps the identity.  The cold level re-opens over what the degradation wrote and
+    // indexes it: nothing is foreign, stale or orphan.
+    fs::remove_all(dir);
+    {
+        const fs::path warm_dir = dir / "warm", cold_dir = dir / "cold";
+        ConversationSpillCache cold, warm, probe;
+        check(probe.open(dir / "probe", id, 1ull << 30, error), "T7: open the probe");
+        check(probe.spill(conversation_with_ids(conv_ids(34000, 400)), error), "T7: probe spill");
+        const uint64_t one = probe.bytes();
+        check(cold.open(cold_dir, id, 1ull << 30, error), "T7: open the cold level");
+        warm.set_next(&cold);
+        check(warm.open(warm_dir, id, one, error), "T7: open the warm with room for one");
+        const std::vector<int32_t> idsA = conv_ids(34000, 400), idsB = conv_ids(35000, 400);
+        check(warm.spill(conversation_with_ids(idsA), error), "T7: spill A");
+        check(warm.spill(conversation_with_ids(idsB), error), "T7: spill B (A degrades)");
+        check(warm.degraded() == 1 && cold.size() == 1, "T7: A reached the cold level");
+        ConversationSpillCache cold_reopened;
+        check(cold_reopened.open(cold_dir, id, 1ull << 30, error), "T7: REOPEN the cold level");
+        check(cold_reopened.size() == 1, "T7: the degraded copy is reindexed");
+        check(cold_reopened.foreign_files_kept() == 0, "T7: nothing is foreign (same identity)");
+        check(cold_reopened.stale_files_kept() == 0 && cold_reopened.orphan_files_kept() == 0,
+              "T7: no stale and no orphan file");
+        std::vector<int32_t> contA = idsA; contA.push_back(1);
+        const auto again = cold_reopened.best(contA, {}, false, 0.0, 0);
+        check(bool(again) && again.tokens == (int64_t) idsA.size(), "T7: the reopened cold resumes A");
+    }
+
+    // T8: a MULTISTAGE conversation degrades whole: every stage file moves and the cold level reads them back with
+    // their own stage images.
+    fs::remove_all(dir);
+    {
+        const fs::path warm_dir = dir / "warm", cold_dir = dir / "cold";
+        ConversationSpillCache cold, warm, probe;
+        check(probe.open(dir / "probe", id, 1ull << 30, error), "T8: open the probe");
+        SavedConversation two_stage = sample(1200);
+        SavedConversation stage1 = sample(600);
+        stage1.layer_lo = 48; stage1.layer_hi = 96;
+        two_stage.stage_images.push_back(stage1);
+        check(probe.spill(two_stage, error), "T8: probe spill a two-stage conversation");
+        const uint64_t one = probe.bytes();
+        check(cold.open(cold_dir, id, 1ull << 30, error), "T8: open the cold level");
+        warm.set_next(&cold);
+        check(warm.open(warm_dir, id, one, error), "T8: open the warm with room for one");
+        check(warm.spill(two_stage, error), "T8: spill the two-stage conversation");
+        check(warm.spill(conversation_with_ids(conv_ids(36000, 400)), error), "T8: spill another (the first degrades)");
+        check(warm.degraded() == 1 && cold.size() == 1, "T8: the two-stage copy reached the cold level");
+        check(d5a_count_ext(warm_dir, ".sess") <= 1, "T8: its stage files left the warm level");
+        std::vector<int32_t> cont = two_stage.live.ids; cont.push_back(4242);
+        const auto match = cold.best(cont, two_stage.live.imgs, false, 0.0, 0);
+        check(bool(match) && match.stages == 1, "T8: the cold level reports the extra stage");
+        SavedConversation back;
+        check(cold.load(match.path, back, {}, error), "T8: the cold level reads every stage back");
+        check(back.stage_images.size() == 1, "T8: one stage image read back");
+        check(back.stage_images[0].live.ids == stage1.live.ids, "T8: the stage ids round-trip through the degradation");
+        check(back.stage_images[0].layer_lo == 48 && back.stage_images[0].layer_hi == 96,
+              "T8: the stage layer range round-trips");
+    }
+
+    // T9: when-full=reject on the WARM level: it refuses the new copy and degrades NOTHING (reject is "this level
+    // removes nothing", and a degradation is an eviction by another name).
+    fs::remove_all(dir);
+    {
+        const fs::path warm_dir = dir / "warm", cold_dir = dir / "cold";
+        ConversationSpillCache cold, warm;
+        check(cold.open(cold_dir, id, 1ull << 30, error), "T9: open the cold level");
+        warm.set_next(&cold);
+        // `spill`'s reject pre-check sizes the incoming copy as image.bytes() + 1 MiB, so the warm's budget is
+        // built from that exact figure: the first copy fits, the second one cannot.
+        SavedConversation imgA = conversation_with_ids(conv_ids(37000, 400));
+        const uint64_t reject_budget = imgA.bytes() + (1ull << 20) + 4096;
+        check(warm.open(warm_dir, id, reject_budget, error, SpillWhenFull::reject), "T9: open the warm with room for one, reject");
+        check(warm.spill(imgA, error), "T9: seed one conversation");
+        std::string keep;
+        for (const auto& e : fs::directory_iterator(warm_dir))
+            if (e.path().extension() == ".sess") keep = e.path().string();
+        const std::vector<uint8_t> keep_bytes = read_file_bytes(keep);
+        std::string reject_error;
+        check(!warm.spill(conversation_with_ids(conv_ids(38000, 4000)), reject_error), "T9: the warm refuses the new copy");
+        check(!reject_error.empty(), "T9: the refusal says why");
+        check(warm.size() == 1 && warm.degraded() == 0, "T9: nothing was degraded for it");
+        check(warm.degraded() == 0 && warm.disk_evictions() == 0, "T9: reject evicts and degrades nothing");
+        check(cold.size() == 0, "T9: the cold level is untouched");
+        check(read_file_bytes(keep) == keep_bytes, "T9: the stored copy is byte-for-byte intact");
+    }
+
+    // T10: with NO next level the tier is byte for byte what it always was: the budget GC REMOVES the oldest.
+    fs::remove_all(dir);
+    {
+        ConversationSpillCache cold_less, probe;
+        check(probe.open(dir / "probe", id, 1ull << 30, error), "T10: open the probe");
+        check(probe.spill(conversation_with_ids(conv_ids(39000, 400)), error), "T10: probe spill");
+        const uint64_t one = probe.bytes();
+        check(cold_less.open(dir / "flat", id, 2 * one, error), "T10: open a FLAT tier (no next level)");
+        check(!cold_less.has_next(), "T10: it has no next level");
+        for (int k = 0; k < 3; ++k)
+            check(cold_less.spill(conversation_with_ids(conv_ids(39000 + k * 100, 400)), error), "T10: spill");
+        check(cold_less.size() == 2, "T10: the budget kept two");
+        check(cold_less.disk_evictions() == 1, "T10: the oldest was REMOVED, as before");
+        check(cold_less.degraded() == 0, "T10: nothing was degraded");
+    }
+
     fs::remove_all(dir);
     std::printf("conversation_spill_test: %d checks passed\n", checks);
     return 0;

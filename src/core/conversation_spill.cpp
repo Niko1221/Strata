@@ -6,6 +6,12 @@
 // A layer-split conversation is one session file per stage (SavedConversation::stage_images), one joint sidecar.
 // The scan never deletes; only enforce_budget() (the GC) does, and it leaves a conversation larger than the budget
 // alone.
+//
+// Delta 6 (the cascade): a level wired to a NEXT one (set_next) does not remove what its two CAPACITY levers take -
+// it MOVES the copy down (degrade_to_next -> the next level's adopt), writing and indexing it below FIRST and only
+// then dropping it here, so a next level that refuses leaves the entry intact. The correction paths (a compaction,
+// a supersede pass, a cancelled request, an unreadable image) still discard. The cold level - the one with no next
+// - is the only one that removes, and the only level where the age lever deletes.
 #include "strata/core/conversation_spill.hpp"
 
 #include <algorithm>
@@ -218,6 +224,7 @@ bool ConversationSpillCache::open(const std::filesystem::path& directory, Sessio
     disk_evictions_ = 0;
     age_evictions_ = 0;
     compacted_ = 0;
+    degraded_ = 0;   // delta 6: what the GC of THIS run handed to the next level (next_ itself is wiring, kept)
     entries_.clear();
     bytes_ = 0;
     pinned_path_.clear();
@@ -401,22 +408,127 @@ bool ConversationSpillCache::spill(const SavedConversation& image, std::string& 
     return true;
 }
 
+// Delta 6: drops the entry at `index` from the index and from the byte count, leaving the DISK alone. It is the
+// half a removal and a degradation share: remove_entry() removes the files and then unindexes; degrade_to_next()
+// has the next level MOVE them and then unindexes here. A pinned entry that goes clears the pin with it.
+void ConversationSpillCache::unindex(size_t index) {
+    if (entries_[index].session_path() == pinned_path_) pinned_path_.clear();
+    bytes_ -= entries_[index].file_bytes;
+    entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
+}
+
 // Removes every file of the entry at `index` and drops it from the index. False when the first (session) file
 // could not be removed: the entry stays, the way a failed eviction leaves it in the RAM cache.
 bool ConversationSpillCache::remove_entry(size_t index) {
     const std::string session = entries_[index].session_path();
     const std::string meta = entries_[index].meta_path();
     const size_t stages = entries_[index].stages;
-    const uint64_t file_bytes = entries_[index].file_bytes;
     std::error_code ec;
     const bool removed = std::filesystem::remove(session, ec);
     ec.clear();
     if (!removed && std::filesystem::exists(session)) return false;
     for (size_t k = 1; k <= stages; ++k) { std::filesystem::remove(stage_path(session, k), ec); ec.clear(); }
     std::filesystem::remove(meta, ec);
-    if (session == pinned_path_) pinned_path_.clear();
-    bytes_ -= file_bytes;
-    entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
+    unindex(index);
+    return true;
+}
+
+void ConversationSpillCache::set_next(ConversationSpillCache* next) {
+    std::lock_guard<std::mutex> lock(mu_);
+    next_ = next;
+}
+
+bool ConversationSpillCache::has_next() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return next_ != nullptr;
+}
+
+size_t ConversationSpillCache::degraded() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return degraded_;
+}
+
+// The next level's side of a degradation (delta 6).  The copy arrives as FILES - the caller relocates them, a cheap
+// rename inside one volume or a copy-then-remove across two - so this level writes ITS OWN sidecar over the new
+// stem first and then takes the session files over.  It is as all-or-nothing as archive_entry: any failure puts
+// back every file that had already moved and drops the sidecar it wrote, so a level never keeps a half copy and the
+// level that sent the entry is left with it intact (the caller only unindexes once this returns true).
+//
+// The arrival is the NEWEST entry of this level whatever age it had above: the FIFO of a level is the order it
+// RECEIVED, so it goes to the back of entries_ and its stamp is re-sealed to now - in memory and on the session
+// file, so a reopen (which re-reads the mtime) does not inherit the age it carried down and prune it at once.
+bool ConversationSpillCache::adopt(const Entry& source, std::string& error) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!enabled_) { error = "the next level of the cache is not open"; return false; }
+    // when-full=reject means "this level removes nothing", so it also REFUSES a degradation rather than evicting
+    // for it: the entry stays in the level above, exactly as a rejected spill stays unwritten.  The estimate is
+    // the copy's own size (it moves, it is not re-encoded), and the byte tests short-circuit so `budget_ - bytes_`
+    // never wraps.
+    if (when_full_ == SpillWhenFull::reject &&
+        (entries_.size() >= kMaxSidecarEntries || bytes_ >= budget_ || source.file_bytes > budget_ - bytes_)) {
+        error = "the next level is full and --conversation-cache-spill-when-full is reject (nothing evicted: the "
+                "entry stays in the level above)";
+        return false;
+    }
+    std::error_code ec;
+    std::filesystem::path stem;
+    do {
+        stem = directory_ / (std::string(kFilePrefix) + std::to_string(++serial_));
+    } while (std::filesystem::exists(stem.string() + ".sess", ec) || std::filesystem::exists(stem.string() + ".meta", ec));
+    const std::string meta = stem.string() + ".meta";
+    const std::string session = stem.string() + ".sess";
+    Entry entry = source;
+    entry.stem = stem;
+    if (!write_sidecar(meta, entry, error)) return false;
+    std::vector<std::pair<std::string, std::string>> moved;   // {here, there}
+    auto move_one = [&](const std::string& from, const std::string& to) -> bool {
+        if (!relocate_file(from, to)) return false;
+        moved.emplace_back(to, from);
+        return true;
+    };
+    auto roll_back = [&] {
+        for (auto it = moved.rbegin(); it != moved.rend(); ++it) relocate_file(it->first, it->second);
+        moved.clear();
+        std::error_code rec;
+        std::filesystem::remove(meta, rec);
+    };
+    bool ok = move_one(source.session_path(), session);
+    for (size_t k = 1; ok && k <= source.stages; ++k) ok = move_one(source.stage_path(k), stage_path(session, k));
+    if (!ok) { roll_back(); error = "the conversation could not be moved into the next level"; return false; }
+    const std::filesystem::file_time_type now = std::filesystem::file_time_type::clock::now();
+    std::error_code sec;
+    std::filesystem::last_write_time(session, now, sec);   // re-seal the file's age too: see the header of adopt()
+    ec.clear();
+    entry.stamp = now;
+    if (entry.file_bytes > budget_) ++oversized_files_kept_;   // kept and reported, as the GC's own rule says
+    try {
+        entries_.push_back(entry);
+    } catch (const std::bad_alloc&) {
+        roll_back();
+        error = "not enough RAM to index the conversation moved into the next level";
+        return false;
+    }
+    bytes_ += entry.file_bytes;
+    // This is the LAST level when it has no next of its own: what it cannot hold it REMOVES, oldest first.  (A
+    // cascade longer than two levels would instead degrade again through the same wire.)
+    enforce_budget();
+    return true;
+}
+
+// The capacity GC's degrade (delta 6): hand the entry at `index` to the next level, and only then drop it here.
+// The order is the whole risk: the copy must exist in the next level BEFORE this one lets go of it, so that a
+// next level that is full, in `reject`, on another volume or out of space leaves the entry where it was - which
+// is still the copy the flat tier would have DELETED, so a failed degradation is never worse than today.
+bool ConversationSpillCache::degrade_to_next(size_t index) {
+    ConversationSpillCache* next = next_;
+    if (next == nullptr) return false;
+    const Entry entry = entries_[index];   // a copy: adopt() moves the files and the index changes below
+    std::string error;
+    if (!next->adopt(entry, error)) return false;   // refused: the entry STAYS here, the GC moves on
+    std::error_code ec;
+    std::filesystem::remove(entry.meta_path(), ec);   // the session files are already in the next level
+    unindex(index);
+    ++degraded_;
     return true;
 }
 
@@ -784,8 +896,15 @@ void ConversationSpillCache::enforce_budget() {
     if (when_full_ == SpillWhenFull::reject) return;
     for (size_t i = 0; (bytes_ > budget_ || entries_.size() > kMaxSidecarEntries) && i < entries_.size();) {
         if (entries_[i].session_path() == pinned_path_ || entries_[i].file_bytes > budget_) { ++i; continue; }
+        if (next_ != nullptr) {
+            // Delta 6: with a level below, an over-budget conversation is not deleted - it is moved down, and the
+            // oldest of THIS level goes first (FIFO by the order it was written here).  A refused degradation
+            // leaves the entry in place, so the loop skips it and goes on with the next one.
+            if (!degrade_to_next(i)) { ++i; continue; }
+            continue;   // the entry left the index: the slot at `i` is a new one
+        }
         if (!remove_entry(i)) { ++i; continue; }   // a failed removal: skip it
-        ++disk_evictions_;
+        ++disk_evictions_;                          // a degradation is NOT an eviction: this counter counts removals
     }
 }
 
@@ -798,8 +917,15 @@ void ConversationSpillCache::enforce_age() {
     for (size_t i = 0; i < entries_.size();) {
         if (entries_[i].session_path() == pinned_path_) { ++i; continue; }
         if (now - entries_[i].stamp < limit) { ++i; continue; }
+        if (next_ != nullptr) {
+            // Delta 6: the age lever is a CAPACITY lever and it degrades the same way the budget one does.  Time is
+            // a retention rule of the LAST level: an aged conversation of a level above is moved down (and its
+            // stamp re-sealed there), never deleted here.
+            if (!degrade_to_next(i)) { ++i; continue; }
+            continue;
+        }
         if (!remove_entry(i)) { ++i; continue; }   // a failed removal: skip it
-        ++age_evictions_;
+        ++age_evictions_;                           // a degradation is NOT an age eviction
     }
 }
 
