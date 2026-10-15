@@ -28,6 +28,7 @@
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/conversation_spill.hpp"
 #include "strata/core/conversation_spill_dir.hpp"   // --conversation-cache-spill-dir's default resolution (pure)
+#include "strata/core/system_prompt_cache_dir.hpp"  // --system-prompt-cache-dir's default (the same rule, its leaf)
 #include "strata/core/conversation_segments.hpp"   // layer/segmentos-t3: the opt-in per-segment tier (N16 wiring)
 #include "strata/core/conversation_restore_ladder.hpp"   // layer/ladder-t3: the opt-in prefix-restore ladder
 #include "strata/core/conversation_prompt_cache.hpp"
@@ -960,9 +961,11 @@ void usage() {
                  "                       fused with the one before it (default 0 = materialize every segment)\n"
                  "  --system-prompt-cache  --serve: persist the system-prompt checkpoint root (--prompt-cache-root) to\n"
                  "                       disk and reload it at start, so a new chat of the same client reads only the\n"
-                 "                       tokens after it (default off; needs --system-prompt-cache-dir)\n"
+                 "                       tokens after it (default off; the folder defaults beside the spill's)\n"
                  "  --system-prompt-cache-dir DIR  --serve: the system-prompt cache's own folder (separate from the\n"
-                 "                       spill directory)\n"
+                 "                       spill directory; when absent it resolves a default like the spill's - a\n"
+                 "                       system-prompt-cache folder inside Strata's own directory, or <user\n"
+                 "                       profile>\\.strata\\system-prompt-cache when that is on the system drive)\n"
                  "  --system-prompt-cache-mib N  --serve: that folder's byte budget (default 2048)\n"
                  "  --system-prompt-cache-slots N  --serve: how many system-prompt variants coexist (default 2; 0 = no cap)\n"
                  "  --system-prompt-cache-max-age-days N  --serve: prune variants older than N days, oldest first\n"
@@ -2725,12 +2728,9 @@ int main(int argc, char** argv) {
          o.conversation_cache_disk_mib == 0))
         std::fprintf(stderr, "strata serve: warning: the disk conversation cache needs --conversation-cache-mib, "
                              "--prompt-cache, --conversation-cache-slots and a nonzero --conversation-cache-disk-mib\n");
-    if (o.serve && o.system_prompt_cache && o.system_prompt_cache_dir.empty())
-        std::fprintf(stderr, "strata serve: warning: --system-prompt-cache needs --system-prompt-cache-dir; it stays off\n");
-    if (o.serve && o.system_prompt_cache && !o.system_prompt_cache_dir.empty() &&
-        (o.prompt_cache <= 0 || o.prompt_cache_root <= 0 || o.turn_token < 0))
-        std::fprintf(stderr, "strata serve: warning: the system prompt cache needs --prompt-cache > 0, "
-                             "--prompt-cache-root > 0 and a turn token; it will not find a root to save\n");
+    // The system-prompt cache's folder default and its two warnings live where the folder is resolved (the serve
+    // setup, beside the spill directory's), because with no --system-prompt-cache-dir the folder is not known until
+    // then - a default now resolves one, so the old "needs --system-prompt-cache-dir; it stays off" note is gone.
     // parking with --layer-split saves every stage (SavedConversation::stage_images)
     // Layer split (multi-GPU): the later stages run layers [K_i, K_i+1) on their own GPUs (--split-device, default
     // the next visible ones); "auto" places the K from each GPU's free VRAM once the weights are in (below).  KV
@@ -8919,6 +8919,29 @@ int main(int argc, char** argv) {
         // A session with the draft layer (--mtp) only: the disk save streams the K/V (conversation_snapshot_sources),
         // which needs the draft's own K/V to be part of the artifact, and the restore path checks for it. Without
         // --mtp the feature stays off (reported) rather than capturing a different artifact.
+        // --system-prompt-cache-dir's default: the SAME rule the spill directory resolves (system_prompt_cache_dir.hpp)
+        // - the cache writes inside Strata's own tree, where the models live - so --system-prompt-cache turns it on
+        // without the operator naming a folder, and WHICH rule won is logged here; without that the default would be
+        // invisible.  Nothing is resolved when the cache is off: the flag-off engine creates no folder and no byte.
+        strata::core::SystemPromptCacheDirChoice prompt_cache_choice;
+        if (o.serve && o.system_prompt_cache) {
+            prompt_cache_choice = strata::core::system_prompt_cache_dir_resolve(o.system_prompt_cache_dir, spill_strata_dir,
+                                                                               spill_user_home, spill_system_drive);
+            if (!o.system_prompt_cache_dir.empty()) {
+                std::fprintf(stderr, "strata serve: system prompt cache: dir %s (%s)\n",
+                             o.system_prompt_cache_dir.c_str(), prompt_cache_choice.reason.c_str());
+            } else if (!prompt_cache_choice.directory.empty()) {
+                o.system_prompt_cache_dir = prompt_cache_choice.directory;
+                std::fprintf(stderr, "strata serve: system prompt cache: dir %s (%s)\n",
+                             prompt_cache_choice.directory.c_str(), prompt_cache_choice.reason.c_str());
+            } else {
+                std::fprintf(stderr, "strata serve: system prompt cache: %s\n", prompt_cache_choice.reason.c_str());
+            }
+            if (!o.system_prompt_cache_dir.empty() &&
+                (o.prompt_cache <= 0 || o.prompt_cache_root <= 0 || o.turn_token < 0))
+                std::fprintf(stderr, "strata serve: warning: the system prompt cache needs --prompt-cache > 0, "
+                                     "--prompt-cache-root > 0 and a turn token; it will not find a root to save\n");
+        }
         strata::core::ConversationPromptCache system_prompt_cache;
         strata::core::SessionFileIdentity system_prompt_identity;
         if (o.serve && o.system_prompt_cache && !o.system_prompt_cache_dir.empty() && use_mtp) {
@@ -8927,9 +8950,29 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: system prompt cache: disabled (%s)\n", identity_error.c_str());
             } else {
                 std::string sp_error;
-                if (!system_prompt_cache.open(o.system_prompt_cache_dir, system_prompt_identity,
+                bool sp_opened = system_prompt_cache.open(o.system_prompt_cache_dir, system_prompt_identity,
                         (uint64_t) o.system_prompt_cache_mib * 1024 * 1024, o.system_prompt_cache_slots,
-                        o.system_prompt_cache_max_age_days, sp_error)) {
+                        o.system_prompt_cache_max_age_days, sp_error);
+                // Fail-open, and try the other rule before giving up: a Strata folder that could not be created falls
+                // back to the user profile, and the log says so - the same fallback the disk tier's open takes.
+                if (!sp_opened && prompt_cache_choice.source == strata::core::SystemPromptCacheDirSource::strata_dir) {
+                    const strata::core::SystemPromptCacheDirChoice sp_fallback = strata::core::system_prompt_cache_dir_resolve(
+                        "", spill_strata_dir, spill_user_home, spill_system_drive, /*skip_strata_dir=*/true);
+                    if (!sp_fallback.directory.empty() && sp_fallback.directory != o.system_prompt_cache_dir) {
+                        std::string retry_error;
+                        if (system_prompt_cache.open(sp_fallback.directory, system_prompt_identity,
+                                (uint64_t) o.system_prompt_cache_mib * 1024 * 1024, o.system_prompt_cache_slots,
+                                o.system_prompt_cache_max_age_days, retry_error)) {
+                            o.system_prompt_cache_dir = sp_fallback.directory;
+                            sp_opened = true;
+                            std::fprintf(stderr, "strata serve: system prompt cache: dir %s (%s)\n",
+                                         sp_fallback.directory.c_str(), sp_fallback.reason.c_str());
+                        } else {
+                            sp_error = retry_error;
+                        }
+                    }
+                }
+                if (!sp_opened) {
                     std::fprintf(stderr, "strata serve: system prompt cache: disabled (%s)\n", sp_error.c_str());
                 } else if (system_prompt_cache.enabled()) {
                     std::fprintf(stderr, "strata serve: system prompt cache: ready (%zu variants, %llu MiB, slots=%lld, "

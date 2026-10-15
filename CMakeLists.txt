@@ -150,6 +150,11 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(conversation_spill_dir_test src/core/conversation_spill_dir_test.cpp)
   target_include_directories(conversation_spill_dir_test PRIVATE include)
   add_test(NAME conversation_spill_dir_test COMMAND conversation_spill_dir_test)
+  # the --system-prompt-cache-dir default's resolution rule (the SAME rule as the spill directory, its own leaf
+  # folder).  Header-only, no CUDA and no model: it runs wherever the other host-only conversation tests do.
+  add_executable(system_prompt_cache_dir_test src/core/system_prompt_cache_dir_test.cpp)
+  target_include_directories(system_prompt_cache_dir_test PRIVATE include)
+  add_test(NAME system_prompt_cache_dir_test COMMAND system_prompt_cache_dir_test)
 
 endif()
 
