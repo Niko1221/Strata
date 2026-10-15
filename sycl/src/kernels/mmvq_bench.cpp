@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 #include <cmath>
 int main(int argc, char** argv) {
@@ -46,6 +47,10 @@ int main(int argc, char** argv) {
     for (int i = 0; i < it; ++i) strata::kernels::native_q6_k_mmvq(w, xq, y, n_in, n_out, ncols, s);
     s->wait();
     const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / it;
-    std::printf("q6_k mmvq %d x %d, %d cols: %.1f us  (%.1f GB/s of weights)\n", n_in, n_out, ncols, us, wbytes / us / 1e3);
+    std::vector<float> hy((size_t) ncols * n_out);
+    s->memcpy(hy.data(), y, hy.size() * 4).wait();
+    unsigned long long cs = 1469598103934665603ull;
+    for (float v : hy) { unsigned u; std::memcpy(&u, &v, 4); cs = (cs ^ u) * 1099511628211ull; }
+    std::printf("q6_k mmvq %d x %d, %d cols: %.1f us  (%.1f GB/s of weights)  checksum %016llx\n", n_in, n_out, ncols, us, wbytes / us / 1e3, cs);
     return 0;
 }

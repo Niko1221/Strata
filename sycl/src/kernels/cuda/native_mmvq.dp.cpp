@@ -25,6 +25,7 @@
 
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
@@ -1703,6 +1704,27 @@ inline int q6k_wide_rpw() {
     static const int v = std::getenv("STRATA_MMVQ_WIDE_RPW") ? std::atoi(std::getenv("STRATA_MMVQ_WIDE_RPW")) : 1;
     return v;
 }
+// Large-GRF mode (256 registers per thread instead of 128) for the wide kernels (Q6_K a2 and the generic one) at 2-8
+// columns: on the A770 they spill at 128, and mmvq_bench Q6_K 4 columns goes 70-80 -> 150-237 GB/s with the same
+// checksum. Large GRF halves the threads an Xe core keeps resident, so it is the default on Arc A-series (Alchemist)
+// only, where it was measured; Battlemage and anything else, and 1 column everywhere, launch the same kernels as before.
+// STRATA_MMVQ_LARGE_GRF=1 forces it on, =0 off.
+inline bool mmvq_large_grf(dpct::queue_ptr s) {
+    static const bool v = [s] {
+        const char* e = std::getenv("STRATA_MMVQ_LARGE_GRF");
+        if (e != nullptr) return std::atoi(e) != 0;
+        return strata::intel_gpu_gen(s->get_device()) == strata::IntelGpuGen::Alchemist;
+    }();
+    return v;
+}
+// 1 column in large GRF too (Arc A-series default with mmvq_large_grf): the 128-register Q6_K kernel spilled 1.4 KB a
+// thread on the A770; dense_bench 1 column, the same hashes: qkv 288 -> 319, z 255 -> 292, QSA q 295 -> 325 GB/s (rows
+// up to 4096 wide: the 6144-wide out-proj is the same or slower).
+// STRATA_MMVQ_GRF1=0 keeps 1 column at 128 registers.
+inline bool mmvq_grf1() {
+    static const bool v = [] { const char* e = std::getenv("STRATA_MMVQ_GRF1"); return !(e && e[0] == '0'); }();
+    return v;
+}
 template <int NCOLS>
 void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, dpct::queue_ptr s) {
     const auto* w = static_cast<const Q6KBlock*>(weights);
@@ -1726,6 +1748,17 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
     }
     if (rpw == 1 && q6k_a2()) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
+        if (NCOLS > 1 || (mmvq_grf1() && n_in <= 4096)) {
+            if (mmvq_large_grf(s)) {
+                s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_a2_grf256, dpct_kernel_scalar<NCOLS>>>(
+                    sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
+                    sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>},
+                    [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                        native_mmvq_q6k_wide_kernel<NCOLS, 1, WARP, (int) sizeof(Q6KBlock), true>(w, x, y, n_in, n_out);
+                    });
+                return;
+            }
+        }
         s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_a2, dpct_kernel_scalar<NCOLS>>>(
             sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
@@ -1959,6 +1992,17 @@ void launch_wide(const void* weights, const void* x_q8_1, float* y, int n_in, in
     STRATA_WKR(2) STRATA_WKR(4)
 #undef STRATA_WKR
     const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
+    // 1 column too for rows up to 4096 (dense_bench: Q5_K / Q4_K 2560-wide +3-9%, k/v +30-40%; 6144-wide -10%), not for
+    // IQ4_XS (-1 to -8%)
+    if (NCOLS > 1 || (mmvq_grf1() && n_in <= 4096 && !std::is_same_v<F, WideIQ4XS>)) {
+        if (mmvq_large_grf(s)) {
+            s->parallel_for<dpct_kernel_name<class native_mmvq_wide_grf256, F, dpct_kernel_scalar<NCOLS>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
+                sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>},
+                [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_wide_kernel<F, NCOLS>(w, x, y, n_in, n_out); });
+            return;
+        }
+    }
     s->parallel_for<dpct_kernel_name<class native_mmvq_wide, F, dpct_kernel_scalar<NCOLS>>>(
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_wide_kernel<F, NCOLS>(w, x, y, n_in, n_out); });
@@ -3797,5 +3841,6 @@ void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* 
     default: throw std::invalid_argument("unsupported native MMVQ GGML type");
     }
 }
+
 
 } // namespace strata::kernels
