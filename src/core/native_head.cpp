@@ -1,4 +1,5 @@
 #include "strata/core/native_head.hpp"
+#include "strata/core/numa_policy.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -143,7 +144,19 @@ bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, i
             return false;
         }
         strata::platform::advise_willneed(gguf.tensor_data(*t), bytes_);   // copied out of the mapping below
-        cudaError_t host_err = cudaHostAlloc(&host_, bytes_, cudaHostAllocMapped | cudaHostAllocPortable);
+        cudaError_t host_err = cudaSuccess;
+        {
+            // S2: the table's pages are this thread's faults, so S1's light rule - bind the thread for the scope that
+            // allocates - decides the node they come from.  Off (hot < 0): no syscall; the VRAM fallback below is
+            // untouched either way.
+            const int hot = detail::numa_hot_node();
+            detail::ThreadNodeBinding nb;
+            std::string why;
+            if (hot >= 0 && !nb.bind(hot, why))
+                std::fprintf(stderr, "native embedding: WARNING: cannot bind this thread to NUMA node %d (%s): the "
+                                     "pinned table takes the process's memory policy\n", hot, why.c_str());
+            host_err = cudaHostAlloc(&host_, bytes_, cudaHostAllocMapped | cudaHostAllocPortable);
+        }
         if (host_err != cudaSuccess) {
             // Under WSL2 the driver's pinned/mapped host budget (~1 GiB) can be spent by the GPU contexts
             // themselves (three cards). The table is only gathered from, so keep it in the current device's VRAM

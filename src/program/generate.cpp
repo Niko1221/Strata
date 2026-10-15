@@ -28,6 +28,7 @@
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
+#include "strata/core/numa_policy.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/pinned.hpp"
 #include "strata/core/remote_experts.hpp"
@@ -461,6 +462,10 @@ struct Options {
     /// not hold that the expert profile ranks hottest are copied into RAM, the rest are read from the files in place
     /// (the GGUF shards when the pack has no experts.bin).  0 = the whole complement (--resident-experts).
     uint64_t resident_budget = 0;
+    /// S1 (`--numa-hot-node N`): the resident complement's pages are claimed on NUMA node N before the startup
+    /// reads (FileExpertSource::reserve_resident_arena).  -1 = the flag is absent or `off` - both mean off, and
+    /// **0 is a node number**, so only `off` says off.
+    int numa_hot_node = -1;
     /// R4: slots of VRAM-resident experts.  **0 = off, and off is the default.**
     /// **THE COMMENT THAT USED TO BE HERE WAS FALSE AND ROUND 328 MEASURED IT.**  It said "the cache has no
     /// consumer yet - `moe_hit_grouped_s2` does not exist - so switching it on costs the fill traffic and
@@ -942,7 +947,12 @@ void usage() {
                  "  --adapt-async 1      --serve with the resident RAM mode or the arena (one GPU; opt-in): the adaptive\n"
                  "                       tier's swaps advance between verify windows instead of a window waiting for a\n"
                  "                       whole round (the arena: copy-in only).  Not bit-exact run to run.  0 (default)\n"
-                 "                       = the blocking tier.\n");
+                 "                       = the blocking tier.\n"
+                 "  --numa-hot-node N    keep the resident complement's pages on NUMA node N: they are claimed on\n"
+                 "                       the node BEFORE the expert cache's startup fill, which otherwise fills the\n"
+                 "                       node's page cache first and pushes the complement to the other one.  Needs\n"
+                 "                       --resident-budget-gib (the claim is its clamped upper bound); `off` and the\n"
+                 "                       flag's absence both mean off, and 0 is node 0, not \"off\".\n");
 }
 
 // --lookup-chain: the context's last tokens for the draft sources (at most 64), the MTP's pending drafts last
@@ -2227,6 +2237,20 @@ int main(int argc, char** argv) {
             if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
                 o.resident_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
         }
+        else if (a == "--numa-hot-node") {
+            // `off` or a node number; 0 IS a node (bind to node 0), so only `off` turns it off
+            const std::string v = next("--numa-hot-node");
+            if (v == "off") o.numa_hot_node = -1;
+            else {
+                int node = 0;
+                const auto parsed = std::from_chars(v.data(), v.data() + v.size(), node);
+                if (parsed.ec != std::errc{} || parsed.ptr != v.data() + v.size() || node < 0) {
+                    std::fprintf(stderr, "strata generate: --numa-hot-node needs a node number or off\n");
+                    return 2;
+                }
+                o.numa_hot_node = node;
+            }
+        }
         else if (a == "--stats") o.stats = true;
         else if (a == "--shared-late") o.shared_late = true;
         else if (a == "--keep-canonical") o.keep_canonical = true;
@@ -2421,6 +2445,46 @@ int main(int argc, char** argv) {
     if (o.resident_cpu_experts && remote_caches) {
         std::fprintf(stderr, "strata generate: --resident-cpu-experts does not support remote expert caches\n");
         return 2;
+    }
+    // S1 (--numa-hot-node): the resident complement's pages, claimed on one node before the startup reads.  Only
+    // the resident RAM mode has that complement, and its size is the --resident-budget-gib upper bound.
+    if (o.numa_hot_node >= 0) {
+        // The nodes this host HAS, not a 0..count-1 range: firmware PXM ids can leave holes, and then a high node
+        // number is legal while a low one names nothing.
+        const std::vector<int> nodes = strata::core::detail::numa_node_ids();
+        if (!nodes.empty() && std::find(nodes.begin(), nodes.end(), o.numa_hot_node) == nodes.end()) {
+            std::string have;
+            for (int node : nodes) have += (have.empty() ? "" : ", ") + std::to_string(node);
+            std::fprintf(stderr, "strata generate: --numa-hot-node %d: this host has no such NUMA node (its nodes: "
+                                 "%s)\n",
+                         o.numa_hot_node, have.c_str());
+            return 2;
+        }
+        if (o.resident_budget == 0) {
+            std::fprintf(stderr, "strata generate: --numa-hot-node is off: without --resident-budget-gib there is no "
+                                 "upper bound to size the complement's claim from\n");
+            o.numa_hot_node = -1;
+        }
+    }
+    // S2/S3: the same switch places the rest of the engine's pinned and malloc'd pools, which have no flag of their
+    // own.  S1's node is the hot one; the cold node is derived here as the FIRST node that is not the hot one, so on
+    // a two-node host the two pools sit on the two nodes and on a single-node host there is no cold node at all and
+    // S3 does nothing.  The nodes are published to the allocation paths (which run on other threads) and this is the
+    // only place they are set.  Off: `o.numa_hot_node < 0`, and then neither is set and every site below is skipped.
+    if (o.numa_hot_node >= 0) {
+        const std::vector<int> nodes = strata::core::detail::numa_node_ids();
+        int cold = -1;
+        for (int node : nodes) {
+            if (node != o.numa_hot_node) { cold = node; break; }
+        }
+        strata::core::detail::set_numa_hot_node(o.numa_hot_node);
+        strata::core::detail::set_numa_cold_node(cold);
+        if (cold >= 0)
+            std::fprintf(stderr, "strata generate: NUMA placement: hot pools on node %d, cold pools on node %d\n",
+                         o.numa_hot_node, cold);
+        else
+            std::fprintf(stderr, "strata generate: NUMA placement: hot pools on node %d, no cold node to split "
+                                 "them with (this host has %zu NUMA node(s))\n", o.numa_hot_node, nodes.size());
     }
     // the helper-GPU expert caches (--expert-cache-remote, docs/SECOND_GPU.md): CUDA1..3 on one GPU; with a layer
     // split, the visible GPUs no stage runs on, in order
@@ -5451,6 +5515,16 @@ int main(int argc, char** argv) {
         } else {
             std::fprintf(stderr, "                 PROFILE, ranked by routing frequency, no eviction.\n");
         }
+    }
+    // ---- S1 (--numa-hot-node): claim the resident complement's pages on the hot node NOW, before the fill below
+    // reads ~24 GiB through the page cache and pushes them to the other one.  The complement is allocated much
+    // later (pin_cache_complement, after this fill), and by then the node is full.  Opt-in and off by default:
+    // with the flag absent or `off` nothing here runs and the start is byte-identical to before.
+    if (o.numa_hot_node >= 0 && srcp == &src) {
+        std::string numa_err;
+        if (!src.reserve_resident_arena(o.resident_budget, o.resident_headroom, o.numa_hot_node, numa_err))
+            std::fprintf(stderr, "strata generate: --numa-hot-node %d: %s; the complement is allocated after the "
+                                 "expert cache's fill as before\n", o.numa_hot_node, numa_err.c_str());
     }
     // ---- R4.2e: fill the tier from the profile.  This is the only place the plan is applied, and it runs
     // ONCE: with `slots` pairs and `slots` slots the cache is full when this returns, so the decode-time

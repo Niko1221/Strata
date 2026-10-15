@@ -107,6 +107,22 @@ uint64_t meminfo_bytes(const std::string& meminfo_text, const std::string& key);
 /// SMALLEST node's free), i.e. what an even spread would find.  Only lowers the figure, so the pages are then taken in
 /// steps (which reclaim cache as they fault) instead of in one driver call; it never refuses and never caps.
 uint64_t numa_pin_free(uint64_t global_free, const std::vector<uint64_t>& node_free);
+/// S1 (`--numa-hot-node`): this host's NUMA nodes, counted under /sys/devices/system/node (numa_node_ids().size()).
+/// 0 when the host cannot be asked at all (a platform without sysfs), and the caller then skips its range check.
+int numa_node_count();
+/// S1: the node NUMBERS themselves, the sysfs entries in ascending order.  The entries are what the host HAS, not
+/// 0..count-1: firmware PXM ids can leave holes (a hot-removed or offline node), so an id is a member of this list
+/// or the host does not have that node.  Empty when the host cannot be asked at all.
+std::vector<int> numa_node_ids();
+/// S1: one node's OWN free memory - the MemFree line of /sys/devices/system/node/node<N>/meminfo (the line reads
+/// "Node N MemFree: <kB> kB") - false when that file cannot be read or has no MemFree line (a memoryless or
+/// offline node: nothing there to place pages on).
+bool numa_node_memfree_bytes(int node, uint64_t& bytes);
+/// S1: the parse above, over the text of such a file (the tests feed it a string).
+bool numa_node_memfree_from_text(const std::string& meminfo_text, uint64_t& bytes);
+/// S1: whether a claim of `bytes` fits what a node really has free: the claim PLUS `reserve`, which must stay free
+/// on the node besides it.  A strict fit: MemFree is a point-in-time reading.
+bool node_claim_fits(uint64_t node_free, uint64_t bytes, uint64_t reserve);
 /// The sentence appended to a "not enough RAM" start failure: how much of the RAM is file cache (Cached + Buffers of
 /// `meminfo_text`, mapped pages included) and what to do about it; "" when under 1 GiB of cache (nothing to say).
 std::string page_cache_hint(const std::string& meminfo_text);
@@ -572,6 +588,24 @@ public:
         const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs = {}, int64_t lend_from_slot = -1,
         uint64_t headroom_bytes = 8ull << 30, uint64_t budget_bytes = 0,
         const std::vector<std::pair<int32_t, int32_t>>* rank = nullptr);
+    /// S1 (`--numa-hot-node N`): claim the resident complement's pages on NUMA node `N` BEFORE the startup reads.
+    /// The driver's own allocation cannot do it: `cudaHostAlloc` allocates AND page-locks at call time and `mbind`
+    /// cannot move page-locked pages, so where `pin_cache_complement` runs today - after the expert cache's ~24 GiB
+    /// fill has filled the node's page cache - is already too late.  This takes the arena first, on the fallback
+    /// path (mmap -> mbind(MPOL_BIND, N) -> pre-touch), and `pin_cache_complement` then registers and locks the
+    /// claimed arena instead of allocating one.
+    ///
+    /// `requested_bytes` is `--resident-budget-gib`; it is clamped by RAM and commit exactly as the complement's
+    /// own budget is, so the result is the UPPER BOUND of the bytes the complement will copy (the tail it does not
+    /// use is given back when the complement's size is known).  False, with `err`, when this build or this host has
+    /// no mbind, the bind is refused, or the memory cannot be had: the caller warns and starts as it always did -
+    /// the flag is opt-in and the default path is untouched.
+    bool reserve_resident_arena(uint64_t requested_bytes, uint64_t headroom_bytes, int node, std::string& err);
+    /// The bytes `reserve_resident_arena` claimed (0 when none), for the caller's log line.
+    uint64_t reserved_arena_bytes() const { return arena_preclaim_bytes_; }
+    /// The claimed arena itself (null when none), for the caller's own checks; `pin_cache_complement` takes it
+    /// over, so it must not be kept past that call.
+    void* reserved_arena() const { return arena_preclaim_; }
     /// A layer split: the prompt path borrows the TAIL SLOTS of every stage's cache - CUDA0's own part
     /// first, then every stage in order.  Set these BEFORE `pin_cache_complement` to keep those slots' experts
     /// in the RAM copy too: each region lists its stage's (layer, expert) pairs, the highest cache slot first,
@@ -877,6 +911,15 @@ private:
     bool complement_ready_ = false;
     uint64_t complement_locked_ = 0;          ///< bytes held in the working set (pin refused)
     int64_t complement_lent_slots_ = 0;
+    // ---- S1 (--numa-hot-node): the arena claimed before the startup reads, until pin_cache_complement takes it
+    void* arena_preclaim_ = nullptr;          ///< an mmap of arena_preclaim_bytes_, bound to arena_preclaim_node_
+    uint64_t arena_preclaim_bytes_ = 0;
+    int arena_preclaim_node_ = -1;
+    uint64_t complement_arena_mmap_bytes_ = 0;   ///< complement_arena_ came from mmap: give it back with munmap
+    /// The claimed arena for a complement of `bytes`, its unused tail given back; null (and the claim released)
+    /// when nothing is claimed, or the claim is smaller than `bytes` (the complement was sized after it).
+    void* take_reserved_arena(uint64_t bytes, uint64_t& mmap_bytes);
+    void release_reserved_arena();
     std::vector<std::vector<std::pair<int32_t, int32_t>>> stage_lend_regions_;  ///< a split: each stage's lend region
     std::vector<const uint8_t*> override_;    ///< staged exchanges: an evicted expert read from its exchange buffer
     struct Exchange { size_t in, out; int64_t q; uint64_t bytes; };

@@ -1,5 +1,6 @@
 // src/core/weights.cpp - the dense-weight loader.  See the header for the engine-vs-pack distinction.
 #include "strata/core/weights.hpp"
+#include "strata/core/numa_policy.hpp"
 
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/platform/memory.hpp"
@@ -252,12 +253,22 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
     // one of the 90 widened tensors - a heap corruption that would have been blamed on whatever ran next.
     void* stage_in = nullptr;
     void* stage_out = nullptr;
-    if (cudaHostAlloc(&stage_in, CHUNK, cudaHostAllocDefault) != cudaSuccess ||
-        cudaHostAlloc(&stage_out, CHUNK * 2, cudaHostAllocDefault) != cudaSuccess) {
-        err = "cudaHostAlloc for the staging buffers failed";
-        if (stage_in) cudaFreeHost(stage_in);
-        if (stage_out) cudaFreeHost(stage_out);
-        return false;
+    {
+        // S2: both staging buffers are pinned by this thread, so S1's light rule - bind the thread for the scope that
+        // allocates - decides the node their pages come from.  One scope covers the pair.  Off (hot < 0): no syscall.
+        const int hot = detail::numa_hot_node();
+        detail::ThreadNodeBinding nb;
+        std::string why;
+        if (hot >= 0 && !nb.bind(hot, why))
+            std::fprintf(stderr, "strata: weights: WARNING: cannot bind this thread to NUMA node %d (%s): the "
+                                 "pinned staging buffers take the process's memory policy\n", hot, why.c_str());
+        if (cudaHostAlloc(&stage_in, CHUNK, cudaHostAllocDefault) != cudaSuccess ||
+            cudaHostAlloc(&stage_out, CHUNK * 2, cudaHostAllocDefault) != cudaSuccess) {
+            err = "cudaHostAlloc for the staging buffers failed";
+            if (stage_in) cudaFreeHost(stage_in);
+            if (stage_out) cudaFreeHost(stage_out);
+            return false;
+        }
     }
 
     uint8_t* dst_base = (uint8_t*) arena_base;

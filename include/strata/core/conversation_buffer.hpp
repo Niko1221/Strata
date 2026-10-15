@@ -1,12 +1,15 @@
 #pragma once
 
+#include "strata/core/numa_policy.hpp"
 #include "strata/core/progress.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -67,6 +70,17 @@ public:
             const size_t spare = segments_.empty() ? 0 : segments_.back().capacity() - segments_.back().size();
             const size_t extend = std::min(n - size_, spare);
             const size_t extra = n - size_ - extend;
+            // S3 (`--numa-hot-node`): glibc hands these fresh ranges back as untouched pages, so it is the zero fill
+            // (the resize below) that faults them in, and those faults follow THIS thread's memory policy - which is
+            // what the cold node is for.  The scope starts before `reserve` because the directory is malloc'd here
+            // too.  Off (cold < 0: the default, and the one-node host): no syscall, and the segment is the one it
+            // always was.
+            const int cold = detail::numa_cold_node();
+            detail::ThreadNodeBinding nb;
+            std::string why;
+            if (cold >= 0 && !nb.bind(cold, why))
+                std::fprintf(stderr, "ConversationBuffer: WARNING: cannot bind this thread to NUMA node %d (%s): "
+                                     "the segment's pages take the process's memory policy\n", cold, why.c_str());
             segments_.reserve(segments_.size() + extra / segment_bytes + (extra % segment_bytes != 0));
             if (extend) {
                 segments_.back().resize(segments_.back().size() + extend, value);

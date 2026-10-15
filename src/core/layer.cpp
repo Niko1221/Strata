@@ -3,6 +3,7 @@
 #include "strata/core/layer.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/core/native_head.hpp"
+#include "strata/core/numa_policy.hpp"
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/elementwise.hpp"
@@ -802,14 +803,25 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256;
         uint8_t* h = nullptr;
         uint8_t* d = nullptr;
-        if (cudaHostAlloc((void**) &h, bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
-            cudaHostGetDevicePointer((void**) &d, h, 0) != cudaSuccess) {
-            // under WSL the NVIDIA driver pins only ~1 GiB in all, which is less than 128K of 8-bit KV needs
-            if (p.mode == 1) std::fprintf(stderr, "strata: KV streaming: cannot pin %.2f GiB of RAM for a layer's KV copy "
-                                 "(%.2f GiB pinned so far) - lower the context, or run without --kv-resident (under "
-                                 "WSL the driver pins only about 1 GiB in all)\n", (double) bytes / 1073741824.0,
-                                 (double) g_kv_host_bytes / 1073741824.0);
-            return 0;
+        {
+            // S2: the pages the driver takes for this pinned KV copy are faults on THIS thread, so the light rule of
+            // S1 - bind the thread for the scope that allocates - decides which node they come from.  Off (hot < 0):
+            // no syscall, the allocation is the one it always was.
+            const int hot = detail::numa_hot_node();
+            detail::ThreadNodeBinding nb;
+            std::string why;
+            if (hot >= 0 && !nb.bind(hot, why))
+                std::fprintf(stderr, "strata: KV streaming: WARNING: cannot bind this thread to NUMA node %d (%s): "
+                                     "the pinned KV copy takes the process's memory policy\n", hot, why.c_str());
+            if (cudaHostAlloc((void**) &h, bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+                cudaHostGetDevicePointer((void**) &d, h, 0) != cudaSuccess) {
+                // under WSL the NVIDIA driver pins only ~1 GiB in all, which is less than 128K of 8-bit KV needs
+                if (p.mode == 1) std::fprintf(stderr, "strata: KV streaming: cannot pin %.2f GiB of RAM for a layer's KV copy "
+                                     "(%.2f GiB pinned so far) - lower the context, or run without --kv-resident (under "
+                                     "WSL the driver pins only about 1 GiB in all)\n", (double) bytes / 1073741824.0,
+                                     (double) g_kv_host_bytes / 1073741824.0);
+                return 0;
+            }
         }
         g_kv_host_bytes += bytes;
         Cursor hc{d};
@@ -1183,7 +1195,7 @@ namespace {}
 uint64_t doorbell_init(const ModelGeometry& g, int64_t k, Doorbell& db) {    db.n_embd = g.n_embd;    db.k = k;    uint64_t bytes = 0;
 // ONE region per field, each MAPPED PINNED, so the device and the host have different pointers to the same
 // bytes and no copy is needed to publish them.
-auto alloc = [&](size_t n, void** h, void** d, const char* what) {        if (cudaHostAlloc(h, n, cudaHostAllocMapped) != cudaSuccess) {            std::fprintf(stderr, "doorbell_init: cudaHostAlloc(%s) failed\n", what);            return false;        }        if (cudaHostGetDevicePointer(d, *h, 0) != cudaSuccess) {            std::fprintf(stderr, "doorbell_init: cudaHostGetDevicePointer(%s) failed\n", what);            return false;        }        std::memset(*h, 0, n);        bytes += n;        return true;    };    if (!alloc((size_t) g.n_embd * 4, (void**) &db.h_x_f, (void**) &db.d_x_f, "x_f")) return 0;    if (!alloc((size_t) k * 4, (void**) &db.h_ids, (void**) &db.d_ids, "ids")) return 0;    if (!alloc((size_t) k * 4, (void**) &db.h_weights, (void**) &db.d_weights, "weights")) return 0;    if (!alloc(4, (void**) &db.h_seq, (void**) &db.d_seq, "seq")) return 0;    if (!alloc(4, (void**) &db.h_flag, (void**) &db.d_flag, "flag")) return 0;    return bytes;}
+auto alloc = [&](size_t n, void** h, void** d, const char* what) {        const int hot = detail::numa_hot_node();        detail::ThreadNodeBinding nb;        std::string why;        if (hot >= 0 && !nb.bind(hot, why))            std::fprintf(stderr, "doorbell_init: WARNING: cannot bind this thread to NUMA node %d (%s): the pinned doorbell takes the process's memory policy\n", hot, why.c_str());        if (cudaHostAlloc(h, n, cudaHostAllocMapped) != cudaSuccess) {            std::fprintf(stderr, "doorbell_init: cudaHostAlloc(%s) failed\n", what);            return false;        }        if (cudaHostGetDevicePointer(d, *h, 0) != cudaSuccess) {            std::fprintf(stderr, "doorbell_init: cudaHostGetDevicePointer(%s) failed\n", what);            return false;        }        std::memset(*h, 0, n);        bytes += n;        return true;    };    if (!alloc((size_t) g.n_embd * 4, (void**) &db.h_x_f, (void**) &db.d_x_f, "x_f")) return 0;    if (!alloc((size_t) k * 4, (void**) &db.h_ids, (void**) &db.d_ids, "ids")) return 0;    if (!alloc((size_t) k * 4, (void**) &db.h_weights, (void**) &db.d_weights, "weights")) return 0;    if (!alloc(4, (void**) &db.h_seq, (void**) &db.d_seq, "seq")) return 0;    if (!alloc(4, (void**) &db.h_flag, (void**) &db.d_flag, "flag")) return 0;    return bytes;}
 void doorbell_free(Doorbell& db) {    if (db.h_x_f) (void) cudaFreeHost(db.h_x_f);    if (db.h_ids) (void) cudaFreeHost(db.h_ids);    if (db.h_weights) (void) cudaFreeHost(db.h_weights);    if (db.h_seq) (void) cudaFreeHost(db.h_seq);    if (db.h_flag) (void) cudaFreeHost(db.h_flag);    db = Doorbell{};}
 void doorbell_reset(const Doorbell& db) {
     if (db.h_seq) *db.h_seq = 0;
