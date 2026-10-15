@@ -985,10 +985,13 @@ $("input").addEventListener("paste", (e) => {
 
 // ------------------------------------------------------------------ the sampling drawer
 function openDrawer(open) {
+  const was = $("drawer").dataset.open === "true";
   $("drawer").dataset.open = String(open);
   $("drawer").setAttribute("aria-hidden", String(!open));
+  $("drawer").inert = !open;                       // closed it is only moved off-screen: keep its controls out of Tab
   $("scrim").hidden = !open;
-  if (open) { loadDrawer(); loadShared(); loadMcp(); }
+  if (open) { loadDrawer(); loadShared(); loadMcp(); $("drawer-close").focus({preventScroll: true}); }
+  else if (was) $("sampling-btn").focus({preventScroll: true});   // back to the button that opened it
 }
 function loadDrawer(s = settings) {
   for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));

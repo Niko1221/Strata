@@ -2999,6 +2999,17 @@ class WebApp(unittest.TestCase):
                 self.assertEqual(code, 200)
                 self.assertIn(want, ctype)
 
+    def test_the_closed_drawer_is_out_of_the_tab_order(self):
+        # closed, the Sampling drawer is only moved off-screen: inert keeps its controls out of the keyboard's Tab
+        # order (they were reachable after Send, inside aria-hidden); opening focuses it, closing returns focus
+        web = ROOT / "serve" / "web"
+        html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
+        drawer = html[html.index('id="drawer"'):]
+        self.assertIn(" inert", drawer[:drawer.index(">")])
+        self.assertIn('$("drawer").inert = !open;', js)
+        self.assertIn('$("drawer-close").focus(', js)
+        self.assertIn('$("sampling-btn").focus(', js)
+
     def test_only_the_app_files_are_served(self):
         for path in ("/web/..%2Fserver.py", "/web/index.html", "/web/test.py", "/fonts/..%2F..%2Fsetup.py",
                      "/fonts/missing.woff2", "/fonts/x.ttf"):
