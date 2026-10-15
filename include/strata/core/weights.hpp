@@ -131,6 +131,10 @@ public:
     bool load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
               const std::set<std::string>* skip = nullptr);
 
+    /// A SKIPPED bf16 tensor's values read back from the pack file (the promoted-f32 and the raw 16-bit forms), for
+    /// the host-side Q8_0 quantizer of STRATA_HC_Q8 (the tensor then has no copy in the arena).
+    bool read_bf16_host(const std::string& name, std::vector<uint16_t>& out, std::string& err) const;
+
     const WeightRef* find(const std::string& name) const;
     const std::map<std::string, WeightRef>& all() const { return table_; }
     const LoadReport& report() const { return report_; }
@@ -139,6 +143,7 @@ private:
     friend class NativeDense;
     std::map<std::string, WeightRef> table_;
     LoadReport report_;
+    std::string pack_dir_;
 };
 
 }  // namespace strata::core

@@ -709,7 +709,11 @@ uint8_t* gemm_stage(size_t need, sycl::queue& q) {
 inline bool staged_gemm(sycl::queue& q, void* handle, const uint16_t* W, int lda, const uint16_t* X, int ldb,
                         dpct::library_data_t dt, int64_t N, int64_t T, int64_t K, float alpha, float beta,
                         float* Y, int64_t ldy) {
-    static const bool no_stage = std::getenv("STRATA_SYCL_GEMM_NO_STAGE") != nullptr;   // tests' negative control
+    // STRATA_SYCL_GEMM_NO_STAGE: the tests' negative control.  0.1.43: not on Battlemage either (the A770 oneMKL bug above did not
+    // show on a B70: 4K and 49K prompts, operands at 18 GiB into the cache arena, first-token logits byte-identical with and
+    // without staging; the 10 MB copy per expert was ~10% of a prompt).  STRATA_SYCL_GEMM_STAGE=1 stages there as before.
+    static const bool no_stage = std::getenv("STRATA_SYCL_GEMM_NO_STAGE") != nullptr ||
+        (strata::intel_gpu_gen(q.get_device()) == strata::IntelGpuGen::Battlemage && !(std::getenv("STRATA_SYCL_GEMM_STAGE") && std::getenv("STRATA_SYCL_GEMM_STAGE")[0] == '1'));
     constexpr size_t k4G = 4ull << 30;
     const size_t es = 2;
     const size_t w_bytes = (size_t) lda * (size_t) N * es;   // W stored K x N, col-major (lda = K)

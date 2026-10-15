@@ -65,6 +65,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/program/split_rules.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/core/verify.hpp"
@@ -85,6 +86,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #define NOMINMAX   // gguf_reader.hpp includes windows.h
 #endif
 #include "strata/artifact/gguf_reader.hpp"
+#include "strata/core/family_layout.hpp"
 #if defined(_WIN32)
 #include <windows.h>
 #include <psapi.h>
@@ -333,13 +335,16 @@ bool resident_stage_swaps(strata::core::FileExpertSource &src,
         if (slot < 0) continue;
         const SwapHome home = locate(s.layer);
         const strata::core::OnDevice on(home.dev);
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
-
+        // the evicted expert's bytes go back into exchange buffer q BEFORE its slot is overwritten
+        // (CUDA: cudaMemcpyAsync D2H on the owning card's stream; the dpct migration had dropped the call)
+        try {
+            home.stream->memcpy(src.exchange_buffer(q), home.cache->device_slot(slot),
+                                (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer));
+        } catch (sycl::exception const& e) {
+            std::fprintf(stderr, "strata: copy back of layer %d slot %d (device %d) failed: %s\n", (int) s.layer,
+                         (int) slot, home.dev, e.what());
+            return false;
+        }
         bool seen = false;
         for (const SwapHome& u : used) seen = seen || u.stream == home.stream;
         if (!seen) used.push_back(home);
@@ -349,6 +354,32 @@ bool resident_stage_swaps(strata::core::FileExpertSource &src,
     if (!staged.empty()) {
         for (const SwapHome& u : used) {
             const strata::core::OnDevice on(u.dev);
+            try {
+                u.stream->wait();
+            } catch (sycl::exception const& e) {
+                std::fprintf(stderr, "strata: copy back sync (device %d) failed: %s\n", u.dev, e.what());
+                return false;
+            }
+        }
+        // STRATA_CHECK_SWAPS=1 (a test aid): each evicted expert's exchange buffer must hold the model file's bytes
+        if (const char* chk = std::getenv("STRATA_CHECK_SWAPS"); chk != nullptr && chk[0] != '\0' && chk[0] != '0') {
+            static std::atomic<int64_t> n_ok{0}, n_bad{0};
+            std::vector<uint8_t> ref;
+            int64_t bad = 0;
+            for (const Staged& x : staged) {
+                ref.resize((size_t) strata::kernels::cpu::expert_layout().blob_bytes(x.layer));
+                if (!src.copy_blob_from_file(x.layer, x.out, ref.data()) ||
+                    std::memcmp(ref.data(), src.exchange_buffer(x.q), ref.size()) != 0) {
+                    ++bad;
+                    std::fprintf(stderr, "strata: STRATA_CHECK_SWAPS: layer %d expert %d: the exchange buffer differs from the file\n",
+                                 (int) x.layer, (int) x.out);
+                } else {
+                    ++n_ok;
+                }
+            }
+            n_bad += bad;
+            std::fprintf(stderr, "strata: STRATA_CHECK_SWAPS: %zu staged, %lld differ (total %lld ok, %lld differ)\n",
+                         staged.size(), (long long) bad, (long long) n_ok.load(), (long long) n_bad.load());
         }
         for (const Staged& x : staged)
             if (!src.stage_exchange(x.layer, x.in, x.out, x.q)) {
@@ -1624,6 +1655,21 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
     return el > 0 ? (double) done / el : -1.0;
 }
 
+// #1980: a start-up refusal ends the process here instead of returning from main.  Returning ran main's destructors
+// (the stages' caches, queues and Level Zero objects) in an order the UR loader did not survive: 2x Arc Pro B60, every
+// REFUSED start segfaulted in libur_loader after its message, and a trimmed one also left an xe page fault (bcs CAT error)
+// on the second card that hung the next start.  The device work queued so far finishes first; nothing is freed.
+[[noreturn]] static void refuse_exit(int code) {
+    std::fflush(stdout);
+    std::fflush(stderr);
+    try {
+        for (unsigned int d = 0; d < dpct::device_count(); ++d) dpct::get_device(d).queues_wait_and_throw();
+    } catch (...) {
+    }
+    std::fflush(stderr);
+    std::_Exit(code);
+}
+
 int main(int argc, char **argv) try {
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
@@ -2284,6 +2330,16 @@ int main(int argc, char **argv) try {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native).  A missing shard is an error
             // here: it used to be skipped, leaving a model with some tensors absent and a later error, or none.
             o.native_shards = strata::gguf_split_paths(o.native_preset);
+            // a model family Strata recognises but has no engine path for yet (Qwen3.6-35B-A3B) is refused here,
+            // with a message that says so, before anything else about the file is judged
+            {
+                const strata::GgufFile meta(o.native_shards.front());
+                const std::string why = strata::model_family_not_supported(strata::model_family(meta));
+                if (strata::model_family(meta) != strata::ModelFamily::Unknown && !why.empty()) {
+                    std::fprintf(stderr, "strata generate: --native %s: %s\n", o.native_preset.c_str(), why.c_str());
+                    return 2;
+                }
+            }
             // --ple-gguf defaults to the shard that holds the PLE table, found by name: shard 2 of the ISTA files
             // and of Unsloth's UD-Q4_K_XL, shard 1 of Swift's
             if (o.ple_gguf.empty() && !o.no_ple) {
@@ -2576,8 +2632,10 @@ int main(int argc, char **argv) try {
                              "(multi-token for the i-quant gate/up rows)\n",
                      !strata::kernels::cpu::cpu_avx2_ok() ? "ggml-cpu vec_dot (no AVX2: the older-CPU build)"
                      : std::getenv("STRATA_NO_IQ256") == nullptr ? "AVX-2" : "ggml-cpu vec_dot (STRATA_NO_IQ256 set)");
-    strata::core::ModelGeometry g;   // canonical defaults; the model file overrides the MoE shape below
-    int64_t K = 10;
+    // the compiled shape; a native model's file replaces it below with its own metadata (read_geometry), which a
+    // pruned variant (GSQ-RCO Coder, fewer than 512 experts) differs from
+    strata::core::ModelGeometry g;
+    int64_t K = g.n_expert_used;
     // THE ROPE CONFIG RESOLVES HERE, BEFORE ANY WEIGHT MOVES - the CLI and the model file have both spoken,
     // and `session_init` below builds the rope table from it and captures the kernels reading its constants
     // (rope_scaling.hpp); the only hard constraint is "set before that", and dying on a bad rope key beats
@@ -2590,19 +2648,29 @@ int main(int argc, char **argv) try {
         std::string gguf_rope_type;
         double gguf_rope_base = 0, gguf_rope_factor = 0, gguf_rope_orig_ctx = 0;
         if (!o.native_preset.empty()) {
-            // a pruned variant (GSQ-RCO Coder) ships fewer experts than the canonical 512x10; the model file
-            // is the authority on its own MoE shape - everything else in the geometry is unchanged
+            // The geometry is the model file's (core::geometry_from_gguf: every "<arch>.*" shape key), checked
+            // against the shapes this engine's kernels are built for.  The expert count and top-k are run-time
+            // sizes: a pruned variant (GSQ-RCO Coder) ships fewer experts than the canonical 512x10.
             try {
                 strata::GgufFile model_gguf(o.native_shards.front());   // the metadata shard
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_count")) g.n_expert = (int64_t) v->u;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.expert_used_count")) K = (int64_t) v->u;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.freq_base")) gguf_rope_base = v->num();
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.type")) gguf_rope_type = v->s;
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.factor")) gguf_rope_factor = v->num();
-                if (const strata::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.original_context_length"))
+                std::string gerr;
+                if (!strata::core::geometry_from_gguf(model_gguf, g, K, gerr)) {
+                    std::fprintf(stderr, "strata generate: %s\n", gerr.c_str());
+                    return 1;
+                }
+                const std::string mismatch = strata::core::compiled_geometry_mismatch(g);
+                if (!mismatch.empty()) {
+                    std::fprintf(stderr, "strata generate: %s: %s\n", o.native_preset.c_str(), mismatch.c_str());
+                    return 1;
+                }
+                const std::string p = std::string(strata::model_family_arch(g.family)) + ".";
+                if (const strata::MetaValue* v = model_gguf.get(p + "rope.freq_base")) gguf_rope_base = v->num();
+                if (const strata::MetaValue* v = model_gguf.get(p + "rope.scaling.type")) gguf_rope_type = v->s;
+                if (const strata::MetaValue* v = model_gguf.get(p + "rope.scaling.factor")) gguf_rope_factor = v->num();
+                if (const strata::MetaValue* v = model_gguf.get(p + "rope.scaling.original_context_length"))
                     gguf_rope_orig_ctx = v->num();
             } catch (const std::exception& e) {
-                std::fprintf(stderr, "strata generate: reading the model's expert shape from %s: %s\n",
+                std::fprintf(stderr, "strata generate: reading the model's geometry from %s: %s\n",
                              o.native_preset.c_str(), e.what());
                 return 1;
             }
@@ -2687,10 +2755,9 @@ int main(int argc, char **argv) try {
                                  "and --prefill CHUNK\n", o.pack.c_str());
             return 2;
         }
-        const strata::core::ModelGeometry g0;
         const auto embed_t0 = std::chrono::steady_clock::now();
-        if (!native_embed.load(o.embd_gguf.empty() ? o.native_shards : std::vector<std::string>{o.embd_gguf}, g0.n_embd,
-                               248320, err)) {
+        if (!native_embed.load(o.embd_gguf.empty() ? o.native_shards : std::vector<std::string>{o.embd_gguf}, g.n_embd,
+                               g.n_vocab, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -3003,7 +3070,13 @@ int main(int argc, char **argv) try {
             if (rps >= kSlowRowsPerS)
                 std::fprintf(stderr, "strata generate: PLE direct read probe: %.0f rows/s (fine)\n", rps);
             if (rps > 0 && rps < kSlowRowsPerS) {
-                if (!o.ple_io_explicit) {
+                // #1984 #1971 #2040: on no platform is the switch made on its own.  Windows: the mapped reads stalled prompts (the first chunk waits for 16 serial page faults
+                // a token from a cold table with no progress mark).  Linux SATA SSD: the 15K rows/s bar is NVMe-calibrated, a SATA SSD
+                // tops out at 10-14K with direct's 16 reads in flight and mapped reads were 7x slower.  The switch is only made when asked for
+                // (STRATA_PLE_AUTO_MMAP=1, the 0.1.42 behaviour); otherwise the slow probe warns and direct is kept.
+                bool auto_mmap = !o.ple_io_explicit;
+                if (const char* am = std::getenv("STRATA_PLE_AUTO_MMAP"); am == nullptr || std::atoi(am) == 0) auto_mmap = false;
+                if (auto_mmap) {
                     std::fprintf(stderr, "strata generate: --ple-io direct measures slow here (%.0f rows/s, about %.0f MB/s of "
                                          "random 4 KiB reads): using --ple-io mmap instead (the OS file cache holds the pages; "
                                          "--ple-io direct forces the old mode, --ple-io ram keeps the table in RAM)\n",
@@ -3018,8 +3091,9 @@ int main(int argc, char **argv) try {
                 } else {
                     std::fprintf(stderr, "strata generate: WARNING: --ple-io direct measures slow here (%.0f rows/s, about %.0f "
                                          "MB/s of random 4 KiB reads): a prompt can spend minutes reading layer 1 and trip the "
-                                         "stall watchdog (#1425, #1629). --ple-io mmap was 40-100x faster on such drives; "
-                                         "--ple-io ram needs the RAM for the table\n", rps, rps * 4096.0 / 1e6);
+                                         "stall watchdog (#1425, #1629). --ple-io mmap was 40-100x faster on some DRAM-less NVMe drives but 7x slower on a SATA SSD (#2040), so it is not chosen for you; "
+                                         "--ple-io ram needs the RAM for the table%s\n", rps, rps * 4096.0 / 1e6,
+                                 o.ple_io_explicit ? "" : " (kept direct: pass --ple-io mmap or --ple-io ram to change it)");
                 }
             }
         }
@@ -3605,11 +3679,38 @@ int main(int argc, char **argv) try {
         std::vector<int64_t> best, at((size_t) ns - 1);
         double best_ms = 1e30, best_mass = 0;
         int64_t best_held = 0, tried = 0;
+        // #1440: of the placements within STRATA_SPLIT_HEADROOM_TOL (default 0.2%) of the best predicted time, the one
+        // whose tightest card keeps the most VRAM beyond all its layers' experts (split_rules::pick_with_headroom).
+        // On by default here (a full xe card moves buffers to system memory instead of failing); STRATA_SPLIT_HEADROOM=0
+        // keeps the first best, as before.
+        static const bool split_headroom = [] {
+            const char* v = std::getenv("STRATA_SPLIT_HEADROOM");
+            return v == nullptr || std::atoi(v) != 0;
+        }();
+        const double headroom_tol =
+            std::getenv("STRATA_SPLIT_HEADROOM_TOL") ? std::atof(std::getenv("STRATA_SPLIT_HEADROOM_TOL")) : 0.002;
+        std::vector<int64_t> need_prefix((size_t) g.n_layers + 1, 0);
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            need_prefix[(size_t) l + 1] = need_prefix[(size_t) l] + (int64_t) g.n_expert * cost(l);
+        auto range_session = [&](int64_t lb, int64_t le) -> int64_t {
+            return (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le);
+        };
+        std::vector<strata::program::split_rules::Placement> scored;
+        std::vector<double> scored_mass;
+        std::vector<int64_t> scored_held;
+        auto score = [&](const std::vector<int64_t>& cuts, double ms, double hm, int64_t held) {
+            if (!split_headroom) return;
+            scored.push_back({cuts, ms, strata::program::split_rules::min_spare(cuts, g.n_layers, cap, need_prefix,
+                                                                                range_session)});
+            scored_mass.push_back(hm);
+            scored_held.push_back(held);
+        };
         auto consider = [&]() {
             double hm = 0;
             int64_t held = 0;
             const double ms = predict(at, hm, held);
             ++tried;
+            score(at, ms, hm, held);
             if (ms < best_ms) { best = at; best_ms = ms; best_mass = hm; best_held = held; }
         };
         const int64_t L = g.n_layers;
@@ -3686,6 +3787,7 @@ int main(int argc, char **argv) try {
                                           (double) k1 * layer_ms[0] + (double) (k2 - k1) * layer_ms[1] +
                                           (double) (k3 - k2) * layer_ms[2] + (double) (L - k3) * layer_ms[3];
                         ++tried;
+                        score({k1, k2, k3}, ms, hm / denom, held_at[a] + held_at[b] + held_at[c] + held_at[d]);
                         if (ms < best_ms) {
                             best = {k1, k2, k3};
                             best_ms = ms;
@@ -3700,6 +3802,27 @@ int main(int argc, char **argv) try {
             // Beyond four GPUs the placements outnumber any budget worth spending at startup (C(46,4) is
             // 163,185 at five).  Nothing on this rig reaches it.
             proportional();
+        }
+        if (split_headroom && scored.size() > 1) {
+            const size_t first = strata::program::split_rules::fastest(scored);
+            const size_t pick = strata::program::split_rules::pick_with_headroom(scored, headroom_tol);
+            if (pick != first && scored[first].cuts == best) {
+                auto fmt_k = [](const std::vector<int64_t>& v) {
+                    std::string s;
+                    for (const int64_t k : v) s += (s.empty() ? "" : ",") + std::to_string(k);
+                    return s;
+                };
+                std::fprintf(stderr, "strata generate: layer split auto: K=%s instead of K=%s (predicted %.1f vs %.1f ms): its "
+                                     "tightest card keeps %.2f GiB beyond all its layers' experts, against %.2f GiB "
+                                     "(#1440: a full card can page to system memory); STRATA_SPLIT_HEADROOM=0 keeps K=%s\n",
+                             fmt_k(scored[pick].cuts).c_str(), fmt_k(best).c_str(), scored[pick].ms, best_ms,
+                             (double) scored[pick].min_spare / 1073741824.0,
+                             (double) scored[first].min_spare / 1073741824.0, fmt_k(best).c_str());
+                best = scored[pick].cuts;
+                best_ms = scored[pick].ms;
+                best_mass = scored_mass[pick];
+                best_held = scored_held[pick];
+            }
         }
         split_at = best;
         std::string ks;
@@ -4775,6 +4898,7 @@ int main(int argc, char **argv) try {
         // miss: 20 GiB of RAM for experts the other card then holds, or one 39 GiB pinned allocation that fails).
         const int64_t mirror_end = multi_gpu && !split_at.empty() ? split_at[0] : g.n_layers;
         std::vector<std::pair<int64_t, int64_t>> miss;
+        size_t n_true_miss = 0;   // the experts no slot holds; what follows them in `miss` are the lend candidates (below)
         for (const auto& pr : profile)   // the profile's order: the most-routed misses first, if the cap is reached
             if (pr.first < mirror_end && xcache.slot_of(pr.first, pr.second) == strata::core::kNotResident)
                 miss.push_back({pr.first, pr.second});
@@ -4783,6 +4907,24 @@ int main(int argc, char **argv) try {
                 if (xcache.slot_of(l, e) == strata::core::kNotResident &&
                     std::find(miss.begin(), miss.end(), std::pair<int64_t, int64_t>{l, e}) == miss.end())
                     miss.push_back({l, e});
+        n_true_miss = miss.size();
+        // 0.1.43: the experts in the last slots - the ones a prompt's loan takes (Prefill::relayout lends the TAIL of the
+        // cache) - are mirrored too, after the real misses (the cap drops them first).  A lent expert is streamed during
+        // the prompt and put back after it; from the GGUF that was a pread at ~2.3 GB/s per expert (~1 s for a 4K prompt's
+        // 930 slots, 0.26 s for a 600-token prompt's 284), from the pinned mirror it is a DMA.  Their mirror entries are never
+        // read by a decode window: it only looks at a mirror address for an expert that has no slot.
+        // STRATA_LEND_MIRROR=0 turns it off; =N: the last N slots (default 10% of the cache with a loan, at most 1,200).
+        if (!o.no_prefill_borrow && o.prefill_chunk > 0 && !multi_gpu) {
+            const char* lm = std::getenv("STRATA_LEND_MIRROR");
+            const int64_t want_tail = lm ? std::atoll(lm) : std::min<int64_t>(xcache.slots() / 10, 1200);
+            if (want_tail > 0) {
+                const int64_t first_tail = xcache.slots() - std::min<int64_t>(want_tail, xcache.slots());
+                for (int64_t l = 0; l < mirror_end; ++l)
+                    for (int64_t e = 0; e < g.n_expert; ++e)
+                        if (const int64_t sl = xcache.slot_of(l, e); sl != strata::core::kNotResident && sl >= first_tail)
+                            miss.push_back({l, e});
+            }
+        }
         uint64_t avail = 0;
         if (FILE* f = std::fopen("/proc/meminfo", "r")) {
             char key[64]; unsigned long long kb = 0;
@@ -4800,8 +4942,8 @@ int main(int argc, char **argv) try {
                              err.c_str());
                 err.clear();
             } else {
-                std::fprintf(stderr, "strata generate: %lld of %zu experts missing from VRAM mirrored in pinned host memory "
-                                     "(%.2f GiB, %.1f s); the GPU reads them over PCIe\n", (long long) got, miss.size(),
+                std::fprintf(stderr, "strata generate: %lld of %zu experts missing from VRAM (+ %zu in the prompt loan's slots) mirrored in pinned host memory "
+                                     "(%.2f GiB, %.1f s); the GPU reads them over PCIe\n", (long long) got, n_true_miss, miss.size() - n_true_miss,
                              (double) gguf_src.mirrored_bytes() / 1073741824.0,
                              std::chrono::duration<double>(Clock::now() - tm).count());
                 // the device-built verify plan's view of it: each (layer, expert) -> its mirror address, 0 = none
@@ -4814,14 +4956,14 @@ int main(int argc, char **argv) try {
                 dpct::get_in_order_queue().memcpy(mirror_table_d, tab.data(), tab.size() * sizeof(unsigned long long)).wait();
             }
         }
-        unmirrored_misses = (int64_t) miss.size() - (int64_t) (gguf_src.mirrored_bytes() ? std::count_if(miss.begin(), miss.end(),
+        unmirrored_misses = (int64_t) n_true_miss - (int64_t) (gguf_src.mirrored_bytes() ? std::count_if(miss.begin(), miss.begin() + (ptrdiff_t) n_true_miss,
             [&](const std::pair<int64_t, int64_t>& pr) { return gguf_src.pinned(pr.first, pr.second); }) : 0);
         const bool no_host = [] { const char* v = std::getenv("STRATA_VERIFY_NO_HOST"); return v && *v && std::strcmp(v, "0") != 0; }();
         if (unmirrored_misses > 0 && no_host) {
             std::fprintf(stderr, "strata generate: REFUSED: %lld experts are neither in VRAM nor mirrored; with STRATA_VERIFY_NO_HOST "
                                  "the device plan cannot run them and generation would lack a safe host fallback - raise "
                                  "STRATA_MIRROR_MIB or the free RAM, or lower --max-context\n", (long long) unmirrored_misses);
-            return 2;
+            refuse_exit(2);
         }
         // The same rule after the start: the mirror holds the start's misses only, so an expert an adaptive swap moves
         // out of VRAM would be in neither, and the device plan would wait for a host that never serves it (every token
@@ -4912,6 +5054,29 @@ int main(int argc, char **argv) try {
     }
     if (multi_gpu)
         std::fprintf(stderr, "strata generate: layer split: CUDA0 runs layers 0-%lld\n", (long long) (split_at[0] - 1));
+    // #1980: the host mirror and the "REFUSED" count above cover the first stage only. A later stage whose cache does not
+    // hold all of its layers' experts has no mirror entry for the rest, and with STRATA_VERIFY_NO_HOST no host answers for
+    // them: the device plan reads a bad address and the card is lost at the first verify window (2x Arc Pro B60, xe CAT
+    // fault). Refuse at the start with the same message, and say how to get a complete load.
+    if (multi_gpu) {
+        const bool no_host_split = [] { const char* v = std::getenv("STRATA_VERIFY_NO_HOST"); return v && *v && std::strcmp(v, "0") != 0; }();
+        int64_t later_misses = 0;
+        for (auto& stp : stages) {
+            const GpuStage& st = *stp;
+            later_misses += std::max<int64_t>(0, (st.le - st.lb) * g.n_expert - (int64_t) st.cache.slots());
+        }
+        if (later_misses > 0 && no_host_split) {
+            std::fprintf(stderr, "strata generate: REFUSED: %lld experts of the later layer-split stages are neither in VRAM nor mirrored "
+                                 "(the host mirror covers the first stage only); with STRATA_VERIFY_NO_HOST the device plan cannot run them "
+                                 "and the card is lost at the first verify window - set STRATA_STAGE_TRIM=1 (with --layer-split N) to free "
+                                 "each card's duplicate dense weights, lower --max-context or --vram-reserve-mib, or unset "
+                                 "STRATA_VERIFY_NO_HOST\n", (long long) later_misses);
+            refuse_exit(2);
+        }
+        if (later_misses > 0)
+            std::fprintf(stderr, "strata generate: layer split: %lld experts of the later stages are not in VRAM (served by the host)\n",
+                         (long long) later_misses);
+    }
 
     std::array<strata::core::RemoteExperts, 3> remote_experts;
     std::unique_ptr<strata::core::RemoteExpertOpt> remote_opt;
@@ -6937,8 +7102,15 @@ int main(int argc, char **argv) try {
         }
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
+        int32_t* usage_dev_srv = nullptr;
         vh.d_res = thits.d_res;
-        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d);
+        // 0.1.44 --expert-profile-save under STRATA_VERIFY_NO_HOST (no adaptive tier, so no host-side counts): the device
+        // plan counts every routed expert of the verify windows and the saved profile is ranked from those counts.
+        if (mirror_table_d && !o.expert_profile_save.empty()) {
+            usage_dev_srv = sycl::malloc_device<int32_t>((size_t) (g.n_layers * g.n_expert), dpct::get_in_order_queue());
+            dpct::get_in_order_queue().memset(usage_dev_srv, 0, (size_t) (g.n_layers * g.n_expert) * 4).wait();
+        }
+        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d, usage_dev_srv, (long long) (g.n_layers * g.n_expert));
         vh.h_res = host_res.empty() ? nullptr : host_res.data();
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;
@@ -7719,7 +7891,9 @@ int main(int argc, char **argv) try {
         // empty and nothing below runs).  It needs the adaptive tier's counts and the residency table.
         std::vector<double> heat;
         if (!o.expert_profile_save.empty() && !all_experts_resident) {
-            if (drive.d.usage.empty() || host_res.empty())
+            if (usage_dev_srv != nullptr) {
+                // the device plan's routing counts (STRATA_VERIFY_NO_HOST): read when the profile is written
+            } else if (drive.d.usage.empty() || host_res.empty())
                 std::fprintf(stderr, "strata serve: --expert-profile-save needs the adaptive tier (--adapt-every and "
                                      "--adapt-swaps above 0) and --expert-profile: nothing will be saved\n");
             else
@@ -8265,6 +8439,38 @@ int main(int argc, char **argv) try {
         // #477: write the learned profile (between requests and at QUIT: a prompt's lent slots are back by then).
         // A swap still in flight counts as done - its expert is resident once the copy lands.  `why`: for the log.
         auto save_profile = [&](const char* why) {
+            if (usage_dev_srv != nullptr) {
+                // The cache and the mirror are fixed (no swaps under NO_HOST), so every pair is ranked by its device
+                // count mixed with the start's ranking (a short conversation must not wipe the prior).
+                const size_t n = (size_t) (g.n_layers * g.n_expert);
+                std::vector<int32_t> uh(n);
+                dpct::get_in_order_queue().memcpy(uh.data(), usage_dev_srv, n * 4).wait();
+                double total = 0;
+                for (int32_t c : uh) total += (double) c;
+                // prior mass by rank: exponential with lambda 2 (the shipped ranking holds ~70% of the routing in its
+                // first 47% of pairs, section 8 of notes-143-intel), worth `prior_entries` routed entries (800k: about one 150-token x 8 prompt session; 60k lost 36% on a different kind of text, 800k lost 18% and kept +13..19% on the trained kind)
+                const double lam = 2.0;
+                double prior_entries = 800000.0;
+                if (const char* pe = std::getenv("STRATA_PROFILE_PRIOR_ENTRIES")) prior_entries = std::max(0.0, std::atof(pe));
+                std::vector<double> hv(n, 0.0);
+                for (size_t i = 0; i < n; ++i) hv[i] = (double) uh[i];
+                for (size_t r = 0; r < profile_loaded.size(); ++r) {
+                    const auto [l, e] = profile_loaded[r];
+                    if (l < 0 || l >= g.n_layers || e < 0 || e >= g.n_expert) continue;
+                    const double x = (double) r / (double) n;
+                    hv[(size_t) (l * g.n_expert + e)] += prior_entries * lam * std::exp(-lam * x) / (1.0 - std::exp(-lam)) / (double) n;
+                }
+                std::vector<uint8_t> none(n, 0);
+                std::string e;
+                const auto ranked = strata::core::rank_learned_profile(g.n_layers, g.n_expert, none, hv, profile_loaded);
+                if (strata::core::write_expert_profile(o.expert_profile_save, g.n_layers, g.n_expert, ranked, e))
+                    std::fprintf(stderr, "strata serve: expert profile saved to %s (%s, %.0f routed entries counted on the device)\n",
+                                 o.expert_profile_save.c_str(), why, total);
+                else
+                    std::fprintf(stderr, "strata serve: the expert profile was not saved: %s\n", e.c_str());
+                profile_saved_at = Clock::now();
+                return;
+            }
             if (heat.empty()) return;
             std::vector<uint8_t> resident(host_res.size(), 0);
             for (size_t i = 0; i < host_res.size(); ++i) resident[i] = host_res[i] >= 0;
@@ -8283,12 +8489,23 @@ int main(int argc, char **argv) try {
         };
         // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
         // away, or pressed Esc): the flag is checked between prompt chunks and between verify windows.
-        std::atomic<bool> stop_req{false};
-        std::mutex in_mu;
-        std::condition_variable in_cv;
-        std::deque<std::string> in_lines;
-        bool in_eof = false;
-        std::thread([&] {
+        // 0.1.44: the reader is detached and may sit in read(2) past QUIT (the server writes more, or closes stdin, while
+        // main returns and the process exits), so what it touches is shared with it, never main's locals: a line or
+        // EOF after QUIT used to lock a destroyed mutex (undefined behaviour; an abort on macOS).
+        struct StdinShared {
+            std::atomic<bool> stop_req{false};
+            std::mutex mu;
+            std::condition_variable cv;
+            std::deque<std::string> lines;
+            bool eof = false;
+        };
+        const auto in_shared = std::make_shared<StdinShared>();
+        std::atomic<bool>& stop_req = in_shared->stop_req;
+        std::mutex& in_mu = in_shared->mu;
+        std::condition_variable& in_cv = in_shared->cv;
+        std::deque<std::string>& in_lines = in_shared->lines;
+        bool& in_eof = in_shared->eof;
+        std::thread([st = in_shared] {
             // read(2) on the descriptor, not std::cin: glibc's exit() flushes every stdio stream and waits for
             // stdin's lock, which getline holds while it waits for input - an engine ending on an error (every
             // std::exit) would hang in exit() on Linux, and the server would wait for it forever
@@ -8319,14 +8536,14 @@ int main(int argc, char **argv) try {
             };
             while (getline_fd(l)) {
                 if (!l.empty() && l.back() == '\r') l.pop_back();
-                if (l == "STOP") { stop_req.store(true); continue; }
-                std::lock_guard<std::mutex> lk(in_mu);
-                in_lines.push_back(l);
-                in_cv.notify_one();
+                if (l == "STOP") { st->stop_req.store(true); continue; }
+                std::lock_guard<std::mutex> lk(st->mu);
+                st->lines.push_back(l);
+                st->cv.notify_one();
             }
-            std::lock_guard<std::mutex> lk(in_mu);
-            in_eof = true;
-            in_cv.notify_one();
+            std::lock_guard<std::mutex> lk(st->mu);
+            st->eof = true;
+            st->cv.notify_one();
         }).detach();
         auto next_line = [&](std::string& out) -> bool {
             std::unique_lock<std::mutex> lk(in_mu);
@@ -9081,7 +9298,7 @@ int main(int argc, char **argv) try {
                 line = std::string(bimg ? "GENI 1" : "GEN 1") + e2;
             }
             // #477: every --expert-profile-save-every minutes, before the next request (at QUIT: after the loop)
-            if (!heat.empty() && line != "QUIT" && o.expert_profile_save_min > 0 &&
+            if ((!heat.empty() || usage_dev_srv != nullptr) && line != "QUIT" && o.expert_profile_save_min > 0 &&
                 Clock::now() - profile_saved_at >= std::chrono::duration<double>(o.expert_profile_save_min * 60.0))
                 save_profile("periodic");
             if (line == "QUIT") break;
@@ -9343,6 +9560,9 @@ int main(int argc, char **argv) try {
             int req_ckpt = 1;
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
+            // #2228: img_keys=<hex>,<hex>,... (GENI): each picture's key from the server (its normalized bytes' hash), in
+            // prompt order; the conversation cache matches a picture by it and its grid instead of its embedding floats
+            std::vector<uint64_t> req_img_keys;
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
             if (endp != nullptr) {   // GENI takes the same keys (#75: image requests were always greedy); its
                                      // embedding file path is the first token without an =
@@ -9370,6 +9590,18 @@ int main(int argc, char **argv) try {
                     else if (key == "logprobs") req_logprobs = std::clamp(std::atoi(tok.c_str() + eq + 1), -1, 20);
                     else if (key == "pcie_frac") req_pcie_frac = std::clamp((double) fv, 0.0, 1.0);
                     else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
+                    else if (key == "img_keys") {
+                        req_img_keys.clear();
+                        const char* q = tok.c_str() + eq + 1;
+                        while (*q != '\0') {
+                            char* qe = nullptr;
+                            const unsigned long long v = std::strtoull(q, &qe, 16);
+                            if (qe == q) { req_img_keys.clear(); break; }
+                            req_img_keys.push_back((uint64_t) v);
+                            q = *qe == ',' ? qe + 1 : qe;
+                            if (*qe != ',' && *qe != '\0') { req_img_keys.clear(); break; }
+                        }
+                    }
                     // unknown keys are skipped: the ids start at the first token without '='
                 }
             }
@@ -9431,7 +9663,10 @@ int main(int argc, char **argv) try {
                         {   // what the conversation cache compares: a picture is its grid and its embeddings
                             const int64_t grid[3] = {im.n, im.nx, im.ny};
                             uint64_t h = fnv1a(grid, sizeof grid);
-                            h = fnv1a(img_rows.data() + im.off, (size_t) im.n * (size_t) g.n_embd * sizeof(float), h);
+                            if (req_img_keys.size() == imgs.size())   // #2228: the server's key for picture k
+                                h = fnv1a(&req_img_keys[k - 1], sizeof(uint64_t), h);
+                            else
+                                h = fnv1a(img_rows.data() + im.off, (size_t) im.n * (size_t) g.n_embd * sizeof(float), h);
                             req_imgs.push_back({i, h});
                         }
                         for (int64_t j = 0; j < im.n && ve.empty(); ++j)
@@ -11298,11 +11533,7 @@ int main(int argc, char **argv) try {
                     return 1;
                 }
                 const int64_t L = (int64_t) live.size();
-                const strata::kernels::QsaShapes qs = [&] {
-                    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-                    s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_dim = g.idx_key_dim;
-                    return s;
-                }();
+                const strata::kernels::QsaShapes qs = strata::core::qsa_shapes(g);
                 bool hash_ok = true;
                 std::array<uint8_t, 65536> hash_buffer;
                 auto hash_dev = [&](const void *p, size_t bytes, uint64_t h) {
@@ -12037,7 +12268,13 @@ int main(int argc, char **argv) try {
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
         vh.d_res = thits.d_res;
-        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d);
+        int32_t* usage_dev = nullptr;   // STRATA_USAGE_DUMP=PATH: the device plan counts every routed expert (measurement)
+        const char* usage_dump = std::getenv("STRATA_USAGE_DUMP");
+        if (mirror_table_d && usage_dump && *usage_dump) {
+            usage_dev = sycl::malloc_device<int32_t>((size_t) (g.n_layers * g.n_expert), dpct::get_in_order_queue());
+            dpct::get_in_order_queue().memset(usage_dev, 0, (size_t) (g.n_layers * g.n_expert) * 4).wait();
+        }
+        if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d, usage_dev, (long long) (g.n_layers * g.n_expert));
         vh.h_res = host_res.empty() ? nullptr : host_res.data();
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;
@@ -12484,6 +12721,24 @@ int main(int argc, char **argv) try {
             std::printf("%-24s plan %.3f  activation quantize %.3f  jobs %.3f  run %.3f ms/round\n", "dispatch",
                         drive.d.ms_plan / rounds, drive.d.ms_actq / rounds, drive.d.ms_jobs / rounds,
                         drive.d.ms_run / rounds);
+        if (usage_dev != nullptr) {   // STRATA_USAGE_DUMP: the window's routing as make_profile.py reads it (layer, k=1, id, weight)
+            std::vector<int32_t> uh((size_t) (g.n_layers * g.n_expert));
+            dpct::get_in_order_queue().memcpy(uh.data(), usage_dev, uh.size() * 4).wait();
+            if (FILE* uf = std::fopen(usage_dump, "wb")) {
+                int64_t total = 0;
+                for (int64_t l = 0; l < g.n_layers; ++l)
+                    for (int64_t e = 0; e < g.n_expert; ++e)
+                        for (int32_t c = 0; c < uh[(size_t) (l * g.n_expert + e)]; ++c, ++total) {
+                            const int32_t hdr[3] = {(int32_t) l, 1, (int32_t) e};
+                            const float wgt[2] = {0.0f, 0.0f};
+                            std::fwrite(hdr, 4, 3, uf);
+                            std::fwrite(wgt, 4, 1, uf);   // (layer, k) + k ids + k weights: 8 + 8 bytes
+                        }
+                std::fclose(uf);
+                std::printf("%-24s %s (%lld routed entries counted on the device)\n", "usage dumped", usage_dump,
+                            (long long) total);
+            }
+        }
         if (rounds > 0 && !drive.d.usage.empty())
             std::printf("%-24s %lld experts swapped into the VRAM tier (every %d rounds, %.3f ms/round)\n", "adaptive tier",
                         (long long) swaps_total, o.adapt_every, ms_adapt / rounds);
@@ -12491,6 +12746,31 @@ int main(int argc, char **argv) try {
             std::printf("%-24s %.2f GiB of experts in RAM, %lld exchanged with the VRAM tier, %lld blob reads from "
                         "the file\n", "resident RAM", (double) src.resident_bytes() / 1073741824.0,
                         (long long) src.exchanges(), (long long) src.file_reads());
+        // STRATA_CHECK_SWAPS=1 (a test aid): after the run every expert must be held (the GPU cache or the RAM copy),
+        // and every RAM-copy blob must equal the model file's bytes (nothing lost, nothing stale after the swaps)
+        if (src.complement_ready())
+            if (const char* chk = std::getenv("STRATA_CHECK_SWAPS"); chk != nullptr && chk[0] != '\0' && chk[0] != '0') {
+                int64_t held_ram = 0, held_gpu = 0, lost = 0, stale = 0;
+                std::vector<uint8_t> ref;
+                for (int64_t l = 0; l < g.n_layers; ++l)
+                    for (int64_t e = 0; e < g.n_expert; ++e) {
+                        const bool ram = src.has_resident(l, e);
+                        const bool gpu = host_res[(size_t) l * (size_t) g.n_expert + (size_t) e] >= 0;
+                        held_ram += ram;
+                        held_gpu += gpu;
+                        if (!ram && !gpu) { ++lost; continue; }
+                        if (!ram) continue;
+                        ref.resize((size_t) strata::kernels::cpu::expert_layout().blob_bytes(l));
+                        if (!src.copy_blob_from_file(l, e, ref.data()) ||
+                            std::memcmp(ref.data(), src.resident_blob(l, e), ref.size()) != 0) {
+                            if (stale++ < 8)
+                                std::fprintf(stderr, "strata: STRATA_CHECK_SWAPS: layer %d expert %d: the RAM copy differs from the file\n",
+                                             (int) l, (int) e);
+                        }
+                    }
+                std::printf("%-24s audit: %lld experts in RAM, %lld in the GPU cache, %lld held by neither, %lld RAM blobs differ from the file\n",
+                            "STRATA_CHECK_SWAPS", (long long) held_ram, (long long) held_gpu, (long long) lost, (long long) stale);
+            }
         if (srcp == &src) {  // CS-T: the RAM and file tiers (the GPU cache's share is the hit rate above)
             const double fms = src.file_ms() - fms0, fmb = (double) (src.file_blob_bytes() - fbytes0) / 1e6;
             std::printf("%-24s decode: RAM %lld blobs, files %lld blobs, %.1f MB read from the files (%.2f MB/round, "

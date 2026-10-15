@@ -271,6 +271,7 @@ class IdleServiceTests(unittest.TestCase):
     def test_dead_vision_without_recorded_footprint_is_not_restarted_blindly(self):
         svc = self.service()
         svc.vision = mock.Mock()
+        svc.vision.elastic = False
         svc.vision.alive.return_value = False
         with self.assertRaises(GpuBusy):
             list(svc.load_events(threading.Event()))
@@ -351,7 +352,7 @@ class IdleServiceTests(unittest.TestCase):
         svc = self.service()
         vision, download = self.interleaved_vision(svc)
         observed = []
-        def encode_all(_):
+        def encode_all(_, cancel=None):
             observed.append((svc.loaded(), vision.alive(), svc.fifo.locked()))
             raise ValueError("fixture reached guarded encoder")
         vision.encode_all = encode_all

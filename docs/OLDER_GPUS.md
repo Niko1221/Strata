@@ -12,7 +12,7 @@ and their output stay exactly as they were. Numbers are the reporters' own, on o
 | Cards | Compute capability | How it runs | What is different on it | Reported |
 | --- | --- | --- | --- | --- |
 | Tesla P100 | 6.0 | the CUDA 12 engine | `__dp4a` emulated (bit-exact); BF16 projections through fp32 | 2x P100, IQ3_S, engine 0.1.39: prompt 526-532 tok/s, decode 28-32 tok/s at 128K prompt tokens, 3 of 3 needle checks at 122K ([report](../bench/results/2026-10-06-community-2x-p100/README.md), #1157) |
-| Tesla P40 / P4, GTX 10 series | 6.1 | the CUDA 12 engine | BF16 projections through fp32 (cuBLAS has no BF16 GEMM there, #395) | P40, IQ3_S, engine 0.1.30: prompt 217-374 tok/s, decode 30-33 tok/s (#395) |
+| Tesla P40 / P4, GTX 10 series | 6.1 | the CUDA 12 engine | BF16 projections through fp32 (cuBLAS has no BF16 GEMM there, #395); the dense weights dequantized by a wide kernel, expert mode 8 and its own interleaved-matvec table; opt-in `STRATA_DENSE_F32=1`: the large dense GEMMs as `cublasSgemm` ([below](#tesla-p40-sm_61-what-was-measured-and-changed)) | P40, IQ3_S, engine 0.1.30: prompt 217-374 tok/s, decode 30-33 tok/s (#395); 0.1.43.1 with the sm_61 changes: prompt 255 tok/s at 565 tokens (was 205), decode 37-38 tok/s (was 34-35); with `STRATA_DENSE_F32=1` 464-474 tok/s at 7K tokens (was 360-432) |
 | Tesla V100, Titan V | 7.0 | the CUDA 12 engine | BF16 projections on the FP16 tensor cores (#655, #540); the prompt attention on `mma.m8n8k4` (#600); a leaner attention kernel (#540) | V100-PCIE-32GB, UD-IQ4_XS: prompt 1,123-1,251 tok/s (#600); V100 32GB, IQ2_XS: prompt +22% from #540 |
 | RTX 20 (Turing) | 7.5 | **supported**, the ready-made engine | opt-in: `STRATA_BF16_TC=1` runs the BF16 projections on the FP16 tensor cores | RTX 2080 Ti, Q2_0: prompt +15-18% (#655) |
 
@@ -95,9 +95,57 @@ sums round differently): #540 measured a mean KL of 8.4e-3 on the next-token dis
 (the same top-1 in 23), the size of other summation-order changes; #655 a worst relative difference of 3.5e-5 per
 product on an RTX 2080 Ti.
 
-A/B switches: `STRATA_BF16_TC=0|1`, `STRATA_PROMPT_ATTN_OLD=1` (the decode kernel for prompts), `STRATA_ATTN_PRE75=0`
+A/B switches: `STRATA_DEQUANT_WIDE=0`, `STRATA_SM61_TABLE=0` (sm_61: the kernels 0.1.43.1 ran), `STRATA_DENSE_F32=1` (Pascal, opt-in),
+`STRATA_BF16_TC=0|1`, `STRATA_PROMPT_ATTN_OLD=1` (the decode kernel for prompts), `STRATA_ATTN_PRE75=0`
 (#540's kernel off; on gfx103x with HIP that kernel is the default, see the AMD table above, and `=1` turns it on for
 another wave32 AMD card). [NVIDIA_V100.md](NVIDIA_V100.md) has the V100 build, its measurements and the parity test.
+
+### Tesla P40 (sm_61): what was measured and changed
+
+One Tesla P40 24 GB in a 20-vCPU VM (Xeon E5-2695 v4, 98 GB RAM), CUDA 12.4 (cuBLAS 12.4.5.8), IQ3_S with MTP
+(`--spec 4`), int8 KV, `--max-context 262144`, engine 0.1.43.1; the numbers and every run are in
+[bench/results/2026-10-12-p40-sm61-kernels](../bench/results/2026-10-12-p40-sm61-kernels/README.md).
+`STRATA_PREFILL_TIMING=1`, `STRATA_DECODE_TIMING=1` and `STRATA_VERIFY_PROFILE=1` show a card that is the bottleneck
+everywhere: the prompt's GPU timeline equals its wall time (waiting for expert copies 0.2%, host grouping 0.2% of a
+7K-token prompt) and a decode window is 49 ms of GPU stages with 1-3 ms of CPU experts. Of a 7K-token prompt, 36% is
+the dense projections' GEMMs, 28% the experts (ggml's MMQ, which has its own Pascal dp4a configuration), 13% the
+hyper-connection read and 12% the attention.
+
+Three things run differently on compute capability 6.1 by default and a fourth is opt-in. Each gives the same bits as
+what it replaces:
+
+| Change | What it replaces | Measured on the P40 | Switch |
+| --- | --- | --- | --- |
+| Wide dequantization (a thread per 8 values, 16-bit loads, 16-byte stores) for Q4_K / Q5_K / Q6_K / IQ4_XS | a thread per 32 values with byte loads: 0.5 s of every prompt chunk, whatever its length | Q6_K 10240 x 2560: 7.2 -> 0.33 ms (10 -> 227 GB/s); Q4_K 5.2x, Q5_K 3.8x, IQ4_XS 3.6x; `dequant_wide_parity` 360 cases bitwise | on; `STRATA_DEQUANT_WIDE=0` |
+| Expert mode 8 for the experts in VRAM (decode and verify windows) | the CUDA layout | an 18-expert call at 2 tokens: IQ3_S 390 -> 255 us, IQ3_XXS 345 -> 252, IQ2_S 290 -> 238, IQ4_XS 328 -> 261; `native_expert_bench` bitwise | on; `STRATA_SM61_TABLE=0` (or `STRATA_EXP_MODE=0`) |
+| The interleaved small-batch matvec with a table measured on the P40 (`kIlRows_61`) | `native_mmvq` | IQ4_XS 2560 x 10240 at 2 columns 112 -> 65 us, Q6_K 12288 x 2560 at 4 columns 189 -> 127 us, the Q5_K head at 3 columns 2,545 -> 1,766 us; `mmvq_il_parity` bitwise | on; `STRATA_SM61_TABLE=0` (or `STRATA_MMVQ_IL=0`) |
+| The large dense GEMMs (qkv, query, gate, output projections) as `cublasSgemm` on FP32 copies of the FP16 operands | cuBLAS's FP16-operand kernels, which run at 4.3 TFLOPS instead of 7.6 for most chunk sizes (a 7K-token prompt reads in 16.3 or 19.5 s by its exact token count) | 8.4-9.8 TFLOPS at every size from 512 tokens; qkv at 7,041 tokens 85 -> 45 ms; `gemm_f32_parity` 5,201 chunk sizes bitwise | **opt-in**, `STRATA_DENSE_F32=1` |
+
+The GEMM route is opt-in because its equality is a property of the cuBLAS build, not of the code: it was measured with
+cuBLAS 12.4.5.8 only. Run `gemm_f32_parity` (a build with `-DSTRATA_BUILD_TESTS=ON`; exit 0 = every size bitwise) with
+your toolkit's library before you set it.
+
+Through the server, medians of 3 requests per run, two runs per build alternated, each run started with the card at
+65 C (see below). By default: a 565-token prompt 203 / 205 -> 256 / 255 tok/s, decode after it 35.0 / 34.2 -> 38.2 /
+37.2 tok/s, a 7,047-token prompt 1-3% faster at the same token count. With `STRATA_DENSE_F32=1` as well: the
+7,047-token prompt 430 / 364 -> 474 / 473 tok/s (the old build reads it at ~361 or ~431 tok/s depending on whether the
+chunk has more than 7,040 tokens; with the route every request read at 464-474), decode after it 32.1 / 33.4 -> 35.9 /
+34.0. With `STRATA_DEQUANT_WIDE=0 STRATA_SM61_TABLE=0` and the route off the new build measures as the old one (210 /
+365 tok/s, 33.3 tok/s).
+
+Measured and **not** changed: the latency-hidden hyper-connection read (`STRATA_GR_FAST=1`) is slower on the P40 below
+5 tokens (82 -> 88 us at one); `STRATA_PREFILL_CPU_SHARE=auto` and `STRATA_ADAPT_OVERLAP=1` gave nothing.
+
+Two things to know when measuring on such a card:
+
+- **Temperature.** A P40 has no fan of its own. This one reaches 87-89 C in a few minutes of work; at 89 C the driver
+  reports `SW Thermal Slowdown: Active` and the clock falls from 1,531 to ~1,300 MHz (`nvidia-smi -q -d PERFORMANCE`,
+  `nvidia-smi --query-gpu=temperature.gpu,clocks.gr --format=csv -l 2`). Start every arm of an A/B at the same
+  temperature, or the later arm loses.
+- **Greedy answers are not identical run to run on a CPU without AVX-512**, even with `--prompt-cache 0
+  --adapt-swaps 0 --pcie-frac 0`: an expert computed on the CPU rounds differently for a lone token than in a window
+  of several (`native_gu_mt_min`), and how many drafts a window holds depends on timing. Add `STRATA_IQ_MT_MIN=1`
+  (and `STRATA_PREFILL_CPU_SHARE=0`, `STRATA_ROUTE_TAIL_SKIP=0`) to compare two builds' answers byte for byte.
 
 ### Quadro RTX 8000: measurements of existing switches
 

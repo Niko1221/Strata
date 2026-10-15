@@ -24,6 +24,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 #include "strata/kernels/native_gdn.hpp"
+#include "strata/core/geometry.hpp"
 #include <cuda_runtime.h>
 #include <atomic>
 #include <cmath>
@@ -35,6 +36,7 @@ namespace strata::kernels {
 namespace {
 std::atomic<bool> enabled{false};
 constexpr int S = 128;
+static_assert(S == strata::core::kCompiledGeometry.ssm_state_size, "native_gdn is compiled for core/geometry.hpp");
 
 __device__ __forceinline__ float warp_sum(float value) {
 #pragma unroll

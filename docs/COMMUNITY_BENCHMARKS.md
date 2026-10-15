@@ -3,6 +3,7 @@
 Share measurements from your own hardware so other users can judge how Strata
 might run on a similar machine. This guide suggests a report format and a pull
 request workflow; a single model, GPU, or context length is enough to contribute.
+The quickest way is the built-in benchmark: [`BENCH.bat` / `./bench.sh`](#run-the-benchmark) writes a report in this format.
 
 Existing [benchmark reports](../bench/results/) provide examples. The
 [engine 0.1.26 speed report](../bench/results/2026-09-29-speed-0126/README.md)
@@ -52,6 +53,9 @@ and their limits. Report what you actually measured and label estimates separate
   Strata 0.1.40.3 prebuilt Windows HIP engine, Flash-Next IQ2_XS and IQ3_XXS: a prefill-size sweep (8,192 best), a matched 32K coding comparison (9/9 tasks each, IQ2_XS about 17% faster decode), one 113K recall request. Sanitized data, fixtures and scripts included.
 - [2026-10-10: 2x Tesla P40 24 GB, Xeon E5-2699 v3, 125 GB RAM](../bench/results/2026-10-10-community-2x-p40-iq3_s/README.md):
   Strata 0.1.41 CUDA 12 source build (sm_61), Flash-Next IQ3_S, 131,072-token context, layer split; decode 35.0 tok/s, prompt 350/558 tok/s at 3.9K/21.9K, needles 6/6, conversation checkpoints.
+- [2026-10-12: Tesla P40 24 GB (sm_61), 20 vCPUs of a Xeon E5-2695 v4 without AVX-512, 98 GB RAM](../bench/results/2026-10-12-p40-sm61-kernels/README.md):
+  Strata `a0116b2` (0.1.43.1) CUDA 12.4 source build, Flash-Next IQ3_S, 262,144-token context, the profile of a prompt and of a decode window on Pascal and four bitwise changes for sm_61:
+  a 565-token prompt 205 -> 255 tok/s, decode 34-35 -> 37-38 tok/s, and with the opt-in `STRATA_DENSE_F32=1` a 7K prompt 360-432 -> 464-474 tok/s. Short and 7K prompts only; cuBLAS 12.4 only.
 - [2026-10-09: RTX 5060 Ti 16 GB + Xeon E5-2680 v4 (Windows 10)](../bench/results/2026-10-09-community-rtx-5060-ti-e5-2680-v4/README.md):
   Strata 0.1.41, Coder IQ1_M and abliterated Q2_0 at 262K; prompt and decode at 4K / 32K / 128K.
 - [2026-10-09: RTX 5060 Ti 16 GB under WSL2, Ryzen 7 3700X, 128 GB RAM](../bench/results/2026-10-09-community-rtx-5060ti-wsl2-iq3_s-0141/README.md):
@@ -60,6 +64,53 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+
+## Run the benchmark
+
+The simplest report is one command after setup. Windows: double-click `BENCH.bat`. Linux: `./bench.sh`. Or
+`python tools/strata_bench.py` from the Strata folder. Setup also offers it at the end of an interactive install
+(default no).
+
+It starts the model with the settings you already have (the newest `strata-*.json`; `--config FILE` picks another one),
+or uses a Strata server that is already running on that port (`--url http://127.0.0.1:8080` for another address). It then
+sends a fixed suite through the HTTP API, three runs each, and reports medians with ranges. The default takes about
+3 to 10 minutes once the model has loaded:
+
+| Test | What it sends | What it reports |
+| --- | --- | --- |
+| chat | three short questions, up to 100 new tokens | decode tok/s, time to first token |
+| 4K and 16K prompt | a fresh word-list prompt of about 4,096 and 16,384 tokens (skipped when your context is smaller) | prompt tok/s, time to first token |
+| agent session | a system prompt and four tools, then five turns that each add about 1,500 words of a project file and continue from the model's own earlier answers | tokens the conversation cache reused, tokens read again, time to first token per turn |
+| `--clients N` | N requests at the same moment (the server needs `--batch` to run them together) | total tok/s, p50 and p95 first-token time and latency |
+| `--long` | the prompt test at about 32,768 tokens | prompt tok/s, time to first token |
+
+Speeds are the engine's own timings (`prompt_per_second`, `predicted_per_second` in the answer); first-token time and
+latency are measured by the client. Thinking is off for the suite so the answers are short and the runs comparable
+(`--think` leaves it on). Every prompt carries a unique tag, so the fresh-prompt tests never get help from the cache.
+Close other programs first: a browser or a game changes the numbers.
+
+The result goes to `bench/results/<date>-community-<gpu>-<model>/` (or `--out DIR`):
+
+- `README.md` in the format below, with the GPU, VRAM, CPU, RAM, OS, driver, Strata and engine versions, model and
+  quantization, context and your settings filled in from the machine and the server
+- `results.json` with every request (tokens, timings, errors) and the machine facts
+- `engine-log-excerpt.txt` with the engine's start-up lines (when the benchmark started the server)
+
+Home folders, user and host names, local network addresses and API keys are replaced by placeholders before anything is
+written. Read the report once before you share it: the benchmark cannot know what else you consider private.
+
+To share it, open a pull request that adds the folder (see [Submit a report](#submit-a-report)), or paste
+`README.md` into a GitHub issue. Add what the tool does not know: background load, power limits, storage.
+
+To compare with an earlier run on the same machine (before and after an update or a setting change):
+
+```bash
+python tools/strata_bench.py --compare bench/results/2026-10-01-community-rtx-3060-qwen3-8-flash-next
+python tools/strata_bench.py --compare OLD_FOLDER --compare-only NEW_FOLDER   # two saved runs, nothing is started
+```
+
+The tool is a speed check, not a quality test. For recall and other checks, see [Optional correctness
+checks](#optional-correctness-checks); for A/B tests of two builds use `tools/ab_engine.py`.
 
 ## What to record
 
