@@ -217,7 +217,14 @@ public:
     /// 1 = this stage's window and commit are done (the last stage's picks are in batch_out), 0 = still running,
     /// -1 = an error (err).  Serves every layer that has rung so far.
     int batch_poll(PoolMultiFn pool, void* user, std::string& err);
-    bool batch_busy() const { return b_running_; }
+    bool batch_busy() const { return b_running_.load(std::memory_order_acquire); }
+    /// Serves the layers of this stage's window that have rung (the CPU pool and the flags), with no CUDA call: 1 once
+    /// every layer is served (or the window raises no host doorbells), 0 while one is still to ring.  batch_poll
+    /// calls it, unless set_external_serve(true) moved it to a thread of its own (STRATA_PIPED_CONCURRENT: a CUDA
+    /// call can wait for the driver's lock while another thread holds it waiting for the GPU, whose window waits
+    /// for its doorbell, #31); batch_poll then makes no CUDA call before every layer is served.
+    int batch_serve(PoolMultiFn pool, void* user);
+    void set_external_serve(bool on) { ext_serve_.store(on, std::memory_order_release); }
     /// A slot's sampling (temperature / top_p / top_k / min_p / seed; penalties are not applied in batch windows):
     /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by
     /// default.  Set on the first stage, it reaches the last.
@@ -341,10 +348,22 @@ private:
         for (int t = 0; t < S; ++t) k.push_back(rows[t]);
         return k;
     }
-    // batch_launch / batch_poll
-    bool b_running_ = false;
-    int64_t b_k_ = 0, b_steps_ = 0;
-    std::chrono::steady_clock::time_point b_last_;
+    // batch_launch / batch_poll (with external serving, batch_serve runs on another thread: running and the served
+    // layer count are atomics, set by batch_launch before running)
+    std::atomic<bool> b_running_{false};
+    std::atomic<int64_t> b_k_{0};
+    int64_t b_steps_ = 0;
+    std::atomic<bool> ext_serve_{false};
+    // when a layer was last served (steady clock ticks): the serving thread writes it, batch_poll's checks read it
+    std::atomic<int64_t> b_last_{0};
+    void ring_now() {
+        b_last_.store((int64_t) std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
+    }
+    std::chrono::steady_clock::time_point last_ring() const {
+        return std::chrono::steady_clock::time_point(
+            std::chrono::steady_clock::duration(b_last_.load(std::memory_order_acquire)));
+    }
+    std::chrono::steady_clock::time_point ext_checked_{};   ///< batch_poll's last check with external serving
     int32_t b_out_[8] = {};
     std::vector<strata::kernels::SamplerParams> slot_sp_;
     bool sample_rows(int S, std::string& err);   ///< the sampled slots' rows of the last batch window

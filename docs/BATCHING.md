@@ -141,6 +141,102 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
 - Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 
+## Reading a prompt beside pipelined groups (experimental, opt-in)
+
+With a layer split and `--batch-groups` above 1 a prompt is read in one run: every decoding slot stops until it is
+read, however long it is (#1906). One GPU does not have this problem: there the slots decode between the prompt's
+chunks for `STRATA_BATCH_DECODE_SHARE` x the chunk's time.
+
+`STRATA_PIPED_CONCURRENT=1` reads a prompt on a thread of its own while the slot groups keep decoding through the
+pipeline, instead of stopping them: the prompt's chunks and the slots' windows run on the same GPUs at once, on their
+own streams (the windows' at the device's highest priority on CUDA; `STRATA_PIPED_CONCURRENT_PRIO=0` keeps the default),
+so the slots never wait for the read and the read is one run with no drain inside it.
+
+- The prompt's K/V goes to the main sessions and the slots' to their own, so they do not touch each other's state. The
+  n-gram (PLE) table both of them read is locked. The adaptive VRAM tier stands still during the read: its round lands
+  before the read and none starts while it runs.
+- The VRAM expert slots the prompt path borrows are lent before the read and refilled after it, with nothing in flight;
+  in between the slots' windows compute those experts on the CPU.
+- The slots' doorbells are served on a thread of their own during the read, which makes no CUDA call. A CUDA call can
+  wait for the driver's lock while its holder waits for the GPU - a free, or the module the first kernel of a new shape
+  loads - and a window on that GPU waits for its doorbell (issue #31's pattern: two such hangs were found and read from
+  the engine's stall dumps while this was built). The MTP drafter's prompt buffers and the prompt path's pinned upload
+  slots are sized before the read, so its thread allocates and frees nothing. Between windows the doorbell thread waits
+  for the next launch, which wakes it (a timed sleep is a whole timer tick on Windows, up to 15.6 ms). A window that
+  will not finish is still found (its graph ended with a layer still to ring, or no layer rang for 20 s), and the stall
+  watchdog stays on for the whole read.
+- A waiting shorter request takes over at the read's next chunk (`BYIELD`), also when no slot decodes: the run ends
+  there, the pipeline is drained and the part read waits in a slot, as off the pipeline. A read nobody waits for is not cut.
+- Off, said once, where the read's thread would allocate or free (`STRATA_PREFILL_HELP=1`, `STRATA_SPLIT_MTP_BATCH=1`),
+  where serving a doorbell makes a CUDA call (`--pcie-mode dma`, `STRATA_FS_SLOTS`, the helper caches
+  `--expert-cache-device1..3`), and with an expert source that hands out buffers it recycles (the GGUF in place, an
+  unbuffered source, `STRATA_IO_PREFETCH`): the experts come from the RAM arena or the mapped file. A prompt with
+  pictures is read the usual way.
+
+One log line per read (`strata batch: read N tokens on a thread of its own in X ms (concurrent, to Q of T); the slots
+decoded R rows meanwhile (S rows/s; stage k: W windows, H ms host each)`). Built for CUDA and HIP (HIP keeps the default
+stream priority, and is not run on a GPU here); SYCL does not have it.
+
+Measured on 2x RTX 5090 (Swift 1.5 IQ3_S, split 25, `--batch 6 --batch-groups 2`, resident experts, k8v4, 262K,
+`--kv-resident 32768`, the engine-default decode share): main (`a0116b27`) against this mode, a fresh engine per arm in
+the order main, this mode, this mode, main (`tools/piped_read_join_bench.py`; the fixed-prompt rows send the same four
+stream prompts every run, so the streams' answers and work are the same):
+
+| | main | `STRATA_PIPED_CONCURRENT=1` |
+| --- | ---: | ---: |
+| 64K + 32K cold prompts beside four streams: longest stop of a stream | 11.9 s | 0.77-0.84 s |
+| ... the streams' tokens meanwhile | 289-291 | 1,411-1,679 |
+| ... the prompts' TTFT | 6.8 / 5.8-5.9 s | 8.1-8.2 / 8.2-8.3 s |
+| the same with fixed stream prompts: the streams' rate while the prompts are read | 2-3 tok/s | 85-92 tok/s |
+| ... the streams finish at | 26.1-27.1 s | 24.6-25.3 s |
+| ... GPU utilization while the prompts are read | 75-86% | 85-91% |
+| a one-line question 1 s into a cold 45K read, nothing decoding: its TTFT | 5.7-5.9 s | 1.9 s |
+| ... and the 45K prompt's own TTFT | 6.2-6.4 s | 7.4-7.5 s |
+
+The joining prompts pay for the GPU time the streams now get. Over a whole run with the same work, the streams
+finished 5-8% sooner (6.4% on average); with prompts that change from run to run (the bench's), the run's token rate
+varies more than that between runs. Between windows the doorbell thread first slept 50 us, which is a whole timer
+tick on Windows: the same build with `STRATA_TEST_BELL_SLEEP_US=50` gave the streams 64-67 tok/s during the reads
+instead of 85-92.
+
+The same randomised load (`soak`: three streams, cold joins of 4-64K, short questions, follow-ups of earlier joins,
+clients leaving mid-read and mid-answer; 5 minutes, the same seed) on main and in this mode: 167 and 180 requests
+answered; the longest gap inside a stream 9.8 and 1.0 s (90th percentile 8.5 and 0.7 s); the joins' TTFT median 3.8
+and 4.6 s. A request that comes during a read still waits for it, unless its prompt is under half as long (`BYIELD`).
+
+A 16 GB card on each side (`--vram-reserve-mib 16600 --kv-resident 16384`, the same flags otherwise):
+
+| | main | this mode |
+| --- | ---: | ---: |
+| fixed stream prompts, 64K + 32K joining: the streams' rate while the prompts are read | 0.9 tok/s | 52.9 tok/s |
+| ... the streams finish at | 70.6 s | 63.8 s |
+| ... the prompts' TTFT | 9.5 / 10.1 s | 15.8 / 21.1 s |
+| a one-line question 1 s into a cold 45K read: its TTFT | 7.3 s | 3.8 s |
+| the 45K prompt read alone | 7.33 s | 7.25 s |
+
+A weaker host as well (16 GB cards, the experts from the mapped file, AVX2 expert kernels, 6 pool workers), in #1906's
+shape (`--batch 2 --batch-groups 2`): one stream decoding while another's cold prompt is read:
+
+| cold prompt | main: the stream's longest stop / tok/s meanwhile / the prompt's TTFT | this mode |
+| --- | ---: | ---: |
+| 64K | 11.1 s / 2.4 / 10.9 s | 0.41 s / 25.7 / 11.7 s |
+| 127K | 20.3 s / 1.5 / 19.9 s | 0.64 s / 32.7 / 20.7 s |
+
+So the cost is the joining prompt's: +4-7% beside one stream, +20-45% beside four on these cards, and +67-109% beside
+four on 16 GB cards, where the streams' windows take a larger share of the GPU.
+
+**Checked:** with the variable unset this build gives main's tokens (six greedy answers' SHA-256 equal in two engine
+starts each, `--prompt-cache 0 --adapt-swaps 0 --pcie-frac 0`) at main's speed. In this mode, 25 minutes of the
+randomised load above (also on `--batch 2`): about 760 requests, 340 concurrent reads and 88 give-ways, with no hang, no
+error and no stall report.
+
+**Text equality** (`batch_interleave_test.py --long 40000` with its exact settings, `--batch 4 --batch-groups 2`, no
+conversation cache): this test is not reproducible run to run on this PC even for main (A differed from its solo tokens
+at token 142 in one run of two). In this mode every request equaled its solo tokens in two runs of three - D giving way
+at its first chunk (`YIELDED 2 2048`), E admitted meanwhile, D going on and A going back to the solo path included,
+which main does not do on this path (D never gives way there); the third run had B off at token 74, a near tie that
+flips on main as well. Greedy only; other GPU pairs, three or more stages and sampled decoding not measured.
+
 ## The VRAM expert tier keeps adapting in batch windows
 
 Batch windows count which experts they route to, and every `--adapt-every` windows (default 4) the engine swaps the

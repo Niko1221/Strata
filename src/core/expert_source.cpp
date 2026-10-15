@@ -3495,7 +3495,7 @@ const uint8_t* FileExpertSource::blob(int64_t layer, int64_t expert) {
         }
         if (complement_ready_ && result != nullptr) file_reads_.fetch_add(1, std::memory_order_relaxed);
     }
-    if (result != nullptr) ++reads_;
+    if (result != nullptr) reads_.fetch_add(1, std::memory_order_relaxed);
     return result;
 }
 
@@ -4895,7 +4895,7 @@ const uint8_t* ArenaExpertSource::blob(int64_t layer, int64_t expert) {
     if (layer < 0 || expert < 0 || expert >= n_expert_) return nullptr;
     const int64_t idx = layer * n_expert_ + expert;
     if (idx < 0 || idx >= blobs_) return nullptr;
-    ++reads_;
+    reads_.fetch_add(1, std::memory_order_relaxed);
     // Pointer arithmetic into resident memory.  No fault, no copy, no mapping - which is the entire point of
     // this class over `FileExpertSource`.
     return base_ + arena_off(layer, expert);

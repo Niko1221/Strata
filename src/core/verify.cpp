@@ -749,6 +749,25 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     sink_.staging = (unsigned long long) staging_;
     sink_.staging_cap = kStagingBlobs;
     (void) TS;
+    // STRATA_PIPED_CONCURRENT=1 (opt-in): a prompt can run on the same GPU while the batch windows run, so the windows'
+    // streams get the device's highest priority (HIP, Metal: the default priority, as the drafter's)
+    auto make_stream = [](cudaStream_t* s) -> cudaError_t {
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+        static const bool hi = [] {   // (STRATA_PIPED_CONCURRENT_PRIO=0: the default priority)
+            const char* v = std::getenv("STRATA_PIPED_CONCURRENT");
+            const char* p = std::getenv("STRATA_PIPED_CONCURRENT_PRIO");
+            return v != nullptr && std::atoi(v) != 0 && (p == nullptr || std::atoi(p) != 0);
+        }();
+        int lo = 0, top = 0;
+        if (hi) {
+            if (cudaDeviceGetStreamPriorityRange(&lo, &top) == cudaSuccess &&
+                cudaStreamCreateWithPriority(s, cudaStreamNonBlocking, top) == cudaSuccess)
+                return cudaSuccess;
+            cudaGetLastError();   // (only the failed priority call's error: the default path clears nothing)
+        }
+#endif
+        return cudaStreamCreateWithFlags(s, cudaStreamNonBlocking);
+    };
     bool copy_made = false;
 #if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     // engine-latency, STRATA_COPY_HIP_PRIO=1 (opt-in): the copy stream at high priority, so it gets a hardware queue of
@@ -762,13 +781,13 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         (void) cudaGetLastError();
     }
 #endif
-    if (!copy_made && cudaStreamCreateWithFlags(&copy_, cudaStreamNonBlocking) != cudaSuccess) {
+    if (!copy_made && make_stream(&copy_) != cudaSuccess) {
         err = "verify: copy stream create failed";
         return false;
     }
     if (ext_stream_ != nullptr) cs_ = ext_stream_;   // set_stream (pipelined windows): the stage's shared stream
-    else if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) cs_ = nullptr;
-    if (cs_ == nullptr || cudaStreamCreateWithFlags(&sh_cs_, cudaStreamNonBlocking) != cudaSuccess) {
+    else if (make_stream(&cs_) != cudaSuccess) cs_ = nullptr;
+    if (cs_ == nullptr || make_stream(&sh_cs_) != cudaSuccess) {
         err = "verify: stream create failed";
         return false;
     }
@@ -3197,52 +3216,38 @@ bool Verifier::batch_launch(int base, int S, const int32_t* tokens, const int64_
             sx.ple_prev[0] = sx.ple_prev[1];
             sx.ple_prev[1] = tokens[t];
         }
-    b_running_ = true;
     b_k_ = 0;
     b_steps_ = le_ - lb_;
-    b_last_ = Clock::now();
+    ring_now();
+    b_running_.store(true, std::memory_order_release);   // last: an external server reads the rest after it
     return true;
 }
 
-int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
-    if (!b_running_) return 1;
-    const OnDevice on_device(device_);
+int Verifier::batch_serve(PoolMultiFn pool, void* user) {
+    if (!b_running_.load(std::memory_order_acquire)) return 1;
     volatile uint32_t* const seq = h_seq_;
-    const int S = last_t_;
     // #646: an all-resident stage's graph raises no host doorbells (see run_slot_rows): nothing to serve per layer,
-    // so the poll is just "has the graph finished" - except the PLE flag, which the graph's first wait reads and
-    // only the host can raise (the same raise run_slot_rows makes).  Per-window (ar_on): with a loan in flight the
-    // doorbell graph needs the per-layer service below.
+    // except the PLE flag, which the graph's first wait reads and only the host can raise (the same raise
+    // run_slot_rows makes).  Per-window (ar_on): with a loan in flight the doorbell graph needs the per-layer service.
     if (ar_on() && ss_->ple.ready() && ple_stage()) {
         std::atomic_thread_fence(std::memory_order_seq_cst);
         _mm_sfence();
         *h_flag_ = 1;
     }
-    while (!ar_on() && b_k_ < b_steps_) {
-        const uint32_t want = (uint32_t) (b_k_ + 1);
-        if (*seq < want) {
-            const auto now = Clock::now();
-            if (now - b_last_ > std::chrono::milliseconds(2)) {
-                const cudaError_t q = cudaStreamQuery(cs_);
-                if (q != cudaErrorNotReady && *seq < want) {
-                    err = "verify batch: layer " + std::to_string(lb_ + b_k_) + " never rang (" +
-                          (q == cudaSuccess ? std::string("graph finished") : std::string(cudaGetErrorString(q))) + ")";
-                    b_running_ = false;
-                    return -1;
-                }
-                if (now - b_last_ > std::chrono::seconds(20)) {
-                    err = "verify batch: timed out at layer " + std::to_string(lb_ + b_k_) + released_note(release_gpu_waits(5000));
-                    b_running_ = false;
-                    return -1;
-                }
-            }
-            return 0;
-        }
+    for (;;) {
+        // the window's row count is read after the served-layer count: with external serving the window this call
+        // began on can have finished and the next one been launched meanwhile, and batch_launch writes its rows
+        // (stage_batch) before it resets b_k_, so a count that is the new window's comes with the new rows
+        const int64_t k = b_k_.load(std::memory_order_acquire);
+        if (ar_on() || k >= b_steps_) break;
+        const uint32_t want = (uint32_t) (k + 1);
+        if (*seq < want) return 0;
+        const int S = last_t_;
         const Clock::time_point b = Clock::now();
         cur_layer_ = want - 1;
         set_plan_slot(0);
         if (remote_opt_) remote_opt_->begin(h_w_, 0, S);
-        if (pool != nullptr) pool(user, h_x_, h_ids_, S, ss_->k, h_ymiss_, lb_ + b_k_);
+        if (pool != nullptr) pool(user, h_x_, h_ids_, S, ss_->k, h_ymiss_, lb_ + k);
         if (remote_opt_) remote_opt_->end();
         progress_tick();
         std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -3259,8 +3264,64 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
         }
         *(volatile uint32_t*) h_flag_ = want;
         ms_pool += ms_since(b);
-        b_last_ = Clock::now();
-        ++b_k_;
+        ring_now();
+        b_k_.fetch_add(1, std::memory_order_release);
+    }
+    return 1;
+}
+
+int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
+    if (!b_running_) return 1;
+    // set_external_serve: another thread serves the doorbells (batch_serve) and this one only checks for a window that
+    // will not finish, as below: its graph ended (or failed) with a layer still to ring, or no layer rang for 20 s.
+    // The stream query can wait for the driver's lock while a read's call holds it; the doorbells go on meanwhile.
+    // The served count is read before the query and the ring count after it: a layer served in between rang first.
+    if (ext_serve_.load(std::memory_order_acquire) && !ar_on()) {
+        const int64_t k = b_k_.load(std::memory_order_acquire);
+        if (k < b_steps_) {
+            const auto now = Clock::now();
+            if (now - last_ring() <= std::chrono::milliseconds(2) || now - ext_checked_ < std::chrono::milliseconds(1))
+                return 0;
+            ext_checked_ = now;   // (at most one query a millisecond: pump calls this in a loop)
+            const OnDevice on_device(device_);
+            const cudaError_t q = cudaStreamQuery(cs_);
+            if (q != cudaErrorNotReady && *(volatile uint32_t*) h_seq_ < (uint32_t) (k + 1)) {
+                err = "verify batch: layer " + std::to_string(lb_ + k) + " never rang (" +
+                      (q == cudaSuccess ? std::string("graph finished") : std::string(cudaGetErrorString(q))) + ")";
+                b_running_ = false;
+                return -1;
+            }
+            if (now - last_ring() > std::chrono::seconds(20)) {
+                err = "verify batch: timed out at layer " + std::to_string(lb_ + k) +
+                      released_note(release_gpu_waits(5000));
+                b_running_ = false;
+                return -1;
+            }
+            return 0;
+        }
+    }
+    const OnDevice on_device(device_);
+    const int S = last_t_;
+    // the layers that have rung so far (batch_serve); with one still to ring: did the graph finish without it, or
+    // has it waited too long?
+    if (!batch_serve(pool, user)) {
+        const auto now = Clock::now();
+        if (now - last_ring() > std::chrono::milliseconds(2)) {
+            const cudaError_t q = cudaStreamQuery(cs_);
+            if (q != cudaErrorNotReady && *(volatile uint32_t*) h_seq_ < (uint32_t) (b_k_ + 1)) {
+                err = "verify batch: layer " + std::to_string(lb_ + b_k_) + " never rang (" +
+                      (q == cudaSuccess ? std::string("graph finished") : std::string(cudaGetErrorString(q))) + ")";
+                b_running_ = false;
+                return -1;
+            }
+            if (now - last_ring() > std::chrono::seconds(20)) {
+                err = "verify batch: timed out at layer " + std::to_string(lb_ + b_k_) +
+                      released_note(release_gpu_waits(5000));
+                b_running_ = false;
+                return -1;
+            }
+        }
+        return 0;
     }
     const cudaError_t q = cudaStreamQuery(cs_);
     if (q == cudaErrorNotReady) return 0;
