@@ -73,7 +73,7 @@ By the PC's RAM (ask the user whether they mainly want it for code - then the Co
 | 32 GB | `--family coder` (size IQ1_M) | for code; with a 24 GB card Q2_0 and IQ2_XS also run (setup picks the low-RAM mode) |
 | 48 GB | `--family qwen --model IQ2_XS` | or `Q2_0` (fastest) |
 | 64 GB | `--family qwen --model IQ2_XS` (recommended) | `IQ3_XXS` / `IQ3_S` are slower and a bit better |
-| 96 GB+ | `--family qwen --model IQ3_S` | `--family unsloth --model UD-IQ4_XS` (~4-bit, 94 GB, part of the experts read from the SSD under ~80 GB of RAM); `--model UD-Q4_K_XL` is experimental: NVIDIA only, NVMe SSD, 7-8.5 tokens/s on 64 GB |
+| 96 GB+ | `--family qwen --model IQ3_S` | `--family unsloth --model UD-IQ4_XS` (~4-bit, 94 GB, part of the experts read from the SSD under ~80 GB of RAM); `--model UD-Q4_K_XL` (4-bit K-quant experts, 111 GB, every expert in RAM from ~88 GB of RAM, the rest read from an NVMe SSD below that; 7-8.5 tokens/s on a 64 GB PC with a 12 GB RTX 5070) |
 
 `--family swift` (Swift 1.5, a fine-tune that thinks shorter; sizes Q2_0, IQ2_XS, IQ3_XXS) is the alternative to
 `qwen`. `--family signal` (agentionai's Signal, a fine-tune that thinks more directly) has two ~4-bit sizes for 48 GB
