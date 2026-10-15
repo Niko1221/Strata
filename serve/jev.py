@@ -391,6 +391,9 @@ def handle_then(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     finish_reason, usage}.  Sampling mirrors the chat endpoint (donor defaults
     temp 0.6, top_p 0.95, top_k 20; max_tokens default 512)."""
     gen = ((req or {}).get("then") or {}).get("generate")
+    if "chat" not in jev_calib.MODES:      # A0.1: then.generate is generation — chat-gated
+        return 404, {"error": {"type": "not_found_error",
+                               "message": "generation surface not enabled on this instance"}}
     if not isinstance(gen, dict) or not gen.get("messages"):
         return _err("then.generate.messages", "required non-empty array")
     sub = {k: v for k, v in req.items() if k != "then"}
