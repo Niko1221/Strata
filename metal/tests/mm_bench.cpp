@@ -47,7 +47,8 @@ int main() {
         {"mpp_mm_half_64_32_2", 2, 64, 32, 2, true},   {"mpp_mm_half_32_16_2", 2, 32, 16, 2, true},
         {"mpp_mm_half_32_32_2", 2, 32, 32, 2, true},   {"mpp_mm_half_16_32_1", 2, 16, 32, 1, true},
         {"mpp_mm_half_16_16_1", 2, 16, 16, 1, true},   {"mpp_mm_half_128_48_4", 2, 128, 48, 4, true},
-        {"mpp_mm_half_64_48_4", 2, 64, 48, 4, true}};
+        {"mpp_mm_half_64_48_4", 2, 64, 48, 4, true},  {"mpp_mm_half_16_128_2", 2, 16, 128, 2, true},
+        {"mpp_mm_half_16_128_4", 2, 16, 128, 4, true}};
     struct Shape { const char* name; int M, N, K; };
     const std::vector<Shape> shapes = {{"square 4096^3", 4096, 4096, 4096},
                                        {"expert gu 128 tok x 1280 x 2560", 128, 1280, 2560},
@@ -57,7 +58,9 @@ int main() {
                                        {"expert gu^T 1280 x 48 tok x 2560", 1280, 48, 2560},
                                        {"expert gu^T 1280 x 16 tok x 2560", 1280, 16, 2560},
                                        {"many gu^T 12800 x 48 tok x 2560", 12800, 48, 2560},
-                                       {"many gu 48 tok x 12800 x 2560", 48, 12800, 2560}};
+                                       {"many gu 48 tok x 12800 x 2560", 48, 12800, 2560},
+                                       {"pair 48 tok x 6400 x 2560", 48, 6400, 2560},
+                                       {"down 48 tok x 25600 x 640", 48, 25600, 640}};
     int filled = 0;
     const char* only = std::getenv("MMB_ONLY");   // a substring of the kernel names to run
     for (const K& k : ks) {
