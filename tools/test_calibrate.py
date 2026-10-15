@@ -20,10 +20,13 @@ import calibrate as CAL  # noqa: E402
 
 
 class FakeEngine:
-    """Speed = f(pcie_frac, spec_min_p, workers): the GEN line's tune keys arrive as `strata_tune`."""
+    """Speed = f(pcie_frac, spec_min_p, workers): the GEN line's tune keys arrive as `strata_tune`.  `share`: how much
+    faster a fresh prompt reads with STRATA_PREFILL_CPU_SHARE_MAX=3072 in `env` (1.0 = the same)."""
 
-    def __init__(self, args, speed, info_workers=6, starts=None, adapt=None):
+    def __init__(self, args, speed, info_workers=6, starts=None, adapt=None, env=None, share=1.0):
         self.args = list(args)
+        self.env = dict(env or {})
+        self.share = share
         self.adapt_bonus = (adapt or {}).get(CAL.arg_value(args, "--adapt-swaps"), 1.0)
         w = CAL.arg_value(args, "--pool-workers")
         self.workers = int(w) if w else info_workers
@@ -35,6 +38,12 @@ class FakeEngine:
             starts.append(list(args))
 
     def generate(self, ids, max_new, sampling, cancel):
+        if sampling.get("strata_checkpoint") is False:   # calibrate's fresh prompt read: 1,000 tok/s, or more with the range
+            gain = self.share if self.env.get(CAL.SHARE_ENV) == CAL.SHARE_RANGE else 1.0
+            self.last = {"generated": 1, "prompt_tokens": len(ids), "prompt_ms": len(ids) / gain, "decode_ms": 1.0,
+                         "reused": 0}
+            yield 1
+            return
         tune = sampling.get("strata_tune") or {}
         rate = self.speed(tune.get("pcie_frac", 0.55), tune.get("spec_min_p", self.info["spec_min_p"]), self.workers)
         rate *= self.adapt_bonus
@@ -47,11 +56,109 @@ BASE = ["--pack", "p", "--spec", "4", "--spec-min-p", "0.5", "--max-context", "8
 
 
 class Calibrate(unittest.TestCase):
-    def run_with(self, speed, workers=6, base=BASE, adapt=None):
+    def run_with(self, speed, workers=6, base=BASE, adapt=None, share=None):
         starts = []
-        res = CAL.measure(base, [[1, 2, 3]] * 3, lambda a: FakeEngine(a, speed, workers, starts, adapt),
-                          say=lambda *_: None)
+        envs = []
+
+        def start(a, env=None):
+            envs.append(env)
+            return FakeEngine(a, speed, workers, starts, adapt, env, share or 1.0)
+        res = CAL.measure(base, [[1, 2, 3]] * 3, start, say=lambda *_: None,
+                          share_ids=[1] * CAL.SHARE_PROMPT_TOKENS if share is not None else None)
+        res["envs"] = envs
         return res, starts
+
+    def test_share_range(self):
+        # the CPU share's range: 3,072 reads a 2K prompt 15% faster -> the variable goes into the config's env
+        res, starts = self.run_with(lambda f, p, w: 50.0, share=1.15)
+        self.assertEqual(res["env"], {CAL.SHARE_ENV: CAL.SHARE_RANGE})
+        # two restarts for it, after the tier's: the default arm with the variable taken away, then 3072
+        self.assertEqual(res["envs"][-2:], [{CAL.SHARE_ENV: None}, {CAL.SHARE_ENV: CAL.SHARE_RANGE}])
+        self.assertEqual(len(starts), 1 + len(CAL.worker_candidates(6)) + len(CAL.ADAPT_CANDIDATES) + 2)
+        self.assertEqual(sorted(res["report"]["share"]), ["3072", "default"])
+        # 2% is noise: nothing written; without share_ids the step does not run at all
+        flat, _ = self.run_with(lambda f, p, w: 50.0, share=1.02)
+        self.assertEqual(flat["env"], {})
+        none, starts = self.run_with(lambda f, p, w: 50.0)
+        self.assertEqual(none["env"], {})
+        self.assertNotIn("share", none["report"])
+        self.assertEqual(len(starts), 1 + len(CAL.worker_candidates(6)) + len(CAL.ADAPT_CANDIDATES))
+
+    def test_share_range_measured_with_the_chosen_settings(self):
+        # the two share arms run with the worker count chosen before, and a failed start drops only that arm
+        res, starts = self.run_with(lambda f, p, w: 60.0 if w == 3 else 50.0, workers=6, share=1.15)
+        self.assertEqual(res["settings"].get("--pool-workers"), "3")
+        self.assertTrue(all(CAL.arg_value(a, "--pool-workers") == "3" for a in starts[-2:]))
+        calls = []
+
+        def start(a, env=None):
+            calls.append(env)
+            if env and env.get(CAL.SHARE_ENV) == CAL.SHARE_RANGE:
+                raise RuntimeError("the engine exited before it was ready")
+            return FakeEngine(a, lambda f, p, w: 50.0, 6, None, None, env, 1.15)
+        res = CAL.measure(BASE, [[1, 2, 3]] * 3, start, say=lambda *_: None, share_ids=[1] * 100)
+        self.assertEqual(res["env"], {})
+        self.assertEqual(list(res["report"]["share"]), ["default"])
+        self.assertIn("the CPU share range 3072", res["report"]["failed_starts"])
+
+    def test_share_read_failure_drops_only_that_arm(self):
+        class Dies(FakeEngine):
+            def generate(self, ids, max_new, sampling, cancel):
+                if self.env.get(CAL.SHARE_ENV) == CAL.SHARE_RANGE and sampling.get("strata_checkpoint") is False:
+                    raise ValueError("ERR the prompt chunk could not be staged")
+                yield from FakeEngine.generate(self, ids, max_new, sampling, cancel)
+        res = CAL.measure(BASE, [[1, 2, 3]] * 3, lambda a, env=None: Dies(a, lambda f, p, w: 50.0, 6, None, None, env, 1.2),
+                          say=lambda *_: None, share_ids=[1] * 100)
+        self.assertEqual(res["env"], {})
+        self.assertEqual(list(res["report"]["share"]), ["default"])
+        self.assertIn("ERR the prompt chunk", res["report"]["failed_starts"]["the CPU share range 3072"])
+        self.assertIn("seconds", res["report"])   # the run finished
+
+    def test_engine_env(self):
+        base = {"PATH": "/x", CAL.SHARE_ENV: "3072", "STRATA_Y": "1"}
+        # the baseline: an earlier calibration's value is taken away, the rest stays
+        self.assertEqual(CAL.engine_env({}, None, base), {"PATH": "/x", "STRATA_Y": "1"})
+        self.assertEqual(CAL.engine_env({}, {CAL.SHARE_ENV: None}, base), {"PATH": "/x", "STRATA_Y": "1"})
+        self.assertEqual(CAL.engine_env({}, {CAL.SHARE_ENV: "3072"}, base), {"PATH": "/x", "STRATA_Y": "1", CAL.SHARE_ENV: "3072"})
+        self.assertEqual(base[CAL.SHARE_ENV], "3072")   # the caller's dict is not changed
+
+    def test_share_step_applies(self):
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / "strata"
+            cfg = {"exe": str(exe), "args": list(BASE), "gpu": 0}
+            self.assertIsNone(CAL.share_step_applies(cfg))
+            self.assertIn("batch", CAL.share_step_applies({**cfg, "args": BASE + ["--batch", "2"]}))
+            self.assertIn("layer split", CAL.share_step_applies({**cfg, "gpu": [0, 1]}))
+            self.assertIn("already", CAL.share_step_applies({**cfg, "env": {"STRATA_PREFILL_CPU_SHARE": "auto"}}))
+            (Path(d) / "BUILD.json").write_text(json.dumps({"backend": "hip"}))
+            self.assertIn("HIP", CAL.share_step_applies(cfg))
+            (Path(d) / "BUILD.json").write_text(json.dumps({"backend": "cuda"}))
+            self.assertIsNone(CAL.share_step_applies(cfg))
+
+    def test_apply_env(self):
+        self.assertEqual(CAL.apply_env(None, {CAL.SHARE_ENV: "3072"}), {CAL.SHARE_ENV: "3072"})
+        # an older calibration's value goes, other variables stay
+        self.assertEqual(CAL.apply_env({CAL.SHARE_ENV: "3072", "STRATA_X": "1"}, {}), {"STRATA_X": "1"})
+        self.assertEqual(CAL.apply_env({"STRATA_X": "1"}, None), {"STRATA_X": "1"})
+
+    def test_share_prompt_ids(self):
+        tok = type("T", (), {"encode": lambda s, t, **k: [0] * (len(t) // 4)})()
+        ids = CAL.share_prompt_ids(tok, 2048)
+        self.assertGreaterEqual(len(ids), 2048)
+        self.assertLess(len(ids), 2048 + 400)
+        self.assertEqual(ids, CAL.share_prompt_ids(tok, 2048))   # the same every run
+
+    def test_prompt_rates_skip_reused_reads(self):
+        class E:
+            def __init__(self):
+                self.n = 0
+                self.last = {}
+
+            def generate(self, ids, max_new, sampling, cancel):
+                self.n += 1
+                self.last = {"prompt_tokens": 2000, "prompt_ms": 1000.0, "reused": 1500 if self.n == 2 else 0}
+                yield 1
+        self.assertEqual(CAL.prompt_rates(E(), [1] * 2000, rounds=3), [2000.0, 2000.0])
 
     def test_defaults_kept_when_flat(self):
         res, _ = self.run_with(lambda f, p, w: 50.0)
@@ -157,7 +264,7 @@ class Calibrate(unittest.TestCase):
             (tok / "token_type.json").write_text(json.dumps([1, 1]))
             seen = []
             saved = CAL.measure
-            CAL.measure = lambda args, ids_list, start_engine, say=print, extra=(): seen.append(args) or {}
+            CAL.measure = lambda args, ids_list, start_engine, say=print, extra=(), share_ids=None: seen.append(args) or {}
             fake = type("ST", (), {"Tokenizer": lambda *a: type("T", (), {"encode": lambda s, t, **k: [0]})()})
             try:
                 with mock.patch.dict(sys.modules, {"strata_tokenizer": fake}):
@@ -228,8 +335,18 @@ class SetupIntegration(unittest.TestCase):
         self.assertTrue(self.S.calibrate_config(cfg_path))
         written = json.loads(cfg_path.read_text())
         self.assertEqual(CAL.arg_value(written["args"], "--pcie-frac"), "0.20")
+        self.assertNotIn("env", written)
         saved = self.S.saved_calibration(written)
         self.assertEqual(saved["settings"], {"--pcie-frac": "0.20"})
+        # the share's range goes into the config's env and the record; a later run without it takes it away again
+        CAL.run = lambda c, say=print, start_engine=None: {"settings": {}, "env": {CAL.SHARE_ENV: "3072"}, "report": {}}
+        self.assertTrue(self.S.calibrate_config(cfg_path))
+        written = json.loads(cfg_path.read_text())
+        self.assertEqual(written["env"], {CAL.SHARE_ENV: "3072"})
+        self.assertEqual(self.S.saved_calibration(written)["env"], {CAL.SHARE_ENV: "3072"})
+        CAL.run = lambda c, say=print, start_engine=None: {"settings": {}, "env": {}, "report": {}}
+        self.assertTrue(self.S.calibrate_config(cfg_path))
+        self.assertNotIn("env", json.loads(cfg_path.read_text()))
         # another model on the same PC has no calibration yet
         self.assertIsNone(self.S.saved_calibration({**written, "model_name": "swift-iq2_xs"}))
         # another context size is another key (its KV cache changes the expert cache)

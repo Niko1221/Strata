@@ -13,11 +13,18 @@ measured on (a Ryzen 5 7600 + RTX 5070 on PCIe 5):
                   its use counts fade.  A PC whose CPU reads the missed experts slowly (DDR3, ~24 GB/s) gains from
                   swapping more: 160 swaps every window measured +7.9% over the default tier on a Xeon E5-2673 v3 (DDR3) with an
                   RTX 4060 Ti on PCIe 3.0 x8 (Q2_0; with the swaps taking effect a window later, #764).
-The first two are measured through one engine (per-request `strata_tune` keys); the worker count and the adaptive
-tier need a restart per value.  Decode speed only: the prompt path streams every expert whatever these settings say.
+  STRATA_PREFILL_CPU_SHARE_MAX (an engine environment variable, in the config's "env")
+                  how large a prompt chunk still hands the idle CPU pool some of the experts the GPU would stream:
+                  1,024 tokens by default, 3,072 where the CPU keeps up with the link.  Measured both ways: a 2,048-token
+                  chunk lost 2% on a Ryzen 5 7600 + RTX 5070; on a Ryzen 7 5800X3D + RTX 5070 Ti (Swift 1.5 IQ3_S)
+                  1,537 tokens read 24% faster, 2,142 tokens 14%, 2,848 tokens 3%, 600 and 4,600 unchanged.
+The first two are measured through one engine (per-request `strata_tune` keys); the worker count, the adaptive
+tier and the share's range need a restart per value.  The first four are decode speed only: the prompt path streams
+every expert whatever they say.  The share's range is the read speed of a fresh ~2K-token prompt.
 
-A setting is kept only when it beats the default by more than MIN_GAIN in an interleaved re-measurement - the
-adaptive expert tier and the OS make single measurements noisy by a few percent.
+A setting is kept only when it beats the default by more than MIN_GAIN in a re-measurement (interleaved for the
+per-request keys, a restart per value for the others) - the adaptive expert tier and the OS make single measurements
+noisy by a few percent.
 
     python tools/calibrate.py strata-q2_0.json        # measure and print; setup.py --calibrate also saves it
 """
@@ -46,11 +53,90 @@ MAX_NEW = 128
 # the expert tier follows a text over some windows: 128-token answers end before it shows (on a Xeon E5-2673 v3 with
 # DDR3, every 1 / 160 / 0.97 measured +0.7% with 128 tokens and +7.9% with 512-token answers), so its step uses these
 TIER_MAX_NEW = 512
+# the CPU prefill share's range: the engine's default (STRATA_PREFILL_CPU_SHARE_MAX unset, 1,024 tokens) against 3,072,
+# a restart each, measured on fresh reads of one ~2K-token prompt (no checkpoint, so every read is from token 0)
+SHARE_ENV = "STRATA_PREFILL_CPU_SHARE_MAX"
+SHARE_RANGE = "3072"
+SHARE_PROMPT_TOKENS = 2048
+SHARE_ROUNDS = 3
+ENV_DEFAULTS = {SHARE_ENV: None}   # None: the engine's own default (the variable absent)
+SHARE_SENTENCES = (
+    "The committee reviewed the budget for the coming year and asked for a shorter report next time.",
+    "A refrigerator moves heat from the inside to the outside by compressing and expanding a working fluid.",
+    "The function merges two sorted lists in linear time and returns a new list without changing its inputs.",
+    "The lighthouse keeper logged the weather every evening and the ships that passed before dark.",
+    "Twelve capitals were listed with one sentence each, from Lisbon in the west to Helsinki in the north.",
+)
 PROMPTS = (
     "Write a Python function that merges two sorted lists into one sorted list, with a docstring and two tests.",
     "Explain in two paragraphs how a refrigerator moves heat from inside to outside.",
     "List twelve European capitals with one sentence about each.",
 )
+
+
+def share_prompt_ids(tok, target: int = SHARE_PROMPT_TOKENS) -> list[int]:
+    """A chat prompt of about `target` tokens: numbered sentences of plain prose (what a tool result or a pasted file
+    costs to read), the same every run."""
+    lines = []
+    ids: list[int] = []
+    text = lambda: "Read these notes and reply with the single word OK.\n\n" + "\n".join(lines)   # noqa: E731
+    while len(ids) < target and len(lines) < target:   # a line is ~20 tokens; the line cap ends it on any tokenizer
+        lines.append(f"Note {len(lines) + 1}: {SHARE_SENTENCES[len(lines) % len(SHARE_SENTENCES)]}")
+        if len(lines) % 16 == 0:   # tokenize every 16 lines
+            ids = chat_ids(tok, text())
+    return ids if len(lines) % 16 == 0 else chat_ids(tok, text())
+
+
+def prompt_rates(eng, ids: list[int], rounds: int = SHARE_ROUNDS) -> list[float]:
+    """Fresh reads of `ids` (a one-shot request: no checkpoint is kept, so every round reads from token 0): the prompt
+    tokens per second of each.  A read the engine reused from a checkpoint is not counted."""
+    out = []
+    for _ in range(rounds):
+        for _ in eng.generate(ids, 1, {"temperature": 0, "strata_checkpoint": False}, threading.Event()):
+            pass
+        last = eng.last or {}
+        n = int(last.get("prompt_tokens") or 0)
+        ms = float(last.get("prompt_ms") or 0.0)
+        if n > 0 and ms > 0 and not last.get("reused"):
+            out.append(n / (ms / 1000.0))
+    return out
+
+
+def share_step_applies(cfg: dict) -> str | None:
+    """Why the CPU share's range cannot change anything for this config (None: it can): the share is on by default on
+    CUDA builds with one GPU and no --batch slots, and a set STRATA_PREFILL_CPU_SHARE already has the 3,072 range."""
+    args = engine_args(cfg)
+    if "--batch" in args:
+        return "batch slots keep the CPU prefill share off"
+    if "--layer-split" in args:
+        return "a layer split keeps the CPU prefill share off by default"
+    if "STRATA_PREFILL_CPU_SHARE" in (cfg.get("env") or {}):
+        return "STRATA_PREFILL_CPU_SHARE is set: the share's range is already 3,072"
+    try:
+        build = json.loads((Path(cfg["exe"]).parent / "BUILD.json").read_text(encoding="utf-8"))
+        if build.get("backend") == "hip":
+            return "the HIP build keeps the CPU prefill share off by default"
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def engine_env(cfg: dict, env: dict | None = None, base: dict | None = None) -> dict:
+    """The environment a calibration start runs the engine with: the server's (`child_env`, or `base`) without the
+    variables the calibration measures (ENV_DEFAULTS: an earlier calibration's value must not be in the baseline), then
+    `env` for this start - a value of None takes the variable away."""
+    if base is None:
+        from serve.server import child_env
+        base = child_env(cfg)
+    e = dict(base)
+    for k in ENV_DEFAULTS:
+        e.pop(k, None)
+    for k, v in (env or {}).items():
+        if v is None:
+            e.pop(k, None)
+        else:
+            e[k] = v
+    return e
 
 
 def chat_ids(tok, text: str) -> list[int]:
@@ -134,13 +220,14 @@ class Session:
 
 
 def run(cfg: dict, say=print, start_engine=None) -> dict:
-    """Measure on the engine `cfg` describes; returns {"settings": {flag: value}, "report": {...}}.
-    `start_engine(args)` returns a started engine (serve.server.StrataEngine or a stand-in in tests)."""
+    """Measure on the engine `cfg` describes; returns {"settings": {flag: value}, "env": {variable: value},
+    "report": {...}}.  `start_engine(args, env=None)` returns a started engine (serve.server.StrataEngine or a stand-in
+    in tests); `env` is given for step 6 only."""
     if start_engine is None:
-        from serve.server import StrataEngine, child_env
+        from serve.server import StrataEngine
 
-        def start_engine(args):
-            return StrataEngine(cfg["exe"], args, cwd=cfg.get("cwd"), log=cfg.get("log"), env=child_env(cfg))
+        def start_engine(args, env=None):
+            return StrataEngine(cfg["exe"], args, cwd=cfg.get("cwd"), log=cfg.get("log"), env=engine_env(cfg, env))
     import strata_tokenizer as ST
     tpath = Path(cfg["tokenizer"])
     vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
@@ -150,7 +237,11 @@ def run(cfg: dict, say=print, start_engine=None) -> dict:
     tok = ST.Tokenizer(toks, (tpath / "merges.txt").read_text(encoding="utf-8").split("\n"),
                        json.loads((tpath / "token_type.json").read_text()))
     ids_list = [chat_ids(tok, p) for p in PROMPTS]
-    return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras())
+    skip = share_step_applies(cfg)
+    if skip:
+        say(f"  The CPU prefill share's range is not measured: {skip}.")
+    return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(),
+                   share_ids=None if skip else share_prompt_ids(tok))
 
 
 def engine_args(cfg: dict) -> list[str]:
@@ -199,7 +290,7 @@ def sweep(s, values: list, base_tune: dict, key: str, label: str, say) -> dict:
     return out
 
 
-def measure(base_args: list[str], ids_list, start_engine, say=print, extra_workers=()) -> dict:
+def measure(base_args: list[str], ids_list, start_engine, say=print, extra_workers=(), share_ids=None) -> dict:
     t0 = time.time()
     report: dict = {}
     say("  Loading the model for the measurements ...")
@@ -290,18 +381,48 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
         base_rate = statistics.median(by_adapt[a_best])
     elif by_adapt.get("default"):
         base_rate = statistics.median(by_adapt["default"])
+    # 6. the CPU prefill share's range (a restart each, with everything chosen so far): the read speed of a fresh
+    # ~2K-token prompt with the engine's default range and with 3,072.  `start_engine(args, env)`: the variable set
+    # for the candidate, taken away for the default (an earlier calibration may have written it into the config).
+    env_settings: dict = {}
+    if share_ids:
+        tuned = apply(base_args, settings)
+        by_share = {}
+        for val in (None, SHARE_RANGE):
+            key = "default" if val is None else val
+            say(f"  Measuring the prompt speed with the CPU share up to {'1,024 tokens (the engine default)' if val is None else val + ' tokens'} (restarts the engine) ...")
+            e = restart(start_engine, tuned, "the CPU share range " + key, say, report, env={SHARE_ENV: val})
+            if e is None:
+                continue
+            try:
+                rates = prompt_rates(e, share_ids)
+                if rates:
+                    by_share[key] = rates
+                    say(f"    {statistics.median(rates):.0f} prompt tok/s ({min(rates):.0f}-{max(rates):.0f})")
+                else:
+                    say("    nothing measured (every read reused a checkpoint): this candidate is dropped")
+            except Exception as ex:  # noqa: BLE001 - an ERR or a dead engine on a read: this arm loses, the rest stays
+                why = str(ex).strip().splitlines()[0][:300] if str(ex).strip() else type(ex).__name__
+                say(f"    the read failed for the CPU share range {key}: {why} - this candidate is dropped")
+                report.setdefault("failed_starts", {})["the CPU share range " + key] = why
+            finally:
+                close(e)
+        report["share"] = by_share
+        if by_share and pick(by_share, "default") == SHARE_RANGE:
+            env_settings[SHARE_ENV] = SHARE_RANGE
     report["seconds"] = round(time.time() - t0)
     report["tok_s"] = round(base_rate, 1) if base_rate else None
-    return {"settings": settings, "report": report}
+    return {"settings": settings, "env": env_settings, "report": report}
 
 
-def restart(start_engine, args, what, say, report):
+def restart(start_engine, args, what, say, report, env=None):
     """#1337: a later step's engine start that fails is a candidate that loses, not a failed run: what the earlier
     steps measured (and the settings they chose) must survive it.  Returns the engine, or None after saying why and
     noting it in report["failed_starts"].  (The first start, for steps 1-3, is not covered: with no engine there is
-    nothing measured.)"""
+    nothing measured.)  `env`: engine environment variables for this start (step 6), passed on only when given, so a
+    `start_engine(args)` of one argument still serves the other steps."""
     try:
-        return start_engine(args)
+        return start_engine(args, env) if env is not None else start_engine(args)
     except Exception as e:  # noqa: BLE001 - whatever the start raised (RuntimeError, EngineDied, OSError ...)
         why = str(e).strip().splitlines()[0][:300] if str(e).strip() else type(e).__name__
         say(f"    the engine did not start for {what}: {why} - this candidate is dropped, the earlier results are kept")
@@ -324,6 +445,20 @@ def close(eng):
 
 DEFAULTS = {"--pcie-frac": None, "--spec-min-p": "0.5", "--pool-workers": None,   # None: the engine's own choice
             "--adapt-every": None, "--adapt-swaps": None, "--adapt-decay": None}
+
+
+def apply_env(env: dict | None, settings_env: dict | None) -> dict:
+    """The config's "env" with the calibrated variables: one the calibration did not choose goes back to the engine's
+    own default (absent), as `apply` does for the arguments, so an older calibration's value never lingers - a value
+    set by hand is replaced the same way, as a hand-set --pcie-frac is.  Other variables in `env` are kept as they are."""
+    out = dict(env or {})
+    for var, default in ENV_DEFAULTS.items():
+        v = (settings_env or {}).get(var, default)
+        if v is None:
+            out.pop(var, None)
+        else:
+            out[var] = v
+    return out
 
 
 def apply(args: list[str], settings: dict) -> list[str]:
