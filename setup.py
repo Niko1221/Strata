@@ -4202,20 +4202,31 @@ def confirm_risk(msg, explicit, yes, stop, hint=None, question="  Go on anyway?"
         fail(stop, hint)
 
 
-def confirm_paging(model, ram, choice, yes, explicit_model=False):
+def smaller_sizes(model, family, ram) -> list:
+    """#1919: what the paging warning suggests - the two smallest sizes `family` offers below `model`, those that fit
+    this RAM first (the paging test's own margin): Q2_0 is the original model's only, the Coder has one size, Swift
+    starts at IQ2_XS."""
+    own = sorted((m for m in MODELS if family in MODELS[m].get("families", ("qwen", "swift"))
+                  and MODELS[m]["arena_gb"] < MODELS[model]["arena_gb"]), key=lambda m: MODELS[m]["arena_gb"])
+    return ([m for m in own if ram >= MODELS[m]["ram_gb"] - 4] or own)[:2]
+
+
+def confirm_paging(model, ram, choice, yes, explicit_model=False, family="qwen"):
     """The model's experts do not fit this PC's RAM and the low-RAM mode is off.  #125: a warning and a question, not
     a stop - the user may accept paging.  Asked "no" by default, so an unattended --yes install stops here, unless
     the low-RAM mode was turned off explicitly (--low-ram off, #250) or the size was (--model): that is the choice
     already made."""
     need_gb, arena = MODELS[model]["ram_gb"], MODELS[model]["arena_gb"]
     off = choice == "off"
+    alt = " or ".join(smaller_sizes(model, family, ram))
     confirm_risk(f"{model} needs about {need_gb} GB of RAM and this PC has {ram:.0f} GB: its experts alone are "
                  f"{arena:.0f} GB and must stay in RAM, so Windows/Linux will page part of them from disk. Expect it "
-                 "to be much slower, and it may not start at all.\n       A smaller size (Q2_0 or IQ2_XS) fits; more "
-                 "RAM fixes it.", off or explicit_model, yes,
+                 "to be much slower, and it may not start at all.\n       "
+                 + (f"A smaller size ({alt}) fits; more RAM fixes it." if alt else "More RAM fixes it."),
+                 off or explicit_model, yes,
                  f"{model} needs about {need_gb} GB of RAM; this PC has {ram:.0f} GB",
-                 "choose Q2_0 or IQ2_XS, or add RAM" + ("" if off else f"; or --model {model} --yes (or --low-ram off "
-                                                                        "--yes) to install it anyway"),
+                 (f"choose {alt}, or add RAM" if alt else "add RAM")
+                 + ("" if off else f"; or --model {model} --yes (or --low-ram off --yes) to install it anyway"),
                  "  Install it anyway?", "y" if off else "n")
     warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose" + (" (--low-ram off)" if off else
                                                                           " (--model)" if explicit_model else ""))
@@ -6229,7 +6240,7 @@ def main() -> int:
     # (the low-RAM mode's variant is decided once the context is known, below; on several GPUs it is the mapped one
     # before RESIDENT_SPLIT_ENGINE, #642)
     if not low_ram and budget is None and ram < MODELS[model]["ram_gb"] - 4:
-        confirm_paging(model, ram, a.low_ram, a.yes, bool(a.model))
+        confirm_paging(model, ram, a.low_ram, a.yes, bool(a.model), family)
     ok(f"size: {model}")
     if MODELS[model].get("license"):                   # the ready-made packs: each size has its own license
         say(f"  Its license: {MODELS[model]['license']}")

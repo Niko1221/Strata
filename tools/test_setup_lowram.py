@@ -79,6 +79,25 @@ class PagingQuestion(unittest.TestCase):
                 self.assertEqual(len(asked), 1)
                 self.assertIn("[y]" if choice == "off" else "[n]", asked[0])
 
+    def test_the_smaller_sizes_are_the_family_s_own_1919(self):
+        # #1919: "Q2_0 or IQ2_XS" was suggested for every family, though only the original model has Q2_0
+        code, out, _ = run(setup.confirm_paging, "IQ3_S", 50, "auto", True)
+        self.assertIn("A smaller size (Q2_0 or IQ2_XS) fits; more RAM fixes it.", out)   # the original: as before
+        self.assertIn("choose Q2_0 or IQ2_XS, or add RAM; or --model IQ3_S --yes (or --low-ram off --yes)", out)
+        code, out, _ = run(setup.confirm_paging, "IQ3_S", 50, "auto", True, False, "swift")
+        self.assertIn("A smaller size (IQ2_XS) fits", out)                  # IQ3_XXS wants 60 GB: not on 50
+        self.assertNotIn("Q2_0", out)
+        code, out, _ = run(setup.confirm_paging, "IQ3_S", 57, "auto", True, False, "swift")
+        self.assertIn("A smaller size (IQ2_XS or IQ3_XXS) fits", out)
+        code, out, _ = run(setup.confirm_paging, "IQ1_M", 20, "auto", True, False, "coder")   # the Coder's one size
+        self.assertIn("much slower, and it may not start at all.\n       More RAM fixes it.", out)
+        self.assertIn("add RAM; or --model IQ1_M --yes", out)
+        self.assertNotIn("Q2_0", out)
+        self.assertEqual(setup.smaller_sizes("IQ2_XS", "qwen", 40), ["Q2_0"])
+        self.assertEqual(setup.smaller_sizes("NVFP4", "nvfp4", 64), [])
+        for ram in (30, 40, 50, 57):                                          # the original's two, at any RAM
+            self.assertEqual(setup.smaller_sizes("IQ3_S", "qwen", ram), ["Q2_0", "IQ2_XS"])
+
 
 if __name__ == "__main__":
     unittest.main()
