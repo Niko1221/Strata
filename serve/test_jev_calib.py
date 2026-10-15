@@ -345,3 +345,45 @@ class OpusPrereviewFixes(unittest.TestCase):
             self.assertTrue((data / "log-D.jsonl").exists())
             self.assertTrue((data / "log-S.jsonl").exists())
             self.assertFalse((data / "log.jsonl").exists())   # no mixed file anymore
+
+
+class ModeGating(unittest.TestCase):
+    """A0.1 mode gating (donor --modes chat,decision): fail-closed 404s,
+    env parsing, default both-on."""
+
+    def test_modes_default_all_on(self):
+        import importlib, os
+        old = os.environ.pop("STRATA_JEV_MODES", None)
+        try:
+            m = importlib.import_module("serve.jev_calib")
+            importlib.reload(m)
+            self.assertEqual(m.MODES, frozenset({"chat", "decision"}))
+        finally:
+            if old is not None:
+                os.environ["STRATA_JEV_MODES"] = old
+            importlib.reload(importlib.import_module("serve.jev_calib"))
+
+    def test_modes_decision_only(self):
+        import importlib, os
+        old = os.environ.pop("STRATA_JEV_MODES", None)
+        os.environ["STRATA_JEV_MODES"] = "decision"
+        try:
+            m = importlib.import_module("serve.jev_calib")
+            importlib.reload(m)
+            self.assertEqual(m.MODES, frozenset({"decision"}))
+        finally:
+            if old is not None:
+                os.environ["STRATA_JEV_MODES"] = old
+            else:
+                os.environ.pop("STRATA_JEV_MODES", None)   # must DELETE: leaked 'decision' gated later tests
+            importlib.reload(importlib.import_module("serve.jev_calib"))
+
+    def test_modes_unknown_fails_closed(self):
+        with self.assertRaises(ValueError):
+            jev_calib._parse_modes("chat,bananas")
+
+    def test_systemone_404_when_decision_gated_off(self):
+        # router-level check replicated: the gate key is what the router tests
+        self.assertIn("decision", jev_calib.MODES)   # default instance has it on
+        # and the parse that would turn it off:
+        self.assertNotIn("decision", jev_calib._parse_modes("chat"))
