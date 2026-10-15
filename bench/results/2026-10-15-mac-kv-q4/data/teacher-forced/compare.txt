@@ -1,0 +1,14 @@
+reference: bench/results/2026-10-15-mac-kv-q4/data/teacher-forced/fp16.tsv
+run                                      segment         pos    top1       KL   KL p99     PPL PPL ref
+q-int8.tsv                               code            999 100.00%  0.00000      nan   2.110   2.110
+q-int8.tsv                               docs            999 100.00%  0.00000      nan  10.464  10.464
+q-int8.tsv                               english         999 100.00%  0.00000      nan   4.546   4.546
+q-int8.tsv                               multilingual    999 100.00%  0.00000      nan   2.812   2.812
+q-int8.tsv                               agent           999 100.00%  0.00000      nan   6.128   6.128
+q-int8.tsv                               all            4995 100.00%  0.00000   0.0000   4.442   4.442
+q-q4.tsv                                 code            999  96.70%  0.01182      nan   2.115   2.110
+q-q4.tsv                                 docs            999  90.99%  0.03196      nan  10.499  10.464
+q-q4.tsv                                 english         999  94.69%  0.01406      nan   4.592   4.546
+q-q4.tsv                                 multilingual    999  96.80%  0.00900      nan   2.806   2.812
+q-q4.tsv                                 agent           999  93.09%  0.10385      nan   6.573   6.128
+q-q4.tsv                                 all            4995  94.45%  0.03414   0.4467   4.517   4.442

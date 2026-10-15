@@ -1,0 +1,2 @@
+reference: /tmp/t6/p-fp16
+p-q4                                     prompts  20  top-1 100.00%  KL mean 0.03565  median 0.00434  max 0.19546

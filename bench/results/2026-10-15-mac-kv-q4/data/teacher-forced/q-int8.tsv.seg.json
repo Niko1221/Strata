@@ -1,0 +1,67 @@
+{
+ "segments": [
+  {
+   "name": "code",
+   "first_line": 0,
+   "end_line": 999
+  },
+  {
+   "name": "docs",
+   "first_line": 999,
+   "end_line": 1998
+  },
+  {
+   "name": "english",
+   "first_line": 1998,
+   "end_line": 2997
+  },
+  {
+   "name": "multilingual",
+   "first_line": 2997,
+   "end_line": 3996
+  },
+  {
+   "name": "agent",
+   "first_line": 3996,
+   "end_line": 4995
+  }
+ ],
+ "config": "strata-q2_0.json",
+ "args": [
+  "/Users/berton/Github/AI-Infra/Strata-metal-kv-q4/build-metal/strata",
+  "--serve",
+  "--pack",
+  "/Users/berton/Github/AI-Infra/Strata-data/packs/q2_0",
+  "--native",
+  "/Users/berton/Github/AI-Infra/Strata-data/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+  "--ple-gguf",
+  "/Users/berton/Github/AI-Infra/Strata-data/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf",
+  "--expert-profile",
+  "/Users/berton/Github/AI-Infra/Strata-metal-kv-q4/data/expert-profile.bin",
+  "--spec",
+  "2",
+  "--mmap-experts",
+  "--expert-cache",
+  "1",
+  "--adapt-every",
+  "100000",
+  "--pcie-frac",
+  "0",
+  "--suffix-draft",
+  "0",
+  "--prompt-cache",
+  "0",
+  "--kv",
+  "int8",
+  "--max-context",
+  "1512",
+  "--short-read",
+  "1064",
+  "--prefill",
+  "512"
+ ],
+ "env": [],
+ "expert_cache_lines": [
+  "strata generate: expert cache 1 slots, 0.00 GiB of VRAM; policy is"
+ ]
+}
