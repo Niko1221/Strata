@@ -10,10 +10,13 @@ wire line in the M3.0 engine commit).  Engines without it get 503, never a fabri
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import threading
 import time
+
+from pathlib import Path
 
 from serve import jev_calib
 
@@ -250,8 +253,15 @@ def _handle_image_direct(svc, req: dict, mode: str, qdefs: list, b64: str) -> tu
         variants = [svc.tok.encode(lbl, parse_special=True)[:1]
                     for lbl in qdef["render_labels"]]
         cancel = threading.Event()
-        for _ in svc.engine.generate(ids, 1, {}, cancel):
-            pass                                 # the one decode step past the image
+        emb = getattr(svc.embeddings, "path", None)   # this qdef's prepare() staged it
+        svc.embeddings.path = None
+        try:
+            for _ in svc.engine.generate(ids, 1, {}, cancel, embeddings=emb):
+                pass                                 # the one decode step past the image
+        finally:
+            if emb:
+                with contextlib.suppress(OSError):
+                    Path(emb).unlink(missing_ok=True)
         tokens = sorted({t for v in variants for t in v})
         row = svc.engine.final_row_logits(ids, tokens)
         try:
@@ -318,12 +328,27 @@ def handle_image(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                                "message": f"vision: {e}"}}
     cancel = threading.Event()
     out = []
-    with svc.fifo:
-        for tok in svc.engine.generate(ids, min(max_new, 160), {}, cancel):
-            out.append(tok)
-            if len(out) >= 160:
-                break
-    summary = svc.tok.decode(out).split("<|im_end|>")[0].strip()
+    from serve.server import Detokenizer              # late import: server.py loads jev first
+    detok = Detokenizer(svc.tok)
+    parts = []
+    emb = getattr(svc.embeddings, "path", None)       # prepare() staged it; run() passes the
+    svc.embeddings.path = None                        # same to generate as GENI (else: black image)
+    try:
+        with svc.fifo:
+            for tok in svc.engine.generate(ids, min(max_new, 160), {}, cancel, embeddings=emb):
+                if tok is None or tok < 0:            # engine sentinel ids (verification artifacts)
+                    continue
+                out.append(tok)
+                piece = detok.push(tok)
+                if piece:
+                    parts.append(piece)
+                if len(out) >= 160:
+                    break
+    finally:
+        if emb:
+            with contextlib.suppress(OSError):
+                Path(emb).unlink(missing_ok=True)     # run() deletes its own; we are the run here
+    summary = "".join(parts).split("<|im_end|>")[0].strip()
 
     # ---- stage 2: decision on the summary state (the standard readout) ----
     sub = {k: v for k, v in req.items() if k not in ("image_b64", "vision_prompt")}
