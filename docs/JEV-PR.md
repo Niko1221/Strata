@@ -104,18 +104,41 @@ Donor: Qwen3.8-27B q4_k_xl, dense, its own server. Port: QFN IQ3_XXS MoE, Strata
 Same task sets (BoolQ / ARC / SST-5 slices from jevcpp's eval data), same metrics
 code, post-calibration numbers:
 
-| task | jevcpp 27B (donor) | jev-port QFN (this PR) |
-|---|---|---|
-| BoolQ noul acc | 0.905 raw / 0.890 cal | 0.910 cal |
-| BoolQ ECE15 | 0.036 raw / 0.049 cal | **0.033** cal |
-| ARC choice acc | 0.990 | 1.000 |
-| SST-5 score acc | 0.569 | 0.520 |
-| SST-5 ECE15 | 0.110 raw / **0.030** cal | 0.154 cal |
-| SST-5 NLL | 1.103 raw / 1.031 cal | 1.049 cal |
+| task | jevcpp 27B (donor) | jev-port QFN (this PR) | port, donor-ECE defn* |
+|---|---|---|---|
+| BoolQ noul acc | 0.905 raw / 0.890 cal | 0.910 cal | — |
+| BoolQ ECE15 | 0.036 raw / 0.049 cal | 0.033 cal | 0.035 cal |
+| ARC choice acc | 0.990 | 1.000 | — |
+| SST-5 score acc | 0.569 | 0.520 (−4.9pp ≈ 1 SE at n=100) | — |
+| SST-5 ECE15 | 0.110 raw / **0.030** cal | 0.154 cal | 0.156 cal |
+| SST-5 NLL | 1.103 raw / 1.031 cal | 1.049 cal | — |
 
-The 26B-smaller IQ3 MoE matches the donor within noise on noul and choice; score is
-−4.9pp (a genuinely harder readout at this quant) but calibration recovers most of
-the confidence quality.
+*Both ECE variants are top-label, 15 bins; the donor scores each bin at its CENTER
+((b+0.5)/15), this PR's harness scores the bin MEAN confidence. The donor-definition
+column recomputes our logged raw_p under the donor's exact b13_eval formula so the
+comparison is apples-to-apples. Under either definition the direction is the same.
+
+The 26B-smaller IQ3 MoE matches the donor within ~1 standard error on noul and choice
+(at n=100, SE≈3-5pp); score is −4.9pp (≈1 SE; the confounds are model size, MoE vs
+dense, and quant — not separable at this n). Donor noul calibration HURT it
+(0.905→0.890 acc); ours helps (0.890→0.910). SST-5 calibrated ECE remains ~5× the
+donor's under both definitions — T_score=2.263 is doing damage control on a weak
+5-way readout, not achieving donor-grade confidence. Stated plainly.
+
+## 4d. Not ported / diverged (deliberate, vs the donor plan)
+
+| Donor item | Why not |
+|---|---|
+| `--modes chat,decision` gating + `/admin/modes` | One Strata process serves both; a config key (`jev.decision_enabled`) is the right shape here, deferred (Opus G1/G2, post-PR) |
+| Prefix-fork + batched decode + naive differential (A2.7/A2.10) | Strata's engine exposes BROW final-row logits, not seq forks; correctness is anchored by the golden battery + the ported jevref math, not a naive twin |
+| V2 image-in-branch (crashed ggml) | **Superseded** by `image_mode: direct` — same single-readout goal, no fork, D-tuple-calibrated, benched on POPE/CVB/CountBench |
+| Chat-KV reuse for decisions (A3.5, PARTIAL in donor) | Strata's conversation cache provides prefix reuse engine-side (272 ms warm L-mode) |
+| B2 LoRA decision adapter | Donor's own gate: only if B1 left gaps; the score tuple is the candidate, deferred |
+| Batched/naive/fallback golden HTTP variants | One serve path exists; the golden battery + 7×3 concurrency arm cover it |
+
+Known-open pre-PR (Opus review, `/opt/data/reviews/jevport-prereview-opus.md`):
+noise-floor measurement, a211 metamorphic battery, soak, S-tuple fit, bootstrap CIs
+on the 4a table, token audit on the QFN tokenizer.
 
 ### 4c. Performance (warm, single client, n=10 per cell)
 
