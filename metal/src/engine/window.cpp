@@ -219,6 +219,10 @@ private:
         ysh_, sg_, qfull_, kcur_, vcur_, iqr_, ikr_, qcur_, qidx_, scores_, qids_, part_, cs_, lm_, apv_, api_, tokout_,
         emb_, pkey_, pval_, qkvL_, alL_, beL_, zL_, ydump_, keyn_, qn_, gated_, normW_, pleHist_;
     Act XA_, XF_, XY_, XQ_, XH_, XE_;
+    // the routing trace (STRATA_METAL_DUMP_ROUTING=path): the window's routed ids and weights, one slot per layer
+    std::FILE* routing_ = nullptr;
+    std::string routing_path_;
+    mtl::Buffer rd_ids_, rd_wts_;
     int cur_inj_ = 0;
     // state
     std::vector<mtl::Buffer> gst_, ghist_[2], kq_, vq_, ksc_, vsc_, tail_, dead_, pooled_;
@@ -249,6 +253,7 @@ private:
     // STRATA_METAL_KPROF=T (test tooling): once, after the 20th cached window of T tokens with the head, the GPU time
     // of each kernel class alone (the window's own dispatches of that pipeline + weight role, run by themselves)
     void kprof(const std::vector<mtl::Dispatch>& ds, int Tn);
+    void routing_write(int Tn);   // the window's routing records, when STRATA_METAL_DUMP_ROUTING names a file
     void fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp);
     // the encoded window per (T, head, hp_): built once, then only the positions are patched (the host's encode cost)
     struct Cached {
@@ -450,6 +455,17 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     xn_ = A(4 * MAXT * HC * N); lo_ = A(4 * MAXT * LR); qkv_ = A(4 * MAXT * 10240); z_ = A(4 * MAXT * 6144);
     al_ = A(4 * MAXT * 48); be_ = A(4 * MAXT * 48); yg_ = A(4 * MAXT * 6144); logits_ = A(4 * MAXT * 512);
     ids_ = A(4 * MAXT * TOPK); wts_ = A(4 * MAXT * TOPK); plan_ = A(4 * P_INTS); h_ = A(4 * MAXT * TOPK * NFF);
+    if (const char* e = std::getenv("STRATA_METAL_DUMP_ROUTING")) {
+        // the records --dump-routing writes on the pooled backends (int32 layer, int32 k, k ids, k float weights),
+        // one per layer per token of the window.  Opt-in: with the variable unset nothing here is allocated or run.
+        routing_ = std::fopen(e, "wb");
+        if (routing_ == nullptr) std::fprintf(stderr, "strata metal: cannot write the routing trace at %s\n", e);
+        else {
+            routing_path_ = e;
+            rd_ids_ = A(4 * 48 * MAXT * TOPK); rd_wts_ = A(4 * 48 * MAXT * TOPK);
+            std::fprintf(stderr, "strata metal: routing trace at %s, route_dump once per layer\n", e);
+        }
+    }
     ye_ = A(4 * MAXT * TOPK * N); gsh_ = A(4 * MAXT * NFF); ush_ = A(4 * MAXT * NFF); ysh_ = A(4 * MAXT * N);
     sg_ = A(4 * MAXT * 4); qfull_ = A(4 * MAXT * 12288); kcur_ = A(4 * MAXT * 512); vcur_ = A(4 * MAXT * 512);
     iqr_ = A(4 * MAXT * 512); ikr_ = A(4 * MAXT * 128); qcur_ = A(4 * MAXT * 24 * 256); qidx_ = A(4 * MAXT * 4 * 128);
@@ -828,6 +844,18 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
             r.tg[0] = 512;
         }
         push(ds, r);
+        if (routing_) {
+            // this layer's choice into its own slot: ids_ is reused by the next layer, and a resident window never
+            // hands the host a turn between layers (at_cut runs only when the experts stream)
+            mtl::Dispatch rd;
+            rd.p = P(lib_, "route_dump", {}, "route_dump");
+            const size_t off = (size_t) l * MAXT * TOPK * 4;
+            rd.args = {mtl::Arg::B(ids_), mtl::Arg::B(wts_), mtl::Arg::B(rd_ids_, off), mtl::Arg::B(rd_wts_, off),
+                       mtl::Arg::V(a)};
+            rd.grid[0] = (MAXT * TOPK + 31) / 32;
+            rd.tg[0] = 32;
+            push(ds, rd);
+        }
         {
             GlueArgs ga{NFF, MAXT, N, TOPK};
             mtl::Dispatch d;
@@ -1299,8 +1327,32 @@ void Window::kprof(const std::vector<mtl::Dispatch>& ds, int Tn) {
     for (const auto& [m, c] : rows) std::fprintf(stderr, "strata metal kprof: %8.3f ms %5.1f%%  %s\n", m, 100.0 * m / sum, c.c_str());
 }
 
+// The routing trace, in the format tools/make_profile.py reads: int32 layer, int32 k, k int32 ids, k float weights,
+// one record per layer per token of the committed window.  route_dump left each layer's rows in its own slot; the
+// slots are MAXT rows wide, so a window of Tn tokens writes its first Tn.  The rows are the window's proposals: a
+// draft that was rejected still shows the experts it routed, which is what a cache profile wants to see anyway.
+void Window::routing_write(int Tn) {
+    if (routing_ == nullptr) return;
+    const int32_t* ids = rd_ids_.as<int32_t>();
+    const float* w = rd_wts_.as<float>();
+    for (int l = 0; l < 48; ++l)
+        for (int t = 0; t < Tn; ++t) {
+            const size_t base = ((size_t) l * MAXT + t) * TOPK;
+            const int32_t rec[2] = {(int32_t) l, (int32_t) TOPK};
+            std::fwrite(rec, sizeof rec, 1, routing_);
+            std::fwrite(ids + base, sizeof(int32_t), (size_t) TOPK, routing_);
+            std::fwrite(w + base, sizeof(float), (size_t) TOPK, routing_);
+        }
+    std::fflush(routing_);
+}
+
 Window::~Window() {
     if (logpos_) std::fclose(logpos_);
+    if (routing_) {
+        std::fprintf(stderr, "strata metal: routing trace at %s written\n", routing_path_.c_str());
+        std::fclose(routing_);
+        routing_ = nullptr;
+    }
     if (std::getenv("STRATA_METAL_PROFILE") == nullptr) return;
     auto line = [](const char* what, const Prof& x) {
         if (x.n == 0) return;
@@ -1318,6 +1370,7 @@ Window::~Window() {
 
 bool Window::finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, double t0) {
     ++win_n_[Tn];
+    if (head) routing_write(Tn);   // the committed window: a fold re-run of the same rows would double the records
     win_ms_[Tn] += now_ms() - t0;
     win_gpu_[Tn] += last_gpu_ms_;
     static const bool prof = std::getenv("STRATA_METAL_PROFILE") != nullptr;
