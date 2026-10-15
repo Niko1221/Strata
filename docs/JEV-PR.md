@@ -150,10 +150,25 @@ on the 4a table, token audit on the QFN tokenizer.
 | image summary, 1 question | 1625 ms | 2731 ms | 0.6 |
 
 vs donor (27B dense, its m1_perf matrix, 1q-1c-warm): **71 ms p50 / 14.0 rps**.
-The port is ~3.8× slower per decision — expected: MoE expert routing + engine wire
-vs the donor's dense-batched loop. In exchange it runs in the Strata serving stack
-(KV cache, vision, MTP, one process for chat+decisions). Image direct ≈ text
-latency (encoder cached); summary costs ~6× direct (full 160-token generation).
+Measured budget of the port's ~350 ms (proxy, fresh connection), decomposed live:
+
+| component | cost | note |
+|---|---|---|
+| serve HTTP + JSON + calibration | ~1 ms | GET /health and /v1/models both p50 1 ms |
+| engine turn (prefill + 1 decode + BROW readout) | **~260 ms** | prefill-dominated on fresh prompts |
+| fresh TCP + auth handshake | ~47 ms | keep-alive removes it (255 ms direct p50) |
+| llama-swap proxy hop | ~44 ms | direct-to-serve-port removes it (302 ms) |
+
+Streaming is not a factor: systemone responses are single JSON bodies with
+Content-Length (donor contract refuses `stream: true`). The gap vs the donor is
+the un-prefixed engine turn, not protocol overhead — the donor amortized prefill
+across forks (prefix-once + seq_cp); this port re-prefills per request. State-KV
+reuse / prefix-LRU (the separate suffix-reuse work, out of scope here) collapses
+the prefill share and projects decisions to ~60–80 ms. Repeat-identical requests
+already hit the engine's prefix mount: 278–300 ms via proxy, and long states
+(~470 tok) repeat at the same cost, confirming the mount fires when the prompt is
+a full prefix. Image direct ≈ text latency (encoder cached); summary costs ~6×
+direct (full 160-token generation).
 
 Determinism / noise floor (measured, mechanism identified): repeat-decision
 probability drift on this engine is p99 |Δp| ≈ 0.04–0.07 with **zero argmax
