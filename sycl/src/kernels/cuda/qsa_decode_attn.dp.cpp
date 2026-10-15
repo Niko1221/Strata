@@ -5,7 +5,6 @@
 #include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
-#include "strata/b70.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_q4.hpp"
@@ -585,9 +584,14 @@ bool pre75_attn() {
 static void launch_qsa_chunk_down(int,const float*,const QsaAttnPools&,const int32_t*,const int32_t*,int64_t,
                            const QsaShapes&,float*,float*,int64_t,void*);
 bool qsa_chunk_down_supported(int64_t cap, int64_t n_q, const QsaShapes& s, void* stream) {
+    static const bool enabled = [] {
+        const char* v = std::getenv("STRATA_SYCL_QSA_CHUNK_DOWN");
+        return !v || v[0] == '1';
+    }();
     const bool batch = n_q >= 1 && n_q <= 6;
     const bool shape = (cap == 2051 && (batch || n_q == 32)) || (cap == 32768 && batch);
-    return shape && s.n_head == 24 && s.n_head_kv == 2 && s.page_size == 4 && strata::is_b70(stream);
+    return enabled && shape && s.n_head == 24 && s.n_head_kv == 2 && s.page_size == 4 &&
+        strata::intel_gpu_gen(strata::q_of(stream)->get_device()) == strata::IntelGpuGen::Battlemage;
 }
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
@@ -1291,8 +1295,12 @@ static void launch_qsa_chunk_down(int mode,const float* q,const QsaAttnPools& po
         qsa_decode_attn_batch(q,pools,ids,steps,cap,s,scratch,attn,nq,stream);return;
     }
     if(nq<=0)return;
+    static const bool vector_enabled = [] {
+        const char* v = std::getenv("STRATA_SYCL_QSA_VALUE8_K8_VEC");
+        return !v || v[0] == '1';
+    }();
     const bool vector_shape=(cap==2051&&(nq==1||nq==2||nq==3||nq==4||nq==32))||(cap==32768&&nq==1);
-    if(vector_shape){launch_normal_qsa_vector(1,q,pools,ids,steps,cap,s,scratch,attn,nq,stream);return;}
+    if(vector_enabled&&vector_shape){launch_normal_qsa_vector(1,q,pools,ids,steps,cap,s,scratch,attn,nq,stream);return;}
     const int chunks=int((cap+CHUNK-1)/CHUNK);
     const long long stride=qsa_decode_attn_scratch_floats(cap,s);
     auto* part_m=scratch+size_t(chunks)*s.n_head*HD;
