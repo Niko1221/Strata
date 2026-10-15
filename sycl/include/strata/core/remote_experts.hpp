@@ -4,6 +4,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_source.hpp"
+#include "strata/kernels/iq_kernels.hpp"
 
 #include <cstdint>
 #include <string>
@@ -24,10 +25,17 @@ public:
     /// Initialise the device before the host expert arena registers
     /// tens of GiB of portable mapped memory with CUDA.
     static bool preflight(int device, double& free_gib, std::string& err);
+    /// `n_embd` / `n_ff` are the model's expert widths (2560 / 640 for Flash-Next, 2048 / 512 for Qwen3.6) and `k`
+    /// the experts routed per token (10 vs 8).  On the CUDA engine the window (MAXT * k), the staging rows and the
+    /// scratch follow them.  The SYCL port's grouped kernels and its (stubbed) RemoteExpertOpt tier are baked to
+    /// Flash-Next's 2560 / 640 / 10, so those are the only numbers the port can serve; the defaults are
+    /// Flash-Next's, so a call that omits them allocates and rejects exactly as before.
     bool open(int device, int slots, int64_t layers, int64_t experts,
               const std::vector<std::pair<int32_t, int32_t>>& ranked,
               const ExpertCache& primary, ExpertSource& source,
-              std::vector<uint8_t>& claimed, std::string& err, bool auto_size = false);
+              std::vector<uint8_t>& claimed, std::string& err, bool auto_size = false,
+              int64_t n_embd = 2560, int64_t n_ff = 640, int64_t k = 10,
+              const std::vector<strata::kernels::NativeExpertLayout>* layer_layouts = nullptr);
     void close();
 
     /// `kind` is the primary verifier's classification (-1 = CPU candidate),
@@ -54,6 +62,7 @@ private:
     int device_ = -1;
     int64_t n_expert_ = 0;
     int32_t groups_ = 0;
+    std::vector<strata::kernels::NativeExpertLayout> layer_layouts_;   ///< per-layer native layout override; empty = use the global expert_layout() table
     int64_t computed_ = 0;
     int64_t launched_layers_ = 0;
     uint64_t returned_bytes_ = 0;

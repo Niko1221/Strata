@@ -27,7 +27,7 @@ void RemoteExpertOpt::copy_rows(float*, const float*, int, int, const int32_t*, 
 
 void RemoteExpertOpt::combine(float*, float*, int, int, const uint32_t*, uint32_t, void*) const {}
 
-size_t RemoteExpertOpt::metadata_bytes() { return 0; }
+size_t RemoteExpertOpt::metadata_bytes() const { return 0; }
 
 void RemoteExpertOpt::prepare(const RemoteExperts&, void*) const {}
 

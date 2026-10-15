@@ -536,4 +536,36 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
 #endif
 }
 
+bool expert_layout_set_native(int64_t n_layers, int64_t n_expert, const std::vector<NativeFmt>& fmt,
+                             uint64_t total, std::string& err) {
+    if (n_layers <= 0 || n_expert <= 0) {
+        err = "expert_layout_set_native: n_layers and n_expert must be positive";
+        return false;
+    }
+    if ((int64_t) fmt.size() != n_layers) {
+        err = "expert_layout_set_native: the format table has " + std::to_string(fmt.size()) +
+              " layers but n_layers is " + std::to_string(n_layers);
+        return false;
+    }
+    ExpertLayout L;
+    L.native = true;
+    L.n_layers = n_layers;
+    L.n_expert = n_expert;
+    L.fmt = fmt;
+    L.offset.assign((size_t) n_layers, 0);
+    L.bytes.assign((size_t) n_layers, 0);
+    L.max_blob = 0;
+    uint64_t at = 0;
+    for (int64_t l = 0; l < n_layers; ++l) {
+        const NativeFmt& f = fmt[(size_t) l];
+        L.offset[(size_t) l] = at;
+        L.bytes[(size_t) l] = f.bytes;
+        if (f.bytes > L.max_blob) L.max_blob = f.bytes;
+        at += f.bytes * (uint64_t) n_expert;
+    }
+    L.total = total;
+    g_layout = L;
+    return true;
+}
+
 }  // namespace strata::kernels::cpu

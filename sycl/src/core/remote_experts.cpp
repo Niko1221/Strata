@@ -161,12 +161,39 @@ void RemoteExperts::close() {
 bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
                          const std::vector<std::pair<int32_t, int32_t>> &ranked,
                          const ExpertCache &primary, ExpertSource &source,
-                         std::vector<uint8_t> &claimed, std::string &err, bool /*auto_size*/) try {
+                         std::vector<uint8_t> &claimed, std::string &err, bool /*auto_size*/,
+                         int64_t n_embd, int64_t n_ff, int64_t k,
+                         const std::vector<strata::kernels::NativeExpertLayout> *layer_layouts) try {
     close();
     if (strata::kernels::cpu::hadamard_spec().any()) {   // APR: this helper does not rotate the expert input yet (SYCL)
         err = "second-GPU experts: Hadamard-folded (Gyro) experts are not supported on a second Intel GPU yet";
         return false;
     }
+    // The same three trailing parameters, and the same first range check as the CUDA engine
+    // (src/core/remote_experts.cpp:127-130), so a call site reads the same on either backend.
+    if (n_embd <= 0 || n_ff <= 0 || k <= 0 || k > 10 || strata::kernels::cpu::MAXT * k > CAP) {
+        err = "experts: the model's row width, expert width and routing width are out of range";
+        return false;
+    }
+    // CUDA then stores n_embd/n_ff/k and sizes the window, the staging and the scratch from them
+    // (remote_experts.cpp:131-134, :200-214).  The port cannot: the migrated grouped kernels bake Flash-Next's
+    // widths (src/kernels/cuda/s2_expert_grouped.dp.cpp:40 `constexpr int H = 2560`, and the staging, activation
+    // and scratch above are all sized from H / FF / CAP), and the port has no RemoteExpertOpt tier
+    // (optimized_decode() is false; sycl/src/core/remote_expert_opt_stub.cpp).  Reading a narrower expert as a
+    // 2560-wide row walks off into the next expert's bytes without faulting - the same rule expert_source.hpp
+    // states for the blob layout (include/strata/core/expert_source.hpp:18-21: "REFUSED rather than mis-indexed").
+    // So a non-Flash-Next shape is refused here rather than silently served at 2560/640/10.  A call that omits
+    // these three parameters takes the defaults - 2560/640/10, which are H/FF/10 - so it passes both checks and
+    // every allocation below runs byte-for-byte as before.
+    if (n_embd != H || n_ff != FF || k != 10) {
+        err = "CUDA" + std::to_string(device) + " experts: the SYCL engine's expert tier is built for Flash-Next's " +
+              std::to_string(H) + "-wide row, " + std::to_string(FF) + "-wide expert and 10 routed experts; this " +
+              "model asks for " + std::to_string(n_embd) + "/" + std::to_string(n_ff) + "/" + std::to_string(k) +
+              ". Use --expert-cache-device on the CUDA engine.";
+        close(); return false;
+    }
+    layer_layouts_.clear();
+    if (layer_layouts) layer_layouts_ = *layer_layouts;
     int count = 0;
     if (!check(DPCT_CHECK_ERROR(count = dpct::device_count()),
                "cudaGetDeviceCount", err, device)) return false;
@@ -429,10 +456,32 @@ bool RemoteExperts::begin(int64_t layer, const float *x, const int32_t *ids,
               "copy group metadata", err, device_);
     if (!staged) return false;
     const auto& lay = strata::kernels::cpu::expert_layout();
-    if (lay.native) {
-        strata::kernels::quantize_q8_1_rows(zero_copy_ ? z_x_ : d_x_, n_tok, H, d_q8_, s);
+    // Per-layer layouts (given to open() by an engine that never loads the global expert_layout table)
+    // win over that table; a layer past the end of either fails rather than reading the wrong entry.
+    // With neither, the canonical Q2_0 s2 path runs exactly as before.
+    strata::kernels::NativeExpertLayout L;
+    bool use_native = false;
+    if (!layer_layouts_.empty()) {
+        if ((size_t) layer >= layer_layouts_.size()) {
+            err = "CUDA" + std::to_string(device_) + " experts: no per-layer layout for layer " +
+                  std::to_string(layer) + " (open() was given " + std::to_string(layer_layouts_.size()) +
+                  ")";
+            return false;
+        }
+        L = layer_layouts_[(size_t) layer];
+        use_native = true;
+    } else if (lay.native) {
+        if ((size_t) layer >= lay.fmt.size()) {
+            err = "CUDA" + std::to_string(device_) + " experts: the expert layout has no entry for layer " +
+                  std::to_string(layer) + " (it has " + std::to_string(lay.fmt.size()) + ")";
+            return false;
+        }
         const auto& fmt = lay.fmt[(size_t) layer];
-        auto L = strata::kernels::native_expert_layout(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff);
+        L = strata::kernels::native_expert_layout(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff);
+        use_native = true;
+    }
+    if (use_native) {
+        strata::kernels::quantize_q8_1_rows(zero_copy_ ? z_x_ : d_x_, n_tok, H, d_q8_, s);
         strata::kernels::native_expert_grouped(L, d_ptr_, d_start_, d_count_, d_dst_, d_tok_,
                                                groups_, (int64_t) dst_.size(), d_q8_, d_scratch_, zero_copy_ ? z_out_ : d_out_, s);
     } else {

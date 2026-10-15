@@ -35,7 +35,9 @@ public:
 
 private:
     friend class RemoteExperts;
-    static size_t metadata_bytes();
+    /// The reduce metadata's size for the geometry init() read from the helpers: Flash-Next's
+    /// 2560-wide rows with k = 10 give 640 B, Qwen3.6's 2048-wide rows with k = 8 give 512 B.
+    size_t metadata_bytes() const;
     bool active() const { return weights_ != nullptr; }
     void prepare(const RemoteExperts& remote, void* metadata) const;
     bool reduce(RemoteExperts& remote, const void* metadata, std::string& err);
@@ -43,6 +45,9 @@ private:
 
     struct Peer { RemoteExperts* remote; float* sum = nullptr; };
     std::vector<Peer> peers_;
+    int64_t n_embd_ = 2560;  ///< the model's row width, set by init() from the helpers' open()
+    int64_t k_ = 10;        ///< the experts routed per token, set by init() from the helpers' open()
+    int64_t cap_ = 80;      ///< the window's entry count, MAXT * k_, set by init()
     float* h_sum_ = nullptr;
     float* m_sum_ = nullptr;
     int32_t* h_mask_ = nullptr;

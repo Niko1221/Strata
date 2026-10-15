@@ -94,6 +94,17 @@ const ExpertLayout& expert_layout();
 /// Reads `<pack_dir>/native_experts.txt` when it exists (a native pack), else sets the canonical layout.
 /// Versions up to kExpertLayoutVersion are read; a newer one is refused (a newer packer wrote it).
 bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
+/// Publishes a layout an engine built itself, for the family that has no pack file at all: `fmt` is one entry
+/// per layer (the same geometry every layer may have, qwen35moe's included), and the blob's bytes are read
+/// from it, `offset` per layer accumulating.  `expert_layout_load` is the packer route and this the in-memory
+/// one; both end at the same global table, so every reader is unchanged.
+///
+/// qwen35moe (src/qwen35) needs it because the q36 engine reads its experts straight from the GGUF tensors
+/// (`ffn_gate_exps` / `ffn_up_exps` / `ffn_down_exps`) instead of a pack: without this, a helper GPU's expert
+/// tier would be sized against the canonical Q2_0 blob (1,382,400 B for 2560/640) rather than the model's own
+/// per-layer blob, and mis-index every slot.  Call it before the first `expert_layout()` reader.
+bool expert_layout_set_native(int64_t n_layers, int64_t n_expert, const std::vector<NativeFmt>& fmt,
+                              uint64_t total, std::string& err);
 /// The newest native_experts.txt this engine reads.  v4 = v3 plus the per-role shard column `gate,up,down`,
 /// written only when some layer's roles are in different shards (every other pack stays v3, byte for byte).
 /// v5 = v4 plus `hadamard.txt` beside it: Hadamard-folded experts (hadamard.hpp), written only for such models,

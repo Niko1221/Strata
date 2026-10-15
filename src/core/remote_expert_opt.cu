@@ -10,9 +10,22 @@
 
 namespace strata::core {
 namespace {
-constexpr int64_t H = strata::kernels::cpu::H;
-constexpr int K = 10, MAXT = strata::kernels::cpu::MAXT, CAP = MAXT * K;
-struct ReduceMeta { int32_t row[CAP]; float weight[CAP]; };
+// The reduce metadata follows the window: row[cap] int32s then weight[cap] floats, one entry per
+// window row (cap = MAXT * k).  The kernels get the geometry as launch arguments because a
+// __global__ cannot read instance members.
+static_assert(strata::kernels::cpu::MAXT == 8 && strata::kernels::cpu::H == 2560,
+              "the defaults below are Flash-Next's geometry (8 token window, 2560-wide rows)");
+// Flash-Next's arithmetic, so a helper opened with the defaults changes no number: cap = 8 * 10 = 80,
+// metadata = 80 * 4 + 80 * 4 = 640 B (the old sizeof(ReduceMeta)), the pinned buffer =
+// (2560 * 8 + 80) * 4 = 82240 B (the old MAXT * (H + K) * 4), one peer's sum = 2560 * 8 * 4 = 81920 B,
+// the reduce grid ((2560 + 255) / 256, tokens) and copy_cpu_rows' row stride 2560 / 4 float4s.
+static_assert(strata::kernels::cpu::MAXT * 10 * sizeof(int32_t) + strata::kernels::cpu::MAXT * 10 * sizeof(float)
+                  == 2 * 80 * 4,
+              "Flash-Next's reduce metadata must stay the old sizeof(ReduceMeta) = 640 B");
+static_assert((strata::kernels::cpu::H * strata::kernels::cpu::MAXT + strata::kernels::cpu::MAXT * 10)
+                      * sizeof(float) == strata::kernels::cpu::MAXT
+                          * (strata::kernels::cpu::H + 10) * sizeof(float),
+              "Flash-Next's pinned sum+mask buffer must stay the old MAXT * (H + K) floats");
 
 bool check(cudaError_t status, std::string& err) {
     if (status == cudaSuccess) return true;
@@ -20,20 +33,21 @@ bool check(cudaError_t status, std::string& err) {
     return false;
 }
 
-__global__ void reduce_experts(const float* parts, const ReduceMeta* meta, float* sum) {
+__global__ void reduce_experts(const float* parts, const int32_t* rows, const float* weights, float* sum,
+                               int H, int K) {
     const int t = blockIdx.y, c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= H) return;
     float v = 0.0f;
     for (int j = 0; j < K; ++j) {
-        const int i = t * K + j, r = meta->row[i];
-        if (r >= 0) v += parts[(int64_t) r * H + c] * meta->weight[i];
+        const int i = t * K + j, r = rows[i];
+        if (r >= 0) v += parts[(int64_t) r * H + c] * weights[i];
     }
     sum[(int64_t) t * H + c] = v;
 }
 
 // Like the upstream mapped-row copy, also skip rows returned in the remote sum.
 __global__ void copy_cpu_rows(float4* dst, const volatile float4* src, const int32_t* mask,
-                              const int32_t* hit_rows, const int32_t* count) {
+                              const int32_t* hit_rows, const int32_t* count, int H) {
     const int row = blockIdx.x;
     __shared__ int skip;
     if (threadIdx.x == 0) {
@@ -54,16 +68,28 @@ void RemoteExpertOpt::attach(RemoteExperts& remote) {
 }
 
 bool RemoteExpertOpt::init(std::string& err) {
+    // The helpers' open() ran before this; every peer serves one model, so their geometry agrees.
+    // (attach() is too early: open() has not set n_embd_ / k_ / cap_ yet.)
+    if (!peers_.empty()) {
+        n_embd_ = peers_[0].remote->n_embd_;
+        k_ = peers_[0].remote->k_;
+        cap_ = peers_[0].remote->cap_;
+        for (auto& p : peers_)
+            if (p.remote->n_embd_ != n_embd_ || p.remote->k_ != k_ || p.remote->cap_ != cap_) {
+                err = "remote expert decode optimization: the helper caches disagree on the model's geometry";
+                return false;
+            }
+    }
     void* mapped = nullptr;
-    if (!check(cudaHostAlloc((void**) &h_sum_, MAXT * (H + K) * sizeof(float),
+    if (!check(cudaHostAlloc((void**) &h_sum_, (n_embd_ * strata::kernels::cpu::MAXT + cap_) * sizeof(float),
                              cudaHostAllocPortable | cudaHostAllocMapped), err) ||
         !check(cudaHostGetDevicePointer(&mapped, h_sum_, 0), err)) return false;
     m_sum_ = (float*) mapped;
-    h_mask_ = reinterpret_cast<int32_t*>(h_sum_ + MAXT * H);
-    m_mask_ = reinterpret_cast<int32_t*>(m_sum_ + MAXT * H);
+    h_mask_ = reinterpret_cast<int32_t*>(h_sum_ + n_embd_ * strata::kernels::cpu::MAXT);
+    m_mask_ = reinterpret_cast<int32_t*>(m_sum_ + n_embd_ * strata::kernels::cpu::MAXT);
     for (auto& p : peers_) {
         const OnDevice on(p.remote->device_);
-        if (!check(cudaMalloc((void**) &p.sum, MAXT * H * sizeof(float)), err)) return false;
+        if (!check(cudaMalloc((void**) &p.sum, n_embd_ * strata::kernels::cpu::MAXT * sizeof(float)), err)) return false;
     }
     return true;
 }
@@ -78,57 +104,69 @@ RemoteExpertOpt::~RemoteExpertOpt() {
     if (h_sum_) cudaFreeHost(h_sum_);
 }
 
-size_t RemoteExpertOpt::metadata_bytes() { return sizeof(ReduceMeta); }
+size_t RemoteExpertOpt::metadata_bytes() const {
+    // row[cap] int32s then weight[cap] floats: for Flash-Next's cap = 80 this is 640 B, the old
+    // sizeof(ReduceMeta); for Qwen3.6's cap = 64 it is 512 B.  remote_experts.cpp allocates this
+    // plus sizeof(RemoteMeta) at open() and copies it (plus the fixed part) at begin().
+    return cap_ * sizeof(int32_t) + cap_ * sizeof(float);
+}
 
 void RemoteExpertOpt::begin(const float* weights, int token_begin, int tokens) {
     weights_ = weights;
     token_begin_ = token_begin;
     tokens_ = tokens;
-    std::memset(h_sum_ + token_begin * H, 0, tokens * H * sizeof(float));
-    std::memset(h_mask_ + token_begin * K, 0, tokens * K * sizeof(int32_t));
+    std::memset(h_sum_ + (size_t) token_begin * n_embd_, 0, (size_t) tokens * n_embd_ * sizeof(float));
+    std::memset(h_mask_ + (size_t) token_begin * k_, 0, (size_t) tokens * k_ * sizeof(int32_t));
 }
 
 void RemoteExpertOpt::prepare(const RemoteExperts& remote, void* metadata) const {
-    auto* m = (ReduceMeta*) metadata;
-    std::fill(m->row, m->row + tokens_ * K, -1);
+    auto* row = (int32_t*) metadata;
+    auto* weight = row + cap_;
+    std::fill(row, row + tokens_ * k_, -1);
     for (size_t i = 0; i < remote.original_row_.size(); ++i)
-        m->row[remote.original_row_[i]] = (int32_t) i;
-    std::memcpy(m->weight, weights_, tokens_ * K * sizeof(float));
+        row[remote.original_row_[i]] = (int32_t) i;
+    std::memcpy(weight, weights_, (size_t) tokens_ * k_ * sizeof(float));
 }
 
 bool RemoteExpertOpt::reduce(RemoteExperts& remote, const void* metadata, std::string& err) {
     const auto& p = *std::find_if(peers_.begin(), peers_.end(), [&](const Peer& p) { return p.remote == &remote; });
     // finish() synchronizes this stream before the host reads h_out_. When mapped output is available,
     // write the reduced rows there directly, avoiding a separate device-to-host copy for every layer.
+    // The row index, the routing width and the row count come from the helper this peer was opened for
+    // (n_embd_ / k_ / cap_), not from Flash-Next's constants: Qwen3.6's helper tier is 2048 wide with
+    // top-8, and the metadata block prepare() filled is sized for that cap.
     float* sum = remote.zero_copy_ ? remote.z_out_ : p.sum;
-    reduce_experts<<<dim3((H + 255) / 256, tokens_), 256, 0, remote.stream_>>>(
-        remote.d_out_, (const ReduceMeta*) metadata, sum);
+    reduce_experts<<<dim3((n_embd_ + 255) / 256, tokens_), 256, 0, remote.stream_>>>(
+        remote.d_out_, (const int32_t*) metadata, (const float*) metadata + cap_, sum,
+        (int) n_embd_, (int) k_);
     if (remote.zero_copy_) return check(cudaGetLastError(), err);
-    return check(cudaMemcpyAsync(remote.h_out_, p.sum, tokens_ * H * sizeof(float),
+    return check(cudaMemcpyAsync(remote.h_out_, p.sum, (size_t) tokens_ * n_embd_ * sizeof(float),
                                   cudaMemcpyDeviceToHost, remote.stream_), err);
 }
 
 void RemoteExpertOpt::accumulate(const RemoteExperts& remote) {
-    for (int64_t i = 0; i < tokens_ * H; ++i) h_sum_[token_begin_ * H + i] += remote.h_out_[i];
-    for (int i = 0; i < tokens_ * K; ++i)
-        h_mask_[token_begin_ * K + i] |= remote.owned_[(size_t) i] != 0;
+    for (int64_t i = 0; i < tokens_ * n_embd_; ++i)
+        h_sum_[(size_t) token_begin_ * n_embd_ + i] += remote.h_out_[i];
+    for (int i = 0; i < (int) (tokens_ * k_); ++i)
+        h_mask_[(size_t) token_begin_ * k_ + i] |= remote.owned_[(size_t) i] != 0;
 }
 
 void RemoteExpertOpt::copy_rows(float* dst, const float* src, int token_begin, int tokens,
-                         const int32_t* hit_rows, const int32_t* count, void* stream) const {
-    copy_cpu_rows<<<tokens * K, 128, 0, (cudaStream_t) stream>>>(
-        (float4*) dst, (const volatile float4*) src, m_mask_ + token_begin * K, hit_rows, count);
+                          const int32_t* hit_rows, const int32_t* count, void* stream) const {
+    copy_cpu_rows<<<tokens * (int) k_, 128, 0, (cudaStream_t) stream>>>(
+        (float4*) dst, (const volatile float4*) src, m_mask_ + (size_t) token_begin * (int) k_, hit_rows, count,
+        (int) n_embd_);
 }
 
 void RemoteExpertOpt::combine(float* dst, float* scratch, int token_begin, int tokens,
                        const uint32_t* skip, uint32_t ring, void* stream) const {
-    const float* sum = m_sum_ + token_begin * H;
+    const float* sum = m_sum_ + (size_t) token_begin * n_embd_;
     if (skip) {
         // An all-primary device-planned group bypasses the host: ignore its stale sum.
-        strata::kernels::copy_or_zero_from_mapped(scratch, sum, tokens * H, skip, ring, stream);
+        strata::kernels::copy_or_zero_from_mapped(scratch, sum, (size_t) tokens * n_embd_, skip, ring, stream);
         sum = scratch;
     }
-    strata::kernels::add_inplace(dst, sum, tokens * H, stream);
+    strata::kernels::add_inplace(dst, sum, (size_t) tokens * n_embd_, stream);
 }
 
 bool RemoteExpertOpt::owns(int64_t layer, int32_t expert) const {

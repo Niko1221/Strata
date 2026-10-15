@@ -18,11 +18,13 @@
 // [--force IDS] [--dump-full-logits F] (tools/qwen35/kl.py's reference interface), --bench-pp N / --bench-tg N.
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
+#include "strata/core/remote_experts.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/native_router.hpp"
+#include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/qwen35/engine.hpp"
@@ -37,6 +39,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <atomic>
 #include <chrono>
@@ -46,6 +49,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <deque>
 #include <functional>
 #include <iostream>
@@ -1121,6 +1125,32 @@ void expert_blob(const Layer& L, int64_t e, uint8_t* dst) {
     std::memcpy(dst + L.L.down_off, L.src_d + (size_t) e * L.src_dsz, L.src_dsz);
 }
 
+/// Expert source for the q36 helper tier (a P100 plus 2xP104): the model's GGUF is mapped in `load` and the three
+/// role tensors stay open, so the blob for (layer, expert) is the layer's own `[gate | up | down]` blob `eparts`
+/// entries are computed from - byte for byte what this engine already reads.  `blob()` assembles it into one
+/// rotating staging buffer, valid until the next call, which is the ExpertSource contract RemoteExperts::open()
+/// relies on (it copies each selected blob into the helper's VRAM slot as it goes).
+class Q36ExpertSource final : public strata::core::ExpertSource {
+public:
+    void set(const std::vector<const Layer*>& layers, int64_t n_expert) {
+        layers_ = layers;
+        n_expert_ = n_expert;
+        const size_t blob = layers_.empty() ? 0 : (size_t) layers_.front()->L.bytes;
+        staging_.assign(blob, 0);
+    }
+    const uint8_t* blob(int64_t layer, int64_t expert) override {
+        if (layer < 0 || layer >= (int64_t) layers_.size() || expert < 0 || expert >= n_expert_ || staging_.empty())
+            return nullptr;
+        expert_blob(*layers_[(size_t) layer], expert, staging_.data());
+        return staging_.data();
+    }
+
+private:
+    std::vector<const Layer*> layers_;
+    int64_t n_expert_ = 0;
+    std::vector<uint8_t> staging_;
+};
+
 // ------------------------------------------------------------------------------------------------ the engine
 float* dalloc(size_t n) {
     float* p = nullptr;
@@ -1245,6 +1275,20 @@ struct Engine {
     int hybrid_t = 32;
     bool main_hybrid = false;   // some main layer is hybrid (else only the MTP block is: the decode graph stays)
     bool mtp_graph = true;      // the MTP draft step may be a graph (not when its layer is hybrid)
+
+    // ---- the helper expert tier (--expert-cache-device1..3): whole layers' routed experts on other CUDA devices,
+    // a P100 plus two P104s.  Layers are striped across the helpers (see open_helpers); for a layer that a helper
+    // owns, every routed entry is computed there through begin()/finish() and the local grouped kernel is skipped.
+    // Off by default: without the flags, helpers_enabled() is false everywhere and this path costs one branch.
+    std::array<strata::core::RemoteExperts, 3> helpers;
+    std::vector<int8_t> helper_of_layer;   // [n_layers]: -1 local, else 0..2 the helper's index
+    int helper_count = 0;
+    bool helpers_enabled() const { return helper_count > 0; }
+    /// Whether state index li's layer is wholly on a helper (its routed experts skip the local grouped kernel).
+    bool helper_layer(size_t li) const {
+        // only main-model layers carry a helper slot: the MTP block (li == m->layers.size()) stays local
+        return !helper_of_layer.empty() && li < (size_t) m->g.n_layers && helper_of_layer[li] >= 0;
+    }
     /// state index li's layer runs hybrid (its experts not all in VRAM)
     bool lhy(size_t li) const {
         if (!m->hybrid) return false;
@@ -1258,6 +1302,11 @@ struct Engine {
     float *h_h = nullptr, *cpu_out = nullptr, *ecpu = nullptr;
     int32_t *h_ids = nullptr, *h_miss = nullptr, *d_miss = nullptr, *h_cnt = nullptr;
     uint8_t* acts = nullptr;   // per token: its quantized activation (kNativeActBytes)
+    // the helper tier's host staging: routing ids and the normed activation, and the result rows it fills
+    int32_t* h_helper_ids = nullptr;
+    float* h_helper_x = nullptr;
+    float* helper_out = nullptr;   // [n_entries][N] the helpers' rows (sparse; finish() scatters by row)
+    Q36ExpertSource helper_src;
     cudaEvent_t ev_route = nullptr;
     uint8_t* stage[2] = {};
     cudaStream_t cst = nullptr;
@@ -2015,11 +2064,24 @@ struct Engine {
         const int64_t n_ent = (int64_t) T * Kp;
         const int32_t* prow = nullptr;
         if (hy_rows) {
-            moe_hybrid_gpu(L, li, T);
+            // a helper GPU owns this layer's experts: every routed entry goes there (MAXT windows only), neither the
+            // local slots nor the CPU pool take any of it; otherwise the usual slots + CPU pool split.
+            if (!(helpers_enabled() && helper_layer(li) && T <= strata::kernels::cpu::MAXT && !helper_failed &&
+                  moe_helpers(li, T)))
+                moe_hybrid_gpu(L, li, T);
         } else if (T > kGemmT && use_mmq) {
             // a prompt chunk: the experts on llama.cpp's MMQ (int8, the weights read once per expert): the entries
             // sorted by expert on the device, gate+up as one [2 FF] product per expert, SwiGLU, down into rows the
             // combine reads through entry -> sorted row
+
+            // a helper GPU owns this layer's experts, but this prompt chunk (T > kGemmT) outgrows the helper's
+            // MAXT window: MMQ (int8, the model's own expert blobs read on this card) and the helper's q8_1
+            // cache cannot serve it, so it runs locally.  Warn once - the helper must not idle silently; the
+            // decode windows (T <= MAXT) still offload through the hybrid and local branches above.
+
+            if (helpers_enabled() && helper_layer(li) && !mmq_helper_warned)
+                std::fprintf(stderr, "strata-q36: a prompt MMQ chunk keeps a helper-owned layer local; its experts stay idle on the helper GPU (MMQ int8 vs the helper q8_1 cache; T=%d > MAXT=%d)\n", T, (int) strata::kernels::cpu::MAXT);
+            if (helpers_enabled() && helper_layer(li)) mmq_helper_warned = true;
             const int ne = (int) g.n_expert;
             CK(cudaMemsetAsync(rcnt, 0, (size_t) ne * 4, st));
             k_route_count<<<grid1(n_ent), kThreads, 0, st>>>(ids, (int) n_ent, rcnt);
@@ -2048,10 +2110,16 @@ struct Engine {
             if (lhy(li)) stream_done();
             prow = rinv;
         } else {
-            group_entries(L, nullptr, T);
+            // A helper GPU owns this whole layer (--expert-cache-device1..3) and the window fits begin()'s
+            // MAXT: every routed entry is computed there and the local grouped kernel is skipped.  Without
+            // the flags helpers_enabled() is false, so this is the same grouping + grouped launch as it always was.
+            const bool offloaded = helpers_enabled() && helper_layer(li) && T <= strata::kernels::cpu::MAXT &&
+                                   !helper_failed && moe_helpers(li, T);
+            if (!offloaded) group_entries(L, nullptr, T);
             if (!xq_post) quant(h, N, T, xq);   // the experts' and the shared expert's input
-            K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
-                                     std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
+            if (!offloaded)
+                K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
+                                         std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
         }
         // the shared expert, scaled by sigmoid(w . h)
         if (T > kGemmT) k_to_f16<<<grid1((int64_t) N * T), kThreads, 0, st>>>(h, x16, (int64_t) N * T);
@@ -2220,6 +2288,37 @@ struct Engine {
         ++stream_pos;
     }
 
+    /// Every routed entry of a helper-owned layer, computed on that helper GPU (T <= MAXT windows only: begin() takes
+    /// a window of at most MAXT tokens, so a bigger batch keeps the local path).  The rows land in `eparts` exactly
+    /// where the local grouped kernel would have put them - `RemoteExperts::begin` keys its output on the entry
+    /// index it was given (tok * k + j), which is `eparts`' own row - so `k_moe_out` combines one way either.
+    /// False (with the reason) leaves the layer to the caller: it must not then also run the local kernel, which is
+    /// what `helper_failed` below reports.
+    bool moe_helpers(size_t li, int T) {
+        const auto& g = m->g;
+        const int N = (int) g.n_embd, Kp = (int) m->top_k;
+        const int64_t n_ent = (int64_t) T * Kp;
+        const int hi = (li >= (size_t) m->g.n_layers || helper_of_layer.empty()) ? -1 : helper_of_layer[li];
+        if (hi < 0) return true;
+        CK(cudaMemcpyAsync(h_helper_ids, ids, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
+        CK(cudaMemcpyAsync(h_helper_x, h, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st));
+        CK(cudaStreamSynchronize(st));
+        std::string err;
+        strata::core::RemoteExperts& help = helpers[(size_t) hi];
+        if (!help.begin((int64_t) li, h_helper_x, h_helper_ids, T, Kp, nullptr, nullptr, err) ||
+            !help.finish(helper_out, err)) {
+            std::fprintf(stderr, "strata-q36: helper CUDA%d, layer %zu: %s\n", hi + 1, li, err.c_str());
+            helper_failed = true;
+            return false;
+        }
+        // finish() wrote the rows it owned into helper_out (entry-indexed); every routed entry of this layer is the
+        // helper's, so the whole window uploads in one copy and nothing else can have written these rows.
+        CK(cudaMemcpyAsync(eparts, helper_out, (size_t) n_ent * N * 4, cudaMemcpyHostToDevice, st));
+        return true;
+    }
+    bool helper_failed = false;   // a helper errored: the run is over rather than half offloaded
+    bool mmq_helper_warned = false;   // the helper-idle warning fired once (prompt MMQ chunks stay local)
+
     /// The GPU half of a hybrid MoE: the routing to the host, the resident experts' entries grouped and run.
     void moe_hybrid_gpu(const Layer& L, size_t li, int T) {
         const auto& g = m->g;
@@ -2243,6 +2342,9 @@ struct Engine {
         const int n_ent = T * Kp;
         Hy& H = hy[li];
         const Layer& L = layer_at((int) li);
+        // A helper GPU owned the layer's experts (moe_helpers above): there is nothing for the pool, and ev_route
+        // was never recorded for it, so waiting for it here would hang.
+        if (helpers_enabled() && helper_layer(li)) return;
         while (cudaEventQuery(ev_route) == cudaErrorNotReady) {
         }
         const auto t0 = Clock::now();
@@ -3730,6 +3832,103 @@ int serve(Engine& E) {
     return sv.run();
 }
 
+/// The helper expert tiers (--expert-cache-device1..3): publish this model's own per-layer expert geometry as the
+/// process-wide layout, then give each helper device a striped share of the layers' experts.
+///
+/// WHY THE LAYOUT IS PUBLISHED FIRST.  `RemoteExperts::open` sizes a helper's VRAM slots from the process-wide
+/// `expert_layout()` table (per-layer blob bytes, and whether the table is native at all).  That table is normally
+/// written by `expert_layout_load` from a pack's native_experts.txt - and qwen35moe has no pack: this engine reads
+/// its experts straight from the GGUF tensors (ffn_gate_exps / ffn_up_exps / ffn_down_exps).  Left alone, a helper
+/// tier would be sized against the canonical Q2_0 blob (2560-wide, 1,382,400 B) instead of this model's, and every
+/// slot would be indexed wrong.  `expert_layout_set_native` writes the same table from the formats this engine
+/// already computed per layer, so the helper reads exactly the bytes `load()` would have read from the file.
+///
+/// WHY WHOLE LAYERS.  A helper computes a routed window through `RemoteExperts::begin/finish`, which keys its
+/// output on the entry index it is given (tok * k + j) and takes a window of at most MAXT tokens.  Handing a helper
+/// one whole layer makes "which entries are the helper's" a question with one answer - all of them - so the local
+/// grouped kernel is skipped for that layer and no entry can be computed twice or left stale.  Layers are striped
+/// across the helpers in order, which keeps a helper's experts of adjacent layers together.
+bool open_helpers(Model& m, Engine& E, const std::array<int, 3>& want, const std::array<bool, 3>& auto_size,
+                 std::string& err) {
+    namespace C = strata::kernels::cpu;
+    const auto& g = m.g;
+    const int devices = (want[0] > 0 ? 1 : 0) + (want[1] > 0 ? 1 : 0) + (want[2] > 0 ? 1 : 0);
+    if (devices == 0) return true;
+    // the per-layer table, from each layer's own layout (never a model-level guess): gu_type / d_type / n_embd /
+    // n_ff are read per layer, so a model whose layers differ is sized per layer too.
+    std::vector<C::NativeFmt> fmt;
+    std::vector<strata::kernels::NativeExpertLayout> layouts;
+    fmt.reserve(m.layers.size() + (m.has_mtp ? 1 : 0));
+    layouts.reserve(fmt.capacity());
+    uint64_t total = 0;
+    std::vector<const Layer*> all;
+    for (const Layer& L : m.layers) all.push_back(&L);
+    if (m.has_mtp) all.push_back(&m.mtp);
+    // The layout table covers the MAIN layers only: the MTP block's experts stay on the primary (its window is one
+    // draft step), and expert_layout_set_native checks fmt.size() == n_layers - a table that also carried m.mtp
+    // would be refused (41 != 40).  `all` still holds the MTP block, for the helper tier's own layer map below.
+    for (size_t i = 0; i < m.layers.size(); ++i) {
+        const Layer* L = all[i];
+        C::NativeFmt f;
+        if (!C::native_fmt(L->L.gu_type, L->L.d_type, g.n_embd, g.n_ff, f, err)) return false;
+        if (f.up_off != L->L.up_off || f.down_off != L->L.down_off || f.bytes != L->L.bytes) {
+            err = "the CPU and GPU expert layouts differ";
+            return false;
+        }
+        fmt.push_back(f);
+        layouts.push_back(L->L);
+        total += (uint64_t) f.bytes * (uint64_t) g.n_expert;
+    }
+    if (!C::expert_layout_set_native(g.n_layers, g.n_expert, fmt, total, err)) return false;
+
+    // one tier per helper device, holding every layer's experts of its stripe
+    E.helper_src.set(all, g.n_expert);
+    std::vector<uint8_t> claimed((size_t) g.n_layers * (size_t) g.n_expert, 0);
+    const int64_t per_device = g.n_layers / devices;
+    // a primary cache of zero slots: every (layer, expert) is "not on CUDA0", so each helper takes its own stripe
+    strata::core::ExpertCache empty_primary;
+    if (!empty_primary.open(1, 1, 1, 4096, err)) { err = "helper: " + err; return false; }
+    for (int r = 0; r < 3; ++r) {
+        if (want[(size_t) r] <= 0) continue;
+        const int device = r + 1;
+        const int64_t lo = (int64_t) r * per_device;
+        const int64_t hi = (r + 1 == devices) ? g.n_layers : lo + per_device;
+        std::vector<std::pair<int32_t, int32_t>> ranked;
+        ranked.reserve((size_t) std::max<int64_t>(0, hi - lo) * (size_t) g.n_expert);
+        for (int64_t l = lo; l < hi; ++l)
+            for (int64_t e = 0; e < g.n_expert; ++e) ranked.emplace_back((int32_t) l, (int32_t) e);
+        double free_gib = 0.0;
+        if (!strata::core::RemoteExperts::preflight(device, free_gib, err)) return false;
+        const int slots = want[(size_t) r] == std::numeric_limits<int>::max() ? (1 << 20) : want[(size_t) r];
+        if (!E.helpers[(size_t) r].open(device, slots, g.n_layers, g.n_expert, ranked, empty_primary, E.helper_src,
+                 claimed, err, auto_size[(size_t) r], g.n_embd, g.n_ff, m.top_k, &layouts)) {
+            err = "helper CUDA" + std::to_string(device) + ": " + err;
+            return false;
+        }
+        E.helper_count += 1;
+        std::fprintf(stderr, "strata-q36: helper CUDA%d: %lld experts of layers [%lld, %lld), %.2f GiB; results return "
+                     "through pinned host rows\n", device, (long long) E.helpers[(size_t) r].resident(),
+                     (long long) lo, (long long) hi, E.helpers[(size_t) r].gib());
+    }
+    // the layer -> helper map (the MTP block's layer, if any, stays local: its window is one draft step)
+    E.helper_of_layer.assign((size_t) g.n_layers, -1);
+    {
+        const int64_t per = g.n_layers / devices;
+        for (int r = 0; r < 3; ++r) {
+            if (want[(size_t) r] <= 0) continue;
+            const int64_t lo = (int64_t) r * per;
+            const int64_t hi = (r + 1 == devices) ? g.n_layers : lo + per;
+            for (int64_t l = lo; l < hi; ++l) E.helper_of_layer[(size_t) l] = (int8_t) r;
+        }
+    }
+    // host staging for the offloaded windows (MAXT tokens: the largest window begin() takes)
+    const size_t T = (size_t) strata::kernels::cpu::MAXT;
+    CK(cudaHostAlloc((void**) &E.h_helper_ids, T * (size_t) m.top_k * 4, cudaHostAllocDefault));
+    CK(cudaHostAlloc((void**) &E.h_helper_x, T * (size_t) g.n_embd * 4, cudaHostAllocDefault));
+    CK(cudaHostAlloc((void**) &E.helper_out, T * (size_t) m.top_k * (size_t) g.n_embd * 4, cudaHostAllocDefault));
+    return true;
+}
+
 }  // namespace
 
 int strata::qwen35::run(int argc, char** argv) {
@@ -3739,6 +3938,9 @@ int strata::qwen35::run(int argc, char** argv) {
     bool warm = true;
     int expert_slots = 0, batch = 0, draft_vocab = -1;
     bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
+    // --expert-cache-device1..3: 0 = off, else the slot count (INT_MAX for "auto")
+    std::array<int, 3> expert_cache_remote = {0, 0, 0};
+    std::array<bool, 3> expert_cache_auto = {false, false, false};
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -3779,6 +3981,15 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--cpu-threads") cpu_threads = std::atoi(next().c_str());
         else if (a == "--expert-slots") expert_slots = std::atoi(next().c_str());
         else if (a == "--hybrid-rows") hybrid_rows = std::atoi(next().c_str());
+        else if (a == "--expert-cache-device1" || a == "--expert-cache-device2" || a == "--expert-cache-device3") {
+            // a P100 plus two P104s as helper expert tiers (the same names and meaning as on the Flash-Next path):
+            // sN = N experts on CUDA1..3, "auto" = as many as fit.  Off by default, and without them the q36 MoE
+            // runs on the main GPU exactly as before - same kernels, same bytes.
+            const int idx = a == "--expert-cache-device1" ? 0 : a == "--expert-cache-device2" ? 1 : 2;
+            const std::string v = next();
+            expert_cache_remote[idx] = v == "auto" ? std::numeric_limits<int>::max() : std::atoi(v.c_str());
+            expert_cache_auto[idx] = v == "auto";
+        }
         else if (serve_mode && a.rfind("--", 0) == 0) {
             // serve passes the config's args plus a few of its own: one this engine does not have is said and skipped
             // (with its value), not fatal
@@ -3862,6 +4073,10 @@ int strata::qwen35::run(int argc, char** argv) {
     }
     E.init(m, ctx, chunk, batch, vision);
     if (!place_experts(m, E, expert_vram, cpu_threads, hybrid_rows, expert_slots, err)) {
+        std::fprintf(stderr, "strata-q36: %s\n", err.c_str());
+        return 1;
+    }
+    if (!open_helpers(m, E, expert_cache_remote, expert_cache_auto, err)) {
         std::fprintf(stderr, "strata-q36: %s\n", err.c_str());
         return 1;
     }

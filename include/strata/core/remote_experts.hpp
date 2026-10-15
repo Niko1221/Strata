@@ -2,6 +2,7 @@
 
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_source.hpp"
+#include "strata/kernels/iq_kernels.hpp"
 
 #include <cuda_runtime.h>
 
@@ -27,10 +28,16 @@ public:
     /// Initialise the device before the host expert arena registers
     /// tens of GiB of portable mapped memory with CUDA.
     static bool preflight(int device, double& free_gib, std::string& err);
+    /// `n_embd` / `n_ff` are the model's expert widths (2560 / 640 for Flash-Next, 2048 / 512 for Qwen3.6) and `k`
+    /// the experts routed per token (10 vs 8).  The window (MAXT * k), the staging rows and the scratch follow
+    /// them.  The defaults are Flash-Next's numbers, so a call that omits them allocates and rejects exactly as
+    /// before.
     bool open(int device, int slots, int64_t layers, int64_t experts,
               const std::vector<std::pair<int32_t, int32_t>>& ranked,
               const ExpertCache& primary, ExpertSource& source,
-              std::vector<uint8_t>& claimed, std::string& err, bool auto_size = false);
+              std::vector<uint8_t>& claimed, std::string& err, bool auto_size = false,
+              int64_t n_embd = 2560, int64_t n_ff = 640, int64_t k = 10,
+              const std::vector<strata::kernels::NativeExpertLayout>* layer_layouts = nullptr);
     void close();
 
     /// `kind` is the primary verifier's classification (-1 = CPU candidate),
@@ -67,7 +74,12 @@ private:
     RemoteExpertOpt* remote_opt_ = nullptr;
     int device_ = -1;
     int64_t n_expert_ = 0;
+    int64_t n_embd_ = 2560;   ///< the model's row width, set by open(); Flash-Next's default
+    int64_t n_ff_ = 640;      ///< the model's expert intermediate width, for the scratch sizing
+    int64_t k_ = 10;          ///< the experts routed per token; begin() checks a window against it
+    int64_t cap_ = 80;        ///< the window's entry count, MAXT * k_ (Flash-Next: 8 * 10)
     int32_t groups_ = 0;
+    std::vector<strata::kernels::NativeExpertLayout> layer_layouts_;   ///< per-layer native layout override; empty = use the global expert_layout() table
     int64_t computed_ = 0;
     int64_t launched_layers_ = 0;
     uint64_t returned_bytes_ = 0;

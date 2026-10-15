@@ -16,17 +16,17 @@
 
 namespace strata::core {
 namespace {
-constexpr int64_t H = strata::kernels::cpu::H;
-constexpr int64_t FF = strata::kernels::cpu::FF;
-constexpr int64_t CAP = strata::kernels::cpu::MAXT * 10;
+// The window's entry count.  It follows the model's routing width k (Flash-Next's 10, Qwen3.6's 8);
+// allocate the arrays for the widest k the engine admits - MAXT * 10 = 80 entries - so both fit.
+constexpr int64_t kMaxCap = strata::kernels::cpu::MAXT * 10;
 
-// Small enough to copy as one pinned buffer per layer. The kernels read the
-// individual arrays through pointers into the same device allocation.
+// Small enough to copy as one pinned buffer per layer, whatever the model's shape. The kernels read
+// the individual arrays through pointers into the same device allocation.
 struct RemoteMeta {
-    unsigned long long ptr[CAP];
-    int32_t start[CAP + 1];
-    int32_t dst[CAP];
-    int32_t tok[CAP];
+    unsigned long long ptr[kMaxCap];
+    int32_t start[kMaxCap + 1];
+    int32_t dst[kMaxCap];
+    int32_t tok[kMaxCap];
     int32_t count;
 };
 
@@ -135,8 +135,20 @@ void RemoteExperts::close() {
 bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
                          const std::vector<std::pair<int32_t, int32_t>>& ranked,
                          const ExpertCache& primary, ExpertSource& source,
-                         std::vector<uint8_t>& claimed, std::string& err, bool auto_size) {
+                         std::vector<uint8_t>& claimed, std::string& err, bool auto_size,
+                         int64_t n_embd, int64_t n_ff, int64_t k,
+                         const std::vector<strata::kernels::NativeExpertLayout>* layer_layouts) {
     close();
+    if (n_embd <= 0 || n_ff <= 0 || k <= 0 || k > 10 || strata::kernels::cpu::MAXT * k > kMaxCap) {
+        err = "experts: the model's row width, expert width and routing width are out of range";
+        return false;
+    }
+    n_embd_ = n_embd;
+    n_ff_ = n_ff;
+    k_ = k;
+    cap_ = strata::kernels::cpu::MAXT * k_;
+    layer_layouts_.clear();
+    if (layer_layouts) layer_layouts_ = *layer_layouts;
     int count = 0;
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
     if (device < 0 || device >= count || slots <= 0 || ranked.empty() ||
@@ -204,30 +216,30 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     }
 
     const size_t scratch = std::max<size_t>(
-        (size_t) strata::kernels::moe_hit_grouped_scratch_bytes(CAP, H, FF),
-        strata::kernels::native_expert_scratch_bytes(CAP, FF));
+        (size_t) strata::kernels::moe_hit_grouped_scratch_bytes(cap_, n_embd_, n_ff_),
+        strata::kernels::native_expert_scratch_bytes(cap_, n_ff_));
     const size_t meta_bytes = sizeof(RemoteMeta) + (remote_opt_ ? remote_opt_->metadata_bytes() : 0);
     const bool allocated =
         check(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "stream", err, device) &&
-        check(cudaHostAlloc((void**) &h_x_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "input staging", err, device) &&
-        check(cudaHostAlloc((void**) &h_out_, (size_t) CAP * H * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "result staging", err, device) &&
+        check(cudaHostAlloc((void**) &h_x_, (size_t) cap_ * n_embd_ * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "input staging", err, device) &&
+        check(cudaHostAlloc((void**) &h_out_, (size_t) cap_ * n_embd_ * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "result staging", err, device) &&
         check(cudaHostAlloc(&h_meta_, meta_bytes, cudaHostAllocPortable), "metadata staging", err, device) &&
-        check(cudaMalloc((void**) &d_x_, (size_t) CAP * H * sizeof(float)), "input", err, device) &&
-        check(cudaMalloc((void**) &d_out_, (size_t) CAP * H * sizeof(float)), "result", err, device) &&
-        check(cudaMalloc((void**) &d_q8_, (size_t) CAP * (H / 32) * 36), "activation", err, device) &&
-        check(cudaMalloc((void**) &d_scales_, (size_t) CAP * (H / 32) * sizeof(float)), "activation scales", err, device) &&
+        check(cudaMalloc((void**) &d_x_, (size_t) cap_ * n_embd_ * sizeof(float)), "input", err, device) &&
+        check(cudaMalloc((void**) &d_out_, (size_t) cap_ * n_embd_ * sizeof(float)), "result", err, device) &&
+        check(cudaMalloc((void**) &d_q8_, (size_t) cap_ * (n_embd_ / 32) * 36), "activation", err, device) &&
+        check(cudaMalloc((void**) &d_scales_, (size_t) cap_ * (n_embd_ / 32) * sizeof(float)), "activation scales", err, device) &&
         check(cudaMalloc(&d_scratch_, scratch), "scratch", err, device) &&
         check(cudaMalloc(&d_meta_, meta_bytes), "group metadata", err, device) &&
         (!strata::kernels::cpu::hadamard_spec().any() ||
-         check(cudaMalloc((void**) &d_xr_, (size_t) CAP * H * sizeof(float)), "rotated input", err, device));
+         check(cudaMalloc((void**) &d_xr_, (size_t) kMaxCap * n_embd_ * sizeof(float)), "rotated input", err, device));
     if (!allocated) { close(); return false; }
     if (!check(cudaStreamCreateWithFlags(&read_stream_, cudaStreamNonBlocking), "cache read stream", err, device)) {
         close();
         return false;
     }
     if (strata::kernels::cpu::hadamard_spec().any()) {   // APR: this device's copies of the sign vectors
-        d_sx_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) H), (int) H);
-        d_sh_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) FF), (int) FF);
+        d_sx_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) n_embd_), (int) n_embd_);
+        d_sh_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) n_ff_), (int) n_ff_);
     }
     // Zero-copy: the helper reads its input from, and writes its compact rows into, the pinned host buffers
     // directly - two copies fewer per layer, each of which is a PCIe round trip.  STRATA_REMOTE_ZEROCOPY=0 copies.
@@ -242,15 +254,15 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     d_dst_ = meta->dst;
     d_tok_ = meta->tok;
     d_count_ = &meta->count;
-    owned_.resize(CAP);
+    owned_.resize(cap_);
     layers_present_.assign((size_t) layers, 0);
-    group_of_.resize(CAP);
-    group_id_.reserve(CAP);
-    ptr_.reserve(CAP);
-    start_.reserve(CAP + 1);
-    dst_.reserve(CAP);
-    tok_.reserve(CAP);
-    original_row_.reserve(CAP);
+    group_of_.resize(cap_);
+    group_id_.reserve(cap_);
+    ptr_.reserve(cap_);
+    start_.reserve(cap_ + 1);
+    dst_.reserve(cap_);
+    tok_.reserve(cap_);
+    original_row_.reserve(cap_);
     computed_ = 0;
     launched_layers_ = 0;
     returned_bytes_ = full_row_bytes_ = 0;
@@ -268,7 +280,7 @@ bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int
     struct Timer { double& acc; std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
         ~Timer() { acc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); } } timer{ms_begin_};
     const int64_t n = n_tok * k;
-    if (n <= 0 || n > CAP || n_tok > strata::kernels::cpu::MAXT || k != 10 || layer < 0 ||
+    if (n <= 0 || n > cap_ || n_tok > strata::kernels::cpu::MAXT || k != k_ || layer < 0 ||
         (size_t) layer >= layers_present_.size() || device_ < 0) {
         err = "CUDA" + std::to_string(device_) + " experts: invalid layer, routing width or window size";
         return false;
@@ -309,7 +321,7 @@ bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int
     start_.push_back((int32_t) dst_.size());
     // Private pinned buffers survive until this GPU has consumed them. The CPU
     // pool can write other output rows without a cross-device race.
-    std::memcpy(h_x_, x, (size_t) n_tok * H * sizeof(float));
+    std::memcpy(h_x_, x, (size_t) n_tok * n_embd_ * sizeof(float));
     auto* meta = (RemoteMeta*) h_meta_;
     std::memcpy(meta->ptr, ptr_.data(), ptr_.size() * sizeof(ptr_[0]));
     std::memcpy(meta->start, start_.data(), start_.size() * sizeof(start_[0]));
@@ -323,36 +335,67 @@ bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int
     groups_ = (int32_t) group_id_.size();
     const cudaStream_t s = stream_;
     const bool staged =
-        (zero_copy_ || check(cudaMemcpyAsync(d_x_, h_x_, (size_t) n_tok * H * sizeof(float), cudaMemcpyHostToDevice, s), "copy input", err, device_)) &&
+        (zero_copy_ || check(cudaMemcpyAsync(d_x_, h_x_, (size_t) n_tok * n_embd_ * sizeof(float), cudaMemcpyHostToDevice, s), "copy input", err, device_)) &&
         check(cudaMemcpyAsync(d_meta_, h_meta_, sizeof(RemoteMeta) + (reduce ? remote_opt_->metadata_bytes() : 0),
                               cudaMemcpyHostToDevice, s), "copy group metadata", err, device_);
     if (!staged) return false;
     const auto& lay = strata::kernels::cpu::expert_layout();
-    if (lay.native) {
+    // Per-layer layouts (given to open() by an engine that never loads the global expert_layout table,
+    // e.g. qwen35moe, whose own load() already computed one per layer) win over that table.  A layer past the
+    // end of either fails rather than reading the wrong entry - an empty layout would silently mis-decode.
+    // With neither, the canonical Q2_0 s2 path runs exactly as before.
+    strata::kernels::NativeExpertLayout L;
+    bool use_native = false;
+    if (!layer_layouts_.empty()) {          // ours: per-layer layouts win over the global table
+        if ((size_t) layer >= layer_layouts_.size()) {
+            err = "CUDA" + std::to_string(device_) + " experts: no per-layer layout for layer " +
+                  std::to_string(layer) + " (open() was given " + std::to_string(layer_layouts_.size()) +
+                  ")";
+            return false;
+        }
+        L = layer_layouts_[(size_t) layer];
+        use_native = true;
+    } else if (lay.native) {                 // ours: global table, with the bounds check upstream lacked
+        if ((size_t) layer >= lay.fmt.size()) {
+            err = "CUDA" + std::to_string(device_) + " experts: the expert layout has no entry for layer " +
+                  std::to_string(layer) + " (it has " + std::to_string(lay.fmt.size()) + ")";
+            return false;
+        }
         const auto& fmt = lay.fmt[(size_t) layer];
+        L = strata::kernels::native_expert_layout(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff);
+        use_native = true;
+    }
+    if (use_native) {
+        // The gate/up activation is Hadamard-folded in an APR pack: quantize H (s * x), never x.  Both parts
+        // of this are upstream's - on our path fmt.had_gu is always false (q36 loads no pack, so
+        // expert_layout_set_native leaves had_gu/had_d false) and the branch costs one compare.
+        const bool have_fmt = (size_t) layer < lay.fmt.size();
+        const auto& fmt = have_fmt ? lay.fmt[(size_t) layer] : strata::kernels::cpu::NativeFmt{};
         const float* xe = zero_copy_ ? z_x_ : d_x_;
-        if (fmt.had_gu) {   // APR: Hadamard-folded gate/up take H (s * x)
-            strata::kernels::hadamard_rows(xe, d_xr_, n_tok, H, fmt.had_block, d_sx_, s);
+        if (fmt.had_gu) {   // APR: Hadamard-folded gate/up take the full row width (s * x)
+            strata::kernels::hadamard_rows(xe, d_xr_, n_tok, n_embd_, fmt.had_block, d_sx_, s);
             xe = d_xr_;
         }
-        strata::kernels::quantize_q8_1_rows(xe, n_tok, H, d_q8_, s);
-        auto L = strata::kernels::native_expert_layout(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff);
-        if (fmt.had_d) { L.had_block = fmt.had_block; L.d_signs = d_sh_; }
+        strata::kernels::quantize_q8_1_rows(xe, n_tok, n_embd_, d_q8_, s);
+        // The down weights are folded, so native_expert_grouped rotates h itself (iq_kernels.hpp:56-59).
+        // Upstream set this only on its own path; on the layer_layouts_ path the flags come from the global
+        // table too, or the kernel would decode a folded down matrix as if it were unfolded.
+        if (have_fmt && fmt.had_d) { L.had_block = fmt.had_block; L.d_signs = d_sh_; }
         strata::kernels::native_expert_grouped(L, d_ptr_, d_start_, d_count_, d_dst_, d_tok_,
                                                groups_, (int64_t) dst_.size(), d_q8_, d_scratch_, zero_copy_ && !reduce ? z_out_ : d_out_, s);
     } else {
-        strata::kernels::quantize_q8_0_scaled(zero_copy_ ? z_x_ : d_x_, d_q8_, d_scales_, n_tok * H, s);
+        strata::kernels::quantize_q8_0_scaled(zero_copy_ ? z_x_ : d_x_, d_q8_, d_scales_, n_tok * n_embd_, s);
         strata::kernels::moe_grouped_s2(d_ptr_, d_start_, d_count_, d_dst_, d_tok_,
                                         groups_, (int64_t) dst_.size(), d_q8_, d_scales_, d_scratch_, zero_copy_ && !reduce ? z_out_ : d_out_, s);
     }
-    const uint64_t compact_bytes = (uint64_t) (reduce ? n_tok : dst_.size()) * H * sizeof(float);
+    const uint64_t compact_bytes = (uint64_t) (reduce ? n_tok : dst_.size()) * n_embd_ * sizeof(float);
     if (reduce) {
         if (!remote_opt_->reduce(*this, (RemoteMeta*) d_meta_ + 1, err)) return false;
     } else if (!zero_copy_ && !check(cudaMemcpyAsync(h_out_, d_out_, (size_t) compact_bytes, cudaMemcpyDeviceToHost, s),
                "copy results", err, device_)) return false;
     ++launched_layers_;
     returned_bytes_ += compact_bytes;
-    full_row_bytes_ += (uint64_t) n * H * sizeof(float);
+    full_row_bytes_ += (uint64_t) n * n_embd_ * sizeof(float);
     return true;
 }
 
@@ -385,7 +428,7 @@ bool RemoteExperts::finish(float* out, std::string& err) {
     ms_wait_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count();
     if (remote_opt_ && remote_opt_->active()) { remote_opt_->accumulate(*this); return true; }
     for (size_t i = 0; i < original_row_.size(); ++i)
-        std::memcpy(out + (size_t) original_row_[i] * H, h_out_ + i * H, (size_t) H * sizeof(float));
+        std::memcpy(out + (size_t) original_row_[i] * n_embd_, h_out_ + i * n_embd_, (size_t) n_embd_ * sizeof(float));
     return true;
 }
 
