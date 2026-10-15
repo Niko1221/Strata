@@ -55,7 +55,7 @@ The M2-b format-aware prompt fast path (prompts on the matrix units) answering t
 (5 segments × first 256/512/768/1000 tokens), full-vocabulary float32 logits of the first window
 (STRATA_DUMP_FIRST_LOGITS), fp16-flagged run as reference.
 
-| run | prompts | top-1 | KL mean | KL median | KL max |
+| run | prompts | top-1 | KL mean | KL median (upper-middle) | KL max |
 |---|---:|---:|---:|---:|---:|
 | q4_0 | 20 | **100.00%** | 0.03565 | 0.00434 | 0.19546 |
 
@@ -67,7 +67,7 @@ the 20 per-prompt top-1/KL rows from a regeneration on 2026-10-15 (the original 
 /tmp and are gone); the regenerated aggregates are identical to the table above — worst row agent@768
 tokens, KL 0.1955.
 
-## Speed (same-day pairs, `speed.sh`, logs in `logs/speed-*.log`)
+## Speed (same-day pairs, `speed.sh`, run lines in `data/speed-runs.txt`)
 
 Engine args exactly the `strata-q2_0.json` template (`--expert-cache 64 --prefill auto --spec 2
 --suffix-draft 0 --max-context 32768 --mmap-experts`, `STRATA_METAL_STREAM=1`), greedy, one run per cell,
@@ -77,7 +77,7 @@ only `--kv` differs. "none" = no `--kv` flag (the fp16 default).
 |---|---:|---:|---:|---:|
 | decode tok/s (4-id prompt, --max-new 64) | 20.84 | 21.09 | 20.82 | −1.2% |
 | prefill tok/s (2200-id prompt, 2199 tokens prefilled, --max-new 16) | 213.15 | 215.54 | | −1.1% |
-| time to first token, 2200-id prompt | 10.71 s | 10.60 s | | +1.0% |
+| time to first token, 2200-id prompt | 10.71 s | 10.60 s | | +1.1% |
 | decode tok/s after the 2200-id prompt | 19.84 | 19.87 | | −0.2% |
 
 The noise scale: `none` and `int8` run the same code on this backend (see above), so their −1.3% decode
@@ -86,9 +86,10 @@ is, at worst, a ~1% cost on this machine — the dequant arithmetic roughly pays
 KV traffic, and the KV saving shows up as resident experts instead (next section). Single runs per cell, no
 repeats; the 2200-id prompt (2199 tokens prefilled; the last id seeds generation) is
 `data/long-prompt-2200.ids` (ids 100..2299, the M1 baseline file; the engine's own line reads "prefill 2199
-tokens in 1 chunks").
+tokens in 1 chunks"). The time-to-first-token delta is computed from the raw ms (10714.3 vs 10600.5,
+`data/speed-runs.txt`), so +1.1%; the one-decimal seconds shown above would give +1.0%.
 
-## KV bytes and arena (`kvmem.sh`, logs in `logs/kvmem-*.log`)
+## KV bytes and arena (`kvmem.sh`, run lines in `data/kvmem-runs.txt`)
 
 Short runs (--max-new 8) at both contexts, pairs {q4_0, int8}. Arithmetic: the engine allocates
 `max-context + 128` cells (the log's "32896/65664 cells"), 12 QSA layers, 1,056 B/cell/layer int8 vs
@@ -107,7 +108,7 @@ expert arena holds 241 more expert slots at 32K, 494 more at 64K. RAM lines, cop
 int8 29.3 — q4_0 leaves ~0.3–0.7 GB more available (the Metal logs carry no watchdog line; the RAM planning
 lines are what was copied).
 
-## Needles (`needle.py`, results in `needle-results.tsv`, logs in `logs/needle-*.log`)
+## Needles (`needle.py`, results in `needle-results.tsv`)
 
 A codeword (`MARBLE-7742-KUMQUAT`) in one sentence, hidden in natural text (the committed quant-quality
 set's five segments, cycled, as token ids — the prompt is byte-reproducible from committed files), depths
@@ -191,5 +192,9 @@ replaces FIXED's fp16 pin when passed. Without it the constructed engine args ar
 - `data/speed-runs.txt`, `data/kvmem-runs.txt` — the tok/s and init lines the scripts print.
 - `data/long-prompt-2200.ids` — the 2200-id prefill prompt (ids 100..2299; 2199 tokens prefilled, the last
   id seeds generation).
-- `logs/` — full engine logs for the speed, kvmem and needle runs.
+- No `logs/` directory is committed: the root .gitignore's `logs/` rule keeps the full engine logs of the
+  speed, kvmem and needle runs out of the repo (the 2026-09-27 PC round committed none either); the distilled
+  run lines they were read from are committed — `data/speed-runs.txt`, `data/kvmem-runs.txt`,
+  `needle-results.tsv` and the `data/*/*.stderr.txt` summaries — and the committed scripts regenerate the
+  logs on a rerun.
 - `needle-run.txt`, `needle-results.tsv` — the needle matrix outcome.
