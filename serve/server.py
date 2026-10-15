@@ -4544,6 +4544,10 @@ def carry_leg(carry: dict, leg: dict) -> None:
     replaces the engine's figures: keep the slot leg's decode time, tokens and prompt figures to add to it."""
     carry["decode_ms"] = carry.get("decode_ms", 0.0) + float(leg.get("decode_ms") or 0.0)
     carry["generated"] = carry.get("generated", 0) + int(leg.get("generated") or 0)
+    # A later DONE replaces the slot leg's figures, including its optional draft counts.
+    for key in ("drafts_offered", "drafts_accepted"):
+        if leg.get(key) is not None:
+            carry[key] = carry.get(key, 0) + int(leg[key])
     carry.setdefault("prompt_ms", float(leg.get("prompt_ms") or 0.0))
     if leg.get("prompt_read") is not None:
         carry.setdefault("prompt_read", int(leg["prompt_read"]))
@@ -4557,6 +4561,9 @@ def add_carry(carry: dict, last: dict) -> dict:
            "prompt_ms": max(float(last.get("prompt_ms") or 0.0), carry.get("prompt_ms", 0.0))}
     if "prompt_read" in carry:
         out["prompt_read"] = carry["prompt_read"]
+    for key in ("drafts_offered", "drafts_accepted"):
+        if key in carry:
+            out[key] = int(last.get(key) or 0) + carry[key]
     return out
 
 
