@@ -73,9 +73,10 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
 
 let tab = "chat";
 function showTab(name) {
-  tab = ["chat", "images", "monitor", "about"].includes(name) ? name : "chat";
-  for (const b of document.querySelectorAll(".st-tab")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const v of ["chat", "images", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
+  tab = ["chat", "images", "monitor", "usage", "history", "about"].includes(name) ? name : "chat";
+  for (const b of document.querySelectorAll(".st-tab[data-tab]")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
+  for (const v of ["chat", "images", "monitor", "usage", "history", "about"]) $(`view-${v}`).hidden = v !== tab;
+  window.StrataHistory.visible(tab === "history");
   if (tab === "images") $("img-prompt").focus();
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
@@ -83,7 +84,7 @@ function showTab(name) {
   if (tab === "about") loadConfig();
   if (lastMetrics) render(lastMetrics);
 }
-for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(b.dataset.tab);
+for (const b of document.querySelectorAll(".st-tab[data-tab]")) b.onclick = () => showTab(b.dataset.tab);
 window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
 
 // ------------------------------------------------------------------ server access
@@ -105,6 +106,7 @@ async function loadHealth() {
                                           : "Attach a text file (or drop it here)";
     $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
     $("tab-btn-images").hidden = !health.image_generation;
+    $("tab-btn-history").hidden = !health.output_history;
     if (location.hash === "#images" && health.image_generation) showTab("images");
   } catch (e) {
     setTimeout(loadHealth, 2000);
@@ -181,6 +183,10 @@ function setPill(state, text) {
 }
 
 function render(m) {
+  $("usage-tracker").closest(".st-header").classList.toggle("usage-enabled", !!m.usage);
+  $("tab-btn-usage").hidden = !m.usage;
+  if (!m.usage && tab === "usage") showTab("chat");
+  window.StrataUsage.update(m.usage, m);
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
   // the header pill
@@ -189,6 +195,8 @@ function render(m) {
     setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
   } else if (live.state === "generating") {
     setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
+  } else if (m.usage && m.usage.active) {
+    setPill("reading", "Encoding image");
   } else {
     setPill("idle", "Idle");
   }
@@ -258,8 +266,9 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   } else if (live.state === "generating") {
     label = live.phase ? live.phase[0].toUpperCase() + live.phase.slice(1) : "Generating";
     delete prog.dataset.tone;
-    pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
+    pct = live.max_tokens > 0 ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
     detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
+    if (live.max_tokens === -1) detail += ` · unlimited output${live.context_rollovers ? ` · ${fmt(live.context_rollovers)} context rollovers` : ""}`;
   } else if (last) {
     delete prog.dataset.tone;
     detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
@@ -312,8 +321,8 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // context fill: the running request, else the last one
   const ctx = eng.max_context || 0;
   let used = 0;
-  if (live.state !== "idle") used = (live.prompt_tokens || 0) + (live.generated || 0);
-  else if (last) used = (last.prompt_tokens || 0) + (last.output_tokens || 0);
+  if (live.state !== "idle") used = live.context_tokens ?? ((live.prompt_tokens || 0) + (live.generated || 0));
+  else if (last) used = last.context_tokens ?? ((last.prompt_tokens || 0) + (last.output_tokens || 0));
   const frac = ctx ? Math.min(1, used / ctx) : 0;
   $("ctx-fill").setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
   $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";         // a near-zero arc would draw just its round cap
@@ -378,6 +387,7 @@ function renderAbout(eng, hw, st) {
     ["Model", eng.model],
     ["Engine", eng.version ? `v${eng.version}` : "built from source"],
     ["Context", eng.max_context ? `${fmt(eng.max_context)} tokens` : null],
+    ["Output limit", eng.unlimited_output ? "Unlimited · older generated context rolls out as windows fill" : null],
     ["KV cache", kv ? `${kv}${eng.kv_resident ? `, streamed: ${fmt(eng.kv_resident)} positions per layer in VRAM, the rest in RAM` : ", all in VRAM"}` : null],
     ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
     ["Speculation", eng.spec ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
@@ -803,7 +813,7 @@ async function send() {
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
   const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
   try {
-    const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
+    const r = await fetch("v1/chat/completions", {method: "POST", headers: {...headers(true), "X-Strata-App": "Strata Web"}, body: JSON.stringify(body),
                                                    signal: controller.signal});
     if (!r.ok) {
       let msg = `HTTP ${r.status}`;
@@ -994,6 +1004,11 @@ function loadDrawer(s = settings) {
   for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));
   $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
   $("s-max").value = s.max; $("s-seed").value = s.seed;
+  const unlimited = !!lastMetrics?.engine?.unlimited_output;
+  $("s-max").disabled = unlimited;
+  if (unlimited) $("s-max").value = "";
+  $("s-max").placeholder = unlimited ? "Unlimited" : "Until done";
+  $("o-max").textContent = unlimited ? "Unlimited · context continues" : "empty = until done";
   $("s-show").setAttribute("aria-checked", String(!!s.show));
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
   $("esp-row").hidden = !projectionLoaded();
@@ -1077,6 +1092,10 @@ $("scrim").onclick = () => openDrawer(false);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") openDrawer(false); });
 
 // ------------------------------------------------------------------ start
+window.StrataHistory.mount($("view-history"), () => headers(), (message) => toast("error", "History", message));
+window.StrataUsage.mount($("usage-tracker"), () => headers(true), {
+  screen: $("usage-dashboard"), profit: $("usage-profit"), navigate: () => showTab("usage")
+});
 setBusy(false);
 renderChat();
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)

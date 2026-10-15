@@ -61,3 +61,14 @@ build-vision-cuda12.bat
 
 /.ccache/
 /.rocm-win/
+
+# Local accounting and remote API credentials are not contribution source.
+*.usage.json
+*.usage.json.tmp
+*.shared-settings.json
+/remote-access/editor-settings.txt
+/remote-access/gateway.json
+*.history.sqlite3
+*.history.sqlite3-wal
+*.history.sqlite3-shm
+/remote-access/dashboard-settings.txt

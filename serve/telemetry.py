@@ -92,6 +92,12 @@ class _Nvml:
         out["temp"] = self._uint("nvmlDeviceGetTemperature", ctypes.c_uint(0))          # NVML_TEMPERATURE_GPU
         mw = self._uint("nvmlDeviceGetPowerUsage")
         out["power"] = mw / 1000.0 if mw is not None else None
+        energy = ctypes.c_ulonglong()
+        try:
+            if self.lib.nvmlDeviceGetTotalEnergyConsumption(self.dev, ctypes.byref(energy)) == 0:
+                out["energy_mj"] = energy.value
+        except (AttributeError, OSError):
+            pass
         lim = self._uint("nvmlDeviceGetEnforcedPowerLimit")
         out["power_limit"] = lim / 1000.0 if lim is not None else None
         out["pcie_gen"] = self._uint("nvmlDeviceGetCurrPcieLinkGeneration")        # drops at idle (power saving)
@@ -397,6 +403,7 @@ class Telemetry:
         self.hist = collections.defaultdict(lambda: collections.deque(maxlen=HISTORY))
         idx = list(gpu_indices) if gpu_indices and len(gpu_indices) > 1 else [gpu_index]
         self.gpus = [(i, gpu_reader(i, amd)) for i in idx]
+        self.work_gpus = list(self.gpus)                  # retain unreadable cards for complete energy accounting
         self.gpus = [(i, g) for i, g in self.gpus if g.ok()] or self.gpus[:1]
         self.gpu = self.gpus[0][1]
         try:
@@ -503,3 +510,10 @@ class Telemetry:
         with self.lock:
             return {"now": dict(self.now), "history": {k: list(v) for k, v in self.hist.items()},
                     "static": dict(self.static)}
+
+    def gpu_work_sample(self):
+        """Direct GPU readings at inference boundaries; a missing card never looks like measured zero."""
+        readings = [reader.read() if reader.ok() else {} for _, reader in self.work_gpus]
+        return {out: sum(row[key] for row in readings) if readings and
+                all(isinstance(row.get(key), (int, float)) for row in readings) else None
+                for out, key in (("power_w", "power"), ("energy_mj", "energy_mj"))}

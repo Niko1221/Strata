@@ -15,7 +15,8 @@ data, http(s) URLs or local file paths) go through `strata-vision` (the model's 
 embeddings (`GENI`).  JPEG/PNG/BMP/GIF go straight in; WebP, TIFF, AVIF, ... (agents like omp send WebP) are
 converted to PNG first with Pillow.
 Requests whose prompt plus max tokens exceed the engine's context are REJECTED with 400, never truncated.
-An unset (or 0, or -1) max tokens means "unlimited": whatever the prompt leaves of the context.
+Normally unset (or 0, or -1) max tokens uses the remaining context. Opt-in unlimited_output continues across
+native context windows, retaining the original input and rolling out older generated context.
 
 The engine boundary is `Engine.generate(prompt_ids, max_new, sampling, cancel) -> iterator of token ids`.
 `StrataEngine` keeps one `strata --serve` process resident (weights, expert arena and VRAM tier load once) and
@@ -24,6 +25,7 @@ talks to it over stdin/stdout; `MockEngine` is a scripted stand-in that makes ev
 from __future__ import annotations
 
 import argparse
+import atexit
 import contextlib
 import collections
 import base64
@@ -39,6 +41,7 @@ import re
 import select
 import signal
 import socket
+import sqlite3
 import struct
 import shutil
 import subprocess
@@ -66,6 +69,7 @@ from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
+from serve.history import HistoryStore, client_identity, event_parts  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 from serve import images as images_api  # noqa: E402
 
@@ -86,6 +90,18 @@ def popen(what: str, args: list, **kw):
                           "& browser control > Smart App Control settings), or - for the image encoder only - run setup "
                           "with --vision no (see docs/TROUBLESHOOTING.md)") from e
         raise
+
+
+def start_remote_access(root: Path = ROOT, *, enabled: bool = False) -> threading.Thread | None:
+    """Only an explicit config opt-in enables public API recovery on Windows."""
+    if not enabled or os.name != "nt":
+        return None
+    script = root / "remote-access" / "Start-Remote.ps1"
+    if not script.is_file():
+        return None
+
+    from serve.remote_access import start_remote_access as start_monitor
+    return start_monitor(root)
 
 
 def listen_problem(host: str, port: int, e: OSError) -> str:
@@ -2422,6 +2438,9 @@ class Vision:
                 return self.cache[key]
             img, out = self.dir / f"{key}.img", self.dir / f"{key}.sve"
             img.write_bytes(data)
+            usage = getattr(self, "usage", None)
+            if usage:
+                usage.begin(("vision", id(self)))
             try:
                 self.proc.stdin.write(f"ENC {img.name} {out.name}\n")      # relative to the encoder's cwd (#480)
                 self.proc.stdin.flush()
@@ -2431,6 +2450,8 @@ class Vision:
                     self.stopped = True                   # alive() is False, so the next request starts it again
                     raise ValueError(str(e)) from None
             finally:                                                   # #352: also when the encoder's pipe is gone
+                if usage:
+                    usage.end(("vision", id(self)))
                 img.unlink(missing_ok=True)
             if not line.startswith("OK"):
                 raise ValueError("the image could not be read: " + (line[4:] if line.startswith("ERR") else
@@ -3026,10 +3047,11 @@ def slot_save_dir(value, base: str | None = None) -> str:
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
-                 fit_max_tokens: bool = False):
+                 fit_max_tokens: bool = False, unlimited_output: bool = False):
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
+        self.unlimited_output = unlimited_output    # opt-in: ignore caps and roll generated context as needed
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
@@ -3067,6 +3089,8 @@ class Service:
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
+        self.output_history = None                     # opt-in disk history; no prompt or header storage
+        self.output_history_error = ''
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
@@ -3079,6 +3103,7 @@ class Service:
         self.latencies = Latencies()                     # GET /metrics in Prometheus text: the latency histograms
         self.last_request_at = None                      # when a request last started or finished
         self.started_at = time.time()
+        self.usage = None                               # opt-in persistent token value and active GPU energy
         self.status_lock = threading.Lock()
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
         # sharing the GPU with other programs (all off by default): unload the engine after this many idle seconds,
@@ -3544,10 +3569,13 @@ class Service:
         """The request with the shared thinking level and max tokens filled in where it has none of its own."""
         s = self.shared
         effort = self.effort_default()
-        if not s and not effort:
+        if not s and not effort and not self.unlimited_output:
             return req
         req = dict(req)
-        if "max_tokens" in s and not req.get("max_tokens") and not req.get("max_completion_tokens"):
+        if self.unlimited_output:
+            req.pop("max_tokens", None)
+            req.pop("max_completion_tokens", None)
+        elif "max_tokens" in s and not req.get("max_tokens") and not req.get("max_completion_tokens"):
             req["max_tokens"] = s["max_tokens"]
         if effort:
             if api == "openai":
@@ -3612,11 +3640,11 @@ class Service:
             reading = self.status.get("busy") and self.status.get("first_token") is None
         return getattr(self.engine, "prefill_tok_s_mean", None) if reading else 0.0
 
-    def begin_request(self, path, req):
+    def begin_request(self, path, req, headers=None):
         """#332: a monitor record for this request, or None when the monitor is off (nothing is kept then)."""
-        if not self.api_monitor:
+        if not self.api_monitor and self.output_history is None:
             return None
-        raw = json.dumps(req, ensure_ascii=False, indent=2)
+        raw = json.dumps(req, ensure_ascii=False, indent=2) if self.api_monitor else ''
         record = {"id": uuid.uuid4().hex[:12], "path": path, "model": req.get("model") or self.model,
                   "started_at": time.time(), "state": "queued", "stream": bool(req.get("stream")),
                   "response_format": (req.get("response_format") or {}).get("type")
@@ -3625,8 +3653,13 @@ class Service:
                   "output": "", "reasoning": "", "output_truncated": False, "reasoning_truncated": False,
                   "queue_s": 0.0, "load_s": 0.0, "first_token_s": None,
                   "_clock": time.perf_counter()}
-        with self.status_lock:
-            self.api_requests.append(record)
+        if self.output_history is not None:
+            record.update(client_identity(headers))
+            record['_actual_model'] = self.model
+            record['_history'] = self.output_history.begin(record)
+        if self.api_monitor:
+            with self.status_lock:
+                self.api_requests.append(record)
         self.request_trace.record = record
         return record
 
@@ -3652,6 +3685,10 @@ class Service:
                 s = {**s, **dict(list(self.live_reqs.values())[-1][0]), "queued": s.get("queued", 0)}
             hist = list(self.history)
             totals = dict(self.totals)
+            usage_live = [{"key": id(row), "input_tokens": row.get("prompt_tokens") or 0,
+                           "output_tokens": row.get("generated") or 0}
+                          for row in ([state for state, _ in self.live_reqs.values()] if self.live_reqs else
+                                      [self.status] if self.status.get("busy") else [])]
         now = time.time()
         progress = getattr(self.engine, "progress", None)
         if s.get("busy") and s.get("first_token") is None:
@@ -3671,6 +3708,9 @@ class Service:
                 "tok_s_mean": round(self._tok_s_mean(), 1) if state == "generating" else None,
                 "prefill_tok_s_mean": getattr(self.engine, "prefill_tok_s_mean", None) if s.get("busy") else None,
                 "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
+        if self.unlimited_output:
+            live.update(context_tokens=s.get("context_tokens") if s.get("busy") else None,
+                        context_rollovers=s.get("context_rollovers", 0) if s.get("busy") else None)
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
         par = int(getattr(self.engine, "batch", 0) or 0)
@@ -3689,9 +3729,12 @@ class Service:
             live["replicas"] = self.engine.replica_view()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
+        if self.unlimited_output:
+            engine["unlimited_output"] = True
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
-        return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
+        return {**({"usage": self.usage.snapshot(usage_live)} if self.usage else {}),
+                "engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
@@ -3846,8 +3889,8 @@ class Service:
         return fetched
 
     def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None):
-        """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
-        the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
+        """-> (ids, thinking, max_new). Normally unset/non-positive uses the remaining context. The opt-in
+        unlimited_output returns -1 for rolling continuation. `force`: without thinking it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
         # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
         # between pictures and raise ClientGone
@@ -3912,6 +3955,8 @@ class Service:
             if ctx <= 0:
                 raise EngineStarting("the engine is starting (a minute or two); try again shortly")
         room = ctx - CTX_SLACK - len(ids)
+        if self.unlimited_output:
+            max_new = None
         if max_new is None or max_new <= 0 or (self.fit_max_tokens and room < 1):
             if room < 1:
                 raise ValueError("request exceeds the context window: "
@@ -3926,6 +3971,8 @@ class Service:
                                  f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
                                  "model's strata-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
+        if self.unlimited_output:
+            max_new = -1                    # logical limit, never sent as a native GEN budget
         if images:
             # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
             # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
@@ -4027,6 +4074,8 @@ class Service:
         with self.status_lock:
             s = self.status if st is None else st
             s["generated"] = n
+            if self.unlimited_output:
+                s["context_tokens"] = s.get("context_base", 0) + n
             if s.get("first_token") is None:
                 s["first_token"] = time.time()
             (self.rate if rate is None else rate).append((time.time(), n))   # the live rate's window (RATE_WINDOW_S)
@@ -4056,11 +4105,37 @@ class Service:
         else:
             rate = s["generated"] / max(1e-6, now - s["first_token"])
             # #984: while a thinking budget applies, the thinking line shows it, not the request's max_tokens
-            limit = (f"budget {s['thinking_budget']} (max {s.get('max_tokens')})"
-                     if s["phase"] == "thinking" and s.get("thinking_budget") else f"max {s.get('max_tokens')}")
+            maximum = "unlimited" if self.unlimited_output else s.get("max_tokens")
+            limit = (f"budget {s['thinking_budget']} (max {maximum})"
+                     if s["phase"] == "thinking" and s.get("thinking_budget") else
+                     "unlimited" if self.unlimited_output else f"max {maximum}")
             print(f"[strata] {s['phase']}: {s['generated']} of {limit} tokens, {rate:.1f} tok/s, "
                   f"{el:.0f} s", flush=True)
         return now
+
+    def rolling_output_prompt(self, anchor, prompt, thinking, parser):
+        """Keep the request prompt, a small output opening and the newest output; reserve half the output space
+        for the next native GEN. Only opt-in unlimited_output drops older GENERATED context, never API input.
+        The HTTP parser/detokenizer stay alive, so a split tag, JSON argument or UTF-8 character stays intact."""
+        capacity = self.engine.max_context - CTX_SLACK - len(anchor)
+        if capacity < 1:
+            raise ValueError("request exceeds the context window after loading the engine")
+        keep = capacity // 2
+        output = prompt[len(anchor):]
+        head_n = min(256, keep // 4)
+        head = output[:head_n]
+        tail_n = keep - len(head)
+        tail = output[-tail_n:] if tail_n else []
+        # A long answer must not look like fresh reasoning when the original template ends in <think>.
+        closed = thinking and parser.state not in ("reasoning", "rcall")
+        bridge = self.tok.encode(THINK_END + "\n", parse_special=True) if closed and \
+            THINK_END not in self.tok.decode(head) and THINK_END not in self.tok.decode(tail) else []
+        if len(bridge) <= tail_n:
+            tail_n -= len(bridge)
+            tail = output[-tail_n:] if tail_n else []
+        else:
+            bridge = []
+        return list(anchor) + head + bridge + tail
 
     def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None) -> Iterator[tuple[str, object]]:
         """The request's events (see _run); with "prevent_sleep" in the config, the PC stays awake while it runs or waits."""
@@ -4076,6 +4151,9 @@ class Service:
     def _run(self, ids, thinking, tools, max_new, sampling, cancel, force=None) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
+        unlimited = self.unlimited_output
+        if unlimited:
+            max_new = -1
         defaults = {**self.sampling_defaults, **self.shared}   # the config's, then the Chat settings shared with apps
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
@@ -4200,6 +4278,8 @@ class Service:
                         st.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
                                   generated=0, started=time.time(), first_token=None, tool=None, tail="",
                                   max_tokens=max_new, reasoning_recoveries=0, thinking_budget=budget)
+                        if unlimited:
+                            st.update(context_base=len(ids), context_tokens=len(ids), context_rollovers=0)
                         if par:
                             self.live_reqs[id(st)] = (st, rate)
                             self.status.update(st)
@@ -4207,18 +4287,38 @@ class Service:
                         rate.clear()                    # the previous request's samples must not leak into this one
                     before = getattr(self.engine, "last", None)
                     last_print = time.time()
-                    prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
+                    prompt, anchor, thought = ids, ids, 0  # anchor keeps the API input through output rollovers
                     for ev in opening:
                         yield "event", ev
                     while True:
+                        if cancel.is_set():
+                            break
+                        if unlimited:
+                            room = self.engine.max_context - CTX_SLACK - len(prompt)
+                            if room < 1:
+                                prompt = self.rolling_output_prompt(anchor, prompt, thinking, parser)
+                                room = self.engine.max_context - CTX_SLACK - len(prompt)
+                                with self.status_lock:
+                                    st["context_rollovers"] += 1
+                                print(f"[strata] output context rollover {st['context_rollovers']}: "
+                                      f"{n} output tokens so far; no total output cap", flush=True)
+                            segment_max = room
+                            with self.status_lock:
+                                st["context_base"] = len(prompt) - n
+                                st["context_tokens"] = len(prompt)
+                        else:
+                            segment_max = max_new - n
+                        segment_start = n
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
-                        gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
-                            else self.engine.generate(prompt, max_new - n, sampling, cancel)
-                        recover_prompt = None
+                        gen = self.engine.generate(prompt, segment_max, sampling, cancel, embeddings=emb) if emb \
+                            else self.engine.generate(prompt, segment_max, sampling, cancel)
+                        recover_prompt, recovery_anchor = None, None
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         nonfinite = False               # #879: the engine ended this pass on non-finite logits
                         opens = False                   # the thinking is over: write the forced call's opening
+                        if self.usage:
+                            self.usage.begin(id(st))
                         try:
                             # A value the frontend holds back (a tool call's array or object argument is sent
                             # whole, once complete) can keep the stream silent for minutes while tokens are
@@ -4279,7 +4379,12 @@ class Service:
                                             looped = True        # #728: end the reply here, as for a repeated token
                                             break
                                         if not emb:              # "recover": not for a request with pictures
-                                            recover_prompt = focused_recovery_prompt(self.tok, ids, raw_ids)
+                                            if unlimited:
+                                                recovery_anchor = focused_recovery_prompt(self.tok, ids, [])
+                                                recover_prompt = recovery_anchor + prompt[len(anchor):] + seg \
+                                                    if recovery_anchor is not None else None
+                                            else:
+                                                recover_prompt = focused_recovery_prompt(self.tok, ids, raw_ids)
                                             if recover_prompt is not None:
                                                 break
                                 if budget and parser.state == "reasoning":
@@ -4317,6 +4422,9 @@ class Service:
                                 self._say_died(e)
                                 if not leaving and not cancel.is_set():
                                     raise
+                            finally:
+                                if self.usage:
+                                    self.usage.end(id(st))
                             segment_done = getattr(self.engine, "last", None)
                             if segment_done is not None and segment_done is not segment_before:
                                 segments.append(dict(segment_done))
@@ -4342,7 +4450,7 @@ class Service:
                                   "reads its prompt from the start", flush=True)
                             finish = "length"
                             break
-                        if recover_prompt is not None and not cancel.is_set() and n < max_new:
+                        if recover_prompt is not None and not cancel.is_set() and (unlimited or n < max_new):
                             recovery_count += 1
                             # Only the two settings that keep the same words coming are raised (temperature to at
                             # least 1.0, presence penalty to at least 1.5): a client's top_p and top_k are never
@@ -4353,6 +4461,8 @@ class Service:
                                              for k in ("temperature", "presence_penalty")):
                                 sampling = {**(sampling or {}), "temperature": want[0], "presence_penalty": want[1]}
                             prompt = recover_prompt
+                            if unlimited:
+                                anchor = recovery_anchor
                             with self.status_lock:
                                 st["reasoning_recoveries"] = recovery_count
                             if trace is not None:
@@ -4370,7 +4480,7 @@ class Service:
                             # an empty answer.  Close the thinking once and let it answer.
                             close_retried = True
                             extra = self.tok.encode(REASONING_CLOSE, parse_special=True)
-                            if max_new - n - len(extra) >= 1:
+                            if unlimited or max_new - n - len(extra) >= 1:
                                 print("[strata] the reply ended inside its thinking with no answer: closing the "
                                       "thinking once and continuing (reasoning_close_retry)", flush=True)
                                 for t in extra:
@@ -4384,6 +4494,10 @@ class Service:
                                 prompt = prompt + seg + extra
                                 finish = "length"
                                 continue
+                        if (unlimited and not (wrap or opens or repeated or looped) and finish != "stop"
+                                and not cancel.is_set() and n - segment_start == segment_max):
+                            prompt = prompt + seg
+                            continue                    # length ends a native window, not this API response
                         if not (wrap or opens) or cancel.is_set():
                             break
                         # #123: the thinking reached reasoning_budget_tokens.  Close it the way the model would (a
@@ -4398,7 +4512,7 @@ class Service:
                             text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
                         force = None
                         extra = self.tok.encode(text, parse_special=True)
-                        if max_new - n - len(extra) < 1:
+                        if not unlimited and max_new - n - len(extra) < 1:
                             break                       # no room left to answer: "length", as without a budget
                         if wrap:
                             print(f"[strata] thinking budget reached ({thought} tokens): wrapping up the thinking",
@@ -4450,6 +4564,9 @@ class Service:
                                 if loaded else None,
                                 "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
                                 "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
+                                **({"context_tokens": min(self.engine.max_context - CTX_SLACK,
+                                                          st.get("context_base", 0) + n),
+                                    "context_rollovers": st.get("context_rollovers", 0)} if unlimited else {}),
                                 # the request's whole prompt, and the tokens read of it (None: an older engine)
                                 "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
                                 "reasoning_recoveries": recovery_count,
@@ -4472,6 +4589,10 @@ class Service:
                             t["decode_ms"] += last.get("decode_ms") or 0.0
                             t["drafts_offered"] += last.get("drafts_offered") or 0
                             t["drafts_accepted"] += last.get("drafts_accepted") or 0
+                            if self.usage:
+                                cache = (request_timings(seen, n, last) or {}).get("cache_n", last.get("reused") or 0)
+                                self.usage.record(seen, cache, n, decode_ms=last.get("decode_ms"),
+                                                  decoded_tokens=last.get("generated"))
                             ft0 = st.get("first_token")             # this request's own (#465: one per request)
                             self.latencies.observe(ft0 - started if ft0 else None, n,
                                                    (last.get("decode_ms") or 0.0) / 1000, time.time() - started)
@@ -5221,8 +5342,9 @@ def make_handler(svc: Service):
             if self.record is not None:
                 with svc.status_lock:
                     self.record["http_status"] = code
-                    raw = json.dumps(obj, ensure_ascii=False, indent=2)
-                    self.record.update(response=raw[:262144], response_truncated=len(raw) > 262144)
+                    if svc.api_monitor:
+                        raw = json.dumps(obj, ensure_ascii=False, indent=2)
+                        self.record.update(response=raw[:262144], response_truncated=len(raw) > 262144)
                     for key in ("error", "usage", "timings"):
                         if key in obj:
                             self.record[key] = obj[key]
@@ -5314,9 +5436,50 @@ def make_handler(svc: Service):
                                records if request_id else {"requests": records, "retention": 100, "persistent": False,
                                                           "loaded": svc.loaded(), "auto_load": hasattr(svc.engine, "restart")})
                 return
+            if path == '/api/history':
+                if not self._authorized():
+                    return
+                if svc.output_history is None:
+                    self._json(503 if svc.output_history_error else 404,
+                               {'error': {'message': svc.output_history_error or 'History recording is off'}})
+                    return
+                try:
+                    query = parse_qs(urlsplit(self.path).query)
+                    ident = query.get('id', [None])[0]
+                    if ident:
+                        detail = svc.output_history.detail(ident, query.get('field', ['output'])[0],
+                                                           int(query.get('offset', ['0'])[0]))
+                        if detail is None:
+                            self._json(404, {'error': {'message': 'History entry not found'}})
+                        elif query.get('download') == ['1']:
+                            self.send_response(200)
+                            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                            self.send_header('Content-Disposition', f'attachment; filename="strata-{ident}.txt"')
+                            self.send_header('Cache-Control', 'no-store')
+                            self.send_header('X-Content-Type-Options', 'nosniff')
+                            self.end_headers()
+                            for piece in svc.output_history.export(ident):
+                                self.wfile.write(piece.encode('utf-8'))
+                        else:
+                            self._json(200, detail, headers={'Cache-Control': 'no-store'})
+                    else:
+                        self._json(200, svc.output_history.records(query.get('before', [None])[0],
+                                   query.get('q', [''])[0], query.get('state', ['all'])[0]),
+                                   headers={'Cache-Control': 'no-store'})
+                except ValueError as error:
+                    self._json(400, {'error': {'message': str(error)}})
+                except (OSError, sqlite3.Error):
+                    if not self.answer_started:
+                        self._json(503, {'error': {'message': 'History storage is unavailable'}})
+                return
             if path == "/settings":
                 if self._authorized():
                     self._json(200, {"shared": bool(svc.shared), "defaults": svc.shared})
+                return
+            if path == "/usage/settings":
+                if self._authorized():
+                    self._json(200, svc.usage.snapshot()) if svc.usage else self._json(
+                        404, {"error": {"message": "usage tracking is not enabled"}})
                 return
             if path == "/config":                            # #564: the Settings view's keys of the run config
                 if self._authorized():
@@ -5338,6 +5501,7 @@ def make_handler(svc: Service):
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),
                                  "image_generation": svc.images is not None,
+                                 **({'output_history': True} if svc.output_history or svc.output_history_error else {}),
                                  "loaded": svc.loaded(), "service": "strata"})
             elif path.startswith("/v1/images/files/"):
                 # response_format url: the name (32 random hex digits) is the access, as an OpenAI image URL is
@@ -5430,6 +5594,25 @@ def make_handler(svc: Service):
             if path == "/config":
                 self._config_post()
                 return
+            if path == "/usage/settings":
+                body = self._body()
+                if not self._own_page("usage prices can be changed"):
+                    return
+                if svc.usage is None:
+                    self._json(404, {"error": {"message": "usage tracking is not enabled"}})
+                    return
+                try:
+                    data = json.loads(body or b"{}")
+                    rates = data.get("rates") if isinstance(data, dict) else None
+                    updated = svc.usage.configure(rates)
+                except ValueError as error:
+                    self._json(400, {"error": {"message": str(error)}})
+                    return
+                except OSError as error:
+                    self._json(500, {"error": {"message": f"prices could not be saved: {error}"}})
+                    return
+                self._json(200, updated)
+                return
             if path in ("/unload", "/load") and not self._control_body():
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
@@ -5503,7 +5686,7 @@ def make_handler(svc: Service):
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
-                    self.record = svc.begin_request(path, req)
+                    self.record = svc.begin_request(path, req, self.headers)
                 if path == "/v1/responses":
                     self._responses(req)
                 elif path.startswith("/slots/"):
@@ -5575,6 +5758,8 @@ def make_handler(svc: Service):
                         record["wallclock_s"] = round(time.perf_counter() - record["_clock"], 3)
                         record["finished_at"] = time.time()
                         record["state"] = "error" if record.get("error") else record.get("outcome", "completed")
+                    if record.get('_history') is not None:
+                        record['_history'].finish(record)
                     svc.request_trace.record = None
 
         def _images(self, req):
@@ -5617,8 +5802,9 @@ def make_handler(svc: Service):
             params = {names.get(k, k): v for k, v in defaults.items()
                       if k in ("temperature", "top_p", "top_k", "min_p", "seed", "repetition_penalty",
                                "presence_penalty", "frequency_penalty", "penalty_last_n")}
-            params["n_predict"] = svc.shared.get("max_tokens", -1)
+            params["n_predict"] = -1 if svc.unlimited_output else svc.shared.get("max_tokens", -1)
             props = {"default_generation_settings": {"n_ctx": svc.reported_ctx(), "params": params},
+                     "unlimited_output": svc.unlimited_output,
                      "total_slots": max(1, int(getattr(svc.engine, "batch", 0) or 0)),   # #1004: the batch slots
                      "model_alias": svc.model, "chat_template": svc.template.source,
                      "chat_template_caps": svc.template.caps,
@@ -5776,30 +5962,24 @@ def make_handler(svc: Service):
             try:
                 for item in items:
                     if item is not None:
-                        if api == "openai":
-                            delta = item["choices"][0]["delta"]
-                            content, reasoning = delta.get("content", ""), delta.get("reasoning_content", "")
-                            usage, timings = item.get("usage"), item.get("timings")
-                        elif api == "responses":
-                            kind = item["type"]
-                            content = item["delta"] if kind == "response.output_text.delta" else ""
-                            reasoning = item["delta"] if kind == "response.reasoning_text.delta" else ""
-                            usage, timings = (item.get("response") or {}).get("usage"), None
-                        else:
-                            _, event = item
-                            delta = event.get("delta", {})
-                            content, reasoning = delta.get("text", ""), delta.get("thinking", "")
-                            usage, timings = event.get("usage"), None
+                        fields, updates = event_parts(api, item)
                         with svc.status_lock:
-                            for name, value in (("output", content), ("reasoning", reasoning)):
+                            for name in ('output', 'reasoning') if svc.api_monitor else ():
+                                value = fields[name]
                                 if value:
                                     combined = self.record[name] + value
                                     self.record[name] = combined[:262144]
                                     self.record[name + "_truncated"] |= len(combined) > 262144
-                            if usage:
-                                self.record["usage"] = usage
-                            if timings:
-                                self.record["timings"] = timings
+                            if updates.get('usage'):
+                                updates['usage'] = {**self.record.get('usage', {}), **updates['usage']}
+                            self.record.update(updates)
+                        capture = self.record.get('_history')
+                        if capture is not None:
+                            capture.meta['state'] = self.record['state']
+                            for name, value in fields.items():
+                                capture.append(name, value)
+                    elif self.record.get('_history') is not None:
+                        self.record['_history'].flush(self.record)
                     yield item
             finally:
                 items.close()
@@ -5980,6 +6160,9 @@ def make_handler(svc: Service):
 
         def _responses_prepare(self, req, cancel=None):
             responses_api.check_request(req)
+            if svc.unlimited_output:
+                req = dict(req)
+                req.pop("max_output_tokens", None)
             messages = responses_api.input_messages(req)
             tools, names, skipped = responses_api.request_tools(req)
             kw = responses_api.template_kwargs(req, {"reasoning_effort": svc.effort_default()})
@@ -5996,7 +6179,7 @@ def make_handler(svc: Service):
                 print(f"[strata] /v1/responses: left out the hosted tools {', '.join(sorted(set(skipped) - noted))} "
                       f"(this server cannot run them)", flush=True)
                 noted.update(skipped)
-            if req.get("max_output_tokens") is None and "max_tokens" in svc.shared:   # the shared Chat settings
+            if not svc.unlimited_output and req.get("max_output_tokens") is None and "max_tokens" in svc.shared:
                 req = {**req, "max_output_tokens": svc.shared["max_tokens"]}
             try:
                 svc.reasoning_budget(req)                    # a bad value is a 400 before anything is sent
@@ -6668,6 +6851,12 @@ def main() -> int:
                          "[{\"gpus\": [0, 1]}, {\"gpus\": [2, 3]}])")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    if cfg.get("unlimited_output") is not None and not isinstance(cfg["unlimited_output"], bool):
+        ap.error('config "unlimited_output" must be true or false')
+    if cfg.get("usage_tracker") is not None and not isinstance(cfg["usage_tracker"], bool):
+        ap.error('config "usage_tracker" must be true or false')
+    if cfg.get("remote_access") is not None and not isinstance(cfg["remote_access"], bool):
+        ap.error('config "remote_access" must be true or false')
     lift_reasoning_effort_arg(cfg)
     if a.replicas is not None:
         cfg["replicas"] = a.replicas
@@ -6767,7 +6956,11 @@ def main() -> int:
     svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
                   model_name=default_model_name(cfg), vision=vision,
                   sampling_defaults=sampling_defaults,
-                  fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
+                  fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True,
+                  unlimited_output=cfg.get("unlimited_output") is True)
+    if svc.unlimited_output:
+        print("[strata] unlimited_output: no total output cap; generated context rolls as windows fill, retaining "
+              "the original prompt and recent output until the model finishes or the request is stopped", flush=True)
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
@@ -6828,6 +7021,18 @@ def main() -> int:
         print("[strata] Host check off: any name reaches this server (allowed_hosts \"*\")" if "*" in svc.allowed_hosts
               else f"[strata] also answers to the host names {', '.join(svc.allowed_hosts)} (allowed_hosts)", flush=True)
     svc.api_monitor = a.api_monitor or cfg.get("api_monitor") is True
+    if not isinstance(cfg.get('output_history', False), bool):
+        raise SystemExit('[strata] config "output_history" must be true or false')
+    if cfg.get('output_history') is True:
+        path = Path(a.config).with_suffix('.history.sqlite3') if a.config else ROOT / 'output.history.sqlite3'
+        try:
+            svc.output_history = HistoryStore(path)
+        except (OSError, sqlite3.Error) as error:
+            svc.output_history_error = f'History storage unavailable: {error}'
+            print('[strata] ' + svc.output_history_error + '; model service will continue', flush=True)
+        else:
+            atexit.register(svc.output_history.close)
+            print(f'[strata] persistent output history on: {path}', flush=True)
     if svc.api_monitor:
         print("[strata] API request monitor on (/api-monitor): the last 100 requests' prompts and answers are kept in "
               "memory" + ("" if svc.api_key else "; anyone who can reach this server can read them (no API key)"),
@@ -6900,6 +7105,15 @@ def main() -> int:
     if a.config:
         svc.config_path = a.config                      # #564: the web page's Settings view
     if a.config:                                        # the Chat settings shared with other apps, from last time
+        if cfg.get("usage_tracker") is True:
+            from serve.usage import UsageLedger, process_cpu_times
+            svc.start_telemetry()
+            svc.usage = UsageLedger(str(Path(a.config).with_suffix("")) + ".usage.json", svc.model,
+                                    sample=lambda: {**svc.telemetry.gpu_work_sample(),
+                                                    "cpu_times": process_cpu_times([svc.engine, svc.vision])})
+            if vision and (cfg.get("vision") or {}).get("gpu") is True:
+                vision.usage = svc.usage
+            svc.usage.start()
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
         try:
             svc.shared = clean_shared_defaults(json.loads(Path(svc.shared_path).read_text(encoding="utf-8")))
@@ -6909,7 +7123,6 @@ def main() -> int:
         except (OSError, ValueError):
             svc.shared = {}
     if hub is not None:
-        import atexit
         svc.mcp = hub
         print(f"[strata] starting {len(hub.servers)} MCP server{'s' * (len(hub.servers) != 1)} for the web app's "
               f"chat: {', '.join(hub.servers)}", flush=True)
@@ -6923,6 +7136,8 @@ def main() -> int:
           f"context {engine.max_context} tokens{', images on' if vision else ''}"
           f"{', API key required' if svc.api_key else ''})", flush=True)
     print(f"       open http://{here}:{a.port}/ in a browser to chat; close this window to stop the model", flush=True)
+    if a.engine == "strata" and a.port == 8080:
+        start_remote_access(enabled=cfg.get("remote_access") is True)
     if a.host not in ("127.0.0.1", "localhost", "::1"):
         # issue #26: reachable from other devices - say at which address, and what can still block it
         ips = lan_addresses()
@@ -6956,7 +7171,8 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\n[strata] stopping (Ctrl+C again to end the engine at once) ...", flush=True)
         closers = [httpd.shutdown, getattr(engine, "close", None), vision.shutdown if vision else None,
-                   hub.close if hub is not None else None]
+                   hub.close if hub is not None else None, svc.usage.close if svc.usage else None,
+                   svc.output_history.close if svc.output_history else None]
         for close in filter(None, closers):
             try:
                 close()
