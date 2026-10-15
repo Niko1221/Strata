@@ -2772,7 +2772,9 @@ std::string Verifier::profile_report() {
 // (the host table is the one the device copy was uploaded from; a loan, a VRAM shrink or a swap in flight has
 // marked some -1).  Not: the doorbell graph, which asks the pool for what the device does not hold.
 void Verifier::refresh_ar() {
-    if (!all_resident_ || h_res_ == nullptr || g_ == nullptr) return;
+// not gated on all_resident_: a shrink that takes a resident expert flips that flag in refresh_residency, and
+// ar_off_ has to follow it - the batch graphs are keyed on it, and the host only serves doorbells when ar_on().
+    if (h_res_ == nullptr || g_ == nullptr) return;
     const int64_t ne = g_->n_expert;
     const int32_t* r = h_res_ + lb_ * ne;
     const int64_t n = (le_ < 0 ? g_->n_layers : le_) * ne - lb_ * ne;

@@ -1615,9 +1615,11 @@ class StrataEngine:
         engine's reason (e.g. it was not started with --vram-elastic), EngineDied when it ended."""
         if not self.alive():
             raise EngineDied("the engine is not running")
-        line = "VRAM" + (" -" if reserve_mib is None else f" {int(reserve_mib)}")
+        # the dash names the start's reserve only so a device can follow it: with no device, an engine from before
+        # this change parses the reserve slot with strtoll and refuses, so send it a bare `VRAM`.
+        line = "VRAM" + ("" if reserve_mib is None else f" {int(reserve_mib)}")
         if gpu is not None:
-            line += f" {int(gpu)}"
+            line += (" -" if reserve_mib is None else "") + f" {int(gpu)}"
         self.proc.stdin.write(line + "\n")
         self.proc.stdin.flush()
         deadline = time.time() + timeout

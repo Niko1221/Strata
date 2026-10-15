@@ -79,7 +79,7 @@ class EngineCommand(unittest.TestCase):
         self.assertEqual(e.info["expert_slots"], 1200)
         e = self.engine(["VRAM reserve_mib=700 gpu=0 expert_slots=3700\n", "VRAM-DONE\n"])
         e.vram(None)
-        self.assertEqual(e.proc.stdin.getvalue(), "VRAM -\n")     # the dash: no number in the reserve slot
+        self.assertEqual(e.proc.stdin.getvalue(), "VRAM\n")      # no device: no dash, so an older engine parses it
 
     def test_one_device_in_the_line(self):
         e = self.engine(["VRAM reserve_mib=16000 gpu=1 expert_slots=512 expert_slots_full=5632 "
