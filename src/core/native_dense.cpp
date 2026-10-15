@@ -410,9 +410,9 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         }
         if (hc_q8_env()) {
             // a bf16 pack stores no Q8_0 copy: quantize the layers' down / up projections. A row the arena kept
-            // (--keep-canonical, a layer split) is quantized on the GPU from the arena's bf16; a skipped row (the
-            // single-GPU default: add_hc_skip) from the pack file on the host, and has no bf16 copy at all. The
-            // inject rows stay bf16 (82 KB), the final mixer stays bf16 (it runs once a window).
+            // (--keep-canonical) is quantized on the GPU from the arena's bf16; a skipped row
+            // (add_hc_skip - single GPU and layer split alike) from the pack file on the host, and has no bf16 copy
+            // at all. The inject rows stay bf16 (82 KB), the final mixer stays bf16 (it runs once a window).
             uint64_t made = 0;
             for (auto& [name, ref] : table.table_) {
                 if (ref.hc_q8 != nullptr || name.rfind("blk.", 0) != 0 || !in_range(name) ||
