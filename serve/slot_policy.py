@@ -136,7 +136,7 @@ def park_destination(main: list[int], busy: list[bool], held: list[list[int]], u
     gs = max(1, group_size)
     reliable = reliable_flags(busy, valid, gs, padding_safe)
     for b, h in enumerate(held):   # already kept (all but a short tail) - in an idle slot or one decoding it
-        if h and len(h) * 10 >= len(main) * 9 and (main[:len(h)] == h or h[:len(main)] == main):
+        if h and reliable[b] and len(h) * 10 >= len(main) * 9 and (main[:len(h)] == h or h[:len(main)] == main):
             return None
     states, blank = _blank(held, busy, used, now, reliable)
     positions = {b: i for i, b in enumerate(order)}
