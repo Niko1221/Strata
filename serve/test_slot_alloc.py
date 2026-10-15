@@ -623,6 +623,14 @@ class ParkMainSession(unittest.TestCase):
         self.assertFalse(e._park_claims)
         self.assertEqual(e.cache_events_view(), [])   # no low-value rejection of a continued conversation
 
+    def test_an_invalid_copy_does_not_count_as_already_kept(self):
+        e = self.e()
+        e.slot_held[3] = [7] * 48000                      # 96% of the main conversation, but no longer usable
+        e.slot_cache_valid[3] = False
+        self.assertIsNotNone(self.dest(e))
+        e.slot_cache_valid[3] = True
+        self.assertIsNone(self.dest(e))                   # a usable copy: nothing to park
+
     def test_own_older_copy_is_refreshed_before_using_a_blank_slot(self):
         e = self.e()
         e.slot_held[5] = [7] * 30000                      # this conversation, a few turns back
