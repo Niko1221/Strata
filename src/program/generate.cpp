@@ -10487,7 +10487,7 @@ int main(int argc, char** argv) {
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
                                        " batch_groups=" + std::to_string(o.batch_groups) +
-                                       (pipeline_active_rows ? " slot_padding_safe=1" : "")).c_str() : "");
+                                       (pipeline_active_rows ? " slot_padding_safe=1 slot_park=1" : "")).c_str() : "");
         }
         // issue #29: a request whose heartbeat (tokens, prompt chunks, verify windows) stops for this long is stuck on
         // a flag nobody will raise - end the engine with where it was, so the server starts it again instead of the
@@ -11659,6 +11659,10 @@ int main(int argc, char** argv) {
             // a parked conversation holding it stays parked) and a later request that resumes from it does not park the
             // branch it leaves: N queries cost one prefix, not N.  Absent = as before.
             int64_t req_pin = 0;
+            // STRATA_PIPELINE_ACTIVE_ROWS=1: park=B - when this request replaces the main session with another
+            // conversation, first copy the outgoing one into idle batch slot B (chosen by the server), so a short side
+            // request between two turns of a long solo conversation does not cost that conversation its cache
+            int req_park = -1;
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
@@ -11685,6 +11689,7 @@ int main(int argc, char** argv) {
                     else if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
+                    else if (key == "park") req_park = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
                     else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
@@ -12081,6 +12086,44 @@ int main(int argc, char** argv) {
                 resume == req_pin && live_ok)
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() == resume && c.pinned) pin_sibling = true;
+            // park=B (see req_park).  Only when this prompt is another conversation (it continues less than
+            // half of what the main session holds), never into the slot this request restores from or runs in.
+            if (pipeline_active_rows && req_park >= 0 && req_park < (int) bs.size() && !bs[(size_t) req_park].active &&
+                req_park != admit_slot && req_park != slot_source && live_ok && !live.empty() &&
+                resume * 2 < (int64_t) live.size() && (!from_live || incoming || slot_source >= 0) && !pin_sibling) {
+                const auto t0 = Clock::now();
+                BSlot& sl = bs[(size_t) req_park];
+                if (copy_to_slot(req_park, live, err)) {
+                    sl = BSlot{};
+                    sl.cached = true;
+                    sl.ids = live;
+                    sl.cvec = cvec_cached;
+                    sl.img = !live_imgs.empty();   // pictures: not matched again by tokens alone
+                    const ConvCheckpoint* best = nullptr;
+                    for (const ConvCheckpoint& c : checks)
+                        if (c.ids.size() < live.size() && (best == nullptr || c.ids.size() > best->ids.size()) &&
+                            std::equal(c.ids.begin(), c.ids.end(), live.begin()))
+                            best = &c;
+                    if (best != nullptr && !sl.img) sl.checks.push_back(*best);
+                    std::fprintf(stderr, "strata batch: slot %d keeps the previous conversation (%zu tokens, copied in "
+                                         "%.1f ms)\n", req_park, live.size(),
+                                 std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+                    std::printf("PARKED %d %zu\n", req_park, sl.img ? (size_t) 0 : live.size());
+                } else {
+                    std::fprintf(stderr, "strata batch: parking into slot %d failed (%s)\n", req_park, err.c_str());
+                    err.clear();
+                    sl.cached = false;   // its sessions may be half written
+                    sl.checks.clear();
+                    std::printf("PARKED %d 0\n", req_park);
+                }
+                std::fflush(stdout);
+            } else if (req_park >= 0) {
+                std::fprintf(stderr, "strata batch: park=%d not used (rows=%d live_ok=%d live=%zu resume=%lld "
+                                     "from_live=%d source=%d admit=%d active=%d)\n", req_park,
+                             pipeline_active_rows ? 1 : 0, live_ok ? 1 : 0, live.size(), (long long) resume,
+                             from_live ? 1 : 0, slot_source, admit_slot,
+                             req_park < (int) bs.size() && bs[(size_t) req_park].active ? 1 : 0);
+            }
             // --conversation-cache-park-gain N: a park now would supersede the entry parked_prefix_tokens() reports (the copy
             // this conversation wrote last), so a conversation that advanced fewer than N tokens since then keeps it:
             // it still holds this conversation's prefix, and re-parking writes the whole snapshot only for the next

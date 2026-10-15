@@ -390,6 +390,15 @@ tokens at temperature 0, one run each): 177.4 / 173.5 tok/s in total (-2.2%), fi
 67.3 / 66.7 tok/s. With all six slots busy the windows hold the same rows either way; runs of this configuration with
 other builds measured 173.9-178.2 tok/s, so this is close to the spread between runs, but it was not repeated.
 
+### Engine: keep the solo path's conversation (`park=B`)
+
+A request alone runs on the solo path, whose state is the engine's main session, not a slot. When the next request is
+another conversation - an agent's short side request between two turns of a long one - the main session is
+overwritten. With `STRATA_PIPELINE_ACTIVE_ROWS=1` the engine takes `park=B` on `GEN` / `BGEN` (`INFO slot_park=1`):
+when the prompt continues less than half of what the main session holds, it first copies the main session's
+conversation (and its last checkpoint) into idle slot B - never the slot it restores from or is admitted to - and says
+`PARKED B <tokens>`. Copying 36-37K tokens took 414-451 ms (five runs, the machine above).
+
 ## The VRAM expert tier keeps adapting in batch windows
 
 Batch windows count which experts they route to, and every `--adapt-every` windows (default 4) the engine swaps the
@@ -599,6 +608,8 @@ On top of `GEN` / `GENI`:
 | `INFO ... batch_slots=N` | out | the slots the engine runs (only with `--batch`) |
 | `INFO ... slot_padding_safe=1` | out | `STRATA_PIPELINE_ACTIVE_ROWS=1`: a pipelined group's window runs its active slots only; an idle slot keeps its conversation |
 | `CACHE_SOURCE <slot> <tokens>` | out | `STRATA_PIPELINE_ACTIVE_ROWS=1`, after a prompt's restore: the idle slot its reused prefix came from (-1: the main session, a checkpoint or the conversation cache) and how long it is |
+| `park=B` (a key of `GEN` / `BGEN`) | in | with `INFO slot_park=1`: before a different conversation replaces the main session's, copy that one into idle slot B |
+| `PARKED <slot> <tokens>` | out | `park=` copied that many tokens into the slot (0: the copy failed, the slot holds nothing usable) |
 
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.
