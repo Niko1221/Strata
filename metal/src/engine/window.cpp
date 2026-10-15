@@ -606,6 +606,29 @@ void Window::xprep(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& x, const A
     push(ds, d);
 }
 
+// gr_down's tile: SG simdgroups per threadgroup, KS of them splitting the row (RS = SG / KS rows per threadgroup).
+// Both call sites ask for 8_8.  STRATA_METAL_GR_TILE=S_K asks for another of the tiles gr.metal instantiates
+// (8_8 8_4 4_4 4_2 16_16 16_8).  Measured on an Apple M3 Max, IQ3_S pack, high power mode: metal/tests/gr_parity.cpp
+// with GR_Q8=1 gives 14.7 us per call for 8_8 with one token per window and 27.4 us with two (3 tokens: 52.3 us),
+// against 15.5 us for 4_2 with two (3 tokens: 20.7 us), and 4_4 is the fastest at one token (12.4 us).  In the
+// engine that is 2.656 ms against 1.522 ms of gr_down in the --spec 2 window (STRATA_METAL_KPROF=2), and decode
+// 57.3 against 59.1 tok/s at --spec 2 (median of three, one boot each), 48.7 against 49.7 with the drafter off and
+// 4_4, and 49.9 against 53.0 at --spec 3.  Only this GPU was measured, so the choice is opt-in, not a new default.
+static std::pair<int, int> gr_tile() {
+    static const std::pair<int, int> known[] = {{8, 8}, {8, 4}, {4, 4}, {4, 2}, {16, 16}, {16, 8}};
+    static const std::pair<int, int> tile = [] {
+        const char* e = std::getenv("STRATA_METAL_GR_TILE");
+        if (e == nullptr) return known[0];
+        int s = 0, k = 0;
+        if (std::sscanf(e, "%d_%d", &s, &k) != 2) return known[0];
+        for (const auto& t : known)
+            if (t.first == s && t.second == k) return t;
+        std::fprintf(stderr, "strata metal: STRATA_METAL_GR_TILE=%s is not a tile gr.metal builds, keeping 8_8\n", e);
+        return known[0];
+    }();
+    return tile;
+}
+
 // the hyper-connection read (gr.metal, 3 dispatches): the previous sublayer's write folded in when `apply`
 void Window::gr_read(std::vector<mtl::Dispatch>& ds, const std::string& pre, bool apply, const Act& out, bool final_,
                      int ntok) {
@@ -635,12 +658,14 @@ void Window::gr_read(std::vector<mtl::Dispatch>& ds, const std::string& pre, boo
     const bool q8 = is_q8(tdn) && is_q8(tup);
     const bool injf = q8 && !final_ && !q8off_.count(tin.name) && tin.type == ref::F32;
     mtl::Dispatch d2;
-    const char* dn = injf ? "gr_down_q8f_8_8" : q8 ? "gr_down_q8_8_8" : "gr_down_8_8";
-    d2.p = P(lib_, dn, mtl::Constants().i(1, ntok), std::string(dn) + "#" + std::to_string(ntok));
+    const auto [gs, gk] = gr_tile();
+    const std::string dn = std::string(injf ? "gr_down_q8f_" : q8 ? "gr_down_q8_" : "gr_down_")
+                           + std::to_string(gs) + "_" + std::to_string(gk);
+    d2.p = P(lib_, dn, mtl::Constants().i(1, ntok), dn + "#" + std::to_string(ntok));
     d2.args = {mtl::Arg::B(*bd, od), mtl::Arg::B(*bi, oi), mtl::Arg::B(xn_), mtl::Arg::B(lo_),
                mtl::Arg::B(inj_[1 - cur_inj_]), mtl::Arg::V(a)};
-    d2.grid[0] = LR + HC;
-    d2.tg[0] = 256;
+    d2.grid[0] = (LR + HC + gs / gk - 1) / (gs / gk);   // RS = SG / KS rows per threadgroup
+    d2.tg[0] = 32 * gs;
     push(ds, d2);
     mtl::Dispatch d3;
     const char* up = q8 ? "gr_up_q8" : "gr_up";
@@ -1637,11 +1662,12 @@ void Window::gr_read_m(std::vector<mtl::Dispatch>& ds, const std::string& pre, m
     d1.grid[0] = HC; d1.grid[1] = ntok; d1.tg[0] = 256;
     push(ds, d1);
     mtl::Dispatch d2;
-    const char* dn = q8 ? "gr_down_q8_8_8" : "gr_down_8_8";
-    d2.p = P(lib_, dn, mtl::Constants().i(1, ntok), std::string(dn) + "#" + std::to_string(ntok));
+    const auto [gs, gk] = gr_tile();
+    const std::string dn = std::string(q8 ? "gr_down_q8_" : "gr_down_") + std::to_string(gs) + "_" + std::to_string(gk);
+    d2.p = P(lib_, dn, mtl::Constants().i(1, ntok), dn + "#" + std::to_string(ntok));
     d2.args = {mtl::Arg::B(WB, tdn.offset), mtl::Arg::B(WB, tin.offset), mtl::Arg::B(xn_), mtl::Arg::B(lo_),
                mtl::Arg::B(inj_out), mtl::Arg::V(a)};
-    d2.grid[0] = LR + HC; d2.tg[0] = 256;
+    d2.grid[0] = (LR + HC + gs / gk - 1) / (gs / gk); d2.tg[0] = 32 * gs;
     push(ds, d2);
     mtl::Dispatch d3;
     const char* up = q8 ? "gr_up_q8" : "gr_up";
