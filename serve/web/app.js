@@ -369,7 +369,7 @@ function projectionText(c) {
   const [mode, range, single] = String(c).split(":");
   const [a, b] = (range || "").split("-");
   return `${mode === "project" ? "Projection" : "Additive"} control vector on layers ${a}–${b}` +
-         `${single ? ` (layer ${single.replace("single", "")}'s direction)` : ""}. Per chat in Sampling. Its package ` +
+         `${single ? ` (layer ${single.replace("single", "")}'s direction)` : ""}. Per chat in Chat settings. Its package ` +
          "describes the vector as a refusal-direction projection; measure the speed yourself";
 }
 function renderAbout(eng, hw, st) {
@@ -1240,14 +1240,14 @@ $("s-apply").onclick = async () => {
   if (share || sharedOn) {
     try {
       await saveShared(share, settings);
-      toast("success", "Sampling saved", share ? "Other apps (omp, API clients) use these settings from their next request."
+      toast("success", "Chat settings saved", share ? "Other apps (omp, API clients) use these settings from their next request."
                                                : "Other apps use their own settings again.");
     } catch (e) {
       toast("error", "Saved here, but not for other apps", e.message, 6000);
     }
     return;
   }
-  toast("success", "Sampling saved", settings.temperature === 0 ? "Greedy: the same question gives the same answer." : "");
+  toast("success", "Chat settings saved", settings.temperature === 0 ? "Greedy: the same question gives the same answer." : "");
 };
 $("sampling-btn").onclick = () => openDrawer(true);
 $("drawer-close").onclick = () => openDrawer(false);
