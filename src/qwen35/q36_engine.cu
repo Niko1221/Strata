@@ -23,6 +23,7 @@
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/native_router.hpp"
+#include "strata/kernels/q36_kv_q8.hpp"
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/qwen35/engine.hpp"
@@ -270,6 +271,59 @@ __global__ void k_attn_prep(const float* qg, const float* kx, const float* vx, c
     }
 }
 
+/// int8 KV variant of k_attn_prep (docs/Q36_INT8_KV.md): the same norm + RoPE, but the K/V heads are written as q8_0
+/// codes with a per-32-value fp16 scale.  HD == 256, so each 32-thread warp is one group and the group max |x|
+/// reduces with shuffles (no shared memory); K and V reduce side by side, each to its own scale.
+__global__ void k_attn_prep_q8(const float* qg, const float* kx, const float* vx, const float* qw, const float* kw,
+                               float* q, float* gate, int8_t* kcq, int8_t* vcq, uint16_t* kcs, uint16_t* vcs,
+                               int H, int HKV, int HD, int n_rot, const int32_t* pos0, int ctx, float base, float eps) {
+    __shared__ float sh[kThreads];
+    __shared__ float buf[256];
+    const int head = blockIdx.x, t = blockIdx.y;
+    const int pos = *pos0 + t;
+    const bool isq = head < H;
+    const float* src = isq ? qg + ((size_t) t * H + head) * 2 * HD : kx + ((size_t) t * HKV + head - H) * HD;
+    const int i = threadIdx.x;
+    const float v0 = i < HD ? src[i] : 0.f;
+    const float s = block_sum(v0 * v0, sh);
+    const float r = rsqrtf(s / (float) HD + eps);
+    if (i < HD) buf[i] = v0 * r * (isq ? qw[i] : kw[i]);
+    __syncthreads();
+    if (i >= HD) return;
+    float v = buf[i];
+    const int half = n_rot / 2;
+    if (i < n_rot) {
+        const int p = i < half ? i : i - half;
+        const float theta = (float) pos * powf(base, -2.0f * (float) p / (float) n_rot);
+        float sn, cs;
+        sincosf(theta, &sn, &cs);
+        v = i < half ? buf[i] * cs - buf[i + half] * sn : buf[i - half] * sn + buf[i] * cs;
+    }
+    if (isq) {
+        q[((size_t) t * H + head) * HD + i] = v;
+        gate[((size_t) t * H + head) * HD + i] = qg[((size_t) t * H + head) * 2 * HD + HD + i];
+    } else {
+        const int kh = head - H;
+        const float vv = vx[((size_t) t * HKV + kh) * HD + i];
+        const int ng = HD / K::Q36_KV_Q8_GROUP;
+        const int g = i / K::Q36_KV_Q8_GROUP;
+        float ak = fabsf(v), av = fabsf(vv);
+        for (int o = 16; o > 0; o >>= 1) {
+            ak = fmaxf(ak, __shfl_xor_sync(0xffffffffu, ak, o));
+            av = fmaxf(av, __shfl_xor_sync(0xffffffffu, av, o));
+        }
+        const uint16_t sk = K::q36_kv_q8_scale_bits(ak);
+        const uint16_t sv = K::q36_kv_q8_scale_bits(av);
+        const size_t sbase = ((size_t) kh * ctx + pos) * ng;
+        if ((i & (K::Q36_KV_Q8_GROUP - 1)) == 0) {
+            kcs[sbase + g] = sk;
+            vcs[sbase + g] = sv;
+        }
+        kcq[((size_t) kh * ctx + pos) * HD + i] = K::q36_kv_q8_quantize(v, sk);
+        vcq[((size_t) kh * ctx + pos) * HD + i] = K::q36_kv_q8_quantize(vv, sv);
+    }
+}
+
 /// Split-K attention, one block per (chunk of 256 cells, query row): query row qi = t * H + h (t from t0) sees the
 /// cells [0, *pos0 + t].  Writes the chunk's partial accumulator, max and sum; chunks past the query's cells write
 /// nothing (the merge stops before them).  grid (n_chunk, n_rows), block 256, HD == 256.
@@ -301,6 +355,48 @@ __global__ void k_attn_part(const float* q, const float* kc, const float* vc, co
     float acc = 0.f;
     const float* vp = vc + ((size_t) kvh * ctx + p0) * HD + j;
     for (int k = 0; k < n; ++k) acc += sc[k] * vp[(size_t) k * HD];
+    const size_t o = (size_t) row * n_chunk + c;
+    pacc[o * HD + j] = acc;
+    if (j == 0) {
+        pm[o] = m;
+        pl[o] = l;
+    }
+}
+/// int8 KV variant of k_attn_part (docs/Q36_INT8_KV.md): identical split-K structure, the K/V reads dequantized
+/// on the fly from q8_0 codes + fp16 scales.
+__global__ void k_attn_part_q8(const float* q, const int8_t* kcq, const int8_t* vcq, const uint16_t* kcs,
+                               const uint16_t* vcs, const int32_t* pos0, int t0, int H, int HKV, int ctx, float scale,
+                               int n_chunk, float* pacc, float* pm, float* pl) {
+    constexpr int HD = 256;
+    constexpr int ng = HD / K::Q36_KV_Q8_GROUP;
+    __shared__ float qs[HD], sc[kChunkCells], sh[kThreads];
+    const int c = blockIdx.x, row = blockIdx.y;
+    const int t = t0 + row / H, h = row % H, kvh = h / (H / HKV);
+    const int npos = *pos0 + t + 1;
+    const int p0 = c * kChunkCells;
+    if (p0 >= npos) return;
+    const int j = threadIdx.x;
+    qs[j] = q[((size_t) t * H + h) * HD + j];
+    __syncthreads();
+    const int p = p0 + j;
+    float s = -INFINITY;
+    if (p < npos) {
+        const int8_t* kp = kcq + ((size_t) kvh * ctx + p) * HD;
+        const uint16_t* sp = kcs + ((size_t) kvh * ctx + p) * ng;
+        float a = 0.f;
+        for (int i = 0; i < HD; ++i) a += qs[i] * K::q36_kv_q8_dequantize(kp[i], sp[i / K::Q36_KV_Q8_GROUP]);
+        s = a * scale;
+    }
+    const float m = block_max(s, sh);
+    const float e = p < npos ? expf(s - m) : 0.f;
+    sc[j] = e;
+    const float l = block_sum(e, sh);
+    const int n = min(kChunkCells, npos - p0);
+    float acc = 0.f;
+    const int8_t* vp = vcq + ((size_t) kvh * ctx + p0) * HD + j;
+    const uint16_t* vsp = vcs + ((size_t) kvh * ctx + p0) * ng + (j / K::Q36_KV_Q8_GROUP);
+    for (int k = 0; k < n; ++k)
+        acc += sc[k] * K::q36_kv_q8_dequantize(vp[(size_t) k * HD], vsp[(size_t) k * ng]);
     const size_t o = (size_t) row * n_chunk + c;
     pacc[o * HD + j] = acc;
     if (j == 0) {
@@ -404,6 +500,23 @@ __global__ void k_kv_f16(const float* kc, const float* vc, __half* k16, __half* 
     const size_t src = (size_t) kvh * ctx * HD + rest;
     k16[i] = __float2half(kc[src]);
     v16[i] = __float2half(vc[src]);
+}
+/// int8 KV variant of k_kv_f16 (docs/Q36_INT8_KV.md): dequantize q8_0 K/V and stage them as FP16 for the prompt's
+/// cuBLAS GEMMs.  The dequantized value goes through f16_from_f32 (round-to-nearest-even), not __float2half.
+__global__ void k_kv_f16_q8(const int8_t* kcq, const int8_t* vcq, const uint16_t* kcs, const uint16_t* vcs,
+                            __half* k16, __half* v16, int ctx, int P, int HD, int HKV) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (int64_t) HKV * P * HD) return;
+    const int64_t per = (int64_t) P * HD;
+    const int64_t kvh = i / per, rest = i % per;
+    const int64_t pos = rest / HD, dim = rest % HD;
+    const int ng = HD / K::Q36_KV_Q8_GROUP;
+    const size_t src = (size_t) kvh * ctx * HD + rest;
+    const size_t sbase = (size_t) kvh * ctx * ng + (size_t) pos * ng + dim / K::Q36_KV_Q8_GROUP;
+    const float kv = K::q36_kv_q8_dequantize(kcq[src], kcs[sbase]);
+    const float vv = K::q36_kv_q8_dequantize(vcq[src], vcs[sbase]);
+    k16[i] = __ushort_as_half(K::f16_from_f32(kv));
+    v16[i] = __ushort_as_half(K::f16_from_f32(vv));
 }
 /// The prompt's causal softmax: row (h, t) of S (ld floats, P cells) -> softmax(S * scale) over the cells
 /// [0, pos0 + t], 0 past them, as FP16 probabilities (S16, the same row offsets, ld halves).  grid (T, H), block 256.
@@ -1050,6 +1163,9 @@ struct Engine {
     int32_t* ami;
     int n_chunk = 0, att_rows = 0;   // attention partials: att_rows query rows x n_chunk chunks
     std::vector<float*> conv, S, kc, vc;   // per layer; the MTP block's K / V at index n_layers
+    bool kv_int8 = false;   // --kv int8: the K/V cache is q8_0 (int8 codes + fp16 scales) instead of fp32
+    std::vector<int8_t*> kcq, vcq;       // q8_0 K/V codes, indexed like kc/vc (nullptr for GDN layers)
+    std::vector<uint16_t*> kcs, vcs;     // q8_0 K/V scales: [kvh * ctx + pos] * (HD / Q36_KV_Q8_GROUP) + group
     // verify windows (T <= kVerify): the GDN inputs of every row per layer, kept for the commit
     static constexpr int kVerify = 8;
     std::vector<float*> v_qkv, v_hc, v_alpha, v_beta;
@@ -1228,14 +1344,31 @@ struct Engine {
             if (L.attn) {
                 conv.push_back(nullptr);
                 S.push_back(nullptr);
-                kc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
-                vc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
+                if (kv_int8) {
+                    kc.push_back(nullptr);
+                    vc.push_back(nullptr);
+                    kcq.push_back(dalloc_t<int8_t>((size_t) g.n_head_kv * ctx * g.head_dim));
+                    vcq.push_back(dalloc_t<int8_t>((size_t) g.n_head_kv * ctx * g.head_dim));
+                    kcs.push_back(dalloc_t<uint16_t>((size_t) g.n_head_kv * ctx * (g.head_dim / K::Q36_KV_Q8_GROUP)));
+                    vcs.push_back(dalloc_t<uint16_t>((size_t) g.n_head_kv * ctx * (g.head_dim / K::Q36_KV_Q8_GROUP)));
+                } else {
+                    kc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
+                    vc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
+                    kcq.push_back(nullptr);
+                    vcq.push_back(nullptr);
+                    kcs.push_back(nullptr);
+                    vcs.push_back(nullptr);
+                }
                 for (auto* v : {&v_qkv, &v_hc, &v_alpha, &v_beta}) v->push_back(nullptr);
             } else {
                 conv.push_back(dalloc(C * (g.ssm_d_conv - 1)));
                 S.push_back(dalloc((size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size));
                 kc.push_back(nullptr);
                 vc.push_back(nullptr);
+                kcq.push_back(nullptr);
+                vcq.push_back(nullptr);
+                kcs.push_back(nullptr);
+                vcs.push_back(nullptr);
                 v_qkv.push_back(dalloc((size_t) kVerify * C));
                 v_hc.push_back(dalloc((size_t) kVerify * C));
                 v_alpha.push_back(dalloc((size_t) kVerify * g.ssm_v_heads));
@@ -1245,8 +1378,21 @@ struct Engine {
         if (m->has_mtp) {   // the MTP block's own K / V (an attention layer at index n_layers)
             conv.push_back(nullptr);
             S.push_back(nullptr);
-            kc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
-            vc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
+            if (kv_int8) {
+                kc.push_back(nullptr);
+                vc.push_back(nullptr);
+                kcq.push_back(dalloc_t<int8_t>((size_t) g.n_head_kv * ctx * g.head_dim));
+                vcq.push_back(dalloc_t<int8_t>((size_t) g.n_head_kv * ctx * g.head_dim));
+                kcs.push_back(dalloc_t<uint16_t>((size_t) g.n_head_kv * ctx * (g.head_dim / K::Q36_KV_Q8_GROUP)));
+                vcs.push_back(dalloc_t<uint16_t>((size_t) g.n_head_kv * ctx * (g.head_dim / K::Q36_KV_Q8_GROUP)));
+            } else {
+                kc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
+                vc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
+                kcq.push_back(nullptr);
+                vcq.push_back(nullptr);
+                kcs.push_back(nullptr);
+                vcs.push_back(nullptr);
+            }
             mtp_cat = dalloc(T * 2 * N);
             hmtp = dalloc(T * N);
             logits_m = dalloc((size_t) g.n_vocab);
@@ -1378,8 +1524,13 @@ struct Engine {
             apply(L.wq, xq, qg, T);
             apply(L.wk, xq, kx, T);
             apply(L.wv, xq, vx, T);
-            k_attn_prep<<<dim3(H + HKV, T), kThreads, 0, st>>>(qg, kx, vx, L.q_norm, L.k_norm, q, gate, kc[li], vc[li], H,
-                                                              HKV, HD, m->n_rot, dpos, ctx, m->rope_base, m->eps);
+            if (kv_int8)
+                k_attn_prep_q8<<<dim3(H + HKV, T), kThreads, 0, st>>>(qg, kx, vx, L.q_norm, L.k_norm, q, gate, kcq[li],
+                                                                       vcq[li], kcs[li], vcs[li], H, HKV, HD, m->n_rot,
+                                                                       dpos, ctx, m->rope_base, m->eps);
+            else
+                k_attn_prep<<<dim3(H + HKV, T), kThreads, 0, st>>>(qg, kx, vx, L.q_norm, L.k_norm, q, gate, kc[li], vc[li], H,
+                                                                  HKV, HD, m->n_rot, dpos, ctx, m->rope_base, m->eps);
             if (T > kGemmT) {
                 // a prompt chunk: scores = Q K^T and out = P V as FP16 GEMMs (FP32 accumulation, FP32 scores) per KV
                 // head (its query heads one strided batch over the shared K / V), the causal softmax in between writing
@@ -1389,7 +1540,11 @@ struct Engine {
                 const int tq = (int) std::max<int64_t>(1, std::min<int64_t>(T, (int64_t) (kAttScoreFloats / ((size_t) H * ldp))));
                 const int G = H / HKV;
                 const float one = 1.0f, zero = 0.0f;
-                k_kv_f16<<<grid1((int64_t) HKV * P * HD), kThreads, 0, st>>>(kc[li], vc[li], k16, v16, ctx, P, HD, HKV);
+                if (kv_int8)
+                    k_kv_f16_q8<<<grid1((int64_t) HKV * P * HD), kThreads, 0, st>>>(kcq[li], vcq[li], kcs[li], vcs[li], k16,
+                                                                                     v16, ctx, P, HD, HKV);
+                else
+                    k_kv_f16<<<grid1((int64_t) HKV * P * HD), kThreads, 0, st>>>(kc[li], vc[li], k16, v16, ctx, P, HD, HKV);
                 k_to_f16<<<grid1((int64_t) T * H * HD), kThreads, 0, st>>>(q, q16, (int64_t) T * H * HD);
                 for (int t0 = 0; t0 < T; t0 += tq) {
                     const int nt = std::min(tq, T - t0);
@@ -1429,8 +1584,13 @@ struct Engine {
                     const int nt = std::min(rows_per, T - t0);
                     const int nc = graph_mode ? n_chunk
                                               : (int) std::min<int64_t>(n_chunk, (p0 + t0 + nt + kChunkCells - 1) / kChunkCells);
-                    k_attn_part<<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q, kc[li], vc[li], dpos, t0, H, HKV, ctx,
-                                                                         1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl);
+                    if (kv_int8)
+                        k_attn_part_q8<<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q, kcq[li], vcq[li], kcs[li], vcs[li], dpos,
+                                                                                  t0, H, HKV, ctx, 1.0f / sqrtf((float) HD),
+                                                                                  n_chunk, pacc, pm, pl);
+                    else
+                        k_attn_part<<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q, kc[li], vc[li], dpos, t0, H, HKV, ctx,
+                                                                             1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl);
                     k_attn_merge<<<nt * H, HD, 0, st>>>(pacc, pm, pl, gate, dpos, t0, H, n_chunk, att);
                 }
             }
@@ -2349,7 +2509,7 @@ int strata::qwen35::run(int argc, char** argv) {
     double expert_vram = -1.0;
     bool warm = true;
     int expert_slots = 0;
-    bool serve_mode = false, graph = true;
+    bool serve_mode = false, graph = true, kv_int8 = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -2385,6 +2545,12 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--cpu-threads") cpu_threads = std::atoi(next().c_str());
         else if (a == "--expert-slots") expert_slots = std::atoi(next().c_str());
         else if (a == "--hybrid-rows") hybrid_rows = std::atoi(next().c_str());
+        else if (a == "--kv") {
+            const std::string v = next();
+            if (v == "int8") kv_int8 = true;
+            else if (v == "fp32") kv_int8 = false;
+            else { std::fprintf(stderr, "strata-q36: --kv takes int8 or fp32\n"); return 2; }
+        }
         else if (serve_mode && a.rfind("--", 0) == 0) {
             // serve passes the config's args plus a few of its own: one this engine does not have is said and skipped
             // (with its value), not fatal
@@ -2395,6 +2561,7 @@ int strata::qwen35::run(int argc, char** argv) {
         } else {
             std::fprintf(stderr,
                          "usage: strata-q36 --model GGUF [--max-context 32768] [--chunk 512] [--no-graph]\n"
+                         "       [--kv int8|fp32]\n"
                          "       (--serve | --tokens IDS [--n 64] [--force IDS] [--dump-full-logits F] | --bench-pp N "
                          "--bench-tg N)\n");
             return 2;
@@ -2421,6 +2588,7 @@ int strata::qwen35::run(int argc, char** argv) {
     }
     Engine E;
     E.use_graph = graph;
+    E.kv_int8 = kv_int8;
     if (chunk == 0) {
         // auto: 512 with every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
         // experts over PCIe once, so a bigger chunk pays that once for more tokens)
