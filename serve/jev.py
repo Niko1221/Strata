@@ -244,7 +244,6 @@ def _handle_image_direct(svc, req: dict, mode: str, qdefs: list, b64: str) -> tu
     AFTER the image so the readout position attends the full image."""
     data_uri = "data:image/png;base64," + b64 if not b64.startswith("data:") else b64
     answers, in_tokens, readouts = {}, 0, 0
-    timing_ms = {}
     # no outer fifo hold: svc.prepare takes its own engine turn for the encode,
     # and each generate() call is its own turn (same as the chat path)
     for qdef in qdefs:
@@ -253,14 +252,12 @@ def _handle_image_direct(svc, req: dict, mode: str, qdefs: list, b64: str) -> tu
                      "content": [{"type": "image", "source": data_uri},
                                  {"type": "text",
                                   "text": question_block(qdef)}]}]
-        t_pre = time.perf_counter()
         try:
             ids, _, max_new = svc.prepare(messages, tools=None,
                                           kwargs={"enable_thinking": False}, max_new=1)
         except (ValueError, OSError) as e:
             return 400, {"error": {"type": "invalid_request_error", "param": "image_b64",
                                    "message": f"vision: {e}"}}
-        t_gen0 = time.perf_counter()
         variants = [svc.tok.encode(lbl, parse_special=True)[:1]
                     for lbl in qdef["render_labels"]]
         cancel = threading.Event()
@@ -273,8 +270,6 @@ def _handle_image_direct(svc, req: dict, mode: str, qdefs: list, b64: str) -> tu
             if emb:
                 with contextlib.suppress(OSError):
                     Path(emb).unlink(missing_ok=True)
-        gen_ms = (time.perf_counter() - t_gen0) * 1000.0
-        pre_ms = (t_gen0 - t_pre) * 1000.0
         tokens = sorted({t for v in variants for t in v})
         row = svc.engine.final_row_logits(ids, tokens)
         try:
@@ -339,14 +334,12 @@ def handle_image(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     messages = [{"role": "user",
                  "content": [{"type": "image", "source": data_uri},
                              {"type": "text", "text": vprompt}]}]
-    t_pre = time.perf_counter()
     try:
         ids, _, max_new = svc.prepare(messages, tools=None,
                                       kwargs={"enable_thinking": False}, max_new=160)
     except (ValueError, OSError) as e:
         return 400, {"error": {"type": "invalid_request_error", "param": "image_b64",
                                "message": f"vision: {e}"}}
-    t_gen0 = time.perf_counter()
     cancel = threading.Event()
     out = []
     from serve.server import Detokenizer              # late import: server.py loads jev first
@@ -484,7 +477,6 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     v_mode = mode == "V"
     image_state = isinstance(req.get("state"), dict) and "image_summary" in req.get("state", {})
     answers, in_tokens, readouts = {}, 0, 0
-    timing_ms = {}
     with svc.fifo:                                       # the engine turn: one request at a time
         for qdef in qdefs:
             use_v = v_mode and qdef["type"] == "choice"   # X-Jev-Mode scopes to choice (donor :767)
@@ -547,13 +539,10 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                 return _err("state", "tokenization failed")
             variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
             cancel = threading.Event()
-            t_r0 = time.perf_counter()
             for _ in engine.generate(ids, 1, {}, cancel):
                 pass                                     # the one decode step; its logits row is the readout
             tokens = sorted({t for v in variants for t in v})
             row = engine.final_row_logits(ids, tokens)   # BROW: only the label tokens asked for
-            _readout_ms = (time.perf_counter() - t_r0) * 1000.0
-            timing_ms["readout"] = timing_ms.get("readout", 0.0) + _readout_ms  # decode+BROW per question
             try:
                 scores = readout_scores(row, variants)
             except ValueError as e:
@@ -578,5 +567,4 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
             in_tokens += len(ids)
             readouts += 1
     return 200, {"answers": answers,
-                 "usage": {"prompt_tokens": in_tokens, "readout_tokens": readouts,
-                           "timing_ms": {k: round(v, 1) for k, v in timing_ms.items()}}}
+                 "usage": {"prompt_tokens": in_tokens, "readout_tokens": readouts}}
