@@ -4,7 +4,7 @@
 html, body { height: 100%; }
 body { display: flex; flex-direction: column; overflow: hidden; }
 main { flex: 1; min-height: 0; display: flex; }
-.view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.view { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .view[hidden] { display: none; }
 .muted { color: var(--st-ink-muted); }
 .small { font-size: var(--st-fs-xs); }
@@ -25,6 +25,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-msg--assistant { align-self: flex-start; }
 .st-msg--assistant .st-bubble { width: 100%; }
 .st-msg--user .st-bubble { white-space: pre-wrap; overflow-wrap: anywhere; }
+.st-msg--assistant .st-bubble { overflow-wrap: anywhere; }
 .st-bubble > :first-child { margin-top: 0; }
 .st-bubble > :last-child { margin-bottom: 0; }
 .st-bubble p, .st-bubble ul, .st-bubble ol { margin: 0 0 var(--st-s-3); }
@@ -38,7 +39,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-bubble blockquote { margin: 0 0 var(--st-s-3); padding-left: var(--st-s-3); border-left: 3px solid var(--st-line);
                         color: var(--st-ink-muted); }
 .st-bubble hr { border: 0; border-top: 1px solid var(--st-line); margin: var(--st-s-4) 0; }
-.st-bubble table { border-collapse: collapse; margin: 0 0 var(--st-s-3); font-size: var(--st-fs-md); }
+.st-bubble table { border-collapse: collapse; margin: 0 0 var(--st-s-3); font-size: var(--st-fs-md); display: block; max-width: 100%; overflow-x: auto; }
 .st-bubble th, .st-bubble td { border: 1px solid var(--st-line); padding: 6px 10px; text-align: left; }
 .msg-images { display: flex; flex-wrap: wrap; gap: var(--st-s-2); justify-content: flex-end; }
 .msg-images img { max-width: 220px; max-height: 180px; border-radius: var(--st-r-md); border: 1px solid var(--st-line); }
