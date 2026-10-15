@@ -825,8 +825,11 @@ _SYSPROMPT_KEYS = {
 
 
 def sysprompt_counts(raw: dict) -> dict:
-    """The system prompt cache's counters as the card wants them, from the engine's own key=value names."""
-    out = {name: next((raw[a] for a in aliases if a in raw), 0) for name, aliases in _SYSPROMPT_KEYS.items()}
+    """The system prompt cache's counters as the card wants them, from the engine's own key=value names.  A counter
+    the engine did NOT report is None, never a 0: the authoritative line ("... shutdown: ..." with hits=/misses=/
+    tokens_saved=) is written only when the engine exits cleanly, and the engine usually does not, so "not reported"
+    is the common case and a silent 0 would read as a measurement of nothing."""
+    out = {name: next((raw[a] for a in aliases if a in raw), None) for name, aliases in _SYSPROMPT_KEYS.items()}
     out["raw"] = dict(raw)                              # whatever else the engine logged, verbatim
     return out
 
@@ -835,7 +838,8 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
     """#596: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
     --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back.
     Additive since the on-disk layer: a "disk" object (the spill tier's own figures) and a "system_prompt_cache"
-    object (F5's hits, misses, live variants, bytes, evictions and hash changes), both read from the same log.
+    object (F5's hits, misses, live variants, bytes, evictions and hash changes, from the log; plus the folder and
+    the byte budget the engine reports in its INFO line), both read from the engine.
     And a "destinations" list: the parking split by destination (RAM, and each on-disk tier that is configured),
     so the Monitor shows one row per destination instead of hardcoding them."""
     mib = info.get("conversation_cache_mib")
@@ -855,9 +859,13 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
             "max_age_days": d.get("max_age_days"), "spill_on": d.get("spill_on"),
             "kept": dict(d.get("kept") or {})}
     raw_sys = parked.get("sysprompt") or {}
-    sysprompt = {"enabled": bool(raw_sys or info.get("system_prompt_cache")
-                                 or info.get("system_prompt_cache_dir") or info.get("system_prompt_cache_mib")),
-                 "dir": info.get("system_prompt_cache_dir"), "budget_mib": info.get("system_prompt_cache_mib"),
+    # The engine's own INFO fields (this series): the folder it opened and the byte budget it runs with, AFTER its
+    # own defaults - the server cannot guess either from the config.  An engine that predates them leaves both None
+    # (unknown, never a fabricated 0), and "enabled" then rests on the log and the folder, not on a single field the
+    # engine happens not to emit (the same rule the disk tier above follows).
+    sys_dir, sys_mib = info.get("system_prompt_cache_dir"), info.get("system_prompt_cache_mib")
+    sysprompt = {"enabled": bool(raw_sys or sys_dir),
+                 "dir": sys_dir, "budget_mib": sys_mib,
                  "slots": raw_sys.get("slots") if raw_sys.get("slots") is not None
                           else info.get("system_prompt_cache_slots"),
                  "max_age_days": raw_sys.get("max_age_days"),
@@ -897,15 +905,17 @@ def admission_field(state: str, parked: dict):
     return "loading" if parked.get("loading") else "reading"
 
 
+_QUOTED_INFO = re.compile(r' ([a-z][a-z0-9_]*)="([^"]*)"')   # a folder, quoted because it can hold spaces
+
+
 def parse_info_line(info: dict, line: str) -> None:
-    """The engine's "INFO k=v k=v ..." line into `info` (int when numeric, else the bare string).  The disk tier's
-    conversation_cache_spill_dir is QUOTED because a folder can hold spaces, so it is lifted out before the
-    whitespace split; every other value is a bare token."""
-    m = re.search(r' conversation_cache_spill_dir="([^"]*)"', line)
-    if m:
-        info["conversation_cache_spill_dir"] = m.group(1)
-        line = line.replace(m.group(0), "")
-    for kv in line.split()[1:]:
+    """The engine's "INFO k=v k=v ..." line into `info` (int when numeric, else the bare string).  A QUOTED value is
+    a folder, which can hold spaces, so it is lifted out before the whitespace split: the disk tier's
+    conversation_cache_spill_dir and the system-prompt cache's folder both go out that way; every other value is a
+    bare token."""
+    for key, value in _QUOTED_INFO.findall(line):
+        info[key] = value
+    for kv in _QUOTED_INFO.sub(" ", line).split()[1:]:
         k, _, v = kv.partition("=")
         info[k] = int(v) if v.lstrip("-").isdigit() else v
 

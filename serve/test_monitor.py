@@ -291,6 +291,61 @@ class ConversationCacheCard(unittest.TestCase):
         for key in ("hits", "misses", "variants", "bytes", "evicted_by_age", "evicted_by_space", "hash_changes"):
             self.assertIn(key, view["system_prompt_cache"])
 
+    def test_the_system_prompt_folder_and_budget_come_from_the_info_line(self):
+        from serve.server import parse_info_line, conversation_cache_view
+        # the engine reports the folder it opened and the budget it runs with (after its own defaults) on the INFO
+        # line, QUOTED like the spill folder because a path can hold spaces
+        info = {}
+        parse_info_line(info, 'INFO context=16384 vram_free_mib=12000 conversation_cache_mib=8192 '
+                              'system_prompt_cache_dir="D:\\Sys Cache\\f5" system_prompt_cache_mib=2048 '
+                              'system_prompt_cache_slots=2 engine=0.1.99')
+        self.assertEqual(info["system_prompt_cache_dir"], r"D:\Sys Cache\f5")   # the folder's spaces kept
+        self.assertEqual(info["system_prompt_cache_mib"], 2048)                 # a number, not the bare string
+        sp = conversation_cache_view(info, [], {}, {})["system_prompt_cache"]   # no log yet: the fields alone say it
+        self.assertEqual((sp["enabled"], sp["dir"], sp["budget_mib"]),
+                         (True, r"D:\Sys Cache\f5", 2048))
+
+    def test_an_engine_without_the_system_prompt_fields_leaves_them_null(self):
+        from serve.server import ConvCacheLog, conversation_cache_view
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:                    # an engine from before the fields
+            log = Path(d) / "strata.log"
+            log.write_text("strata serve: system prompt cache: ready (2 variants, 300 MiB, slots=2, max-age=0 d, "
+                           "0 foreign kept, 0 stale kept, 0 orphans kept, 0 oversized kept)\n", encoding="utf-8")
+            st = ConvCacheLog().poll(str(log), 0)
+        sp = conversation_cache_view({"conversation_cache_mib": 8192}, [], {}, st)["system_prompt_cache"]
+        self.assertIsNone(sp["dir"])                                # unknown, not invented
+        self.assertIsNone(sp["budget_mib"])
+        self.assertTrue(sp["enabled"])                             # the log still proves the cache ran
+        self.assertEqual(sp["variants"], 2)                        # and a figure that did arrive is kept
+
+    def test_an_unreported_counter_is_not_a_measured_zero(self):
+        from serve.server import ConvCacheLog, conversation_cache_view
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            # the authoritative "shutdown:" line (hits=/misses=/tokens_saved=) is only written when the engine exits
+            # cleanly, and it usually does not: a counter it never reported is UNKNOWN, not a measured 0
+            log.write_text("strata serve: system prompt cache: ready (2 variants, 300 MiB, slots=2, max-age=0 d, "
+                           "0 foreign kept, 0 stale kept, 0 orphans kept, 0 oversized kept)\n"
+                           "strata serve: system prompt cache: hit 5000 tokens (2 variants)\n", encoding="utf-8")
+            sp = conversation_cache_view({"conversation_cache_mib": 8192}, [], {},
+                                         ConvCacheLog().poll(str(log), 0))["system_prompt_cache"]
+            self.assertIsNone(sp["tokens_saved"])                  # never reported: not displayed as 0
+            self.assertIsNone(sp["hash_changes"])
+            self.assertIsNone(sp["misses"])
+            self.assertEqual(sp["hits"], 1)                        # the hit line did arrive: a real count
+            self.assertEqual(sp["variants"], 2)
+            # and a counter the engine DID report as zero is a measurement: "unknown" and "measured zero" differ
+            log.write_text("strata serve: system prompt cache: ready (2 variants, 300 MiB, slots=2, max-age=0 d, "
+                           "0 foreign kept, 0 stale kept, 0 orphans kept, 0 oversized kept)\n"
+                           "strata serve: system prompt cache: shutdown: 2 variants, 300 MiB, hits=0 misses=0, "
+                           "tokens_saved=0, hash_changes=0, evicted_by_space=0, evicted_by_age=0\n", encoding="utf-8")
+            sp = conversation_cache_view({"conversation_cache_mib": 8192}, [], {},
+                                         ConvCacheLog().poll(str(log), 0))["system_prompt_cache"]
+            self.assertEqual((sp["hits"], sp["tokens_saved"]), (0, 0))     # measured zeros, not None
+            self.assertIsNotNone(sp["tokens_saved"])
+
     def test_the_card_is_on_the_page(self):
         web = Path(__file__).parent / "web"
         html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
