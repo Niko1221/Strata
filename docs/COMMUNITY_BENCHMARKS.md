@@ -64,6 +64,10 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-14: RTX 5070 Ti 16 GB (PCIe 4.0 x16), Ryzen 7 5800X3D without AVX-512, 80 GiB RAM, Linux](../bench/results/2026-10-14-community-rtx-5070-ti-swift-iq3_s/README.md):
+  Strata 0.1.44.1 source build (CUDA 13.1), Swift 1.5 IQ3_S at a 1,048,576-token YaRN context (3,132 cached experts);
+  `strata_bench.py --long`: chat decode 61.2 tok/s, prompt 1,987 / 3,122 / 3,054 tok/s at 4K / 16K / 32K; 256-token
+  decode 72.7 / 70.5 / 66.3 tok/s at 4K / 32K / 128K; needles 9/9 from 32K to 1,034,541 tokens. One engine session, with clocks and power.
 
 ## Run the benchmark
 
