@@ -4683,8 +4683,7 @@ void launch_dequant_gu_bounded(const void* gate, const void* up, uint32_t n_ff,
     // keeps block + per_row < 2^23, so the correction product cannot overflow.
     const uint32_t reciprocal = uint32_t(((uint64_t{1} << 32) + per_row - 1) / per_row);
     const size_t groups = (blocks + subgroups - 1) / subgroups;
-    const auto properties = sycl::ext::oneapi::experimental::properties{
-        sycl::ext::oneapi::experimental::use_root_sync};
+    const auto properties = sycl::ext::oneapi::experimental::properties{};
     strata::q_of(stream)->parallel_for<dpct_kernel_name<Kernel, dpct_kernel_scalar<Type>>>(
         sycl::nd_range<3>(sycl::range<3>(1, 2, groups * subgroups * 32),
                           sycl::range<3>(1, 1, subgroups * 32)), properties,
