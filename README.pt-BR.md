@@ -66,6 +66,7 @@ Experimental, escrito e testado por membros da comunidade nas próprias máquina
 
 - **Placas de vídeo mais antigas** (Tesla P40 / V100, GTX 10, Radeon VII / MI50, RX 6700 XT, RX 5500 XT): [Older GPUs](docs/OLDER_GPUS.md).
 - **Intel Arc**, compilado a partir do código-fonte no Linux: [Intel Arc](docs/INTEL_ARC.md).
+- **Macs com Apple Silicon (M1 a M5)**, compilados a partir do código-fonte pelo `./setup.sh` (o motor Metal): [Mac](docs/MAC.md).
 - **AMD Ryzen AI Max (Strix Halo)**, compilado a partir do código-fonte no Linux: [Strix Halo](docs/STRIX_HALO.md).
 - **Processadores mais antigos sem AVX2**: funcionam, mas devagar. [Older CPUs](docs/INSTALL.md#older-cpus-experimental).
 
@@ -110,6 +111,8 @@ Se o download parar, rode de novo: ele continua de onde parou. Seu navegador abr
 **Da próxima vez**, rode `START-HERE.bat` (ou `./setup.sh`) de novo. Ele inicia na hora e não baixa nada duas
 vezes. Feche a janela para parar o modelo. `UPDATE.bat` (`./update.sh`) atualiza o Strata sem iniciá-lo.
 Atualização, Docker, várias placas, onde ficam os arquivos e todas as opções: [docs/INSTALL.md](docs/INSTALL.md).
+
+**É rápido no seu PC?** Rode `BENCH.bat` (`./bench.sh`): uns 5-10 minutos. Ele mede o chat, prompts de 4K/16K e uma sessão no estilo de um agente com as suas próprias configurações, e escreve um relatório para compartilhar ([como](docs/COMMUNITY_BENCHMARKS.md#run-the-benchmark)).
 
 ## Qual modelo devo escolher?
 

@@ -65,6 +65,7 @@ NVIDIA：Q2_0 用的是引擎 0.1.36，其他各行用的是 0.1.26（4K 回答�
 
 - **较老的显卡**（Tesla P40 / V100、GTX 10、Radeon VII / MI50、RX 6700 XT、RX 5500 XT）：[较老的 GPU](docs/OLDER_GPUS.md)。
 - **Intel Arc**，在 Linux 上从源码构建：[Intel Arc](docs/INTEL_ARC.md)。
+- **Apple 芯片的 Mac（M1 到 M5）**，由 `./setup.sh` 从源码构建（Metal 引擎）：[Mac](docs/MAC.md)。
 - **AMD Ryzen AI Max（Strix Halo）**，在 Linux 上从源码构建：[Strix Halo](docs/STRIX_HALO.md)。
 - **不支持 AVX2 的老处理器**：能用，但很慢。[较老的 CPU](docs/INSTALL.md#older-cpus-experimental)。
 
@@ -106,6 +107,8 @@ NVIDIA 和 AMD 的步骤完全一样。安装程序会识别你的显卡，并�
 **下次使用时**，再运行一次 `START-HERE.bat`（或 `./setup.sh`）。它会马上启动，已下载的东西不会重复下载。关闭它的窗口就能停止模型。
 `UPDATE.bat`（`./update.sh`）只更新 Strata，不启动。更新、Docker、多张显卡、文件存放位置以及所有选项：
 [docs/INSTALL.md](docs/INSTALL.md)。
+
+**在你的电脑上快不快？** 运行 `BENCH.bat`（`./bench.sh`）：大约 5-10 分钟。它用你自己的设置测量聊天、4K/16K 提示和一次智能体式的会话，并写出一份可以分享的报告（[方法](docs/COMMUNITY_BENCHMARKS.md#run-the-benchmark)）。
 
 ## 该选哪个模型
 

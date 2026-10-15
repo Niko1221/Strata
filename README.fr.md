@@ -66,6 +66,7 @@ Expérimental, écrit et testé par des membres de la communauté sur leurs prop
 
 - **Cartes graphiques plus anciennes** (Tesla P40 / V100, GTX 10, Radeon VII / MI50, RX 6700 XT, RX 5500 XT) : [Older GPUs](docs/OLDER_GPUS.md).
 - **Intel Arc**, compilé depuis les sources sous Linux : [Intel Arc](docs/INTEL_ARC.md).
+- **Mac Apple Silicon (M1 à M5)**, compilés depuis les sources par `./setup.sh` (le moteur Metal) : [Mac](docs/MAC.md).
 - **AMD Ryzen AI Max (Strix Halo)**, compilé depuis les sources sous Linux : [Strix Halo](docs/STRIX_HALO.md).
 - **Processeurs plus anciens sans AVX2** : ça marche, mais lentement. [Older CPUs](docs/INSTALL.md#older-cpus-experimental).
 
@@ -110,6 +111,8 @@ ouvre l'application Strata à l'adresse `http://127.0.0.1:8080`.
 **La fois suivante**, relancez `START-HERE.bat` (ou `./setup.sh`). Il démarre tout de suite et ne télécharge rien
 deux fois. Fermez sa fenêtre pour arrêter le modèle. `UPDATE.bat` (`./update.sh`) met Strata à jour sans le démarrer.
 Mises à jour, Docker, plusieurs cartes, emplacement des fichiers et toutes les options : [docs/INSTALL.md](docs/INSTALL.md).
+
+**Est-ce rapide sur votre PC ?** Lancez `BENCH.bat` (`./bench.sh`) : environ 5-10 minutes. Il mesure le chat, des prompts de 4K/16K et une session de type agent avec vos propres réglages, et écrit un rapport à partager ([comment](docs/COMMUNITY_BENCHMARKS.md#run-the-benchmark)).
 
 ## Quel modèle choisir ?
 
