@@ -1,4 +1,5 @@
 #include "strata/core/native_head.hpp"
+#include "strata/kernels/bf16_gemv.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -25,7 +26,7 @@ void NativeHead::unload() {
     weights_ = nullptr;
 }
 
-bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err) {
+bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err, bool allow_bf16) {
     if (loaded()) { err = "native head is already loaded"; return false; }
     if (n_in <= 0 || n_out <= 0 || n_in > INT_MAX || n_out > INT_MAX || n_in % 256) {
         err = "native head requires positive int32 dimensions and whole 256-value rows";
@@ -40,12 +41,14 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
         size_t at = 0;
         const strata::TensorInfo* tensor = model.find("output.weight", &at);
         const strata::GgufFile& gguf = model.shard(at);
-        if (!tensor || !strata::kernels::native_mmvq_supported((int) tensor->type) || tensor->shape.size() != 2 ||
+        if (!tensor || !(strata::kernels::native_mmvq_supported((int) tensor->type) ||
+                         (allow_bf16 && tensor->type == 30)) || tensor->shape.size() != 2 ||
             tensor->shape[0] != (uint64_t) n_in || tensor->shape[1] != (uint64_t) n_out) {
             err = "native head: expected a natively supported output.weight with the canonical head dimensions";
             return false;
         }
-        const uint64_t bytes = strata::kernels::native_mmvq_weight_bytes((int) tensor->type, (int) n_in, (int) n_out);
+        const uint64_t bytes = tensor->type == 30 ? (uint64_t) n_in * n_out * 2
+            : strata::kernels::native_mmvq_weight_bytes((int) tensor->type, (int) n_in, (int) n_out);
         const uint64_t payload = gguf.file_size() - gguf.data_start();
         if (tensor->offset > payload || bytes > payload - tensor->offset) {
             err = "native head: truncated output.weight payload";
@@ -89,7 +92,9 @@ bool NativeHead::run(const float* mixed, float* logits, void* stream, std::strin
         return false;
     }
     try {
-        if (type_ == 13) {
+        if (type_ == 30) {
+            strata::kernels::bf16_gemv_fp32_mmvf(mixed, (const uint16_t*) weights_, logits, n_in_, n_out_, stream);
+        } else if (type_ == 13) {
             strata::kernels::native_q5_k_f32(weights_, mixed, scratch_, logits, n_in_, n_out_, 1, stream);
         } else {
             strata::kernels::native_quantize_q8_1(mixed, scratch_, n_in_, 1, stream);

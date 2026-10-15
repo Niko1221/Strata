@@ -51,10 +51,8 @@ sys.path.insert(0, str(ROOT))
 MIN_GAIN = 0.03                    # a setting must beat the default by this much to be kept
 PCIE_FRACS = (0.0, 0.2, 0.35, 0.55, 0.75, 0.9, 1.0)   # 1.0: every miss over PCIe, the CPU pool gets no expert
 SPEC_MIN_PS = (0.3, 0.5, 0.7)
-SWEEP_ROUNDS = 3                   # how many times the sweep visits each value (see `sweep`)
 DFLASH_BLOCKS = (1, 2, 3, 4, 5, 6, 7)
-
-
+SWEEP_ROUNDS = 3                   # how many times the sweep visits each value (see `sweep`)
 # the adaptive tier's candidates (every, swaps, decay) against the engine's own (None): swapping more and remembering
 # longer, the rest of the set as the engine has it
 # HIP: the shared-expert stream fork, off (the HIP default) against on; an engine environment variable, not an argument
@@ -348,12 +346,10 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
             return out
 
         def sweep_blocks(f, p):
-            rates = {}
-            for k in blocks:
-                rates[k] = [s.rate(tune(f, p, k))]
-                say(f"    DFlash forward block {k}: {rates[k][0]:.1f} tok/s")
+            rates = sweep(s, blocks, {"pcie_frac": f, "spec_min_p": p},
+                          "dflash_block", "DFlash forward block", say)
             block_sweeps.append({"pcie_frac": f, "spec_min_p": p, "rates": {str(k): v for k, v in rates.items()}})
-            return max(rates, key=lambda k: rates[k][0])
+            return max(rates, key=lambda k: statistics.median(rates[k]))
 
         if blocks:
             best_block = sweep_blocks(d_pcie, d_minp)
@@ -369,8 +365,8 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
         best_minp = max(by_minp, key=lambda k: statistics.median(by_minp[k]))
         if blocks:
             best_block = sweep_blocks(best_pcie, best_minp)
+        # 3. the winner against the default, interleaved, the same number of rounds
         dflt, cand = (round(d_pcie, 2), round(d_minp, 2), d_block), (best_pcie, best_minp, best_block)
-
         confirm = {dflt: [], cand: []}
         confirm_total = SWEEP_ROUNDS * 2 if cand != dflt else 1
         _progress(progress, "confirmation", 0, confirm_total)

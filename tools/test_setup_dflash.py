@@ -81,6 +81,25 @@ class ConfigKey(unittest.TestCase):
 
 
 class DrafterChoice(unittest.TestCase):
+    def test_original_head_choice_and_saved_arguments(self):
+        with patch.object(setup, "say"), patch.object(setup, "ask", return_value="1"):
+            self.assertEqual(setup.choose_dflash_head(None, True), "target")
+        with patch.object(setup, "say"), patch.object(setup, "ask", return_value="2"):
+            self.assertEqual(setup.choose_dflash_head(None, False), "original")
+        with patch.object(setup, "ask", side_effect=AssertionError("explicit choice must not prompt")):
+            self.assertEqual(setup.choose_dflash_head("original", True), "original")
+        default = setup.drafter_args("draft.gguf", None)
+        self.assertNotIn("--dflash-head", default)
+        args = setup.drafter_args("draft.gguf", None, dflash_head="bf16.gguf")
+        self.assertEqual(args[args.index("--dflash-head") + 1], "bf16.gguf")
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "strata-iq3_xxs.json"
+            cfg.write_text(json.dumps({"args": args, "drafter": "dflash", "dflash_head": "original"}))
+            self.assertEqual(setup.choices_from_config(cfg)["dflash_head"], "original")
+            new = {"args": default, "drafter": "dflash"}
+            setup.carry_over(json.loads(cfg.read_text()), new)
+            self.assertNotIn("dflash_head", new)
+
     def test_defaults_and_explicit_choices(self):
         with patch.object(setup, "say"), patch.object(setup, "ask", return_value="1"):
             self.assertEqual(setup.choose_drafter(None, None, None, True), ("mtp", "original"))

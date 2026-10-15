@@ -521,7 +521,7 @@ bool DFlashDrafter::load_head(const std::string& path, std::string& err) {
     if (owned_head_) { err = "dflash: draft head already loaded"; return false; }
     const DFlashGeometry& dg = artifact_.geom();
     auto candidate = std::make_unique<NativeHead>();
-    if (!candidate->load({path}, dg.hidden, dg.vocab, err)) return false;
+    if (!candidate->load({path}, dg.hidden, dg.vocab, err, true)) return false;
     vram_ += candidate->weight_bytes() + strata::kernels::native_q8_1_bytes((int) dg.hidden, 1);
     std::fprintf(stderr, "dflash: draft-only head %s, type %d, +%.1f MiB weights; verifier head unchanged\n",
                  path.c_str(), candidate->type(), candidate->weight_bytes() / 1048576.0);
@@ -554,7 +554,9 @@ bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::str
               " rows, less than the artifact's vocabulary " + std::to_string(dg.vocab);
         return false;
     }
-    if (!vocab_path.empty()) {
+    if (!vocab_path.empty() && head_->type() == 30)
+        std::fprintf(stderr, "dflash: original BF16 head uses the full vocabulary; --dflash-vocab is ignored\n");
+    if (!vocab_path.empty() && head_->type() != 30) {
         switch (head_->type()) {
             case 2: case 6: case 8: case 11: case 12: case 13: case 14: case 20: case 23: case 42: break;
             default: err = "dflash: this head type has no indexed kernel; omit --dflash-vocab"; return false;
@@ -1092,14 +1094,16 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         const bool output_parity = parity_want(cycle_);
         {
             DFlashSection s("out.quantize");
-            native_quantize_q8_1(xn_, xq_, (int) N, K, cs_);
+            if (head_->type() != 30) native_quantize_q8_1(xn_, xq_, (int) N, K, cs_);
         }
-        if (output_parity)
+        if (output_parity && head_->type() != 30)
             parity_dump(parity_dir_, "head_act_q8", (const float*) xq_,
                         strata::kernels::native_q8_1_bytes((int) N, K) / 4, cs_);
         {
             DFlashSection s("out.head");
-            if (head_ids_) native_mmvq_indexed(head_->type(), head_->weights(), xq_, logits_, (int) N, vocab, K, head_ids_, cs_);
+            if (head_->type() == 30) bf16_gemv_fp32_mmvf_multi(xn_, N, (const uint16_t*) head_->weights(),
+                                                                         logits_, vocab, N, vocab, K, cs_);
+            else if (head_ids_) native_mmvq_indexed(head_->type(), head_->weights(), xq_, logits_, (int) N, vocab, K, head_ids_, cs_);
             else native_mmvq(head_->type(), head_->weights(), xq_, logits_, (int) N, vocab, K, cs_);
         }
         if (output_parity) {

@@ -259,7 +259,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -562,7 +562,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -858,7 +858,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": false,
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -1122,7 +1122,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -1384,7 +1384,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": false,
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
