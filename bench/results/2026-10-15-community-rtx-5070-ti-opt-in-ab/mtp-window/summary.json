@@ -1,0 +1,139 @@
+{
+ "config": "<strata>/strata-swift-iq3_s.json",
+ "arms": [
+  "win32k:",
+  "win8k:xargs=--mtp-window;8192"
+ ],
+ "rounds": [
+  {
+   "round": 0,
+   "arm": "win32k",
+   "ready_s": 30.5,
+   "pooled_decode": 79.81,
+   "median_decode": 79.94999999999999,
+   "long_decode": 66.8,
+   "long_prompt": 3050.0,
+   "long_prompt_n": 63147
+  },
+  {
+   "round": 0,
+   "arm": "win8k",
+   "ready_s": 30.4,
+   "pooled_decode": 79.85,
+   "median_decode": 79.65,
+   "long_decode": 68.1,
+   "long_prompt": 3069.7,
+   "long_prompt_n": 63147
+  },
+  {
+   "round": 1,
+   "arm": "win8k",
+   "ready_s": 30.5,
+   "pooled_decode": 79.09,
+   "median_decode": 78.35,
+   "long_decode": 69.1,
+   "long_prompt": 3080.6,
+   "long_prompt_n": 63147
+  },
+  {
+   "round": 1,
+   "arm": "win32k",
+   "ready_s": 30.4,
+   "pooled_decode": 80.06,
+   "median_decode": 79.9,
+   "long_decode": 66.1,
+   "long_prompt": 3074.7,
+   "long_prompt_n": 63147
+  },
+  {
+   "round": 2,
+   "arm": "win32k",
+   "ready_s": 30.5,
+   "pooled_decode": 80.42,
+   "median_decode": 78.6,
+   "long_decode": 61.6,
+   "long_prompt": 3080.4,
+   "long_prompt_n": 63147
+  },
+  {
+   "round": 2,
+   "arm": "win8k",
+   "ready_s": 30.4,
+   "pooled_decode": 80.12,
+   "median_decode": 79.9,
+   "long_decode": 68.3,
+   "long_prompt": 3065.6,
+   "long_prompt_n": 63147
+  },
+  {
+   "round": 3,
+   "arm": "win8k",
+   "ready_s": 30.4,
+   "pooled_decode": 79.77,
+   "median_decode": 79.44999999999999,
+   "long_decode": 65.6,
+   "long_prompt": 3085.5,
+   "long_prompt_n": 63147
+  },
+  {
+   "round": 3,
+   "arm": "win32k",
+   "ready_s": 30.4,
+   "pooled_decode": 79.45,
+   "median_decode": 80.30000000000001,
+   "long_decode": 69.1,
+   "long_prompt": 3067.8,
+   "long_prompt_n": 63147
+  }
+ ],
+ "medians": {
+  "win32k": {
+   "median": {
+    "pooled_decode": 79.935,
+    "long_decode": 66.44999999999999,
+    "long_prompt": 3071.25
+   },
+   "range": {
+    "pooled_decode": [
+     79.45,
+     80.42
+    ],
+    "long_decode": [
+     61.6,
+     69.1
+    ],
+    "long_prompt": [
+     3050.0,
+     3080.4
+    ]
+   }
+  },
+  "win8k": {
+   "median": {
+    "pooled_decode": 79.81,
+    "long_decode": 68.19999999999999,
+    "long_prompt": 3075.1499999999996
+   },
+   "range": {
+    "pooled_decode": [
+     79.09,
+     80.12
+    ],
+    "long_decode": [
+     65.6,
+     69.1
+    ],
+    "long_prompt": [
+     3065.6,
+     3085.5
+    ]
+   }
+  }
+ },
+ "paired_pct_B_vs_A": [
+  0.05,
+  -1.21,
+  -0.37,
+  0.4
+ ]
+}
