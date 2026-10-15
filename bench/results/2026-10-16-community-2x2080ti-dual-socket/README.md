@@ -31,6 +31,21 @@ throughput with `--batch`, and a same-workload comparison against vLLM on the sa
 - Quality: the 31-case suite (instruction following, Chinese, math, long-context needle 128K, tool
   calls, vision) run against the final config.
 
+## Canonical suite (`tools/strata_bench.py --long --clients 4 --runs 3`)
+
+The repo's own benchmark tool, run against this install on the final config (2-GPU layer split +
+`--batch 4 --batch-groups 2`, engine 0.1.43.1). Medians with ranges; every request is in
+`results.json`.
+
+| Configuration | Prompt tok/s | Decode tok/s | TTFT s |
+| --- | ---: | ---: | ---: |
+| short chat | — | 42.8 (31.9–49.7) | 0.67 |
+| 4K prompt, fresh | 678.6 (618.7–683.8) | — | 5.96 |
+| 16K prompt, fresh | 1102.4 (1080.2–1111.1) | — | 14.62 |
+| 32K prompt, fresh | 1298.1 (1294.1–1303.7) | — | 24.76 |
+| agent session, follow-up turns | — | 50.3 (39.0–65.5) | 5.26 |
+| 4 clients, 128 new tokens each | — | 41.3 total (37.6–45.5) | 2.68 p50 |
+
 ## Results — single GPU vs layer split (`"gpu": [0, 1]`)
 
 | metric | single GPU | layer split |
