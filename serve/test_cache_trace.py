@@ -2,6 +2,21 @@ import unittest
 from serve.cache_trace import snapshot
 
 class CacheTrace(unittest.TestCase):
+    def test_prefix_boundary_busy_and_expired(self):
+        result=snapshot([1,2,3,4], [[1,2],[1,7],[1,2,3,4,5],[]],
+                        [False,True,False,False],[True,True,False,True],[0,99,99,0],100)
+        self.assertEqual([r['common_prefix_tokens'] for r in result['slots']], [2,1,4,0])
+        self.assertEqual([r['full_prefix_match'] for r in result['slots']], [True,False,False,False])
+        self.assertTrue(result['slots'][0]['expired'])
+        self.assertTrue(result['slots'][1]['busy'])
+        self.assertFalse(result['slots'][2]['valid_hint'])
+        self.assertNotIn('prompt', result)
+    def test_matches_equal_prefixes_at_every_boundary(self):
+        held=list(range(300))
+        for i in range(301):
+            prompt=held[:i]+[-1]
+            result=snapshot(prompt,[held],[False],[True],[0],100)
+            self.assertEqual(result['slots'][0]['common_prefix_tokens'],i)
 
     def test_resume_after_main_source_is_actual_reuse(self):
         import queue, threading

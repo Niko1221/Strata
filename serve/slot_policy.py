@@ -1,28 +1,70 @@
-"""The placement policy interface for STRATA_SLOT_CACHE_AFFINITY=1: what serve/server.py (pick_slot, _claim_park,
-slots_view) and serve/cache_trace.py call.  No policy is here - which idle slot a request runs in, which
-history is given up, how long one is protected and where the solo path's conversation is parked are a policy's
-choice.  Without one, STRATA_SLOT_CACHE_AFFINITY=1 and STRATA_CACHE_TRACE=1 raise NotImplementedError; with both
-off nothing here runs (configure() and settings() aside)."""
+"""Cache retention and pipelined placement policy for STRATA_SLOT_CACHE_AFFINITY=1; no engine or I/O."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
+MAX_CACHE_TOKENS = 262144
+# Tunables (environment, read by configure() when the engine starts; the menu sets them per profile under
+# config_overrides.env).  Defaults are the values the policy was specified with.
+PROTECTION_WAIT_S = 5.0      # STRATA_SLOT_PROTECT_WAIT_S: wait when every idle history is still protected
+PARK_MIN_TOKENS = 8192       # STRATA_SLOT_PARK_MIN_TOKENS: a shorter main-session conversation is not parked
+EXPIRED_KEEP_SCORE = 0.01    # STRATA_SLOT_EXPIRED_KEEP_SCORE: an expired history scoring at least this (retention at
+                             # freshness 0; 0.01 is about 2.5K tokens) is overwritten only when nothing else is free
+TTL_MAX_S = 120.0            # STRATA_SLOT_TTL_MAX_S: protection at 262144 tokens; the whole curve scales with it
+_TTL_SHAPE = ((0, 0.0), (500, 0.1), (2000, 2.0), (8000, 10.0),
+              (32000, 45.0), (50000, 65.0), (100000, 90.0), (MAX_CACHE_TOKENS, 120.0))
+TTL_POINTS = _TTL_SHAPE
 
 
 def configure(env) -> dict:
-    """Called by StrataEngine with the engine's environment: read the policy's tunables, return settings()."""
+    """Read the tunables from `env` (the engine's environment); bad or missing values keep the defaults."""
+    global PROTECTION_WAIT_S, PARK_MIN_TOKENS, TTL_MAX_S, TTL_POINTS, EXPIRED_KEEP_SCORE
+
+    def value(name, default):
+        try:
+            v = float((env or {}).get(name, default))
+            return v if math.isfinite(v) and v >= 0 else default
+        except (TypeError, ValueError):
+            return default
+    TTL_MAX_S = value("STRATA_SLOT_TTL_MAX_S", 120.0)
+    EXPIRED_KEEP_SCORE = value("STRATA_SLOT_EXPIRED_KEEP_SCORE", 0.01)
+    TTL_POINTS = tuple((n, s * TTL_MAX_S / 120.0) for n, s in _TTL_SHAPE)
+    PROTECTION_WAIT_S = value("STRATA_SLOT_PROTECT_WAIT_S", 5.0)
+    PARK_MIN_TOKENS = int(value("STRATA_SLOT_PARK_MIN_TOKENS", 8192))
     return settings()
 
 
 def settings() -> dict:
-    """The tunables in force (/metrics live.slot_policy)."""
-    return {}
+    return {"ttl_max_s": TTL_MAX_S, "protect_wait_s": PROTECTION_WAIT_S,
+            "park_min_tokens": PARK_MIN_TOKENS, "expired_keep_score": EXPIRED_KEEP_SCORE}
+
+
+def cache_ttl(tokens: int) -> float:
+    n = min(MAX_CACHE_TOKENS, max(0, tokens))
+    for (lo, a), (hi, b) in zip(TTL_POINTS, TTL_POINTS[1:]):
+        if n <= hi:
+            return a + (b - a) * (n - lo) / (hi - lo)
+    return TTL_POINTS[-1][1]
+
+
+def stale_retention(tokens: int) -> float:
+    """The retention score at freshness 0 (the same formula): orders expired histories - lowest is reclaimed first."""
+    n = min(MAX_CACHE_TOKENS, max(0, tokens))
+    return (n / 50000.0) ** 0.7 * (n / (n + 2000.0)) ** 2 * 0.25
 
 
 def cache_state(tokens: int, last_used: float, now: float, valid: bool = True) -> dict:
-    """An idle history of `tokens`, last used at `last_used`: a dict with tokens, ttl_s, age_s, expired, valid,
-    retention, overwrite_score (/metrics live.slots and serve/cache_trace.py show it)."""
-    raise NotImplementedError("serve/slot_policy.py has no placement policy")
+    age = max(0.0, now - last_used)
+    ttl = cache_ttl(tokens)
+    expired = tokens == 0 or age >= ttl or not valid
+    # A 50K history has substantial value. The additional small-history factor makes
+    # tiny probes much cheaper to replace without flattening all medium histories.
+    n = min(MAX_CACHE_TOKENS, max(0, tokens))
+    freshness = max(0.0, 1.0 - age / ttl) if ttl else 0.0
+    retention = 0.0 if expired else (n / 50000.0) ** 0.7 * (n / (n + 2000.0)) ** 2 * (0.25 + 0.75 * freshness)
+    return {"tokens": tokens, "ttl_s": ttl, "age_s": age, "expired": expired,
+            "valid": valid, "retention": retention, "overwrite_score": 1.0 / (1.0 + retention)}
 
 
 @dataclass(frozen=True)
@@ -45,7 +87,7 @@ def reliable_flags(busy: list[bool], valid: list[bool] | None, group_size: int, 
 
 def superseded_slots(held: list[list[int]], busy: list[bool], reliable: list[bool]) -> set[int]:
     """Idle histories that are the start of another idle slot's history: the conversation moved on in that other
-    slot, so this copy saves nothing it does not.  They count as empty (no protection)."""
+    slot, so this copy saves nothing it does not.  They count as empty (no protection, no wait)."""
     out = set()
     for b, h in enumerate(held):
         if h and not busy[b]:
@@ -57,20 +99,114 @@ def superseded_slots(held: list[list[int]], busy: list[bool], reliable: list[boo
     return out
 
 
+def _blank(held, busy, used, now, reliable):
+    superseded = superseded_slots(held, busy, reliable)
+    states = [cache_state(len(h), used[b], now, reliable[b] and b not in superseded) for b, h in enumerate(held)]
+    # Nothing worth keeping: no tokens, known invalid, or a superseded copy.  An expired history counts as empty for
+    # the protection rules, but it is still a cache (it can match until overwritten), so it is overwritten only after
+    # these - the one with the lowest score first.
+    blank = {b for b in range(len(held)) if not held[b] or not reliable[b] or b in superseded}
+    return states, blank
+
+
 def park_destination(main: list[int], busy: list[bool], held: list[list[int]], used: list[float],
                      order: list[int], group_size: int, now: float, valid: list[bool] | None = None,
                      padding_safe: bool = False, exclude=()) -> int | None:
-    """The idle slot to keep the main session's conversation `main` in before another request replaces it (the
-    engine's park=B), never one in `exclude`; None: do not park."""
-    raise NotImplementedError("serve/slot_policy.py has no placement policy")
+    """An idle slot to keep the main session's conversation in before another request replaces it (engine park=):
+    its own older copy, else a blank slot of the least loaded group.  Never another conversation's history - parking
+    must not evict anything.  None: nowhere to keep it (or it is already kept)."""
+    if not padding_safe or not main:
+        return None
+    gs = max(1, group_size)
+    reliable = reliable_flags(busy, valid, gs, padding_safe)
+    for b, h in enumerate(held):   # already kept (all but a short tail) - in an idle slot or one decoding it
+        if h and len(h) * 10 >= len(main) * 9 and (main[:len(h)] == h or h[:len(main)] == main):
+            return None
+    _, blank = _blank(held, busy, used, now, reliable)
+    positions = {b: i for i, b in enumerate(order)}
+    loads = {g: sum(busy[g:g + gs]) for g in range(0, len(busy), gs)}
+    own = [b for b in order if not busy[b] and b not in exclude and held[b] and reliable[b] and
+           len(held[b]) < len(main) and main[:len(held[b])] == held[b]]
+    if own:
+        return max(own, key=lambda b: (len(held[b]), -positions[b]))
+    free = [b for b in order if not busy[b] and b not in exclude and b in blank]
+    return min(free, key=lambda b: (loads[b - b % gs], positions[b])) if free else None
 
 
 def place(prompt: list[int], busy: list[bool], held: list[list[int]], used: list[float],
           order: list[int], group_size: int, now: float, valid: list[bool] | None = None,
-          prefill_rate: float | None = None, padding_safe: bool = False) -> Placement:
-    """The idle slot `prompt` runs in (the caller holds slot_cv).  busy/held/used/valid: each slot's state (held: the
-    tokens it holds, used: when it was last used, valid: the server's knowledge that its state is intact); order: the
-    slots in the order that spreads requests over the pipeline groups; group_size: slots per group; prefill_rate: the
-    observed prompt rate (tok/s); padding_safe: the engine runs a group's active slots only (INFO
-    slot_padding_safe=1).  A busy slot is never returned; Placement(None) only when every slot is busy."""
-    raise NotImplementedError("serve/slot_policy.py has no placement policy")
+          prefill_rate: float | None = None, allow_eviction: bool = True,
+          padding_safe: bool = False) -> Placement:
+    free = [b for b in order if not busy[b]]
+    if not free:
+        return Placement(None)
+    gs = max(1, group_size)
+    validity = valid if valid is not None else [True] * len(busy)
+    # Conservative current-window check plus remembered native-line invalidations.
+    reliable = reliable_flags(busy, validity, gs, padding_safe)
+    states, blank = _blank(held, busy, used, now, reliable)
+    matches = {b: len(held[b]) for b in free if reliable[b] and held[b] and
+               len(held[b]) < len(prompt) and prompt[:len(held[b])] == held[b]}
+    best = max(matches.values(), default=0)
+    # Near = at most 2% of the best prefix, 1 second of observed prefill, and 4096 tokens.
+    rate = prefill_rate if prefill_rate and math.isfinite(prefill_rate) and prefill_rate > 0 else 1000.0
+    near = int(min(best * 0.02, rate, 4096))
+    sources = [b for b, n in matches.items() if best - n <= near]
+    loads = {g: sum(busy[g:g + gs]) for g in range(0, len(busy), gs)}
+    positions = {b: i for i, b in enumerate(order)}
+
+    def collateral(b):
+        if padding_safe:
+            return 0.0
+        # Starting an upper row can pad over a lower idle protected history. A matching
+        # ancestor is the same conversation, so its displacement does not lose another chat.
+        return sum(states[x]["retention"] for x in range(b - b % gs, b)
+                   if not busy[x] and x not in matches)
+
+    def loss(b):
+        return (0.0 if b in matches else states[b]["retention"]) + collateral(b)
+
+    def pipeline(b):
+        g0 = b - b % gs
+        high = max([x - g0 for x in range(g0, g0 + gs) if busy[x]] + [-1])
+        extra_rows = 1 if padding_safe else max(0, b - g0 - high)
+        return loads[g0], extra_rows, positions[b]
+
+    if sources:
+        # Cache source and execution destination are separate: the native engine restores the longest valid
+        # prefix from any idle slot, then copies the conversation into the destination (it copies even when they
+        # are the same slot, so moving costs nothing extra).  Move only into a blank slot, and only for a less
+        # loaded group; never over another conversation's history, expired or not (2026-10-14: two chats moved
+        # into each other's expired slot on every turn and re-read 60-100K tokens each time).
+        candidates = sources + [b for b in free if b not in sources and b in blank and collateral(b) == 0]
+        slot = min(candidates, key=lambda b: (loss(b), *pipeline(b)[:2], b not in sources, positions[b]))
+        source = max(sources, key=lambda b: (matches[b], -positions[b]))
+        return Placement(slot, source, best, near, "reuse")
+
+    safe = [b for b in free if states[b]["expired"] and collateral(b) == 0]
+
+    def stale(b):
+        return 0.0 if b in blank else stale_retention(len(held[b]))
+
+    def worthy(b):
+        return stale(b) >= EXPIRED_KEEP_SCORE and stale(b) > 0
+
+    if safe:
+        # Expired = empty for protection, but an expired history can still match until it is overwritten: one that
+        # still scores EXPIRED_KEEP_SCORE goes only when no blank or worthless slot is free (else a new chat in the
+        # idle group overwrote the other chat every turn - GPU run 2026-10-15).  Then group load; then the lowest score.
+        slot = min(safe, key=lambda b: (worthy(b), *pipeline(b)[:2], b not in blank, stale(b), positions[b]))
+        # Only worthy histories are left, but a protected slot worth less ends its protection within the wait window
+        # (a side request that has just finished): wait for it under the same one-per-request 5 s protection wait
+        # rather than destroy a conversation that can still match.  After the wait the overwrite goes ahead.
+        if worthy(slot) and not allow_eviction and any(
+                not states[b]["expired"] and collateral(b) == 0 and stale(b) < stale(slot) and
+                states[b]["ttl_s"] - states[b]["age_s"] <= PROTECTION_WAIT_S for b in free):
+            return Placement(None, reason="protected")
+        return Placement(slot, reason="reclaim")
+    if not allow_eviction:
+        return Placement(None, reason="protected")
+    cheapest = min(loss(b) for b in free)
+    # Loss scores within 10% are close enough to let group load/padding break the tie.
+    candidates = [b for b in free if loss(b) <= cheapest * 1.10 + 1e-12]
+    return Placement(min(candidates, key=lambda b: (*pipeline(b), loss(b), used[b])), reason="evict")
