@@ -1323,7 +1323,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         const bool mirror = st.host.present();
                         strata::kernels::kv_append_q2_steps(st.k_q2, st.k_q2, st.page_table, step_b, kStepCount, n,
                                                             kc_b, kc_b, s, cs, mirror ? &hk : nullptr,
-                                                            /*v3level*/ false);
+                                                            /*v3level*/ false, st.kv_k_gain);
                         kv_append_q4_steps(st.v_q4, st.v_q4, st.page_table, step_b, kStepCount, n, vc_b, vc_b, s, cs,
                                            mirror ? &hv : nullptr);
                     } else if (st.kv_q4)
@@ -1331,7 +1331,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                            &st.host);
                     else if (st.kv_q2)   // 2-bit, 4-level Lloyd-Max for K and V (kv_q2.hpp, the parity gate's choice)
                         strata::kernels::kv_append_q2_steps(st.k_q2, st.v_q2, st.page_table, step_b, kStepCount, n,
-                                                            kc_b, vc_b, s, cs, &st.host, /*v3level*/ false);
+                                                            kc_b, vc_b, s, cs, &st.host, /*v3level*/ false,
+                                                            st.kv_k_gain);
                     else if (st.kv_int8)
                         kv_append_q8_steps(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_b, kStepCount,
                                            kc_b, vc_b, (int) (NKV * HD), n, s, cs, &st.host);
@@ -1364,7 +1365,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         const bool mirror = st.host.present();
                         strata::kernels::kv_append_q2_step(st.k_q2, st.k_q2, st.page_table, step_t,
                                                            kcur_ + t * NKV * HD, kcur_ + t * NKV * HD, s, cs,
-                                                           mirror ? &hk : nullptr, /*v3level*/ false);
+                                                           mirror ? &hk : nullptr, /*v3level*/ false, st.kv_k_gain);
                         kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vcur_ + t * NKV * HD,
                                           vcur_ + t * NKV * HD, s, cs, mirror ? &hv : nullptr);
                     } else if (st.kv_q4)
@@ -1373,7 +1374,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     else if (st.kv_q2)   // 2-bit, 4-level Lloyd-Max for K and V (kv_q2.hpp, the parity gate's choice)
                         strata::kernels::kv_append_q2_step(st.k_q2, st.v_q2, st.page_table, step_t,
                                                            kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st.host,
-                                                           /*v3level*/ false);
+                                                           /*v3level*/ false, st.kv_k_gain);
                     else if (st.kv_int8)
                         kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_t,
                                           kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st.host);

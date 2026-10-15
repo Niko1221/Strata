@@ -239,6 +239,11 @@ struct QsaState {
     /// `qsa_kv_format()` answers kKvQ2K. A reader told "q2" would read V's 18-byte q4_0 blocks as 10-byte
     /// per-channel slots; one told "q4" would read K's slots as blocks. Both are silent.
     bool kv_q2k = false;
+    /// Per-layer K reconstruction gain (`--kv-k-gain`, kv_q2.hpp): the q2-family K scale is STORED as this times
+    /// the scale the rule computes, and the codes are chosen against the rule's (un-gained) scale - the code
+    /// assignment is unchanged and only the reconstruction grows. 1.0 (the default) is bit-identical to the rule
+    /// without it; V and the drafter ring never see it.
+    float kv_k_gain = 1.0f;
     /// K and V go through kv_q4.hpp's Walsh-Hadamard rotation before they are stored, the queries too, the output
     /// back: always for Q4_0, for INT8 by qsa_set_kv_int8_rotate (spreads outlier channels over the scale groups)
     bool kv_rot = false;
@@ -359,6 +364,13 @@ bool qsa_kv_hybrid();
 /// cell for 2 KV heads, against q2's 320 and q4_0's 576. Set before sizing and initializing the session.
 void qsa_set_kv_q2k(bool enabled);
 bool qsa_kv_q2k();
+/// Per-layer K reconstruction gain (`--kv-k-gain`): the q2/q2k K scale is stored as `beta` times the scale the
+/// rule computes, and the CODES are chosen against the rule's (un-gained) scale (kv_q2.cu): the code assignment
+/// is unchanged, only the reconstruction grows. Indexed by MODEL layer (3, 7, ... 47 - the numbering `--dump-kv`
+/// uses); every layer defaults to 1.0 (off). Set per layer before session init; `session_init` copies the table
+/// into each main layer's `QsaState::kv_k_gain` (the drafter ring keeps 1.0).
+void qsa_set_kv_k_gain(int64_t model_layer, float beta);
+float qsa_kv_k_gain(int64_t model_layer);
 /// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvHybrid /
 /// kKvQ2 / kKvQ2K). THE MIXED FORMATS ARE NAMED AS MIXED: kKvHybrid is "int8 K + q4_0 V" and kKvQ2K is
 /// "q2-per-channel K + q4_0 V", each with its own runs in kv_stream.cu. Answering one of the two single-format

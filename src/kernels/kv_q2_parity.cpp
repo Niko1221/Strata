@@ -1059,6 +1059,71 @@ int main() {
                          "batch append into a fresh group stores the full-group RMS with the previous group's "
                          "mean square for the 20 cells not yet written, bit for bit, and the same bits whether "
                          "the previous group was in this launch or the last");
+        // K reconstruction gain (beta = 1.1, `--kv-k-gain`): the same two appends. The stored scale is beta x
+        // the rule exactly as the gain mode computes it (raw-domain shrink for the fresh partial), but the codes
+        // are chosen against sc = (beta x rule) x (1/beta) - the code assignment of an UN-gained append, with
+        // only the reconstruction scaled up. Host mirror: separate float ops in the kernel's order.
+        {
+            const float a = 1.1f, inv_a = 1.0f / a;
+            uint8_t* kq2_e = dalloc<uint8_t>(pool48);
+            uint8_t* kq2_f = dalloc<uint8_t>(pool48);
+            k::kv_append_q2(kq2_e, kq2_e, d_tab48, 0, 32, dK, dK, s, nullptr, nullptr, nullptr, false, 1.1f);
+            k::kv_append_q2(kq2_e, kq2_e, d_tab48, 32, 12, dK + (size_t) 32 * H * D, dK + (size_t) 32 * H * D, s,
+                            nullptr, nullptr, nullptr, false, 1.1f);
+            k::kv_append_q2(kq2_f, kq2_f, d_tab48, 0, n44, dK, dK, s, nullptr, nullptr, nullptr, false, 1.1f);
+            ck(cudaDeviceSynchronize(), "gain 44-cell appends");
+            std::vector<uint8_t> he(pool48), hf(pool48);
+            ck(cudaMemcpy(he.data(), kq2_e, pool48, cudaMemcpyDeviceToHost), "gain pool e");
+            ck(cudaMemcpy(hf.data(), kq2_f, pool48, cudaMemcpyDeviceToHost), "gain pool f");
+            bool gain_ok = true, gcodes_ok = true, differs = false;
+            int ties = 0;
+            for (int h = 0; h < H && gain_ok; ++h)
+                for (int d = 0; d < D && gain_ok; ++d) {
+                    float ss0 = 0.0f, ss1 = 0.0f;
+                    for (int i = 0; i < 32; ++i) {
+                        const float v = Kref[(size_t) i * H * D + (size_t) h * D + d];
+                        ss0 += v * v;
+                    }
+                    for (int i = 32; i < n44; ++i) {
+                        const float v = Kref[(size_t) i * H * D + (size_t) h * D + d];
+                        ss1 += v * v;
+                    }
+                    const float s0 = sqrtf(ss0 * (1.0f / 32.0f));
+                    const uint16_t want0 = k::f16_from_f32(a * s0);
+                    const float prev_raw = k::f32_from_f16(want0) * inv_a;
+                    const float pp = prev_raw * prev_raw;
+                    const float t = 20.0f * pp;
+                    const float u = ss1 + t;
+                    const float w = u * (1.0f / 32.0f);
+                    const uint16_t want1 = k::f16_from_f32(a * sqrtf(w));
+                    const k::block_q2c_0* c0 = k::q2c_slot(he.data(), 0, h, d, H, D);
+                    const k::block_q2c_0* c1 = k::q2c_slot(he.data(), 1, h, d, H, D);
+                    if (c0->d != want0 || c1->d != want1 || k::q2c_slot(hf.data(), 0, h, d, H, D)->d != want0 ||
+                        k::q2c_slot(hf.data(), 1, h, d, H, D)->d != want1)
+                        gain_ok = false;
+                    if (want0 != k::f16_from_f32(s0)) differs = true;   // the gain moved the stored scale
+                    const float sc0 = (a * s0) * inv_a;                 // the UN-gained scale the codes use
+                    for (int i = 0; i < 32; ++i) {
+                        const float v = Kref[(size_t) i * H * D + (size_t) h * D + d];
+                        const int want_code = k::q2_code_lm4(v, sc0);
+                        if (((c0->qs[i / 4] >> (2 * (i % 4))) & 3) != want_code) gcodes_ok = false;
+                        if (k::q2_code_lm4(v, s0) != want_code) ++ties;   // exact-threshold ties, printed only
+                    }
+                    const float sc1 = (a * sqrtf(w)) * inv_a;
+                    for (int i = 0; i < 12; ++i) {
+                        const float v = Kref[(size_t) (32 + i) * H * D + (size_t) h * D + d];
+                        if (((c1->qs[i / 4] >> (2 * (i % 4))) & 3) != k::q2_code_lm4(v, sc1)) gcodes_ok = false;
+                    }
+                }
+            check(gain_ok && gcodes_ok && differs,
+                  "K reconstruction gain 1.1: the stored K scale is beta x the rule (complete group) and beta x "
+                  "the raw-domain shrink (fresh partial group), bit for bit, in one call or two, and the codes "
+                  "are chosen against the UN-gained scale");
+            std::printf("  K reconstruction gain 1.1: %d group-0 codes differ from the un-gained choice "
+                        "(exact-threshold ties)\n", ties);
+            cudaFree(kq2_e);
+            cudaFree(kq2_f);
+        }
     } else {
         std::printf("  fresh partial group after a complete one: NOT RUN - the probe cache has %d cells, fewer\n"
                     "  than the 44 the check appends\n", N);

@@ -423,6 +423,12 @@ struct Options {
     /// quantized --kv formats gain from it.
     int64_t kv_window = 0;
     int64_t kv_sink = 8;
+    /// Per-layer K reconstruction gain for the q2 family (`--kv-k-gain`): a comma list of items, each a bare
+    /// float (the default for every QSA layer) or `L:B` (model layer L - 3, 7, ... 47, the numbering
+    /// `--dump-kv` uses). The stored K scale becomes B times the scale the rule computes and the codes are
+    /// chosen against the rule's (un-gained) scale, so the code assignment is unchanged and only the
+    /// reconstruction grows; 1.0 (the default) is off.
+    std::string kv_k_gain;
     bool kv_grow = false;              ///< the elastic K/V (--kv-grow, STRATA_KV_GROW=1; kvg_ensure)
     std::string dump_residual;
     /// The head input, `bb.mixed`.  It exists so the head can be SPLIT: steps 1-4 (the per-stream norm, the two
@@ -778,6 +784,15 @@ void usage() {
                  "                       sensitive one, so the bits go on V - 1.911% attention-output RMS against\n"
                  "                       q2's 3.508% for 40% more bytes, at 2.2x q4_0's 0.888% for 22% less memory\n"
                  "                       (kv_q2_parity, K2c + V4). Streams and rings like q2; --kv-window applies\n"
+                 "  --kv-k-gain SPEC     per-layer K RECONSTRUCTION GAIN for the q2 family (--kv q2 / q2k): the\n"
+                 "                       stored K scale becomes B times the scale the rule computes, but the codes\n"
+                 "                       are chosen against the rule's scale - the code assignment is unchanged,\n"
+                 "                       only the reconstruction grows (it undoes the 4-level Lloyd-Max shrink of\n"
+                 "                       the attention scores). SPEC is a comma list: a bare float is the default\n"
+                 "                       for every QSA layer, `L:B` sets model layer L (3, 7, ... 47 - the\n"
+                 "                       numbering --dump-kv uses). Examples: `1.10`, `3:1.10,7:1.10`. 1.0 <= B <=\n"
+                 "                       1.5; B = 1.0 (the default) is off, and a non-1.0 gain needs --kv q2 or\n"
+                 "                       --kv q2k. V is never gained\n"
                  "  --kv-resident N      KV streaming: keep N cells of each QSA layer in VRAM (min 20480) and the\n"
                  "                       whole K/V in pinned RAM; the freed VRAM goes to expert slots. 0 (default):\n"
                  "                       all of it in VRAM. A context of N cells or fewer is not streamed\n"
@@ -2200,6 +2215,7 @@ int main(int argc, char** argv) {
         else if (a == "--kv-window") o.kv_window = std::atoll(next("--kv-window"));
         else if (a == "--kv-sink") o.kv_sink = std::atoll(next("--kv-sink"));
         else if (a == "--kv-grow") o.kv_grow = true;
+        else if (a == "--kv-k-gain") o.kv_k_gain = next("--kv-k-gain");
         else if (a == "--no-kv-grow") o.kv_grow = false;
         else if (a == "--stream-token") o.stream_token = true;
         else if (a == "--check-logits") o.check_logits = true;
@@ -3195,6 +3211,97 @@ int main(int argc, char** argv) {
     // pruned variant (GSQ-RCO Coder, fewer than 512 experts) differs from
     strata::core::ModelGeometry g;
     int64_t K = g.n_expert_used;
+    // **`--kv-k-gain`: the per-layer K reconstruction gain for the q2 family (kv_q2.cu's gain mode).**  SPEC is
+    // a comma list; an item is a bare float (the default for every QSA layer) or `L:B` (model layer L - the
+    // numbering --dump-kv uses).  The K scale is STORED as B times the scale the rule computes, but the codes
+    // are quantized against the rule's (un-gained) scale: the code assignment is unchanged and only the
+    // reconstruction grows.  B = 1.0 (the default) is off, and a non-1.0 gain acts on the q2-family K, so it
+    // needs `--kv q2` or `--kv q2k` - refused by name otherwise.  Validated here, where the geometry is known
+    // (L must be a QSA layer of THIS model), and handed to layer.cpp's gain table before session init;
+    // `qsa_kv_k_gain` is what session_init copies into each main layer's QsaState, and the q2 append kernels
+    // read it from there.  V is never gained, and the MTP drafter's ring keeps 1.0.
+    if (!o.kv_k_gain.empty()) {
+        float gain_default = 1.0f;
+        std::vector<std::pair<int64_t, float>> gain_layers;
+        for (size_t at = 0; at <= o.kv_k_gain.size();) {
+            const size_t comma = o.kv_k_gain.find(',', at);
+            const std::string item = o.kv_k_gain.substr(at, comma == std::string::npos ? std::string::npos
+                                                                                       : comma - at);
+            at = comma == std::string::npos ? o.kv_k_gain.size() + 1 : comma + 1;
+            if (item.empty()) continue;
+            const size_t colon = item.find(':');
+            const std::string b_str = colon == std::string::npos ? item : item.substr(colon + 1);
+            float b = 0.0f;
+            size_t used = 0;
+            try { b = (float) std::stod(b_str, &used); } catch (...) {}
+            if (used != b_str.size() || !(b >= 1.0f && b <= 1.5f)) {
+                std::fprintf(stderr, "strata generate: --kv-k-gain: '%s' is not B or L:B with 1.0 <= B <= 1.5\n",
+                             item.c_str());
+                return 2;
+            }
+            if (colon == std::string::npos) {
+                gain_default = b;
+                continue;
+            }
+            const std::string l_str = item.substr(0, colon);
+            int64_t layer = -1;
+            size_t lused = 0;
+            try { layer = (int64_t) std::stoll(l_str, &lused); } catch (...) {}
+            if (lused != l_str.size() || layer < 0 || !strata::core::is_qsa_layer(g, layer) ||
+                layer >= g.n_layers) {
+                std::fprintf(stderr, "strata generate: --kv-k-gain: '%s' names layer %lld, not a QSA layer of this "
+                                     "model (QSA layers: %lld, %lld, ... %lld)\n", item.c_str(), (long long) layer,
+                             (long long) (g.qsa_interval - 1), (long long) (2 * g.qsa_interval - 1),
+                             (long long) (g.n_layers - 1));
+                return 2;
+            }
+            gain_layers.push_back({layer, b});
+        }
+        // the effective per-layer gains: the default on every QSA layer, then the named layers on top
+        std::vector<std::pair<int64_t, float>> eff;
+        if (gain_default != 1.0f)
+            for (int64_t l = g.qsa_interval - 1; l < g.n_layers; l += g.qsa_interval) eff.push_back({l, gain_default});
+        for (const auto& e : gain_layers) eff.push_back(e);
+        bool any_gain = false;
+        for (const auto& e : eff) any_gain = any_gain || e.second != 1.0f;
+        if (any_gain) {
+            // The gain acts on the q2-family K, so a non-1.0 gain needs `--kv q2` or `--kv q2k` (this build has
+            // no per-layer format override): refused by name, naming the layer and the format it stores.
+            if (o.kv != "q2" && o.kv != "q2k") {
+                if (gain_default != 1.0f) {
+                    std::fprintf(stderr, "strata generate: --kv-k-gain: the bare default %.3f applies to every "
+                                         "QSA layer, which stores %s - a non-1.0 gain needs --kv q2 or --kv q2k "
+                                         "(the q2-family K)\n", gain_default, o.kv.c_str());
+                    return 2;
+                }
+                std::string named;
+                char buf[64];
+                for (const auto& e : gain_layers) {
+                    if (e.second == 1.0f) continue;
+                    std::snprintf(buf, sizeof buf, "%s%lld", named.empty() ? "" : ", ", (long long) e.first);
+                    named += buf;
+                }
+                std::fprintf(stderr, "strata generate: --kv-k-gain: layer(s) %s store %s - a non-1.0 gain needs "
+                                     "--kv q2 or --kv q2k (the q2-family K)\n", named.c_str(), o.kv.c_str());
+                return 2;
+            }
+            // every effective entry, 1.0 included: a named `L:1.0` after a bare default must turn layer L back off
+            for (const auto& e : eff) strata::core::qsa_set_kv_k_gain(e.first, e.second);
+            std::string listed;
+            char buf[96];
+            if (gain_default != 1.0f) {
+                std::snprintf(buf, sizeof buf, "default %.3f", gain_default);
+                listed = buf;
+            }
+            for (const auto& [layer, b] : gain_layers) {
+                if (b == 1.0f) continue;
+                std::snprintf(buf, sizeof buf, "%s%lld:%.3f", listed.empty() ? "" : ", ", (long long) layer, b);
+                listed += buf;
+            }
+            std::fprintf(stderr, "strata generate: --kv-k-gain: K reconstruction gain (%s) - the stored K scale "
+                                 "is beta times the rule's, codes unchanged, V untouched\n", listed.c_str());
+        }
+    }
     // THE ROPE CONFIG RESOLVES HERE, BEFORE ANY WEIGHT MOVES - the CLI and the model file have both spoken,
     // and `session_init` below builds the rope table from it and captures the kernels reading its constants
     // (rope_scaling.hpp); the only hard constraint is "set before that", and dying on a bad rope key beats

@@ -499,3 +499,42 @@ shrink**; the chunked stress pattern is 1.4% worse with shrink than /n (mixed by
 - Real prefill chunks are 2048 cells, aligned from position 0, so the 100-cell chunked row is a stress case; the
   verify row is what every speculative decode does at each group boundary.
 
+### K reconstruction gain (`--kv-k-gain`)
+
+The 4-level Lloyd-Max K codebook is MSE-optimal, and that is the problem: an MSE-optimal quantizer's
+reconstruction is shrunk toward zero. On real queries the slope of q2k's attention scores on the exact
+scores is 0.92-0.97 (q4_0: 0.997-0.998). With the FP16 window on, the exact window cells out-score the
+shrunk bulk, and the softmax over-weights the window by +1.7..+5.9% of its mass on 11 of the 12 QSA
+layers (L31: -0.5%); q4_0 + window: +0.1..+0.4%.
+
+`--kv-k-gain SPEC` undoes the shrink without moving any code: the stored K scale becomes `beta` times the
+scale the rule computes, and the codes are chosen against the rule's (un-gained) scale, so the code
+assignment is unchanged and only the reconstruction grows. SPEC is a comma list: a bare float is the
+default for every QSA layer, or `L:B` (model layer L - 3, 7, ... 47, the numbering `--dump-kv` uses).
+1.0 <= B <= 1.5; B = 1.0 (the default) is off. A non-1.0 gain acts on the q2-family K, so it needs
+`--kv q2` or `--kv q2k`. V is never gained, and the MTP drafter's ring keeps 1.0. The kernel side is
+`kv_q2.cu`'s gain mode (a positive per-layer `k_gain`): the scale rule runs in the raw domain - every
+stored previous scale is divided by `beta` before it enters the formula, the scale a block writes is
+`beta` times the rule's, and the codes are chosen against `(beta x rule) x (1/beta)`, the code assignment
+of an un-gained append. Pinned in kv_q2_parity: "K reconstruction gain 1.1".
+
+Measured at decode (teacher-forced: every arm is fed the same 128-token continuation one token per window, and
+each row is compared with a forced FP16 run's row at the same position; nine texts - three built-in prompts and
+six repo files up to 6144 tokens; `STRATA_PREFILL_CPU_SHARE=0`, under which two FP16 runs are bit-identical).
+Mean KL vs FP16, and the geometric-mean change vs plain q2k with the number of texts that improved:
+
+| arm | mean KL | top-1 | vs q2k |
+|---|---:|---:|---:|
+| q4_0 | 0.0198 | 96.6% | -89.9% (9/9) |
+| q4_0 + window 128 | 0.0174 | 96.9% | -91.9% (9/9) |
+| q2k | 0.1825 | 88.5% | |
+| q2k + window 128 | 0.2060 | 87.3% | +10.3% (4/9) |
+| q2k + window 128 + gain 1.10 | 0.1338 | 89.8% | -29.3% (7/9) |
+| **q2k + window 256 + gain 1.10** | **0.1203** | **90.3%** | **-36.8% (8/9)** |
+
+Without the gain the window makes q2k worse; with it the window helps. The gain sweep (window 128, same nine
+texts, on the development build): 1.03 -9%, 1.05 -15%, 1.08 -26%, 1.10 -30%, 1.13 -29% vs q2k - the offline
+bias-zeroing values (1.03-1.05) undershoot the logit optimum - and the gain alone, with no exact cells, -1%.
+Recommended with q2k:
+`--kv-window 256 --kv-sink 8 --kv-k-gain 1.10` (the 256-cell overlay is ~6.6 MiB at 262144 for 12 layers).
+

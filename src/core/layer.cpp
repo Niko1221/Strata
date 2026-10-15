@@ -184,6 +184,10 @@ bool g_kv_int8 = false, g_kv_q4 = false, g_kv_hybrid = false, g_kv_int8_rot = fa
 /// a state that sets both g_kv_q2 and g_kv_q4 means "q2 wins" (qsa_state_init), which is the smaller format,
 /// not this one.
 bool g_kv_q2k = false;
+/// `--kv-k-gain`: the per-layer K reconstruction gains, by MODEL layer index (3, 7, ... 47). Sparse: entries
+/// exist only for layers a caller set; everything else answers 1.0, the un-gained rule. `session_init` copies
+/// this into each main layer's `QsaState::kv_k_gain`; the drafter ring never reads it and keeps 1.0.
+std::vector<float> g_kv_k_gain;
 /// The FP16 sliding window + attention sinks of kv_window.hpp: the last `g_kv_window` cells and the first
 /// `g_kv_sinks` ones are also kept in FP16. 0: off (the default).
 int64_t g_kv_window = 0, g_kv_sinks = 8;
@@ -228,6 +232,13 @@ void qsa_set_kv_q2(bool enabled) { g_kv_q2 = enabled; }
 bool qsa_kv_q2() { return g_kv_q2; }
 void qsa_set_kv_q2k(bool enabled) { g_kv_q2k = enabled; }
 bool qsa_kv_q2k() { return g_kv_q2k; }
+void qsa_set_kv_k_gain(int64_t model_layer, float beta) {
+    if (g_kv_k_gain.size() <= (size_t) model_layer) g_kv_k_gain.resize((size_t) model_layer + 1, 1.0f);
+    g_kv_k_gain[(size_t) model_layer] = beta;
+}
+float qsa_kv_k_gain(int64_t model_layer) {
+    return model_layer >= 0 && (size_t) model_layer < g_kv_k_gain.size() ? g_kv_k_gain[(size_t) model_layer] : 1.0f;
+}
 void qsa_set_kv_window(int64_t window, int64_t sinks) {
     g_kv_window_asked = true;
     g_kv_window = window > 0 ? window : 0;
@@ -1278,14 +1289,14 @@ if (st.kv_q2k) {
                                        hv = strata::kernels::kv_q2k_v_half(st.host);
     const bool mirror = st.host.present();   // streamed: the host copy takes the cell too
     strata::kernels::kv_append_q2_step(st.k_q2, st.k_q2, st.page_table, st.step, b.kcur, b.kcur, s, stream,
-                                       mirror ? &hk : nullptr, /*v3level*/ false);
+                                       mirror ? &hk : nullptr, /*v3level*/ false, st.kv_k_gain);
     strata::kernels::kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, st.step, b.vcur, b.vcur, s, stream,
                                        mirror ? &hv : nullptr);
 } else if (st.kv_q4) {
     strata::kernels::kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);
 } else if (st.kv_q2) {   // 4-level Lloyd-Max for K and V, the codebook the parity gate picked on both measures
     strata::kernels::kv_append_q2_step(st.k_q2, st.v_q2, st.page_table, st.step, b.kcur, b.vcur, s, stream,
-                                       &st.host, /*v3level*/ false);
+                                       &st.host, /*v3level*/ false, st.kv_k_gain);
 } else if (st.kv_int8) kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    else kv_append_step(st.k_pool, st.v_pool, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host); } /* not K8V4 */
     // the FP16 sliding window + attention sinks (kv_window.hpp): mirror the cell the append just stored, from the
     // same (already rotated) K/V it quantized, so a reader of a sink or of one of the last `kv_window` cells gets

@@ -1596,7 +1596,7 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
                                                hv = strata::kernels::kv_q2k_v_half(st.host);
             const bool mirror = st.host.present();
             strata::kernels::kv_append_q2(st.k_q2, st.k_q2, st.page_table, c0, nb, Kc, Kc, s, m.cs,
-                                          mirror ? &hk : nullptr, nullptr, /*v3level*/ false);
+                                          mirror ? &hk : nullptr, nullptr, /*v3level*/ false, st.kv_k_gain);
             strata::kernels::kv_append_q4(st.v_q4, st.v_q4, st.page_table, c0, nb, Vc, Vc, s, m.cs,
                                           mirror ? &hv : nullptr, nullptr);
         }
@@ -1604,7 +1604,7 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, c0, nb, Kc, Vc, s, m.cs, &st.host);
         } else if (st.kv_q2) {
             strata::kernels::kv_append_q2(st.k_q2, st.v_q2, st.page_table, c0, nb, Kc, Vc, s, m.cs, &st.host,
-                                          nullptr, /*v3level*/ false);
+                                          nullptr, /*v3level*/ false, st.kv_k_gain);
         }
         if (st.kv_q4 || st.kv_q2 || st.kv_q2k) {
             // the FP16 sliding window + attention sinks (kv_window.hpp); the drafter's ring state has none
@@ -2921,7 +2921,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const bool mirror = st.host.present();
                             strata::kernels::kv_append_q2(st.k_q2, st.k_q2, st.page_table, p0, T, m.Kc, m.Kc, s, m.cs,
                                                           mirror && !host_by_dma ? &hk : nullptr,
-                                                          staged ? &sk : nullptr, /*v3level*/ false);
+                                                          staged ? &sk : nullptr, /*v3level*/ false, st.kv_k_gain);
                             strata::kernels::kv_append_q4(st.v_q4, st.v_q4, st.page_table, p0, T, m.Vc, m.Vc, s, m.cs,
                                                           mirror && !host_by_dma ? &hv : nullptr,
                                                           staged ? &sv : nullptr);
@@ -2931,7 +2931,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                           host_w, staged ? &m.stage : nullptr);
                         else if (st.kv_q2)   // 2-bit, 4-level Lloyd-Max for K and V (kv_q2.hpp, the parity gate's choice)
                             strata::kernels::kv_append_q2(st.k_q2, st.v_q2, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
-                                                          host_w, staged ? &m.stage : nullptr, /*v3level*/ false);
+                                                          host_w, staged ? &m.stage : nullptr, /*v3level*/ false,
+                                                          st.kv_k_gain);
                         else
                             kv_append(m.Kc, m.Vc, T, p0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
                                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs,
