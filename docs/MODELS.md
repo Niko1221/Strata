@@ -267,8 +267,9 @@ With the config setup wrote (128K context, 8-bit KV, images on, every expert in 
 DDR5-3600 RAM and Strata 0.1.46.3 (`tools/strata_bench.py`, three runs of the suite each, medians of the runs):
 AP-Q4_K_XL 71.3 tokens/s for short answers and 86.1 in an agent session; AP-IQ4_XS 91.0 and 108.0. Speeds moved from
 run to run (AP-Q4_K_XL short answers: 71.3, 71.5 and 64.5 tokens/s in the three runs); each run is in the tables of
-the Signal page. AP-Q4_K_XL is NVIDIA only so far: the AMD engine has no prompt kernels for its Q4_K experts, as with
-UD-Q4_K_XL. The two files differ only in the experts' gate/up type, the one UD-IQ4_XS uses. Details and the manual
+the Signal page. Neither size is NVIDIA-only: every format they use has AMD kernels (Q4_K experts run on an R9700 as
+UD-Q4_K_XL's, IQ3_S and IQ4_NL as UD-IQ4_XS's - [QUANTS.md](QUANTS.md)), but neither Signal file has run on an AMD
+card yet. The two files differ only in the experts' gate/up type, the one UD-IQ4_XS uses. Details and the manual
 steps: [Signal](SIGNAL_AP_Q4_K_XL.md).
 
 ```
