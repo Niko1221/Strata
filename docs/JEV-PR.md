@@ -112,7 +112,7 @@ recommended one, not a workaround.
 
 ## 3. Test strategy
 
-**Unit (mock engine) — 54/54 green:** readout math invariants, prompt rendering
+**Unit (mock engine) — 73/73 green (jev modules; full serve/ discovery 858 run, 0 fail, 11 skipped):** readout math invariants, prompt rendering
 (byte-pinned noul/choice blocks — the Yes/No-swap regression is now a golden test),
 per-tuple calibration isolation, V-mode softmax, image two-call/direct shapes,
 decide-then-generate, chat-surface validation arms, 7×3 concurrency + FIFO
@@ -269,4 +269,32 @@ CIs + Brier (`blockers-run/cis-brier.json`).
 - `text-suite.md`, `image-suite.md`, `real-suite.md` + `*-item-log.jsonl` — suite reports
 - `convert-manifest.json` — real-benchmark provenance (sha256 per image)
 - `audit-text-sample.json`, `audit-image-sample.json`, `audit-real-sample.json` — 1-in-10 audits
-- Donor reference files: `jevcpp/reports/m2_baseline.json`, `m1_perf.json`, `calib/calib.json`
+- Donor reference files: `jevcpp/reports/m2_baseline.json`, `jevcpp/reports/m1_perf.json`, `jevcpp/calib/calib.json` (all in the donor tree, not this repo)
+
+## 6. Scope of change, compatibility, and what was NOT verified
+
+**Engine diff (5 files, +149 lines, additive):** `Verifier::brow_row` (verify.hpp/.cpp),
+the `--jev-brow` flag and `BROW` serve-loop handler (generate.cpp), a CMake test target
+(`verify_brow_test`, CUDA builds only), and its test. Everything is opt-in: the handler
+runs only when `--jev-brow` is passed and the server sends `BROW`; no existing request
+path changes. One line runs on every verify window regardless of the flag
+(`last_row_T_ = T;` in `Verifier::run`) — an int store, no behavior change.
+
+**Default behavior:** `STRATA_JEV_MODES` unset = chat only. Verified end to end with the
+env var absent: `/v1/systemone` and the chat `jev` extension return 404, plain chat
+returns 200. A stock Strata process is behaviorally unchanged.
+
+**Verified:** CUDA build + GPU runs on RTX 3090 (QFN IQ3_XXS, Qwen3.8-Flash-Next);
+`serve/` full discovery (858 tests) green with the jev modules opted in.
+
+**Not verified — please run before merge:**
+- **HIP / SYCL builds.** `brow_row` uses `cudaMemcpy*`, which the repo's HIP compat
+  headers map to `hipMemcpy*`, and a Metal branch is written but none of
+  HIP/SYCL/Metal was compiled or run here (no hardware/toolchain). The repo's
+  contributing rule asks for every touched backend to be built; this is the gap.
+- **Layer-split / multi-GPU `brow_row`.** The stage-forwarding (`next_->brow_row`) is
+  implemented and mirrors `window_logprobs`, but only the single-GPU path was exercised.
+- **`serve/test_responses.py::NoLeakedSampler`** fails when the whole module is run in
+  one process, on this branch **and on an unmodified `Strata-043` tree** (passes alone
+  and on `Strata-main`); the branch does not touch the sampler or that test. Pre-existing
+  test-isolation issue, unrelated to jev.
