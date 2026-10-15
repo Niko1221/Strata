@@ -6,6 +6,9 @@ It opens a Models table at `http://127.0.0.1:8090`. The launcher stays available
 while a model downloads, prepares or loads. Chat and API clients use the model
 server on `http://127.0.0.1:8080`, as with the normal start scripts.
 
+Lazy-loading and idle-unloaded servers keep **Open Chat** available; their next
+request loads the model.
+
 This is an alternative launcher. `START-HERE.bat`, `setup.sh`, the normal web app,
 and every engine backend keep their existing behavior.
 
@@ -45,8 +48,9 @@ The original Qwen GSQ-RCO sizes and Coder share the identical second GGUF shard,
 as used by the official installer. If a compatible installed config already
 points to a table moved elsewhere (for example, an SSD), new installs keep that
 location after setup succeeds. The launcher checks the shards' file sizes,
-architecture and tensor directories first, writes the earlier config to `.bak`,
-and changes only the lookup and explicit dense-shard paths. It does not move,
+architecture and tensor directories first, keeps setup's `.json.bak` of the user's
+earlier settings and saves the generated config to `.json.lookup.bak` before
+changing only the lookup and explicit dense-shard paths. It does not move,
 delete or rename a GGUF, and it does not change quantization or inference tuning.
 
 This is metadata checking, not an additional full-file checksum: the table must
@@ -99,6 +103,7 @@ in the normal chat page's About settings; the Models page does not display it.
 ```
 python -m unittest tools.test_strata_models tools.test_strata_mcp
 node --check serve/web/models.js
+node --test tools/test_strata_models_web.js
 ```
 
 The launcher tests use fake setup and server processes, without model downloads
@@ -113,3 +118,8 @@ port, cancellation before setup starts and during job publication, and Windows
 shutdown of owned child processes. The POSIX port probe follows the server's
 SO_REUSEADDR policy; Windows keeps reuse disabled. Cancellation and setup's
 recovery record are synchronized so a fast child cannot lose the cancellation.
+
+The page behavior tests require Node.js 18 or newer and use its built-in test
+runner. They check chat access before the first lazy-load request and after idle
+unloading, and keep chat hidden during switching or while no server runs. The
+Python suite also checks that lookup reuse preserves official setup's backup.

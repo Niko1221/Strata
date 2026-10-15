@@ -7,6 +7,8 @@ on:
       - 'tools/strata_mcp.py'
       - 'tools/test_strata_models.py'
       - 'tools/test_strata_mcp.py'
+      - 'tools/test_strata_models_web.js'
+      - 'serve/web/models.*'
       - 'setup.py'
       - 'models.sh'
       - 'MODELS.bat'
@@ -42,6 +44,8 @@ jobs:
           sys.exit(subprocess.call([str(py), '-m', 'unittest', 'tools.test_strata_models', 'tools.test_strata_mcp', '-v']))"
       - name: Python syntax
         run: python -m py_compile tools/strata_models.py tools/strata_mcp.py tools/test_strata_models.py tools/test_strata_mcp.py
+      - name: Models page behavior
+        run: node --test tools/test_strata_models_web.js
       - name: Linux launcher syntax
         if: runner.os == 'Linux'
         run: sh -n models.sh

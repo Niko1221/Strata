@@ -31,7 +31,8 @@ function render() {
     : active ? "The Models page stays available while this operation runs."
     : current ? "Start another installed model to switch. Requests must finish before switching."
     : "Select an installed model to start it, or review a download below.";
-  $("open-chat").hidden = !current || active || current.loaded === false;
+  // A lazy or idle-unloaded server loads its model on the first chat request.
+  $("open-chat").hidden = !current || active;
   $("open-chat").href = current?.url || state.model_url;
   $("stop-model").hidden = !current || external;
   $("stop-model").disabled = disabled;

@@ -55,7 +55,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self):
         data = {"status":"ok", "service":"strata", "model":cfg["model_name"], "max_context":65536,
-                "loaded":True, "busy":(root / "busy").exists(), "images":False, "api_key":False}
+                "loaded":not cfg.get("lazy_load"), "busy":(root / "busy").exists(), "images":False, "api_key":False}
         b = json.dumps(data).encode(); self.send_response(200); self.send_header("Content-Length", str(len(b)))
         self.end_headers(); self.wfile.write(b)
     def do_POST(self):
@@ -386,6 +386,14 @@ class LauncherTests(unittest.TestCase):
         self.cfg(host="0.0.0.0")
         with self.assertRaisesRegex(M.ToolError, "local servers only"): self.w.start("iq2_xs")
 
+    def test_lazy_server_is_ready_before_its_first_request(self):
+        self.cfg(lazy_load=True)
+        self.w.start("iq2_xs")
+        op = self.finish()
+        self.assertEqual(op["state"], "done", op)
+        self.assertIn("Open Chat", op["message"])
+        self.assertFalse(self.s.probe(self.port)["loaded"])
+
     def test_parallel_mutation_rejected(self):
         self.w.operation = {"state":"running"}
         with self.assertRaises(M.ToolError): self.w.plan("iq3_xxs")
@@ -406,8 +414,32 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(W.arg_value(updated["args"], "--ple-gguf"), str(source))
         self.assertEqual(W.arg_value(updated["args"], "--spec"), "4")
         self.assertEqual(updated["args"].count("--native-dense-gguf"), 2)
-        self.assertEqual(cfg_path.with_suffix(".json.bak").read_bytes(), original)
+        self.assertEqual(cfg_path.with_suffix(".json.lookup.bak").read_bytes(), original)
         self.assertEqual({k:v for k,v in cfg.items() if k != "args"}, {k:v for k,v in updated.items() if k != "args"})
+
+    def test_lookup_reuse_preserves_official_setup_backup(self):
+        target, source = self.root / "target.gguf", self.root / "ssd.gguf"
+        for p in (target, source): p.write_bytes(b"fake")
+        cfg_path = self.cfg()
+        original_cfg = json.loads(cfg_path.read_text())
+        original_cfg["args"] += ["--native", "native.gguf", "--ple-gguf", str(source),
+                                 "--vram-reserve-mib", "5120"]
+        cfg_path.write_text(json.dumps(original_cfg))
+        original = cfg_path.read_bytes()
+        generated = {**original_cfg, "args":["--native", "native.gguf", "--ple-gguf", str(target)]}
+        with mock.patch.object(official, "say"):
+            official.write_setup_config(cfg_path, generated)
+        setup_config = cfg_path.read_bytes()
+        self.assertEqual(cfg_path.with_suffix(".json.bak").read_bytes(), original)
+        fake = SimpleNamespace(metadata={"general.architecture":"qwen4exp"},
+                               tensors=[SimpleNamespace(name="per_layer_token_embd.weight",shape=[1],type_id=30)])
+        with mock.patch.object(W, "GGUFFile", return_value=fake):
+            self.w.reuse_lookup("iq2_xs", source)
+            self.w.reuse_lookup("iq2_xs", source)  # Recovery is safe to repeat.
+        self.assertEqual(cfg_path.with_suffix(".json.bak").read_bytes(), original)
+        self.assertEqual(cfg_path.with_suffix(".json.lookup.bak").read_bytes(), setup_config)
+        updated = json.loads(cfg_path.read_text())
+        self.assertEqual(W.arg_value(updated["args"], "--ple-gguf"), str(source))
 
     def test_mismatched_lookup_is_not_substituted(self):
         target, source = self.root / "target.gguf", self.root / "source.gguf"
@@ -422,7 +454,8 @@ class LauncherTests(unittest.TestCase):
 
     def test_http_requires_host_origin_and_session_token(self):
         for headers in ({"Host":"evil.test"}, {"Origin":"https://evil.test"}, {"Origin":""}, {"X-Strata-Token":""}):
-            self.assertEqual(self.call("/api/models/plan", {"model":"iq3_xxs"}, headers)[0], 403)
+            with self.subTest(headers=headers):
+                self.assertEqual(self.call("/api/models/plan", {"model":"iq3_xxs"}, headers)[0], 403)
 
     def test_http_rejects_extra_fields_and_arbitrary_paths(self):
         self.assertEqual(self.call("/api/models/plan", {"model":"iq3_xxs", "command":"evil"})[0], 400)

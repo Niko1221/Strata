@@ -291,7 +291,9 @@ class ModelManager:
             i += 1
         updated += ["--native-dense-gguf", native, "--native-dense-gguf", str(lookup)]
         cfg["args"] = updated
-        p.with_suffix(p.suffix + ".bak").write_bytes(p.read_bytes())
+        # Official setup already saved the user's earlier config as .json.bak.
+        # Keep that recovery copy; this backup is only for our path adjustment.
+        p.with_suffix(p.suffix + ".lookup.bak").write_bytes(p.read_bytes())
         tmp = p.with_suffix(p.suffix + ".tmp")
         tmp.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, p)
