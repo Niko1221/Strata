@@ -9059,13 +9059,17 @@ int main(int argc, char** argv) {
                             const double copy_ms = std::chrono::duration<double, std::milli>(Clock::now() - tc).count();
                             posted = park_writer.post(key, std::move(mirrored));
                             std::fprintf(stderr, "strata serve: conversation cache: park mirror queued (%zu tokens, copy %.1f ms); "
-                                         "writes=%zu collapsed=%zu throttled=%zu\n", live.size(), copy_ms,
-                                         park_writer.writes(), park_writer.collapsed(), park_writer.throttled());
+                                         "writes=%zu collapsed=%zu throttled=%zu disk=%zu MiB disk_evictions=%zu conversations=%zu\n", live.size(), copy_ms,
+                                         park_writer.writes(), park_writer.collapsed(), park_writer.throttled(),
+                                         (size_t) (conversation_spill.bytes() >> 20), conversation_spill.disk_evictions(),
+                                         conversation_spill.size());
                         } else {
                             posted = park_writer.post(key, std::move(image));
                             std::fprintf(stderr, "strata serve: conversation cache: park mirror queued (%zu tokens, disk only, no RAM copy); "
-                                         "writes=%zu collapsed=%zu throttled=%zu\n", live.size(),
-                                         park_writer.writes(), park_writer.collapsed(), park_writer.throttled());
+                                         "writes=%zu collapsed=%zu throttled=%zu disk=%zu MiB disk_evictions=%zu conversations=%zu\n", live.size(),
+                                         park_writer.writes(), park_writer.collapsed(), park_writer.throttled(),
+                                         (size_t) (conversation_spill.bytes() >> 20), conversation_spill.disk_evictions(),
+                                         conversation_spill.size());
                         }
                     }
                 }
@@ -10311,6 +10315,7 @@ int main(int argc, char** argv) {
                         "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld "
                         "conversation_cache_min_free_mib=%lld conversation_cache_disk_mib=%lld "
                         "conversation_cache_similarity=%.3f conversation_cache_n_min=%lld "
+                        "conversation_cache_spill_dir=\"%s\" conversation_cache_disk=%d "
                         "tail_role_token=%lld vram_elastic=%d%s engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
@@ -10325,6 +10330,7 @@ int main(int argc, char** argv) {
                         (long long) o.conversation_cache_min_free_mib, (long long) o.conversation_cache_min_tokens,
                         (long long) o.conversation_cache_min_free_mib, (long long) o.conversation_cache_disk_mib,
                         o.conversation_cache_similarity, (long long) o.conversation_cache_n_min,
+                        o.conversation_cache_spill_dir.c_str(), conversation_spill.enabled() ? 1 : 0,
                         (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
@@ -11844,6 +11850,12 @@ int main(int argc, char** argv) {
                                 std::fprintf(stderr, "strata serve: conversation cache: disk hit skipped (%s)\n", limits_error.c_str());
                                 conversation_spill.unpin(disk_match.path);
                             } else {
+                                // The admission is about to stream this parking back from disk: say so BEFORE the
+                                // read, so a consumer (the Monitor) tells a disk load from a fresh prompt WHILE it
+                                // happens.  The matching close is the "restored ..." line the load ends with (or a
+                                // "discard ..." when the image is refused).
+                                std::fprintf(stderr, "strata serve: conversation cache: loading %lld tokens from disk\n",
+                                             (long long) disk_match.tokens);
                                 strata::core::SavedConversation restored;
                                 std::string spill_error;
                                 if (!conversation_spill.load(disk_match.path, restored, limits, spill_error)) {

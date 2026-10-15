@@ -654,14 +654,30 @@ class ConvCacheLog:
     which is the log): read on from where it was last read, from the start of the engine's current run.  The disk
     tier's "spill dir ready ..." and "spilled ..." lines and the system prompt cache's "system prompt cache: ..."
     lines (key=value counters) are read the same way, for the Monitor's card."""
-    EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
-                       r"(?: evictions=(\d+))?")
+    # a park or a restore: "parked N tokens ... parked=P bytes=B" (the RAM cache's own count and bytes), and in disk
+    # mode "parked on disk N tokens ... parked=P bytes=B" where P/B are again the RAM cache's (0 when a disk-only
+    # park keeps nothing in RAM).  The verb decides whether it is a park, a restore or neither.
+    EVENT = re.compile(r"conversation cache: (parked on disk|parked|skipped|restored|dropped) (\d+) tokens"
+                       r".*?parked=(\d+) bytes=(\d+)(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
-    # the disk tier (#1271 / delta1): its startup line and one line per conversation written to it
+    # the disk tier (#1271 / delta1): its startup line and one line per conversation written to it.  spill-on,
+    # divergence and park-throttle were added after the first form, so they are optional here.
     SPILL_DIR = re.compile(r"conversation cache: spill dir ready \((\d+) conversations?, (\d+) MiB, "
-                           r"when-full=([^,\s]+), max-age=(\d+) d, (\d+) oversized kept, (\d+) stale kept, "
+                           r"when-full=([^,\s]+), max-age=(\d+) d"
+                           r"(?:, spill-on=[^,]+)?(?:, divergence=\d+ tok)?(?:, park-throttle=\d+ s)?"
+                           r", (\d+) oversized kept, (\d+) stale kept, "
                            r"(\d+) foreign kept, (\d+) orphans kept, (\d+) disk evictions, (\d+) age evictions\)")
     SPILLED = re.compile(r"conversation cache: spilled \d+ tokens .*?disk=(\d+) MiB disk_evictions=(\d+)")
+    # the R3 park mirror: one line per conversation the disk writer accepted in park mode, with the tier's own
+    # bytes and disk evictions (the "spilled ..." line is the eviction path's write, this one is the park's).
+    PARK_MIRROR = re.compile(r"conversation cache: park mirror queued \(\d+ tokens"
+                             r".*?disk=(\d+) MiB disk_evictions=(\d+) conversations=(\d+)")
+    # the START of a disk load: the admission in progress is bringing a parking back from the disk tier, not
+    # reading a new prompt.  Its END is the "restored ..." line below (or a "discard ..." when the image is refused).
+    LOAD = re.compile(r"conversation cache: loading (\d+) tokens from (\w+)")
+    # the disk image was refused after the load: the load is over too (the "discard ..." family and the
+    # budget-exceeded line).  The rejection path logs one of these before it decides what to do next.
+    DISCARD = re.compile(r"conversation cache: (?:discard |disk conversation exceeds the RAM cache budget after loading)")
     # the system prompt cache (F5): its ready/hit/miss/persisted lines (prose counts) and the shutdown line's
     # key=value counters (hits=, misses=, tokens_saved=, hash_changes=, evicted_by_space=, evicted_by_age=)
     SYS_READY = re.compile(r"system prompt cache: ready \((\d+) variants?, (\d+) MiB, slots=(\d+), max-age=(\d+) d, "
@@ -680,6 +696,10 @@ class ConvCacheLog:
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
                       "last_tokens": None, "last_at": None,
+                      # the disk load in progress: its token count while a parking streams back from disk, 0 when
+                      # none.  Set by the engine's "loading N tokens from disk", cleared by the "restored ..." (the
+                      # load's end) or a "discard ..." (the image refused) - see metrics()'s live.admission.
+                      "loading": 0,
                       "disk": {"ready": False, "conversations": 0, "bytes": 0, "spills": 0, "evictions": 0,
                                "age_evictions": 0, "when_full": None, "max_age_days": None,
                                "kept": {"oversized": 0, "stale": 0, "foreign": 0, "orphan": 0}},
@@ -744,9 +764,22 @@ class ConvCacheLog:
                 st["parked"], st["bytes"] = int(m.group(3)), int(m.group(4))
                 if m.group(5) is not None:
                     st["evictions"] = int(m.group(5))
-                if m.group(1) != "skipped":
-                    st["parks" if m.group(1) == "parked" else "restores"] += 1
-                    st["last_event"], st["last_tokens"], st["last_at"] = m.group(1), int(m.group(2)), now
+                verb = m.group(1)
+                if verb in ("parked", "parked on disk"):    # a park, to RAM or to disk: park target disk counts too
+                    st["parks"] += 1
+                    st["last_event"], st["last_tokens"], st["last_at"] = "parked", int(m.group(2)), now
+                elif verb == "restored":
+                    st["restores"] += 1
+                    st["loading"] = 0                       # the disk load (if any) ended here: the state is seated
+                    st["last_event"], st["last_tokens"], st["last_at"] = "restored", int(m.group(2)), now
+                continue
+            m = self.LOAD.search(line)                      # a disk load STARTED: the admission is "loading"
+            if m:
+                self.state["loading"] = int(m.group(1)) if m.group(2) == "disk" else 0
+                continue
+            m = self.DISCARD.search(line)                   # the image was refused: no load is in progress
+            if m:
+                self.state["loading"] = 0
                 continue
             m = self.DROPPED.search(line)
             if m:
@@ -767,6 +800,12 @@ class ConvCacheLog:
                 d = self.state["disk"]
                 d["bytes"], d["evictions"], d["spills"], d["ready"] = int(m.group(1)) * 1048576, int(m.group(2)), \
                     d["spills"] + 1, True
+                continue
+            m = self.PARK_MIRROR.search(line)               # park mode's own write: the tier's bytes and evictions
+            if m:
+                d = self.state["disk"]
+                d["bytes"], d["evictions"], d["conversations"], d["spills"], d["ready"] = \
+                    int(m.group(1)) * 1048576, int(m.group(2)), int(m.group(3)), d.get("spills", 0) + 1, True
         return dict(self.state)
 
 
@@ -795,11 +834,16 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
     Additive since the on-disk layer: a "disk" object (the spill tier's own figures) and a "system_prompt_cache"
     object (F5's hits, misses, live variants, bytes, evictions and hash changes), both read from the same log."""
     mib = info.get("conversation_cache_mib")
+    dmib = info.get("conversation_cache_disk_mib")
     last = hist[-1] if hist else None
     d = parked.get("disk") or {}
     spill_dir = info.get("conversation_cache_spill_dir")
-    disk = {"enabled": bool(d.get("ready") or spill_dir), "dir": spill_dir,
-            "budget_mib": info.get("conversation_cache_disk_mib"), "bytes": d.get("bytes", 0),
+    # The disk tier is ON when the operator turned the conversation cache on (--conversation-cache-mib) AND gave the
+    # tier a budget (--conversation-cache-disk-mib); the engine's own flag and the tier's log prove it too.  It must
+    # NOT hinge on one field the engine happens not to emit.
+    disk_on = bool((isinstance(mib, int) and mib > 0) and (isinstance(dmib, int) and dmib > 0))
+    disk = {"enabled": bool(disk_on or info.get("conversation_cache_disk") == 1 or d.get("ready") or spill_dir),
+            "dir": spill_dir, "budget_mib": dmib, "bytes": d.get("bytes", 0),
             "conversations": d.get("conversations", 0), "spills": d.get("spills", 0),
             "restores": parked.get("restores", 0), "evictions": d.get("evictions", 0),
             "age_evictions": d.get("age_evictions", 0), "when_full": d.get("when_full"),
@@ -822,6 +866,30 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
             "last_reused": last.get("reused") if last else None,
             "last_prompt": last.get("prompt_tokens") if last else None,
             "disk": disk, "system_prompt_cache": sysprompt}
+
+
+def admission_field(state: str, parked: dict):
+    """`live.admission`: where an admission in progress is taking its state from, or None outside one.  "loading"
+    while a parking streams back from the DISK tier (the engine's "loading N tokens from disk", tracked in
+    ConvCacheLog's `loading`), "reading" for a new prompt.  Only meaningful while the engine is admitting
+    (`state == "reading"`, before the first token): once the admission ends the field is None, so it can never stay
+    stuck at "loading"."""
+    if state != "reading":
+        return None
+    return "loading" if parked.get("loading") else "reading"
+
+
+def parse_info_line(info: dict, line: str) -> None:
+    """The engine's "INFO k=v k=v ..." line into `info` (int when numeric, else the bare string).  The disk tier's
+    conversation_cache_spill_dir is QUOTED because a folder can hold spaces, so it is lifted out before the
+    whitespace split; every other value is a bare token."""
+    m = re.search(r' conversation_cache_spill_dir="([^"]*)"', line)
+    if m:
+        info["conversation_cache_spill_dir"] = m.group(1)
+        line = line.replace(m.group(0), "")
+    for kv in line.split()[1:]:
+        k, _, v = kv.partition("=")
+        info[k] = int(v) if v.lstrip("-").isdigit() else v
 
 
 _BTRACE = bool(os.environ.get("STRATA_BATCH_TRACE"))
@@ -943,9 +1011,7 @@ class StrataEngine:
             if line is None:
                 break
             if line.startswith("INFO "):
-                for kv in line.split()[1:]:
-                    k, _, v = kv.partition("=")
-                    self.info[k] = int(v) if v.lstrip("-").isdigit() else v
+                parse_info_line(self.info, line)
             if line.startswith("READY"):
                 f = line.split()
                 self.max_context = int(f[1])
@@ -3797,6 +3863,7 @@ class Service:
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
+        live["admission"] = admission_field(state, parked)
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
