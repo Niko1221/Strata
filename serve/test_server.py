@@ -1253,11 +1253,15 @@ class UnfinishedToolCall(unittest.TestCase):
 
     def test_schema_typed_arguments_over_both_apis(self):
         self.PROPS = {"unlock": {"type": "boolean"}, "count": {"type": "integer"},
-                      "optional": {"type": ["boolean", "null"]}, "note": {"type": "string"}}
+                      "optional": {"type": ["boolean", "null"]}, "note": {"type": "string"},
+                      "level": {"enum": ["None", "Low", "High"]},
+                      "label": {"anyOf": [{"type": "string"}, {"type": "null"}]}}
         script = ("</think><tool_call><function=write><parameter=unlock>False</parameter>"
                   "<parameter=count>+10</parameter><parameter=optional>None</parameter>"
-                  "<parameter=note>False</parameter></function></tool_call>")
-        expected = {"unlock": False, "count": 10, "optional": None, "note": "False"}
+                  "<parameter=note>False</parameter><parameter=level>None</parameter>"
+                  "<parameter=label>False</parameter></function></tool_call>")
+        expected = {"unlock": False, "count": 10, "optional": None, "note": "False",
+                    "level": "None", "label": "False"}
         for (api, stream), (reason, arguments) in self.answers(script).items():
             with self.subTest(api=api, stream=stream):
                 self.assertEqual(reason, "tool_calls" if api == "openai" else "tool_use")

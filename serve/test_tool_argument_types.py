@@ -10,7 +10,7 @@ from serve.frontend import OutputParser, parse_tool_call
 
 class ToolArgumentTypes(unittest.TestCase):
     def check_value(self, declared, value, expected):
-        prop = {} if declared is None else {"type": declared}
+        prop = declared if isinstance(declared, dict) else ({} if declared is None else {"type": declared})
         schema = {"name": "f", "parameters": {"properties": {"p": prop}}}
         body = f"<function=f><parameter=p>\n{value}\n</parameter></function>"
         direct = parse_tool_call(body, schema).arguments
@@ -76,7 +76,7 @@ class ToolArgumentTypes(unittest.TestCase):
                     self.check_value(declared, value, value)
 
     def test_untyped_and_structured(self):
-        for declared in (None, [], ""):
+        for declared in (None, {}):
             for value, expected in (("True", True), ("False", False), ("None", None), ('{"a":1}', {"a": 1}),
                                     ("[1,false,null]", [1, False, None]), ("+10", "+10"), ("maybe", "maybe")):
                 with self.subTest(declared=declared, value=value):
@@ -87,6 +87,27 @@ class ToolArgumentTypes(unittest.TestCase):
         self.check_value("array", "[True, None]", "[True, None]")
         self.assertEqual(parse_tool_call("<function=f><parameter=p>True</parameter></function>").arguments,
                          {"p": True})
+
+    def test_schemas_without_top_level_type_preserve_python_literals(self):
+        cases = [
+            ({"enum": ["None", "Low", "High"]}, "None"),
+            ({"enum": ["True", "False"]}, "False"),
+            ({"const": "True"}, "True"),
+            ({"anyOf": [{"type": "string"}, {"type": "null"}]}, "False"),
+            ({"anyOf": [{"type": "string"}, {"type": "null"}]}, "None"),
+            ({"oneOf": [{"type": "string"}, {"type": "boolean"}]}, "True"),
+            ({"$ref": "#/$defs/Level"}, "None"),
+            ({"description": "A level"}, "False"),
+            ({"type": None}, "True"),
+            ({"type": []}, "True"),
+            ({"type": ""}, "True"),
+        ]
+        for prop, value in cases:
+            with self.subTest(prop=prop, value=value):
+                self.check_value(prop, value, value)
+        # Preserve the existing JSON-first behavior even without a top-level type.
+        self.check_value({"enum": [True, False]}, "false", False)
+        self.check_value({"anyOf": [{"type": "object"}, {"type": "null"}]}, '{"a":1}', {"a": 1})
 
     def test_vehicle_call_and_multiple_calls(self):
         schema = {"name": "lockDoors", "parameters": {"properties": {

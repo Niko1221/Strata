@@ -835,12 +835,13 @@ def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
     return ToolCall(name=obj["name"], arguments=args) if isinstance(args, dict) else None
 
 
-def _coerce_tool_value(value: str, declared):
+def _coerce_tool_value(value: str, schema: dict | None):
     """Keep strings verbatim and existing JSON decoding; recover typed scalar literals after JSON fails.
 
     This is not schema validation: valid JSON retains its original meaning, including quoted strings. Unknown
     or incompatible non-JSON values stay unchanged rather than guessing (especially for boolean arguments).
     """
+    declared = (schema or {}).get("type")
     types = declared if isinstance(declared, list) else [declared]
     if types == ["string"]:
         return value
@@ -850,7 +851,8 @@ def _coerce_tool_value(value: str, declared):
         pass
     v = value.strip()
     low = v.lower()
-    untyped = not declared or None in types
+    # No top-level type does not mean no schema: enum, anyOf, $ref, etc. still declare the property.
+    untyped = not schema
     if ("boolean" in types or untyped) and low in ("true", "false"):
         return low == "true"
     if ("null" in types or untyped) and low in ("null", "none"):
@@ -869,8 +871,8 @@ def _coerce_tool_value(value: str, declared):
 
 def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall. Values are JSON-decoded
-    unless declared as a string. Non-JSON scalar literals are converted by the declared type; without a type,
-    Python-style booleans and None are also accepted. Unrecognized values are kept unchanged."""
+    unless declared as a string. Non-JSON scalar literals are converted by the declared type. Without a property
+    schema, Python-style booleans and None are also accepted. Unrecognized values are kept unchanged."""
     body = body.strip()
     if not body.startswith("<function=") or ">" not in body:
         raise ValueError("malformed tool call: " + body[:80])
@@ -889,8 +891,7 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
             value = value[1:]
         if value.endswith("\n"):
             value = value[:-1]
-        declared = (props.get(pname) or {}).get("type")
-        args[pname] = _coerce_tool_value(value, declared)
+        args[pname] = _coerce_tool_value(value, props.get(pname))
     return ToolCall(name=name, arguments=args)
 
 
@@ -1071,7 +1072,7 @@ class OutputParser:
         self.scall = None            # the ToolCall being streamed (its id is reused by the final event)
         self.sfirst = True
         self.sval_started = False
-        self.sdeclared = {}
+        self.sprops = {}
 
     def _scan(self) -> list[Event]:
         """Advance the streaming view of the call body in self.buf (see stream_tools)."""
@@ -1090,7 +1091,7 @@ class OutputParser:
                 name = rest[a + 10:b]
                 self.scall = ToolCall(name=name, arguments={})
                 props = ((self.schemas.get(name) or {}).get("parameters") or {}).get("properties") or {}
-                self.sdeclared = {k: (v or {}).get("type") for k, v in props.items()}
+                self.sprops = props
                 out.append(Event("tool_start", call=self.scall))
                 args("{")
                 self.sp += b + 1
@@ -1106,8 +1107,9 @@ class OutputParser:
                     args(("" if self.sfirst else ",") + json.dumps(pname) + ":")
                     self.sfirst = False
                     self.sp += b + 1
-                    self.stype = self.sdeclared.get(pname)
-                    if self.stype == "string" or self.stype == ["string"]:
+                    self.sprop = self.sprops.get(pname)
+                    declared = (self.sprop or {}).get("type")
+                    if declared == "string" or declared == ["string"]:
                         args('"')
                         self.ss, self.sval_started = "str", False
                     else:
@@ -1152,7 +1154,7 @@ class OutputParser:
                     value = value[1:]
                 if value.endswith("\n"):
                     value = value[:-1]
-                v = _coerce_tool_value(value, self.stype)
+                v = _coerce_tool_value(value, self.sprop)
                 args(json.dumps(v, ensure_ascii=False))
                 self.sp += end + len(PARAM_END)
                 self.ss = "between"
