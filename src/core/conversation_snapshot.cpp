@@ -1,5 +1,7 @@
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_q2.hpp"
+#include "strata/kernels/kv_window.hpp"
 #include "conversation_checked.hpp"
 #include "conversation_copy.hpp"
 #include <cuda_runtime.h>
@@ -35,12 +37,22 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     const auto s = strata::kernels::qsa_real_shapes();
     const bool int8_keys = st.kv_int8 || st.kv_hybrid;
     if (g.n_head_kv <= 0 || g.head_dim <= 0 || g.head_dim > INT32_MAX || g.idx_key_dim <= 0 ||
-        (st.kv_q4 && g.head_dim % 32) || (int8_keys && !st.kv_q4 && g.head_dim % 64)) {
+        ((st.kv_q4 || st.kv_q2 || st.kv_q2k) && g.head_dim % 32) ||
+        (int8_keys && !st.kv_q4 && !st.kv_q2 && g.head_dim % 64)) {
         error = "conversation snapshot: invalid K/V geometry";
         return false;
     }
-    const int64_t cells = ((upto + s.page_size - 1) / s.page_size) * s.page_size;
+    // q2/q2k: the image's K side is GROUP-MAJOR (one 10-byte slot per (32-cell group, head, dim), kv_q2.hpp),
+    // so the image has to hold whole groups - a cell count that stops mid-group would store half a group's
+    // slots. Every other format keeps the page rounding it always had.
+    int64_t cells = ((upto + s.page_size - 1) / s.page_size) * s.page_size;
+    if (st.kv_q2 || st.kv_q2k)
+        cells = ((cells + strata::kernels::Q2_0 - 1) / strata::kernels::Q2_0) * strata::kernels::Q2_0;
+    // `per` is the K side's bytes per (cell, head); the V side is stated separately below (l.value_data).
+    // q2k is where that split earns its keep: K is the q2 width and V the q4_0 one, in the same image.
     const size_t per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
+                              : st.kv_q2 ? (size_t) strata::kernels::kv_q2_bytes_per_head((int) g.head_dim)
+                              : st.kv_q2k ? (size_t) strata::kernels::kv_q2_bytes_per_head((int) g.head_dim)
                               : (size_t) g.head_dim * (int8_keys ? 1 : 2);
     // Include the moving spare row, not only completed blocks. The checkpoint
     // restore reconstructs that row when rewinding to an earlier prefix.
@@ -48,9 +60,22 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     // Format 3 identifies snapshot K8V4 only; never pass it to the block movers.  Rotated INT8 K/V (#293,
     // STRATA_KV_ROT=1) is another format too (+16): its bytes mean nothing to a state that does not rotate, so a
     // snapshot or prompt checkpoint taken with the rotation never restores into one without it, nor the reverse.
-    // (Q4_0 is always rotated: nothing to tell apart; without the rotation the format is the one it always was.)
-    const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_hybrid ? 16 : 0;
-    l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated, cells, pooled, s.page_size, 0, 0, 0, 0, 0};
+    // (Q4_0 is always rotated: nothing to tell apart; without the rotation the format is the one it always was.
+    //  q2 is the same case: kv_q2.hpp reuses q4_0's 256-point Hadamard unchanged, so a q2 state is always rotated.)
+    //
+    // q2 carries +8 as well, for the same reason in its own way: its 2-bit layout is PER CHANNEL (one fp16 scale
+    // per dimension per 32-cell group, kv_q2.hpp) and the per-token layout it replaced put the scale per 32
+    // values of one cell. Same 80 B per cell and head, same codebook, and not one byte of the payload means the
+    // same thing. A snapshot taken with the per-token layout (format 4) must never restore into per-channel
+    // pools (format 12), and the reverse; `conversation_kv_validate` compares this number and refuses.
+    const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_q2 && !st.kv_q2k && !st.kv_hybrid ? 16 : 0;
+    // q2k carries the +8 too: its K side IS the per-channel q2 layout, so a snapshot whose K bytes are
+    // per-token-layout slots must not restore into it either. Its format number is 5 (kKvQ2K), so the marker
+    // is 13 - not 4 or 12 (q2), not 2 (q4_0), not 3 (K8V4). `conversation_kv_validate` compares this number
+    // and refuses a mismatch, which is the point: a q2k image restoring into a q4 state would write 80-byte
+    // K rows into 144-byte K blocks and call it a day.
+    const int q2_layout = (st.kv_q2 || st.kv_q2k) ? 8 : 0;
+    l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated + q2_layout, cells, pooled, s.page_size, 0, 0, 0, 0, 0};
     using conversation_detail::product;
     if (!product(l.data, {(uint64_t) cells, (uint64_t) g.n_head_kv, per}) ||
         !product(l.scales, {(uint64_t) cells, (uint64_t) g.n_head_kv,
@@ -61,10 +86,10 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     }
     l.value_data = l.data;
     l.value_scales = l.scales;
-    if (st.kv_hybrid) {
+    if (st.kv_hybrid || st.kv_q2k) {   // both put V in rotated q4_0, so V's row width is q4's, not `per`'s
         if (!product(l.value_data, {(uint64_t) cells, (uint64_t) g.n_head_kv,
                                    (uint64_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)})) {
-            error = "conversation snapshot: hybrid V byte count overflow";
+            error = "conversation snapshot: mixed-width (K8V4/q2k) V byte count overflow";
             return false;
         }
         l.value_scales = 0;
@@ -79,6 +104,10 @@ std::array<void*, 5> pools(const QsaState& st, bool resident = false) {
                 nullptr, st.idx_pooled};
     if (st.kv_q4)
         return {host ? st.host.k_q4 : st.k_q4, host ? st.host.v_q4 : st.v_q4, nullptr, nullptr, st.idx_pooled};
+    if (st.kv_q2k)   // K's per-channel pool and V's q4_0 pool - the two halves, in the image's K, V slots
+        return {host ? st.host.k_q2 : st.k_q2, host ? st.host.v_q4 : st.v_q4, nullptr, nullptr, st.idx_pooled};
+    if (st.kv_q2)
+        return {host ? st.host.k_q2 : st.k_q2, host ? st.host.v_q2 : st.v_q2, nullptr, nullptr, st.idx_pooled};
     if (st.kv_int8)
         return {host ? st.host.k_q : st.k_q, host ? st.host.v_q : st.v_q,
                 host ? st.host.k_scale : st.k_scale, host ? st.host.v_scale : st.v_scale, st.idx_pooled};
@@ -102,8 +131,11 @@ bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error
         }
     }
     if (st.kv_mode == 2 && (!st.page_table ||
-        (st.kv_q4 ? !st.k_q4 || !st.v_q4 : st.kv_int8 ? !st.k_q || !st.v_q || !st.k_scale || !st.v_scale
-                                                    : !st.k_pool || !st.v_pool))) {
+        (st.kv_q4 ? !st.k_q4 || !st.v_q4
+                  : st.kv_q2k ? !st.k_q2 || !st.v_q4
+                  : st.kv_q2 ? !st.k_q2 || !st.v_q2
+                  : st.kv_int8 ? !st.k_q || !st.v_q || !st.k_scale || !st.v_scale
+                               : !st.k_pool || !st.v_pool))) {
         error = "conversation snapshot: invalid draft ring";
         return false;
     }
@@ -154,7 +186,12 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
         error = "conversation snapshot: invalid unchanged prefix";
         return false;
     }
-    const int64_t whole_cells = (unchanged_tokens / l.page_size) * l.page_size;
+    // The reusable byte prefix. q2/q2k round it DOWN to a whole group as well: a group's slots are rewritten
+    // when any later cell of that group is written (its scale and the other cells' bits live in the same
+    // 10-byte slot), so a partial group's bytes are not reusable.
+    int64_t whole_cells = (unchanged_tokens / l.page_size) * l.page_size;
+    if (st.kv_q2 || st.kv_q2k)
+        whole_cells = (whole_cells / strata::kernels::Q2_0) * strata::kernels::Q2_0;
     image.format = l.format;
     image.cells = l.cells;
     image.heads = g.n_head_kv;
@@ -210,6 +247,44 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
         if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
                 return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
             })) return false;
+    // The FP16 sliding window + attention sinks (kv_window.hpp) are not part of the image: the restored quantized
+    // bulk is COMPLETE, so the overlay is rebuilt from it.  A restored window comes back at bulk precision instead
+    // of exact, which is correct - leaving it would have the new conversation reading the previous one's K/V.
+    if (st.k_win != nullptr && upto > 0) {
+        const auto src2 = pools(st);
+        strata::kernels::QsaAttnPools bulk;
+        bulk.page_table = st.page_table;
+        if (st.kv_hybrid) {
+            bulk.k_q = (const int8_t*) src2[0];
+            bulk.v_q4 = (const uint8_t*) src2[1];
+            bulk.k_scale = (const uint16_t*) src2[2];
+        } else if (st.kv_q4) {
+            bulk.k_q4 = (const uint8_t*) src2[0];
+            bulk.v_q4 = (const uint8_t*) src2[1];
+        } else if (st.kv_q2k) {   // K through bulk_q2, V through the q4_0 arm (kv_window.cu, mode 5)
+            bulk.k_q2 = (const uint8_t*) src2[0];
+            bulk.v_q4 = (const uint8_t*) src2[1];
+        } else if (st.kv_q2) {
+            bulk.k_q2 = (const uint8_t*) src2[0];
+            bulk.v_q2 = (const uint8_t*) src2[1];
+        } else if (st.kv_int8) {
+            bulk.k_q = (const int8_t*) src2[0];
+            bulk.v_q = (const int8_t*) src2[1];
+            bulk.k_scale = (const uint16_t*) src2[2];
+            bulk.v_scale = (const uint16_t*) src2[3];
+        } else {
+            bulk.k_pool = (const uint16_t*) src2[0];
+            bulk.v_pool = (const uint16_t*) src2[1];
+        }
+        auto shapes = strata::kernels::qsa_real_shapes();
+        shapes.n_head_kv = g.n_head_kv;
+        shapes.head_dim = g.head_dim;
+        strata::kernels::kv_window_restore(
+            {const_cast<uint16_t*>(st.k_win), const_cast<uint16_t*>(st.v_win)},
+            strata::kernels::KvWindowShape{(int32_t) st.kv_window, (int32_t) st.kv_sinks}, bulk,
+            st.kv_q4 ? 2 : (st.kv_hybrid ? 3 : (st.kv_q2k ? 5 : (st.kv_q2 ? 4 : (st.kv_int8 ? 1 : 0)))),
+            upto, shapes, nullptr);
+    }
     // VRAM slots still contain the outgoing conversation. Resolve must refill
     // them from the restored authoritative pools before any attention reads.
     if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, nullptr);

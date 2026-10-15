@@ -14,6 +14,7 @@
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_q2.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -959,16 +960,43 @@ bool MtpDrafter::record_front(int T, int row0, cudaStream_t cs, std::string& err
             fwht256_inplace_cuda(vcur_, (int64_t) T * NKV, cs);
         }
         // stored in the state's own format (#293 appended rotated INT8 K/V as Q4_0, into pools INT8 never has)
-        if (!no_batch_kv && st_.kv_q4)
+        if (!no_batch_kv && st_.kv_q2k) {   // q2k, drafter ring: K on the q2 group path (its accepted window is a
+            // partial group, so the word-masked atomic path), V on the q4 one. The ring's unit is the q2 group
+            // (kv_stream_unit_blocks), which is what layer.cpp's kv_plan rounds the ring's slots to.
+            const KvHostPools hk = kv_q2k_k_half(st_.host), hv = kv_q2k_v_half(st_.host);
+            const bool mirror = st_.host.present();
+            strata::kernels::kv_append_q2_steps(st_.k_q2, st_.k_q2, st_.page_table, step, 4, T, kcur_, kcur_, s, cs,
+                                                mirror ? &hk : nullptr, /*v3level*/ false);
+            kv_append_q4_steps(st_.v_q4, st_.v_q4, st_.page_table, step, 4, T, vcur_, vcur_, s, cs,
+                               mirror ? &hv : nullptr);
+        }
+        else if (!no_batch_kv && st_.kv_q4)
             kv_append_q4_steps(st_.k_q4, st_.v_q4, st_.page_table, step, 4, T, kcur_, vcur_, s, cs, &st_.host);
+        else if (!no_batch_kv && st_.kv_q2)   // 2-bit, 4-level Lloyd-Max (kv_q2.hpp), the drafter's ring in --kv q2
+            strata::kernels::kv_append_q2_steps(st_.k_q2, st_.v_q2, st_.page_table, step, 4, T, kcur_, vcur_, s, cs,
+                                                &st_.host, /*v3level*/ false);
         else if (!no_batch_kv && st_.kv_int8)
             kv_append_q8_steps(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step, 4, kcur_, vcur_,
                                (int) (NKV * HD), T, s, cs, &st_.host);
         else
             for (int t = 0; t < T; ++t) {
-                if (st_.kv_q4)
+                if (st_.kv_q2k) {   // q2k per row: the q2 single-cell append (partial group, atomics) for K,
+                    // the q4 append for V - the pair the main layers use, with the ring's own page table
+                    const KvHostPools hk = kv_q2k_k_half(st_.host), hv = kv_q2k_v_half(st_.host);
+                    const bool mirror = st_.host.present();
+                    strata::kernels::kv_append_q2_step(st_.k_q2, st_.k_q2, st_.page_table, step + t * 4,
+                                                       kcur_ + t * NKV * HD, kcur_ + t * NKV * HD, s, cs,
+                                                       mirror ? &hk : nullptr, /*v3level*/ false);
+                    kv_append_q4_step(st_.v_q4, st_.v_q4, st_.page_table, step + t * 4, vcur_ + t * NKV * HD,
+                                      vcur_ + t * NKV * HD, s, cs, mirror ? &hv : nullptr);
+                }
+                else if (st_.kv_q4)
                     kv_append_q4_step(st_.k_q4, st_.v_q4, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
                                       vcur_ + t * NKV * HD, s, cs, &st_.host);
+                else if (st_.kv_q2)
+                    strata::kernels::kv_append_q2_step(st_.k_q2, st_.v_q2, st_.page_table, step + t * 4,
+                                                       kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st_.host,
+                                                       /*v3level*/ false);
                 else if (st_.kv_int8)
                     kv_append_q8_step(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step + t * 4,
                                       kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st_.host);

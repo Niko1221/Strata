@@ -5509,6 +5509,7 @@ int main(int argc, char **argv) try {
     // per-token dump site, and a header promising rows that were never written is worse than no file.
     int32_t hdr[2] = {0, 0};
     bool hdr_written = false;
+    int64_t rows_written = 0;   // rows actually in the file; the header is repaired to this at close
     const int64_t dump_positions = (int64_t) o.tokens.size() - 1 + o.max_new;
     if (!o.dump_logits.empty()) {
         if (dump_positions > INT32_MAX || n_vocab > INT32_MAX) {
@@ -5527,7 +5528,16 @@ int main(int argc, char **argv) try {
         // class of defect as a self-check that verifies the wrong invariant: anything reading the count instead
         // of the size gets a wrong answer that looks authoritative.  `tools/logits_identical.py` caught it by
         // parsing the header and refusing the file.
-        const int32_t n_rows = (int32_t) strata::program::logits_selection::row_count(dump_positions, o.logits_stride);
+        //
+        // **THE COUNT IS OVER THE RANGE THE RUNNING PATH EMITS, NOT FROM 0.**  The per-token loop writes from
+        // position 0, so `first_emit = 0` and the count is exactly `row_count(dump_positions, stride)` - the
+        // non-native header is unchanged, byte for byte.  A native (IQ) pack breaks out of that loop on its
+        // first iteration (see `if (native_pack) { spec_pos = pos; break; }`) and emits rows only from the
+        // prompt's last position `n_prompt - 1`, so counting from 0 promised `n_prompt - 1` rows that the
+        // speculative loop never writes.
+        const int64_t first_emit = native_pack ? (int64_t) o.tokens.size() - 1 : 0;
+        const int32_t n_rows = (int32_t) strata::program::logits_selection::row_count_from(first_emit, dump_positions,
+                                                                                            o.logits_stride);
         hdr[0] = n_vocab; hdr[1] = n_rows;
     }
 
@@ -12141,6 +12151,7 @@ int main(int argc, char **argv) try {
             std::fclose(dump);
             return 1;
         }
+        if (emit_logits) ++rows_written;
         {
             // **993 KB OF SYNCHRONOUS D2H AND A 248,320-FLOAT HOST SCAN, EVERY TOKEN.**  (The review's notes
             // say 151,936 floats; the artifact's `output.weight` is 248,320 rows, so the real figure is 1.6x
@@ -12463,6 +12474,11 @@ int main(int argc, char **argv) try {
         };
         int64_t p = spec_pos;
         int32_t x = (int32_t) tok;
+        // **--dump-logits CAN ONLY BE SERVED FROM THIS LOOP ON A NATIVE (IQ) PACK** - see the dump site in the
+        // acceptance loop below for why.  The row buffer is allocated only for that case, so a run without
+        // --dump-logits, and a non-native run (which the per-token loop already covers), pay nothing.
+        const bool dump_logits_spec = dump != nullptr && native_pack;
+        std::vector<float> spec_row(dump_logits_spec ? (size_t) n_vocab : 0);
         std::vector<int32_t> drafts((size_t) o.spec, 0);
         std::vector<float> dprob((size_t) o.spec, 1.0f);
         std::vector<int64_t> window_hist((size_t) o.spec + 1, 0);
@@ -12648,6 +12664,46 @@ int main(int argc, char **argv) try {
             bool eos = false;
             for (int i = 0; i <= a && (int64_t) produced.size() < max_new && !eos; ++i) {
                 produced.push_back(outv[(size_t) i]);
+                // ---- **--dump-logits, THE SPECULATIVE PATH.**  This site exists because a native (IQ) pack
+                // NEVER RUNS THE PER-TOKEN LOOP ABOVE: its loop head breaks on the FIRST iteration
+                // (`if (native_pack) { spec_pos = pos; break; }`), and a non-native pack hands the decode over
+                // to this loop at the `o.spec > 0 && pos >= n_prompt - 1` break.  So on a native pack every
+                // token - and every position - comes from here, and with no dump site here `--dump-logits`
+                // printed "logits dumped <path>" over a 0-byte file.  That blocked the 2-bit KV cache's
+                // KL / top-1 / perplexity measurement, which reads exactly these rows.
+                //
+                // Row i of the window IS the distribution that produced `outv[i]`: `Verifier::run` runs the
+                // head over all T rows at p into `head_logits_` and samples them
+                // (`sample_tokens(head_logits_, T, n_vocab, ...)`, verify.cpp), and `copy_logits(i, ...)`
+                // reads `head_logits_ + i * n_vocab`.  The row therefore belongs to position `p + i`, and the
+                // window's rows stay valid until the NEXT `ver.run` - the commit graph touches only the K/V
+                // and the PLE window, never `head_logits_`.
+                //
+                // The gate is the per-token loop's own selection, so `--logits-stride` picks the same
+                // positions on both paths.  A row of the WRONG distribution is worse than a missing row: if
+                // `copy_logits` cannot give slot i the row is SKIPPED and the header is repaired to the rows
+                // actually written (see the close of `dump`).
+                if (dump_logits_spec &&
+                    strata::program::logits_selection::selected(p + i, dump_positions, o.logits_stride)) {
+                    if (!ver.copy_logits(i, spec_row.data())) {
+                        std::fprintf(stderr, "strata generate: --dump-logits: the verify window at position %lld "
+                                             "(T=%d) cannot give slot %d; the row for position %lld is SKIPPED\n",
+                                     (long long) p, T, i, (long long) (p + i));
+                    } else if (!hdr_written && std::fwrite(hdr, sizeof hdr, 1, dump) != 1) {
+                        std::fprintf(stderr, "strata generate: cannot write logits header\n");
+                        std::fclose(dump);
+                        return 1;
+                    } else {
+                        hdr_written = true;
+                        if (std::fwrite(spec_row.data(), sizeof(float), (size_t) n_vocab, dump) != (size_t) n_vocab) {
+                            std::fprintf(stderr, "strata generate: cannot write logits at position %lld\n",
+                                         (long long) (p + i));
+                            std::fclose(dump);
+                            return 1;
+                        }
+                        ++rows_written;
+                    }
+                }
                 if (sfx_on) sfx.append(outv[(size_t) i]);
                 if (o.lookup_chain > 0) extra_sources_append(&outv[(size_t) i], 1);
                 eos = o.stop_eos && std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outv[(size_t) i]) != o.eos_ids.end();
@@ -12798,9 +12854,27 @@ int main(int argc, char **argv) try {
                         (double) mtp.vram_bytes() / 1048576.0);
     }
 
-    if (dump != nullptr && std::fclose(dump) != 0) {
-        std::fprintf(stderr, "strata generate: cannot finish logits dump\n");
-        return 1;
+    if (dump != nullptr) {
+        // **THE HEADER MUST NEVER PROMISE ROWS THE FILE DOES NOT CONTAIN.**  On the native path the count is
+        // computed up front from the positions the speculative loop is expected to emit; if a window ever
+        // refused a slot the file is shorter.  An early EOS shortens a NON-native run just the same, and
+        // rows_written is counted on both paths, so the header is repaired to what was actually written on
+        // EVERY path whenever rows_written differs from it.
+        if (hdr_written && rows_written != (int64_t) hdr[1]) {
+            std::fprintf(stderr, "strata generate: --dump-logits: the header promised %lld rows, %lld were "
+                                 "written; rewriting it to %lld\n", (long long) hdr[1], (long long) rows_written,
+                         (long long) rows_written);
+            hdr[1] = (int32_t) rows_written;
+            if (std::fseek(dump, 0, SEEK_SET) != 0 || std::fwrite(hdr, sizeof hdr, 1, dump) != 1) {
+                std::fprintf(stderr, "strata generate: cannot rewrite the logits header\n");
+                std::fclose(dump);
+                return 1;
+            }
+        }
+        if (std::fclose(dump) != 0) {
+            std::fprintf(stderr, "strata generate: cannot finish logits dump\n");
+            return 1;
+        }
     }
     if (layer_dump != nullptr) {
         std::fclose(layer_dump);

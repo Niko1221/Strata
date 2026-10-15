@@ -294,15 +294,16 @@ __dpct_inline__ void reset_kernel(KvStreamMap m) {
 }
 
 __dpct_inline__ void ring_kernel(int32_t *table, long long n_blocks,
-                                 long long n_slots) {
+                                 long long n_slots, int gpb) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const long long ng = n_slots / gpb;
 #pragma unroll
     for (long long i =
              (long long)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
              item_ct1.get_local_id(2);
          i < n_blocks; i += (long long)item_ct1.get_group_range(2) *
                             item_ct1.get_local_range(2))
-        table[i] = (int32_t) (i % n_slots);
+        table[i] = (int32_t) ((i / gpb) % ng * gpb + i % gpb);   // gpb == 1: i % n_slots
 }
 
 }  // namespace
@@ -391,7 +392,7 @@ void kv_stream_resolve(const KvStreamMap& m, const QsaAttnPools& slots, const Kv
     check("copy");
 }
 
-void kv_ring_table(int32_t* page_table, int64_t n_blocks, int64_t n_slots, void* stream) {
+void kv_ring_table(int32_t* page_table, int64_t n_blocks, int64_t n_slots, void* stream, int gpb) {
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -402,7 +403,7 @@ void kv_ring_table(int32_t* page_table, int64_t n_blocks, int64_t n_slots, void*
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    ring_kernel(page_table, n_blocks, n_slots);
+                    ring_kernel(page_table, n_blocks, n_slots, gpb);
                 });
     }
     check("ring table");

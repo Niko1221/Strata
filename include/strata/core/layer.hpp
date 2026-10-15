@@ -219,16 +219,47 @@ struct QsaState {
     bool kv_q4 = false;
     uint8_t* k_q4 = nullptr;
     uint8_t* v_q4 = nullptr;
+    /// 2-bit KV with Walsh-Hadamard rotation (qsa_set_kv_q2, kv_q2.hpp): 80 B per cell and head, 320 per cell for
+    /// 2 KV heads, against 576 for Q4_0 and 2,048 for FP16. Same rotation as Q4_0, so the readers share it.
+    bool kv_q2 = false;
+    uint8_t* k_q2 = nullptr;
+    uint8_t* v_q2 = nullptr;
     /// Hybrid K8V4: K in INT8 (unrotated - the scores stay exact), V in rotated Q4_0 (kv_q4.hpp): 816 B per cell.
     /// Uses k_q/k_scale + v_q4. Mode 0 only (no KV streaming, no ring); under this setting the MTP drafter's
     /// ring state stays plain INT8, so the block movers never see the hybrid layout.
     bool kv_hybrid = false;
+    /// MIXED WIDTH `--kv q2k`: K in 2-bit PER-CHANNEL (the q2 path, kv_q2.hpp) + V in rotated Q4_0 (kv_q4.hpp).
+    /// Uses k_q2 + v_q4 - the two pools the two formats already have, one per side - and 224 B per cell and KV
+    /// head, 448 per cell for 2 KV heads (q2: 320, q4_0: 576). Both sides are rotated, so `kv_rot` is true and
+    /// the readers are q2's for K and q4's for V, which is why the fused attention reads K and V by two modes
+    /// rather than one (qsa_decode_attn.cu). Streams and rings like q2: the K side's per-channel scale spans a
+    /// 32-cell group, so the residency unit is the group (kv_stream.hpp).
+    ///
+    /// It is NOT a q2 state and NOT a q4 state, and it says so: `kv_q2` and `kv_q4` are both false, and
+    /// `qsa_kv_format()` answers kKvQ2K. A reader told "q2" would read V's 18-byte q4_0 blocks as 10-byte
+    /// per-channel slots; one told "q4" would read K's slots as blocks. Both are silent.
+    bool kv_q2k = false;
+    /// Per-layer K reconstruction gain (`--kv-k-gain`, kv_q2.hpp): the q2-family K scale is STORED as this times
+    /// the scale the rule computes, and the codes are chosen against the rule's (un-gained) scale - the code
+    /// assignment is unchanged and only the reconstruction grows. 1.0 (the default) is bit-identical to the rule
+    /// without it; V and the drafter ring never see it.
+    float kv_k_gain = 1.0f;
     /// K and V go through kv_q4.hpp's Walsh-Hadamard rotation before they are stored, the queries too, the output
     /// back: always for Q4_0, for INT8 by qsa_set_kv_int8_rotate (spreads outlier channels over the scale groups)
     bool kv_rot = false;
     int32_t* page_table = nullptr;   ///< (n_pages,) logical page -> physical page (-1: not resident, streamed)
     int64_t n_pages = 0;
     int64_t max_cells = 0;
+    /// FP16 sliding window + attention sinks (kv_window.hpp): the `kv_window` most recent cells and the `kv_sinks`
+    /// leading ones are mirrored in FP16 in k_win/v_win and read from there, while the quantized pools above stay
+    /// COMPLETE for every cell - snapshots, streaming residency and the ring modes keep reading them untouched.
+    /// `kv_window` 0 (the default) leaves the overlay off: every reader then takes the path it took before it
+    /// existed, bit for bit.
+    int64_t kv_window = 0;
+    int64_t kv_sinks = 0;
+    uint16_t* k_win = nullptr;
+    uint16_t* v_win = nullptr;
+    long long win_bulk_rows = 0;   ///< the row number the overlay's rows start at (QsaAttnPools::bulk_rows)
 
     /// KV STREAMING (docs/kv-streaming-design.md, `kv_stream.hpp`). `kv_mode` 0: every page in VRAM, identity
     /// table (n_slots == n_pages, no host copy). 1: streamed - the authoritative K/V in `host`, `n_slots` pages
@@ -315,12 +346,40 @@ bool qsa_kv_int8();
 /// PR #21: store K/V as Q4_0 after a Hadamard rotation (`--kv q4_0`): 576 B per cell, vs 1,056 in INT8.
 void qsa_set_kv_q4(bool enabled);
 bool qsa_kv_q4();
+/// 2-bit K/V through the same Hadamard rotation (`--kv q2`, kv_q2.hpp): 320 B per cell for 2 KV heads, with a
+/// Lloyd-Max codebook scaled by block RMS. Not near-lossless yet - see docs/kv-q2.md for the measured gap.
+void qsa_set_kv_q2(bool enabled);
+bool qsa_kv_q2();
+/// FP16 sliding window + attention sinks (kv_window.hpp): the `window` most recent cells and the `sinks` leading
+/// ones are also kept in FP16 and read from there. Leave `window` 0 (the default, or STRATA_KV_WINDOW unset) to
+/// keep the overlay off. Only the quantized formats gain from it, so a fully resident FP16 state ignores it, and
+/// the MTP drafter's ring state keeps its own format (the hybrid setting's reason: the block movers never see it).
+void qsa_set_kv_window(int64_t window, int64_t sinks);
+int64_t qsa_kv_window();
+int64_t qsa_kv_window_sinks();
 /// Hybrid K8V4 (`--kv k8v4`): K in INT8, V in rotated Q4_0 - 816 B per cell; streams with --kv-resident too.
 void qsa_set_kv_hybrid(bool enabled);
 bool qsa_kv_hybrid();
-/// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvHybrid).
+/// Mixed width `--kv q2k`: K in 2-bit per-channel (the q2 path) + V in rotated Q4_0 (the q4 path) - 448 B per
+/// cell for 2 KV heads, against q2's 320 and q4_0's 576. Set before sizing and initializing the session.
+void qsa_set_kv_q2k(bool enabled);
+bool qsa_kv_q2k();
+/// Per-layer K reconstruction gain (`--kv-k-gain`): the q2/q2k K scale is stored as `beta` times the scale the
+/// rule computes, and the CODES are chosen against the rule's (un-gained) scale (kv_q2.cu): the code assignment
+/// is unchanged, only the reconstruction grows. Indexed by MODEL layer (3, 7, ... 47 - the numbering `--dump-kv`
+/// uses); every layer defaults to 1.0 (off). Set per layer before session init; `session_init` copies the table
+/// into each main layer's `QsaState::kv_k_gain` (the drafter ring keeps 1.0).
+void qsa_set_kv_k_gain(int64_t model_layer, float beta);
+float qsa_kv_k_gain(int64_t model_layer);
+/// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvHybrid /
+/// kKvQ2 / kKvQ2K). THE MIXED FORMATS ARE NAMED AS MIXED: kKvHybrid is "int8 K + q4_0 V" and kKvQ2K is
+/// "q2-per-channel K + q4_0 V", each with its own runs in kv_stream.cu. Answering one of the two single-format
+/// numbers for a mixed state would tell a mover that V's q4_0 bytes are 2-bit slots (or that K's per-channel
+/// slots are q4_0 blocks), and it would move them without complaining.
 inline int qsa_kv_format(const QsaState& st) {
     if (st.kv_hybrid) return strata::kernels::kKvHybrid;   // K8V4: its own three runs (kv_stream.cu)
+    if (st.kv_q2k) return strata::kernels::kKvQ2K;         // q2k: K's group run + V's q4_0 run (kv_stream.cu)
+    if (st.kv_q2) return strata::kernels::kKvQ2;
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,

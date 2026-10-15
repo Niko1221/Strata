@@ -31,7 +31,9 @@
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_q2.hpp"
 #include "strata/kernels/kv_q8.hpp"
+#include "strata/kernels/kv_window.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_gr_postops.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
@@ -1250,12 +1252,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 // the per-token GEMVs / norms / RoPEs / copies of this layer as one launch over the
                 // window's rows each - row-wise identical arithmetic (STRATA_DEC_BATCH=0: token by token)
                 // STRATA_DF_QB_Q4 (opt-in: STRATA_DF_QB_Q4=1): a Q4_0 KV cache too - its one per-token extra, the query's rotation, is
-                // row-wise and the batched path rotates (270650e); 0: Q4_0 token by token, as before
+                // row-wise and the batched path rotates (270650e); 0: Q4_0 token by token, as before.  q2 is the same
+                // case for the same reason - it rotates K, V and the query (kv_q2.hpp reuses q4_0's Hadamard), so the
+                // gate treats it exactly as it treats Q4_0 and STRATA_DF_QB_Q4 opts both in.
                 static const bool qb_q4 = [] {
                     const char* e = std::getenv("STRATA_DF_QB_Q4");
                     return e != nullptr && std::atoi(e) != 0;
                 }();
-                const bool qb = dec_batch && n > 1 && native_qsa_enabled() && native_rope_enabled() && (!st.kv_q4 || qb_q4);
+                const bool qb = dec_batch && n > 1 && native_qsa_enabled() && native_rope_enabled() &&
+                                ((!st.kv_q4 && !st.kv_q2 && !st.kv_q2k) || qb_q4);
                 if (!q8_attn) native_quantize_q8_1(xm, xq_, (int) N, n, cs);
                 // STRATA_DF_BRANCH: the query side (q and its norm/RoPE/rotation on side 0, the indexer query on side 1)
                 // beside the K/V side; the indexer query joins before the block scores, the query before attention
@@ -1311,9 +1316,23 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                            kc_b, kc_b, (int) (NKV * HD), n, s, cs, mirror ? &hk : nullptr);
                         kv_append_q4_steps(st.v_q4, st.v_q4, st.page_table, step_b, kStepCount, n, vc_b, vc_b, s, cs,
                                            mirror ? &hv : nullptr);
+                    } else if (st.kv_q2k) {   // q2k: K through the q2 group kernel (whole groups plain, the batch's
+                        // tail through the word-masked atomics), V through the q4 batch kernel. One plane each, by
+                        // the hybrid fold (the same pool and the same tensor twice) - layer.cpp's decode arm.
+                        const KvHostPools hk = kv_q2k_k_half(st.host), hv = kv_q2k_v_half(st.host);
+                        const bool mirror = st.host.present();
+                        strata::kernels::kv_append_q2_steps(st.k_q2, st.k_q2, st.page_table, step_b, kStepCount, n,
+                                                            kc_b, kc_b, s, cs, mirror ? &hk : nullptr,
+                                                            /*v3level*/ false, st.kv_k_gain);
+                        kv_append_q4_steps(st.v_q4, st.v_q4, st.page_table, step_b, kStepCount, n, vc_b, vc_b, s, cs,
+                                           mirror ? &hv : nullptr);
                     } else if (st.kv_q4)
                         kv_append_q4_steps(st.k_q4, st.v_q4, st.page_table, step_b, kStepCount, n, kc_b, vc_b, s, cs,
                                            &st.host);
+                    else if (st.kv_q2)   // 2-bit, 4-level Lloyd-Max for K and V (kv_q2.hpp, the parity gate's choice)
+                        strata::kernels::kv_append_q2_steps(st.k_q2, st.v_q2, st.page_table, step_b, kStepCount, n,
+                                                            kc_b, vc_b, s, cs, &st.host, /*v3level*/ false,
+                                                            st.kv_k_gain);
                     else if (st.kv_int8)
                         kv_append_q8_steps(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_b, kStepCount,
                                            kc_b, vc_b, (int) (NKV * HD), n, s, cs, &st.host);
@@ -1321,6 +1340,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         for (int t = tb; t < te; ++t)
                             kv_append_step(st.k_pool, st.v_pool, st.page_table, step_ + t * kStepCount,
                                            kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st.host);
+                    // the FP16 sliding window + attention sinks (kv_window.hpp): the same cells the appends above
+                    // stored, in FP16. The decode attention that follows reads the window's cells from here, so
+                    // this is not optional when the overlay is on.
+                    if (st.k_win != nullptr)
+                        strata::kernels::kv_window_write_steps(
+                            {st.k_win, st.v_win},
+                            strata::kernels::KvWindowShape{(int32_t) st.kv_window, (int32_t) st.kv_sinks}, step_b,
+                            kStepCount, n, kc_b, vc_b, s, cs);
                 } else
                 for (int t = tb; t < te; ++t) {
                     const QsaState& st = slot_ss(t).qsa_states[qi];   // the row's own K/V (ss's outside a batch)
@@ -1332,15 +1359,34 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                           kcur_ + t * NKV * HD, kcur_ + t * NKV * HD, s, cs, mirror ? &hk : nullptr);
                         kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vcur_ + t * NKV * HD,
                                           vcur_ + t * NKV * HD, s, cs, mirror ? &hv : nullptr);
+                    } else if (st.kv_q2k) {   // q2k, one cell: the q2 partial-group atomic path for K, the q4
+                        // append for V (layer.cpp's decode append, the same pair of folded one-plane calls)
+                        const KvHostPools hk = kv_q2k_k_half(st.host), hv = kv_q2k_v_half(st.host);
+                        const bool mirror = st.host.present();
+                        strata::kernels::kv_append_q2_step(st.k_q2, st.k_q2, st.page_table, step_t,
+                                                           kcur_ + t * NKV * HD, kcur_ + t * NKV * HD, s, cs,
+                                                           mirror ? &hk : nullptr, /*v3level*/ false, st.kv_k_gain);
+                        kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vcur_ + t * NKV * HD,
+                                          vcur_ + t * NKV * HD, s, cs, mirror ? &hv : nullptr);
                     } else if (st.kv_q4)
                         kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kcur_ + t * NKV * HD,
                                           vcur_ + t * NKV * HD, s, cs, &st.host);
+                    else if (st.kv_q2)   // 2-bit, 4-level Lloyd-Max for K and V (kv_q2.hpp, the parity gate's choice)
+                        strata::kernels::kv_append_q2_step(st.k_q2, st.v_q2, st.page_table, step_t,
+                                                           kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st.host,
+                                                           /*v3level*/ false, st.kv_k_gain);
                     else if (st.kv_int8)
                         kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_t,
                                           kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st.host);
                     else
                         kv_append_step(st.k_pool, st.v_pool, st.page_table, step_t, kcur_ + t * NKV * HD,
                                        vcur_ + t * NKV * HD, s, cs, &st.host);
+                    // the FP16 sliding window + attention sinks (kv_window.hpp), per row's own state
+                    if (st.k_win != nullptr)
+                        strata::kernels::kv_window_write_step(
+                            {st.k_win, st.v_win},
+                            strata::kernels::KvWindowShape{(int32_t) st.kv_window, (int32_t) st.kv_sinks}, step_t,
+                            kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs);
                 }
                 if (dec_batch && !g_no_batch_kv && !batch_rec_) {
                     const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
