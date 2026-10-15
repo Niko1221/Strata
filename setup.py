@@ -31,13 +31,17 @@ answers, no questions), --setup (install another model / change settings instead
 engine), --check (only check this PC), --resident-budget-gib N (UD-Q4_K_XL's or UD-IQ4_XS's experts in RAM),
 --kv-streaming on|off|auto.
 
-The on-disk layer (off by default, and nothing is written for it): --conversation-cache-spill-dir DIR keeps the
-conversations the RAM cache evicts on disk (with --conversation-cache-disk-mib N, and the optional
---conversation-cache-spill-when-full evict-oldest|reject and --conversation-cache-spill-max-age-days N), and
---system-prompt-cache keeps the system prompt's prefill checkpoint on disk across restarts (with
---system-prompt-cache-dir DIR, --system-prompt-cache-mib N, --system-prompt-cache-slots N,
---system-prompt-cache-max-age-days N, --system-prompt-cache-key STR).  The two are independent, and setup creates
-the feature's folder when it is turned on.
+The on-disk layer: once the RAM conversation cache is on (--conversation-cache-mib), the engine keeps the
+conversations it evicts on disk, resolving a default folder when --conversation-cache-spill-dir DIR is not given
+(<Strata dir>\\slots, or .strata\\slots in the user profile when the Strata folder is on the system drive).  The tier
+is bounded by --conversation-cache-disk-mib N, and --conversation-cache-spill-when-full evict-oldest|reject and
+--conversation-cache-spill-max-age-days N are optional.  --system-prompt-cache keeps the system prompt's prefill
+checkpoint on disk across restarts (with --system-prompt-cache-dir DIR, --system-prompt-cache-mib N,
+--system-prompt-cache-slots N, --system-prompt-cache-max-age-days N, --system-prompt-cache-key STR).  The two are
+independent, and setup creates the feature's folder when it is turned on.  Where a parked conversation goes is the
+engine's --conversation-cache-park (ram|disk|auto, default ram; --conversation-cache-park-min-free-mib, default 512,
+is the transient floor a disk-destined capture may take) - setup passes neither, but the run config's args may carry
+them.
 
 Setup recommends, it never forces: the recommended answers are the defaults (--yes, or Enter), and a bigger choice
 than it recommends - a longer context, more GPUs, a bigger RAM budget, a size it thinks will not fit - is kept, with
@@ -5949,8 +5953,8 @@ def main() -> int:
                          "experts fit on the GPU); auto: when the RAM has room for it")
     ap.add_argument("--conversation-cache-spill-dir", metavar="DIR",
                     help="keep the conversations the RAM cache evicts on disk, in this folder, so a restart finds "
-                         "them again (the on-disk layer; off unless given. It complements --conversation-cache-mib, "
-                         "which turns the RAM cache on). docs/DETAILS.md")
+                         "them again (it overrides the folder the engine resolves when the flag is absent; the tier "
+                         "is on whenever --conversation-cache-mib is). docs/DETAILS.md")
     ap.add_argument("--conversation-cache-disk-mib", type=int, metavar="N",
                     help="the spill folder's limit in MiB (engine default 8192; 0 = no limit)")
     ap.add_argument("--conversation-cache-spill-when-full", choices=["evict-oldest", "reject"],

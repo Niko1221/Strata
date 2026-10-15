@@ -144,8 +144,10 @@ flowchart TD
 
 **Turn it on.**
 
-- Disk tier: `--conversation-cache-spill-dir DIR`, with `--conversation-cache-mib > 0`, `--prompt-cache > 0`,
-  `--conversation-cache-slots > 0` and a nonzero `--conversation-cache-disk-mib` (default 8192 MiB).
+- Disk tier: `--conversation-cache-mib > 0`, `--prompt-cache > 0`, `--conversation-cache-slots > 0` and a nonzero
+  `--conversation-cache-disk-mib` (default 8192 MiB). `--conversation-cache-spill-dir DIR` names the folder; when
+  the flag is absent the engine resolves one (`<Strata dir>\slots`, or `<user profile>\.strata\slots` when the Strata
+  folder is on the system drive or cannot be created) and logs the choice, so the tier turns on without the flag.
   `--conversation-cache-spill-on` chooses `park` (default once the tier is on: a mirror, written at the park) or
   `evict` (the delta-1 overflow);
   `--conversation-cache-spill-when-full` chooses `evict-oldest` (default) or `reject`;
@@ -157,6 +159,9 @@ flowchart TD
   2048; `--conversation-cache-archive-keep`, default 4; `--conversation-cache-archive-max-age-days`, default 0 =
   no retention by time). With the mode `off` nothing is archived and nothing is created: the tier is
   **byte-for-byte identical** to the behaviour without these flags.
+- Parking destination: `--conversation-cache-park` (default `ram`) sends a capture to host RAM, spills it to disk,
+  or lets `auto` resolve the two at start; `--conversation-cache-park-min-free-mib` (default 512 MiB) is the transient
+  floor a disk-destined copy may take. See [FLAGS.md](FLAGS.md), section D.
 - System-prompt cache: `--system-prompt-cache` with `--system-prompt-cache-dir DIR`. It also needs
   `--prompt-cache > 0`, `--prompt-cache-root > 0`, a turn token and `--mtp` (without MTP the feature reports
   itself off rather than capturing a different artifact). Its folder is separate from the spill folder.
@@ -171,8 +176,10 @@ shows their counters under `/metrics` in `conversation_cache` (`disk` and `syste
   variant's key, and a joint sidecar holding the stage count (its sidecar is version 2; a version 1 file, the
   single-file form, is still read). It also loads a variant whose K/V was stored while the engine kept part of
   the context in host RAM.
-- A disk hit is read into host RAM before it is restored: it must fit `--conversation-cache-mib` and leave the
-  `--conversation-cache-min-free-mib` floor available, or the request reads the prompt normally.
+- A disk hit is read into host RAM before it is restored: it must fit `--conversation-cache-mib` and leave a
+  physical-memory floor available, or the request reads the prompt normally. A copy destined to disk reads under the
+  smaller `--conversation-cache-park-min-free-mib` (default 512 MiB) when the `--conversation-cache-min-free-mib`
+  floor does not hold, because its RAM is transient.
 - The scan never deletes. A file of another identity, a broken or missing sidecar, an orphan session file and a
   leftover temporary are ignored and counted (`foreign`, `stale`, `orphan`), never removed. Only the GC removes,
   by budget and (if enabled) by age, oldest first.
@@ -188,9 +195,11 @@ shows their counters under `/metrics` in `conversation_cache` (`disk` and `syste
   between copies that disagree discards nothing, and a trace line names the `conversation_key` of the copy removed.
   It is written and tested on a sibling branch and arrives as the next stacked PR against this branch; this delta
   ships without it.
-- Nothing is written with the flags absent: no folder is created and no byte is written. The mirror writes at the
-  **end of a request** (the park), never mid-generation, and collapses a burst of parks of one conversation to its
-  newest state; the disk cost is bounded by `--conversation-cache-disk-mib` either way.
+- With the RAM cache off (`--conversation-cache-mib 0`, the default) nothing is written: no folder is created and no
+  byte is written. With the RAM cache on, the disk tier resolves a default folder and turns on even when
+  `--conversation-cache-spill-dir` is absent. The mirror writes at the **end of a request** (the park), never
+  mid-generation, and collapses a burst of parks of one conversation to its newest state; the disk cost is bounded by
+  `--conversation-cache-disk-mib` either way.
 - The **archive** (`--conversation-cache-archive-mode`, delta 5a) is off by default: with `off` the tier is
   **byte-for-byte identical** to the behaviour without the archive flags (no directory, no byte, counters at 0).
   When on it keeps what the three discard paths would destroy, in its own subdirectory, with its **own** budget and
