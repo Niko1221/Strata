@@ -200,7 +200,8 @@ reproduce it and the needle disclosures live in `bench/results/2026-10-15-mac-kv
 - **Streaming:** measured at 32 GB only. The model's file must be on the internal SSD; an external disk is untested and likely much slower.
 - **`--kv q4_0` (opt-in):** the whole measurement is one Mac, the M4 Pro with 48 GB (the Quality section above); the M5's
   k4-layout q4 kernels were compiled but never dispatched by it, and MTP drafting over q4_0 pools was not run end to end.
-  `--kv k8v4` and `STRATA_KV_ROT=1` (the PC's rotated K/V, without q4_0) are refused at startup.
+  `--kv k8v4` is refused at startup, and so is `STRATA_KV_ROT=1` (the PC's rotated int8 K/V) next to `--kv int8` —
+  next to fp16 that env is a no-op on both engines and starts.
 - **Families:** the original Qwen3.8-Flash-Next and Unsloth's UD-Q4/Q5/Q6_K_XL are measured (above). Setup repacks Unsloth's shards into one file for the GPU. The Swift and Coder releases are not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
 - **Engine only from source.** There is no ready-made Mac engine in the release zips.
 

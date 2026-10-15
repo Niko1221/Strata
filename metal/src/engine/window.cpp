@@ -431,7 +431,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     // the KV cache format (kv_format.h): q4_0 turns on the fused fc-25 qsa path below; k8v4 is REFUSED - it used
     // to be silently ignored (the int8 pools were allocated whatever --kv said, M0's finding)
     kv_q4_ = strata::core::qsa_kv_q4();
-    if (const std::string ferr = kv_format_check(kv_q4_, strata::core::qsa_kv_hybrid()); !ferr.empty()) {
+    if (const std::string ferr = kv_format_check(kv_q4_, strata::core::qsa_kv_hybrid(), strata::core::qsa_kv_int8()); !ferr.empty()) {
         err = ferr;
         return false;
     }

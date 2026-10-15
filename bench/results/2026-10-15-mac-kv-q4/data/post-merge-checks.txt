@@ -1,0 +1,38 @@
+The post-merge determinism checks behind the README's provenance note (the round's numbers were measured
+before the tree merged upstream main; after the merge b056ff8d the metal tests were re-run and these two
+engine determinism runs were re-run, one per format, against pre-merge references).
+
+Runner: /tmp's g.sh, the strata-q2_0.json template args + STRATA_METAL_STREAM=1 STRATA_METAL_STUBS=log,
+one load per run:
+
+    g.sh <tag> <kv> <tokens> <max-new>     # --kv fp16/int8/q4_0, --tokens T --max-new N, 4-id prompt
+
+  f1-q4-short    q4_0, 8 new   pre-merge  (2026-10-15 08:04, engine 0.1.44-metal, branch at 521b2210)
+  f4-int8-regress int8, 64 new pre-merge  (08:05, same build)
+  f5-postmerge-int8 int8, 64 new post-merge (10:31, engine 0.1.44.1-metal, merge commit b056ff8d)
+  f6-postmerge-q4  q4_0, 8 new  post-merge (10:31, same build)
+
+Result, per pair (same format, same args, only the tree differing):
+
+- int8: f4 vs f5 - the "output :" token lines are identical,
+  md5 4d77bea68f9699c09550424781295a56 (60 ids below).
+- q4_0: f1 vs f6 - identical, md5 9e398b5e197806509a911e0fb63c13d6 (8 ids below).
+- diff of each whole log pair leaves ONLY timing, throughput, memory-planning (RAM available, footprint,
+  arena slots) and the engine-version strings (0.1.44-metal vs 0.1.44.1-metal); the q4 pair has no other
+  line of any kind, the int8 pair none either.  Zero stub lines in all four (STRATA_METAL_STUBS=log).
+
+The output lines, copied as logged ("output  : " then the ids):
+
+int8 (f4 = f5):
+487 198 262 328 82637 763 328 70 409 17 487 198 262 328 7095 7824 763 498 19 22 20 11 220 17 17 15 11 220
+19 21 16 11 220 18 20 18 11 220 17 22 22 22 11 220 16 16 16 23 11 220 18 20 18 60 198 92 198 71093 271
+7734 264 1228 999 1510
+
+q4_0 (f1 = f6):
+487 198 262 328 8678 59348 763 328
+
+(q4_0's ids differ from int8's - different formats, the near-tie class the README describes; the claim
+here is only pre-merge vs post-merge within a format.)
+
+Not re-measured on the merged tree: the round's quality, speed, KV and needle tables (the README's
+provenance note says so).

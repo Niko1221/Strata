@@ -18,7 +18,8 @@ machine. The PC round (bench/results/2026-09-27-kv-q4, commit history) is a diff
 - Measured on the tree before it merged upstream main (the merge is b056ff8d in the PR: upstream 0.1.44.1,
   whose Metal changes — gdn_step's launch size, the dispatch thread-limit checks, the qsa_prompt macOS 26.3
   compile fix — touch code this round timed). After the merge the metal tests and an int8 and a q4_0 engine
-  determinism run were re-run and matched the pre-merge outputs byte for byte; the numbers below were not
+  determinism run were re-run and matched the pre-merge outputs byte for byte (`data/post-merge-checks.txt`
+  has the four runs' output token lines, md5s and the whole-log diff statement); the numbers below were not
   re-measured on the merged tree.
 
 ## The backend fact that frames every table: on Metal, fp16 and int8 are one path

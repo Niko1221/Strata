@@ -46,22 +46,26 @@ int main() {
 
     // ---- 2. the startup format check (Window::init): k8v4 is refused, was silently int8 before
     {
-        check(kv_format_check(false, false).empty(), "int8/fp16: no error");
-        check(kv_format_check(true, false).empty(), "q4_0: no error (this PR's path)");
-        const std::string e = kv_format_check(false, true);
+        check(kv_format_check(false, false, false).empty(), "fp16: no error");
+        check(kv_format_check(false, false, true).empty(), "int8: no error");
+        check(kv_format_check(true, false, false).empty(), "q4_0: no error (this PR's path)");
+        const std::string e = kv_format_check(false, true, false);
         check(!e.empty() && e.find("k8v4") != std::string::npos && e.find("not implemented") != std::string::npos,
               "k8v4: an explicit startup error naming it");
-        check(!kv_format_check(true, true).empty(), "hybrid refused whatever the q4 flag is (the flags are exclusive in generate.cpp)");
-        // STRATA_KV_ROT=1: the same explicit-refusal treatment (the env generate.cpp parses; there is no shared
-        // getter for the flag) - refused next to the non-q4 formats (the snapshot tag would add +16 for a rotation
-        // the pools lack), a no-op next to q4_0 (the rotation is intrinsic there, the tag never adds it)
+        check(!kv_format_check(true, true, false).empty(), "hybrid refused whatever the q4 flag is (the flags are exclusive in generate.cpp)");
+        // STRATA_KV_ROT=1 (the env generate.cpp parses): refused next to --kv int8 - there the PC rotates the
+        // pools and the snapshot tag adds +16 for a rotation the Metal pools lack.  Next to fp16 it is a no-op on
+        // both engines (layer.cpp gates the rotation on the int8 flag, so nothing rotates and the tag adds
+        // nothing): allowed, matching the PC's silent no-op; a no-op next to q4_0 too (the rotation is intrinsic).
         ::setenv("STRATA_KV_ROT", "1", 1);
-        const std::string r = kv_format_check(false, false);
+        const std::string r = kv_format_check(false, false, true);
         check(!r.empty() && r.find("STRATA_KV_ROT") != std::string::npos && r.find("not implemented") != std::string::npos,
-              "STRATA_KV_ROT=1 without q4_0: an explicit startup error naming the env");
-        check(kv_format_check(true, false).empty(), "STRATA_KV_ROT=1 next to q4_0: allowed (the rotation is intrinsic)");
+              "STRATA_KV_ROT=1 with --kv int8: an explicit startup error naming the env");
+        check(kv_format_check(false, false, false).empty(),
+              "STRATA_KV_ROT=1 with fp16: allowed (a no-op on both engines - layer.cpp gates the rotation on int8)");
+        check(kv_format_check(true, false, false).empty(), "STRATA_KV_ROT=1 next to q4_0: allowed (the rotation is intrinsic)");
         ::unsetenv("STRATA_KV_ROT");
-        check(kv_format_check(false, false).empty(), "the env off again: no error");
+        check(kv_format_check(false, false, true).empty(), "the env off again: no error");
     }
 
     // ---- 3. the key / Constants composition: every function constant in BOTH, and the keys pairwise apart
