@@ -15,6 +15,12 @@ The upstream route-tail-skip default is retained in source; matched quality comp
 `STRATA_ROUTE_TAIL_SKIP=0`. Earlier validation below retains its original source and binary identities.
 Results are not transferred to this revision; port validation is pending.
 
+Built-in image generation (`POST /v1/images/generations`) cannot currently be combined with adaptive memory,
+idle parking or supervisor tool leases. Its image-job controller has a separate GPU lifecycle and does not
+participate in the supervisor broker. The selected combination is rejected during setup and before an image
+job can start. Use the brokered external-tool path for such jobs; ordinary built-in image generation remains
+available when adaptive ownership is disabled. This guard does not add image generation to the broker.
+
 The vision teardown also adapts [weituotian's PR #1862](https://github.com/Niko1221/Strata/pull/1862):
 close buffered stdin after confirmed process death so a failed `QUIT` does not flush again during garbage
 collection. An encoder that cannot be confirmed stopped still retains its process and blocks replacement.

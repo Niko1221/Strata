@@ -3679,6 +3679,18 @@ class Service:
         for _ in self._admit_loaded(self.shutdown_event):
             pass
 
+    def check_embedded_image_ownership(self):
+        """The upstream image-job controller is separate from adaptive ownership.
+
+        Until its lifecycle participates in the supervisor broker, reject only
+        that selected combination before any image job can release or acquire GPU
+        resources. Ordinary upstream image generation keeps its existing policy.
+        """
+        if self.images is not None and (self.memory_policy is not None or self.tool_leases.enabled
+                or self._preparation_admission_enabled() or self.coadaptive.active):
+            raise ValueError("built-in image generation cannot be combined with adaptive memory or supervisor "
+                             "tool leases yet; run image tools through the supervisor resource broker instead")
+
     def _ensure_loaded_base(self):
         """Start the engine if it is not running (unloaded, or it died - issue #27), after the before_load hook and
         the free-VRAM check.  The caller holds self.fifo."""
@@ -7725,6 +7737,7 @@ def make_handler(svc: Service):
                                            "message": "image generation is not set up on this server (run setup "
                                                       "with --images qwen-image)"}})
                 return
+            svc.check_embedded_image_ownership()
             job = images_api.parse_request(req, gen.cfg)        # ImageRequestError (a ValueError): 400
             svc.last_request_at = time.time()
             cancel = threading.Event()
@@ -9021,6 +9034,7 @@ def main() -> int:
         svc.configure_memory(cfg.get("memory_policy"))
         svc.configure_resources(cfg.get("resource_presets"))
         svc.configure_coadaptive(cfg.get("coadaptive"))
+        svc.check_embedded_image_ownership()
     except (ValueError, TypeError) as e:
         raise SystemExit(f"[strata] config {e}")
     # --slot-save-path is relative to the working directory the server was started in; the config's slot_save_path
