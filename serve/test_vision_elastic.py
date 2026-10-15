@@ -118,6 +118,28 @@ class Elastic(unittest.TestCase):
         self.assertFalse(v.elastic)
         self.assertEqual((v.elastic_mib, v.elastic_idle_s), (2048, 120.0))
 
+    def tool_picture(self):
+        return [{"role": "user", "content": "read it"},
+                {"role": "tool", "tool_call_id": "t1", "content": [dict(IMAGE)]}]
+
+    def test_a_tool_picture_starts_an_idle_encoder_and_holds_it(self):
+        msg = self.tool_picture()
+        self.svc._note_unreadable_tool_images(msg)
+        self.assertEqual(self.vision.starts, 1)             # the picture woke the encoder (it was down: no picture turn
+        self.assertTrue(self.vision.up)                     # ran yet, and encode died on the missing pipe)
+        self.assertGreater(self.svc.last_image_at, 0)       # the turn counted for the idle timer, as prepare's does
+        self.assertEqual(self.svc._vision_idle_down(), "busy")   # so the sweep leaves the new encoder alone
+        self.assertEqual(msg[1]["content"][0]["type"], "image")  # and the picture stays in the history
+
+    def test_a_tool_picture_whose_encoder_cannot_start_becomes_a_note(self):
+        def fail():
+            raise RuntimeError("the vision encoder did not start")  # what _vision_up's start raises
+        self.vision.restart = fail
+        msg = self.tool_picture()
+        self.svc._note_unreadable_tool_images(msg)          # the start's RuntimeError must not escape: the method's
+        self.assertEqual(msg[1]["content"][0],              # contract is a note in the picture's place, not a 500
+                         {"type": "text", "text": "[image omitted: the vision encoder did not start]"})
+
 
 if __name__ == "__main__":
     unittest.main()
