@@ -39,6 +39,12 @@ WIDE_PUBLIC = {
     "act_quant_q8_1_avx2", "q8k_quant_avx2", "kq256_gu_rows", "kq256_rows", "bf16_rows_dot_multi",
 }
 WIDE_OBJECTS = ("expert.cpp", "iq_avx512.cpp", "iq_avx2.cpp", "q2_avx2.cpp", "kq_avx2.cpp", "nvfp4_avx512.cpp")
+# Also compiled above the baseline (AVX2/FMA for nvfp4_avx2, AVX for the older CPUs' rows) and reached only behind a CPU
+# check.  STATIC INITIALISERS in any of these run on EVERY CPU at program start (#2324: nvfp4_avx2.cpp / nvfp4_avx512.cpp
+# built a table in a constructor, the compiler used AVX/FMA for it, and a Westmere / Sandy Bridge Xeon died with an
+# illegal instruction before main, with nothing in the log).  The initialisers must not exist: constexpr tables, or
+# function-local statics read behind the CPU check.
+INIT_FREE_OBJECTS = WIDE_OBJECTS + ("nvfp4_avx2.cpp", "kq_avx1.cpp", "q2_avx1.cpp", "iq_avx1.cpp")
 
 # An instruction is "wide" if it is EVEX encoded (first byte 0x62 in 64-bit mode), or one of these VEX / legacy
 # extensions that an AVX2 CPU may lack.  AVX-VNNI is VEX encoded (vpdpbusd, vpdpwssd ...).
@@ -89,7 +95,7 @@ def run_elf(path):
             weak.add((obj, m.group(2)))
     dis = subprocess.run(["objdump", "-d", "-C", "-w", "--no-addresses", path], capture_output=True, text=True,
                          check=True).stdout
-    obj, cur, wide, funcs = None, None, {}, 0
+    obj, cur, wide, funcs, inits = None, None, {}, 0, {}
     for line in dis.splitlines():
         m = re.match(r"^(\S+\.o):\s+file format", line)
         if m:
@@ -113,6 +119,11 @@ def run_elf(path):
         if is_wide(int(raw[0], 16), text[0], ops):
             e = wide.setdefault((obj, cur), [0, text[0]])
             e[0] += 1
+        # a static initialiser of a wide-ISA / older-CPU object: any VEX / EVEX encoding is an illegal instruction on a
+        # CPU without AVX (or FMA, AVX2), and the initialiser runs before main
+        if cur.startswith("_GLOBAL__sub_I_") and obj and any(obj.endswith(o + ".o") for o in INIT_FREE_OBJECTS) and                 (int(raw[0], 16) in (0xC4, 0xC5, 0x62) or (text[0].startswith("v") and text[0] not in ("verr", "verw"))):
+            e = inits.setdefault((obj, cur), [0, text[0]])
+            e[0] += 1
     bad = []
     for (obj, name), (n, first) in sorted(wide.items(), key=lambda kv: (kv[0][0] or "", kv[0][1])):
         # .isra / .part / .cold clones belong to the function they were split from
@@ -121,6 +132,9 @@ def run_elf(path):
         why = judge(root, obj, "", False, is_weak, True)
         if why:
             bad.append((name, n, first, why + (" [%s]" % obj if obj else "")))
+    for (o, name), (n, first) in sorted(inits.items()):
+        bad.append((name, n, first, "static initialiser holding AVX-class instructions in a wide-ISA / older-CPU object: it "
+                    "runs on every CPU at program start (#2324) [%s]" % o))
     return report(path, funcs, {k[1]: v for k, v in wide.items()}, bad)
 
 

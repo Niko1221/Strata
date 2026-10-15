@@ -144,6 +144,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         d.args = std::move(a);
         d.grid[0] = gx; d.grid[1] = gy; d.grid[2] = gz;
         d.tg[0] = tg;
+        mtl::require_fit(d, "prompt-chain dispatch");
         ds.push_back(std::move(d));
     };
     auto gemm = [&](const mtl::Buffer& A, const mtl::Buffer& B, const mtl::Buffer& Y, int M, int Nn, int K) {

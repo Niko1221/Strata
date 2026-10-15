@@ -26,6 +26,7 @@ struct Pipeline {
     int max_threads = 0;      // maxTotalThreadsPerThreadgroup
     int simd_width = 0;       // threadExecutionWidth
     int static_tg_mem = 0;    // staticThreadgroupMemoryLength
+    std::string name;         // the function (+ its constants), for messages
 };
 
 // A function-constant value set (index -> int / bool / uint).
@@ -57,6 +58,16 @@ struct Dispatch {
     size_t ind_off = 0;
     bool barrier = true;              // run_graph: a buffer memory barrier before this dispatch
 };
+
+// A pipeline whose maxTotalThreadsPerThreadgroup is below the threadgroup size a dispatch asks for is NOT executed by
+// Metal and raises no error (0.1.44, #2323: gdn_step needs 512 threads, an M2 Max gave 448 for the GDN_NTOK >= 2
+// specializations - the layers silently kept their old outputs and every answer was garbage).  So every dispatch is
+// checked: too few threads is fatal, with a message that names the kernel, the limit and the size needed.
+// STRATA_METAL_MAX_THREADS_CAP=N lowers every pipeline's reported limit to N (a test hook: it proves this check).
+void require_fit(const Pipeline& p, uint32_t threads, const char* where);
+inline void require_fit(const Dispatch& d, const char* where = "dispatch") {
+    require_fit(*d.p, d.tg[0] * d.tg[1] * d.tg[2], where);
+}
 
 class Context {
 public:

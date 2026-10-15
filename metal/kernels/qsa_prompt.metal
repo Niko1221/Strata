@@ -231,7 +231,11 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
     auto tPh = tP.template slice<32, 16>(0, 0);
     auto acc = opO.template get_destination_cooperative_tensor<__tensor_ops_detail::__remove_addrspace_t<decltype(tPh)>,
                                                                __tensor_ops_detail::__remove_addrspace_t<decltype(rv)>, float>();
-    auto tot = acc;   // the running output; acc takes one chunk (fresh each chunk: on the M4 a run does not accumulate
+    // (a second destination tensor, not a copy of acc: the MetalPerformancePrimitives headers of macOS 26.3 cannot copy a
+    // cooperative tensor - "cannot initialize a parameter of type 'void *' with an rvalue of type 'const void *'", #2323;
+    // tot is zeroed right below, so the copy was only there for its type)
+    auto tot = opO.template get_destination_cooperative_tensor<__tensor_ops_detail::__remove_addrspace_t<decltype(tPh)>,
+                                                               __tensor_ops_detail::__remove_addrspace_t<decltype(rv)>, float>();   // the running output; acc takes one chunk (fresh each chunk: on the M4 a run does not accumulate
                       // into elements rescaled in place)
     for (uint16_t i = 0; i < acc.get_capacity(); ++i)
         if (acc.is_valid_element(i)) tot[i] = 0.0f;

@@ -63,8 +63,20 @@ int main(int argc, char** argv) {
         return d;
     };
     {
-        mtl::Pipeline p1 = cx.pipeline(lib, "gdn_step", mtl::Constants().i(2, 1));
-        std::printf("gdn_step pipeline: max %d threads per threadgroup (the kernel needs 512)\n", p1.max_threads);
+        // every specialization the engine launches (GDN_NTOK 1..8): an M2 Max gave 448 for ntok >= 2 (#2323)
+        const char* kn = std::getenv("GDN_IB8") ? "gdn_step8" : "gdn_step";
+        const int need = std::getenv("GDN_IB8") ? 1024 : 512;
+        int low = 0;
+        for (int nt = 1; nt <= 8; ++nt) {
+            mtl::Pipeline pn = cx.pipeline(lib, kn, mtl::Constants().i(2, nt));
+            std::printf("%s pipeline GDN_NTOK %d: max %d threads per threadgroup (the kernel needs %d)%s\n", kn, nt, pn.max_threads,
+                        need, pn.max_threads < need ? "  TOO FEW" : "");
+            low += pn.max_threads < need;
+        }
+        if (low) {
+            std::printf("gdn parity: %d specialization(s) cannot run with %d threads on this GPU: FAIL\n", low, need);
+            return 1;
+        }
     }
     if (bench) {
         for (int nt : {1, 2, 3, 4}) {

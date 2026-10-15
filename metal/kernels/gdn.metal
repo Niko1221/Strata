@@ -27,7 +27,12 @@ struct GdnArgs {
                      // `plane` floats between planes) and the other planes and the per-16 sums are written too
 };
 
+// The kernel is launched with IB * 128 threads (512 for gdn_step, 1024 for gdn_step8).  Without the attribute the compiler
+// is free to use as many registers as the 128-row state needs and a pipeline can end up with
+// maxTotalThreadsPerThreadgroup below the launch size: an M2 Max gave 448 for the GDN_NTOK >= 2 specializations, and
+// Metal then skips the dispatch without an error (#2323).  The attribute makes the compiler fit the launch size.
 template <int IB>
+[[max_total_threads_per_threadgroup(IB * 128)]]
 kernel void gdn_step_t(device float* state [[buffer(0)]], device float* hist [[buffer(1)]],
                      device const float* qkv [[buffer(2)]], device const float* alpha [[buffer(3)]],
                      device const float* beta [[buffer(4)]], device const float* z [[buffer(5)]],

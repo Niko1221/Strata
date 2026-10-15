@@ -171,6 +171,7 @@ private:
             for (const auto& w : skip)
                 if (k.find(w) != std::string::npos) { d.indirect = nullptr; d.grid[0] = 0; break; }
         }
+        mtl::require_fit(d, "engine dispatch (graph build)");   // a kernel Metal would skip silently: stop at the build, not at the first wrong answer
         ds.push_back(std::move(d));
     }
     std::map<const mtl::Pipeline*, std::string> pkey_of_;

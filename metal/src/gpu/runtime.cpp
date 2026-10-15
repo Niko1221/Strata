@@ -600,6 +600,27 @@ MTL::ComputePipelineState* pipeline(const char* source_name, const char* source,
 Error dispatch(Stream st, MTL::ComputePipelineState* p, const void* args, size_t arg_bytes, Grid groups, Grid threads,
                size_t tg_bytes) {
     if (arg_bytes > 4096) return fail(kErrorInvalidValue);   // setBytes limit
+    {   // Metal skips a dispatch above the pipeline's maxTotalThreadsPerThreadgroup without any error (#2323): stop instead
+        const uint64_t want = (uint64_t) threads.x * threads.y * threads.z;
+        if (p && want > (uint64_t) p->maxTotalThreadsPerThreadgroup()) {
+            Runtime& r = rt();
+            std::string name = "?";
+            {
+                std::lock_guard<std::mutex> lk(r.mu);
+                for (const auto& kv : r.pipes)
+                    if (kv.second == p) { name = kv.first; break; }
+            }
+            std::fprintf(stderr,
+                         "strata metal: the kernel %s can run at most %lu threads per threadgroup on this GPU (%s), but the "
+                         "launch asks for %lu.\nMetal skips such a dispatch without any error, so every answer would be "
+                         "wrong; stopping here instead.  Please report this (the GPU, macOS version and this line) at "
+                         "https://github.com/Niko1221/Strata/issues .  (#2323)\n",
+                         name.c_str(), (unsigned long) p->maxTotalThreadsPerThreadgroup(),
+                         r.dev->name()->utf8String(), (unsigned long) want);
+            std::fflush(stderr);
+            std::exit(6);
+        }
+    }
     StreamImpl* s = S(st);
     Op o;
     o.kind = Op::Dispatch;

@@ -22,25 +22,38 @@
 namespace strata::kernels::cpu {
 namespace {
 
-struct Ue4m3Table {
+// A compile-time table, not a constructor: this file is compiled for a wide ISA, and a namespace-scope object with a
+// constructor runs at program start on EVERY CPU - the compiler vectorises the loop with AVX/FMA, and a CPU without them
+// (Westmere, Sandy Bridge, ...) died with an illegal instruction before main (#2324).  Powers of two: exact.
+constexpr float pow2i(int e) {
+    float r = 1.0f;
+    for (; e > 0; --e) r *= 2.0f;
+    for (; e < 0; ++e) r *= 0.5f;
+    return r;
+}
+struct Ue4m3Table {   // ggml_ue4m3_to_fp32 (ggml-impl.h): halved for the doubled kvalues_fp4, 0x7F read as 0
     float v[256];
-    Ue4m3Table() {
+    constexpr Ue4m3Table() : v() {
         for (int x = 0; x < 256; ++x) {
             if (x == 0 || x == 0x7F) { v[x] = 0.0f; continue; }
             const int e = (x >> 3) & 0xF, m = x & 0x7;
-            const float raw = e == 0 ? std::ldexp((float) m, -9) : std::ldexp(1.0f + (float) m / 8.0f, e - 7);
+            const float raw = e == 0 ? (float) m * pow2i(-9) : (1.0f + (float) m / 8.0f) * pow2i(e - 7);
             v[x] = raw * 0.5f;
         }
     }
 };
-const Ue4m3Table kUe4m3;
+constexpr Ue4m3Table kUe4m3;
 
 // software prefetch distance in bytes (STRATA_NVFP4_PREFETCH, 0 = off): the rows stream from DRAM through 4 KB
 // pages, where the hardware prefetchers stop at every page boundary; the IQ kernel's E-2 knob, same default
-const int prefetch_ahead = [] {
-    const char* v = std::getenv("STRATA_NVFP4_PREFETCH");
-    return v ? std::atoi(v) : 2048;
-}();
+// (read on first use, behind the CPU check: a static initialiser here would run on every CPU, see above)
+inline int prefetch_distance() {
+    static const int v = [] {
+        const char* e = std::getenv("STRATA_NVFP4_PREFETCH");
+        return e ? std::atoi(e) : 2048;
+    }();
+    return v;
+}
 
 inline float h2f(uint16_t h) { return _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128((int) h))); }
 
@@ -92,6 +105,7 @@ inline void row_dot(const uint8_t* row, const Acts& a, float* res) {
     __m512 acc[NT];
     for (int t = 0; t < NT; ++t) acc[t] = _mm512_setzero_ps();
     const block_nvfp4* x = (const block_nvfp4*) row;
+    const int prefetch_ahead = prefetch_distance();
     for (int ib = 0; ib < a.nb; ++ib) {
         if (prefetch_ahead > 0) _mm_prefetch((const char*) (x + ib) + prefetch_ahead, _MM_HINT_T0);
         const __m512i codes = codes64(x[ib].qs);

@@ -37,6 +37,7 @@ struct Context::Impl {
 
 static inline id<MTLBuffer> B(const Buffer& b) { return (__bridge id<MTLBuffer>)b.handle; }
 static inline id<MTLComputePipelineState> P(const Pipeline* p) { return (__bridge id<MTLComputePipelineState>)p->handle; }
+static std::string g_device_name = "unknown GPU";
 
 Context::Context() : impl_(new Impl) {
     impl_->dev = MTLCreateSystemDefaultDevice();
@@ -88,7 +89,9 @@ int Context::compile(const std::vector<std::string>& files, const std::string& p
     NSError* err = nil;
     id<MTLLibrary> lib = [impl_->dev newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()] options:o error:&err];
     if (!lib) {
-        std::fprintf(stderr, "mtl: compile failed:\n%s\n", [[err localizedDescription] UTF8String]);
+        std::fprintf(stderr, "mtl: compile failed (%s, macOS %s; %s):\n%s\n", [[impl_->dev name] UTF8String],
+                     [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String],
+                     files.empty() ? "?" : files.back().c_str(), [[err localizedDescription] UTF8String]);
         std::exit(3);
     }
     impl_->libs.push_back(lib);
@@ -136,9 +139,33 @@ Pipeline Context::pipeline(int lib, const std::string& fn, const Constants& c) {
     Pipeline p;
     p.handle = (__bridge_retained void*)ps;
     p.max_threads = (int)ps.maxTotalThreadsPerThreadgroup;
+    if (const char* cap = std::getenv("STRATA_METAL_MAX_THREADS_CAP")) {   // test hook, see require_fit
+        const int lim = std::atoi(cap);
+        if (lim > 0 && lim < p.max_threads) p.max_threads = lim;
+    }
     p.simd_width = (int)ps.threadExecutionWidth;
     p.static_tg_mem = (int)ps.staticThreadgroupMemoryLength;
+    p.name = fn;
+    if (!c.vals.empty()) {
+        p.name += "{";
+        for (size_t i = 0; i < c.vals.size(); ++i)
+            p.name += (i ? "," : "") + std::to_string(c.vals[i].index) + "=" + std::to_string((int)c.vals[i].v);
+        p.name += "}";
+    }
+    g_device_name = [[impl_->dev name] UTF8String];
     return p;
+}
+
+void require_fit(const Pipeline& p, uint32_t threads, const char* where) {
+    if (threads == 0 || (int64_t)threads <= (int64_t)p.max_threads) return;
+    std::fprintf(stderr,
+                 "strata metal: the kernel %s can run at most %d threads per threadgroup on this GPU (%s), but the %s asks "
+                 "for %u.\nMetal skips such a dispatch without any error, so every answer would be wrong; stopping here "
+                 "instead.  Please report this (the GPU, macOS version and this line) at "
+                 "https://github.com/Niko1221/Strata/issues .  (#2323)\n",
+                 p.name.empty() ? "?" : p.name.c_str(), p.max_threads, g_device_name.c_str(), where, threads);
+    std::fflush(stderr);
+    std::exit(6);
 }
 
 Buffer Context::alloc(size_t bytes) {
@@ -179,6 +206,7 @@ void Context::free(Buffer& b) {
 }
 
 static void encode(id<MTLComputeCommandEncoder> enc, const Dispatch& d) {
+    require_fit(d, "dispatch");
     [enc setComputePipelineState:P(d.p)];
     for (size_t i = 0; i < d.args.size(); ++i) {
         const Arg& a = d.args[i];
@@ -316,6 +344,7 @@ double Context::run_icb(const std::vector<Dispatch>& ds, int reps, bool barrier_
         NSMutableSet* used = [NSMutableSet new];
         for (size_t i = 0; i < ds.size(); ++i) {
             const Dispatch& d = ds[i];
+            require_fit(d, "indirect-command dispatch");
             id<MTLIndirectComputeCommand> c = [icb indirectComputeCommandAtIndex:i];
             [c setComputePipelineState:P(d.p)];
             for (size_t a = 0; a < d.args.size(); ++a) {
