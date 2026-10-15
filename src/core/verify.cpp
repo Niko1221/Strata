@@ -652,8 +652,13 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
                                  "STRATA_VERIFY_DEFER_CPU=1 or check)\n", h);
         }
         if (defer_heavy_ > 0.0f && pool_gpu_helper() != nullptr) {   // its rows land after the CPU's: nothing to split
-            std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU_BELOW is not taken with %s (its rows land after "
-                                 "the CPU's): every CPU row joins late\n", pool_gpu_helper());
+            if (below_set)
+                std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU_BELOW is not taken with %s (its rows land "
+                                     "after the CPU's): every CPU row joins late\n", pool_gpu_helper());
+            else
+                std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU: the heavy rows (weight >= %g, the default) "
+                                     "are not kept on time with %s (its rows land after the CPU's): every CPU row joins "
+                                     "late\n", defer_heavy_, pool_gpu_helper());
             defer_heavy_ = 0.0f;
         }
     }
@@ -888,8 +893,13 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
                              "join the residual before layer l+1's FFN-side read (its mixer runs without them; the "
                              "stage's last layer exact)\n");
     if (defer_heavy_ > 0.0f && device_plan_) {
-        std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU_BELOW is not taken with STRATA_VERIFY_DEVICE_PLAN=1: "
-                             "every CPU row joins late\n");
+        if (below_set)
+            std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU_BELOW is not taken with "
+                                 "STRATA_VERIFY_DEVICE_PLAN=1: every CPU row joins late\n");
+        else
+            std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU: the heavy rows (weight >= %g, the default) are "
+                                 "not kept on time with STRATA_VERIFY_DEVICE_PLAN=1: every CPU row joins late\n",
+                         defer_heavy_);
         defer_heavy_ = 0.0f;
         sink_.heavy = 0.0f;
         cudaFreeHost(h_pflag_);   // (nothing raises or waits for it then: as if it had never been allocated)
@@ -897,11 +907,11 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         m_pflag_ = nullptr;
     }
     if (defer_heavy_ > 0.0f)
-        std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU_BELOW=%.3f%s: a deferred layer waits for its CPU rows "
-                             "of routing weight >= %.3f (the pool computes them first) and combines them; the lighter "
+        std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU_BELOW=%g%s: a deferred layer waits for its CPU rows "
+                             "of routing weight >= %g (the pool computes them first) and combines them; the lighter "
                              "ones join late\n", defer_heavy_, below_set ? "" : " (the default)", defer_heavy_);
     else if (defer_ && below >= 1.0f)
-        std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU_BELOW=%.3f: every CPU row joins late\n", below);
+        std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU_BELOW=%g: every CPU row joins late\n", below);
     return true;
 }
 

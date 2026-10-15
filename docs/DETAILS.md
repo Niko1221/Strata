@@ -1733,7 +1733,10 @@ runs without layer l's CPU rows. The stage's last layer is never deferred, nor l
 It changes the answers (teacher-forced KL against the default: see below). Windows that run without it (one start-up
 line says why): batch windows, `--spec-split` token groups, `--remote-expert-opt`, the all-resident graph (no CPU
 rows), a stage with no layer to defer, a control vector on the stage. Start-up lines when on:
-`STRATA_VERIFY_DEFER_CPU=1 (changes the output)` and `capturing the N-token window (...), deferred`. With
+`STRATA_VERIFY_DEFER_CPU=1 (changes the output)`, then the split's (below)
+`STRATA_VERIFY_DEFER_CPU_BELOW=0.1 (the default): a deferred layer waits for its CPU rows of routing weight >= 0.1 ...`
+(without `(the default)` when it is set; `STRATA_VERIFY_DEFER_CPU_BELOW=<w>: every CPU row joins late` for `w` >= 1),
+and `capturing the N-token window (...), deferred`. With
 `STRATA_VERIFY_PROFILE` the late wait shows as `late rows`. CUDA only so far: HIP compiles the same code but it has
 not been built or run there; SYCL and Metal do not have it.
 
@@ -1751,19 +1754,24 @@ the rest. Layer l's combine waits for that flag and takes those rows; only the l
 Layer l+1's mixer then misses only the light part of layer l's CPU share. The rows themselves come out as in one pass
 (the pool cuts its work by output rows; only the order of the jobs changes). The cost is the wait for the heavy jobs, a
 part of the time deferring every CPU row hides. `w` of 1 or more defers every CPU row, without the split (no second
-flag, the same graph and pool steps as before this switch); a value that is not a number above 0 gets one line and the
-default. Start-up line:
+flag, the same graph and pool steps as before this switch), so a row of routing weight exactly 1.0 is deferred too:
+rows of weight >= `w` are kept on time only while `w` < 1. An empty value is the default; a value that is not a number
+above 0 gets one line and the default. `=check` splits at `w` too, the default 0.1 included (the heavy rows in the
+combine, the light ones right after it); `=check` with `STRATA_VERIFY_DEFER_CPU_BELOW=1` checks the late addition of
+every CPU row. Start-up line:
 `STRATA_VERIFY_DEFER_CPU_BELOW=<w> (the default): a deferred layer waits for its CPU rows of routing weight >= <w> ...`
 (without `(the default)` when set), or `STRATA_VERIFY_DEFER_CPU_BELOW=<w>: every CPU row joins late` for `w` >= 1;
 with `STRATA_VERIFY_PROFILE` the wait for the heavy rows shows as `waitCPU` of the deferred layers, the late ones as
 `late rows`.
 
-The split is turned off at start-up, with one line saying so, and every CPU row joins late (as with `w` >= 1), when
-the verifier takes the device plan (`STRATA_VERIFY_DEVICE_PLAN=1`) and with `--peer-device` or a helper cache
-(`--expert-cache-device1..3`), whose rows land after the CPU's. The doorbell carries the routing weights in the windows
+The split is turned off at start-up, with one line saying so (`STRATA_VERIFY_DEFER_CPU: the heavy rows (weight >=
+0.1, the default) are not kept on time with ...` when `w` was not set), and every CPU row joins late (as with
+`w` >= 1), when the verifier takes the device plan (`STRATA_VERIFY_DEVICE_PLAN=1`) and with `--peer-device` or a helper
+cache (`--expert-cache-device1..3`), whose rows land after the CPU's. The doorbell carries the routing weights in the windows
 that defer (`doorbell_publish`, as `--remote-expert-opt` uses it), so those windows copy the layer's input to the host
 even when all its experts are in VRAM. Without `STRATA_VERIFY_DEFER_CPU`, nothing of it runs: no flag is allocated and
-no kernel or host step changes.
+no kernel or host step changes; a `STRATA_VERIFY_DEFER_CPU_BELOW` set then gets one line,
+`STRATA_VERIFY_DEFER_CPU_BELOW=<w> ignored (it needs STRATA_VERIFY_DEFER_CPU=1 or check)`.
 
 On a layer split each card's stage is a verifier of its own (own flags, own plan, own late rows), and a stage defers
 its own layers but its last one, so nothing is deferred across the hand-off between cards; the pool for a layer is the
