@@ -869,6 +869,15 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
 
 RCALL_MAX = 32768        # the most of a `<tool_call>` inside the reasoning that is held while waiting for its end (#804)
 
+# What a tool argument may be streamed as (stream_all_args): the characters that can only open a JSON value - an
+# array, an object, a quoted string.  A parameter whose schema is not a plain "string" is not necessarily JSON: a
+# union type, an anyOf, no type at all, or a model that writes `abc` for an integer or `yes` for a boolean.  Passing
+# such a value through as written sends it unquoted, and the pieces the client joins are not valid JSON - the final
+# tool_call of a call that was streamed is not sent again, so the client keeps the broken text (#2057 review).
+# Numbers, `true`/`false`/`null` and bare words wait for their end and go out through json.dumps, as without the
+# switch: they are short, and streaming them buys nothing the array of an `edit` call does not already get.
+RAW_STREAM_STARTS = "[{\""
+
 
 class OutputParser:
     """Incremental parser of the model's text. Feed deltas; get events. A tag split across deltas is held back
@@ -1151,6 +1160,13 @@ class OutputParser:
                     if rest[:1] == "\n":               # the value's leading newline is not part of it
                         self.sp += 1
                         rest = rest[1:]
+                        if not rest:
+                            return out                 # its first character has not arrived yet
+                    if rest[:1] not in RAW_STREAM_STARTS:
+                        # not JSON text (a bare word, `yes` for a boolean, `abc` for an integer, an empty value):
+                        # it waits for its end and goes out quoted, as without the switch, so the pieces the client
+                        # joins add up (#2057 review)
+                        return out
                     self.sval_started = True
                 safe = rest.find(PARAM_END) if end == -2 else len(rest) - self._hold(rest, (PARAM_END,))
                 if safe > 0 and rest[safe - 1] == "\n":     # may be the trailing newline before </parameter>

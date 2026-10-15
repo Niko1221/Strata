@@ -862,7 +862,12 @@ print(r.choices[0].message.content)
   string parameter already does: the same call at a token width of 8 sends 44 argument pieces with none longer than
   9 characters instead of 15 pieces with one of 217. A client joins the pieces either way (the final `tool_call` of
   a call that was streamed is not sent again), so the arguments it parses are the same; only how finely they arrive
-  changes. Off by default.
+  changes. Only a value that opens with `[`, `{` or `"` is JSON text and streams in pieces: a parameter whose schema
+  is not a plain `"string"` is not necessarily JSON - a union type, an `anyOf`, no declared type at all, or a model
+  that writes `abc` for an integer or `yes` for a boolean - and such a value waits for its end and goes out quoted,
+  exactly as it does without the switch (a client that joined the raw text would have had invalid JSON, and the
+  final `tool_call` of a streamed call is not sent again to correct it). Numbers and `true`/`false`/`null` wait for
+  their end too: they are short, and nothing about them needs the stream. Off by default.
 - **opencode's environment block in the user turn (opt-in).** opencode writes an `<env>` block (working directory,
   today's date) near the start of its system message, ahead of ~40K characters of instructions and tool definitions that
   are the same in every session. The prefix cache only reuses a prompt's start, so every new folder and every new day
