@@ -1662,6 +1662,15 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(ordered_gpus({**base, "gpu_order": "as_given"}, fast_first), [0, 2])
         self.assertEqual(ordered_gpus({**base, "layer_split": "24"}, fast_first), [0, 2])
         self.assertEqual(ordered_gpus({**base, "args": ["--layer-split", "24"]}, fast_first), [0, 2])
+        # #2085: auto stages the cards 2,0 and the engine's "To try the other: --layer-split K" counts in that order;
+        # a K of the user's own keeps the listed order, so the reorder line says to list the cards as 2,0 - and so listed,
+        # the manual split gets the same order the engine's K was counted in
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(ordered_gpus(base, fast_first), [2, 0])
+        self.assertIn('"gpu": [2, 0]', out.getvalue())
+        self.assertIn("--layer-split K", out.getvalue())
+        self.assertEqual(ordered_gpus({"gpu": [2, 0], "layer_split": "24", "args": []}, fast_first), [2, 0])
         self.assertEqual(ordered_gpus({**base, "backend": "hip"}, fast_first), [2, 0])           # AMD: same rule
         self.assertEqual(ordered_gpus({**base, "backend": "hip"}, {0: 7.0, 2: 7.0}), [0, 2])      # identical cards (the R9700s)
         self.assertEqual(ordered_gpus(base, {0: 1.0}), [0, 2])                               # a card unmeasured

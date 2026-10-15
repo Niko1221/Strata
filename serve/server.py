@@ -2780,8 +2780,11 @@ def ordered_gpus(cfg: dict, scores=None, vrams=None) -> list[int]:
                   f"less VRAM than the one the split ends on ({vram[out[-1]]} vs {vram[gl[-1]]} MiB, #1576)",
                   flush=True)
             return gl
+        # #2085: the engine counts a split point in this order (its "To try the other: --layer-split K"), but a
+        # "layer_split" of the user's own keeps the listed order - listing the cards in this order keeps both
         print(f"[strata] layer split: card order {','.join(map(str, out))} (the faster card last; "
-              f'"gpu_order": "as_given" keeps {",".join(map(str, gl))}, #1352)', flush=True)
+              f'"gpu_order": "as_given" keeps {",".join(map(str, gl))}, #1352; to try the engine\'s --layer-split K '
+              f'in this order, list "gpu": [{", ".join(map(str, out))}] with it, #2085)', flush=True)
     return out
 
 
