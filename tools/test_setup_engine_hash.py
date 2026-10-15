@@ -296,6 +296,11 @@ class WhatARefusalDoesToTheCaller(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         (Path(self.tmp.name) / "engine").mkdir(parents=True, exist_ok=True)
 
+    def release_found(self):
+        """#1935: get_prebuilt() first asks the release for the asset (a HEAD); offline, or on a host whose asset no
+        release has (strata-linux-x64.zip), it compiled instead and the path under test never ran."""
+        return mock.patch.object(setup.urllib.request, "urlopen", return_value=mock.MagicMock())
+
     def fake_download(self, url, dst, what=None):
         with zipfile.ZipFile(dst, "w") as z:
             z.writestr("BUILD.json", json.dumps({"version": "0.1.40", "archs": [89]}))
@@ -304,7 +309,8 @@ class WhatARefusalDoesToTheCaller(unittest.TestCase):
     def get_prebuilt(self, updating, digest):
         out = io.StringIO()
         with contextlib_redirect(out),                 mock.patch.object(setup, "download", self.fake_download),                 mock.patch.object(setup, "engine_digest", return_value=digest):
-            return setup.get_prebuilt(setup.PREBUILT_URL, {"arch": 89}, "gpu", updating=updating), out
+            with self.release_found():
+                return setup.get_prebuilt(setup.PREBUILT_URL, {"arch": 89}, "gpu", updating=updating), out
 
     def test_updating_keeps_the_installed_engine_instead_of_stopping(self):
         # The call site's own words: "a failed download must not stop the model from starting".
@@ -324,7 +330,7 @@ class WhatARefusalDoesToTheCaller(unittest.TestCase):
 
     def test_a_first_install_stops_because_there_is_nothing_to_fall_back_to(self):
         with mock.patch.object(setup, "download", self.fake_download),                 mock.patch.object(setup, "engine_digest", return_value=(999, "f" * 64)):
-            with self.assertRaises(SystemExit):
+            with self.release_found(), self.assertRaises(SystemExit):
                 setup.get_prebuilt(setup.PREBUILT_URL, {"arch": 89}, "gpu")
 
     def test_the_cuda_and_amd_paths_both_verify(self):

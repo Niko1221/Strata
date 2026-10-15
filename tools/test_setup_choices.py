@@ -315,6 +315,7 @@ class ExperimentalSm60(unittest.TestCase):
                 self.tools(archs, lambda below: (None, None) if below else ("nvcc13", (13, 0)))
 
 
+@mock.patch.object(setup, "cpu_info", lambda: ("test CPU", True, False))   # #1935: not this PC's /proc/cpuinfo
 class HipVision(unittest.TestCase):
     """#304: --vision cpu with --backend hip builds the CPU image encoder beside the HIP engine."""
 
@@ -521,6 +522,7 @@ class DesktopReserveTip(unittest.TestCase):
         self.assertIn("desktop", tip)
 
 
+@mock.patch.object(setup, "cpu_info", lambda: ("test CPU", True, False))   # #1935: not this PC's /proc/cpuinfo
 class CudaVision(unittest.TestCase):
     """#411: the image encoder setup compiles beside the CUDA engine is built for this PC, not portable."""
 
@@ -564,6 +566,7 @@ class SwiftIq3s(unittest.TestCase):
                           "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf"])
 
 
+@mock.patch.object(setup, "cpu_info", lambda: ("test CPU", True, False))   # #1935: not this PC's /proc/cpuinfo
 class HostCompilers(unittest.TestCase):
     """#1645: CC / CXX / CUDAHOSTCXX name the build's compilers - handed to CMake as -D, so a build folder that is
     already configured picks them up too (CXX alone reaches CMake only on the first configure: the reporter's
