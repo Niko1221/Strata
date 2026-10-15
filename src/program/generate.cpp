@@ -646,6 +646,11 @@ struct Options {
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
     int64_t prompt_cache_every = 16384;
     bool prompt_cache_tail = false;   // optional extra checkpoint at an existing near-tail chunk boundary
+    /// --prompt-cache-policy lru|log (opt-in, default lru): which checkpoint leaves when the chain is over
+    /// --prompt-cache.  lru: the root stays, the rest rotate by least recent use (conv_cache.hpp).  log: chosen
+    /// against a geometric grid behind the newest point - the tail as dense as --prompt-cache-every, the anchors
+    /// behind it farther apart - so a request that branches deep into a long conversation finds a point near it.
+    bool prompt_cache_log = false;
     /// --serve: a prompt read from token 0 is also checkpointed at its first turn boundary - the end of the system
     /// prompt, which every chat of the same client shares - when that is at least N tokens (0 = never)
     int64_t prompt_cache_root = 2048;
@@ -812,6 +817,9 @@ void usage() {
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
                  "  --prompt-cache-tail  --serve, single GPU: one extra checkpoint near the prompt's end, at an existing\n"
                  "                       chunk boundary (default off; requires --prompt-cache and --prompt-cache-every > 0)\n"
+                 "  --prompt-cache-policy lru|log  --serve: which checkpoint leaves when there are more than --prompt-cache\n"
+                 "                       (default lru: the root stays, the rest by least recent use; log: chosen against a\n"
+                 "                       geometric grid behind the newest point, needs --prompt-cache-every > 0, at most 63 kept)\n"
                  "  --turn-token ID      --serve: the token that opens a chat turn (default 248045, <|im_start|>)\n"
                  "  --tail-role-token ID --serve: a turn of this role right before the last turn is left out of\n"
                  "                       the conversation checkpoint (a trailing effort turn; default -1 = off)\n"
@@ -2124,6 +2132,12 @@ int main(int argc, char** argv) {
             else o.conversation_cache_slots = (int) number;
         }
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
+        else if (a == "--prompt-cache-policy") {
+            const std::string v = next("--prompt-cache-policy");
+            if (v == "lru") o.prompt_cache_log = false;
+            else if (v == "log") o.prompt_cache_log = true;
+            else { std::fprintf(stderr, "strata generate: --prompt-cache-policy takes lru or log, not '%s'\n", v.c_str()); return 2; }
+        }
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
@@ -8495,8 +8509,18 @@ int main(int argc, char** argv) {
                         for (size_t i = 0; i < checks.size(); ++i) pin_flags[i] = checks[i].pinned;
                         break;
                     }
-                const size_t victim = strata::program::conv_cache::eviction_victim(
-                    stamps.data(), stamps.size(), o.prompt_cache, tail_flags.get(), pin_flags.get());
+                size_t victim;
+                if (o.prompt_cache_log && o.prompt_cache_every > 0) {   // --prompt-cache-policy log (opt-in)
+                    std::vector<int64_t> lens;
+                    lens.reserve(checks.size());
+                    for (const ConvCheckpoint& k : checks) lens.push_back((int64_t) k.ids.size());
+                    victim = strata::program::conv_cache::eviction_victim_log(
+                        stamps.data(), lens.data(), stamps.size(), o.prompt_cache, o.prompt_cache_every,
+                        tail_flags.get(), pin_flags.get());
+                } else {
+                    victim = strata::program::conv_cache::eviction_victim(
+                        stamps.data(), stamps.size(), o.prompt_cache, tail_flags.get(), pin_flags.get());
+                }
                 checks.erase(checks.begin() + (std::ptrdiff_t) victim);
             }
             return true;

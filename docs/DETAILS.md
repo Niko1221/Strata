@@ -973,12 +973,30 @@ prompt when that is 2,048 tokens or more (engine 0.1.20; PR #62 + #65), so that 
 system prompts and tool lists. Claude Code stamps its system prompt with a billing header that changes on every
 request (`cch=...`) and every session (the 4th part of `cc_version=`); the server pins both stamps (to `f`s, as
 llama.cpp does), so the system prompt and the tool list in front of it are the same prompt on every turn. Engine options: `--prompt-cache N` (0 = off), `--prompt-cache-every N`,
-`--prompt-cache-root N` (0 = no system-prompt checkpoint), `--turn-token ID`.
+`--prompt-cache-root N` (0 = no system-prompt checkpoint), `--prompt-cache-policy lru|log` (below), `--turn-token ID`.
 A one-shot request that no later request continues (a classification call, a probe) can send
 `"strata_checkpoint": false` in its body: it saves no checkpoint at its last turn nor every 16K tokens, so what
 follows the reused prefix (or the root) is read in one run, and its session is not kept or parked for a next request.
 It still starts from a checkpoint it matches, and still saves the system-prompt root when that reaches
 `--prompt-cache-root`. Without the field (or with `true`) nothing changes.
+
+**Which checkpoints stay (opt-in, `--prompt-cache-policy log`).** With more checkpoints than `--prompt-cache`, the default
+keeps the first one (the root) and the most recently used ones, so a long conversation has checkpoints only near its end:
+at 256K with the defaults there is none between the root and ~192K, and a request that branches there (an agent compacting
+its history, an edited early message, a sub-agent that shares the first half) reads everything after the root again.
+`--prompt-cache-policy log` (an engine argument, in the config's `args`; the default `lru` is unchanged) chooses against a
+geometric grid behind the newest point instead: the points nearest the end `--prompt-cache-every` apart, the anchors
+behind them farther apart the older they are, the root pinned as before, the tail checkpoint and a `pin=N` prefix treated
+as before (up to 63 checkpoints; more fall back to `lru`). A conversation with no more points than `--prompt-cache` keeps
+the same chain either way. Measured on an RTX 5070 Ti 16 GB (Swift 1.5 IQ3_S, 262K context, `--kv-resident 32768`,
+`--prompt-cache 6`, greedy, 4 output tokens; three runs per arm in alternating order, the engine restarted for each,
+medians of the prompt time; every run of an arm reused the same token counts): a 178,823-token conversation read cold took
+62.5 s with both; a request that then branched at 90,104 tokens reused 16,384 tokens and read 73,720 in 23.9 s with `lru`,
+and reused 66,731 and read 23,373 in 8.2 s with `log`. A retry of the last turn (165,035 reused, 5.7 s) and the return to
+the full conversation after the branch (81,920 / 83,115 reused, 34.4 / 34.1 s) were the same on both. The rule is a pure
+function (`include/strata/program/conv_cache.hpp`) and `conv_cache_test` walks it: at 256K with the defaults the largest
+gap between two checkpoints is 96K against the `lru` rule's 162K. `tools/checkpoint_branch_test.py` sends the four
+requests above to a running server and prints what each reused.
 
 **One long document, many questions: a pinned shared prefix (opt-in, 0.1.40.2, [RESEARCH_RUNS.md](RESEARCH_RUNS.md)).**
 A request can say where the document ends: `"strata_prefix": {"messages": 1}` (the first message is the document),

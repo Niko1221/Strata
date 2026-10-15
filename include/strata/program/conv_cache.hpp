@@ -22,6 +22,9 @@
 //
 // With a budget below two slots there is no room to keep root and leaf apart, so the pin switches off and
 // the oldest checkpoint leaves - the previous behaviour, one slot = the newest point only.
+//
+// --prompt-cache-policy log (eviction_victim_log, below) is the opt-in alternative for long conversations: the
+// root pinned the same way, the rest chosen against a geometric grid of lengths instead of by stamp.
 #pragma once
 
 #include <cstddef>
@@ -75,6 +78,84 @@ inline size_t eviction_victim(const uint64_t* stamps, size_t n, int64_t cap, con
     for (size_t i = 2; i < n; ++i)
         if (stamps[i] < stamps[v]) v = i;
     return v;
+}
+
+/// --prompt-cache-policy log (opt-in): the chain is chosen against a geometric grid behind the newest point - targets
+/// at `every` * (2^k - 1) tokens behind it (0, 16K, 48K, 112K, 240K, ... with the default 16K), so the tail stays as
+/// dense as the periodic checkpoints and the anchors behind it are farther apart the older they are.  The
+/// least-recently-used rule keeps only the newest `cap` points: a 256K conversation with the defaults keeps the root
+/// (~30K) and 192K-256K, and a request that branches between them reads up to ~162K tokens again.  Each eviction
+/// re-picks against the grid from the chain it has, so the kept chain follows the grid where the history allows it
+/// rather than landing on it exactly (conv_cache_test.cpp walks the 256K case: 30, 80, 128, 224, 240, 256K kept, the
+/// largest gap 96K against the lru rule's 162K).
+///
+/// `lens[i]` is item i's length in tokens; the newest (longest) item is the grid's origin.  The root (index 0) is
+/// not on the grid: it is pinned as above, and the grid stops at it - the targets that would fall behind it are
+/// spent halving the largest gap left between the grid and the root instead.  Candidates are the items that are
+/// neither the root, nor pinned, nor the newest-stamped one (just saved or just mounted); the tail rule is as above.
+/// For each candidate, the chain without it is matched by rank (nearest first) to the targets and scored by the summed
+/// relative distance; the candidate whose removal scores lowest leaves, ties to the older stamp, then the lower index.
+/// With `every` <= 0 there is no grid, and a chain of more than 64 items (`--prompt-cache` 64 or more) is left to
+/// the plain policy too.  Pure, like the others.
+inline size_t eviction_victim_log(const uint64_t* stamps, const int64_t* lens, size_t n, int64_t cap, int64_t every,
+                                  const bool* tail, const bool* pinned) {
+    if (every <= 0 || lens == nullptr || cap < 2 || n < 3 || n > 64) return eviction_victim(stamps, n, cap, tail, pinned);
+    size_t newest = 0;
+    int64_t origin = lens[0];
+    for (size_t i = 1; i < n; ++i) {
+        if (stamps[i] > stamps[newest]) newest = i;
+        if (lens[i] > origin) origin = lens[i];
+    }
+    const int64_t root_dist = origin > lens[0] ? origin - lens[0] : 0;
+    auto is_pinned = [&](size_t i) { return pinned != nullptr && pinned[i]; };
+    if (tail != nullptr)
+        for (size_t i = 1; i < n; ++i)
+            if (tail[i] && !is_pinned(i) && i != newest) return i;
+    auto sort_asc = [](int64_t* a, size_t m) {   // insertion sort: a handful of items
+        for (size_t i = 1; i < m; ++i) {
+            const int64_t d = a[i];
+            size_t b = i;
+            while (b > 0 && a[b - 1] > d) { a[b] = a[b - 1]; --b; }
+            a[b] = d;
+        }
+    };
+    // the targets for m non-root items: the geometric grid up to the root, then the largest gap halved
+    int64_t target[64];
+    const size_t m = n - 2;   // non-root items once one has left
+    {
+        size_t t = 0;
+        for (int64_t d = 0, gap = every; t < m && d < root_dist; d += gap, gap *= 2) target[t++] = d;
+        while (t < m) {   // the points so far plus the root, sorted; halve the widest gap
+            int64_t pts[66];
+            size_t k = 0;
+            for (size_t i = 0; i < t; ++i) pts[k++] = target[i];
+            pts[k++] = root_dist;
+            sort_asc(pts, k);
+            int64_t lo = 0, hi = root_dist, widest = -1;
+            for (size_t i = 1; i < k; ++i)
+                if (pts[i] - pts[i - 1] > widest) { widest = pts[i] - pts[i - 1]; lo = pts[i - 1]; hi = pts[i]; }
+            target[t++] = widest > 0 ? (lo + hi) / 2 : root_dist;
+        }
+        sort_asc(target, m);
+    }
+    size_t best = n;
+    double best_cost = 0.0;
+    for (size_t v = 1; v < n; ++v) {
+        if (is_pinned(v) || v == newest) continue;
+        int64_t dist[64];
+        size_t k = 0;
+        for (size_t i = 1; i < n; ++i)
+            if (i != v) dist[k++] = origin - lens[i];
+        sort_asc(dist, k);
+        double cost = 0.0;
+        for (size_t i = 0; i < k && i < m; ++i) {
+            const int64_t diff = dist[i] > target[i] ? dist[i] - target[i] : target[i] - dist[i];
+            cost += (double) diff / (double) (target[i] + every);
+        }
+        if (best == n || cost < best_cost || (cost == best_cost && stamps[v] < stamps[best])) { best = v; best_cost = cost; }
+    }
+    if (best != n) return best;
+    return eviction_victim(stamps, n, cap, tail, pinned);   // nothing but pins and the newest: the backstop
 }
 
 }  // namespace strata::program::conv_cache
