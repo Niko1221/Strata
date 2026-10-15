@@ -5619,3 +5619,96 @@ class PrepareCancelled(unittest.TestCase):
             ids, _, _ = svc.prepare(self.msgs(), None, {}, cancel=threading.Event())
             self.assertEqual(ids.count(ByteTokenizer().encode("<|image_pad|>", parse_special=True)[0]), 6)
             svc.embeddings.path.unlink(missing_ok=True)
+
+
+def write_gguf(path, kv: dict, tensors: list, pad: int = 0):
+    """A GGUF v3 with these metadata (int: u32, str: string, list of str: string array) and tensor headers
+    [(name, shape, type_id)], then `pad` bytes of data: enough for the header readers, no real weights."""
+    import struct
+
+    def s(x):
+        b = x.encode()
+        return struct.pack("<Q", len(b)) + b
+
+    out = struct.pack("<IIQQ", 0x46554747, 3, len(tensors), len(kv))
+    for k, v in kv.items():
+        if isinstance(v, str):
+            out += s(k) + struct.pack("<I", 8) + s(v)
+        elif isinstance(v, list):
+            out += s(k) + struct.pack("<IIQ", 9, 8, len(v)) + b"".join(s(x) for x in v)
+        else:
+            out += s(k) + struct.pack("<II", 4, v)
+    for name, shape, type_id in tensors:
+        out += s(name) + struct.pack(f"<I{len(shape)}Q", len(shape), *shape) + struct.pack("<IQ", type_id, 0)
+    Path(path).write_bytes(out + b"\0" * pad)
+
+
+class ModelMeta(unittest.TestCase):
+    """GET /v1/models `meta` carries llama-server's model facts (n_params, size, ftype, n_vocab, n_ctx_train,
+    n_embd), read from the --native GGUF's headers; n_ctx stays the engine's."""
+
+    def split_model(self, d):
+        first = Path(d) / "M-Q8_0-00001-of-00002.gguf"
+        write_gguf(first, {"general.architecture": "qwen4exp", "general.file_type": 7, "split.count": 2,
+                           "qwen4exp.context_length": 262144, "qwen4exp.embedding_length": 2560,
+                           "tokenizer.ggml.tokens": ["a", "b", "c"]},
+                   [("token_embd.weight", [2560, 3], 8), ("output_norm.weight", [2560], 0)], pad=100)
+        write_gguf(Path(d) / "M-Q8_0-00002-of-00002.gguf", {"general.architecture": "qwen4exp", "split.count": 2},
+                   [("blk.0.ffn_down_exps.weight", [512, 256, 4], 8)], pad=1000)
+        return first
+
+    def test_split_model(self):
+        from serve.server import gguf_model_meta
+        with tempfile.TemporaryDirectory() as d:
+            first = self.split_model(d)
+            size = sum(p.stat().st_size for p in Path(d).glob("*.gguf"))
+            want = {"n_vocab": 3, "n_ctx_train": 262144, "n_embd": 2560, "ftype": "Q8_0",
+                    "n_params": 2560 * 3 + 2560 + 512 * 256 * 4, "size": size}
+            self.assertEqual(gguf_model_meta(first), want)
+            self.assertEqual(gguf_model_meta(Path(d) / "M-Q8_0-00002-of-00002.gguf"), want)   # any shard names it
+
+    def test_missing_shard_or_no_gguf(self):
+        from serve.server import gguf_model_meta
+        with tempfile.TemporaryDirectory() as d:
+            first = self.split_model(d)
+            (Path(d) / "M-Q8_0-00002-of-00002.gguf").unlink()
+            meta = gguf_model_meta(first)
+            self.assertEqual(meta["ftype"], "Q8_0")
+            self.assertNotIn("n_params", meta)          # no count rather than a wrong one
+            self.assertNotIn("size", meta)
+            self.assertEqual(gguf_model_meta(Path(d)), {})               # a pack directory
+            self.assertEqual(gguf_model_meta(None), {})
+            self.assertEqual(gguf_model_meta(Path(d) / "gone.gguf"), {})
+
+    def test_v1_models(self):
+        tok = ByteTokenizer()
+        with tempfile.TemporaryDirectory() as d:
+            engine = RecordingEngine(tok, "hi", max_context=CTX)
+            engine.model_path = str(self.split_model(d))
+            svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+            svc.aliases = ["sol"]
+            httpd = serve(svc, port=0)
+            try:
+                url = f"http://127.0.0.1:{httpd.server_address[1]}/v1/models"
+                with urllib.request.urlopen(url, timeout=10) as r:
+                    data = json.loads(r.read())["data"]
+            finally:
+                httpd.shutdown()
+            self.assertEqual([m["id"] for m in data], [svc.model, "sol"])
+            for m in data:
+                self.assertEqual(m["meta"]["n_ctx"], CTX)
+                self.assertEqual((m["meta"]["ftype"], m["meta"]["n_params"]), ("Q8_0", 2560 * 4 + 512 * 256 * 4))
+                self.assertIsInstance(m["meta"]["size"], int)
+
+    def test_unreadable_gguf(self):
+        tok = ByteTokenizer()
+        with tempfile.TemporaryDirectory() as d:
+            bad = Path(d) / "bad.gguf"
+            bad.write_bytes(b"not a gguf")
+            engine = RecordingEngine(tok, "hi", max_context=CTX)
+            engine.model_path = str(bad)
+            svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(svc.model_meta(), {})
+                self.assertEqual(svc.model_meta(), {})   # read once
+            self.assertEqual(err.getvalue().count("could not be read"), 1)
