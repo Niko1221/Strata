@@ -1,0 +1,126 @@
+[
+ {
+  "qid": "pope_105",
+  "gold": 0,
+  "argmax": 0,
+  "pr": [
+   0.9663,
+   0.0337
+  ],
+  "instructions": "Is there a car in the image?",
+  "png": "audit-real-imgs/pope_105.png",
+  "criteria": null
+ },
+ {
+  "qid": "pope_155",
+  "gold": 0,
+  "argmax": 0,
+  "pr": [
+   0.9033,
+   0.0967
+  ],
+  "instructions": "Is there a snowboard in the image?",
+  "png": "audit-real-imgs/pope_155.png",
+  "criteria": null
+ },
+ {
+  "qid": "cvb_21",
+  "gold": 1,
+  "argmax": 1,
+  "pr": [
+   0.3049,
+   0.6793,
+   0.0127,
+   0.0031
+  ],
+  "instructions": "How many blinds are in the image?",
+  "png": "audit-real-imgs/cvb_21.png",
+  "criteria": [
+   "0",
+   "1",
+   "2",
+   "3"
+  ]
+ },
+ {
+  "qid": "cvb_57",
+  "gold": 3,
+  "argmax": 3,
+  "pr": [
+   0.005899,
+   0.0027,
+   0.0018,
+   0.989601
+  ],
+  "instructions": "How many persons are in the image?",
+  "png": "audit-real-imgs/cvb_57.png",
+  "criteria": [
+   "0",
+   "3",
+   "2",
+   "1"
+  ]
+ },
+ {
+  "qid": "cb_20",
+  "gold": 3,
+  "argmax": 3,
+  "pr": [
+   0.006001,
+   0.006601,
+   0.007201,
+   0.945495,
+   0.024002,
+   0.005601,
+   0.0024,
+   0.0011,
+   0.0004,
+   0.0012
+  ],
+  "instructions": "How many men are there in the image? Reply with the count.",
+  "png": "audit-real-imgs/cb_20.png",
+  "criteria": [
+   "0",
+   "1",
+   "2",
+   "3",
+   "4",
+   "5",
+   "6",
+   "7",
+   "8",
+   "9"
+  ]
+ },
+ {
+  "qid": "cb_50",
+  "gold": 4,
+  "argmax": 4,
+  "pr": [
+   0.0005,
+   0.001,
+   0.0013,
+   0.0046,
+   0.990501,
+   0.0006,
+   0.0006,
+   0.0003,
+   0.0003,
+   0.0003
+  ],
+  "instructions": "How many snails are there in the image? Reply with the count.",
+  "png": "audit-real-imgs/cb_50.png",
+  "criteria": [
+   "0",
+   "1",
+   "2",
+   "3",
+   "4",
+   "5",
+   "6",
+   "7",
+   "8",
+   "9"
+  ]
+ }
+]
