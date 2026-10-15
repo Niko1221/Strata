@@ -140,6 +140,72 @@ flowchart TD
     I --> J
 ```
 
+## What a parked image is bound to
+
+A spilled conversation is an ordinary session file, so it carries the same `SessionFileIdentity` the slot
+save/restore API writes: two 64-bit hashes in the file's 64-byte header - a **model fingerprint** and a **config
+fingerprint** (`SessionFileIdentity` and the field list in `include/strata/core/conversation_file.hpp`; the header
+is laid down by `header_bytes`, `src/core/conversation_file.cpp`). The disk tier compares both against its own at
+the scan (`read_sidecar`, `src/core/conversation_spill.cpp`), and a restore refuses a file whose header carries
+another pair before the payload is parsed (`header_ok`, `src/core/conversation_file.cpp`). The system-prompt cache
+and the per-segment tier open with the same pair (`session_identity`, `src/program/generate.cpp`), so the three
+tiers in this document share one identity.
+
+The model fingerprint is a sample of every model input the engine loaded - role, size and the first and last MiB of
+each file, not its path (`session_model_fingerprint`, `src/core/conversation_file.cpp`). The config fingerprint is
+one hash over the resolved settings that change what the saved bytes mean (`session_config_fingerprint`, same
+file), each field under its own tag:
+
+| Field | Set from | Note |
+| --- | --- | --- |
+| `engine` | `STRATA_VERSION` | the engine **version string** - the only thing about the build that enters the identity |
+| `backend` | `cuda` / `hip` | a file of one backend is not restored by the other |
+| `kv` | `--kv` | the K/V quant |
+| `max_context`, `mtp_window` | `--max-context`, `--mtp-window` | the state's shape and capacity |
+| `kv_rot` | `STRATA_KV_ROT` | |
+| `rope.*` | the resolved rope configuration | the cached K is post-RoPE |
+| `cvec` | the loaded control-vector digest | |
+| `switch.*` | the `--native-*` / `--no-*` arithmetic switches | |
+
+Not claimed: the table is what enters the fingerprint, not the flag list. Sampling, seeds, draft tuning and the
+expert tier are outside it, and `--kv-resident` is deliberately outside it too - it says where the same K/V bytes
+live, not what they mean (`include/strata/core/conversation_file.hpp`).
+
+**The version string is the whole of the version.** `STRATA_VERSION` is the project version baked in at compile
+time (`CMakeLists.txt`: `add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")` under `project(strata
+VERSION 0.1.44.1 ...)`), and it is the only build identity the fingerprint carries: there is no build hash, so two
+builds of the same version are not told apart (see [DETAILS.md](DETAILS.md), Session files). A file written by one
+engine version and read by another differs only in that one field - and one field is enough: the compare is over
+the whole fingerprint, and any mismatch is a `foreign` file.
+
+**What a version bump does to the tier.** Every image the previous build wrote carries the previous version string,
+so the new build's fingerprint matches none of them. At the scan each sidecar is compared, found to be another
+identity and counted as `foreign` (`read_sidecar` and the scan loop, `src/core/conversation_spill.cpp`); the file is
+**left in place** - the scan only reads, and the GC (`enforce_budget` / `enforce_age`, same file) walks only the
+entries the scan indexed, so a file that never entered the index is never removed by the tier. The bump therefore
+turns every parked image of the old build into a foreign file: no later request can reuse it, and the tier will not
+clean it up.
+
+**The bump is not announced.** The engine prints its version at start (`strata generate: session is up (engine %s)`,
+`src/program/generate.cpp`), but no line connects a version change to the images it refuses. The only trace is the
+`foreign kept` counter of the tier's ready line (`src/program/generate.cpp`) - one number beside `oversized`,
+`stale` and `orphans`, from which nothing names the version: it reads the same whether a hundred images went
+foreign because the version changed or because an unrelated foreign file was left beside the tier. A request that
+would have hit an old image is an ordinary miss.
+
+**The lever.** Because the version string is part of the identity, it is the mechanism by which the project decides
+when an image a build wrote stops being valid: bumping it invalidates every image the previous identity matched,
+and leaving it alone keeps every image the format can still read. The scope is the project's to set - whether a
+bump should invalidate everything the identity covers, or only what a format change actually affects - and the
+current identity makes no such distinction, because the config is one hash: no field separates the format from the
+settings beside it. What the mechanism carries today is that the decision takes effect without a line that says it
+did.
+
+Not claimed: the engine version string is not the file-format version. The header holds a second, separate number
+for the format itself (`kVersion`, `src/core/conversation_file.cpp`), refused as `unsupported version` before the
+identity is even compared; that one is the precise lever for a format change. The `engine` field is the coarse one
+- it invalidates the whole tier regardless of whether the format moved. Neither number is changed by this document.
+
 ## Use and limits
 
 **Turn it on.**
