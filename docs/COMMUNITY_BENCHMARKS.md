@@ -64,6 +64,16 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-15: Tesla V100-PCIE-32GB (sm_70, PCIe 3.0 x16), Ryzen 5 3600, 31 GiB RAM + 23 GiB swap](../bench/results/2026-10-15-community-v100-pcie-32gb-iq2-xs/README.md):
+  Strata 0.1.42 source build for sm_70, original Flash-Next IQ2_XS in resident RAM mode, 262,144-token context, `--kv k8v4`;
+  chat decode **76.1 tok/s**, agent decode 74.4 tok/s, prompt **1251.6 / 1373.8 / 1344.9 tok/s** with first token
+  3.23 / 11.72 / 23.87 s at 4,019 / 16,058 / 32,049 fresh prompt tokens; agent conversation cache hit 68.7 %.
+  `tools/strata_bench.py --long`, three runs each; speed only, no recall or concurrency test.
+- [2026-10-15: the same box with Flash-Next IQ3_XXS in `--mmap-experts` mode](../bench/results/2026-10-15-community-v100-pcie-32gb-iq3-xxs/README.md):
+  a 47.0 + 28.8 GB model on one 32 GB card and 31 GiB of RAM: chat decode **62.5 tok/s**, prompt
+  **930.7 / 1180.1 / 1206.8 tok/s** with first token 4.34 / 13.64 / 26.60 s at the same three lengths (the first 4K run
+  is a cold file-cache read, 438 tok/s); agent cache hit 68.7 %. Read with the IQ2_XS entry above as the quant
+  comparison on one machine and one settings set.
 
 ## Run the benchmark
 
