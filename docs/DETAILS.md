@@ -571,6 +571,18 @@ is no temperature or power reading without root (`powermetrics`), and an Apple S
 no PCIe link. The engine's own VRAM figures are in its log.
 - **About:** the model and engine settings, and the addresses to connect other apps.
 
+**Edit chat history (opt-in).** In Chat's Sampling drawer, turn on **Edit chat history** and Apply. Each message then
+has **Edit** and **Remove from here**; answers also have **Regenerate**. Editing a user message keeps its available
+attachments, removes later messages and asks for a new answer. Editing an answer saves its text without a request,
+removing its old thinking and tool history. Regenerate replaces that answer and later messages, and may run tools
+again. Remove from here drops the selected message and everything after it. Stop a running answer and wait for it
+to finish stopping before changing history. **Undo** restores the last history change, including its removed messages;
+it remains available after regeneration, until a new question, New chat or a page reload. The editor accepts Ctrl+Enter
+(Command+Enter on Mac) to save and Escape to cancel. The switch is remembered only in this browser and is off by
+default; it does not change sampling or other API clients. Existing browser storage keeps attachment names, not their
+contents: after a reload, retrying or editing a user turn with missing attachments is refused rather than silently
+sending incomplete context. Start a new chat and attach those files again.
+
 `http://127.0.0.1:8080/?q=your question` opens it with a new chat already asking. The API is at
 `http://127.0.0.1:8080/v1` for your apps.
 
