@@ -135,6 +135,16 @@ setup warns when it finds 13.2.0 or 13.2.1 for such a card, and takes an older 1
 `--vision gpu` (or `--vision cpu`). Pictures that take several seconds (about 3 s at 300 image tokens on 8 cores, more with more tokens) are read by the encoder on the CPU; `--vision gpu`
 (NVIDIA, ~1.4 GB of VRAM) makes it 0.1-0.5 s.
 
+**Linux, NVIDIA GTX 1080 Ti (Pascal): the whole PC freezes while it reads a long prompt, and nothing is left in the
+local log.** One reported case (#2084: GTX 1080 Ti, Linux, drivers 575.64.05 and 580): hard freezes during long cold
+prompts. The reporter's best explanation is an NVIDIA driver bug (6869496: the card's power-management controller
+halts, Xid 62); one capture over the network showed Xid 62, later freezes left no trace, so the cause is not proven.
+Without the workaround below 4 of 8 saturated cold prompts froze the PC there, and UEFI-only boot or the BIOS's PCIe
+equalization phases turned off did not change that. In the reporter's runs this stopped the freezes:
+`options nvidia NVreg_RegistryDwords="RmDisableGen2LinkRetraining=1"` in `/etc/modprobe.d/nvidia.conf`, then a
+reboot. It also held that card's link at Gen1 (about 3.2 GB/s instead of about 14 GB/s at Gen3), so a 14.4K-token cold
+prompt took 171 s instead of 52 s.
+
 ## AMD cards
 
 **"No AMD GPU found (the amdgpu driver's KFD topology is empty)" on Linux.**
