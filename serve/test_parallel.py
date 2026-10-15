@@ -5,6 +5,7 @@ real StrataEngine and Service, so the server's side is tested without a GPU: req
 wait for a slot, /metrics shows the slots, each request's history row is its own, and a conversation's next turn
 goes back to the slot that holds it."""
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -99,6 +100,8 @@ while True:
             stopped.add(b)
         continue
     if line.startswith(("GEN ", "BGEN ")):
+        if "--source-trace" in args:
+            print("CACHE_SOURCE 1 3", flush=True)
         f = line.split()
         slot = int(f[1]) if f[0] == "BGEN" else None
         max_new = int(f[2] if f[0] == "BGEN" else f[1])
@@ -305,7 +308,7 @@ class PickSlot(unittest.TestCase):
 class ParallelService(unittest.TestCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them."""
 
-    def start(self, slots, fit=None, slot_cache=False, fail=False, reuse=False, says_groups=0, more=()):
+    def start(self, slots, fit=None, slot_cache=False, fail=False, reuse=False, says_groups=0, more=(), affinity=False):
         import serve.server as server
         self.tmp = tempfile.TemporaryDirectory()
         script = Path(self.tmp.name) / "fake_strata.py"
@@ -320,7 +323,8 @@ class ParallelService(unittest.TestCase):
         extra += list(more)
         with mock.patch.object(server.subprocess, "Popen",
                                lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
-            self.engine = StrataEngine("strata", extra)
+            self.engine = StrataEngine("strata", extra,
+                                      env={**os.environ, "STRATA_SLOT_CACHE_AFFINITY": "1"} if affinity else None)
         tok = ByteTokenizer()
         self.svc = Service(self.engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
         self.httpd = serve(self.svc, port=0)
@@ -353,6 +357,32 @@ class ParallelService(unittest.TestCase):
         with urllib.request.urlopen(self.base + path, timeout=10) as r:
             return json.loads(r.read().decode())
 
+    def _protected_waiter(self):
+        self.start(6, says_groups=3, affinity=True)
+        e = self.engine
+        with e.slot_cv:
+            e.slot_held = [[9000 + b] * 50000 for b in range(6)]
+            e.slot_used = [time.time()] * 6
+            e.slot_cache_valid = [True] * 6
+            # Keep one request marked busy to exercise admission instead of the solo path.
+            e.slot_busy[0] = True
+            e.slot_claims.add(0)
+        cancel, result = threading.Event(), {}
+        def run():
+            try:
+                result['tokens'] = list(e.generate_batched([9999], 8, {}, cancel))
+            except BaseException as ex:
+                result['error'] = ex
+        t = threading.Thread(target=run)
+        t.start()
+        end = time.monotonic() + 2
+        while time.monotonic() < end and not e.admitting:
+            time.sleep(0.01)
+        self.assertGreater(e.admitting, 0)
+        self.assertTrue(e.ctl.acquire(blocking=False))  # waiting never monopolizes the control channel
+        e.ctl.release()
+        return cancel, result, t
+
     def _two_at_once(self, text_b):
         """A long request first, then one that has to go to a batch slot (the engine is busy with the first)."""
         out = {}
@@ -368,6 +398,26 @@ class ParallelService(unittest.TestCase):
         tb.start()
         ta.join(30); tb.join(30)
         return out
+
+    def test_solo_native_source_is_forwarded_without_reserving_batch_slot(self):
+        self.start(2, more=["--source-trace"])
+        out = {}
+        worker = threading.Thread(target=lambda: out.update(reply=self.chat("LONGREPLY please")))
+        worker.start()
+        deadline = time.time() + 5
+        observed = None
+        while time.time() < deadline:
+            live = self.get("/metrics")["live"]
+            if live.get("solo_cache_source_slot") == 1:
+                observed = live
+                break
+            time.sleep(.01)
+        worker.join(10)
+        self.assertIsNotNone(observed)
+        self.assertEqual(observed["solo_cache_reused_tokens"], 3)
+        self.assertTrue(observed["solo_request_key"])
+        self.assertTrue(all(s["state"] == "idle" for s in observed["slots"]))
+        self.assertIn("reply", out)
 
     def test_bgen_refused_by_the_engine_is_retried_not_a_400(self):
         """#1994: the engine refuses a BGEN ("no such free slot") although the server saw the slot free: the request
