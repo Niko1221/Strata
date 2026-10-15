@@ -678,15 +678,33 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
 #else
 #define NW_DROW(i, hi) (2 * (i) + (hi))
 #endif
-// The VGPR cap of the occupancy variant (amdgpu_waves_per_eu).  8 was measured against ROCm 7's clang; clang 22 (ROCm 7.10)
-// computes wrong results with it (#1180: gfx1100, every run), so there the cap is off.  -DSTRATA_W_LB=N sets it.
+// The VGPR cap of the occupancy variant (amdgpu_waves_per_eu).  8 was measured against a clang before 22; clang 22
+// (ROCm 7.10) computes wrong results with it (#1180: gfx1100, every run), so from clang 22 the cap is off - except for
+// gfx1151 on clang 23, where the capped kernels give the same bits and take less time (measured with ROCm 7.14.1's
+// clang 23, hip_prefill_fused_iq, one layer, 2048-8192 tokens: gate/up IQ2_XXS / IQ3_XXS / IQ3_S / IQ4_XS with down
+// Q2_0 / IQ4_NL 10-15% less time; IQ2_S / Q2_0 2-4%, from its Q2_0 down: IQ2_S's LDS leaves room for 3 blocks per WGP,
+// so the compiler keeps its 238 VGPRs).  Two formats stay uncapped there: IQ2_XS gate/up spills 104 VGPRs under the cap
+// (the IQ2_XS / IQ4_NL layer 74-78% slower), and Q8_0 down spills 18 (Q4_K / Q8_0 -1.9% to +1.3%).  The test is the
+// clang major version: other clang 23 builds are not measured, and clang 24 and newer keep the clang 22 rule.  NW_LB is
+// the variant's template argument, the same in the host and every device pass (the launch names that instance); whether
+// its cap applies is decided per architecture and format in the device pass (nw_capped).  -DSTRATA_W_LB=N sets the cap
+// on every architecture and format that launches the occupancy variant.
 #if defined(STRATA_W_LB)
 constexpr int NW_LB = STRATA_W_LB;
-#elif defined(__clang_major__) && __clang_major__ >= 22
-constexpr int NW_LB = 1;
 #else
 constexpr int NW_LB = 8;
 #endif
+constexpr bool nw_capped(int wt) {
+#if defined(STRATA_W_LB) || !defined(__clang_major__) || __clang_major__ < 22
+    (void) wt;
+    return true;
+#elif defined(__gfx1151__) && __clang_major__ == 23
+    return wt != T_IQ2_XS && wt != T_Q8_0;
+#else
+    (void) wt;
+    return false;
+#endif
+}
 typedef int nw_i4 __attribute__((ext_vector_type(4)));
 typedef int nw_i2 __attribute__((ext_vector_type(2)));
 typedef int nw_i8 __attribute__((ext_vector_type(8)));
@@ -714,10 +732,11 @@ __device__ __forceinline__ nw_i8 nw_wmma(nw_ab a, nw_ab b, nw_i8 c) {
 #endif
 }
 
-// W (X1): ALIAS = the H tile lives on the weight buffers (one extra barrier); LB > 0 = amdgpu_waves_per_eu(LB) (VGPR cap).
+// W (X1): ALIAS = the H tile lives on the weight buffers (one extra barrier); LB > 0 = amdgpu_waves_per_eu(LB) (VGPR cap)
+// where nw_capped(WT) says the cap applies.
 // Disable both with -DSTRATA_W_NO_OCC (the launch sites then use <WT, GU, false, 0> and grid factor wgp_blocks).
 template <int WT, bool GU, bool ALIAS = false, int LB = 0>
-__global__ void __launch_bounds__(NW_THREADS) __attribute__((amdgpu_waves_per_eu(LB > 0 ? LB : 1)))
+__global__ void __launch_bounds__(NW_THREADS) __attribute__((amdgpu_waves_per_eu(LB > 0 && nw_capped(WT) ? LB : 1)))
 native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_t* __restrict__ act,
                   const int32_t* __restrict__ src, uint8_t* __restrict__ out, float* __restrict__ dm) {
 #if STRATA_NAT_WMMA
@@ -1161,6 +1180,8 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
         // W (X1): LDS alias of the H tile + waves_per_eu(8) (192 VGPRs) + 4 blocks per WGP, only for the types whose
         // kernels do not spill under the cap (measured: gate/up IQ2_*, IQ3_*, IQ4_XS 0-5 regs; down IQ4_NL 11, Q8_0 / Q2_0 0;
         // Q4_K / Q5_K gate/up and Q5_1 down spill 100+ and keep the old launch).
+        // Those counts are from a clang before 22; from clang 22 nw_capped decides which of these kernels get the cap
+        // (above NW_LB), and the launch is the same.
 #ifdef STRATA_W_NO_OCC
         const bool occ_gu = false, occ_d = false;
 #else
