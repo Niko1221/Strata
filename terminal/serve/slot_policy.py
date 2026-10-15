@@ -11,6 +11,8 @@ PROTECTION_WAIT_S = 5.0      # STRATA_SLOT_PROTECT_WAIT_S: wait when every idle 
 PARK_MIN_TOKENS = 8192       # STRATA_SLOT_PARK_MIN_TOKENS: a shorter main-session conversation is not parked
 EXPIRED_KEEP_SCORE = 0.01    # STRATA_SLOT_EXPIRED_KEEP_SCORE: an expired history scoring at least this (retention at
                              # expiry, then decayed; 0.01 is about 2.5K tokens at expiry) goes last
+PARK_VALUE_RATIO = 2.0       # STRATA_SLOT_PARK_VALUE_RATIO: a park takes an expired history worth keeping only when the
+                             # main session's conversation is worth at least this many times more; 0: never
 IDLE_VALUE_ZERO_S = 1800.0  # STRATA_SLOT_IDLE_VALUE_ZERO_S: idle age when expired value reaches zero; 0 disables decay
 TTL_MAX_S = 120.0            # STRATA_SLOT_TTL_MAX_S: protection at 262144 tokens; the whole curve scales with it
 _TTL_SHAPE = ((0, 0.0), (500, 0.1), (2000, 2.0), (8000, 10.0),
@@ -20,7 +22,8 @@ TTL_POINTS = _TTL_SHAPE
 
 def configure(env) -> dict:
     """Read the tunables from `env` (the engine's environment); bad or missing values keep the defaults."""
-    global PROTECTION_WAIT_S, PARK_MIN_TOKENS, TTL_MAX_S, TTL_POINTS, EXPIRED_KEEP_SCORE, IDLE_VALUE_ZERO_S
+    global PROTECTION_WAIT_S, PARK_MIN_TOKENS, TTL_MAX_S, TTL_POINTS, EXPIRED_KEEP_SCORE, IDLE_VALUE_ZERO_S, \
+        PARK_VALUE_RATIO
 
     def value(name, default):
         try:
@@ -34,13 +37,14 @@ def configure(env) -> dict:
     TTL_POINTS = tuple((n, s * TTL_MAX_S / 120.0) for n, s in _TTL_SHAPE)
     PROTECTION_WAIT_S = value("STRATA_SLOT_PROTECT_WAIT_S", 5.0)
     PARK_MIN_TOKENS = int(value("STRATA_SLOT_PARK_MIN_TOKENS", 8192))
+    PARK_VALUE_RATIO = value("STRATA_SLOT_PARK_VALUE_RATIO", 2.0)
     return settings()
 
 
 def settings() -> dict:
     return {"ttl_max_s": TTL_MAX_S, "protect_wait_s": PROTECTION_WAIT_S,
             "park_min_tokens": PARK_MIN_TOKENS, "expired_keep_score": EXPIRED_KEEP_SCORE,
-            "idle_value_zero_s": IDLE_VALUE_ZERO_S}
+            "idle_value_zero_s": IDLE_VALUE_ZERO_S, "park_value_ratio": PARK_VALUE_RATIO}
 
 
 def cache_ttl(tokens: int) -> float:
@@ -124,13 +128,32 @@ def _blank(held, busy, used, now, reliable):
     return states, blank
 
 
+def _slot_values(held, states, blank) -> dict[int, float]:
+    """Each slot's current value: 0 for a blank slot, else its value decayed with its idle age."""
+    return {b: 0.0 if b in blank else stale_retention(len(h), states[b]["age_s"]) for b, h in enumerate(held)}
+
+
+def _worth_keeping(value: float) -> bool:
+    return value >= EXPIRED_KEEP_SCORE and value > 0
+
+
+def reclaim_slot(candidates, values, blank, rank, positions) -> int | None:
+    """The reclaim order place() and park_destination() share, over idle expired slots (blank ones included): the
+    slots not worth keeping (blank, or a value below EXPIRED_KEEP_SCORE) before histories worth keeping; then `rank`
+    (the group's load); then the lowest value, a blank slot first at an equal value; then the slot order."""
+    if not candidates:
+        return None
+    return min(candidates, key=lambda b: (_worth_keeping(values[b]), *rank(b), values[b], b not in blank,
+                                          positions[b]))
+
+
 def park_destination(main: list[int], busy: list[bool], held: list[list[int]], used: list[float],
                      order: list[int], group_size: int, now: float, valid: list[bool] | None = None,
-                     padding_safe: bool = False, exclude=()) -> int | None:
+                     padding_safe: bool = False, exclude=(), main_value: float = 0.0) -> int | None:
     """An idle slot to keep the main session's conversation in before another request replaces it (engine park=):
-    its own older copy, else a blank slot of the least loaded group, else an expired history worth less than
-    EXPIRED_KEEP_SCORE (the ones place() overwrites first).  Never a history worth keeping.  None: nowhere to keep it
-    (or it is already kept)."""
+    its own older copy, else an expired slot in place()'s reclaim order (reclaim_slot), where a history worth keeping
+    counts only when `main_value` (the main session's current value) is at least PARK_VALUE_RATIO times its own.
+    Never a protected slot.  None: nowhere to keep it (or it is already kept)."""
     if not padding_safe or not main:
         return None
     gs = max(1, group_size)
@@ -145,15 +168,11 @@ def park_destination(main: list[int], busy: list[bool], held: list[list[int]], u
            len(held[b]) < len(main) and main[:len(held[b])] == held[b]]
     if own:
         return max(own, key=lambda b: (len(held[b]), -positions[b]))
-    free = [b for b in order if not busy[b] and b not in exclude and b in blank]
-    if free:
-        return min(free, key=lambda b: (loads[b - b % gs], positions[b]))
-    # The main session is at least PARK_MIN_TOKENS long; give up a short side chat or a long history left unused
-    # until its value decays below EXPIRED_KEEP_SCORE. The least loaded group, then the lowest current score.
-    scores = {b: stale_retention(len(held[b]), states[b]["age_s"]) for b in order}
-    worthless = [b for b in order if not busy[b] and b not in exclude and states[b]["expired"] and
-                 scores[b] < EXPIRED_KEEP_SCORE]
-    return min(worthless, key=lambda b: (loads[b - b % gs], scores[b], positions[b])) if worthless else None
+    values = _slot_values(held, states, blank)
+    candidates = [b for b in order if not busy[b] and b not in exclude and states[b]["expired"] and
+                  (not _worth_keeping(values[b]) or
+                   (PARK_VALUE_RATIO > 0 and main_value >= PARK_VALUE_RATIO * values[b]))]
+    return reclaim_slot(candidates, values, blank, lambda b: (loads[b - b % gs],), positions)
 
 
 def place(prompt: list[int], busy: list[bool], held: list[list[int]], used: list[float],
@@ -208,17 +227,19 @@ def place(prompt: list[int], busy: list[bool], held: list[list[int]], used: list
 
     safe = [b for b in free if states[b]["expired"] and collateral(b) == 0]
 
+    values = _slot_values(held, states, blank)
+
     def stale(b):
-        return 0.0 if b in blank else stale_retention(len(held[b]), states[b]["age_s"])
+        return values[b]
 
     def worthy(b):
-        return stale(b) >= EXPIRED_KEEP_SCORE and stale(b) > 0
+        return _worth_keeping(values[b])
 
     if safe:
         # Expired = empty for protection, but an expired history can still match until it is overwritten: one that
         # still scores EXPIRED_KEEP_SCORE goes only when no blank or worthless slot is free (else a new chat in the
         # idle group overwrote the other chat every turn - GPU run 2026-10-15).  Then group load; then the lowest score.
-        slot = min(safe, key=lambda b: (worthy(b), *pipeline(b)[:2], b not in blank, stale(b), positions[b]))
+        slot = reclaim_slot(safe, values, blank, lambda b: pipeline(b)[:2], positions)
         # Only worthy histories are left, but a protected slot worth less ends its protection within the wait window
         # (a side request that has just finished): wait for it under the same one-per-request 5 s protection wait
         # rather than destroy a conversation that can still match.  After the wait the overwrite goes ahead.
