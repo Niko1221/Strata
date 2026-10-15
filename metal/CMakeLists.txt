@@ -98,6 +98,10 @@ set(STRATA_METAL_HOST_SOURCES
   ${S}/prefill/prefill.cpp
   ${S}/spec/suffix_drafter.cpp ${S}/spec/controller.cpp ${S}/spec/draft_policy.cpp ${S}/spec/draft_source.cpp
   ${S}/kernels/cpu/pool.cpp ${S}/kernels/cpu/expert_layout.cpp ${S}/kernels/cpu/native_expert.cpp)
+# On arm64, the Metal host links portable definitions for CPU symbols without x86 objects.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
+  list(APPEND STRATA_METAL_HOST_SOURCES ${S}/kernels/cpu/portable.cpp)
+endif()
 set_source_files_properties(${S}/core/device.cu ${S}/core/pinned.cu PROPERTIES LANGUAGE CXX)
 
 # The kernel library: Metal implementations (src/engine/*.cpp) and, for every entry point not ported yet, a stub

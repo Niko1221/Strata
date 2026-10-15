@@ -2220,7 +2220,8 @@ bool Verifier::adapt_gate_wait(int32_t layer, std::string& err) {
     const Clock::time_point t0 = Clock::now();
     uint32_t spins = 0;
     while (adapt_gate_->reached() < layer) {
-        _mm_pause();
+        // Use the architecture-aware pause hint so this spin-wait also works on ARM.
+        strata_cpu_pause();
         if ((++spins & 1023u) != 0) continue;
         if (Clock::now() - t0 > std::chrono::seconds(20)) {
             err = "verify: the adaptive tier's copies for layer " + std::to_string(layer) + " never landed" +
