@@ -67,7 +67,7 @@ class RemoteSafety(unittest.TestCase):
         checks.tailscale_json = lambda command, *args: {
             "BackendState": "Running", "Self": {"DNSName": host}} if command == "status" else funnel
         with mock.patch("serve.remote_access.http.client.HTTPConnection") as connection:
-            connection.return_value.getresponse.return_value = SimpleNamespace(status=405)
+            connection.return_value.getresponse.return_value = SimpleNamespace(status=405, getheader=lambda _: '2')
             healthy, _ = checks.health()
         self.assertFalse(healthy, "Publishing this port would expose /admin outside the authenticated gateway")
 

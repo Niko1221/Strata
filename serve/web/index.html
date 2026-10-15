@@ -29,6 +29,8 @@
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Monitor</button>
     <button class="st-tab" role="tab" id="tab-btn-usage" aria-controls="view-usage" aria-selected="false" data-tab="usage" hidden>
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Usage</button>
+    <button class="st-tab" role="tab" id="tab-btn-history" aria-controls="view-history" aria-selected="false" data-tab="history" hidden>
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-clock"/></svg>History</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>About</button>
   </nav>
@@ -181,6 +183,49 @@
     <div class="usage-dashboard" id="usage-dashboard"></div>
   </section>
 
+  <section class="view view--history" id="view-history" role="tabpanel" aria-labelledby="tab-btn-history" hidden>
+    <div class="history-toolbar">
+      <h1>History</h1>
+      <input class="st-input" id="history-search" type="search" aria-label="Search history" placeholder="Search history">
+      <select class="st-input" id="history-filter" aria-label="History status">
+        <option value="all">All statuses</option><option value="active">Active</option>
+        <option value="completed">Completed</option><option value="error">Errors</option>
+        <option value="disconnected">Disconnected</option><option value="interrupted">Interrupted</option>
+      </select>
+      <button class="st-btn st-btn--icon" id="history-refresh" title="Refresh history" aria-label="Refresh history">
+        <svg class="st-icon"><use href="web/sprite.svg#i-refresh"/></svg></button>
+    </div>
+    <div id="history-error" class="history-notice" role="status" hidden></div>
+    <div class="history-workspace">
+      <aside class="history-sidebar" aria-label="Saved requests">
+        <ul id="history-list"></ul>
+        <button class="st-btn st-btn--secondary" id="history-more" hidden>Older requests</button>
+      </aside>
+      <article class="history-detail">
+        <div id="history-empty" class="history-empty">Select a request</div>
+        <div id="history-selected" hidden>
+          <div class="history-heading"><h2 id="history-title"></h2><span class="st-badge" id="history-status"></span></div>
+          <div id="history-app" class="history-app"></div>
+          <div id="history-meta" class="muted small"></div>
+          <div class="history-viewbar">
+            <div role="tablist" aria-label="Saved request content" class="history-panes">
+              <button class="st-tab" role="tab" data-history-pane="output" aria-selected="true">Output</button>
+              <button class="st-tab" role="tab" data-history-pane="reasoning" aria-selected="false">Thinking</button>
+              <button class="st-tab" role="tab" data-history-pane="tools" aria-selected="false">Tools</button>
+              <button class="st-tab" role="tab" data-history-pane="details" aria-selected="false">Details</button>
+            </div>
+            <button class="st-btn st-btn--icon" id="history-copy" title="Copy displayed text" aria-label="Copy displayed history text">
+              <svg class="st-icon"><use href="web/sprite.svg#i-copy"/></svg></button>
+            <button class="st-btn st-btn--icon" id="history-download" title="Download full request as text" aria-label="Download full history text">
+              <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
+          </div>
+          <pre id="history-text" role="tabpanel" aria-label="Saved request text" tabindex="0"></pre>
+          <button class="st-btn st-btn--secondary" id="history-text-more" hidden>Load more text</button>
+        </div>
+      </article>
+    </div>
+  </section>
+
   <!-- ============================ About ============================ -->
   <section class="view view--about" id="view-about" role="tabpanel" aria-labelledby="tab-btn-about" hidden>
     <div class="about">
@@ -275,6 +320,7 @@
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
 <script src="web/metrics.js"></script>
 <script src="web/usage.js"></script>
+<script src="web/history.js"></script>
 <script src="web/app.js"></script>
 </body>
 </html>

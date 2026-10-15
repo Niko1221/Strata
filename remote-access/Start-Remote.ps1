@@ -7,9 +7,10 @@ function Test-StrataGatewayCredential {
     # OPTIONS checks gateway authentication without depending on model readiness.
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Method Options -Uri ('http://127.0.0.1:' + $Port + '/v1/models') -Headers @{ Authorization=('Bearer ' + $ApiKey) } -TimeoutSec 3
-        return ([int]$response.StatusCode -eq 405)
+        return ([int]$response.StatusCode -eq 405 -and $response.Headers['x-strata-gateway-version'] -eq '2')
     } catch {
-        return ($null -ne $_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 405)
+        return ($null -ne $_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 405 -and
+            $_.Exception.Response.Headers['x-strata-gateway-version'] -eq '2')
     }
 }
 
@@ -66,6 +67,17 @@ function Start-StrataFunnel {
 }
 
 $remoteDir = Join-Path $env:LOCALAPPDATA 'StrataRemote'
+$nameHasher = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $nameBytes = $nameHasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($remoteDir.ToLowerInvariant()))
+    $lockName = 'Local\StrataRemoteStartup-' + ([BitConverter]::ToString($nameBytes)).Replace('-', '').Substring(0, 16)
+} finally { $nameHasher.Dispose() }
+$startupMutex = [System.Threading.Mutex]::new($false, $lockName)
+$ownsStartupMutex = $false
+try {
+    try { $ownsStartupMutex = $startupMutex.WaitOne(60000) }
+    catch [System.Threading.AbandonedMutexException] { $ownsStartupMutex = $true }
+    if (!$ownsStartupMutex) { throw 'Another remote startup is busy; automatic recovery will retry.' }
 $disabledPath = Join-Path $remoteDir 'disabled'
 if ($Recovery -and (Test-Path -LiteralPath $disabledPath)) { return }
 if (!$Recovery) { Remove-Item -LiteralPath $disabledPath -ErrorAction SilentlyContinue }
@@ -92,8 +104,9 @@ if ($existing) {
         !$gatewayProcess.CommandLine.Contains($gatewayPath) -or !$gatewayProcess.CommandLine.Contains($configPath)) {
         throw ('Port ' + $config.port + ' belongs to another service.')
     }
-    if (!(Test-StrataGatewayCredential -Port $config.port -ApiKey $config.apiKey)) {
-        Write-Information 'Restarting the owned gateway to load the saved credentials.' -InformationAction Continue
+    $sourceChanged = (Get-Item -LiteralPath $gatewayPath).LastWriteTimeUtc -gt $gatewayProcess.CreationDate.ToUniversalTime()
+    if ($sourceChanged -or !(Test-StrataGatewayCredential -Port $config.port -ApiKey $config.apiKey)) {
+        Write-Information 'Restarting the owned gateway to load the current code and saved credentials.' -InformationAction Continue
         Stop-Process -Id $gatewayProcess.ProcessId -ErrorAction Stop
         Wait-Process -Id $gatewayProcess.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
         $existing = $null
@@ -135,11 +148,18 @@ if (!$SkipFunnel) {
 }
 $publicHost = $tailStatus.Self.DNSName.TrimEnd('.')
 $settingsPath = Join-Path $remoteDir 'editor-settings.txt'
+$modelId = 'Choose the loaded model from GET /v1/models'
+try {
+    $upstreamHeaders = @{}
+    if ($config.upstreamApiKey) { $upstreamHeaders.Authorization = 'Bearer ' + $config.upstreamApiKey }
+    $modelStatus = Invoke-RestMethod -Uri 'http://127.0.0.1:8080/health' -Headers $upstreamHeaders -TimeoutSec 3
+    if ($modelStatus.model) { $modelId = $modelStatus.model }
+} catch { Write-Verbose 'Strata health is not ready; editor settings explain how to select the model.' }
 @"
 Provider: OpenAI-compatible / Custom OpenAI
 API base URL: https://$publicHost/v1
 API key: $($config.apiKey)
-Model: qwen3.8-flash-next-coder-iq1_m
+Model: $modelId
 
 Chat Completions: https://$publicHost/v1/chat/completions
 Responses API: https://$publicHost/v1/responses
@@ -150,6 +170,16 @@ Keep this key private. This PC and Strata must stay running.
 Start: powershell -NoProfile -ExecutionPolicy Bypass -File "$PSScriptRoot\Start-Remote.ps1"
 Stop: powershell -NoProfile -ExecutionPolicy Bypass -File "$PSScriptRoot\Stop-Remote.ps1"
 "@ | Set-Content -LiteralPath $settingsPath -Encoding utf8
+if ($config.exposeDashboard -is [bool] -and $config.exposeDashboard -eq $true) {
+    $dashboardPath = Join-Path $remoteDir 'dashboard-settings.txt'
+@"
+Dashboard URL: https://$publicHost/
+Username: strata
+Password: $($config.apiKey)
+Keep this password private. Dashboard access includes request history, usage, model settings and management controls.
+This PC and Strata must stay running. Chat conversations stay in each browser's local storage.
+"@ | Set-Content -LiteralPath $dashboardPath -Encoding utf8
+}
 if ($InstallStartup) {
     $startupPath = Join-Path ([Environment]::GetFolderPath('Startup')) 'Strata Remote API.vbs'
     $startPath = Join-Path $PSScriptRoot 'Start-Remote.ps1'
@@ -160,3 +190,8 @@ if ($InstallStartup) {
 Write-Output ('Gateway ready on localhost:' + $config.port)
 Write-Output ('Editor settings: ' + $settingsPath)
 if (!$SkipFunnel) { Write-Output ('Public API: https://' + $publicHost + '/v1') }
+if ($dashboardPath) { Write-Output ('Dashboard settings: ' + $dashboardPath) }
+} finally {
+    if ($ownsStartupMutex) { $startupMutex.ReleaseMutex() }
+    $startupMutex.Dispose()
+}

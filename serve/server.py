@@ -25,6 +25,7 @@ talks to it over stdin/stdout; `MockEngine` is a scripted stand-in that makes ev
 from __future__ import annotations
 
 import argparse
+import atexit
 import contextlib
 import collections
 import base64
@@ -40,6 +41,7 @@ import re
 import select
 import signal
 import socket
+import sqlite3
 import struct
 import shutil
 import subprocess
@@ -67,6 +69,7 @@ from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
+from serve.history import HistoryStore, client_identity, event_parts  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 from serve import images as images_api  # noqa: E402
 
@@ -3086,6 +3089,8 @@ class Service:
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
+        self.output_history = None                     # opt-in disk history; no prompt or header storage
+        self.output_history_error = ''
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
@@ -3635,11 +3640,11 @@ class Service:
             reading = self.status.get("busy") and self.status.get("first_token") is None
         return getattr(self.engine, "prefill_tok_s_mean", None) if reading else 0.0
 
-    def begin_request(self, path, req):
+    def begin_request(self, path, req, headers=None):
         """#332: a monitor record for this request, or None when the monitor is off (nothing is kept then)."""
-        if not self.api_monitor:
+        if not self.api_monitor and self.output_history is None:
             return None
-        raw = json.dumps(req, ensure_ascii=False, indent=2)
+        raw = json.dumps(req, ensure_ascii=False, indent=2) if self.api_monitor else ''
         record = {"id": uuid.uuid4().hex[:12], "path": path, "model": req.get("model") or self.model,
                   "started_at": time.time(), "state": "queued", "stream": bool(req.get("stream")),
                   "response_format": (req.get("response_format") or {}).get("type")
@@ -3648,8 +3653,13 @@ class Service:
                   "output": "", "reasoning": "", "output_truncated": False, "reasoning_truncated": False,
                   "queue_s": 0.0, "load_s": 0.0, "first_token_s": None,
                   "_clock": time.perf_counter()}
-        with self.status_lock:
-            self.api_requests.append(record)
+        if self.output_history is not None:
+            record.update(client_identity(headers))
+            record['_actual_model'] = self.model
+            record['_history'] = self.output_history.begin(record)
+        if self.api_monitor:
+            with self.status_lock:
+                self.api_requests.append(record)
         self.request_trace.record = record
         return record
 
@@ -5332,8 +5342,9 @@ def make_handler(svc: Service):
             if self.record is not None:
                 with svc.status_lock:
                     self.record["http_status"] = code
-                    raw = json.dumps(obj, ensure_ascii=False, indent=2)
-                    self.record.update(response=raw[:262144], response_truncated=len(raw) > 262144)
+                    if svc.api_monitor:
+                        raw = json.dumps(obj, ensure_ascii=False, indent=2)
+                        self.record.update(response=raw[:262144], response_truncated=len(raw) > 262144)
                     for key in ("error", "usage", "timings"):
                         if key in obj:
                             self.record[key] = obj[key]
@@ -5425,6 +5436,42 @@ def make_handler(svc: Service):
                                records if request_id else {"requests": records, "retention": 100, "persistent": False,
                                                           "loaded": svc.loaded(), "auto_load": hasattr(svc.engine, "restart")})
                 return
+            if path == '/api/history':
+                if not self._authorized():
+                    return
+                if svc.output_history is None:
+                    self._json(503 if svc.output_history_error else 404,
+                               {'error': {'message': svc.output_history_error or 'History recording is off'}})
+                    return
+                try:
+                    query = parse_qs(urlsplit(self.path).query)
+                    ident = query.get('id', [None])[0]
+                    if ident:
+                        detail = svc.output_history.detail(ident, query.get('field', ['output'])[0],
+                                                           int(query.get('offset', ['0'])[0]))
+                        if detail is None:
+                            self._json(404, {'error': {'message': 'History entry not found'}})
+                        elif query.get('download') == ['1']:
+                            self.send_response(200)
+                            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                            self.send_header('Content-Disposition', f'attachment; filename="strata-{ident}.txt"')
+                            self.send_header('Cache-Control', 'no-store')
+                            self.send_header('X-Content-Type-Options', 'nosniff')
+                            self.end_headers()
+                            for piece in svc.output_history.export(ident):
+                                self.wfile.write(piece.encode('utf-8'))
+                        else:
+                            self._json(200, detail, headers={'Cache-Control': 'no-store'})
+                    else:
+                        self._json(200, svc.output_history.records(query.get('before', [None])[0],
+                                   query.get('q', [''])[0], query.get('state', ['all'])[0]),
+                                   headers={'Cache-Control': 'no-store'})
+                except ValueError as error:
+                    self._json(400, {'error': {'message': str(error)}})
+                except (OSError, sqlite3.Error):
+                    if not self.answer_started:
+                        self._json(503, {'error': {'message': 'History storage is unavailable'}})
+                return
             if path == "/settings":
                 if self._authorized():
                     self._json(200, {"shared": bool(svc.shared), "defaults": svc.shared})
@@ -5454,6 +5501,7 @@ def make_handler(svc: Service):
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),
                                  "image_generation": svc.images is not None,
+                                 **({'output_history': True} if svc.output_history or svc.output_history_error else {}),
                                  "loaded": svc.loaded(), "service": "strata"})
             elif path.startswith("/v1/images/files/"):
                 # response_format url: the name (32 random hex digits) is the access, as an OpenAI image URL is
@@ -5638,7 +5686,7 @@ def make_handler(svc: Service):
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
-                    self.record = svc.begin_request(path, req)
+                    self.record = svc.begin_request(path, req, self.headers)
                 if path == "/v1/responses":
                     self._responses(req)
                 elif path.startswith("/slots/"):
@@ -5710,6 +5758,8 @@ def make_handler(svc: Service):
                         record["wallclock_s"] = round(time.perf_counter() - record["_clock"], 3)
                         record["finished_at"] = time.time()
                         record["state"] = "error" if record.get("error") else record.get("outcome", "completed")
+                    if record.get('_history') is not None:
+                        record['_history'].finish(record)
                     svc.request_trace.record = None
 
         def _images(self, req):
@@ -5912,30 +5962,24 @@ def make_handler(svc: Service):
             try:
                 for item in items:
                     if item is not None:
-                        if api == "openai":
-                            delta = item["choices"][0]["delta"]
-                            content, reasoning = delta.get("content", ""), delta.get("reasoning_content", "")
-                            usage, timings = item.get("usage"), item.get("timings")
-                        elif api == "responses":
-                            kind = item["type"]
-                            content = item["delta"] if kind == "response.output_text.delta" else ""
-                            reasoning = item["delta"] if kind == "response.reasoning_text.delta" else ""
-                            usage, timings = (item.get("response") or {}).get("usage"), None
-                        else:
-                            _, event = item
-                            delta = event.get("delta", {})
-                            content, reasoning = delta.get("text", ""), delta.get("thinking", "")
-                            usage, timings = event.get("usage"), None
+                        fields, updates = event_parts(api, item)
                         with svc.status_lock:
-                            for name, value in (("output", content), ("reasoning", reasoning)):
+                            for name in ('output', 'reasoning') if svc.api_monitor else ():
+                                value = fields[name]
                                 if value:
                                     combined = self.record[name] + value
                                     self.record[name] = combined[:262144]
                                     self.record[name + "_truncated"] |= len(combined) > 262144
-                            if usage:
-                                self.record["usage"] = usage
-                            if timings:
-                                self.record["timings"] = timings
+                            if updates.get('usage'):
+                                updates['usage'] = {**self.record.get('usage', {}), **updates['usage']}
+                            self.record.update(updates)
+                        capture = self.record.get('_history')
+                        if capture is not None:
+                            capture.meta['state'] = self.record['state']
+                            for name, value in fields.items():
+                                capture.append(name, value)
+                    elif self.record.get('_history') is not None:
+                        self.record['_history'].flush(self.record)
                     yield item
             finally:
                 items.close()
@@ -6977,6 +7021,18 @@ def main() -> int:
         print("[strata] Host check off: any name reaches this server (allowed_hosts \"*\")" if "*" in svc.allowed_hosts
               else f"[strata] also answers to the host names {', '.join(svc.allowed_hosts)} (allowed_hosts)", flush=True)
     svc.api_monitor = a.api_monitor or cfg.get("api_monitor") is True
+    if not isinstance(cfg.get('output_history', False), bool):
+        raise SystemExit('[strata] config "output_history" must be true or false')
+    if cfg.get('output_history') is True:
+        path = Path(a.config).with_suffix('.history.sqlite3') if a.config else ROOT / 'output.history.sqlite3'
+        try:
+            svc.output_history = HistoryStore(path)
+        except (OSError, sqlite3.Error) as error:
+            svc.output_history_error = f'History storage unavailable: {error}'
+            print('[strata] ' + svc.output_history_error + '; model service will continue', flush=True)
+        else:
+            atexit.register(svc.output_history.close)
+            print(f'[strata] persistent output history on: {path}', flush=True)
     if svc.api_monitor:
         print("[strata] API request monitor on (/api-monitor): the last 100 requests' prompts and answers are kept in "
               "memory" + ("" if svc.api_key else "; anyone who can reach this server can read them (no API key)"),
@@ -7067,7 +7123,6 @@ def main() -> int:
         except (OSError, ValueError):
             svc.shared = {}
     if hub is not None:
-        import atexit
         svc.mcp = hub
         print(f"[strata] starting {len(hub.servers)} MCP server{'s' * (len(hub.servers) != 1)} for the web app's "
               f"chat: {', '.join(hub.servers)}", flush=True)
@@ -7116,7 +7171,8 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\n[strata] stopping (Ctrl+C again to end the engine at once) ...", flush=True)
         closers = [httpd.shutdown, getattr(engine, "close", None), vision.shutdown if vision else None,
-                   hub.close if hub is not None else None, svc.usage.close if svc.usage else None]
+                   hub.close if hub is not None else None, svc.usage.close if svc.usage else None,
+                   svc.output_history.close if svc.output_history else None]
         for close in filter(None, closers):
             try:
                 close()

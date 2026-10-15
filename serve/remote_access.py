@@ -11,6 +11,7 @@ import os
 import socket
 import ssl
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -146,6 +147,8 @@ class RuntimeChecks:
             response = connection.getresponse()
             if response.status != 405:
                 return False, "Gateway credential check failed"
+            if response.getheader('x-strata-gateway-version') != '2':
+                return False, 'Gateway revision needs an update'
         except (OSError, http.client.HTTPException):
             return False, "Gateway unavailable"
         finally:
@@ -234,8 +237,13 @@ class WindowsLease:
 
     def __enter__(self):
         if self.valid_parent and self.mutex:
-            result = self.kernel.WaitForSingleObject(self.mutex, 60000)
-            self.owned = result in (0, 0x80)
+            while not self.stopped():
+                result = self.kernel.WaitForSingleObject(self.mutex, 5000)
+                if result in (0, 0x80):
+                    self.owned = True
+                    break
+                if result != 0x102:
+                    raise OSError('Remote watchdog singleton could not be acquired')
         return self
 
     def stopped(self, seconds=0):
@@ -283,7 +291,7 @@ def monitor_remote_access(root: Path, parent_pid=None):
                 awake.acquire()
                 held = True
                 say("Idle sleep guard active while the public API is enabled; the display may still sleep.")
-            checks.repair(startup=True)
+            checks.repair()
             say("Remote watchdog started; checking every 30 seconds while Strata runs.")
             while not lease.stopped():
                 want_awake = not (runtime / "disabled").exists()
@@ -302,10 +310,33 @@ def monitor_remote_access(root: Path, parent_pid=None):
             say("Remote watchdog stopped; app-scoped sleep guard released.")
 
 
+def supervise_remote_access(root: Path):
+    """Restart a failed parent-bound watchdog; never restart the model or rotate its credentials."""
+    runtime = Path(os.environ['LOCALAPPDATA']) / 'StrataRemote'
+    try:
+        runtime.mkdir(parents=True, exist_ok=True)
+        (runtime / 'disabled').unlink(missing_ok=True)
+    except OSError:
+        print('[strata] remote runtime unavailable; local inference remains available', flush=True)
+        return
+    while True:
+        try:
+            with (runtime / 'watchdog-console.log').open('a', encoding='utf-8') as output:
+                child = subprocess.Popen(
+                    [sys.executable, '-m', 'serve.remote_access', '--parent-pid', str(os.getpid())],
+                    cwd=str(root), stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                child.wait()
+        except (OSError, subprocess.SubprocessError) as error:
+            print(f'[strata] remote monitor startup failed ({type(error).__name__}); retrying', flush=True)
+        time.sleep(5)
+
+
 def start_remote_access(root: Path):
     if os.name != "nt" or not (root / "remote-access" / "Start-Remote.ps1").is_file():
         return None
-    worker = threading.Thread(target=monitor_remote_access, args=(root,), name="strata-remote-watchdog", daemon=True)
+    worker = threading.Thread(target=supervise_remote_access, args=(root,), name="strata-remote-supervisor", daemon=True)
     worker.start()
     return worker
 

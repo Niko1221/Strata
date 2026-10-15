@@ -73,9 +73,10 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
 
 let tab = "chat";
 function showTab(name) {
-  tab = ["chat", "images", "monitor", "usage", "about"].includes(name) ? name : "chat";
-  for (const b of document.querySelectorAll(".st-tab")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const v of ["chat", "images", "monitor", "usage", "about"]) $(`view-${v}`).hidden = v !== tab;
+  tab = ["chat", "images", "monitor", "usage", "history", "about"].includes(name) ? name : "chat";
+  for (const b of document.querySelectorAll(".st-tab[data-tab]")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
+  for (const v of ["chat", "images", "monitor", "usage", "history", "about"]) $(`view-${v}`).hidden = v !== tab;
+  window.StrataHistory.visible(tab === "history");
   if (tab === "images") $("img-prompt").focus();
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
@@ -83,7 +84,7 @@ function showTab(name) {
   if (tab === "about") loadConfig();
   if (lastMetrics) render(lastMetrics);
 }
-for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(b.dataset.tab);
+for (const b of document.querySelectorAll(".st-tab[data-tab]")) b.onclick = () => showTab(b.dataset.tab);
 window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
 
 // ------------------------------------------------------------------ server access
@@ -105,6 +106,7 @@ async function loadHealth() {
                                           : "Attach a text file (or drop it here)";
     $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
     $("tab-btn-images").hidden = !health.image_generation;
+    $("tab-btn-history").hidden = !health.output_history;
     if (location.hash === "#images" && health.image_generation) showTab("images");
   } catch (e) {
     setTimeout(loadHealth, 2000);
@@ -811,7 +813,7 @@ async function send() {
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
   const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
   try {
-    const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
+    const r = await fetch("v1/chat/completions", {method: "POST", headers: {...headers(true), "X-Strata-App": "Strata Web"}, body: JSON.stringify(body),
                                                    signal: controller.signal});
     if (!r.ok) {
       let msg = `HTTP ${r.status}`;
@@ -1090,6 +1092,7 @@ $("scrim").onclick = () => openDrawer(false);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") openDrawer(false); });
 
 // ------------------------------------------------------------------ start
+window.StrataHistory.mount($("view-history"), () => headers(), (message) => toast("error", "History", message));
 window.StrataUsage.mount($("usage-tracker"), () => headers(true), {
   screen: $("usage-dashboard"), profit: $("usage-profit"), navigate: () => showTab("usage")
 });

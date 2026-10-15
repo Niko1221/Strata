@@ -1,0 +1,16 @@
+{
+  "model": "claude-opus-4-6",
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8080",
+    "ANTHROPIC_AUTH_TOKEN": "strata-local",
+    "ANTHROPIC_MODEL": "claude-opus-4-6",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-6",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-opus-4-6",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-opus-4-6",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-4-6",
+    "ANTHROPIC_CUSTOM_HEADERS": "X-Strata-App: Claude Code",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "132000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "API_TIMEOUT_MS": "14400000"
+  }
+}

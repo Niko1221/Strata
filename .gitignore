@@ -68,3 +68,7 @@ build-vision-cuda12.bat
 *.shared-settings.json
 /remote-access/editor-settings.txt
 /remote-access/gateway.json
+*.history.sqlite3
+*.history.sqlite3-wal
+*.history.sqlite3-shm
+/remote-access/dashboard-settings.txt

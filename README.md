@@ -15,6 +15,10 @@ and coding agents. Nothing leaves your PC.
 
 ## How fast is it?
 
+Optional [Usage, output History and authenticated remote access](docs/LOCAL_FEATURES.md)
+include a setup guide, accounting definitions, privacy notes and example screens.
+They are off by default and do not require replacing the native engine.
+
 We measured it on two ordinary gaming PCs. A token is about ¾ of a word.
 
 - **Writes answers:** how fast the reply appears in a short chat. 60 tokens per second is faster than you can read.

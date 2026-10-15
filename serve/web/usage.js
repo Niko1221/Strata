@@ -21,6 +21,7 @@ window.StrataUsage = (() => {
       <summary class="usage-summary" aria-label="Usage tracker and pricing settings">
         <span class="usage-stat"><span class="usage-label">Tokens</span><strong data-usage="tokens">—</strong></span>
         <span class="usage-stat"><span class="usage-label">Cached tokens</span><strong data-usage="cached-tokens">—</strong></span>
+        <span class="usage-stat"><span class="usage-label">Average TPS</span><strong data-usage="average-tps">&mdash;</strong></span>
         <span class="usage-stat"><span class="usage-label">API value</span><strong data-usage="value">—</strong></span>
         <span class="usage-stat"><span class="usage-label">GPU active</span><strong data-usage="time">—</strong></span>
         <span class="usage-stat"><span class="usage-label">GPU energy</span><strong data-usage="energy">—</strong></span>
@@ -245,6 +246,11 @@ window.StrataUsage = (() => {
     const set = (name, text) => { root.querySelector(`[data-usage="${name}"]`).textContent = text; };
     root.dataset.active = String(data.active);
     set("tokens", status.compact(data.total_tokens)); set("cached-tokens", status.compact(data.cached_tokens));
+    const average = Number.isFinite(data.decode_tok_s) && data.decode_tok_s >= 0 ? data.decode_tok_s : null;
+    const averageText = average == null ? "Not recorded" : `${status.number(average)} t/s`;
+    set("average-tps", averageText);
+    root.querySelector('[data-usage="average-tps"]').title =
+      "Time-weighted average of saved, recorded engine decode work. Prefill, idle and untimed history are excluded.";
     set("value", status.money(data.api_value_usd));
     root.querySelector('[data-usage="cached-tokens"]').title = `${exactCount(data.cached_tokens)} cached input tokens reused across completed calls. Included in Tokens; repeated uses count again.`;
     set("time", status.duration(data.active_s));
@@ -265,7 +271,7 @@ window.StrataUsage = (() => {
       for (const id of ids) root.querySelector(`#usage-${id}`).value = data.rates[id] ?? "";
     }
     const summary = root.querySelector("summary");
-    summary.title = `${exactCount(data.total_tokens)} tokens · ${exactCount(data.cached_tokens)} cached input tokens · ${money(data.api_value_usd)} regular API value · ${duration(data.active_s)} active GPU work`;
+    summary.title = `${exactCount(data.total_tokens)} tokens · ${exactCount(data.cached_tokens)} cached input tokens · ${averageText} average decode · ${money(data.api_value_usd)} regular API value · ${duration(data.active_s)} active GPU work`;
     if (data.persistence_error) root.querySelector("#usage-save-message").textContent = "Totals could not be saved to disk.";
     if (profit) {
       profit.querySelector("strong").textContent = data.profit_usd == null ? profitValue(data, data.rates) : status.money(data.profit_usd);

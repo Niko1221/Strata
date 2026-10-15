@@ -65,9 +65,53 @@ main { flex: 1; min-height: 0; display: flex; }
 
 @media (max-width: 640px) {
   .usage-bar { align-items: stretch; }
-  .st-header .usage-summary, .st-header .profit-shortcut { height: auto; min-height: var(--st-appbar-card-height); }
+  .st-header.usage-enabled .usage-summary,
+  .st-header.usage-enabled .profit-shortcut { height: auto; min-height: var(--st-appbar-card-height); }
   .usage-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 8px; }
   .usage-panel { max-height: calc(100vh - 230px); padding: 18px; }
+}
+
+/* ---------------------------------------------------------------- saved output history */
+.view--history { overflow: hidden; }
+.history-toolbar { display: flex; align-items: center; gap: 12px; padding: 18px 24px; border-bottom: 1px solid var(--st-line); flex: none; flex-wrap: wrap; }
+.history-toolbar h1 { font-size: 20px; margin: 0 auto 0 0; letter-spacing: 0; }
+.history-toolbar .st-input { height: 36px; min-width: 0; border-radius: 6px; font-size: 13px; }
+#history-search { width: 220px; }
+.history-workspace { display: grid; grid-template-columns: minmax(240px, 29%) minmax(0, 1fr); flex: 1; min-height: 0; }
+.history-sidebar { min-height: 0; overflow-y: auto; border-right: 1px solid var(--st-line); }
+#history-list { list-style: none; margin: 0; padding: 0; }
+.history-request { width: 100%; min-height: 88px; border: 0; border-bottom: 1px solid var(--st-line-soft); padding: 14px 20px; background: transparent; color: var(--st-ink); text-align: left; cursor: pointer; font: inherit; }
+.history-request:hover { background: var(--st-surface-2); }
+.history-request[aria-pressed="true"] { background: var(--st-accent-tint); box-shadow: inset 3px 0 var(--st-accent); }
+.history-request:focus-visible { outline: 2px solid var(--st-focus); outline-offset: -3px; }
+.history-request strong { display: block; font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.history-request span { display: block; font-size: 11px; margin-top: 5px; color: var(--st-ink-muted); overflow-wrap: anywhere; }
+.history-app, .history-request .history-app { color: var(--st-accent-text); font-size: 12px; overflow-wrap: anywhere; }
+#history-app { margin: 0 0 6px; }
+.history-detail { min-width: 0; min-height: 0; padding: 22px 24px; display: flex; flex-direction: column; }
+.history-empty { margin: auto; padding: 40px 16px; text-align: center; color: var(--st-ink-muted); font-size: 14px; }
+#history-selected { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.history-heading { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
+.history-heading h2 { font-size: 16px; font-weight: 500; letter-spacing: 0; margin: 0 0 6px; overflow-wrap: anywhere; }
+#history-meta { overflow-wrap: anywhere; }
+.history-viewbar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; border-bottom: 1px solid var(--st-line); padding: 14px 0 10px; }
+.history-panes { display: flex; gap: 3px; margin-right: auto; flex-wrap: wrap; }
+.history-panes .st-tab { height: 34px; padding: 0 10px; border-radius: 6px; font-size: 12px; }
+.history-panes [aria-selected="true"] { background: var(--st-surface-2); color: var(--st-accent-text); }
+#history-text { flex: 1; min-height: 120px; margin: 16px 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 var(--st-font-mono); color: var(--st-ink-soft); }
+#history-more, #history-text-more { margin: 12px; align-self: flex-start; height: 34px; font-size: 12px; }
+.history-notice { padding: 10px 24px; background: var(--st-danger-tint); color: var(--st-danger-text); font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .view--history { overflow: auto; }
+  .history-toolbar { padding: 14px; gap: 8px; }
+  .history-toolbar h1 { flex: 1 1 100%; }
+  #history-search { width: auto; flex: 1; }
+  .history-toolbar select { max-width: 138px; }
+  .history-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: 180px minmax(340px, 1fr); min-height: 540px; }
+  .history-sidebar { border-right: 0; border-bottom: 1px solid var(--st-line); }
+  .history-detail { padding: 16px 14px; }
+  .history-request { min-height: 76px; padding: 10px 14px; }
+  .history-panes .st-tab { padding: 0 8px; }
 }
 
 /* ---------------------------------------------------------------- usage dashboard */

@@ -1,5 +1,9 @@
 # Strata Remote API
 
+Start with the [complete setup guide](../docs/LOCAL_FEATURES.md#public-api-setup-windows)
+for prerequisites, editor configuration, dashboard login, storage/privacy,
+startup recovery, troubleshooting, and example screenshots.
+
 After enabling Funnel, use your device's public OpenAI-compatible base URL:
 
 https://<your-device>.<your-tailnet>.ts.net/v1
@@ -17,7 +21,10 @@ to editors that restrict their provider choices.
 
 The gateway accepts Bearer authorization and Anthropic's `x-api-key` header.
 It forwards model listing, Chat Completions, Responses, Messages, and token
-counting. Strata's web UI, history, and model management routes are not exposed.
+counting. Strata's web UI, history, and model management routes are not exposed
+unless `exposeDashboard` is explicitly true in the protected gateway config.
+Dashboard sharing requires the saved gateway key (browser username `strata`,
+password the key); read the setup guide before enabling administrative access.
 Streaming responses pass through immediately. Prompts are limited to 32 MiB.
 The gateway does not log prompts or API keys. Credentials are outside the repo
 in a directory restricted to the current Windows user and SYSTEM.
@@ -46,6 +53,9 @@ failures are reported without stopping the local model; details are appended
 to `%LOCALAPPDATA%\StrataRemote\autostart.log`.
 
 The hook now keeps a background watchdog running for the life of Strata.
+The server supervises a separate parent-bound watchdog process and retries a
+crash after five seconds. Startup is serialized; watchdog restarts do not undo
+intentional pauses. Gateway auth reads the protected config for each request.
 Every 30 seconds it checks the authenticated gateway and Tailscale Funnel
 configuration, restarting a failed owned gateway or restoring a missing
 tunnel. Every minute it checks public ingress using external DNS and normal

@@ -3,11 +3,14 @@ import { readFileSync } from 'node:fs';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { pipeline } from 'node:stream';
 
-const config = JSON.parse(readFileSync(process.argv[2], 'utf8').replace(/^\uFEFF/, ''));
-if (typeof config.apiKey !== 'string' || config.apiKey.length < 32) {
-  throw new Error('A generated API key is required. Run Start-Remote.ps1 first.');
+function readConfig() {
+  const config = JSON.parse(readFileSync(process.argv[2], 'utf8').replace(/^\uFEFF/, ''));
+  if (typeof config.apiKey !== 'string' || config.apiKey.length < 32) {
+    throw new Error('A generated API key is required. Run Start-Remote.ps1 first.');
+  }
+  return config;
 }
-const expectedKey = createHash('sha256').update(config.apiKey).digest();
+const config = readConfig();
 const port = config.port ?? 8787;
 const maxBody = 32 * 1024 * 1024;
 const routes = new Map([
@@ -35,13 +38,24 @@ function json(res, status, message, type = 'invalid_request_error') {
   res.end(body);
 }
 
-function authorized(req) {
+function requestAccess(req, modelRoute) {
   const auth = req.headers.authorization ?? '';
-  const supplied = /^Bearer /i.test(auth)
+  let supplied = /^Bearer /i.test(auth)
     ? auth.slice(7).trim() : (req.headers['x-api-key'] ?? '');
-  return timingSafeEqual(
-    createHash('sha256').update(supplied).digest(), expectedKey,
-  );
+  try {
+    // Read the protected source of truth, so an old process cannot retain a revoked key.
+    const current = readConfig();
+    const dashboardLogin = !modelRoute && current.exposeDashboard === true;
+    if (current.exposeDashboard === true && /^Basic /i.test(auth)) {
+      const credentials = Buffer.from(auth.slice(6).trim(), 'base64').toString('utf8');
+      supplied = credentials.startsWith('strata:') ? credentials.slice(7) : '';
+    }
+    const expectedKey = createHash('sha256').update(current.apiKey).digest();
+    return { config: current, dashboardLogin,
+      authorized: timingSafeEqual(createHash('sha256').update(supplied).digest(), expectedKey) };
+  } catch {
+    return null;
+  }
 }
 
 function cleanHeaders(headers) {
@@ -50,14 +64,8 @@ function cleanHeaders(headers) {
     !blockedHeaders.has(name) && !extra.has(name)));
 }
 
-let active = 0;
+const active = { api: 0, dashboard: 0 };
 const server = http.createServer(async (req, res) => {
-  if (!authorized(req)) {
-    res.setHeader('www-authenticate', 'Bearer realm="Strata"');
-    res.setHeader('connection', 'close');
-    json(res, 401, 'Missing or incorrect API key.', 'authentication_error');
-    return;
-  }
   let target;
   try {
     target = new URL(req.url, 'http://127.0.0.1');
@@ -67,24 +75,49 @@ const server = http.createServer(async (req, res) => {
   }
   const pathname = target.pathname.replace(/\/$/, '');
   const method = routes.get(pathname);
-  if (!method) {
+  const access = requestAccess(req, Boolean(method));
+  if (!access?.authorized) {
+    res.setHeader('www-authenticate', access?.dashboardLogin ? 'Basic realm="Strata Dashboard", charset="UTF-8"' : 'Bearer realm="Strata"');
+    res.setHeader('connection', 'close');
+    json(res, 401, access?.dashboardLogin ? 'Missing or incorrect dashboard login.' : 'Missing or incorrect API key.', 'authentication_error');
+    return;
+  }
+  // A browser remembers Basic credentials. Do not let a foreign page spend inference or use local-image inputs.
+  if (req.method === 'POST' && /^Basic /i.test(req.headers.authorization ?? '')) {
+    let sameOrigin = false;
+    try {
+      const origin = new URL(req.headers.origin);
+      sameOrigin = origin.origin === req.headers.origin && origin.host === req.headers.host &&
+        (origin.protocol === 'https:' || (origin.protocol === 'http:' &&
+          ['127.0.0.1', 'localhost'].includes(origin.hostname)));
+    } catch { /* Missing, null and malformed origins fail closed for browser mutations. */ }
+    if (!sameOrigin || req.headers['sec-fetch-site'] === 'cross-site') {
+      json(res, 403, 'Dashboard browser requests must come from the same origin. Use Bearer authentication in API clients.');
+      return;
+    }
+  }
+  const requestConfig = access.config;
+  res.setHeader('x-strata-gateway-version', '2');
+  const methods = method ? [method] : requestConfig.exposeDashboard === true ? ['GET', 'POST'] : [];
+  if (!methods.length) {
     json(res, 404, 'This endpoint is not available through the public gateway.');
     return;
   }
-  if (req.method !== method) {
-    res.setHeader('allow', method);
+  if (!methods.includes(req.method)) {
+    res.setHeader('allow', methods.join(', '));
     json(res, 405, 'Method not allowed.');
     return;
   }
-  if (active >= 16) {
+  const pool = method ? 'api' : 'dashboard';
+  if (active[pool] >= 16) {
     json(res, 429, 'The gateway is busy. Retry shortly.');
     return;
   }
-  active++;
+  active[pool]++;
   let upstream;
   let release = false;
   res.on('close', () => {
-    if (!release) { active--; release = true; }
+    if (!release) { active[pool]--; release = true; }
     if (!res.writableFinished) upstream?.destroy();
   });
   try {
@@ -112,10 +145,10 @@ const server = http.createServer(async (req, res) => {
     headers['content-length'] = body.length;
     headers['accept-encoding'] = 'identity';
     // The upstream remains local; gateway credentials never enter its logs.
-    if (config.upstreamApiKey) headers.authorization = `Bearer ${config.upstreamApiKey}`;
+    if (requestConfig.upstreamApiKey) headers.authorization = `Bearer ${requestConfig.upstreamApiKey}`;
     upstream = http.request({
       hostname: '127.0.0.1', port: 8080,
-      path: pathname + target.search,
+      path: (pathname || '/') + target.search,
       method: req.method, headers,
     }, response => {
       const responseHeaders = cleanHeaders(response.headers);
@@ -145,7 +178,7 @@ server.keepAliveTimeout = 5_000;
 server.maxHeadersCount = 100;
 server.on('error', error => { console.error(error.message); process.exitCode = 1; });
 server.listen(port, '127.0.0.1', () => {
-  console.log(`Authenticated Strata gateway listening at 127.0.0.1:${port}`);
+  console.log(`Authenticated Strata gateway listening at 127.0.0.1:${server.address().port}`);
 });
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => { server.close(); server.closeAllConnections(); });
