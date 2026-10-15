@@ -275,7 +275,7 @@ def _mark_deep(v, tags: dict[str, str] = LITERAL_TAGS):
     if isinstance(v, str):
         return _mark(v, tags)
     if isinstance(v, dict):
-        return {k: _mark_deep(x, tags) for k, x in v.items()}
+        return {_mark(k, tags) if isinstance(k, str) else k: _mark_deep(x, tags) for k, x in v.items()}
     if isinstance(v, list):
         return [_mark_deep(x, tags) for x in v]
     return v
@@ -285,7 +285,7 @@ def _has_tag(v, tags: dict[str, str] = LITERAL_TAGS) -> bool:
     if isinstance(v, str):
         return any(tag in v for tag in tags)
     if isinstance(v, dict):
-        return any(_has_tag(x, tags) for x in v.values())
+        return any(_has_tag(k, tags) or _has_tag(x, tags) for k, x in v.items())
     if isinstance(v, list):
         return any(_has_tag(x, tags) for x in v)
     return False
@@ -345,7 +345,8 @@ def mark_think_literals(messages: list[dict], tools: list[dict] | None, tags: di
         mine = own if m.get("role") == "assistant" else tags
         for k, v in m.items():
             if k != "role":
-                m[k] = _mark_deep(v, mine)
+                # Raw assistant content keeps its protocol; structured arguments are data.
+                m[k] = _mark_deep(v, mine if k == "content" else tags)
         if m.get("role") == "user":
             kept = _keep_tool_result_wrap(content, tags)
             if kept is not None:
