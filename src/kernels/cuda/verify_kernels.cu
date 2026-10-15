@@ -1381,6 +1381,40 @@ void fill_zero(float* dst, long long n, void* stream) {
     fill_zero_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>((float4*) dst, n4);
     check("fill_zero");
 }
+namespace {
+// copy_rows_from_mapped_kernel (elementwise.cu) with the routing weight's test: block = row
+__global__ void copy_rows_by_weight_kernel(float4* __restrict__ dst, const volatile float4* src, int64_t row4,
+                                           const int32_t* __restrict__ hit_rows, const int32_t* __restrict__ count,
+                                           const float* __restrict__ w, float heavy, int take_heavy) {
+    const int row = blockIdx.x;
+    __shared__ int take;
+    if (threadIdx.x == 0) {
+        int h = 0;
+        const int c = *count;
+        for (int i = 0; i < c; ++i) h |= hit_rows[i] == row;
+        take = !h && ((w[row] >= heavy ? 1 : 0) == take_heavy);
+    }
+    __syncthreads();
+    float4* d = dst + (int64_t) row * row4;
+    if (!take) {
+        for (int64_t i = threadIdx.x; i < row4; i += blockDim.x) d[i] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    } else {
+        const volatile float4* sr = src + (int64_t) row * row4;
+        for (int64_t i = threadIdx.x; i < row4; i += blockDim.x) d[i] = const_cast<const float4*>(sr)[i];
+    }
+}
+}  // namespace
+void copy_rows_by_weight(float* dst, const float* src, int64_t rows, int64_t width, const int32_t* hit_rows,
+                         const int32_t* count, const float* w, float heavy, bool take_heavy, void* stream) {
+    if (rows <= 0) return;
+    if ((width & 3) != 0 || ((uintptr_t) dst & 15) != 0 || ((uintptr_t) src & 15) != 0) {
+        std::fprintf(stderr, "copy_rows_by_weight: width must be a multiple of 4 and both pointers 16-byte aligned\n");
+        std::exit(1);
+    }
+    copy_rows_by_weight_kernel<<<(unsigned) rows, 128, 0, (cudaStream_t) stream>>>(
+        (float4*) dst, (const volatile float4*) src, width / 4, hit_rows, count, w, heavy, take_heavy ? 1 : 0);
+    check("copy_rows_by_weight");
+}
 void defer_add_rows(const float* parts, const float* w, const float* inject, float* R, int64_t n_embd, int k, int hc,
                     int n_tok, void* stream) {
     if (n_tok <= 0 || n_embd <= 0) return;

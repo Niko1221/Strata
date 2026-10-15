@@ -96,6 +96,11 @@ void defer_add_rows(const float* parts, const float* w, const float* inject, flo
 /// n floats of +0.0 (n a multiple of 4, 16-byte aligned): a kernel node where a memset node would break the window's
 /// kernel-to-kernel chain (pdl.hpp).  Graph-capturable.
 void fill_zero(float* dst, long long n, void* stream);
+/// STRATA_VERIFY_DEFER_HEAVY: copy_rows_from_mapped's CPU rows split by routing weight - row i (rows = tokens * k) is
+/// copied when it is not one of the plan's GPU rows hit_rows[0, *count) and (w[i] >= heavy) == take_heavy, and is
+/// +0.0 otherwise.  width a multiple of 4, both pointers 16-byte aligned.  Graph-capturable.
+void copy_rows_by_weight(float* dst, const float* src, int64_t rows, int64_t width, const int32_t* hit_rows,
+                         const int32_t* count, const float* w, float heavy, bool take_heavy, void* stream);
 
 /// Rows of the S2/S4/S8 embedding for T token ids read from DEVICE memory; out (T, n).  Bitwise `embedding_gather`.
 void embedding_gather_dev(const uint8_t* codes, const float* scales, const float* offsets, const int32_t* tokens,

@@ -31,6 +31,11 @@ namespace strata::core {
 /// the peer card writes into are then allocated with cudaHostAllocPortable; without a peer the flag stays off.
 void set_peer_portable(bool on);
 bool peer_portable();
+/// STRATA_VERIFY_DEFER_HEAVY (verify.cpp): set once at startup, before the verifiers' init, when the verify windows'
+/// pool also takes rows from another GPU (--peer-device, --expert-cache-device1..3), which land after the CPU's; `what`
+/// names it.  Null (the default): none.
+void set_pool_gpu_helper(const char* what);
+const char* pool_gpu_helper();
 
 class PeerExperts {
 public:

@@ -19,6 +19,9 @@ namespace strata::core {
 static bool g_peer_portable = false;
 void set_peer_portable(bool on) { g_peer_portable = on; }
 bool peer_portable() { return g_peer_portable; }
+static const char* g_pool_gpu_helper = nullptr;
+void set_pool_gpu_helper(const char* what) { g_pool_gpu_helper = what; }
+const char* pool_gpu_helper() { return g_pool_gpu_helper; }
 
 namespace {
 

@@ -1744,6 +1744,29 @@ default do. It checks the late addition's copy and arithmetic, not the order of 
 <!-- TODO before the PR: decode speed (interleaved pairs, fresh engines, low and high context) and teacher-forced KL
      against the default with the tail-skip section's protocol, each with the machine it was measured on. -->
 
+**`STRATA_VERIFY_DEFER_HEAVY=<w>`** (with `STRATA_VERIFY_DEFER=1` or `check`; `w` a routing weight in (0, 1], for
+example 0.1) keeps the heavy CPU rows on time. In a deferred layer the pool computes first the experts of the CPU
+entries whose routing weight is at least `w`, raises a second flag, then computes the rest. Layer l's combine waits
+for that flag and takes those rows; only the lighter rows join late in layer l+1. Layer l+1's mixer then misses only
+the light part of layer l's CPU share. The rows themselves come out as in one pass (the pool cuts its work by output
+rows; only the order of the jobs changes). The cost is the wait for the heavy jobs, a part of the time `=1` hid.
+Start-up line: `STRATA_VERIFY_DEFER_HEAVY=<w>: a deferred layer waits for its CPU rows of routing weight >= <w> ...`;
+with `STRATA_VERIFY_PROFILE` the wait for the heavy rows shows as `waitCPU` of the deferred layers, the late ones as
+`late rows`.
+
+HEAVY is turned off at start-up, with one line saying so, and the run is exactly `STRATA_VERIFY_DEFER` alone (every
+CPU row joins late), when the verifier takes the device plan (`STRATA_VERIFY_DEVICE_PLAN=1`) and with `--peer-device`
+or a helper cache (`--expert-cache-device1..3`), whose rows land after the CPU's. The doorbell carries the routing weights in the windows that defer
+(`doorbell_publish`, as `--remote-expert-opt` uses it), so those windows copy the layer's input to the host even when
+all its experts are in VRAM. Unset, nothing of it runs: no flag is allocated and no kernel or host step changes.
+
+On a layer split each card's stage is a verifier of its own (own flags, own plan, own late rows), and a stage defers
+its own layers but its last one, so nothing is deferred across the hand-off between cards; the pool for a layer is the
+stage's own (`drive_pool_split` sets the stage's plan, partial flag included). This was checked by reading the code,
+not run on two cards.
+
+<!-- TODO before the PR: decode speed and teacher-forced KL of =1 HEAVY=0.1 against =1 and the default, same protocol. -->
+
 ## More opt-in switches measured for 0.1.41 (all off unless you set them)
 
 None of these changes the default answers; each was measured against the default with interleaved off/on pairs of whole
