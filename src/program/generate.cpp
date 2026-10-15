@@ -676,6 +676,14 @@ struct Options {
     bool conversation_cache_cold_dir_named = false;    // --conversation-cache-cold-dir named the directory
     bool conversation_cache_disk_mib_named = false;    // --conversation-cache-disk-mib named the budget
     bool conversation_cache_cold_mib_named = false;    // --conversation-cache-cold-mib named the budget
+    /// --conversation-cache-warm-dir / --conversation-cache-warm-mib: the WARM level of the cascade, between the
+    /// RAM cache and the cold level. The park writer and the RAM cache's evictions write HERE, and what this
+    /// level's own GC (budget or age) would have removed DEGRADES to the cold level instead. `degraded` counts
+    /// those moves; this level never removes (the cold one is the last and the only one that does). No default:
+    /// the operator names the folder, and with an empty folder or a 0 budget there is NO warm level and the
+    /// engine is the flat tier, byte for byte.
+    std::string conversation_cache_warm_dir;
+    int64_t conversation_cache_warm_mib = 0;      // the warm level's limit (0 = off, and then there is no cascade)
     double conversation_cache_similarity = 0.0;   // least LCP/new-prompt fraction a disk hit may offer (range [0,1))
     int64_t conversation_cache_n_min = 0;         // least common-prefix tokens a disk hit may offer
     /// --conversation-cache-spill-when-full: what the disk tier does at its budget. "evict-oldest" (default, what
@@ -901,6 +909,16 @@ void usage() {
                  "                       names with two different folders is an error at start\n"
                  "  --conversation-cache-cold-mib N  --serve: the CANONICAL name of the same field as\n"
                  "                       --conversation-cache-disk-mib, the spill directory's limit in MiB\n"
+                 "  --conversation-cache-warm-dir DIR  --serve: the WARM level of the cascade. The park writer and\n"
+                 "                       the RAM cache's evictions write here, and what this level's own GC (budget or\n"
+                 "                       age, --conversation-cache-spill-when-full / -max-age-days) would have removed\n"
+                 "                       is MOVED down to the cold level instead of being deleted. Reads take the copy\n"
+                 "                       from the level that has it; a hit from the cold comes back to the warm by\n"
+                 "                       being parked again. No default: name the folder. Empty = no warm level, and\n"
+                 "                       with no warm level the disk tier is exactly what it was\n"
+                 "  --conversation-cache-warm-mib N  --serve: the warm level's budget in MiB (0 = no warm level, and\n"
+                 "                       then there is no cascade). With --conversation-cache-spill-when-full reject\n"
+                 "                       this level refuses a new copy and degrades nothing\n"
                  "  --conversation-cache-similarity F  --serve: least common-prefix fraction a disk hit may offer\n"
                  "                       (default 0 = any; range [0,1))\n"
                  "  --conversation-cache-n-min N  --serve: least common-prefix tokens a disk hit may offer (default 0)\n"
@@ -2310,7 +2328,7 @@ int main(int argc, char** argv) {
                  a == "--conversation-cache-park-min-free-mib" ||
                  a == "--session-min-free-mib" || a == "--memory-limit-mib" ||
                  a == "--conversation-cache-disk-mib" || a == "--conversation-cache-cold-mib" ||
-                 a == "--conversation-cache-n-min") {
+                 a == "--conversation-cache-warm-mib" || a == "--conversation-cache-n-min") {
             const std::string value = next(a.c_str());
             int64_t number = 0;
             const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
@@ -2341,6 +2359,7 @@ int main(int argc, char** argv) {
                 o.conversation_cache_disk_mib = number;
                 (canonical ? o.conversation_cache_cold_mib_named : o.conversation_cache_disk_mib_named) = true;
             }
+            else if (a == "--conversation-cache-warm-mib") o.conversation_cache_warm_mib = number;
             else o.conversation_cache_n_min = number;
         }
         else if (a == "--conversation-cache-park") {
@@ -2367,6 +2386,7 @@ int main(int argc, char** argv) {
             if (a == "--conversation-cache-cold-dir") o.conversation_cache_cold_dir_named = true;
             else o.conversation_cache_spill_dir_named = true;
         }
+        else if (a == "--conversation-cache-warm-dir") o.conversation_cache_warm_dir = next("--conversation-cache-warm-dir");
         else if (a == "--conversation-cache-similarity") {
             const std::string value = next("--conversation-cache-similarity");
             char* end = nullptr;
@@ -8628,7 +8648,10 @@ int main(int argc, char** argv) {
         // The durable disk tier: conversations the RAM cache evicts are written here as session files, so a restart
         // finds them. The identity is the same one the slot save/restore API binds its files to, so a spilled
         // conversation and a hand-saved session file are interchangeable.
-        strata::core::ConversationSpillCache conversation_spill;
+        strata::core::ConversationSpillCache conversation_spill;   // the COLD level (the tier of always)
+        // Delta 6: the cascade's WARM level. Empty and not open unless --conversation-cache-warm-dir names it: with
+        // no warm level nothing here is used and the cold level is the whole disk tier, byte for byte as before.
+        strata::core::ConversationSpillCache conversation_spill_warm;
         strata::core::SessionFileIdentity spill_identity;
         // --conversation-cache-spill-dir's default: when the operator opted into the conversation cache but named
         // no folder, one is resolved (conversation_spill_dir.hpp) from the engine's own directory and the user
@@ -8706,6 +8729,37 @@ int main(int argc, char** argv) {
                                  conversation_spill.oversized_files_kept(), conversation_spill.stale_files_kept(),
                                  conversation_spill.foreign_files_kept(), conversation_spill.orphan_files_kept(),
                                  conversation_spill.disk_evictions(), conversation_spill.age_evictions());
+                    // Delta 6: the cascade's WARM level, between the RAM cache and the cold level above. It is where
+                    // the park writer and the RAM cache's evictions write, and what its OWN GC (the same budget and
+                    // age levers) would have removed, it MOVES down to the cold level instead - so the cold level is
+                    // the only one that deletes.  The wire is set BEFORE open(), because open() runs both levers:
+                    // without it, opening a warm over an already-over-budget folder would DELETE exactly what the
+                    // cascade exists to degrade.  No default: the operator names the folder, and without it nothing
+                    // of this block runs and the engine is the flat tier.
+                    if (!o.conversation_cache_warm_dir.empty() && o.conversation_cache_warm_mib > 0) {
+                        conversation_spill_warm.set_next(&conversation_spill);
+                        std::string warm_error;
+                        if (!conversation_spill_warm.open(o.conversation_cache_warm_dir, spill_identity,
+                                (uint64_t) o.conversation_cache_warm_mib * 1024 * 1024, warm_error, spill_when_full,
+                                o.conversation_cache_spill_max_age_days)) {
+                            std::fprintf(stderr, "strata serve: conversation cache: warm level disabled (%s); the cold "
+                                         "level keeps what it writes\n", warm_error.c_str());
+                        } else if (conversation_spill_warm.enabled()) {
+                            std::fprintf(stderr, "strata serve: conversation cache: warm dir ready (%zu conversations, "
+                                         "%llu MiB, mib=%lld, when-full=%s, max-age=%lld d, %zu degraded to cold, "
+                                         "%zu oversized kept, %zu stale kept, %zu foreign kept, %zu orphans kept)\n",
+                                         conversation_spill_warm.size(),
+                                         (unsigned long long) (conversation_spill_warm.bytes() >> 20),
+                                         (long long) o.conversation_cache_warm_mib,
+                                         o.conversation_cache_spill_when_full.c_str(),
+                                         (long long) o.conversation_cache_spill_max_age_days,
+                                         conversation_spill_warm.degraded(),
+                                         conversation_spill_warm.oversized_files_kept(),
+                                         conversation_spill_warm.stale_files_kept(),
+                                         conversation_spill_warm.foreign_files_kept(),
+                                         conversation_spill_warm.orphan_files_kept());
+                        }
+                    }
                     // Delta 5a: the archive. Off unless --conversation-cache-archive-mode is ids or state; with off
                     // no directory is created and no byte is written (the tier stays byte-for-byte delta 4). Its own
                     // folder, its own budget and its own GC; it exists only beside a live tier.
@@ -8773,9 +8827,40 @@ int main(int argc, char** argv) {
         // Delta 2 / R3: with --conversation-cache-spill-on park the tier is a mirror, not overflow. The park writer
         // holds one cell per conversation (only the newest state) and a background thread drains it, so a turn with
         // five tool calls writes once. It is inert without a spill directory.
-        const bool spill_on_park = conversation_spill.enabled() && o.conversation_cache_spill_on == "park";
+        // Delta 6: the cascade's WRITE level. The park writer and the RAM cache's evictions land in the WARM level
+        // when it is open, and in the cold level when it is not - so with no warm level every counter and every log
+        // line below is the one it always was, byte for byte.
+        strata::core::ConversationSpillCache* const spill_write =
+            conversation_spill_warm.enabled() ? &conversation_spill_warm : &conversation_spill;
+        // The counters of the level a write just landed on, in the log's own spelling: the cold level keeps the
+        // "disk=... disk_evictions=..." tail (and the Monitor keeps reading it unchanged), the warm level names
+        // itself and reports what its GC moved DOWN instead (a degradation is not an eviction: it counts 0 there).
+        auto tier_counters = [&]() -> std::string {
+            if (spill_write == &conversation_spill)
+                return "disk=" + std::to_string(conversation_spill.bytes() >> 20) + " MiB disk_evictions=" +
+                       std::to_string(conversation_spill.disk_evictions());
+            return "warm=" + std::to_string(conversation_spill_warm.bytes() >> 20) + " MiB warm_degraded=" +
+                   std::to_string(conversation_spill_warm.degraded());
+        };
+        // A degradation is decided INSIDE the cache, on whichever thread ran its GC, so it is reported wherever the
+        // counters can be read around the call - and it carries BOTH levels, because the cold level's row has no
+        // other writer once the writer targets the warm.  Only a warm level can degrade.
+        size_t degraded_seen = 0;
+        auto note_degradations = [&]() {
+            if (spill_write == &conversation_spill) return;
+            const size_t now_degraded = conversation_spill_warm.degraded();
+            if (now_degraded == degraded_seen) return;
+            std::fprintf(stderr, "strata serve: conversation cache: degraded %zu conversation%s to the cold level; "
+                         "warm=%zu conversations / %zu MiB; cold=%zu conversations / %zu MiB, cold_evictions=%zu\n",
+                         now_degraded - degraded_seen, now_degraded - degraded_seen == 1 ? "" : "s",
+                         conversation_spill_warm.size(), (size_t) (conversation_spill_warm.bytes() >> 20),
+                         conversation_spill.size(), (size_t) (conversation_spill.bytes() >> 20),
+                         conversation_spill.disk_evictions());
+            degraded_seen = now_degraded;
+        };
+        const bool spill_on_park = spill_write->enabled() && o.conversation_cache_spill_on == "park";
         strata::core::ConversationSpillWriter park_writer;
-        if (spill_on_park) park_writer.start(&conversation_spill, o.conversation_cache_spill_park_throttle_s);
+        if (spill_on_park) park_writer.start(spill_write, o.conversation_cache_spill_park_throttle_s);
         // --conversation-cache-park: resolve the destination ONCE, here.  The arena and the model are resident by now,
         // so available_host_bytes() is what the park itself will see and `auto` can grade the free RAM against one
         // snapshot per slot beside the floor (the spec's `arena + slots x ~2.5 GiB + piso`).  A disk target needs the
@@ -8857,20 +8942,20 @@ int main(int argc, char** argv) {
             }
         }
         auto spill_evicted = [&](const strata::core::SavedConversation& evicted) {
-            if (!conversation_spill.enabled()) return;
+            if (!spill_write->enabled()) return;   // delta 6: the write level (the warm one when the cascade is on)
             try {
                 std::string spill_error;
                 std::string stored;
-                if (conversation_spill.spill(evicted, spill_error, &stored)) {
+                if (spill_write->spill(evicted, spill_error, &stored)) {
                     mirror_segments(evicted);   // the per-segment tier mirrors the same conversation (opt-in)
                     // park mode: an eviction confirms what the mirror already wrote, so the older copy of this
                     // conversation goes once the new one is on disk (one copy per conversation, never two).
                     if (spill_on_park)
-                        conversation_spill.drop_superseded(evicted.live.ids, evicted.live.imgs, evicted.checkpoints,
-                                                           evicted.cvec, stored);
-                    std::fprintf(stderr, "strata serve: conversation cache: spilled %zu tokens (%zu MiB); disk=%zu MiB "
-                                 "disk_evictions=%zu\n", evicted.live.ids.size(), evicted.bytes() >> 20,
-                                 (size_t) (conversation_spill.bytes() >> 20), conversation_spill.disk_evictions());
+                        spill_write->drop_superseded(evicted.live.ids, evicted.live.imgs, evicted.checkpoints,
+                                                     evicted.cvec, stored);
+                    std::fprintf(stderr, "strata serve: conversation cache: spilled %zu tokens (%zu MiB); %s\n",
+                                 evicted.live.ids.size(), evicted.bytes() >> 20, tier_counters().c_str());
+                    note_degradations();   // the spill's own GC may have moved the oldest of the warm level down
                 } else {
                     std::fprintf(stderr, "strata serve: conversation cache: could not spill evicted conversation (%s); "
                                  "dropping it\n", spill_error.c_str());
@@ -8916,7 +9001,9 @@ int main(int argc, char** argv) {
             // park mode: the writer supersedes the previous disk copy once the new one is on disk (one copy per
             // conversation, and no window with none); evict mode keeps the delta-1 synchronous supersede.
             if (!spill_on_park) {
-                const size_t disk_dropped = conversation_spill.drop_superseded(live, live_imgs, checks, cvec_cached);
+                // delta 6: the write level (the warm one when the cascade is on) - the copies this park supersedes
+                // are the ones that level holds.
+                const size_t disk_dropped = spill_write->drop_superseded(live, live_imgs, checks, cvec_cached);
                 if (disk_dropped)
                     std::fprintf(stderr, "strata serve: conversation cache: removed %zu superseded disk conversation%s\n",
                                  disk_dropped, disk_dropped == 1 ? "" : "s");
@@ -9105,18 +9192,19 @@ int main(int argc, char** argv) {
                             const double copy_ms = std::chrono::duration<double, std::milli>(Clock::now() - tc).count();
                             posted = park_writer.post(key, std::move(mirrored));
                             std::fprintf(stderr, "strata serve: conversation cache: park mirror queued (%zu tokens, copy %.1f ms); "
-                                         "writes=%zu collapsed=%zu throttled=%zu disk=%zu MiB disk_evictions=%zu conversations=%zu\n", live.size(), copy_ms,
+                                         "writes=%zu collapsed=%zu throttled=%zu %s conversations=%zu\n", live.size(), copy_ms,
                                          park_writer.writes(), park_writer.collapsed(), park_writer.throttled(),
-                                         (size_t) (conversation_spill.bytes() >> 20), conversation_spill.disk_evictions(),
-                                         conversation_spill.size());
+                                         tier_counters().c_str(), spill_write->size());
                         } else {
                             posted = park_writer.post(key, std::move(image));
                             std::fprintf(stderr, "strata serve: conversation cache: park mirror queued (%zu tokens, disk only, no RAM copy); "
-                                         "writes=%zu collapsed=%zu throttled=%zu disk=%zu MiB disk_evictions=%zu conversations=%zu\n", live.size(),
+                                         "writes=%zu collapsed=%zu throttled=%zu %s conversations=%zu\n", live.size(),
                                          park_writer.writes(), park_writer.collapsed(), park_writer.throttled(),
-                                         (size_t) (conversation_spill.bytes() >> 20), conversation_spill.disk_evictions(),
-                                         conversation_spill.size());
+                                         tier_counters().c_str(), spill_write->size());
                         }
+                        // the writer drains on its own thread, so a degradation it made is reported whenever the
+                        // counter is read next - here, and on the next eviction (the counter is monotonic).
+                        note_degradations();
                     }
                 }
                 // put() reserves again with the captured size, so it carries the spill hook too: an eviction it makes
@@ -10368,6 +10456,8 @@ int main(int argc, char** argv) {
                         "conversation_cache_similarity=%.3f conversation_cache_n_min=%lld "
                         "conversation_cache_spill_dir=\"%s\" conversation_cache_disk=%d "
                         "system_prompt_cache_dir=\"%s\" system_prompt_cache_mib=%lld "
+                        "conversation_cache_warm_dir=\"%s\" conversation_cache_warm_mib=%lld "
+                        "conversation_cache_warm=%d "
                         "tail_role_token=%lld vram_elastic=%d%s engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
@@ -10384,6 +10474,8 @@ int main(int argc, char** argv) {
                         o.conversation_cache_similarity, (long long) o.conversation_cache_n_min,
                         o.conversation_cache_spill_dir.c_str(), conversation_spill.enabled() ? 1 : 0,
                         o.system_prompt_cache_dir.c_str(), (long long) o.system_prompt_cache_mib,
+                        o.conversation_cache_warm_dir.c_str(), (long long) o.conversation_cache_warm_mib,
+                        conversation_spill_warm.enabled() ? 1 : 0,
                         (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
@@ -11829,22 +11921,42 @@ int main(int argc, char** argv) {
             bool incoming_from_disk = false;
             bool incoming_from_ram = false;   // the parked RAM image is the chosen candidate (the ladder never retries it)
             std::string incoming_disk_path;
+            bool incoming_disk_cold = false;  // delta 6: the hit came from the COLD level, not the primary disk one
             // R2: if the client rewrote this conversation's tail (a compaction or an edited history), the stored
             // copy describes nothing it will send. Detect it from the sidecar's own token ids (no K/V read) and
             // discard the copy - it can never be a hit and only occupies GB. A copy the prompt extends, or one
             // whose header is another conversation's, is left alone.
             if (spill_on_park) {   // a delta-2 refinement: --conversation-cache-spill-on evict reproduces delta 1
-                const size_t discarded = conversation_spill.discard_diverged(
+                // The write level holds the copies a park wrote; with the cascade on, that is the warm level and the
+                // cold level keeps whatever was degraded into it. A compacted copy can never be a hit, so it is
+                // discarded wherever it sits - the whole point of the check is to stop GB from accumulating.
+                size_t discarded = spill_write->discard_diverged(
                         ids, want_cvec, (size_t) o.conversation_cache_spill_divergence_tokens, o.turn_token);
+                if (spill_write != &conversation_spill)   // inert (0) when there is no warm level
+                    discarded += conversation_spill.discard_diverged(
+                            ids, want_cvec, (size_t) o.conversation_cache_spill_divergence_tokens, o.turn_token);
                 if (discarded)
                     std::fprintf(stderr, "strata serve: conversation cache: discarded %zu compacted disk conversation%s "
                                  "(the client rewrote the tail); compacted=%zu\n", discarded,
-                                 discarded == 1 ? "" : "s", conversation_spill.compacted());
+                                 discarded == 1 ? "" : "s",
+                                 conversation_spill_warm.compacted() + conversation_spill.compacted());
             }
             // A spilled conversation can beat the RAM cache: match it from its sidecar (no K/V read), and only if it
             // offers a longer resume than RAM, the batch slots and the live state does, read it back whole.
-            const auto disk_match = conversation_spill.best(ids, req_imgs, want_cvec,
+            // Delta 6: with the cascade on there are TWO levels to match, and the one offering the LONGER resume
+            // wins - the same rule the batch slots and the live state already lose to. A tie goes to the cold level
+            // (the older copy; the warm copy, if any, will simply be matched again next time). With no warm level
+            // the warm match is empty and this is exactly the single-tier decision it always was.
+            const auto cold_match = conversation_spill.best(ids, req_imgs, want_cvec,
                                                             o.conversation_cache_similarity, o.conversation_cache_n_min);
+            const auto warm_match = conversation_spill_warm.best(ids, req_imgs, want_cvec,
+                                                                 o.conversation_cache_similarity, o.conversation_cache_n_min);
+            const bool hit_from_cold = cold_match.tokens >= warm_match.tokens;
+            const auto disk_match = hit_from_cold ? cold_match : warm_match;
+            // Which instance owns the path decides load/pin/unpin/erase: the pin list lives per instance, so
+            // anchoring in the wrong one would leave the entry of the other permanently out of its own GC.
+            strata::core::ConversationSpillCache* const disk_cache = hit_from_cold ? &conversation_spill
+                                                                                  : &conversation_spill_warm;
             if (!disk_match.path.empty() && disk_match.tokens > std::max(resume, std::max(slot_tokens, parked.tokens))) {
                 constexpr uint64_t admission_extra = 1ull << 20;
                 const uint64_t estimate = disk_match.file_bytes > UINT64_MAX - disk_match.file_bytes / 8 - admission_extra
@@ -11855,10 +11967,10 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: conversation cache: disk hit needs %llu MiB; RAM budget is %llu MiB\n",
                                  (unsigned long long) (estimate >> 20), (unsigned long long) (ram_budget >> 20));
                 } else {
-                    conversation_spill.pin(disk_match.path);
+                    disk_cache->pin(disk_match.path);
                     if (!conversations.make_room((size_t) estimate, 0, spill_evicted)) {
                         std::fprintf(stderr, "strata serve: conversation cache: disk hit does not fit the RAM cache budget\n");
-                        conversation_spill.unpin(disk_match.path);
+                        disk_cache->unpin(disk_match.path);
                     } else {
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                         const uint64_t disk_floor = (uint64_t) o.conversation_cache_park_min_free_mib << 20;
@@ -11878,7 +11990,7 @@ int main(int argc, char** argv) {
                             std::fprintf(stderr, "strata serve: conversation cache: disk hit skipped (physical RAM admission; "
                                          "need %llu MiB plus a %lld MiB floor, or telemetry unavailable)\n",
                                          (unsigned long long) (estimate >> 20), (long long) o.conversation_cache_park_min_free_mib);
-                            conversation_spill.unpin(disk_match.path);
+                            disk_cache->unpin(disk_match.path);
                         } else {
                             // One read limit per stage file: the main image's carve, then each later stage's. The
                             // disk tier writes one session file per stage (conversation_spill.hpp), so the limits
@@ -11901,30 +12013,38 @@ int main(int argc, char** argv) {
                                         (uint64_t) std::max(o.prompt_cache, 1), limits_error);
                             if (!limits_ok) {
                                 std::fprintf(stderr, "strata serve: conversation cache: disk hit skipped (%s)\n", limits_error.c_str());
-                                conversation_spill.unpin(disk_match.path);
+                                disk_cache->unpin(disk_match.path);
                             } else {
                                 // The admission is about to stream this parking back from disk: say so BEFORE the
                                 // read, so a consumer (the Monitor) tells a disk load from a fresh prompt WHILE it
                                 // happens.  The matching close is the "restored ..." line the load ends with (or a
                                 // "discard ..." when the image is refused).
-                                std::fprintf(stderr, "strata serve: conversation cache: loading %lld tokens from disk\n",
-                                             (long long) disk_match.tokens);
+                                // Delta 6: the LEVEL is named.  "disk" stays the primary disk level (the warm level
+                                // when the cascade is configured, the cold level when it is not) so a run with no
+                                // warm level logs exactly the line it always did; "cold" appears only for a hit that
+                                // came from the level below the warm one.
+                                std::fprintf(stderr, "strata serve: conversation cache: loading %lld tokens from %s\n",
+                                             (long long) disk_match.tokens,
+                                             (spill_write != &conversation_spill && disk_cache == &conversation_spill)
+                                                 ? "cold" : "disk");
                                 strata::core::SavedConversation restored;
                                 std::string spill_error;
-                                if (!conversation_spill.load(disk_match.path, restored, limits, spill_error)) {
+                                if (!disk_cache->load(disk_match.path, restored, limits, spill_error)) {
                                     std::fprintf(stderr, "strata serve: conversation cache: discard unreadable disk conversation (%s)\n",
                                                  spill_error.c_str());
                                     std::string erase_error;
-                                    conversation_spill.erase(disk_match.path, erase_error);
-                                    conversation_spill.unpin(disk_match.path);
+                                    disk_cache->erase(disk_match.path, erase_error);
+                                    disk_cache->unpin(disk_match.path);
                                 } else if (restored.bytes() > ram_budget) {
                                     std::fprintf(stderr, "strata serve: conversation cache: disk conversation exceeds the RAM cache budget after loading\n");
-                                    conversation_spill.unpin(disk_match.path);
+                                    disk_cache->unpin(disk_match.path);
                                 } else {
                                     incoming.emplace(std::move(restored));
                                     parked = {0, disk_match.tokens, disk_match.live};
                                     incoming_from_disk = true;
                                     incoming_disk_path = disk_match.path;
+                                    incoming_disk_cold = disk_cache == &conversation_spill &&
+                                                         spill_write != &conversation_spill;
                                 }
                             }
                         }
@@ -12207,10 +12327,10 @@ int main(int argc, char** argv) {
                 }
                 if (incoming_from_disk && main_failed) {   // a disk conversation this engine cannot use: drop its files
                     std::string erase_error;
-                    conversation_spill.erase(incoming_disk_path, erase_error);
-                    conversation_spill.unpin(incoming_disk_path);
+                    disk_cache->erase(incoming_disk_path, erase_error);   // delta 6: the instance that owns the path
+                    disk_cache->unpin(incoming_disk_path);
                 } else if (incoming_from_disk && restore_ladder_on) {
-                    conversation_spill.unpin(incoming_disk_path);   // opt-in: release the pin on every rejection
+                    disk_cache->unpin(incoming_disk_path);   // opt-in: release the pin on every rejection
                 }
                 incoming.reset();
                 incoming_from_disk = false;
@@ -12362,10 +12482,14 @@ int main(int argc, char** argv) {
                     conversations.retain(std::move(incoming->kv), int64_t(live.size()), std::move(stage_kv));
                 }
                 if (incoming_from_disk)
-                    conversation_spill.unpin(incoming_disk_path);   // it is back in RAM: the disk copy is evictable again
+                    disk_cache->unpin(incoming_disk_path);   // it is back in RAM: the disk copy is evictable again
+                    // (delta 6: the copy stays where it was - a hit from the cold level is NOT promoted into the
+                    // warm one here; the conversation is live again and its next park writes it back to the warm.)
                 incoming.reset(); // Running-state/checkpoint copies are no longer needed.
                 std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s%s) in %.1f ms; parked=%zu bytes=%zu\n",
-                             (long long) resume, incoming_from_disk ? "disk/" : "", from_live ? "live" : "checkpoint",
+                             (long long) resume,
+                             incoming_disk_cold ? "cold/" : incoming_from_disk ? "disk/" : "",
+                             from_live ? "live" : "checkpoint",
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes());
             }
@@ -14532,7 +14656,7 @@ int main(int argc, char** argv) {
                 helper_bytes_before = bytes;
             }
         }
-        if (conversation_spill.enabled()) {   // the parked conversations go to disk, so a restart finds them
+        if (spill_write->enabled()) {   // the parked conversations go to disk (the warm level), so a restart finds them
             if (!park_current(0))
                 std::fprintf(stderr, "strata serve: conversation cache: the final active conversation was not captured (%s)\n",
                              err.c_str());
@@ -14540,9 +14664,9 @@ int main(int argc, char** argv) {
             // the shutdown spill supersedes them instead of racing them.
             if (spill_on_park) park_writer.stop();
             const size_t resident = conversations.spill_all(spill_evicted);
-            std::fprintf(stderr, "strata serve: conversation cache: shutdown spilled %zu parked conversations; disk=%zu MiB "
-                         "disk_evictions=%zu\n", resident, (size_t) (conversation_spill.bytes() >> 20),
-                         conversation_spill.disk_evictions());
+            note_degradations();
+            std::fprintf(stderr, "strata serve: conversation cache: shutdown spilled %zu parked conversations; %s\n",
+                         resident, tier_counters().c_str());
             if (spill_on_park)
                 std::fprintf(stderr, "strata serve: conversation cache: park mirror: %zu writes, %zu collapsed, %zu skipped, "
                              "%zu throttled, %zu refused\n", park_writer.writes(), park_writer.collapsed(),
