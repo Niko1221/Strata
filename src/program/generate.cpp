@@ -11040,10 +11040,12 @@ int main(int argc, char** argv) {
                     checks.clear();   // the main session's checkpoints were of the conversation it held before
                     // a read that gave way, the same request again (into its own slot): on with it - its segments and
                     // checkpoints as if it had not stopped
+                    bool took_checks = false;
                     if (slot_ck == nullptr && bs[(size_t) slot_source].partial && admit_slot == slot_source) {
                         resumed_from0 = bs[(size_t) slot_source].partial_from0;
                         for (const ConvCheckpoint& c : bs[(size_t) slot_source].checks) checks.push_back(c);
                         bs[(size_t) slot_source].partial = false;
+                        took_checks = true;
                     }
                     if (slot_ck != nullptr) {
                         live = slot_ck->ids;
@@ -11051,6 +11053,15 @@ int main(int argc, char** argv) {
                         checks.back().used = ++check_clock;
                     } else {
                         live = bs[(size_t) slot_source].ids;
+                        // the whole conversation comes back: its checkpoints (the turn boundary) come with it.  Else
+                        // they were lost here, and when the request later went back into a slot (another request
+                        // arrived) or was parked, the slot had none: a next turn that does not continue the whole
+                        // reply (a client that rewrites its end) was read from token 0 instead of the boundary
+                        if (!took_checks)
+                            for (const ConvCheckpoint& c : bs[(size_t) slot_source].checks) {
+                                checks.push_back(c);
+                                checks.back().used = ++check_clock;
+                            }
                     }
                     live_imgs.clear();
                     resume = slot_tokens;
