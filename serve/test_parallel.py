@@ -376,6 +376,71 @@ class FakeEngineCase(unittest.TestCase):
         with urllib.request.urlopen(self.base + path, timeout=10) as r:
             return json.loads(r.read().decode())
 
+    def _protected_waiter(self):
+        self.start(6, says_groups=3, affinity=True)
+        e = self.engine
+        with e.slot_cv:
+            e.slot_held = [[9000 + b] * 50000 for b in range(6)]
+            e.slot_used = [time.time()] * 6
+            e.slot_cache_valid = [True] * 6
+            # Keep one request marked busy to exercise admission instead of the solo path.
+            e.slot_busy[0] = True
+            e.slot_claims.add(0)
+        cancel, result = threading.Event(), {}
+        def run():
+            try:
+                result['tokens'] = list(e.generate_batched([9999], 8, {}, cancel))
+            except BaseException as ex:
+                result['error'] = ex
+        t = threading.Thread(target=run)
+        t.start()
+        end = time.monotonic() + 2
+        while time.monotonic() < end and not e.admitting:
+            time.sleep(0.01)
+        self.assertGreater(e.admitting, 0)
+        self.assertTrue(e.ctl.acquire(blocking=False))  # waiting never monopolizes the control channel
+        e.ctl.release()
+        return cancel, result, t
+
+    def test_affinity_protection_wait_is_bounded_and_then_admits(self):
+        started = time.monotonic()
+        cancel, result, t = self._protected_waiter()
+        try:
+            t.join(8)
+            self.assertFalse(t.is_alive())
+            self.assertNotIn('error', result)
+            self.assertGreaterEqual(time.monotonic() - started, 4.8)
+            self.assertTrue(result['tokens'])
+        finally:
+            cancel.set()
+            t.join(3)
+
+    def test_affinity_wait_wakes_when_a_short_history_expires(self):
+        cancel, result, t = self._protected_waiter()
+        try:
+            with self.engine.slot_cv:
+                self.engine.slot_held[4] = [42] * 500
+                self.engine.slot_used[4] = time.time() - 0.2
+                self.engine.slot_cv.notify_all()
+            t.join(2)
+            self.assertFalse(t.is_alive())
+            self.assertNotIn('error', result)
+            self.assertTrue(result['tokens'])
+        finally:
+            cancel.set()
+            t.join(3)
+
+    def test_affinity_wait_can_be_cancelled_without_overwriting_cache(self):
+        cancel, result, t = self._protected_waiter()
+        before = list(self.engine.slot_held)
+        cancel.set()
+        t.join(2)
+        self.assertFalse(t.is_alive())
+        self.assertNotIn('error', result)
+        self.assertEqual(result.get('tokens'), [])
+        self.assertEqual(self.engine.slot_held, before)
+        self.assertEqual(self.engine.admitting, 0)
+
     def _two_at_once(self, text_b):
         """A long request first, then one that has to go to a batch slot (the engine is busy with the first)."""
         out = {}
@@ -412,6 +477,16 @@ class ParallelService(FakeEngineCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them: slots, queues, benchmarks, telemetry.
     The yielding, restart and failure tests are in serve/test_parallel_yield.py (this file alone ran past 100 s)."""
 
+    def test_expiry_state_and_event_are_visible_in_same_metrics_response(self):
+        self.start(4, says_groups=2, affinity=True)
+        self.engine.slot_held[0] = [1] * 500
+        self.engine.slot_used[0] = time.time() - 1
+        self.engine.slot_cache_valid[0] = True
+        metrics = self.get("/metrics")["live"]
+        self.assertTrue(metrics["slots"][0]["cache_expired"])
+        self.assertTrue(any(event["kind"] == "expired" and event["slot"] == 0
+                            for event in metrics["cache_events"]))
+
     def test_solo_native_source_is_forwarded_without_reserving_batch_slot(self):
         self.start(2, more=["--source-trace"])
         out = {}
@@ -435,6 +510,25 @@ class ParallelService(FakeEngineCase):
         live = self.get("/metrics")["live"]
         self.assertEqual([live[k] for k in ("solo_peer_ip", "solo_request_key", "solo_cache_source_slot",
                                             "solo_cache_reused_tokens")], [None] * 4)
+
+    def test_http_peer_is_recorded_without_trusting_forwarded_ip(self):
+        self.start(2, says_groups=2, affinity=True)
+        body = {"messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 16, "reasoning_effort": "none", "peer_ip": "192.0.2.99"}
+        req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json", "X-Forwarded-For": "192.0.2.99"})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            self.assertEqual(response.status, 200)
+            response.read()
+        history = self.get("/metrics")["requests"]
+        self.assertEqual(history[0]["peer_ip"], "127.0.0.1")
+        self.assertIsNone(self.get("/metrics")["live"]["peer_ip"])
+        out = self._two_at_once("another")
+        self.assertEqual(out["b"][0], "ok", out)
+        events = self.get("/metrics")["live"]["cache_events"]
+        allocations = [x for x in events if x["kind"] == "allocation"]
+        self.assertTrue(allocations)
+        self.assertTrue(all(x["peer_ip"] == "127.0.0.1" for x in allocations))
 
     def test_bgen_refused_by_the_engine_is_retried_not_a_400(self):
         """#1994: the engine refuses a BGEN ("no such free slot") although the server saw the slot free: the request
