@@ -309,6 +309,16 @@ class ReportTests(unittest.TestCase):
         self.assertEqual((safe["args"], removed), (["--spec", "4"], True))
         same = {"args": ["--spec", "4"]}
         self.assertEqual(B.without_profile_save(same), (same, False))
+        # the config's "expert_profile_save" key: the server adds the same argument from it (learned_profile_args)
+        keyed = {"args": ["--expert-profile", "p.bin"], "expert_profile_save": "learned.bin", "expert_profile_save_every": 5}
+        safe, removed = B.without_profile_save(keyed)
+        self.assertEqual((safe, removed), ({"args": ["--expert-profile", "p.bin"]}, True))
+        self.assertEqual(keyed["expert_profile_save"], "learned.bin")       # the input is not changed
+        if str(B.ROOT) not in sys.path:
+            sys.path.insert(0, str(B.ROOT))
+        from serve.server import learned_profile_args
+        self.assertNotIn("--expert-profile-save", learned_profile_args(safe, safe["args"]))
+        self.assertIn("--expert-profile-save", learned_profile_args(keyed, keyed["args"]))   # what it would have run
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
             c = Path(d) / "strata-x.json"
             c.write_text(json.dumps(cfg))
@@ -317,6 +327,11 @@ class ReportTests(unittest.TestCase):
             used = Path(popen.call_args[0][0][popen.call_args[0][0].index("--config") + 1])
             self.assertNotIn("--expert-profile-save", json.loads(used.read_text())["args"])
             self.assertIn("--expert-profile-save", json.loads(c.read_text())["args"])   # the user's file is as it was
+            c.write_text(json.dumps({"args": ["--spec", "4"], "expert_profile_save": "learned.bin"}))
+            with mock.patch.object(B.subprocess, "Popen") as popen, contextlib.redirect_stderr(io.StringIO()):
+                B.start_server(c, 8080, None, Path(d) / "run2.log")
+            used = Path(popen.call_args[0][0][popen.call_args[0][0].index("--config") + 1])
+            self.assertNotIn("expert_profile_save", json.loads(used.read_text()))
 
     def test_an_attached_server_is_not_stopped(self):
         """#2088: with --url the bench only reads; the server it did not start keeps running."""

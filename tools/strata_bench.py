@@ -669,7 +669,13 @@ def is_strata(base: str, key: str) -> bool:
 
 def without_profile_save(cfg: dict) -> tuple[dict, bool]:
     """#2088: the config without `--expert-profile-save FILE` (and its value) - the engine writes that profile when the
-    server quits, and a benchmark's short prompts must not replace the user's calibrated one.  -> (config, removed)."""
+    server quits, and a benchmark's short prompts must not replace the user's calibrated one.  -> (config, removed).
+    The config's "expert_profile_save" key (and "expert_profile_save_every") goes too: the server turns it into the
+    same argument (serve/server.py learned_profile_args), and would also start from that learned profile instead of
+    the config's own --expert-profile."""
+    keys = [k for k in ("expert_profile_save", "expert_profile_save_every") if k in cfg]
+    if keys:
+        cfg = {k: v for k, v in cfg.items() if k not in keys}
     args = list(cfg.get("args") or [])
     out, i, removed = [], 0, False
     while i < len(args):
@@ -680,7 +686,7 @@ def without_profile_save(cfg: dict) -> tuple[dict, bool]:
         else:
             out.append(args[i])
             i += 1
-    return ({**cfg, "args": out} if removed else cfg), removed
+    return ({**cfg, "args": out} if removed else cfg), removed or bool(keys)
 
 
 def start_server(cfg_path: Path, port: int, gpu: str | None, log_path: Path):
@@ -691,8 +697,8 @@ def start_server(cfg_path: Path, port: int, gpu: str | None, log_path: Path):
     if isinstance(cfg, dict):
         safe, removed = without_profile_save(cfg)
         if removed:                       # a copy beside the log: the user's config file is not touched
-            print("Note: the bench starts this model without --expert-profile-save, so its short prompts do not "
-                  "overwrite your saved expert profile.", file=sys.stderr)
+            print("Note: the bench starts this model without --expert-profile-save (or the config's expert_profile_save), "
+                  "so its short prompts do not overwrite your saved expert profile.", file=sys.stderr)
             tmp = log_path.with_suffix(".config.json")
             tmp.write_text(json.dumps(safe), encoding="utf-8")
             cfg_path = tmp
