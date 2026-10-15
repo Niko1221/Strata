@@ -45,6 +45,42 @@ curl -s $URL/v1/systemone -d '{
   "state": {"hp": 12}, "questions": {...},
   "then": {"generate": {"messages": [{"role": "user", "content": "Narrate."}],
                         "max_tokens": 128}}}'
+
+# MULTIPLE questions, mixed types, ONE state (each question = its own readout;
+# cost scales ~linearly until prefix reuse lands)
+curl -s $URL/v1/systemone -d '{
+  "state": "Reactor at 84%. Coolant loop A nominal, loop B pressure rising slowly.",
+  "questions": {
+    "threat":  {"type": "noul",   "instructions": "Is loop B a current threat?"},
+    "action":  {"type": "choice", "instructions": "Which action first?",
+                "criteria": {"inspect": null, "throttle": null, "shutdown": null}},
+    "urgency": {"type": "score",  "instructions": "How urgent is intervention?",
+                "criteria": ["none", "low", "medium", "high", "critical"]}}}'
+# -> {"answers": {"threat":  {"type": "noul", "noul": 0.5429, "calib": "platt_v1"},
+#                 {"action":  {"type": "choice", "choice": 0,
+#                              "probabilities": [0.830, 0.160, 0.010],
+#                              "confidence": 0.7453, "calib": "T_choice_v1"},
+#                 {"urgency": {"type": "score", "score": 1.5928,
+#                              "probabilities": [0.103, 0.374, 0.376, 0.121, 0.026],
+#                              "confidence": 0.2201, "calib": "T_score_v1"}},
+#     "usage": {"prompt_tokens": 303, "readout_tokens": 3}}
+# (live response, QFN; note each answer carries its OWN calibrator id)
+
+# INLINE jev on the chat surface — decisions inside an OpenAI chat call; the
+# conversation itself is the state (v1-chat template), no "state" field needed
+curl -s $URL/v1/chat/completions -d '{
+  "model": "jev",
+  "messages": [{"role": "system", "content": "You are the plant supervisor."},
+               {"role": "user", "content": "Loop B pressure is rising. Inspect now?"}],
+  "jev": {"questions": {"inspect":
+      {"type": "noul", "instructions": "Should loop B be inspected now?"}}}}'
+# -> {"id": "jev-1792055290765", "object": "jev.response",
+#     "model": "qwen3.8-flash-next-iq3_xxs-jevport",
+#     "jev": {"answers": {"inspect": {"type": "noul", "noul": 0.9230,
+#                                      "calib": "platt_v1"}},
+#             "usage": {"prompt_tokens": 82, "readout_tokens": 1}}}
+# (live response; jev answers ride alongside the normal chat fields, so any
+#  OpenAI client gets decisions without a second endpoint)
 ```
 
 Full surface + examples: `docs/JEV-SYSTEMONE.md`. Refit calibration:
