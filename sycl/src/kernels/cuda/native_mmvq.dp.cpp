@@ -30,7 +30,6 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
-#include "strata/b70.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/iq4_lut.hpp"
 #include "strata/kernels/dp4a.hpp"
@@ -3387,16 +3386,30 @@ void native_iq4_xs_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(y);
     validate_stream(stream);
 
-    const bool b70 = ncols >= 1 && ncols <= 6 && strata::is_b70(stream);
-    if(b70&&ncols<=4&&(n_in==2560||n_in==6144)&&
+    static const bool pair_reuse = [] {
+        const char* v = std::getenv("STRATA_SYCL_IQ4_PAIR_REUSE");
+        return !v || v[0] == '1';
+    }();
+    static const bool split = [] {
+        const char* v = std::getenv("STRATA_SYCL_IQ4_Q8_SPLIT");
+        return !v || v[0] == '1';
+    }();
+    static const bool use_bit_select = [] {
+        const char* v = std::getenv("STRATA_SYCL_IQ4_LOOKUP");
+        return !v || std::atoi(v) != 0;
+    }();
+    const bool bmg = ncols >= 1 && ncols <= 6 &&
+        strata::intel_gpu_gen(strata::q_of(stream)->get_device()) == strata::IntelGpuGen::Battlemage;
+    if(pair_reuse&&bmg&&ncols<=4&&(n_in==2560||n_in==6144)&&
        !(ncols==1&&n_in==2560&&n_out==640)&&
        !(reinterpret_cast<uintptr_t>(weights)&63)&&!(reinterpret_cast<uintptr_t>(x_q8_1)&63)){
         const bool selected=(n_in==2560&&n_out==10240&&ncols==4)||(n_in==6144&&n_out==2560&&ncols==4)||(n_in==2560&&n_out==106299&&ncols==1);
-        if(selected)launch_iq4_q8_split(1,weights,x_q8_1,y,n_in,n_out,ncols,stream);
+        if(split&&selected)launch_iq4_q8_split(1,weights,x_q8_1,y,n_in,n_out,ncols,stream);
         else launch_iq4_pair_reuse(1,weights,x_q8_1,y,n_in,n_out,ncols,stream);
         return;
     }
-    if (b70 && (n_in == 2560 || n_in == 6144) && try_wide<WideIQ4Lookup>(weights, x_q8_1, y, n_in, n_out, ncols, stream)) {
+    if (use_bit_select && bmg && (n_in == 2560 || n_in == 6144) &&
+        try_wide<WideIQ4Lookup>(weights, x_q8_1, y, n_in, n_out, ncols, stream)) {
         launch_check(); return;
     }
     if (try_wide<WideIQ4XS>(weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }
