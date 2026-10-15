@@ -1,0 +1,165 @@
+{
+ "date": "2026-10-15",
+ "model": "QFN Qwen3.8-Flash-Next IQ3_XXS (RTX 3090)",
+ "method": "offline replay of held-out test raw_p (identical items across arms); standard top-label ECE15, mean NLL",
+ "old_global_calib": {
+  "a": 0.7446,
+  "c": 0.2449,
+  "Tc": 1.0459,
+  "Ts": 2.2428
+ },
+ "new_per_tuple": {
+  "L": {
+   "a": 0.6127,
+   "c": 0.6539,
+   "Tc": 1.0557,
+   "Ts": 2.263
+  },
+  "D": {
+   "a": 1.0571,
+   "c": -0.172,
+   "Tc": 1.5456,
+   "Ts": 0.6555
+  }
+ },
+ "tuples": {
+  "L|noul BoolQ": {
+   "raw": {
+    "n": 100,
+    "acc": 0.89,
+    "nll": 0.2975,
+    "ece15": 0.0837,
+    "flips": 0
+   },
+   "old_global": {
+    "n": 100,
+    "acc": 0.89,
+    "nll": 0.2641,
+    "ece15": 0.0549,
+    "flips": 0
+   },
+   "new_per_tuple": {
+    "n": 100,
+    "acc": 0.91,
+    "nll": 0.2621,
+    "ece15": 0.0331,
+    "flips": 4
+   }
+  },
+  "L|choice ARC": {
+   "raw": {
+    "n": 100,
+    "acc": 1.0,
+    "nll": 0.0051,
+    "ece15": 0.005,
+    "flips": 0
+   },
+   "old_global": {
+    "n": 100,
+    "acc": 1.0,
+    "nll": 0.0062,
+    "ece15": 0.006,
+    "flips": 0
+   },
+   "new_per_tuple": {
+    "n": 100,
+    "acc": 1.0,
+    "nll": 0.0065,
+    "ece15": 0.0063,
+    "flips": 0
+   }
+  },
+  "L|score SST-5": {
+   "raw": {
+    "n": 100,
+    "acc": 0.52,
+    "nll": 1.4708,
+    "ece15": 0.3012,
+    "flips": 0
+   },
+   "old_global": {
+    "n": 100,
+    "acc": 0.52,
+    "nll": 1.0503,
+    "ece15": 0.1431,
+    "flips": 0
+   },
+   "new_per_tuple": {
+    "n": 100,
+    "acc": 0.52,
+    "nll": 1.0493,
+    "ece15": 0.154,
+    "flips": 0
+   }
+  },
+  "D|noul POPE-adv": {
+   "raw": {
+    "n": 60,
+    "acc": 0.8667,
+    "nll": 0.2043,
+    "ece15": 0.1217,
+    "flips": 0
+   },
+   "old_global": {
+    "n": 60,
+    "acc": 0.8667,
+    "nll": 0.2446,
+    "ece15": 0.1322,
+    "flips": 0
+   },
+   "new_per_tuple": {
+    "n": 60,
+    "acc": 0.8833,
+    "nll": 0.1951,
+    "ece15": 0.0808,
+    "flips": 1
+   }
+  },
+  "D|choice CV-Bench": {
+   "raw": {
+    "n": 20,
+    "acc": 0.65,
+    "nll": 0.9441,
+    "ece15": 0.1452,
+    "flips": 0
+   },
+   "old_global": {
+    "n": 20,
+    "acc": 0.65,
+    "nll": 0.9283,
+    "ece15": 0.2183,
+    "flips": 0
+   },
+   "new_per_tuple": {
+    "n": 20,
+    "acc": 0.65,
+    "nll": 0.8632,
+    "ece15": 0.2598,
+    "flips": 0
+   }
+  },
+  "D|score CountBench": {
+   "raw": {
+    "n": 20,
+    "acc": 1.0,
+    "nll": 0.1019,
+    "ece15": 0.0908,
+    "flips": 0
+   },
+   "old_global": {
+    "n": 20,
+    "acc": 1.0,
+    "nll": 0.616,
+    "ece15": 0.4505,
+    "flips": 0
+   },
+   "new_per_tuple": {
+    "n": 20,
+    "acc": 1.0,
+    "nll": 0.0361,
+    "ece15": 0.0334,
+    "flips": 0
+   }
+  }
+ }
+}
