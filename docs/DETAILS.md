@@ -467,7 +467,7 @@ app. It has three tabs:
   VRAM, temperature, power and PCIe traffic; CPU, RAM and disk; the context in use; the last requests.
 - **About:** the model and engine settings, and the addresses to connect other apps.
 
-**Edit chat history (opt-in).** In Chat's Sampling drawer, turn on **Edit chat history** and Apply. Each message then
+**Edit chat history (opt-in).** In Chat's **Chat settings** drawer (the labelled gear button below the message box), turn on **Edit chat history** and Apply. Each message then
 has **Edit** and **Remove from here**; answers also have **Regenerate**. Editing a user message keeps its available
 attachments, removes later messages and asks for a new answer. Editing an answer saves its text without a request,
 removing its old thinking and tool history. Regenerate replaces that answer and later messages, and may run tools

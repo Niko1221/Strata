@@ -203,3 +203,13 @@ main { flex: 1; min-height: 0; display: flex; }
 .img-results figure{margin:0}
 .img-results img{max-width:100%;border-radius:var(--st-r-lg);display:block}
 .img-results figcaption{font-size:var(--st-fs-sm, 13px);color:var(--st-ink-2, inherit);margin-top:4px}
+
+/* Keep chat settings visible without crowding the phone composer. */
+.chat-settings-button { height: 36px; padding: 0 10px; gap: 6px; white-space: nowrap; font-size: var(--st-fs-sm); }
+.chat-settings-short { display: none; }
+@media (max-width: 640px) {
+  .chat-settings-label, .composer-hint { display: none; }
+  .chat-settings-short { display: inline; }
+  .st-composer__bar { flex-wrap: wrap; }
+  .st-btn--send { margin-left: auto; }
+}
