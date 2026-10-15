@@ -98,3 +98,39 @@ class NoulPromptDescriptions(unittest.TestCase):
         block = J.question_block(qdefs[0])
         self.assertIn("A. a: the a option\n", block)
         self.assertIn("B. b\n", block)
+
+
+class LmEvalSmokeInvariants(unittest.TestCase):
+    """lm-evaluation-harness guardrails (survey 2026-10-15): per-choice readouts
+    must be distinct; identical values are the signature of a broken
+    context/continuation split (the BOS-double-count class of bug). Catches
+    wiring breaks that argmax tests pass through. Runs the golden battery live
+    against the mock engine and inspects every answer."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        engine = DecisionEngine(tok, "A")
+        cls.svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def test_battery_answers_have_distinct_normalized_probabilities(self):
+        for i, item in enumerate(load_battery()):
+            st, body = post(self.base, "/v1/systemone", item)
+            self.assertEqual(st, 200)
+            for qid, a in body.get("answers", {}).items():
+                pr = a.get("probabilities") or [1 - a["noul"], a["noul"]]
+                self.assertTrue(any(p != pr[0] for p in pr),
+                                f"item {i}/{qid}: all probabilities identical — readout split broken")
+                self.assertTrue(all(0.0 < p < 1.0 for p in pr),
+                                f"item {i}/{qid}: probability at 0 or 1 — degenerate readout")
+                self.assertAlmostEqual(sum(pr), 1.0, places=5,
+                                       msg=f"item {i}/{qid}: probabilities do not sum to 1")
+                self.assertIn("margin", a, f"item {i}/{qid}: margin missing")
+                self.assertGreaterEqual(a["margin"], 0.0)

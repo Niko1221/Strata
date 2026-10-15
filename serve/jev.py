@@ -95,18 +95,23 @@ def answers_from_scores(qtype: str, scores: list[float]) -> dict:
 def answers_from_calibrated(qtype: str, pr: list[float], calib_id: str) -> dict:
     """Answers from calibrated label probabilities (donor order: rounded pr -> calib ->
     answers).  `pr` is already calibrated and renormalized; `scores` for noul is
-    recovered as the pair's log-odds so the sigmoid path stays exact."""
+    recovered as the pair's log-odds so the sigmoid path stays exact.
+    `margin` = top1−top2 probability (the cascade-routing number: separates
+    'confident' from 'no-alternatives'; classifier literature standard)."""
     if qtype == "noul":
         p = min(max(pr[1] if len(pr) > 1 else 0.0, 1e-9), 1 - 1e-9)
-        return {"type": "noul", "noul": p, "calib": calib_id}
+        return {"type": "noul", "noul": p, "margin": abs(pr[1] - pr[0]) if len(pr) > 1 else 1.0,
+                "calib": calib_id}
     best = max(range(len(pr)), key=lambda i: pr[i])
+    srt = sorted(pr, reverse=True)
+    margin = round(srt[0] - srt[1], 6) if len(srt) > 1 else 1.0
     if qtype == "choice":
         return {"type": "choice", "choice": best, "probabilities": pr,
-                "confidence": confidence(pr), "calib": calib_id}
+                "confidence": confidence(pr), "margin": margin, "calib": calib_id}
     if qtype == "score":
         sc = sum(i * pi for i, pi in enumerate(pr))
         return {"type": "score", "score": sc, "probabilities": pr,
-                "confidence": confidence(pr), "calib": calib_id}
+                "confidence": confidence(pr), "margin": margin, "calib": calib_id}
     raise ValueError(qtype)
 
 
