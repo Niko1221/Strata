@@ -1,0 +1,13 @@
+8192-10          kv=q4_0  ids=  7936 needle@   788 (10%)  rc=0  found=True  reply='MARBLE-7742-KUMQUAT<|im_end|> <|im_start|>assistant <think> The tool result got '
+8192-50          kv=q4_0  ids=  7936 needle@  3941 (50%)  rc=0  found=True  reply="MARBLE-7742-KUMQUAT<|im_end|> <|im_start|>assistant <think> The user's message c"
+8192-90          kv=q4_0  ids=  7936 needle@  7094 (90%)  rc=0  found=True  reply='MARBLE-7742-KUMQUAT<|im_end|> <|im_start|>assistant <think> The tool output got '
+16384-10         kv=q4_0  ids= 16128 needle@  1607 (10%)  rc=0  found=True  reply="MARBLE-7742-KUMQUAT<|im_end|> <|im_start|>assistant <think> The user's message c"
+16384-50         kv=q4_0  ids= 16128 needle@  8037 (50%)  rc=0  found=True  reply="MARBLE-7742-KUMQUAT<|im_end|> <|im_start|>assistant <think> The user's message c"
+16384-90         kv=q4_0  ids= 16128 needle@ 14467 (90%)  rc=0  found=True  reply="MARBLE-7742-KUMQUAT<|im_end|> <|im_start|>assistant <think> The user's message c"
+32768-10         kv=q4_0  ids= 32512 needle@  3245 (10%)  rc=0  found=True  reply="MARBLE-7742-KUMQUAT<|im_end|> <|im_start|>assistant <think> The user's message c"
+32768-50         kv=q4_0  ids= 32512 needle@ 16229 (50%)  rc=0  found=True  reply='MARBLE-7742-KUMQUAT<|im_end|> <|im_start|>assistant <think> The user is asking a'
+32768-90         kv=q4_0  ids= 32512 needle@ 29213 (90%)  rc=0  found=False  reply='<|im_end|> <|im_start|>assistant <think> The user is asking me to extract an "ac'
+8192-50          kv=int8  ids=  7936 needle@  3941 (50%)  rc=0  found=True  reply='MARBLE-7742-KUMQUAT<|im_end|> <|im_start|>assistant <think> The tool result got '
+16384-50         kv=int8  ids= 16128 needle@  8037 (50%)  rc=0  found=True  reply="MARBLE-7742-KUMQUAT<|im_end|> <|im_start|>assistant <think> The user's message c"
+32768-50         kv=int8  ids= 32512 needle@ 16229 (50%)  rc=0  found=True  reply='MARBLE-7742-KUMQUAT<|im_end|> <|im_start|>assistant <think> The user is asking a'
+q4_0: 8/9 found; int8: 3/3

@@ -1,0 +1,116 @@
+{
+ "requests": [
+  {
+   "segment": "code",
+   "tokens": 256
+  },
+  {
+   "segment": "code",
+   "tokens": 512
+  },
+  {
+   "segment": "code",
+   "tokens": 768
+  },
+  {
+   "segment": "code",
+   "tokens": 1000
+  },
+  {
+   "segment": "docs",
+   "tokens": 256
+  },
+  {
+   "segment": "docs",
+   "tokens": 512
+  },
+  {
+   "segment": "docs",
+   "tokens": 768
+  },
+  {
+   "segment": "docs",
+   "tokens": 1000
+  },
+  {
+   "segment": "english",
+   "tokens": 256
+  },
+  {
+   "segment": "english",
+   "tokens": 512
+  },
+  {
+   "segment": "english",
+   "tokens": 768
+  },
+  {
+   "segment": "english",
+   "tokens": 1000
+  },
+  {
+   "segment": "multilingual",
+   "tokens": 256
+  },
+  {
+   "segment": "multilingual",
+   "tokens": 512
+  },
+  {
+   "segment": "multilingual",
+   "tokens": 768
+  },
+  {
+   "segment": "multilingual",
+   "tokens": 1000
+  },
+  {
+   "segment": "agent",
+   "tokens": 256
+  },
+  {
+   "segment": "agent",
+   "tokens": 512
+  },
+  {
+   "segment": "agent",
+   "tokens": 768
+  },
+  {
+   "segment": "agent",
+   "tokens": 1000
+  }
+ ],
+ "args": [
+  "/Users/berton/Github/AI-Infra/Strata-metal-kv-q4/build-metal/strata",
+  "--serve",
+  "--pack",
+  "/Users/berton/Github/AI-Infra/Strata-data/packs/q2_0",
+  "--native",
+  "/Users/berton/Github/AI-Infra/Strata-data/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+  "--ple-gguf",
+  "/Users/berton/Github/AI-Infra/Strata-data/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf",
+  "--expert-profile",
+  "/Users/berton/Github/AI-Infra/Strata-metal-kv-q4/data/expert-profile.bin",
+  "--spec",
+  "2",
+  "--mmap-experts",
+  "--expert-cache",
+  "1",
+  "--adapt-every",
+  "100000",
+  "--pcie-frac",
+  "0",
+  "--suffix-draft",
+  "0",
+  "--prompt-cache",
+  "0",
+  "--kv",
+  "fp16",
+  "--max-context",
+  "1512",
+  "--prefill",
+  "auto"
+ ],
+ "env": []
+}

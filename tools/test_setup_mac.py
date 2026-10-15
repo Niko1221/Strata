@@ -109,6 +109,51 @@ class Config(unittest.TestCase):
         self.assertNotIn("--mtp", small)
         self.assertTrue(M.stream_mtp(False, 16) and M.stream_mtp(True, 128) and not M.stream_mtp(True, 64))
 
+    def test_kv_q4_0_is_opt_in_and_the_default_writes_no_flag(self):
+        # --kv q4_0 (a 4-bit K/V cache, docs/MAC.md): opt-in.  Without it no --kv is written at all, so the generated
+        # config's args are byte-identical to before the option existed; with it the flag pair is appended at the end.
+        base = M.engine_args(Path("/p"), [Path("/a1.gguf"), Path("/a2.gguf")], Path("/d/mtp/rt"), 32768)
+        self.assertNotIn("--kv", base)
+        q4 = M.engine_args(Path("/p"), [Path("/a1.gguf"), Path("/a2.gguf")], Path("/d/mtp/rt"), 32768, kv="q4_0")
+        self.assertEqual(q4[q4.index("--kv") + 1], "q4_0")
+        self.assertEqual(q4[:-2], base)
+        st = M.engine_args(Path("/p"), [Path("/a1.gguf"), Path("/a2.gguf")], Path("/d/mtp/rt"), 65536, stream=True,
+                           ram_gb=32, kv="q4_0")
+        self.assertEqual(st[st.index("--kv") + 1], "q4_0")          # streaming takes it too (more arena slots)
+        self.assertEqual(st[st.index("--suffix-draft") + 1], "0")
+        src = (ROOT / "metal" / "setup_mac.py").read_text(encoding="utf-8")
+        # q4_0 is the only choice: k8v4 is refused by the engine on Metal, and fp16/int8 are one path there
+        self.assertIn('ap.add_argument("--kv", choices=["q4_0"]', src)
+
+    def test_kv_with_an_installed_config_warns_instead_of_changing_it(self):
+        # ./setup.sh --kv q4_0 with a config already installed: the early-start path runs that config's args
+        # as written (the flag would otherwise be silently ignored); it says so and how to make it take effect
+        cfg = Path("/x/strata-q2_0.json")
+        with mock.patch.object(M, "mac_configs", return_value=[cfg]), \
+                mock.patch.object(M.S, "data_folder", return_value=(Path("/d"), [])), \
+                mock.patch.object(M, "start", return_value=0) as start, \
+                mock.patch.object(M.S, "warn") as warn, mock.patch.object(M.S, "say"):
+            self.assertEqual(M.main(["--kv", "q4_0"]), 0)
+        start.assert_called_once_with(cfg, None, True)
+        warn.assert_called_once()
+        w = "".join(str(c) for c in warn.call_args[0])
+        self.assertIn("--kv", w)
+        self.assertIn("--setup", w)
+
+    def test_kv_appends_only_its_pair_over_the_whole_choice_matrix(self):
+        # the manual 48-cell check behind the PR's gate 3 (stream x ram x context x shard shape), pinned as a
+        # test: whatever the choices, --kv changes nothing but the pair appended at the end
+        two = [Path("/m/a-00001.gguf"), Path("/m/a-00002.gguf")]
+        repack = [Path("/m/q2_0-metal.gguf"), Path("/m/a-00002.gguf")]   # the repacked file: --native-dense-gguf
+        for stream in (False, True):
+            for ram in (16, 32, 64, 128):
+                for ctx in (8192, 32768, 65536):
+                    for shards in (two, repack):
+                        base = M.engine_args(Path("/p"), shards, Path("/d/mtp/rt"), ctx, stream, ram)
+                        self.assertNotIn("--kv", base)
+                        q4 = M.engine_args(Path("/p"), shards, Path("/d/mtp/rt"), ctx, stream, ram, kv="q4_0")
+                        self.assertEqual(q4, base + ["--kv", "q4_0"])
+
     def test_config_is_a_model_config_with_the_metal_backend(self):
         cfg = M.mac_config(Path("/r/build-metal/strata"), ["--pack", "x"], Path("/p"), "qwen3.8-flash-next-q2_0",
                            "Q2_0", 8080)

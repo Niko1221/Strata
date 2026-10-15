@@ -18,6 +18,29 @@
 //               planes) for attn_output.
 //
 // RoPE: cos/sin from a host table [pos][32] (double precision, as build_rope_table).
+//
+// QSA_KV_Q4 (function constant 25, the --kv q4_0 cache of kv_q4.hpp, off by default): the Q4_0 KV with the
+// Walsh-Hadamard rotation, fused into the same kernels.  With it on, this file needs kv_q4.metal's shared
+// prelude before it in the compile (metal/'s concatenation convention - every mtl_rt compile() list that names
+// qsa.metal prepends kv_q4.metal):
+//
+//   qsa_prep    the k rows (norm + RoPE), the v rows (raw, like the PC: only K is normalized) and the q
+//               attention rows (norm + RoPE, r < QH) pass through the orthonormal 256-point FWHT before the
+//               store/pack, so <Hq, Hk> = <q, k> and the score math is unchanged.  The FWHT is the fused row
+//               form fwht_row256 below (one value per thread over 8 simdgroups, bit-identical in stage order and
+//               arithmetic to kv_q4.metal's fwht256).  The packed rows go to the q4 pools [cell][kv head][144]
+//               (576 B/cell, the fp16 scale inside each 18-byte block; ksc/vsc unused).  The indexer chain
+//               (qidx, tail, dead, pooled) and qfull's gate half NEVER rotate - the indexer scores plain
+//               unrotated keys, and the gate is applied to the unrotated output.
+//   qsa_attn    reads the q4 pools: every block is dequantized to fp32 as (nibble - 8) * f32_from_f16(d) - the
+//               PC native fused path's arithmetic (qsa_decode_attn.cu's load8_q4), NOT the fp16 rounding of the
+//               kv_gather_q4 scratch path.  This is a declared rounding-path choice: the fused decode keeps the
+//               whole score/accumulate math in fp32, as the PC's native attention does.
+//   qsa_merge   the merged output row is rotated back (the orthonormal FWHT is its own inverse) after o = o/L
+//               and BEFORE the sigmoid(gate) multiply - the elementwise gate does not commute with the rotation,
+//               and the PC rotates back before gating too (layer.cpp: fwht256_inplace_cuda(b.attn) precedes
+//               native_qsa_gate_apply).  qsa_prompt.metal's mm path shares this kernel with fc off (a q4 prompt
+//               takes the window path), so the mm pipeline is unchanged.
 
 #define QH 24
 #define QKV 2
@@ -35,6 +58,14 @@ constant int QSA_NTOK [[function_constant(3)]];
 // the pooled indexer keys too (position pos_base + 4 b of a block).  Off: exactly the plain RoPE.
 constant bool QSA_MROPE [[function_constant(24)]];
 constant bool qsa_mrope = is_function_constant_defined(QSA_MROPE) && QSA_MROPE;
+// QSA_KV_Q4 (function constant 25, free: 20/22/23/24 in use, 7/8 in qsa_prompt's context): the Q4_0 KV mode of
+// the header comment above.  Off (unset or false): every branch below is dead and the kernels are today's.
+constant bool QSA_KV_Q4 [[function_constant(25)]];
+constant bool qsa_kv_q4 = is_function_constant_defined(QSA_KV_Q4) && QSA_KV_Q4;
+// the q4 pools' row: QD / QK4 blocks of 18 bytes = 144 per (cell, kv head) - kv_q4.metal's prelude provides QK4
+// and kv_q4_blk (this file is compiled with that prelude in front; see the header comment)
+#define Q4_ROW 144
+static_assert((QD / QK4) * (int)sizeof(kv_q4_blk) == Q4_ROW, "the q4 pool row of a 256-dim head is 8 x 18 bytes");
 
 struct QsaArgs {
     uint pos0;        // the window's first cell (relative to the sequence)
@@ -78,6 +109,30 @@ static inline float norm_rope(float x, float xhi_unused, device const float* g, 
     threadgroup_barrier(mem_flags::mem_threadgroup);
     (void)xhi_unused;
     return o;
+}
+
+// the q4 mode's row rotation (and, being orthonormal, its own inverse): one row of 256 values held by the
+// threadgroup's 256 threads, one per thread, tid = element index = sg * 32 + lane - the row/thread layout of
+// qsa_prep and qsa_merge, NOT restructured.  Exactly kv_q4.metal's fwht256 (and the CUDA register order, and
+// kv_q4_ref.h's fwht256_ref) in stage order and arithmetic: the scale 1/16 first, then the butterflies over the
+// low 5 index bits within each simdgroup (the shared fwht_step over simd_shuffle_xor - no staging needed), then
+// 32 / 64 / 128 across the simdgroups, one xor-pair exchange per stage through the threadgroup staging array -
+// tg_sum256's part[8] pattern, one slot per (simdgroup, lane): `stage` is 256 floats.  The barrier between every
+// read phase and write phase keeps the exchange on pre-step values (a single array cannot be read and written
+// racily), so equal bits in give equal bits out.
+static inline float fwht_row256(float x, threadgroup float* stage, ushort tid, ushort sg, ushort lane) {
+    x = x * (1.0f / 16.0f);
+    for (ushort h = 1; h < 32; h *= 2) x = fwht_step(x, simd_shuffle_xor(x, h), (lane & h) == 0);
+    stage[tid] = x;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (ushort s = 1; s < 8; s *= 2) {   // index bit 32 s: partner simdgroup sg ^ s, same lane
+        const float y = stage[(sg ^ s) * 32 + lane];
+        threadgroup_barrier(mem_flags::mem_threadgroup);   // every read of the pre-step values first...
+        x = fwht_step(x, y, (sg & s) == 0);
+        stage[tid] = x;
+        threadgroup_barrier(mem_flags::mem_threadgroup);   // ...then the writes, staged for the next stage
+    }
+    return x;
 }
 
 // grid (32 rows + 1, n_tok): rows 0..23 q heads, 24..25 k heads, 26..27 v heads, 28..31 indexer q heads;
@@ -125,26 +180,40 @@ kernel void qsa_prep(device const float* qfull [[buffer(0)]], device const float
     const uint cell = a.pos0 + uint(t), absp = a.pos_base + cell;
     if (r < QH) {
         const float x = qfull[(t * QH + r) * 2 * QD + tid];
-        const float o = norm_rope(x, 0.0f, qn, row, part, tid, sg, lane, QD, a.eps, cs, absp, true, mtab);
+        float o = norm_rope(x, 0.0f, qn, row, part, tid, sg, lane, QD, a.eps, cs, absp, true, mtab);
+        // q4: the q attention rows rotate after the norm/RoPE (Hq with the Hk below), so the stored qcur pairs
+        // with the rotated K pool and the score math is unchanged.  The gate half of qfull is read by qsa_merge
+        // straight from qfull and never rotates.
+        if (qsa_kv_q4) o = fwht_row256(o, row, tid, sg, lane);
         qcur[(t * QH + r) * QD + tid] = o;
     } else if (r < QH + 2 * QKV) {
         const bool isv = r >= QH + QKV;
         const int h = r - QH - (isv ? QKV : 0);
         float x = (isv ? vcur : kcur)[(t * QKV + h) * QD + tid];
         if (!isv) x = norm_rope(x, 0.0f, kn, row, part, tid, sg, lane, QD, a.eps, cs, absp, true, mtab);
-        // int8 with an fp16 scale per 64 values: groups = simdgroup pairs (64 threads)
-        float m = simd_max(fabs(x));
-        if (lane == 0) amax[sg] = m;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        const int g = tid >> 6;
-        m = max(amax[2 * g], amax[2 * g + 1]);
-        const half sh = half(m / 127.0f);
-        const float sf = float(sh);
-        int q = 0;
-        if (sf > 0.0f) q = clamp(int(rint(x / sf)), -127, 127);
         const uint rowi = cell * QKV + uint(h);
-        (isv ? vq : kq)[rowi * QD + tid] = char(q);
-        if ((tid & 63) == 0) (isv ? vsc : ksc)[rowi * 4 + g] = sh;
+        if (qsa_kv_q4) {
+            // Q4_0: rotate (the k rows after norm/RoPE, the v rows raw, as the PC rotates b.kcur/b.vcur), then
+            // pack - each 32-value block is exactly one simdgroup's 32 lanes (block = sg), the shared q4_group's
+            // simd reduction.  Pool row [cell][kv head][144], scale inside the block; ksc/vsc unused.
+            x = fwht_row256(x, row, tid, sg, lane);
+            uchar byte;
+            const ushort d = q4_group(x, lane, byte);
+            q4_store((device uchar*)(isv ? vq : kq), rowi, int(sg), lane, d, byte);
+        } else {
+            // int8 with an fp16 scale per 64 values: groups = simdgroup pairs (64 threads)
+            float m = simd_max(fabs(x));
+            if (lane == 0) amax[sg] = m;
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            const int g = tid >> 6;
+            m = max(amax[2 * g], amax[2 * g + 1]);
+            const half sh = half(m / 127.0f);
+            const float sf = float(sh);
+            int q = 0;
+            if (sf > 0.0f) q = clamp(int(rint(x / sf)), -127, 127);
+            (isv ? vq : kq)[rowi * QD + tid] = char(q);
+            if ((tid & 63) == 0) (isv ? vsc : ksc)[rowi * 4 + g] = sh;
+        }
     } else {
         const int h = r - QH - 2 * QKV;
         const float x = tid < ID ? iqraw[(t * IH + h) * ID + tid] : 0.0f;
@@ -299,10 +368,22 @@ kernel void qsa_attn(device const float* qcur [[buffer(0)]], device const char* 
     // scores: 12 x 64 dots of 256; simdgroup sg takes cells sg, sg + 8, ...; lanes split the 256 dims (8 each)
     for (int c = sg; c < nc; c += 8) {
         const uint rowi = uint(cid[c]) * QKV + uint(g);
-        device const char* kr = kq + rowi * QD;
         float kv[8];
-        const float scl = float(ksc[rowi * 4 + (lane >> 3)]);
-        for (int i = 0; i < 8; ++i) kv[i] = float(kr[lane * 8 + i]) * scl;
+        if (qsa_kv_q4) {
+            // dequantized to fp32 (the header's declared rounding path); a lane's 8 dims sit inside one 32-value
+            // block: block = dim / 32 = lane >> 2, byte offset (rem == 0 || rem == 16) ? 0 : 8 like the PC's load8_q4
+            const device kv_q4_blk* blk =
+                (const device kv_q4_blk*)((device const uchar*)kq + (size_t)rowi * Q4_ROW) + (lane >> 2);
+            const float d = f32_from_f16(blk->d);
+            const int rem = (lane & 3) * 8;
+            const device uchar* qbs = blk->qs + ((rem == 0 || rem == 16) ? 0 : 8);
+            for (int i = 0; i < 8; ++i)
+                kv[i] = (rem < 16 ? float((qbs[i] & 0x0F) - 8) : float((qbs[i] >> 4) - 8)) * d;
+        } else {
+            device const char* kr = kq + rowi * QD;
+            const float scl = float(ksc[rowi * 4 + (lane >> 3)]);
+            for (int i = 0; i < 8; ++i) kv[i] = float(kr[lane * 8 + i]) * scl;
+        }
         for (int h = 0; h < HPG; ++h) {
             float d = 0.0f;
             for (int i = 0; i < 8; ++i) d = fma(qs[h][lane * 8 + i], kv[i], d);
@@ -332,7 +413,18 @@ kernel void qsa_attn(device const float* qcur [[buffer(0)]], device const char* 
     for (int h = 0; h < HPG; ++h) acc[h] = 0.0f;
     for (int c = 0; c < nc; ++c) {
         const uint rowi = uint(cid[c]) * QKV + uint(g);
-        const float v = float(vq[rowi * QD + tid]) * float(vsc[rowi * 4 + (tid >> 6)]);
+        float v;
+        if (qsa_kv_q4) {
+            // fp32 dequant of this thread's dim: block tid >> 5, element tid & 31 (low nibble of qs[j], high of
+            // qs[j - 16]), like the PC's load8_q4 at rem = tid % 32
+            const device kv_q4_blk* blk =
+                (const device kv_q4_blk*)((device const uchar*)vq + (size_t)rowi * Q4_ROW) + (tid >> 5);
+            const int j = tid & 31;
+            const uchar qb = blk->qs[j < 16 ? j : j - 16];
+            v = (j < 16 ? float((qb & 0x0F) - 8) : float((qb >> 4) - 8)) * f32_from_f16(blk->d);
+        } else {
+            v = float(vq[rowi * QD + tid]) * float(vsc[rowi * 4 + (tid >> 6)]);
+        }
         for (int h = 0; h < HPG; ++h) acc[h] = fma(s[h][c], v, acc[h]);
     }
     for (int h = 0; h < HPG; ++h) {
@@ -342,10 +434,12 @@ kernel void qsa_attn(device const float* qcur [[buffer(0)]], device const char* 
     }
 }
 
-// grid (QH, n_tok), 256 threads: out = merge * sigmoid(gate), as prepared activations of n = QH * QD per token
+// grid (QH, n_tok), 256 threads: out = merge * sigmoid(gate), as prepared activations of n = QH * QD per token.
+// q4: the merged row is rotated back BEFORE the gate (fwht_row256 after this o = o/L, on the msum staging).
 kernel void qsa_merge(device const float* part [[buffer(0)]], device const float* qfull [[buffer(1)]],
                       device float* xp [[buffer(2)]], constant QsaArgs& a [[buffer(3)]],
-                      uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]]) {
+                      uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]],
+                      ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
     threadgroup float msum[256];
     const int h = int(tg.x), t = int(tg.y);
     const int nchunks = (QBUDGET + QCH - 1) / QCH;
@@ -362,6 +456,10 @@ kernel void qsa_merge(device const float* part [[buffer(0)]], device const float
         o = fma(q[tid], e, o);
     }
     o = o / L;
+    // q4: the output back - the rotation is its own inverse, and it goes BEFORE the sigmoid(gate) multiply (the
+    // elementwise gate does not commute with it; the PC gates b.attn only after fwht256_inplace_cuda).  msum is
+    // free as the staging here: its own use (the sum16 plane) comes after, off the gated y.
+    if (qsa_kv_q4) o = fwht_row256(o, msum, tid, sg, lane);
     const float gate = qfull[(t * QH + h) * 2 * QD + QD + tid];
     const float y = o * (1.0f / (1.0f + exp(-gate)));
     // prepared planes (xprep layout) of the n = QH * QD vector

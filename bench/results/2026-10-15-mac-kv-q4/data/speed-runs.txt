@@ -1,0 +1,15 @@
+exit=0 tag=dec-q4
+decode                   64 tokens in 3071.4 ms  ->  20.84 tok/s
+prefill                  3 tokens in 3802.8 ms  ->  0.79 tok/s  (time to first token 4179.1 ms)
+exit=0 tag=dec-int8
+decode                   64 tokens in 3034.3 ms  ->  21.09 tok/s
+prefill                  3 tokens in 3636.9 ms  ->  0.82 tok/s  (time to first token 4017.6 ms)
+exit=0 tag=dec-none
+decode                   64 tokens in 3074.0 ms  ->  20.82 tok/s
+prefill                  3 tokens in 3617.0 ms  ->  0.83 tok/s  (time to first token 4003.7 ms)
+exit=0 tag=pre-q4
+decode                   16 tokens in 806.4 ms  ->  19.84 tok/s
+prefill                  2199 tokens in 10316.9 ms  ->  213.15 tok/s  (time to first token 10714.3 ms)
+exit=0 tag=pre-int8
+decode                   16 tokens in 805.3 ms  ->  19.87 tok/s
+prefill                  2199 tokens in 10202.5 ms  ->  215.54 tok/s  (time to first token 10600.5 ms)

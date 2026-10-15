@@ -4,6 +4,7 @@
 // (their real embedding rows start every hyper-connection stream), the parity programs check the kernels.
 //
 //   prompt_chain <shard-1.gguf> [--prompt P,P,..] [--chunk C] [--breakdown] [--only CLASS] [--skip CLASS]
+//                 [--kv q4_0]
 //
 // Per layer and chunk (T tokens; activations fp32 rows, fp16 copies as the matrix units' operands):
 //   HC read     gr_norm_h (fp16 xn) -> GEMM [w_down; w_inject] -> gr_epi_down -> gemm_hc_up (the GEMM with the
@@ -17,10 +18,19 @@
 // Every dense matrix is dequantized to fp16 (dq_f16) once a chunk, before its GEMM.  After the last chunk: the final
 // HC read and the LM head on the LAST row only (the decode kernels: gr_norm / gr_down / gr_up, GEMV, argmax).
 // Left out: the PLE path and the MTP draft.
+//
+// --kv q4_0 runs the chain over q4 pools exactly as the engine's M2-b chains do: the pool sizes, the no_scale
+// placeholder in the ksc/vsc slots and every qsa key / Constants set come from src/engine/kv_format.h (the same
+// source the engine dispatches through), so this harness measures the q4 arms a prompt really takes.  Without it
+// every pool, key and constant is today's int8 one, byte for byte.
 #include "coop_probe.h"
 #include "gguf_lite.h"
 #include "mtl_rt.h"
 #include "ref_quant.h"
+
+#include "../src/engine/kv_format.h"
+
+using namespace strata::metal_engine;   // kv_format.h's pool sizes and key / Constants helpers
 
 #include <algorithm>
 #include <cmath>
@@ -55,10 +65,10 @@ int unit_of(int t) { return t == ref::Q2_0 || t == ref::IQ3_S || t == ref::BF16 
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2) { std::fprintf(stderr, "usage: prompt_chain <shard-1.gguf> [--prompt P,..] [--chunk C] [--breakdown]\n"); return 2; }
+    if (argc < 2) { std::fprintf(stderr, "usage: prompt_chain <shard-1.gguf> [--prompt P,..] [--chunk C] [--breakdown] [--kv q4_0]\n"); return 2; }
     std::vector<int> prompts = {1024, 4096, 32768};
     int C = 2048, reps = 2;
-    bool breakdown = false;
+    bool breakdown = false, kv_q4 = false;
     std::string only, skip;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
@@ -73,6 +83,11 @@ int main(int argc, char** argv) {
         else if (a == "--breakdown") breakdown = true;
         else if (a == "--only") only = argv[++i];
         else if (a == "--skip") skip = argv[++i];
+        else if (a == "--kv") {
+            const std::string v = argv[++i];
+            if (v == "q4_0") kv_q4 = true;
+            else if (v != "int8" && v != "fp16") { std::fprintf(stderr, "--kv: q4_0, int8 or fp16 (got %s)\n", v.c_str()); return 2; }
+        }
     }
     const int PMAX = *std::max_element(prompts.begin(), prompts.end());
     gguf::File f;
@@ -98,7 +113,8 @@ int main(int argc, char** argv) {
     const int lib = cx.compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "moe_mm.metal", "gr.metal",
                                 "gemv.metal", "prompt.metal"});
     const int lgdn = cx.compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
-    const int lqsa = cx.compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+    // kv_q4.metal first: qsa.metal's optional q4 mode (function constant 25) uses its shared prelude
+    const int lqsa = cx.compile({"kv_q4.metal", "qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
     const int lsmp = cx.compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
     std::printf("kernels compiled in %.1f s\n", mtl::now_s() - tc0);
     std::map<std::string, mtl::Pipeline> pcache;
@@ -175,16 +191,22 @@ int main(int argc, char** argv) {
             cs.as<float>()[(p * 32 + i) * 2 + 1] = (float)std::sin(th);
         }
     std::vector<mtl::Buffer> gst, ghist[2], kq, vq, ksc, vsc, tail, dead, pooled;
+    // the K/V pools by format, as Window::init allocates them (kv_format.h): --kv q4_0 packs [cell][2 heads][144]
+    // with the scale inside each block and NO scale pools - the fc-25 kernels never read ksc/vsc, so those slots
+    // bind one 16-byte placeholder (the engine pushes the same into its own ksc_/vsc_ members)
+    const KvPoolBytes kb = kv_pool_bytes(kv_q4);
+    const mtl::Buffer no_scale = kb.scale == 0 ? cx.alloc(16) : mtl::Buffer{};
+    if (kv_q4) std::printf("--kv q4_0: the q4 pools (%d B/cell a head pair, K and V each), no scale pools\n", (int)kb.pool);
     for (int l = 0; l < 48; ++l) {
         if (l % 4 != 3) {
             gst.push_back(F32(128 * 48 * 128));
             ghist[0].push_back(F32(10240 * 3));
             ghist[1].push_back(F32(10240 * 3));
         } else {
-            kq.push_back(cx.alloc((size_t)MAXC * 2 * 256));
-            vq.push_back(cx.alloc((size_t)MAXC * 2 * 256));
-            ksc.push_back(cx.alloc(2 * (size_t)MAXC * 2 * 4));
-            vsc.push_back(cx.alloc(2 * (size_t)MAXC * 2 * 4));
+            kq.push_back(cx.alloc((size_t)MAXC * kb.pool));
+            vq.push_back(cx.alloc((size_t)MAXC * kb.pool));
+            ksc.push_back(kb.scale > 0 ? cx.alloc((size_t)MAXC * kb.scale) : no_scale);
+            vsc.push_back(kb.scale > 0 ? cx.alloc((size_t)MAXC * kb.scale) : no_scale);
             tail.push_back(F32(4 * 128));
             dead.push_back(F32(128));
             pooled.push_back(F32((size_t)MB * 128));
@@ -346,7 +368,7 @@ int main(int argc, char** argv) {
                 gemm(mixh, Wiq, iqr, T, 512, N, "qsa proj");
                 gemm(mixh, Wik, ikr, T, 128, N, "qsa proj");
                 QsaArgs a{(uint32_t)pos0, 0, (uint32_t)MAXC, (uint32_t)T, 1e-6f};
-                D(P(lqsa, "qsa_prep"),
+                D(P(lqsa, "qsa_prep", qsa_prep_constants(false, kv_q4), qsa_prep_key(false, kv_q4)),
                   {mtl::Arg::B(qfull), mtl::Arg::B(kcur), mtl::Arg::B(vcur), mtl::Arg::B(iqr), mtl::Arg::B(ikr),
                    mtl::Arg::B(W, T_(b + "attn_q_norm.weight").offset), mtl::Arg::B(W, T_(b + "attn_k_norm.weight").offset),
                    mtl::Arg::B(W, T_(b + "indexer.q_norm.weight").offset), mtl::Arg::B(W, T_(b + "indexer.k_norm.weight").offset),
@@ -371,7 +393,7 @@ int main(int argc, char** argv) {
                 if (qsa_mode == "flash") {
                     const uint32_t nq = (uint32_t)T * 24 * 256;
                     D(P(lqsa, "qsa_q_f16"), {mtl::Arg::B(qcur), mtl::Arg::B(qcurh), mtl::Arg::V(nq)}, (nq + 255) / 256, 1, 256, "qsa attn");
-                    D(P(lqsa, "qsa_flash", mtl::Constants().b(7, k4)),
+                    D(P(lqsa, "qsa_flash", qsa_prompt_mm_constants(k4, kv_q4), qsa_prompt_mm_key("qsa_flash", kv_q4)),
                       {mtl::Arg::B(qcurh), mtl::Arg::B(kq[qi]), mtl::Arg::B(vq[qi]), mtl::Arg::B(ksc[qi]), mtl::Arg::B(vsc[qi]),
                        mtl::Arg::B(qids), mtl::Arg::B(qfull), mtl::Arg::B(xqh), mtl::Arg::V(a)},
                       2, T, 128, "qsa attn");
@@ -382,14 +404,17 @@ int main(int argc, char** argv) {
                 if (qsa_mode == "mm") {
                     const uint32_t nq = (uint32_t)T * 24 * 256;
                     D(P(lqsa, "qsa_q_f16"), {mtl::Arg::B(qcur), mtl::Arg::B(qcurh), mtl::Arg::V(nq)}, (nq + 255) / 256, 1, 256, "qsa attn");
-                    D(P(lqsa, "qsa_attn_mm", mtl::Constants().b(7, k4)), {mtl::Arg::B(qcurh), mtl::Arg::B(kq[qi]), mtl::Arg::B(vq[qi]), mtl::Arg::B(ksc[qi]),
+                    D(P(lqsa, "qsa_attn_mm", qsa_prompt_mm_constants(k4, kv_q4), qsa_prompt_mm_key("qsa_attn_mm", kv_q4)),
+                      {mtl::Arg::B(qcurh), mtl::Arg::B(kq[qi]), mtl::Arg::B(vq[qi]), mtl::Arg::B(ksc[qi]),
                                                mtl::Arg::B(vsc[qi]), mtl::Arg::B(qids), mtl::Arg::B(part), mtl::Arg::V(a)},
                       QCHUNKS, 2, 32, "qsa attn", T);
                 } else
-                D(P(lqsa, "qsa_attn"), {mtl::Arg::B(qcur), mtl::Arg::B(kq[qi]), mtl::Arg::B(vq[qi]), mtl::Arg::B(ksc[qi]),
+                D(P(lqsa, "qsa_attn", qsa_q4_constants(kv_q4), qsa_q4_key("qsa_attn", kv_q4)),
+                  {mtl::Arg::B(qcur), mtl::Arg::B(kq[qi]), mtl::Arg::B(vq[qi]), mtl::Arg::B(ksc[qi]),
                                         mtl::Arg::B(vsc[qi]), mtl::Arg::B(qids), mtl::Arg::B(part), mtl::Arg::V(a)},
                   QCHUNKS, 2, 256, "qsa attn", T);
-                D(P(lqsa, "qsa_merge"), {mtl::Arg::B(part), mtl::Arg::B(qfull), mtl::Arg::B(XQ), mtl::Arg::V(a)}, 24, T, 256,
+                D(P(lqsa, "qsa_merge", qsa_q4_constants(kv_q4), qsa_q4_key("qsa_merge", kv_q4)),
+                  {mtl::Arg::B(part), mtl::Arg::B(qfull), mtl::Arg::B(XQ), mtl::Arg::V(a)}, 24, T, 256,
                   "qsa merge");
                 act16(XQ, xqh, (size_t)T * 6144, "qsa proj");
                 gemm(xqh, Wout, bo, T, N, 6144, "qsa proj");

@@ -59,9 +59,12 @@
 #include "strata/kernels/cpu/kq_avx1.hpp"
 #include "strata/kernels/cpu/kq_avx2.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
+#include "strata/kernels/cpu/nvfp4_avx2.hpp"
+#include "strata/kernels/cpu/nvfp4_avx512.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/kernels.hpp"
+#include "strata/prefill/mmq_kq_abi.hpp"
 #include "strata/prefill/moe_fused.hpp"
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/prefill/moe_mmq.hpp"
@@ -82,9 +85,12 @@
 #include "strata/core/exchange_storage.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_source.hpp"
+#include "strata/core/family_layout.hpp"
 #include "strata/core/foresight_swap.hpp"
+#include "strata/core/geometry.hpp"
 #include "strata/core/graph.hpp"
 #include "strata/core/hit_hook.hpp"
+#include "strata/core/host_graph_launch.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/layout.hpp"
 #include "strata/core/logit_bias.hpp"
@@ -200,7 +206,6 @@ namespace strata::kernels { void fused_gr_quantize_q8_0(const uint16_t * p0, uin
 namespace strata::kernels { void fused_gr_read(const FusedGrArgs & p0, void * p1) { strata::metal_engine::missing("strata::kernels::fused_gr_read"); } }
 namespace strata::kernels { bool fused_gr_read_multi(const FusedGrArgs * p0, int p1, float * p2, void * p3, unsigned long long * p4, int p5) { strata::metal_engine::missing("strata::kernels::fused_gr_read_multi"); return {}; } }
 namespace strata::kernels { bool fused_gr_supported(int64_t p0, int64_t p1, int64_t p2) { strata::metal_engine::missing("strata::kernels::fused_gr_supported"); return {}; } }
-namespace strata::kernels { void fwht256_cuda(const float * p0, float * p1, int64_t p2, void * p3) { strata::metal_engine::missing("strata::kernels::fwht256_cuda"); } }
 namespace strata::kernels { void gdn_ab_multi(const float * p0, const uint16_t * p1, const uint16_t * p2, const float * p3, const float * p4, float * p5, float * p6, int p7, int p8, int p9, void * p10) { strata::metal_engine::missing("strata::kernels::gdn_ab_multi"); } }
 namespace strata::kernels { void gdn_beta_gate(float * p0, int64_t p1, void * p2) { strata::metal_engine::missing("strata::kernels::gdn_beta_gate"); } }
 namespace strata::kernels { void gdn_conv_commit(float * p0, const float * p1, int p2, const int32_t * p3, void * p4) { strata::metal_engine::missing("strata::kernels::gdn_conv_commit"); } }
@@ -217,18 +222,12 @@ namespace strata::kernels { void gr_read(const float * p0, const float * p1, con
 namespace strata::kernels { void gr_write(const float * p0, const float * p1, const float * p2, const GrShapes & p3, float * p4, void * p5) { strata::metal_engine::missing("strata::kernels::gr_write"); } }
 namespace strata::kernels { void gr_write_multi(const float * p0, const float * p1, const float * p2, const GrShapes & p3, float * p4, int p5, void * p6) { strata::metal_engine::missing("strata::kernels::gr_write_multi"); } }
 namespace strata::kernels { void indexer_key_append(const float * p0, const int32_t * p1, int32_t p2, const float * p3, float p4, const QsaIndexerBuffers & p5, const QsaShapes & p6, const float * p7, const float * p8, void * p9) { strata::metal_engine::missing("strata::kernels::indexer_key_append"); } }
-namespace strata::kernels { void iq_dequant_f16(int p0, const void * p1, int64_t p2, uint16_t * p3, void * p4) { strata::metal_engine::missing("strata::kernels::iq_dequant_f16"); } }
 namespace strata::kernels { void iq_dequant_f32(int p0, const void * p1, int64_t p2, float * p3, void * p4) { strata::metal_engine::missing("strata::kernels::iq_dequant_f32"); } }
-namespace strata::kernels { void iq_dequant_gu_f16(int p0, const void * p1, const void * p2, int64_t p3, int64_t p4, uint16_t * p5, void * p6) { strata::metal_engine::missing("strata::kernels::iq_dequant_gu_f16"); } }
 namespace strata::kernels { void iq_embed_rows(int p0, const void * p1, size_t p2, const int32_t * p3, int64_t p4, int64_t p5, float * p6, void * p7) { strata::metal_engine::missing("strata::kernels::iq_embed_rows"); } }
-namespace strata::kernels { void kv_append_q4(uint8_t * p0, uint8_t * p1, const int32_t * p2, int64_t p3, int64_t p4, const float * p5, const float * p6, const QsaShapes & p7, void * p8, const KvHostPools * p9, const KvHostPools * p10) { strata::metal_engine::missing("strata::kernels::kv_append_q4"); } }
-namespace strata::kernels { void kv_append_q4_step(uint8_t * p0, uint8_t * p1, const int32_t * p2, const int32_t * p3, const float * p4, const float * p5, const QsaShapes & p6, void * p7, const KvHostPools * p8) { strata::metal_engine::missing("strata::kernels::kv_append_q4_step"); } }
-namespace strata::kernels { void kv_append_q4_steps(uint8_t * p0, uint8_t * p1, const int32_t * p2, const int32_t * p3, int p4, int p5, const float * p6, const float * p7, const QsaShapes & p8, void * p9, const KvHostPools * p10) { strata::metal_engine::missing("strata::kernels::kv_append_q4_steps"); } }
 namespace strata::kernels { void kv_append_q8_step(int8_t * p0, int8_t * p1, uint16_t * p2, uint16_t * p3, const int32_t * p4, const int32_t * p5, const float * p6, const float * p7, const QsaShapes & p8, void * p9, const KvHostPools * p10) { strata::metal_engine::missing("strata::kernels::kv_append_q8_step"); } }
 namespace strata::kernels { void kv_append_q8_steps(int8_t * p0, int8_t * p1, uint16_t * p2, uint16_t * p3, const int32_t * p4, const int32_t * p5, int p6, const float * p7, const float * p8, int p9, int p10, const QsaShapes & p11, void * p12, const KvHostPools * p13) { strata::metal_engine::missing("strata::kernels::kv_append_q8_steps"); } }
 namespace strata::kernels { void kv_append_step(uint16_t * p0, uint16_t * p1, const int32_t * p2, const int32_t * p3, const float * p4, const float * p5, const QsaShapes & p6, void * p7, const KvHostPools * p8) { strata::metal_engine::missing("strata::kernels::kv_append_step"); } }
 namespace strata::kernels { uint64_t kv_block_bytes(const QsaShapes & p0, int p1) { strata::metal_engine::missing("strata::kernels::kv_block_bytes"); return {}; } }
-namespace strata::kernels { void kv_gather_q4_step(const uint8_t * p0, const uint8_t * p1, const int32_t * p2, const int32_t * p3, const int32_t * p4, int64_t p5, const QsaShapes & p6, uint16_t * p7, uint16_t * p8, void * p9) { strata::metal_engine::missing("strata::kernels::kv_gather_q4_step"); } }
 namespace strata::kernels { void kv_gather_q8_step(const int8_t * p0, const int8_t * p1, const uint16_t * p2, const uint16_t * p3, const int32_t * p4, const int32_t * p5, const int32_t * p6, int64_t p7, const QsaShapes & p8, uint16_t * p9, uint16_t * p10, void * p11) { strata::metal_engine::missing("strata::kernels::kv_gather_q8_step"); } }
 namespace strata::kernels { void kv_gather_step(const uint16_t * p0, const uint16_t * p1, const int32_t * p2, const int32_t * p3, const int32_t * p4, int64_t p5, const QsaShapes & p6, uint16_t * p7, uint16_t * p8, void * p9) { strata::metal_engine::missing("strata::kernels::kv_gather_step"); } }
 namespace strata::kernels { void kv_ring_restore(const QsaAttnPools & p0, const KvHostPools & p1, int p2, int64_t p3, int64_t p4, int64_t p5, const QsaShapes & p6, void * p7) { strata::metal_engine::missing("strata::kernels::kv_ring_restore"); } }
@@ -350,7 +349,6 @@ namespace strata::prefill { void gr_write(float * p0, const float * p1, const fl
 namespace strata::prefill { void gr_write_cvec_norm_rs(float * p0, const float * p1, const float * p2, int64_t p3, const float * p4, const float * p5, const int * p6, int p7, const float * p8, float p9, float * p10, uint16_t * p11, int64_t p12, void * p13, uint16_t * p14, int64_t p15) { strata::metal_engine::missing("strata::prefill::gr_write_cvec_norm_rs"); } }
 namespace strata::prefill { void gr_write_norm_rs(float * p0, const float * p1, const float * p2, int64_t p3, const float * p4, float p5, float * p6, uint16_t * p7, int64_t p8, void * p9, uint16_t * p10, int64_t p11) { strata::metal_engine::missing("strata::prefill::gr_write_norm_rs"); } }
 namespace strata::prefill { void kv_append(const float * p0, const float * p1, int64_t p2, int64_t p3, const int32_t * p4, int64_t p5, uint16_t * p6, uint16_t * p7, int8_t * p8, int8_t * p9, uint16_t * p10, uint16_t * p11, void * p12, const strata::kernels::KvHostPools * p13, const strata::kernels::KvHostPools * p14) { strata::metal_engine::missing("strata::prefill::kv_append"); } }
-namespace strata::prefill { void moe_combine(const float * p0, const int32_t * p1, const float * p2, const float * p3, const float * p4, float * p5, int64_t p6, void * p7) { strata::metal_engine::missing("strata::prefill::moe_combine"); } }
 namespace strata::prefill { void moe_combine_peer(const float * p0, const int32_t * p1, const float * p2, const float * p3, const float * p4, const float * p5, int64_t p6, float * p7, int64_t p8, void * p9) { strata::metal_engine::missing("strata::prefill::moe_combine_peer"); } }
 namespace strata::prefill { void moe_combine_peer16(const float * p0, const int32_t * p1, const float * p2, const float * p3, const float * p4, const uint16_t * p5, int64_t p6, float * p7, int64_t p8, void * p9) { strata::metal_engine::missing("strata::prefill::moe_combine_peer16"); } }
 namespace strata::prefill { void peer_gather_add(float * p0, const float * p1, int64_t p2, const float * p3, const int32_t * p4, const int32_t * p5, const int32_t * p6, const int32_t * p7, int64_t p8, void * p9) { strata::metal_engine::missing("strata::prefill::peer_gather_add"); } }

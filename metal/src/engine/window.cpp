@@ -5,7 +5,8 @@
 // The window is mac-kern's chain (metal/kernels, tests/token_chain.cpp) on the model GGUF itself: shard 1 is mmapped
 // and wrapped no-copy as one MTLBuffer, every weight is read where it lies (unified memory: no upload, no expert
 // cache), and one window is encoded as a dependency graph in one command buffer.  Its own state lives here (the GDN
-// recurrence and conv history, the int8 K/V and the indexer per QSA layer, the PLE history): the engine's
+// recurrence and conv history, the K/V pool and indexer per QSA layer - int8, or Q4_0 under --kv q4_0 (kv_format.h,
+// qsa.metal's function constant 25) - the PLE history): the engine's
 // SessionState buffers are not used by it, except the PLE token window (ss.ple_prev) and table.
 //
 // First version (MAC-PLAN Phase 3 start): windows of one token (no MTP drafts yet: --mtp-max-t 1), greedy.  The PLE
@@ -15,6 +16,7 @@
 #include "mtl_rt.h"
 #include "ref_quant.h"
 #include "arena_budget.h"
+#include "kv_format.h"
 #include "stream.h"
 #include "../../tests/coop_probe.h"
 
@@ -123,6 +125,7 @@ public:
     int64_t vocab() const { return n_vocab_; }
     bool ready() const { return cx_ != nullptr; }
     bool streaming() const { return stream_; }
+    bool kv_q4() const { return kv_q4_; }   // kv_format.h's prompt_fast_path reads this (no format diverts the prompt since M2-b)
     // --serve's conversation checkpoints: the window's running state (the GDN recurrences and conv histories, the
     // PLE history, each QSA layer's indexer tail and tail-block key); the KV and pooled keys are positional
     bool checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err);
@@ -240,6 +243,9 @@ private:
     // holds it from init, restored after a window that selected).  STRATA_METAL_FUSE=0: off.
     bool fuse_ = !(std::getenv("STRATA_METAL_FUSE") && std::string(std::getenv("STRATA_METAL_FUSE")) == "0");
     bool qdirty_ = false;
+    // --kv q4_0 (strata::core::qsa_kv_q4(), the shared host code's format state), read ONCE at init: the q4 pools
+    // and the fc-25 qsa specializations of kv_format.h.  Off (the default): every pool and pipeline is today's.
+    bool kv_q4_ = false;
     // mac-kern's router_route (3f9ca996): the BF16 router GEMV and moe_route in one dispatch, beside the shared
     // expert's GEMVs (bitwise).  Opt-in (STRATA_METAL_ROUTE=1): in this window, where the router GEMV already runs
     // beside the shared GEMVs, it measured no faster (T2 GPU 13.035 vs 13.027 ms; the fused kernel alone 0.615 ms vs
@@ -371,8 +377,14 @@ private:
         const int64_t a = std::max<int64_t>(0, c0 & ~(int64_t) 3), b = std::min<int64_t>(max_cells_, c0 + n);
         if (b > a) std::memcpy(mrope_.as<int32_t>() + a * 3, g_mrope_host + a * 3, (size_t) (b - a) * 12);
     }
-    mtl::Constants qsa_c() const { return mrope_on() ? mtl::Constants().b(24, true) : mtl::Constants(); }
-    std::string qsa_k() const { return mrope_on() ? "qsa_prep#mrope" : "qsa_prep"; }
+    // the qsa dispatches' Constants and pipeline keys, through kv_format.h: the format (q4) and M-RoPE are in BOTH
+    // the key and the Constants - P() looks the key up first, and a key without the format would return a stale
+    // cached specialization of the same function (the int8 one under q4)
+    mtl::Constants qsa_c() const { return qsa_prep_constants(mrope_on(), kv_q4_); }
+    std::string qsa_k() const { return qsa_prep_key(mrope_on(), kv_q4_); }
+    // attn / merge: only the q4 arm (no M-RoPE), same trap
+    mtl::Constants qsa_q4_c() const { return qsa_q4_constants(kv_q4_); }
+    std::string qsa_q4_k(const char* fn) const { return qsa_q4_key(fn, kv_q4_); }
     int m5_layout_ = -1;   // the M5's matmul2d layout (coop_k4), asked once: the M4's tiles differ
     bool m5_layout() { if (m5_layout_ < 0) m5_layout_ = coop_k4() ? 1 : 0; return m5_layout_ == 1; }
     bool pc_setup(int C);
@@ -416,6 +428,13 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         return false;
     }
     eps_ = 1e-6f;
+    // the KV cache format (kv_format.h): q4_0 turns on the fused fc-25 qsa path below; k8v4 is REFUSED - it used
+    // to be silently ignored (the int8 pools were allocated whatever --kv said, M0's finding)
+    kv_q4_ = strata::core::qsa_kv_q4();
+    if (const std::string ferr = kv_format_check(kv_q4_, strata::core::qsa_kv_hybrid(), strata::core::qsa_kv_int8()); !ferr.empty()) {
+        err = ferr;
+        return false;
+    }
     const double t0 = now_ms();
     if (const long rp = repack_pid_running(shard1); rp > 0 && !(std::getenv("STRATA_METAL_IGNORE_REPACK") && std::string(std::getenv("STRATA_METAL_IGNORE_REPACK")) == "1")) {
         err = "metal window: a model repack or setup's preparation is running here (pid " + std::to_string(rp) + "): the engine is not started "
@@ -439,7 +458,8 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
                          "glue.metal"});
     rcounter_ = cx_->alloc(16);
     lgdn_ = cx_->compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
-    lqsa_ = cx_->compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
+    // kv_q4.metal first: qsa.metal's optional q4 mode (function constant 25) uses its shared prelude
+    lqsa_ = cx_->compile({"kv_q4.metal", "qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
     lsmp_ = cx_->compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
     lple_ = cx_->compile({std::string(STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/ple.metal"}, "#define NO_GGML_COMMON 1\n");
 
@@ -475,16 +495,21 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         }
     for (int t = 0; t < MAXT; ++t)
         for (int c = 0; c < 2051; ++c) qids_.as<int>()[t * 2051 + c] = c;
+    // the K/V pools by cache format (kv_format.h): q4_0 packs [cell][2 kv heads][144] with the fp16 scale inside
+    // each 18-byte block; int8/fp16 as today.  q4 has no scale pools - the fc-25 kernels never read ksc/vsc, so
+    // their buffer slots bind this one placeholder.  The indexer pools are format-independent.
+    const KvPoolBytes kb = kv_pool_bytes(kv_q4_);
+    const mtl::Buffer no_scale = kb.scale == 0 ? A(16) : mtl::Buffer{};
     for (int l = 0; l < 48; ++l) {
         if (l % 4 != 3) {
             gst_.push_back(A(4 * 128 * 48 * 128));
             ghist_[0].push_back(A(4 * 10240 * 3));
             ghist_[1].push_back(A(4 * 10240 * 3));
         } else {
-            kq_.push_back(A((size_t) MAXC * 2 * 256));
-            vq_.push_back(A((size_t) MAXC * 2 * 256));
-            ksc_.push_back(A(2 * (size_t) MAXC * 2 * 4));
-            vsc_.push_back(A(2 * (size_t) MAXC * 2 * 4));
+            kq_.push_back(A((size_t) MAXC * kb.pool));
+            vq_.push_back(A((size_t) MAXC * kb.pool));
+            ksc_.push_back(kb.scale > 0 ? A((size_t) MAXC * kb.scale) : no_scale);
+            vsc_.push_back(kb.scale > 0 ? A((size_t) MAXC * kb.scale) : no_scale);
             tail_.push_back(A(4 * 4 * 128));
             dead_.push_back(A(4 * 128));
             pooled_.push_back(A(4 * (size_t) MB * 128));
@@ -557,9 +582,9 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     }
     ple_hist_.assign((size_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM, 0.0f);
     last_norm_.assign((size_t) MAXT * strata::kernels::NG_HC_DIM, 0.0f);
-    std::fprintf(stderr, "strata metal: decode window on %s: %s %s (%.1f GB), %d cells, PLE %s, ready in %.0f ms\n",
+    std::fprintf(stderr, "strata metal: decode window on %s: %s %s (%.1f GB), %d cells, KV %s, PLE %s, ready in %.0f ms\n",
                  cx_->device_name().c_str(), shard1.c_str(), stream_ ? "streamed from the SSD (experts)" : "wrapped",
-                 f_.file_bytes / 1e9, MAXC, ple_on_ ? "on" : "OFF", now_ms() - t0);
+                 f_.file_bytes / 1e9, MAXC, kv_q4_ ? "q4_0" : "int8", ple_on_ ? "on" : "OFF", now_ms() - t0);
     return true;
 }
 
@@ -736,7 +761,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
             if (rec_) rec_->push_back({(int) ds.size() - 1, 0});
         }
         mtl::Dispatch at;
-        at.p = P(lqsa_, "qsa_attn", {}, "qsa_attn");
+        at.p = P(lqsa_, "qsa_attn", qsa_q4_c(), qsa_q4_k("qsa_attn"));
         at.args = {mtl::Arg::B(qcur_), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]),
                    mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(qids_), mtl::Arg::B(part_), mtl::Arg::V(a)};
         at.grid[0] = 33;
@@ -746,7 +771,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         push(ds, at);
         if (rec_) rec_->push_back({(int) ds.size() - 1, 0});
         mtl::Dispatch m;
-        m.p = P(lqsa_, "qsa_merge", {}, "qsa_merge");
+        m.p = P(lqsa_, "qsa_merge", qsa_q4_c(), qsa_q4_k("qsa_merge"));
         QsaArgs am = a;
         am.n_tok = MAXT;   // the plane stride
         m.args = {mtl::Arg::B(part_), mtl::Arg::B(qfull_), mtl::Arg::B(XQ_.b), mtl::Arg::V(am)};
@@ -1191,6 +1216,8 @@ bool Window::stream_arena(std::string& err) {
                                                      "a Mac that runs short of memory can freeze (watchdog panics seen at 90+ GB "
                                                      "resident of 128)" : "");
     }
+    // the prompt-GEMM stand-by slots in EVERY format (M2-b: prompt_fast_path runs q4 prompts on the matrix-unit
+    // chains too); STRATA_METAL_PROMPT_GEMM=0 opts out, and the arena is then planned without them (576 -> 64)
     const char* epg = std::getenv("STRATA_METAL_PROMPT_GEMM");
     const bool pg_on = !(epg && std::string(epg) == "0");
     bool minimal = false;   // the arena's least layout (the min slots) is not shrunk further: it goes ahead, filled in steps
@@ -1372,6 +1399,12 @@ void Window::fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp) {
     nb_ = false;   // what follows reads the folded state: a barrier
 }
 
+// --serve's conversation checkpoints.  ss.qsa_states is deliberately NOT wired here (a controller ruling, M1-b):
+// the window's K/V pools are positional (a cell is rewritten before anything reads it again), so a checkpoint
+// keeps the running state only - the GDN recurrences, the conv/PLE histories, the indexer tails - and the cells
+// are rebuilt by re-running the kept turns, in whatever cache format the engine runs.  A DISK session is
+// different (conversation_snapshot.cpp): its K/V image carries the shared side's format tag, and opening one
+// saved under another --kv is rejected by the shared side's format/geometry check there - nothing to tag here.
 bool Window::checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err) {
     (void) err;
     if (pend_fold_ > 0) {   // the last commit's fold first: the checkpoint is the state after it
@@ -1546,8 +1579,17 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
     minj_[0] = A(4 * MAXT * HC); minj_[1] = A(4 * MAXT * HC); mqids_ = A(4 * MAXT * 2051); mlm_ = A(4 * (size_t) n_vocab_);
     auto act = [&](int n) { Act x; x.n = n; x.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return x; };
     XEn_ = act(N); XHn_ = act(N);
-    mkq_.push_back(A((size_t) MAXC * 2 * 256)); mvq_.push_back(A((size_t) MAXC * 2 * 256));
-    mksc_.push_back(A(2 * (size_t) MAXC * 2 * 4)); mvsc_.push_back(A(2 * (size_t) MAXC * 2 * 4));
+    // the drafter's own K/V in the window's format (the PC's mtp.cpp appends through the same kv_q4 pools; here
+    // the shared qsa_prep/attn/merge specializations carry it): q4_0 pools [cell][2][144] and no scale pools
+    // (kv_format.h), int8 as before.  init has run before this (mtp_load is called after the window's own init),
+    // so kv_q4_ is the format the decode pools already have.
+    {
+        const KvPoolBytes kb = kv_pool_bytes(kv_q4_);
+        const mtl::Buffer no_scale = kb.scale == 0 ? A(16) : mtl::Buffer{};
+        mkq_.push_back(A((size_t) MAXC * kb.pool)); mvq_.push_back(A((size_t) MAXC * kb.pool));
+        mksc_.push_back(kb.scale > 0 ? A((size_t) MAXC * kb.scale) : no_scale);
+        mvsc_.push_back(kb.scale > 0 ? A((size_t) MAXC * kb.scale) : no_scale);
+    }
     mtail_.push_back(A(4 * 4 * 128)); mdead_.push_back(A(4 * 128)); mpooled_.push_back(A(4 * (size_t) MB * 128));
     {
         std::string vp;
@@ -1751,13 +1793,13 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
         const int64_t first = std::max<int64_t>(0, cell0 - 2050);
         for (int64_t c = first; c <= cell0; ++c) ids[c - first] = (int) c;
         mtl::Dispatch at;
-        at.p = P(lqsa_, "qsa_attn", {}, "qsa_attn");
+        at.p = P(lqsa_, "qsa_attn", qsa_q4_c(), qsa_q4_k("qsa_attn"));
         at.args = {mtl::Arg::B(qcur_), mtl::Arg::B(mkq_[0]), mtl::Arg::B(mvq_[0]), mtl::Arg::B(mksc_[0]), mtl::Arg::B(mvsc_[0]),
                    mtl::Arg::B(mqids_, (size_t) slot * 2051 * 4), mtl::Arg::B(part_), mtl::Arg::V(qa)};
         at.grid[0] = 33; at.grid[1] = 2; at.grid[2] = 1; at.tg[0] = 256;
         push(ds, at);
         mtl::Dispatch m;
-        m.p = P(lqsa_, "qsa_merge", {}, "qsa_merge");
+        m.p = P(lqsa_, "qsa_merge", qsa_q4_c(), qsa_q4_k("qsa_merge"));
         QsaArgs am = qa;
         am.n_tok = MAXT;
         m.args = {mtl::Arg::B(part_), mtl::Arg::B(qfull_), mtl::Arg::B(XQ_.b), mtl::Arg::V(am)};
@@ -2036,7 +2078,10 @@ bool Window::prompt_gemm_init(std::string& err) {
     p.lib = cx_->compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "moe_mm.metal", "gr.metal", "gemv.metal",
                           "prompt.metal"});
     p.lgdn = cx_->compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
-    p.lqsa = cx_->compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+    // kv_q4.metal first (as the decode window's compile): qsa.metal's optional q4 mode (fc 25) uses its shared
+    // prelude; a dropped prepend is a LOUD MSL compile error (qsa.metal's static_assert needs the prelude's
+    // QK4 / kv_q4_blk), never a silent int8 fallback
+    p.lqsa = cx_->compile({"kv_q4.metal", "qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
     p.k4 = ::coop_k4(*cx_);
     const char* eg = std::getenv("STRATA_METAL_PROMPT_EXPERTS");   // v2 | v3 (default: v3 with the M5's layout)
     p.gu_v3 = p.dn_v3 = eg ? std::string(eg) == "v3" : p.k4;
@@ -2263,7 +2308,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
             if (p.flash) {
                 const uint32_t nq = (uint32_t) T * 24 * 256;
                 D(PP(p.lqsa, "qsa_q_f16"), {mtl::Arg::B(p.qcur), mtl::Arg::B(p.qcurh), mtl::Arg::V(nq)}, (nq + 255) / 256, 1, 256);
-                D(PP(p.lqsa, "qsa_flash", mtl::Constants().b(7, p.k4), "qsa_flash"),
+                D(PP(p.lqsa, "qsa_flash", qsa_prompt_mm_constants(p.k4, kv_q4_), qsa_prompt_mm_key("qsa_flash", kv_q4_)),
                   {mtl::Arg::B(p.qcurh), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]),
                    mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(p.qids), mtl::Arg::B(p.qfull), mtl::Arg::B(p.xqh), mtl::Arg::V(a)},
                   2, T, 128);
@@ -2272,11 +2317,13 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
                 for (int t0 = 0; t0 < T; t0 += p.QS) {
                     const int ns = std::min(p.QS, T - t0);
                     QsaArgs as{(uint32_t) (pos0 + t0), 0, (uint32_t) max_cells_, (uint32_t) ns, eps_};
-                    D(PP(p.lqsa, "qsa_attn"), {mtl::Arg::B(p.qcur, (size_t) t0 * 24 * 256 * 4), mtl::Arg::B(kq_[(size_t) qi]),
+                    D(PP(p.lqsa, "qsa_attn", qsa_q4_c(), qsa_q4_k("qsa_attn")),
+                      {mtl::Arg::B(p.qcur, (size_t) t0 * 24 * 256 * 4), mtl::Arg::B(kq_[(size_t) qi]),
                                                mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]),
                                                mtl::Arg::B(p.qids, (size_t) t0 * 2051 * 4), mtl::Arg::B(p.part), mtl::Arg::V(as)},
                       33, 2, 256, (uint32_t) ns);
-                    D(PP(p.lqsa, "qsa_merge"), {mtl::Arg::B(p.part), mtl::Arg::B(p.qfull, (size_t) t0 * 12288 * 4),
+                    D(PP(p.lqsa, "qsa_merge", qsa_q4_c(), qsa_q4_k("qsa_merge")),
+                      {mtl::Arg::B(p.part), mtl::Arg::B(p.qfull, (size_t) t0 * 12288 * 4),
                                                 mtl::Arg::B(p.XQ, (size_t) t0 * 6144 * 4), mtl::Arg::V(as)}, 24, ns, 256);
                 }
                 act16(p.XQ, p.xqh, (size_t) T * 6144);
@@ -2557,8 +2604,11 @@ bool prompt_run_rows(const int64_t* tokens, int64_t n, int64_t pos0,
     if (g_window == nullptr) { err = "metal prompt: the decode window is not up yet"; return false; }
     static const bool windows = std::getenv("STRATA_METAL_PROMPT") && std::string(std::getenv("STRATA_METAL_PROMPT")) == "window";
     static const int64_t min_rows = std::getenv("STRATA_METAL_PROMPT_MIN") ? std::atoll(std::getenv("STRATA_METAL_PROMPT_MIN")) : 32;
-    if (!windows && !g_window->streaming() && n >= min_rows) return g_window->prompt(tokens, n, pos0, on_chunk, err);
-    if (!windows && g_window->streaming()) {
+    // every format takes the fast chains (M2-b: their dispatches are format-aware); the env hatches below (window,
+    // the GEMM opt-outs, the row minimum) still divert to the decode window's path as before
+    const bool fast = prompt_fast_path(g_window->kv_q4());
+    if (fast && !windows && !g_window->streaming() && n >= min_rows) return g_window->prompt(tokens, n, pos0, on_chunk, err);
+    if (fast && !windows && g_window->streaming()) {
         const char* e = std::getenv("STRATA_METAL_PROMPT_GEMM");
         const char* em = std::getenv("STRATA_METAL_PROMPT_GEMM_MIN");
         const int64_t mn = em ? std::atoll(em) : 64;

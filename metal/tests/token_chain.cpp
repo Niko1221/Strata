@@ -105,7 +105,8 @@ int main(int argc, char** argv) {
     const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "gr.metal", "gr2.metal", "glue.metal",
                                 "router.metal"});
     const int lgdn = cx.compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
-    const int lqsa = cx.compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
+    // kv_q4.metal first: qsa.metal's optional q4 mode (function constant 25) uses its shared prelude
+    const int lqsa = cx.compile({"kv_q4.metal", "qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
     const int lsmp = cx.compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
     std::map<std::string, mtl::Pipeline> pcache;
 

@@ -1,0 +1,6 @@
+engine: /Users/berton/Github/AI-Infra/Strata-metal-kv-q4/build-metal/strata --serve --pack /Users/berton/Github/AI-Infra/Strata-data/packs/q2_0 --native /Users/berton/Github/AI-Infra/Strata-data/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf --ple-gguf /Users/berton/Github/AI-Infra/Strata-data/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf --expert-profile /Users/berton/Github/AI-Infra/Strata-metal-kv-q4/data/expert-profile.bin --spec 2 --mmap-experts --expert-cache 1 --adapt-every 100000 --pcie-frac 0 --suffix-draft 0 --prompt-cache 0 --kv q4_0 --max-context 1512 --short-read 1064 --prefill 512
+code: 999 positions, 28.9 s
+docs: 999 positions, 24.9 s
+english: 999 positions, 24.8 s
+multilingual: 999 positions, 26.3 s
+agent: 999 positions, 26.8 s

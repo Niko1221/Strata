@@ -1,0 +1,24 @@
+exit=0 tag=32768-q4
+strata metal: decode window on Apple M4 Pro: /Users/berton/Github/AI-Infra/Strata-data/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf streamed from the SSD (experts) (37.6 GB), 32896 cells, KV q4_0, PLE on, ready in 339 ms
+strata metal stream: 3.50 GB allocated before the arena (the process holds 8.37 GB, 6.64 GB resident); RAM 51.5 GB (30.6 GB available, 7.7 GB kept for macOS), GPU working set 45.1 GB
+strata metal stream: planned resident footprint 31.3 GB = arena 22.4 + 8.4 held before it + 0.5 reserved for the n-gram table; cap 43.8 GB = the lesser of the GPU working set 45.1 GB and the RAM 51.5 GB less 7.7 GB left to macOS and its file cache
+strata metal stream: expert arena 22.40 GB, 16081 slots in 1 size classes, 16081 experts read from the profile's top (24576 ranked) in 3.2 s (6.99 GB/s); 6 I/O threads, read-ahead top 10; 3 buffers
+strata metal: prompts on the matrix units in chunks of 1024 (experts v2, QSA v1, matmul2d layout other; 1.60 GB of buffers, in the expert arena while a prompt runs)
+exit=0 tag=32768-int8
+strata metal: decode window on Apple M4 Pro: /Users/berton/Github/AI-Infra/Strata-data/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf streamed from the SSD (experts) (37.6 GB), 32896 cells, KV int8, PLE on, ready in 340 ms
+strata metal stream: 3.69 GB allocated before the arena (the process holds 8.75 GB, 6.83 GB resident); RAM 51.5 GB (30.3 GB available, 7.7 GB kept for macOS), GPU working set 45.1 GB
+strata metal stream: planned resident footprint 31.3 GB = arena 22.1 + 8.7 held before it + 0.5 reserved for the n-gram table; cap 43.8 GB = the lesser of the GPU working set 45.1 GB and the RAM 51.5 GB less 7.7 GB left to macOS and its file cache
+strata metal stream: expert arena 22.06 GB, 15840 slots in 1 size classes, 15840 experts read from the profile's top (24576 ranked) in 3.1 s (7.01 GB/s); 6 I/O threads, read-ahead top 10; 3 buffers
+strata metal: prompts on the matrix units in chunks of 1024 (experts v2, QSA v1, matmul2d layout other; 1.60 GB of buffers, in the expert arena while a prompt runs)
+exit=0 tag=65536-q4
+strata metal: decode window on Apple M4 Pro: /Users/berton/Github/AI-Infra/Strata-data/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf streamed from the SSD (experts) (37.6 GB), 65664 cells, KV q4_0, PLE on, ready in 355 ms
+strata metal stream: 3.78 GB allocated before the arena (the process holds 8.94 GB, 6.93 GB resident); RAM 51.5 GB (30.0 GB available, 7.7 GB kept for macOS), GPU working set 45.1 GB
+strata metal stream: planned resident footprint 31.2 GB = arena 21.8 + 8.9 held before it + 0.5 reserved for the n-gram table; cap 43.8 GB = the lesser of the GPU working set 45.1 GB and the RAM 51.5 GB less 7.7 GB left to macOS and its file cache
+strata metal stream: expert arena 21.80 GB, 15657 slots in 1 size classes, 15657 experts read from the profile's top (24576 ranked) in 3.1 s (7.02 GB/s); 6 I/O threads, read-ahead top 10; 3 buffers
+strata metal: prompts on the matrix units in chunks of 1024 (experts v2, QSA v1, matmul2d layout other; 1.63 GB of buffers, in the expert arena while a prompt runs)
+exit=0 tag=65536-int8
+strata metal: decode window on Apple M4 Pro: /Users/berton/Github/AI-Infra/Strata-data/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf streamed from the SSD (experts) (37.6 GB), 65664 cells, KV int8, PLE on, ready in 374 ms
+strata metal stream: 4.16 GB allocated before the arena (the process holds 9.70 GB, 7.31 GB resident); RAM 51.5 GB (29.3 GB available, 7.7 GB kept for macOS), GPU working set 45.1 GB
+strata metal stream: planned resident footprint 31.3 GB = arena 21.1 + 9.7 held before it + 0.5 reserved for the n-gram table; cap 43.8 GB = the lesser of the GPU working set 45.1 GB and the RAM 51.5 GB less 7.7 GB left to macOS and its file cache
+strata metal stream: expert arena 21.12 GB, 15163 slots in 1 size classes, 15163 experts read from the profile's top (24576 ranked) in 3.0 s (6.98 GB/s); 6 I/O threads, read-ahead top 10; 3 buffers
+strata metal: prompts on the matrix units in chunks of 1024 (experts v2, QSA v1, matmul2d layout other; 1.63 GB of buffers, in the expert arena while a prompt runs)

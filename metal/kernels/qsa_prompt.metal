@@ -6,6 +6,21 @@
 //   per head: m = max, p = exp(s - m), l = sum p (fp32, through threadgroup memory), P -> fp16
 //   acc[12 x 256] = P[12 x 64] . V[64 x 256]  four 64-dim matmuls, V decoded into the right input
 // The operands are fp16 (q rounded from fp32; k, v = int8 * scale rounded): to rounding of qsa_attn's fp32.
+//
+// QSA_KV_Q4 (function constant 25, qsa.metal's q4 mode; this file compiles with kv_q4.metal and qsa.metal in
+// front, so the prelude and Q4_ROW are in scope): the q4 pools [cell][kv head][Q4_ROW] decode straight into the
+// right inputs as half(float(nibble - 8) * d), d inside each 18-byte block - under the constant the scale caches
+// stay unread (the host binds a placeholder).  Both cooperative layouts decode their own way: !k4 one element a
+// thread (block k >> 5, element (k & 31) the low nibble of byte (k & 15) below 16, the high above); k4 one 4-run -
+// its k .. k + 3 (k % 4 = 0) sit in one block, four consecutive bytes on one nibble side.  qsa_attn_mm's partials
+// stay in the rotated domain: qsa_merge rotates the merged row back under the same constant, so nothing else
+// moves.  qsa_flash has no merge: its epilogue rotates the accumulated row back FIRST (orthonormal,
+// self-inverse - the 1/16 scale), then divides by l and applies sigmoid(gate), which does not commute with the
+// rotation; the row's 256 dims span four simdgroups, so the butterflies cross them through sp as the staging
+// (dead since the chunk loop ended).
+// Cross-platform note, as qsa.metal:35-38 states for decode: the PC's prompt kernels apply the q4 scale in fp32
+// (prefill's mode 4); this file rounds the decoded operand to fp16, being a matmul2d right input - the same
+// half-rounding the int8 arm above has always had against qsa_attn's fp32.
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 using namespace mpp::tensor_ops;
 #ifndef STRATA_COOP_K4
@@ -44,7 +59,9 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
     for (int c = lane; c < QCH; c += 32) {
         const int id = c < nc ? ids[t * QBUDGET + c0 + c] : -1;
         cid[c] = id;
-        for (int j = 0; j < 4; ++j) vs[c][j] = id >= 0 ? vsc[(uint(id) * QKV + g) * 4 + j] : half(0.0f);
+        // q4 has no scale pool (d rides inside each 18-byte block): the host binds a placeholder, never read
+        if (!qsa_kv_q4)
+            for (int j = 0; j < 4; ++j) vs[c][j] = id >= 0 ? vsc[(uint(id) * QKV + g) * 4 + j] : half(0.0f);
     }
     simdgroup_barrier(mem_flags::mem_threadgroup);
     if (qsa_stop == 1) { if (lane < HPG) { pp[lane * (QD + 2) + QD] = 1.0f; pp[lane * (QD + 2) + QD + 1] = 1.0f; } return; }
@@ -65,7 +82,20 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
                     const auto ix = rk.get_multidimensional_index(i);
                     const int k = k0 + ix[0], id = cid[ix[1]];
                     const uint row = uint(id) * QKV + g;
-                    rk[i] = id >= 0 ? half(float(kq[row * QD + k]) * float(ksc[row * 4 + (k >> 6)])) : half(0.0f);
+                    if (qsa_kv_q4) {
+                        // block (k >> 5) of the Q4_ROW-byte row; element (k & 31) is the low nibble of byte
+                        // (k & 15) below 16, the high above - qsa_attn's decode, the fp32 product rounded to half
+                        half w = half(0.0f);
+                        if (id >= 0) {
+                            const device kv_q4_blk* blk =
+                                (const device kv_q4_blk*)((device const uchar*)kq + (size_t)row * Q4_ROW) + (k >> 5);
+                            const uchar qb = blk->qs[k & 15];
+                            w = half(float(((k & 31) < 16 ? (qb & 0x0F) : (qb >> 4)) - 8) * f32_from_f16(blk->d));
+                        }
+                        rk[i] = w;
+                    } else {
+                        rk[i] = id >= 0 ? half(float(kq[row * QD + k]) * float(ksc[row * 4 + (k >> 6)])) : half(0.0f);
+                    }
                 }
             } else
 #pragma clang loop unroll(full)
@@ -75,8 +105,18 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
                 half4 w = half4(0.0h);
                 if (id >= 0) {
                     const uint row = uint(id) * QKV + g;
-                    const char4 q4 = *(device const char4*)(kq + row * QD + k);
-                    w = half4(float4(q4) * float(ksc[row * 4 + (k >> 6)]));
+                    if (qsa_kv_q4) {
+                        // a run's k .. k + 3 (k % 4 = 0) sit in one block, four consecutive bytes on one nibble
+                        // side - one shift and mask for the whole run, the fp32 products rounded to half
+                        const device kv_q4_blk* blk =
+                            (const device kv_q4_blk*)((device const uchar*)kq + (size_t)row * Q4_ROW) + (k >> 5);
+                        const device uchar* qs = blk->qs + (k & 15);
+                        const uint4 nib = (uint4(qs[0], qs[1], qs[2], qs[3]) >> uint4((k & 31) < 16 ? 0u : 4u)) & uint4(0x0Fu);
+                        w = half4((float4(nib) - 8.0f) * f32_from_f16(blk->d));
+                    } else {
+                        const char4 q4 = *(device const char4*)(kq + row * QD + k);
+                        w = half4(float4(q4) * float(ksc[row * 4 + (k >> 6)]));
+                    }
                 }
                 rk[i] = w.x; rk[i + 1] = w.y; rk[i + 2] = w.z; rk[i + 3] = w.w;
             }
@@ -120,7 +160,19 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
                 for (uint16_t i = 0; i < rv.get_capacity(); ++i) {
                     const auto ix = rv.get_multidimensional_index(i);   // (cell, dim)
                     const int c = c0 + ix[0], d = d0 + ix[1], id = cid[c];
-                    rv[i] = id >= 0 ? half(float(vq[(uint(id) * QKV + g) * QD + d]) * float(vs[c][d >> 6])) : half(0.0f);
+                    if (qsa_kv_q4) {
+                        // the V rows decode like the K ones (d rides in the block; the vs scale cache is not read)
+                        half w = half(0.0f);
+                        if (id >= 0) {
+                            const device kv_q4_blk* blk =
+                                (const device kv_q4_blk*)((device const uchar*)vq + (size_t)(uint(id) * QKV + g) * Q4_ROW) + (d >> 5);
+                            const uchar qb = blk->qs[d & 15];
+                            w = half(float(((d & 31) < 16 ? (qb & 0x0F) : (qb >> 4)) - 8) * f32_from_f16(blk->d));
+                        }
+                        rv[i] = w;
+                    } else {
+                        rv[i] = id >= 0 ? half(float(vq[(uint(id) * QKV + g) * QD + d]) * float(vs[c][d >> 6])) : half(0.0f);
+                    }
                 }
                 tPh = tP.template slice<32, 16>(c0, 0);
                 op.run(tPh, rv, acc);
@@ -246,7 +298,9 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
         if (tid < QCH) {
             const int id = tid < nc ? ids[t * QBUDGET + c0 + tid] : -1;
             cid[tid] = id;
-            vs[tid] = id >= 0 ? float(vsc[(uint(id) * QKV + g) * 4 + sg * 0]) : 0.0f;   // (per-simdgroup scale below)
+            // q4 has no scale pool (d rides inside each 18-byte block): the host binds a placeholder, never read
+            if (!qsa_kv_q4)
+                vs[tid] = id >= 0 ? float(vsc[(uint(id) * QKV + g) * 4 + sg * 0]) : 0.0f;   // (written but never read: the V arm below reads vsc directly)
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         // S partial over this simdgroup's 64 dims
@@ -263,7 +317,20 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
                         const auto ix = rk.get_multidimensional_index(i);
                         const int k = k0 + ix[0], id = cid[ix[1]];
                         const uint row = uint(id) * QKV + g;
-                        rk[i] = id >= 0 ? half(float(kq[row * QD + k]) * float(ksc[row * 4 + (k >> 6)])) : half(0.0f);
+                        if (qsa_kv_q4) {
+                            // block (k >> 5) of the Q4_ROW-byte row; element (k & 31) is the low nibble of byte
+                            // (k & 15) below 16, the high above - qsa_attn's decode, the fp32 product to half
+                            half w = half(0.0f);
+                            if (id >= 0) {
+                                const device kv_q4_blk* blk =
+                                    (const device kv_q4_blk*)((device const uchar*)kq + (size_t)row * Q4_ROW) + (k >> 5);
+                                const uchar qb = blk->qs[k & 15];
+                                w = half(float(((k & 31) < 16 ? (qb & 0x0F) : (qb >> 4)) - 8) * f32_from_f16(blk->d));
+                            }
+                            rk[i] = w;
+                        } else {
+                            rk[i] = id >= 0 ? half(float(kq[row * QD + k]) * float(ksc[row * 4 + (k >> 6)])) : half(0.0f);
+                        }
                     }
                 } else
 #pragma clang loop unroll(full)
@@ -273,8 +340,18 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
                     half4 w = half4(0.0h);
                     if (id >= 0) {
                         const uint row = uint(id) * QKV + g;
-                        const char4 q4 = *(device const char4*)(kq + row * QD + k);
-                        w = half4(float4(q4) * float(ksc[row * 4 + (k >> 6)]));
+                        if (qsa_kv_q4) {
+                            // a run's k .. k + 3 (k % 4 = 0) sit in one block, four consecutive bytes on one
+                            // nibble side - one shift and mask for the whole run, the fp32 products to half
+                            const device kv_q4_blk* blk =
+                                (const device kv_q4_blk*)((device const uchar*)kq + (size_t)row * Q4_ROW) + (k >> 5);
+                            const device uchar* qs = blk->qs + (k & 15);
+                            const uint4 nib = (uint4(qs[0], qs[1], qs[2], qs[3]) >> uint4((k & 31) < 16 ? 0u : 4u)) & uint4(0x0Fu);
+                            w = half4((float4(nib) - 8.0f) * f32_from_f16(blk->d));
+                        } else {
+                            const char4 q4 = *(device const char4*)(kq + row * QD + k);
+                            w = half4(float4(q4) * float(ksc[row * 4 + (k >> 6)]));
+                        }
                     }
                     rk[i] = w.x; rk[i + 1] = w.y; rk[i + 2] = w.z; rk[i + 3] = w.w;
                 }
@@ -318,7 +395,19 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
             for (uint16_t i = 0; i < rv.get_capacity(); ++i) {
                 const auto ix = rv.get_multidimensional_index(i);   // (cell, dim)
                 const int c = c0 + ix[0], d = d0 + ix[1], id = cid[c];
-                rv[i] = id >= 0 ? half(float(vq[(uint(id) * QKV + g) * QD + d]) * float(vsc[(uint(id) * QKV + g) * 4 + sg])) : half(0.0f);
+                if (qsa_kv_q4) {
+                    // the V rows decode like the K ones; d rides in the block, so vsc (a placeholder) is not read
+                    half w = half(0.0f);
+                    if (id >= 0) {
+                        const device kv_q4_blk* blk =
+                            (const device kv_q4_blk*)((device const uchar*)vq + (size_t)(uint(id) * QKV + g) * Q4_ROW) + (d >> 5);
+                        const uchar qb = blk->qs[d & 15];
+                        w = half(float(((d & 31) < 16 ? (qb & 0x0F) : (qb >> 4)) - 8) * f32_from_f16(blk->d));
+                    }
+                    rv[i] = w;
+                } else {
+                    rv[i] = id >= 0 ? half(float(vq[(uint(id) * QKV + g) * QD + d]) * float(vsc[(uint(id) * QKV + g) * 4 + sg])) : half(0.0f);
+                }
             }
             tPh = tP.template slice<32, 16>(c0, 0);
             opO.run(tPh, rv, acc);
@@ -327,14 +416,62 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
             if (acc.is_valid_element(i)) tot[i] = fma(tot[i], fac[acc.get_multidimensional_index(i)[1]], acc[i]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint16_t i = 0; i < acc.get_capacity(); ++i)
-        if (acc.is_valid_element(i)) {
-            const auto ix = acc.get_multidimensional_index(i);   // (dim, row)
-            const int h = ix[1], d = d0 + ix[0];
-            if (h < HPG) {
-                const int hh = g * HPG + h;
-                const float gate = qfull[(uint(t) * QH + hh) * 2 * QD + QD + d];
-                xqh[(uint(t) * QH + hh) * QD + d] = half(tot[i] / lsum[h] * (1.0f / (1.0f + exp(-gate))));
+    if (qsa_kv_q4) {
+        // the V pool is rotated, so tot is R(o): rotate back FIRST (the orthonormal FWHT is its own inverse),
+        // then / lsum, then the gate - qsa_merge's placement (the elementwise gate does not commute with it).
+        // A row's 256 dims span four simdgroups: sp is dead since the chunk loop ended and becomes the staging.
+        threadgroup float* rot = &sp[0][0];
+        for (uint16_t i = 0; i < acc.get_capacity(); ++i)
+            if (acc.is_valid_element(i)) {
+                const auto ix = acc.get_multidimensional_index(i);   // (dim, row)
+                if (ix[1] < HPG) rot[ix[1] * 256 + d0 + ix[0]] = tot[i];
             }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        // one row over the 128 threads, two elements each (tid and tid + 128): the scale, the stage order and
+        // the butterfly arithmetic are fwht_row256's - the low five index bits inside each simdgroup (both
+        // elements' partners share the xor offset), 32 / 64 across the simdgroups through the row, and 128
+        // inside the thread, whose two elements are the pair
+        for (int h = 0; h < HPG; ++h) {
+            threadgroup float* row = rot + h * 256;
+            float x0 = row[tid] * (1.0f / 16.0f), x1 = row[tid + 128] * (1.0f / 16.0f);
+            for (ushort b = 1; b < 32; b *= 2) {
+                const bool low = (lane & b) == 0;
+                const float p0 = simd_shuffle_xor(x0, b), p1 = simd_shuffle_xor(x1, b);
+                x0 = low ? x0 + p0 : p0 - x0;
+                x1 = low ? x1 + p1 : p1 - x1;
+            }
+            for (ushort s = 1; s < 4; s *= 2) {   // index bit 32 s: partner simdgroup sg ^ s, same lane, same half
+                row[tid] = x0; row[tid + 128] = x1;
+                threadgroup_barrier(mem_flags::mem_threadgroup);   // the pre-step values staged first...
+                const float p0 = row[(sg ^ s) * 32 + lane], p1 = row[(sg ^ s) * 32 + lane + 128];
+                threadgroup_barrier(mem_flags::mem_threadgroup);   // ...every read done before the rewrite
+                const bool low = (sg & s) == 0;
+                x0 = low ? x0 + p0 : p0 - x0;
+                x1 = low ? x1 + p1 : p1 - x1;
+            }
+            row[tid] = x0 + x1;   // index bit 128: the thread's own two elements are the pair
+            row[tid + 128] = x0 - x1;
         }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint16_t i = 0; i < acc.get_capacity(); ++i)
+            if (acc.is_valid_element(i)) {
+                const auto ix = acc.get_multidimensional_index(i);   // (dim, row)
+                const int h = ix[1], d = d0 + ix[0];
+                if (h < HPG) {
+                    const int hh = g * HPG + h;
+                    const float gate = qfull[(uint(t) * QH + hh) * 2 * QD + QD + d];
+                    xqh[(uint(t) * QH + hh) * QD + d] = half(rot[h * 256 + d] / lsum[h] * (1.0f / (1.0f + exp(-gate))));
+                }
+            }
+    } else
+        for (uint16_t i = 0; i < acc.get_capacity(); ++i)
+            if (acc.is_valid_element(i)) {
+                const auto ix = acc.get_multidimensional_index(i);   // (dim, row)
+                const int h = ix[1], d = d0 + ix[0];
+                if (h < HPG) {
+                    const int hh = g * HPG + h;
+                    const float gate = qfull[(uint(t) * QH + hh) * 2 * QD + QD + d];
+                    xqh[(uint(t) * QH + hh) * QD + d] = half(tot[i] / lsum[h] * (1.0f / (1.0f + exp(-gate))));
+                }
+            }
 }
