@@ -155,6 +155,25 @@ inline bool conversation_checkpoints_merge(ConversationCheckpointSplit&& split, 
     return true;
 }
 
+/// --kv-pool-tokens: a conversation changes lane (the main session <-> a batch slot) by moving its K/V chunks, so its
+/// running-state checkpoints must change lane with them - a checkpoint is only usable beside the K/V cells below it.
+/// Moves the checkpoints of `from` whose tokens are a prefix of `ids` onto the back of `to`, in their order; the others
+/// stay in `from` (the caller drops them).  Text only: a checkpoint with a picture is not carried (a slot never caches
+/// a conversation with pictures).  Returns how many moved.
+inline size_t conversation_checkpoints_carry(std::vector<ConversationCheckpoint>& from, const std::vector<int32_t>& ids,
+                                             std::vector<ConversationCheckpoint>& to) {
+    size_t moved = 0;
+    std::vector<ConversationCheckpoint> rest;
+    for (auto& c : from) {
+        const bool prefix = !c.ids.empty() && c.ids.size() <= ids.size() && c.imgs.empty() &&
+                            std::equal(c.ids.begin(), c.ids.end(), ids.begin());
+        if (prefix) { to.push_back(std::move(c)); ++moved; }
+        else rest.push_back(std::move(c));
+    }
+    from = std::move(rest);
+    return moved;
+}
+
 struct SavedConversation {
     // Runtime compatibility only; NOT a model/weights identity or disk schema.
     std::array<int64_t, 18> geometry{};
