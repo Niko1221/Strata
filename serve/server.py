@@ -3023,6 +3023,51 @@ def slot_save_dir(value, base: str | None = None) -> str:
         raise ValueError(f"slot_save_path {path} is not a directory")
     return path
 
+
+# llama.cpp's llama_model_ftype_name(), keyed by the GGUF's general.file_type (llama_ftype): the label llama-server
+# puts in /v1/models meta.ftype, which proxies and dashboards (Olla, llama-swap) show as the quantisation
+LLAMA_FTYPE_NAMES = {
+    0: "all F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 7: "Q8_0", 8: "Q5_0", 9: "Q5_1",
+    10: "Q2_K - Medium", 11: "Q3_K - Small", 12: "Q3_K - Medium", 13: "Q3_K - Large", 14: "Q4_K - Small",
+    15: "Q4_K - Medium", 16: "Q5_K - Small", 17: "Q5_K - Medium", 18: "Q6_K", 19: "IQ2_XXS - 2.0625 bpw",
+    20: "IQ2_XS - 2.3125 bpw", 21: "Q2_K - Small", 22: "IQ3_XS - 3.3 bpw", 23: "IQ3_XXS - 3.0625 bpw",
+    24: "IQ1_S - 1.5625 bpw", 25: "IQ4_NL - 4.5 bpw", 26: "IQ3_S - 3.4375 bpw", 27: "IQ3_S mix - 3.66 bpw",
+    28: "IQ2_S - 2.5 bpw", 29: "IQ2_M - 2.7 bpw", 30: "IQ4_XS - 4.25 bpw", 31: "IQ1_M - 1.75 bpw", 32: "BF16",
+    36: "TQ1_0 - 1.69 bpw ternary", 37: "TQ2_0 - 2.06 bpw ternary", 38: "MXFP4 MoE",
+}
+_GGUF_SHARD = re.compile(r"^(?P<stem>.*)-(?P<no>\d{5})-of-(?P<count>\d{5})\.gguf$")
+
+
+def gguf_model_meta(path) -> dict:
+    """The model facts llama-server reports in /v1/models `meta`, from the GGUF's headers only (no tensor data is
+    read; well under a second for a 188 GB six-shard model): n_params (every tensor's elements, all shards), size
+    (the shards' bytes on disk), ftype (llama.cpp's label of general.file_type), n_vocab, n_ctx_train, n_embd.
+    `path` is the --native GGUF, any shard of a split model.  Only the facts found are returned: {} for no GGUF."""
+    from gguf_reader import GGUFFile
+    path = Path(path) if path else None
+    if path is None or path.suffix.lower() != ".gguf" or not path.is_file():
+        return {}
+    m = _GGUF_SHARD.match(path.name)
+    shards = ([path.with_name(f"{m['stem']}-{i:05d}-of-{m['count']}.gguf") for i in range(1, int(m["count"]) + 1)]
+              if m else [path])
+    first = GGUFFile(shards[0]) if shards[0].is_file() else None
+    meta = {}
+    if first is not None:
+        md = first.metadata
+        arch = md.get("general.architecture")
+        tokens = md.get("tokenizer.ggml.tokens")
+        if isinstance(tokens, list):
+            meta["n_vocab"] = len(tokens)
+        for key, field in (("context_length", "n_ctx_train"), ("embedding_length", "n_embd")):
+            if isinstance(md.get(f"{arch}.{key}"), int):
+                meta[field] = md[f"{arch}.{key}"]
+        if md.get("general.file_type") in LLAMA_FTYPE_NAMES:
+            meta["ftype"] = LLAMA_FTYPE_NAMES[md["general.file_type"]]
+    if all(p.is_file() for p in shards):             # a missing shard: no count rather than a wrong one
+        meta["n_params"] = sum(t.elements for p in shards for t in (first if p == shards[0] else GGUFFile(p)).tensors)
+        meta["size"] = sum(p.stat().st_size for p in shards)
+    return meta
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -3031,6 +3076,8 @@ class Service:
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
+        self._model_meta = None                       # gguf_model_meta() of the engine's GGUF, read once (/v1/models)
+        self._model_meta_lock = threading.Lock()
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
@@ -3205,6 +3252,20 @@ class Service:
         or the last one it reported while it restarts (max_context is 0 until READY, and a client that sizes its
         prompt from it would send nothing, #351).  Reporting only: requests are checked in prepare()."""
         return int(getattr(self.engine, "max_context", 0) or getattr(self.engine, "known_ctx", 0) or 0)
+
+    def model_meta(self) -> dict:
+        """The loaded model's facts for /v1/models `meta`, as llama-server gives them (n_params, size, ftype, ...):
+        read from the engine's --native GGUF headers the first time they are asked for, then kept.  {} when the
+        engine has no GGUF (a pack-only or test engine) or it cannot be read: the endpoint still answers."""
+        with self._model_meta_lock:
+            if self._model_meta is None:
+                try:
+                    self._model_meta = gguf_model_meta(getattr(self.engine, "model_path", None))
+                except (OSError, ValueError, KeyError, struct.error) as e:
+                    print(f"strata serve: /v1/models: the model's GGUF metadata could not be read ({e})",
+                          file=sys.stderr, flush=True)
+                    self._model_meta = {}
+            return self._model_meta
 
     def reasoning_budget(self, req) -> int | None:
         """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens`, else the
@@ -5370,7 +5431,7 @@ def make_handler(svc: Service):
                 if self._authorized():
                     loaded = svc.loaded()
                     model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
-                             "meta": {"n_ctx": svc.reported_ctx()},
+                             "meta": {**svc.model_meta(), "n_ctx": svc.reported_ctx()},
                              "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
                                               "output_modalities": ["text"]}}
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
