@@ -492,10 +492,25 @@ private:
     GpuPlanSink sink_;
     uint32_t cur_layer_ = 0;
     static void publish_plan(void* ctx);
+    static void raise_partial(void* ctx);   // STRATA_VERIFY_DEFER_CPU_BELOW: the pool's partial hook (h_pflag_)
     void set_plan_slot(int grp);
     bool split_ = false;   // opt-in (--spec-split): exact but slower, see the overlap study
     int groups_[9] = {};
     float* h_ymiss_ = nullptr;   float* m_ymiss_ = nullptr;     // T * k * n_embd
+    // STRATA_VERIFY_DEFER_CPU=1 (opt-in, changes the output): a decode window's layer l adds the CPU's expert rows to the
+    // residual before layer l+1's FFN-side read instead of waiting for them in its own combine (record_window)
+    bool defer_ = false;
+    bool defer_check_ = false;             ///< STRATA_VERIFY_DEFER_CPU=check: the same steps, the rows added back in layer l
+                                           ///< itself (no deferral: the default's sums in another order)
+    bool defer_said_ = false;              ///< the reason a window runs without deferral was printed
+    float* def_parts_ = nullptr;           ///< device: a deferred layer's CPU rows (T * k * n_embd)
+    // STRATA_VERIFY_DEFER_CPU_BELOW=<w> (with =1 or =check; 0.1 when unset, 0 when w >= 1): the pool computes the CPU
+    // rows whose routing weight is >= w first and raises h_pflag_; post(l) of a deferred layer waits for that and
+    // combines those rows, the lighter ones join late.  Not with STRATA_VERIFY_DEVICE_PLAN.
+    float defer_heavy_ = 0.0f;
+    uint32_t* h_pflag_ = nullptr; uint32_t* m_pflag_ = nullptr;  // the pool has written the heavy CPU rows (partial flag)
+    bool defer_ok(int T, std::string* why) const;   ///< the T-token window may be captured with deferral
+    bool heavy_layer(int T, int64_t l) const;       ///< STRATA_VERIFY_DEFER_CPU_BELOW: post(l) waits for the partial flag
 
     // device
     void* arena_ = nullptr;

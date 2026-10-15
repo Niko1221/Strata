@@ -3963,12 +3963,51 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             ++jb.nt;
             ++d.multi_entries;
         }
+    // STRATA_VERIFY_DEFER_CPU_BELOW (verify.cpp): the experts of the heavy CPU entries (routing weight >= ps->heavy) run
+    // first and ps->partial tells the GPU they are done.  A row comes out as in one pass: the pool cuts every phase by
+    // output rows, so a row never depends on the other jobs (the S2 pool's one-token path for more than kMaxSplitMulti
+    // experts would not: no split there).  Not with a peer GPU or a helper cache GPU, whose rows land only after the
+    // CPU's (the verifier turns the split off at init then: pool_gpu_helper).  Not split: one pass, the verifier raises the
+    // partial flag with the full one, and that layer waits for all its rows (said once).
+    const GpuPlanSink* ps = d.plan;
+    const bool heavy = ps != nullptr && ps->partial != nullptr && ps->weights != nullptr && ps->heavy > 0.0f;
+    const char* no_split = !heavy ? nullptr
+                         : (n > kMaxWindowEntries || n > ps->cap) ? "more entries than the plan holds"
+                         : (d.peer != nullptr || d.remote_count > 0) ? "a peer or helper cache GPU adds rows after the CPU's"
+                         : (!native && njobs > strata::kernels::cpu::ExpertPool::kMaxSplitMulti)
+                             ? "more CPU experts than the S2 pool's multi-token path takes"
+                             : nullptr;
+    const bool split = heavy && no_split == nullptr;
+    if (no_split != nullptr) {
+        static std::atomic<bool> said{false};
+        if (!said.exchange(true))
+            std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU_BELOW: a layer's CPU rows not split (%s): it waits "
+                                 "for all of them (said once)\n", no_split);
+    }
+    int nfirst = njobs;
+    if (split && njobs > 0) {
+        bool heavy_job[kMaxWindowEntries] = {};
+        for (int64_t i = 0; i < n; ++i)
+            if (kind[i] == -1 && ps->weights[i] >= ps->heavy) heavy_job[d.job_of[(size_t) ids[i]]] = true;
+        static thread_local std::vector<ExpertJobMulti> order;
+        order.clear();
+        for (int pass = 0; pass < 2; ++pass)
+            for (int j = 0; j < njobs; ++j)
+                if (heavy_job[j] == (pass == 0)) order.push_back(d.jobs_multi[(size_t) j]);
+        nfirst = 0;
+        for (int j = 0; j < njobs; ++j) nfirst += heavy_job[j] ? 1 : 0;
+        std::copy(order.begin(), order.end(), d.jobs_multi.begin());
+    }
     const auto c3 = std::chrono::steady_clock::now();
     pt("run", njobs);
-    if (njobs > 0) {
-        if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
-        else d.pool->run_split_multi(d.jobs_multi.data(), njobs);
-    }
+    auto run_jobs = [&](ExpertJobMulti* jobs, int nj) {
+        if (nj <= 0) return;
+        if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], jobs, nj);
+        else d.pool->run_split_multi(jobs, nj);
+    };
+    run_jobs(d.jobs_multi.data(), nfirst);
+    if (split) ps->partial(ps->ctx);
+    run_jobs(d.jobs_multi.data() + nfirst, njobs - nfirst);
     if (d.remote_count > 0) {
         static thread_local std::string remote_error;
         for (int r = 0; r < d.remote_count; ++r)

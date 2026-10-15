@@ -1344,6 +1344,86 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
 }
 
 namespace {
+// blockIdx.y = the token; one thread per column: the combine's sum (combine_k10_vec4: the first product rounded, then
+// one FMA per expert in order), then the fused read's pending write per stream (fused_gr.cu: fmaf(bo, 2*sigmoid(inj/hc), R))
+__global__ void defer_add_rows_kernel(const float* __restrict__ parts, const float* __restrict__ w,
+                                      const float* __restrict__ inject, float* __restrict__ R, int64_t n_embd, int k,
+                                      int hc) {
+    const int64_t t = blockIdx.y;
+    const int64_t d = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (d >= n_embd) return;
+    const float* p = parts + t * k * n_embd + d;
+    const float* wt = w + t * k;
+    float s = p[0] * wt[0];
+    for (int j = 1; j < k; ++j) s = fmaf(p[(int64_t) j * n_embd], wt[j], s);
+    const float* inj = inject + t * hc;
+    float* r = R + t * hc * n_embd + d;
+    for (int c = 0; c < hc; ++c) {
+        const float gw = 2.0f * (1.0f / (1.0f + __expf(-(inj[c] / (float) hc))));
+        r[(int64_t) c * n_embd] = fmaf(s, gw, r[(int64_t) c * n_embd]);
+    }
+}
+}  // namespace
+namespace {
+__global__ void fill_zero_kernel(float4* __restrict__ dst, long long n4) {
+    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < n4; i += (long long) gridDim.x * blockDim.x)
+        dst[i] = make_float4(0.f, 0.f, 0.f, 0.f);
+}
+}  // namespace
+void fill_zero(float* dst, long long n, void* stream) {
+    if (n <= 0) return;
+    if ((n & 3) != 0 || ((uintptr_t) dst & 15) != 0) {
+        std::fprintf(stderr, "fill_zero: n must be a multiple of 4 and dst 16-byte aligned\n");
+        std::exit(1);
+    }
+    const long long n4 = n / 4;
+    const int blocks = (int) ((n4 + 255) / 256 < 64 ? (n4 + 255) / 256 : 64);
+    fill_zero_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>((float4*) dst, n4);
+    check("fill_zero");
+}
+namespace {
+// copy_rows_from_mapped_kernel (elementwise.cu) with the routing weight's test: block = row
+__global__ void copy_rows_by_weight_kernel(float4* __restrict__ dst, const volatile float4* src, int64_t row4,
+                                           const int32_t* __restrict__ hit_rows, const int32_t* __restrict__ count,
+                                           const float* __restrict__ w, float heavy, int take_heavy) {
+    const int row = blockIdx.x;
+    __shared__ int take;
+    if (threadIdx.x == 0) {
+        int h = 0;
+        const int c = *count;
+        for (int i = 0; i < c; ++i) h |= hit_rows[i] == row;
+        take = !h && ((w[row] >= heavy ? 1 : 0) == take_heavy);
+    }
+    __syncthreads();
+    float4* d = dst + (int64_t) row * row4;
+    if (!take) {
+        for (int64_t i = threadIdx.x; i < row4; i += blockDim.x) d[i] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    } else {
+        const volatile float4* sr = src + (int64_t) row * row4;
+        for (int64_t i = threadIdx.x; i < row4; i += blockDim.x) d[i] = const_cast<const float4*>(sr)[i];
+    }
+}
+}  // namespace
+void copy_rows_by_weight(float* dst, const float* src, int64_t rows, int64_t width, const int32_t* hit_rows,
+                         const int32_t* count, const float* w, float heavy, bool take_heavy, void* stream) {
+    if (rows <= 0) return;
+    if ((width & 3) != 0 || ((uintptr_t) dst & 15) != 0 || ((uintptr_t) src & 15) != 0) {
+        std::fprintf(stderr, "copy_rows_by_weight: width must be a multiple of 4 and both pointers 16-byte aligned\n");
+        std::exit(1);
+    }
+    copy_rows_by_weight_kernel<<<(unsigned) rows, 128, 0, (cudaStream_t) stream>>>(
+        (float4*) dst, (const volatile float4*) src, width / 4, hit_rows, count, w, heavy, take_heavy ? 1 : 0);
+    check("copy_rows_by_weight");
+}
+void defer_add_rows(const float* parts, const float* w, const float* inject, float* R, int64_t n_embd, int k, int hc,
+                    int n_tok, void* stream) {
+    if (n_tok <= 0 || n_embd <= 0) return;
+    defer_add_rows_kernel<<<dim3((unsigned) ((n_embd + 255) / 256), (unsigned) n_tok), 256, 0, (cudaStream_t) stream>>>(
+        parts, w, inject, R, n_embd, k, hc);
+    check("defer_add_rows");
+}
+
+namespace {
 __global__ void wait_copy_i32_kernel(const volatile uint32_t* flag, uint32_t value, int32_t* __restrict__ dst,
                                      const volatile int32_t* src, int n) {
     if (threadIdx.x == 0) {
