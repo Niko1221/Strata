@@ -29,6 +29,8 @@
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Monitor</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>About</button>
+    <button class="st-tab" role="tab" id="tab-btn-profile" aria-controls="view-profile" aria-selected="false" data-tab="profile" hidden>
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-gauge"/></svg>Profile</button>
   </nav>
   <span class="st-header__spacer"></span>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
@@ -204,6 +206,162 @@
         <form class="cfg-form" id="cfg-form"></form>
         <div class="cfg-actions"><button class="st-btn st-btn--primary" id="cfg-save" type="button">Save</button>
           <span class="muted small" id="cfg-msg" role="status"></span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ Profile (opt-in: "profile": true) ============================ -->
+  <section class="view view--profile" id="view-profile" role="tabpanel" aria-labelledby="tab-btn-profile" hidden>
+    <div class="monitor profile">
+      <div class="st-card pf-notice" id="pf-notice" role="status" hidden>
+        <span id="pf-notice-text"></span>
+        <button class="st-btn st-btn--secondary" id="pf-notice-btn" type="button" hidden>Open Settings</button>
+      </div>
+
+      <div class="st-card pf-card" id="pf-off" hidden>
+        <span class="card-title">The Profile tab is off</span>
+        <p>The Profile tab is off. Turn on <code>profile</code> in About &gt; Model settings and start Strata again; the
+          engine then runs with its timing switches.</p>
+        <div><button class="st-btn st-btn--secondary" id="pf-off-link" type="button">Open Model settings</button></div>
+      </div>
+
+      <div class="pf-cards" id="pf-cards" hidden>
+        <!-- ---- 1. Last request ---- -->
+        <div class="st-card pf-card">
+          <div class="req-head"><span class="card-title">Last request</span><span class="muted small" id="pf-last-note"></span></div>
+          <p class="muted small pf-inflight" id="pf-inflight" hidden></p>
+          <p class="muted" id="pf-last-empty">No request with its breakdown yet. Send one from Chat or any API client; it
+            appears here when it ends.</p>
+          <div class="pf-card" id="pf-last" hidden>
+            <div class="pf-tiles">
+              <div class="pf-tile"><div class="st-metric"><span class="st-metric__label">Decode</span>
+                <span class="st-metric__value" id="pf-decode-tps">–</span><span class="st-metric__sub">tokens per second</span></div></div>
+              <div class="pf-tile"><div class="st-metric"><span class="st-metric__label">Expert cache hit rate</span>
+                <span class="st-metric__value" id="pf-hit">–</span><span class="st-metric__sub" id="pf-pcie">of the experts looked up while decoding</span></div></div>
+              <div class="pf-tile"><div class="st-metric"><span class="st-metric__label">Prompt read</span>
+                <span class="st-metric__value" id="pf-prompt-tps">–</span><span class="st-metric__sub">tokens per second</span></div></div>
+              <div class="pf-tile"><div class="st-metric"><span class="st-metric__label">Decode window</span>
+                <span class="st-metric__value" id="pf-window">–</span><span class="st-metric__sub">ms per window</span></div></div>
+            </div>
+            <h3 class="pf-sub">Prompt read, GPU time by group</h3>
+            <div class="pf-bar" id="pf-prompt-bar" role="img" aria-label="Prompt read, GPU time by group"></div>
+            <div class="pf-legend" id="pf-prompt-legend"></div>
+            <h3 class="pf-sub">Decode window, milliseconds by what the host waited for</h3>
+            <div class="pf-bar" id="pf-decode-bar" role="img" aria-label="Decode window, milliseconds by what the host waited for"></div>
+            <div class="pf-legend" id="pf-decode-legend"></div>
+            <dl class="facts" id="pf-facts"></dl>
+            <p class="muted small" id="pf-kv"></p>
+          </div>
+        </div>
+
+        <!-- ---- 2. Recent requests ---- -->
+        <div class="st-card pf-card">
+          <div class="req-head"><span class="card-title">Recent requests</span>
+            <span class="muted small">the last 50, kept in memory by the server (timings only)</span></div>
+          <p class="muted" id="pf-hist-empty">Nothing yet</p>
+          <div class="pf-card" id="pf-hist" hidden>
+            <div class="pf-sparks">
+              <figure class="pf-fig"><figcaption>Decode tokens per second <span class="pf-max" id="pf-max-tps"></span></figcaption>
+                <svg class="pf-spark" id="pf-spark-tps" viewBox="0 0 100 40" preserveAspectRatio="none" role="img"
+                     aria-label="Decode tokens per second of the recent requests"></svg></figure>
+              <figure class="pf-fig"><figcaption>Expert cache hit rate <span class="pf-max" id="pf-max-hit"></span></figcaption>
+                <svg class="pf-spark" id="pf-spark-hit" viewBox="0 0 100 40" preserveAspectRatio="none" role="img"
+                     aria-label="Expert cache hit rate of the recent requests"></svg></figure>
+              <figure class="pf-fig"><figcaption>Milliseconds per decode window:
+                  <span class="pf-key"><i class="pf-c0"></i>card</span>
+                  <span class="pf-key"><i class="pf-c1"></i>CPU experts</span>
+                  <span class="pf-key"><i class="pf-c5"></i>the rest</span>
+                  <span class="pf-max" id="pf-max-ms"></span></figcaption>
+                <svg class="pf-spark" id="pf-spark-ms" viewBox="0 0 100 40" preserveAspectRatio="none" role="img"
+                     aria-label="Milliseconds per decode window of the recent requests, split into the card, the CPU experts and the rest"></svg></figure>
+            </div>
+            <div class="table-wrap">
+              <table class="st-table pf-table">
+                <thead><tr><th>#</th><th>Time</th><th class="num">Context</th><th class="num">Prompt tok/s</th>
+                  <th class="num">Decode tok/s</th><th class="num">Hit rate</th><th class="num">ms/window</th>
+                  <th class="num">Card ms</th><th class="num">CPU experts ms</th><th>Largest part of the prompt read</th></tr></thead>
+                <tbody id="pf-hist-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- 3. Measured run ---- -->
+        <div class="st-card pf-card">
+          <div class="req-head"><span class="card-title">Measured run</span><span class="muted small" id="pf-run-state">No run yet</span></div>
+          <p class="muted" id="pf-run-help">The run sends three short questions, fresh 2K / 16K / 32K prompts and a six-request
+            agent session through this server (tools/strata_profile.py) and writes the report to bench/results. Other
+            requests queue behind its own while it runs.</p>
+          <p class="muted small" id="pf-run-wait" hidden>About 42-50 s on an RTX 5070 Ti with the model loaded, longer on a
+            slower PC; other requests wait behind the run's own.</p>
+          <div class="pf-actions">
+            <button class="st-btn st-btn--primary" id="pf-run" type="button" disabled>Run the profile</button>
+            <span class="muted small pf-step" id="pf-run-step"></span>
+          </div>
+          <p class="msg-error" id="pf-run-note" hidden></p>
+          <details class="st-collapse" id="pf-run-out" hidden>
+            <summary>Show output<svg class="st-icon st-icon--sm st-chev"><use href="web/sprite.svg#i-chevron"/></svg></summary>
+            <div class="st-collapse__body"><pre class="pf-log" id="pf-run-log"></pre></div>
+          </details>
+          <div class="pf-card" id="pf-report" hidden>
+            <h3 class="pf-sub">Prompt reads</h3>
+            <div class="table-wrap"><table class="st-table pf-table" id="pf-t-prompts"></table></div>
+            <h3 class="pf-sub">Decode windows</h3>
+            <div class="table-wrap"><table class="st-table pf-table" id="pf-t-decode"></table></div>
+            <h3 class="pf-sub">Agent session, turn by turn</h3>
+            <div class="table-wrap"><table class="st-table pf-table" id="pf-t-agent"></table></div>
+            <h3 class="pf-sub">Findings</h3>
+            <ul class="pf-findings" id="pf-findings"></ul>
+            <p class="muted small pf-path"><span id="pf-report-path"></span>
+              <button class="st-btn st-btn--icon" id="pf-report-copy" type="button" aria-label="Copy the report's folder">
+                <svg class="st-icon"><use href="web/sprite.svg#i-copy"/></svg></button></p>
+          </div>
+        </div>
+
+        <!-- ---- 4. Tune this PC ---- -->
+        <div class="st-card pf-card">
+          <div class="req-head"><span class="card-title">Tune this PC</span><span class="muted small" id="pf-tune-state">Not run</span></div>
+          <p class="muted" id="pf-tune-help">Setup's calibration measures the PCIe share of the missed experts, the draft
+            floor, the CPU workers and the adaptive expert tier on this PC and writes the winners into the run config.
+            Setup's own estimate is 15-30 minutes, longer on a slow card; the model is unloaded meanwhile and requests
+            get 503 until it ends. The model loads again with the tuned settings on the next request.</p>
+          <div class="pf-warn" id="pf-tune-warn" role="status" hidden>The model is unloaded: requests get 503 until the
+            tuning ends. Model settings cannot be saved meanwhile.</div>
+          <div class="pf-actions">
+            <button class="st-btn st-btn--secondary" id="pf-tune" type="button" disabled>Tune this PC</button>
+            <span class="muted small pf-step" id="pf-tune-step"></span>
+          </div>
+          <p class="msg-error" id="pf-tune-failed" hidden>The tuning failed; the run config and the settings stay as they were.</p>
+          <details class="st-collapse" id="pf-tune-out" hidden>
+            <summary>Show output<svg class="st-icon st-icon--sm st-chev"><use href="web/sprite.svg#i-chevron"/></svg></summary>
+            <div class="st-collapse__body"><pre class="pf-log" id="pf-tune-log"></pre></div>
+          </details>
+          <div class="pf-card" id="pf-tune-result" hidden>
+            <p id="pf-tune-kept" hidden></p>
+            <div class="table-wrap" id="pf-tune-table-wrap"><table class="st-table pf-table" id="pf-t-tune"></table></div>
+            <p id="pf-tune-toks"></p>
+            <p class="muted" id="pf-tune-note"></p>
+            <p class="muted">The model loads again on the next request: the first one waits for the load.</p>
+          </div>
+        </div>
+
+        <!-- ---- 5. Settings that matter for speed ---- -->
+        <div class="st-card pf-card">
+          <div class="req-head"><span class="card-title">Settings that matter for speed</span>
+            <span class="muted small" id="pf-settings-file"></span></div>
+          <div class="table-wrap">
+            <table class="st-table pf-table pf-settings">
+              <thead><tr><th>Setting</th><th>Loaded now</th><th>Next load</th><th>What the profile said</th><th>Change</th></tr></thead>
+              <tbody id="pf-settings-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <p class="muted small pf-foot">The engine runs with its timing switches while <code>profile</code> is on: an
+          8K-token prompt read measured 3.9-4.7% slower on an RTX 5070 Ti (Swift 1.5 IQ3_S), decode moved within its
+          noise. Speeds on this tab were measured with the switches on; quote speeds from tools/strata_bench.py. Turn
+          <code>profile</code> off in <button class="pf-link" id="pf-profile-link" type="button">Model settings</button>
+          when you are done. <span id="pf-updated"></span></p>
       </div>
     </div>
   </section>

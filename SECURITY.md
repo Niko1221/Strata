@@ -40,9 +40,9 @@ this PC only. The details and every setting are in [docs/DETAILS.md](docs/DETAIL
   that ask for them. They run with your user's rights, and the model decides when to call them.
 - **The request monitor** (`/api-monitor`, which keeps the last prompts and answers in memory) is off unless
   `"api_monitor": true` is set.
-- **The Profile page** (`/profile`, which can start a measured run that keeps the model busy for a minute or more,
-  and a tuning run that unloads the model for the time setup's calibration takes and writes the winners into the
-  run config) is off
-  unless `"profile": true` is set; both runs start only from Strata's own page.
+- **The Profile tab** (`#profile` in the web app; `/profile` redirects there), which can start a measured run that
+  keeps the model busy for a minute or more, and a tuning run that unloads the model for the time setup's calibration
+  takes and writes the winners into the run config, is off unless `"profile": true` is set; both runs start only from
+  Strata's own page. The tab keeps the timings of the last 50 requests in memory, without prompts or answers.
 
 Strata has not had an outside security audit yet.

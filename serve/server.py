@@ -2797,7 +2797,7 @@ def child_env(cfg: dict) -> dict:
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in ordered_gpus(cfg))
     for k, v in (cfg.get("env") or {}).items():      # engine settings the config carries (AMD: the GEMM tuning table)
         env[str(k)] = str(v)
-    if cfg.get("profile") is True:                   # the Profile page: every request writes its breakdown to the log
+    if cfg.get("profile") is True:                   # the Profile tab: every request writes its breakdown to the log
         env = profile_page.timing_env(env)
     dirs = [d for d in cfg.get("lib_dirs") or [] if Path(d).is_dir()]
     if dirs:
@@ -3071,9 +3071,10 @@ class Service:
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
-        # the Profile page (/profile, serve/profile.py): off unless the config's "profile" (or --profile) turns it on
+        # the Profile tab (#profile, serve/profile_page.py): off unless the config's "profile" (or --profile) turns it on
         self.profile = None                             # a profile_page.ProfileRun when on
         self.profile_last = profile_page.LastRequest()
+        self.profile_history = profile_page.ProfileHistory()   # reads nothing until profile is on and /metrics or the route asks
         self.tune = None                                # a profile_page.TuneRun when on and a run config is known
         self.tune_unavailable = None                    # why not (no run config, replicas, a HIP build), for the page
         self.tuning = False                             # a tuning run is going: the engine is not loaded meanwhile
@@ -3327,8 +3328,8 @@ class Service:
         the free-VRAM check.  The caller holds self.fifo."""
         if self.loaded() and not self._vision_down():
             return
-        if self.tuning:                                 # the Profile page's calibration runs its own engines on the card
-            raise GpuBusy("a tuning run is going (the Profile page): the model loads again when it ends", retry_after=60)
+        if self.tuning:                                 # the Profile tab's calibration runs its own engines on the card
+            raise GpuBusy("a tuning run is going (the Profile tab): the model loads again when it ends", retry_after=60)
         hook_failed = None
         if self.before_load:
             cmd = self.before_load
@@ -3655,7 +3656,7 @@ class Service:
                     for r in reversed(records)]
 
     def apply_tuned_config(self) -> str:
-        """After a tuning run from the Profile page: the calibrated flags the run wrote into the run config go into the
+        """After a tuning run from the Profile tab: the calibrated flags the run wrote into the run config go into the
         engine's start command, so the next load (the next request) runs with them.  Returns the note the page shows."""
         with self.config_lock:
             cfg = runconfig.load(self.config_path)
@@ -3670,6 +3671,8 @@ class Service:
 
     def tuning_ended(self):
         self.tuning = False
+        if self.profile is not None:                    # the calibration's engines wrote their requests to the same log: not the user's
+            self.profile_history.skip_to_end(getattr(self.engine, "log_path", None))
 
     def metrics(self, all_requests=False) -> dict:
         """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, and
@@ -3719,6 +3722,8 @@ class Service:
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
+        if self.profile is not None and not self.tuning:   # the Profile tab's history: the log's new lines, as the requests end
+            self.profile_history.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
@@ -5356,7 +5361,7 @@ def make_handler(svc: Service):
                     self._json(200, svc.mcp.status() if svc.mcp else {"servers": [], "tools": 0})
                 return
             if path == "/profile/last" and svc.profile is not None:
-                # the last finished request's breakdown, from the engine log's tail (serve/profile.py)
+                # the last finished request's breakdown, from the engine log's tail (serve/profile_page.py)
                 if self._authorized():
                     last = svc.profile_last.read(getattr(svc.engine, "log_path", None), getattr(svc.engine, "log_start", None))
                     self._json(200, {"request": last, "log": bool(getattr(svc.engine, "log_path", None)),
@@ -5368,19 +5373,49 @@ def make_handler(svc: Service):
                     self._json(200, {**svc.profile.status(), "tune": svc.tune.status() if svc.tune is not None else None,
                                      "tune_unavailable": svc.tune_unavailable})
                 return
-            if path == "" or (path == "/api-monitor" and svc.api_monitor) or (path == "/profile" and svc.profile is not None):
-                body = (ROOT / "serve" / "web" / ("profile.html" if path == "/profile" else "monitor.html" if path else
-                                                  "index.html")).read_bytes()
+            if path == "/profile/history" and svc.profile is not None:
+                # the last 50 requests' breakdowns (timings only), read from the engine log's new lines
+                if self._authorized():
+                    if svc.tuning:                      # the calibration's own requests are not the history
+                        self._json(200, svc.profile_history.snapshot())
+                    else:
+                        self._json(200, svc.profile_history.read(getattr(svc.engine, "log_path", None),
+                                                                 getattr(svc.engine, "log_start", None)))
+                return
+            if path == "/profile/settings" and svc.profile is not None:
+                if self._authorized():
+                    cfg = None
+                    if svc.config_path:
+                        try:
+                            with svc.config_lock:
+                                cfg = runconfig.load(svc.config_path)
+                        except (OSError, ValueError):
+                            cfg = None
+                    self._json(200, profile_page.speed_settings(svc.engine, svc.loaded(), cfg, svc.config_path))
+                return
+            if path == "/profile" and svc.profile is not None:
+                # the page became the web app's Profile tab; relative, so it works behind a path-prefixed proxy
+                here = self.path.split("?")[0].endswith("/")
+                self.send_response(302)
+                self.send_header("Location", "../#profile" if here else "./#profile")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if path == "" or (path == "/api-monitor" and svc.api_monitor):
+                body = (ROOT / "serve" / "web" / ("monitor.html" if path else "index.html")).read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
             elif path in ("/health", "/api/health"):
-                self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
-                                 "images": svc.vision is not None, "api_key": bool(svc.api_key),
-                                 "image_generation": svc.images is not None,
-                                 "loaded": svc.loaded(), "service": "strata"})
+                health = {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
+                          "images": svc.vision is not None, "api_key": bool(svc.api_key),
+                          "image_generation": svc.images is not None,
+                          "loaded": svc.loaded(), "service": "strata"}
+                if svc.profile is not None:                 # the web app shows its Profile tab; absent when it is off
+                    health["profile"] = True
+                self._json(200, health)
             elif path.startswith("/v1/images/files/"):
                 # response_format url: the name (32 random hex digits) is the access, as an OpenAI image URL is
                 f = svc.images.file(path[len("/v1/images/files/"):]) if svc.images is not None else None
@@ -5509,6 +5544,15 @@ def make_handler(svc: Service):
                         self._json(409, {"status": "running", "error": {"message": "a tuning or profile run is still going"}})
                         return
                     svc.tuning = True                    # from here no request loads the engine (ensure_loaded)
+                    try:                                  # what the flags are now, before the unload takes the engine's report
+                        try:
+                            with svc.config_lock:
+                                before_cfg = runconfig.load(svc.config_path)
+                        except (OSError, ValueError, TypeError):
+                            before_cfg = {}
+                        svc.tune.before = profile_page.tune_snapshot(before_cfg, dict(getattr(svc.engine, "info", None) or {}))
+                    except Exception:                    # noqa: BLE001 - only the before column is lost; svc.tuning must not stay set
+                        svc.tune.before = None
                     try:
                         r = svc.unload()
                     except EngineStuck as e:
@@ -6749,8 +6793,8 @@ def main() -> int:
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
     ap.add_argument("--profile", action="store_true",
-                    help="the Profile page at /profile: the engine starts with its timing switches and every request's "
-                         "breakdown is shown; a run of tools/strata_profile.py from the page (also \"profile\": true "
+                    help="the web app's Profile tab: the engine starts with its timing switches and every request's "
+                         "breakdown is shown; a run of tools/strata_profile.py from the tab (also \"profile\": true "
                          "in the config; off by default)")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
@@ -6947,7 +6991,7 @@ def main() -> int:
             svc.tune = profile_page.TuneRun(config_path=str(Path(a.config).resolve()), on_done=svc.apply_tuned_config,
                                             on_end=svc.tuning_ended)
         if a.engine == "strata":
-            print("[strata] Profile page on (/profile): the engine runs with STRATA_PREFILL_TIMING and STRATA_DECODE_TIMING, "
+            print("[strata] Profile tab on (#profile): the engine runs with STRATA_PREFILL_TIMING and STRATA_DECODE_TIMING, "
                   "every request's breakdown is in its log", flush=True)
     svc.api_monitor = a.api_monitor or cfg.get("api_monitor") is True
     if svc.api_monitor:

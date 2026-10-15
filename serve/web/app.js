@@ -1,4 +1,4 @@
-// serve/web/app.js - the Strata web app: Chat, Monitor, About. No framework, no network beyond this server.
+// serve/web/app.js - the Strata web app: Chat, Monitor, About (and Profile, opt-in). No framework, no network beyond this server.
 // The Monitor tab rebuilds PR #22's dashboard idea (code-martin) on the server's own /metrics.
 "use strict";
 
@@ -73,14 +73,15 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
 
 let tab = "chat";
 function showTab(name) {
-  tab = ["chat", "images", "monitor", "about"].includes(name) ? name : "chat";
+  tab = ["chat", "images", "monitor", "about", "profile"].includes(name) ? name : "chat";
   for (const b of document.querySelectorAll(".st-tab")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const v of ["chat", "images", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
+  for (const v of ["chat", "images", "monitor", "about", "profile"]) $(`view-${v}`).hidden = v !== tab;
   if (tab === "images") $("img-prompt").focus();
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
   if (tab === "monitor") loadMcp();
   if (tab === "about") loadConfig();
+  if (tab === "profile") profileShown();
   if (lastMetrics) render(lastMetrics);
 }
 for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(b.dataset.tab);
@@ -95,9 +96,13 @@ function headers(json = false) {
   return h;
 }
 $("api-key").value = store.get("apikey", "");
-$("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", "API key saved", "Kept in this browser only."); };
+$("api-key").onchange = () => {
+  store.set("apikey", $("api-key").value.trim());
+  toast("success", "API key saved", "Kept in this browser only.");
+  profileRefresh();
+};
 
-let health = {model: "strata", images: false, max_context: 0};
+let health = {model: "strata", images: false, max_context: 0}, healthKnown = false;
 async function loadHealth() {
   try {
     health = await (await fetch("health")).json();
@@ -106,6 +111,10 @@ async function loadHealth() {
     $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
     $("tab-btn-images").hidden = !health.image_generation;
     if (location.hash === "#images" && health.image_generation) showTab("images");
+    healthKnown = true;
+    $("tab-btn-profile").hidden = !health.profile;           // the key is there only when "profile" is on
+    if (location.hash === "#profile" && health.profile) showTab("profile");
+    else if (tab === "profile") profileShown();              // off: its card says how to turn it on
   } catch (e) {
     setTimeout(loadHealth, 2000);
   }
@@ -196,6 +205,7 @@ function render(m) {
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
   if (tab === "about") renderAbout(eng, hw, st);
+  if (tab === "profile") renderInflight(live);
 }
 
 // #596: the conversation cache - the prompt's state the engine keeps between requests (always), and the whole
@@ -440,10 +450,16 @@ function renderMcp() {
 // ------------------------------------------------------------------ Model settings (GET / POST /config, #564)
 // A few documented keys of the run config (strata-<model>.json), for every client, from the next start on.  The
 // server lists them, checks every value and keeps every other key of the file as it is.
-let cfgKeys = [];
-async function loadConfig() {
+let cfgKeys = [], cfgLoad = null, cfgStatus = 0;           // cfgStatus: what the last GET /config answered (0: no answer)
+function loadConfig() {                                     // one load at a time: openModelSetting() waits for the one showTab started
+  if (!cfgLoad) cfgLoad = loadConfigNow().finally(() => { cfgLoad = null; });
+  return cfgLoad;
+}
+async function loadConfigNow() {
   let r;
+  cfgStatus = 0;
   try { r = await fetch("config", {headers: headers()}); } catch (e) { return; }
+  cfgStatus = r.status;
   if (!r.ok) { $("cfg-card").hidden = true; return; }       // no run config, an older server, or no key yet
   const c = await r.json();
   cfgKeys = c.keys || [];
@@ -454,11 +470,11 @@ async function loadConfig() {
     if (k.kind === "bool" || k.kind === "enum") {
       const opts = k.kind === "bool" ? [["true", "on"], ["false", "off"]] : k.choices.map((x) => [x, x]);
       const cur = v == null ? "" : String(v);
-      input = `<select class="st-input" id="${id}"><option value=""${cur === "" ? " selected" : ""}>default</option>` +
+      input = `<select class="st-input" id="${id}" data-key="${esc(k.key)}"><option value=""${cur === "" ? " selected" : ""}>default</option>` +
         opts.map(([val, text]) => `<option value="${esc(val)}"${cur === val ? " selected" : ""}>${esc(text)}</option>`).join("") + `</select>`;
     } else {
       const text = v == null ? "" : Array.isArray(v) ? v.join(", ") : String(v);
-      input = `<input class="st-input" id="${id}" ${k.kind === "number" ? 'type="number" step="any" min="0"' : 'type="text"'} ` +
+      input = `<input class="st-input" id="${id}" data-key="${esc(k.key)}" ${k.kind === "number" ? 'type="number" step="any" min="0"' : 'type="text"'} ` +
         `value="${esc(text)}" placeholder="default" autocomplete="off">`;
     }
     return `<label for="${id}" title="${esc(k.help)}">${esc(k.help)}<code>${esc(k.key)}</code></label>${input}`;
@@ -492,6 +508,516 @@ $("cfg-save").addEventListener("click", async () => {
     toast("error", "Not saved", String(e.message || e), 6000);
   }
 });
+
+// ------------------------------------------------------------------ Profile (GET /profile/*)
+// The Profile tab, shown when /health says "profile": true (the run config's "profile" key): the last request's
+// breakdown, the last 50, a measured run of tools/strata_profile.py, setup's calibration and the speed settings.
+// Everything the server sends goes into the page as text (textContent, setAttribute with numbers, createElementNS).
+const PROMPT_GROUPS = ["experts over PCIe", "dequant", "expert GEMM", "attention", "GDN", "other"];
+const DECODE_GROUPS = ["GPU", "CPU experts", "draft", "adapt wait", "other"];
+const SVG_NS = "http://www.w3.org/2000/svg";
+const pf = {timer: null, busy: false, again: false, keyGen: 0, ticks: 0, stamps: {}, key401: false, down: false, status: null,
+            settings: null, settingsDue: true, seen: {run: false, tune: false}, unloaded: null, runState: null, tuneState: null};
+
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+};
+const pct = (x) => (typeof x === "number" ? `${Math.round(x * 100)}%` : "–");
+const msfmt = (s) => {                                       // 681 -> "11 min 21 s"
+  const t = Math.max(0, Math.round(s || 0)), m = Math.floor(t / 60);
+  return m ? `${m} min ${t % 60} s` : `${t} s`;
+};
+function pfText(id, value) { const e = $(id), v = String(value); if (e.textContent !== v) e.textContent = v; }
+function logText(pre, lines) {
+  const v = lines.join("\n");
+  if (pre.textContent !== v) { pre.textContent = v; pre.scrollTop = pre.scrollHeight; }
+}
+
+async function pget(path) {
+  const r = await fetch(path, {headers: headers(), cache: "no-store"});
+  if (!r.ok) throw {status: r.status};
+  return r.json();
+}
+function ppost(path) {
+  return fetch(path, {method: "POST", headers: headers(true), body: "{}"});
+}
+async function pstart(path) {                                // POST a run; an error answer becomes the Error's message
+  const r = await ppost(path);
+  let b = {};
+  try { b = await r.json(); } catch (e) { /* no body */ }
+  if (!r.ok) throw new Error((b.error && b.error.message) || `HTTP ${r.status}`);
+}
+
+// a stacked bar with its legend: values[name] in `unit` ("%": shares of 1, or "ms"); colour never carries a number alone
+function stackBar(barId, legendId, names, values, unit) {
+  const bar = $(barId), legend = $(legendId);
+  bar.replaceChildren();
+  legend.replaceChildren();
+  const total = names.reduce((s, n) => s + (values[n] || 0), 0) || 1;
+  names.forEach((name, i) => {
+    const v = values[name] || 0, shown = unit === "%" ? pct(v) : `${fmt(v, 1)} ms`;
+    const seg = el("span", `pf-c${i}`);
+    seg.style.width = `${(v / total) * 100}%`;
+    seg.title = `${name}: ${shown}`;
+    bar.append(seg);
+    const item = el("span");
+    item.append(el("i", `pf-c${i}`), `${name} ${shown}`);
+    legend.append(item);
+  });
+}
+function table(tbl, header, rows) {
+  const t = typeof tbl === "string" ? $(tbl) : tbl;
+  t.replaceChildren();
+  const head = el("tr"), thead = el("thead");
+  header.forEach((h, i) => head.append(el("th", i ? "num" : "", h)));
+  thead.append(head);
+  t.append(thead);
+  const body = el("tbody");
+  rows.forEach((row) => {
+    const tr = el("tr");
+    row.forEach((c, i) => tr.append(el("td", i ? "num" : "", c)));
+    body.append(tr);
+  });
+  t.append(body);
+}
+// one bar per request, oldest left; value(e) is a number, an array (stacked, bottom first) or null; a dashed line
+// marks each time the engine started again
+function sparkBars(svgId, entries, value, label, classes) {
+  const svg = $(svgId);
+  svg.replaceChildren();
+  const w = 100 / Math.max(entries.length, 10);
+  const parts = entries.map((e) => { const v = value(e); return v == null ? null : Array.isArray(v) ? v : [v]; });
+  const highest = Math.max(0, ...parts.map((p) => (p ? p.reduce((a, b) => a + b, 0) : 0)));
+  const top = highest || 1;
+  entries.forEach((e, i) => {
+    if (i && e.engine_run !== entries[i - 1].engine_run) {
+      const mark = document.createElementNS(SVG_NS, "line");
+      mark.setAttribute("class", "pf-mark");
+      for (const [k, v] of [["x1", i * w], ["x2", i * w], ["y1", 0], ["y2", 40]]) mark.setAttribute(k, v.toFixed(2));
+      const t = document.createElementNS(SVG_NS, "title");
+      t.textContent = "The model loaded again here";
+      mark.append(t);
+      svg.append(mark);
+    }
+    let y = 40;
+    (parts[i] || []).forEach((v, k) => {
+      const h = (v / top) * 38;
+      if (!(h > 0)) return;
+      y -= h;
+      const rect = document.createElementNS(SVG_NS, "rect");
+      rect.setAttribute("class", classes[k]);
+      for (const [a, b] of [["x", i * w + w * 0.1], ["width", w * 0.8], ["y", y], ["height", h]]) rect.setAttribute(a, b.toFixed(2));
+      const t = document.createElementNS(SVG_NS, "title");
+      t.textContent = label(e);
+      rect.append(t);
+      svg.append(rect);
+    });
+  });
+  return highest;
+}
+
+// ---- Last request
+function renderLast(data) {
+  const r = data.request;
+  $("pf-last-empty").hidden = Boolean(r);
+  $("pf-last").hidden = !r;
+  if (!r) {
+    pfText("pf-last-empty", data.log === false
+      ? 'The engine writes no log file (no "log" in the run config), so there is nothing to read.'
+      : "No request with its breakdown yet. Send one from Chat or any API client; it appears here when it ends.");
+    pfText("pf-last-note", "");
+    return;
+  }
+  const p = r.prompt, d = r.decode, h = r.hit;
+  pfText("pf-decode-tps", fmt(d.tok_s, 1));
+  pfText("pf-hit", pct(h && h.hit_rate));
+  pfText("pf-pcie", h && h.pcie_share ? `plus ${pct(h.pcie_share)} of all routed experts read by the card over PCIe`
+                                      : "of the experts looked up while decoding");
+  pfText("pf-prompt-tps", p.tok_s ? fmt(p.tok_s) : "–");
+  pfText("pf-window", d.groups ? fmt(d.groups.ms_per_window, 1) : "–");
+  pfText("pf-last-note", `prompt ${fmt(p.tokens)} tokens · ${fmt(d.generated)} generated`);
+  if (p.groups) {
+    stackBar("pf-prompt-bar", "pf-prompt-legend", PROMPT_GROUPS, p.groups.share, "%");
+  } else {
+    $("pf-prompt-bar").replaceChildren();
+    pfText("pf-prompt-legend", p.read ? "No prefill timing line for this request." : "Nothing was read: the whole prompt was reused.");
+  }
+  if (d.groups) {
+    stackBar("pf-decode-bar", "pf-decode-legend", DECODE_GROUPS, d.groups.ms, "ms");
+  } else {
+    $("pf-decode-bar").replaceChildren();
+    pfText("pf-decode-legend", "No decode timing line for this request.");
+  }
+  const g = d.groups;
+  const dl = $("pf-facts");
+  dl.replaceChildren();
+  for (const [k, v] of [
+    ["Prompt tokens", fmt(p.tokens)],
+    ["Reused / read", `${fmt(p.reused)} / ${fmt(p.read)}`],
+    ["Generated", fmt(d.generated)],
+    ["Tokens per window", g ? fmt(g.tokens_per_window, 2) : "–"],
+    ["CPU experts per layer-window", g && typeof g.cpu_experts === "number" ? `${fmt(g.cpu_experts, 1)} (${fmt(g.cpu_entries, 1)} entries)` : "–"],
+    ["Drafts accepted", d.drafts_offered ? `${fmt(d.drafts_accepted)} of ${fmt(d.drafts_offered)}` : "–"],
+  ]) dl.append(el("dt", "", k), el("dd", "", v));
+  pfText("pf-kv", r.kv ? `KV streaming: ${pct(r.kv.kv_hit)} of this request's ${fmt(r.kv.block_reads)} block reads from VRAM, ${fmt(r.kv.ram_mib)} MiB from RAM` : "");
+}
+// the request that is running now, from the 1 s /metrics poll (the same text as the header pill)
+function renderInflight(live) {
+  if (!live || !health.profile) return;
+  const busy = live.state === "reading" || live.state === "generating";
+  $("pf-inflight").hidden = !busy;
+  if (busy) pfText("pf-inflight", `A request is running (${$("pill-text").textContent}); its breakdown appears when it ends`);
+  const unloaded = live.state === "unloaded";
+  if (pf.unloaded !== null && pf.unloaded !== unloaded) pf.settingsDue = true;   // loaded or unloaded: the settings it reports change
+  pf.unloaded = unloaded;
+}
+
+// ---- Recent requests
+function renderHistory(h) {
+  const rows = h.requests || [];
+  $("pf-hist-empty").hidden = rows.length > 0;
+  $("pf-hist").hidden = rows.length === 0;
+  if (!rows.length) return;
+  const what = (e, text) => `#${e.n} · ${fmt(e.prompt_tokens)} tokens of context · ${text}`;
+  const tps = sparkBars("pf-spark-tps", rows, (e) => e.decode_tok_s, (e) => what(e, `${fmt(e.decode_tok_s, 1)} tok/s`), ["pf-c2"]);
+  const hit = sparkBars("pf-spark-hit", rows, (e) => e.hit_rate, (e) => what(e, `hit rate ${pct(e.hit_rate)}`), ["pf-c0"]);
+  pfText("pf-max-tps", tps ? `highest ${fmt(tps, 1)}` : "");     // the bars start at zero: this is the scale
+  pfText("pf-max-hit", hit ? `highest ${pct(hit)}` : "");
+  const ms = sparkBars("pf-spark-ms", rows, (e) => {
+    if (!e.ms) return null;
+    const card = e.ms.GPU || 0, cpu = e.ms["CPU experts"] || 0;
+    return [card, cpu, Math.max(0, (e.ms_per_window || 0) - card - cpu)];
+  }, (e) => what(e, `${fmt(e.ms_per_window, 1)} ms per window (card ${fmt(e.ms && e.ms.GPU, 1)}, CPU experts ${fmt(e.ms && e.ms["CPU experts"], 1)})`),
+  ["pf-c0", "pf-c1", "pf-c5"]);
+  pfText("pf-max-ms", ms ? `highest ${fmt(ms, 1)} ms` : "");
+  const body = $("pf-hist-body");
+  body.replaceChildren();
+  rows.slice().reverse().forEach((e) => {
+    const i = rows.indexOf(e), again = i > 0 && e.engine_run !== rows[i - 1].engine_run;
+    const t = new Date(e.seen_at * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+    const tr = el("tr");
+    const cells = [`${e.n}`, again ? `${t} · model loaded again` : t, ctxfmt(e.prompt_tokens), fmt(e.prompt_tok_s), fmt(e.decode_tok_s, 1),
+                   pct(e.hit_rate), fmt(e.ms_per_window, 1), fmt(e.ms && e.ms.GPU, 1), fmt(e.ms && e.ms["CPU experts"], 1), e.prompt_top || "–"];
+    cells.forEach((c, k) => tr.append(el("td", k > 1 && k < 9 ? "num" : "", c)));
+    body.append(tr);
+  });
+}
+
+// ---- Measured run
+const RUN_LABEL = {idle: () => "No run yet", running: (s) => `Running · ${msfmt(s.elapsed_s)}`,
+                   done: (s) => `Done in ${msfmt(s.elapsed_s)}`, failed: (s) => `Failed (exit ${s.returncode})`};
+function setOutput(detailsId, logId, lines, state) {          // closed while it runs and when it is done, open when it failed
+  const out = $(detailsId);
+  out.hidden = !lines.length;
+  logText($(logId), lines);
+  return state;
+}
+function renderRun(st) {                                      // the state, the newest line and the output: every tick while it runs
+  pfText("pf-run-state", (RUN_LABEL[st.state] || (() => st.state))(st));
+  $("pf-run-help").hidden = st.state !== "idle";
+  $("pf-run-wait").hidden = st.state !== "running";
+  pfText("pf-run-step", st.state === "running" && st.lines.length ? st.lines[st.lines.length - 1] : "");
+  setOutput("pf-run-out", "pf-run-log", st.lines, st.state);
+  if (pf.runState !== st.state) { pf.runState = st.state; $("pf-run-out").open = st.state === "failed"; }
+}
+function renderRunReport(st) {                                // the tables and findings: only when the run's state or report changed
+  const rep = st.report, res = rep && rep.results && rep.results.results;
+  const note = $("pf-run-note");
+  note.hidden = !(st.state === "failed" || (rep && !res && st.state !== "running"));
+  if (st.state === "failed") pfText("pf-run-note", "The run failed; nothing was changed. Its output says why." +
+    (rep && !res ? " The report folder could not be read." : ""));
+  else if (rep && !res) pfText("pf-run-note", "The report was written but its files could not be read.");
+  $("pf-report").hidden = !(res && st.state === "done");
+  pf.report = res && st.state === "done" ? rep : null;
+  if (pf.settings) renderSettings(pf.settings);               // "what the profile said" follows the report
+  if (!pf.report) return;
+  table("pf-t-prompts", ["Read", "Tokens", "Prompt tok/s", "GPU ms", ...PROMPT_GROUPS],
+        Object.entries(res.prompts || {}).map(([k, v]) => [k, fmt(v.prompt_tokens), fmt(v.summary && v.summary.prompt_tok_s != null ? v.summary.prompt_tok_s : v.prompt_tps),
+                                                           v.groups ? fmt(v.groups.gpu_ms) : "–", ...PROMPT_GROUPS.map((g) => (v.groups ? pct(v.groups.share[g]) : "–"))]));
+  table("pf-t-decode", ["Request", "Context", "Decode tok/s", "Hit rate", "PCIe share", "ms/window", ...DECODE_GROUPS, "Tokens/window", "CPU experts per layer-window"],
+        Object.entries(res.decode || {}).map(([k, v]) => [k, ctxfmt(v.context), fmt(v.decode_tps && v.decode_tps.median, 1), pct(v.hit && v.hit.hit_rate), pct(v.hit && v.hit.pcie_share),
+                                                           v.groups ? fmt(v.groups.ms_per_window, 1) : "–", ...DECODE_GROUPS.map((g) => (v.groups ? fmt(v.groups.ms[g], 1) : "–")),
+                                                           v.groups ? fmt(v.groups.tokens_per_window, 2) : "–", v.groups ? fmt(v.groups.cpu_experts, 1) : "–"]));
+  const turns = (res.agent && res.agent.turns) || [];
+  table("pf-t-agent", ["Turn", "Prompt tokens", "Reused", "Read", "Prompt tok/s", "Decode tok/s", "Hit rate", "ms/window", "Card ms", "CPU experts ms"],
+        turns.map((t) => [t.turn, fmt(t.prompt_tokens), fmt(t.reused_tokens), fmt(t.read_tokens), fmt(t.prompt_tps), fmt(t.decode_tps), pct(t.hit && t.hit.hit_rate),
+                          t.groups ? fmt(t.groups.ms_per_window, 1) : "–", t.groups ? fmt(t.groups.ms.GPU, 1) : "–", t.groups ? fmt(t.groups.ms["CPU experts"], 1) : "–"]));
+  const shown = String(rep.path).match(/(bench[\\/]results[\\/].*)$/);
+  pfText("pf-report-path", `Report: ${shown ? shown[1] : rep.path} (README.md, results.json)`);
+  $("pf-report-copy").onclick = () => copyText(String(rep.path), $("pf-report-copy"));
+  if (!pf.settings) renderFindings();
+}
+// each finding is a sentence and one chip per setting it names, with the value loaded now and at the next load
+function renderFindings() {
+  const ul = $("pf-findings");
+  ul.replaceChildren();
+  const byId = {};
+  for (const row of (pf.settings && pf.settings.settings) || []) byId[row.id] = row;
+  for (const f of (pf.report && pf.report.findings) || []) {
+    const li = el("li", "", f.text);
+    if (f.settings.length) {
+      const chips = el("div", "pf-chips");
+      for (const id of f.settings) {
+        const row = byId[id];
+        const next = row && settingValue(row, row.next_load, "default");
+        const b = el("button", "chip pf-chip", !row ? id : row.loaded_now == null ? `${row.name}: ${next} at the next load`
+                     : `${row.name} ${settingValue(row, row.loaded_now, "—")} loaded · ${next} next load`);
+        b.type = "button";
+        b.onclick = () => {
+          const tr = $(`pf-set-${id}`);
+          if (tr) { tr.scrollIntoView({block: "center"}); tr.classList.add("pf-flash"); setTimeout(() => tr.classList.remove("pf-flash"), 1500); }
+        };
+        chips.append(b);
+      }
+      li.append(chips);
+    }
+    ul.append(li);
+  }
+}
+
+// ---- Tune this PC
+function renderTune(t, why) {                                 // the state, the newest line and the output: every tick while it runs
+  const states = {idle: "Not run", running: t && `Running · ${msfmt(t.elapsed_s)}`, done: t && `Done in ${msfmt(t.elapsed_s)}`,
+                  failed: t && `Failed (exit ${t.returncode})`};
+  pfText("pf-tune-state", t ? states[t.state] || t.state : why || "Not available");
+  $("pf-tune-help").hidden = !(!t || t.state === "idle");
+  $("pf-tune-warn").hidden = !t || t.state !== "running";
+  $("pf-tune-failed").hidden = !t || t.state !== "failed";
+  pfText("pf-tune-step", t && t.state === "running" && t.lines.length ? t.lines[t.lines.length - 1] : "");
+  setOutput("pf-tune-out", "pf-tune-log", t ? t.lines : [], t && t.state);
+  if (t && pf.tuneState !== t.state) { pf.tuneState = t.state; $("pf-tune-out").open = t.state === "failed"; }
+}
+function renderTuneResult(t) {                                // the before and after: only when the tuning's state or report changed
+  const done = !!t && t.state === "done";
+  $("pf-tune-result").hidden = !done;
+  if (!done) return;
+  const rep = t.report;
+  const changes = (rep && rep.changes) || [];
+  const anyChanged = changes.some((c) => c.changed);
+  const kept = !!rep && /already the fastest/.test(rep.summary || "");
+  const text = kept && anyChanged ? "The default settings were the fastest here: the values an earlier tuning wrote went back to the defaults."
+    : kept ? "The default settings are already the fastest on this PC; no setting changed."
+    : changes.length && !anyChanged ? "The calibration kept the settings the model started with; no setting changed." : "";
+  $("pf-tune-kept").hidden = !text;
+  pfText("pf-tune-kept", text);
+  $("pf-tune-table-wrap").hidden = !changes.length;
+  table("pf-t-tune", ["Setting", "Before", "After"], changes.map((c) => {
+    const loaded = c.before_loaded != null ? ` (${c.before_loaded})` : "";
+    return [c.flag, c.before == null ? `engine default${loaded}` : c.before,
+            c.after == null ? `engine default${c.changed ? "" : loaded}` : c.after];
+  }));
+  [...$("pf-t-tune").tBodies[0].rows].forEach((tr, i) => tr.classList.toggle("pf-changed", changes[i].changed));
+  pfText("pf-tune-toks", rep && rep.tok_s != null ? `Calibration's measured speed with these: ${fmt(rep.tok_s, 1)} tok/s` : "");
+  $("pf-tune-toks").hidden = !(rep && rep.tok_s != null);
+  pfText("pf-tune-note", t.note || "");
+  $("pf-tune-note").hidden = !t.note;
+}
+
+// ---- Settings that matter for speed
+function settingValue(row, v, fallback) {
+  if (v == null) return fallback;
+  return row.id === "kv_resident" && v === "0" ? "0 (all in VRAM)" : v;
+}
+function linkButton(text, run) {
+  const b = el("button", "pf-link", text);
+  b.type = "button";
+  b.onclick = run;
+  return b;
+}
+// About > Model settings, scrolled to and focused on the input of a run config key
+async function openModelSetting(key) {
+  showTab("about");
+  await loadConfig();
+  for (const input of document.querySelectorAll("#cfg-form [data-key]")) {
+    if (input.dataset.key === key) { input.scrollIntoView({block: "center"}); input.focus(); return; }
+  }
+  const why = cfgStatus === 401 ? "This server needs an API key: add it under About > Settings."
+    : cfgStatus === 404 ? "This server was started without a run config, so there is nothing to change here."
+    : cfgStatus === 0 ? "The server did not answer."
+    : "This setting is not in this server's Model settings list.";
+  toast("info", "Not in Model settings", why, 6000);
+}
+function renderSettings(data) {
+  pf.settings = data;
+  pfText("pf-settings-file", data.file ? `Run config: ${data.file}` : "No run config");
+  const findings = pf.report ? pf.report.findings || [] : null;
+  const body = $("pf-settings-body");
+  body.replaceChildren();
+  for (const row of data.settings || []) {
+    const tr = el("tr");
+    tr.id = `pf-set-${row.id}`;
+    const name = el("td");
+    name.append(el("code", "", row.name));
+    const next = el("td", "", settingValue(row, row.next_load, "default"));
+    if (data.file && row.run_config !== row.next_load) {      // the file and the start command differ: a hand edit, or a flag the server adds itself
+      next.append(el("div", "muted small", `the run config file has ${settingValue(row, row.run_config, "default")}; the server reads it when Strata starts`));
+    }
+    const said = el("td");
+    said.append(el("div", "", row.about));
+    if (findings === null) {
+      said.append(el("div", "muted small", "No run yet"));
+    } else {
+      const named = findings.filter((f) => f.settings.includes(row.id));
+      if (!named.length) {
+        said.append(el("div", "muted small", "Not named by the last run"));
+      } else {
+        const d = el("details", "st-collapse pf-named");
+        d.append(el("summary", "", `Named by the last run in ${named.length} finding${named.length > 1 ? "s" : ""}`));
+        const inner = el("div", "st-collapse__body");
+        named.forEach((f) => inner.append(el("p", "", f.text)));
+        d.append(inner);
+        said.append(d);
+      }
+    }
+    const change = el("td");
+    if (row.edit === "about") change.append(linkButton("Model settings", () => openModelSetting(row.id)));
+    else if (row.calibrated) change.append(linkButton("Tune this PC", () => { $("pf-tune").scrollIntoView({block: "center"}); $("pf-tune").focus(); }));
+    else change.append(el("span", "muted small", row.kind === "env" ? "In the run config's env (setup writes it)"
+                         : row.kind === "key" ? "A key of the run config" : "In the run config's args (setup writes it)"));
+    tr.append(name, el("td", "", settingValue(row, row.loaded_now, "—")), next, said, change);
+    body.append(tr);
+  }
+  renderFindings();
+}
+
+// ---- the poll: one timer; every 2 s while the tab is shown, every 10 s for a run seen running, else nothing
+function setNotice(kind, text) {
+  $("pf-notice").hidden = !kind;
+  $("pf-notice-btn").hidden = kind !== "key";
+  if (kind === "key") pfText("pf-notice-text", "This server needs an API key: add it under About > Settings");
+  if (kind === "down") pfText("pf-notice-text", "Server not reachable · retrying");
+  if (kind === "answered") pfText("pf-notice-text", `${text} · retrying`);
+}
+function syncButtons() {
+  const st = pf.status, tune = st && st.tune;
+  const running = !!st && (st.state === "running" || (!!tune && tune.state === "running"));
+  const blocked = pf.down || pf.key401 || !st || running;
+  $("pf-run").disabled = blocked;
+  $("pf-tune").disabled = blocked || !tune;
+}
+function stamped(key, data, render) {
+  const s = JSON.stringify(data);
+  if (pf.stamps[key] !== s) { pf.stamps[key] = s; render(data); }
+}
+function finished(kind, state) {
+  if (state !== "done" && state !== "failed") return;
+  const ok = state === "done", here = tab === "profile" && !document.hidden;
+  const title = kind === "tune" ? (ok ? "Tuning done" : "Tuning failed") : (ok ? "Profile run done" : "Profile run failed");
+  if (here && !(kind === "tune" && ok)) return;                 // the state on the page says it; a finished tuning also toasts
+  toast(ok ? "success" : "error", title, "", 8000, here ? null : {label: "Open", run: () => showTab("profile")});
+}
+function onStatus(st) {
+  const run = st.state === "running", tune = !!st.tune && st.tune.state === "running";
+  const ended = [];
+  if (pf.seen.run && !run) ended.push(["run", st.state]);
+  if (pf.seen.tune && !tune) ended.push(["tune", st.tune ? st.tune.state : "failed"]);
+  pf.seen = {run, tune};
+  pf.status = st;
+  // four stamps, so a part is rebuilt only when it changed: the tables, findings and settings rows do not follow the clock
+  const tail = (l) => ({n: l.length, last: l.length ? l[l.length - 1] : null});
+  const t = st.tune;
+  stamped("run", {state: st.state, e: st.elapsed_s, rc: st.returncode, ...tail(st.lines)}, () => renderRun(st));
+  stamped("run-report", {state: st.state, rc: st.returncode, path: st.report && st.report.path,
+                         res: !!(st.report && st.report.results), found: st.report && st.report.findings ? st.report.findings.length : 0},
+          () => renderRunReport(st));
+  stamped("tune", t ? {state: t.state, e: t.elapsed_s, rc: t.returncode, ...tail(t.lines)} : {why: st.tune_unavailable},
+          () => renderTune(t, st.tune_unavailable));
+  stamped("tune-result", t ? {state: t.state, rc: t.returncode, note: t.note, report: t.report} : null, () => renderTuneResult(t));
+  syncButtons();
+  if (ended.length) pf.settingsDue = true;
+  ended.forEach(([kind, state]) => finished(kind, state));
+}
+async function profileTick() {
+  const [last, st, hist] = await Promise.all([pget("profile/last"), pget("profile/status"), pget("profile/history")]);
+  pf.down = false;
+  setNotice(null);
+  onStatus(st);
+  stamped("last", last, renderLast);
+  stamped("hist", hist, renderHistory);
+  pfText("pf-updated", `Updated ${new Date().toLocaleTimeString()}`);
+  if (pf.settingsDue || ++pf.ticks % 15 === 0) {                // when the tab opens, a run ends, the model (un)loads, else every 30 s
+    pf.settingsDue = false;
+    try {
+      stamped("settings", await pget("profile/settings"), renderSettings);
+    } catch (e) {                                               // its own failure leaves the rest of the tab alone
+      if (e && e.status === 401) throw e;
+      pf.settingsDue = true;
+    }
+  }
+}
+async function profilePoll() {
+  clearTimeout(pf.timer);
+  if (!health.profile || pf.key401) return;
+  if (pf.busy) { pf.again = true; return; }
+  const here = tab === "profile" && !document.hidden;
+  if (!here && !pf.seen.run && !pf.seen.tune) return;           // nothing this page saw running: no profile fetch at all
+  const gen = pf.keyGen;
+  pf.busy = true;
+  try {
+    if (here) await profileTick(); else onStatus(await pget("profile/status"));
+  } catch (e) {
+    const status = e && e.status;
+    if (status === 401) {
+      if (gen === pf.keyGen) {                                   // a key entered while this fetch was in flight is tried again
+        pf.key401 = true;
+        setNotice("key");
+      }
+    } else if (status === 404) {                                 // the server no longer has the tab: /health says so
+      await loadHealth();
+      if (health.profile) {                                      // still there: some other 404 (a proxy)
+        pf.down = true;
+        setNotice("answered", "The server answered 404");
+      }
+    } else {
+      pf.down = true;
+      pf.settingsDue = true;
+      setNotice(status ? "answered" : "down", `The server answered ${status}`);   // no status: fetch itself failed
+    }
+    syncButtons();
+  }
+  pf.busy = false;
+  if (pf.key401) return;                                         // stops until the key changes (profileRefresh)
+  pf.timer = setTimeout(profilePoll, pf.again ? 0 : here ? 2000 : 10000);
+  pf.again = false;
+}
+function profileRefresh() {                                      // at once: the key changed, the tab opened, the page is visible
+  pf.key401 = false;
+  pf.keyGen++;
+  if (!health.profile) return;
+  if (!pf.down) setNotice(null);
+  profilePoll();
+}
+function profileShown() {
+  if (!healthKnown) return;                                      // loadHealth() calls this again when it knows
+  const on = health.profile === true;
+  $("pf-off").hidden = on;
+  $("pf-cards").hidden = !on;
+  if (!on) return;
+  pf.settingsDue = true;
+  profileRefresh();
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden && tab === "profile") profileRefresh(); });
+
+$("pf-run").onclick = async () => {
+  $("pf-run").disabled = true;
+  try { await pstart("profile/run"); } catch (e) { toast("error", "Not started", String(e.message || e), 6000); }
+  profileRefresh();
+};
+$("pf-tune").onclick = async () => {
+  if (!confirm("Tune this PC now? The model is unloaded while setup's calibration measures the PCIe share, the draft floor, " +
+               "the CPU workers and the adaptive expert tier. It took 681 s on an RTX 5070 Ti + Ryzen 7 5800X3D; setup's " +
+               "estimate is 15-30 minutes, longer on a slow card. Requests get 503 meanwhile, and the model loads again " +
+               "with the tuned settings on the next request.")) return;
+  $("pf-tune").disabled = true;
+  try { await pstart("profile/tune"); } catch (e) { toast("error", "Not started", String(e.message || e), 6000); }
+  profileRefresh();
+};
+$("pf-notice-btn").onclick = () => { showTab("about"); $("api-key").focus(); };
+$("pf-off-link").onclick = () => openModelSetting("profile");
+$("pf-profile-link").onclick = () => openModelSetting("profile");
 
 // ------------------------------------------------------------------ Markdown (escaped first, then formatted)
 function inline(s) {
