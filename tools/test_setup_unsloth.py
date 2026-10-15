@@ -286,6 +286,23 @@ class Main(Base):
         self.assertNotIn("has not been run on AMD cards yet", out)
         self.assertIn("RAM budget: 40 GiB of UD-Q4_K_XL's experts", out)
 
+    def test_hip_keeps_the_env_of_an_all_ram_install(self):
+        """The hipBLASLt table joined setup's env instead of replacing it.  On Linux gfx12 setup no longer writes
+        STRATA_ROUTE_TAIL_SKIP=0 (0.2.11: the engine's own skip is faster there), so UD-Q5_K_XL's STRATA_MMQ_KQ=1
+        is the key the table must join."""
+        r9700 = [{"index": 0, "name": "AMD Radeon AI PRO R9700", "vram_gb": 31.9, "arch": "gfx1201",
+                  "driver": "amdgpu"}]
+        table = self.t / "tools" / "hip" / "gfx1201-hipblaslt-100401.txt"
+        with mock.patch.object(setup, "get_prebuilt_hip", lambda *a, **k: self.t / "engine"), \
+                mock.patch.object(setup, "build_engine_hip", lambda *a, **k: self.t / "engine"), \
+                mock.patch.object(setup, "hipblaslt_table", lambda *a, **k: table):
+            code, out, cfg = self.main(["--context", "8192", "--backend", "hip", "--vision", "no"],
+                                       amd=r9700, ram=120, m="UD-Q5_K_XL", version="0.1.57")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("--resident-budget-gib", cfg["args"])    # 120 GB holds every expert: no budget
+        self.assertEqual(cfg["env"]["STRATA_HIPBLASLT_TUNING"], str(table))
+        self.assertEqual(cfg["env"]["STRATA_MMQ_KQ"], "1")        # setup's own env, kept beside the table
+
     def test_resumed_download_needs_room_for_the_rest_only(self):
         """#425: the disk check counts the finished shards and .part files already there (sizes scaled down: a
         2 MB "model" with 1.5 MB on the disk, 8 GB of other room needed, 8.001 GB free)."""
