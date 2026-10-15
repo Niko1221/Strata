@@ -16,7 +16,8 @@ only the A/B restarted the engine, and no other model size was run.
 - **CPU:** AMD Ryzen 7 5800X3D, 8 cores / 16 threads, AVX2, **no AVX-512** (the engine: `the expert kernels run on
   AVX-2`); 7 expert-pool workers on CPUs 1-7 and the host thread on CPU 0. Board MSI MAG B550M MORTAR WIFI.
 - **RAM:** 80 GiB installed (2x 32 GiB + 2x 8 GiB DDR4, 3,200 MT/s; `dmidecode` prints the sizes as "GB"),
-  76.5 GiB usable (`MemTotal`). 7 GiB swap, not used.
+  76.5 GiB usable (`MemTotal`). 8 GiB swap (8,191 MiB), 2.9-3.8 GiB of it in use during the windows (`free -m`);
+  which processes' pages were in swap was not checked.
   Transparent huge pages `madvise`, no reserved huge pages (`vm.nr_hugepages=0`).
 - **Storage:** SK hynix Gold P31 1 TB NVMe (`SHGP31-1000GM-2`), ext4. The model files were read through the page cache.
 - **OS:** Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic. **Driver** 595.99.02 (`nvidia-smi` reports CUDA 13.2,
@@ -163,7 +164,7 @@ The clock-event field showed the software power cap (`0x4`) in 189 of 559 busy s
 in window 2 and 281 of 402 in window 3 (long prompts only), with the measured draw at most 280 W against the 300 W limit (`nvidia-smi -q -d POWER`: current, default and
 maximum limit 300 W); the flag also shows at draws of 127 W and up, and why it is set there was not looked into.
 There was no thermal or hardware slowdown flag. RAM: 73,973-74,512 MiB of 78,301 MiB in use during window 3
-(`free -m` after each needle), 3.8-4.3 GiB available, no swap use ([hardware.txt](hardware.txt)). VRAM: the engine
+(`free -m` after each needle), 3.8-4.3 GiB available, 3,537-3,868 MiB of swap in use ([hardware.txt](hardware.txt)). VRAM: the engine
 reports 325 MiB free inside its own process while `nvidia-smi` shows 15,444-15,587 of 16,303 MiB in use (716-859 MiB
 not in use); the two count differently and the difference was not looked into.
 
