@@ -110,6 +110,13 @@ as well (#410): the PCIe share of the missed experts (computed on the GPU instea
 answer after a start differ from the next ones. Measured here (IQ3_XXS, a 3.6K-token prompt, 4 repeats): with all
 three switches 1 answer of 4, without `--pcie-frac 0` 2 of 4 (the first one differs), with the defaults 2 of 4.
 `--pcie-frac 0` costs decode speed (the missed experts all run on the CPU), so keep it for A/B runs.
+Since 0.1.42 the share is also refined from measured times in the first decode windows (one GPU, CUDA or RDNA4, no
+`--pcie-frac`; [below](#the-pcie-share-of-the-missed-experts-is-set-from-the-cpus-speed-cuda-single-gpu-no---pcie-frac)),
+and it can end differently on two fresh servers, so `STRATA_IQ_MT_MIN=1` alone no longer always gives one answer: on
+one reporter's RTX 5090 (Windows, serve mode, IQ3_S, 0.1.42, 5 fresh servers per prompt, temperature 0, 256 tokens)
+it gave 1, 1 and 4 different answers on three prompts, and with a fixed `--pcie-frac 0.55` (the value the start's PCIe
+probe printed) as well 1, 1 and 1 (10 servers on the third) (#1928). A fixed `--pcie-frac` stops the refinement;
+`STRATA_PCIE_FRAC_DEFAULT=old` (the 0.1.41 rule) should too, but was not tried there.
 
 **Coupled drafts with Gumbel-max picks (opt-in, `STRATA_SPEC_COUPLED=1` and `STRATA_SPEC_GUMBEL=1`):** for a request
 that samples (temperature above 0), `STRATA_SPEC_COUPLED=1` lets the draft layer sample its guesses with the target's own
@@ -1266,7 +1273,8 @@ seed** are honored per request (OpenAI and Anthropic fields), and so are stop st
 to 4; Anthropic `stop_sequences`): the answer ends before the first one, which is not sent, and the engine stops
 there (`finish_reason` "stop"; `stop_reason` "stop_sequence" with `stop_sequence` set to the one found); with the default adaptive expert tier a sampled result
 is not reproducible run to run - for seed-reproducible output add `--adapt-every 100000` (static residency) to the
-engine arguments. The run config's optional `sampling` block sets the defaults for requests that leave the fields out
+engine arguments, and since 0.1.42 a fixed `--pcie-frac` as well (#1928, measured at temperature 0).
+The run config's optional `sampling` block sets the defaults for requests that leave the fields out
 (`"sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 20}`); a request's own fields always win, and with no
 block at all a request without sampling keys decodes greedy. The penalties (`presence_penalty`, `frequency_penalty`,
 `repetition_penalty`, with `penalty_last_n` capping how many recent tokens they count over, default 64 when any
