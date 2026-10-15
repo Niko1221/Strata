@@ -124,6 +124,26 @@ class MaxTokens(unittest.TestCase):
         self.assertIn('"usage"', stream)
         self.assertIn("data: [DONE]", stream)
 
+    def test_legacy_completions_stream_text_matches_nonstream(self):
+        for echo, budget in ((False, 64), (True, 64), (False, 3000), (True, 3000)):
+            with self.subTest(echo=echo, budget=budget):
+                body = {"model": "m", "prompt": "raw prompt", "max_tokens": budget,
+                        "temperature": 0, "enable_thinking": False, "echo": echo}
+                status, reply = self.post("/v1/completions", body)
+                self.assertEqual(status, 200)
+                req = urllib.request.Request(self.base + "/v1/completions", data=json.dumps({
+                    **body, "stream": True}).encode(), headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    raw = response.read().decode()
+                chunks = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
+                self.assertEqual("".join(c["choices"][0]["text"] for c in chunks), reply["choices"][0]["text"])
+                self.assertEqual(chunks[-1]["choices"][0]["text"], "")
+                self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], reply["choices"][0]["finish_reason"])
+                self.assertEqual(chunks[-1]["usage"], reply["usage"])
+                if echo:
+                    self.assertEqual(chunks[0]["choices"][0]["text"], body["prompt"])
+                self.assertTrue(raw.endswith("data: [DONE]\n\n"))
+
     def test_legacy_completions_rejects_unsupported_shapes(self):
         for body in ({"model": "m", "prompt": ["a"]}, {"model": "m", "prompt": "a", "n": 2},
                      {"model": "m", "prompt": "a", "suffix": "b"}):
@@ -195,6 +215,10 @@ class MaxTokens(unittest.TestCase):
         self.assertEqual(run_ids({"prompt": "hi", "reasoning_effort": "none"}), encode("hi") + tail_off)
         for tail in (tail_off_text, tail_on_text):                       # already ends with a tail: no second one
             self.assertEqual(run_ids({"prompt": "hi" + tail, "enable_thinking": False}), encode("hi") + encode(tail))
+        # Some templates add a tail only when thinking is disabled; an empty prompt still needs it.
+        with mock.patch.object(self.svc.template, "gen_prompt_tail", side_effect=lambda enabled: "" if enabled else tail_off_text):
+            for prompt in ("", "hi"):
+                self.assertEqual(run_ids({"prompt": prompt, "enable_thinking": False}), encode(prompt) + tail_off)
 
     def test_request_line_parses_the_engine_summary(self):
         line = ("strata serve: prompt 1200 tokens = 1000 reused + 200 read in 50 ms (4000.0 tok/s), 30 generated in "
