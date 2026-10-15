@@ -47,6 +47,7 @@ import math
 import os
 import platform
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -4413,7 +4414,7 @@ def write_config(path: Path, cfg: dict):
 # #629: the run config's keys setup writes itself (and rewrites on every setup run); any other key is the user's - a
 # "sampling" or "mcp_servers" block, "allowed_hosts", "cors_origins", "open_browser" - and is kept when setup runs again
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
-                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision"})
+                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision", "engine_args_extra"})
 SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
                        "STRATA_ROUTE_TAIL_SKIP"})   # the "env" entries setup writes
 # 0.1.44 added these three, written for Unsloth's files only (unsloth_default_env).  In any other model's config they are the
@@ -5527,6 +5528,29 @@ def own_path_size(fam: dict, ram: float) -> str:
     return max(fits, key=lambda m: fam["sha256"][fam["file"].format(q=m)][0]) if fits else next(iter(fam["models"]))
 
 
+def engine_extra_text(a, cfg_path: Path) -> str:
+    """--engine-args (a shell-quoted string), or the one an earlier setup run saved for this model. The flag, even
+    empty, wins over the saved one (so --engine-args '' clears them)."""
+    if a.engine_args is not None:
+        return a.engine_args.strip()
+    try:
+        return str(json.loads(cfg_path.read_text(encoding="utf-8-sig")).get("engine_args_extra") or "").strip()
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def engine_extra_list(a, cfg_path: Path) -> tuple[list, str]:
+    """(the extra engine arguments as argv tokens, the raw string they came from)."""
+    text = engine_extra_text(a, cfg_path)
+    if not text:
+        return [], ""
+    try:
+        return shlex.split(text, posix=not WIN), text
+    except ValueError as e:
+        fail(f"--engine-args is not a well-formed shell string ({e})",
+             "quote it as one string, e.g. --engine-args '--prefill 1024 --ple-io ram'")
+
+
 def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted):
     """Steps 2-7 for a family with its own engine path (OWN_PATH_FAMILIES: Qwen3.6-35B-A3B): the size, the context, the
     engine, the GGUF (pinned revision, size and SHA-256), the tokenizer from the GGUF, the config and the start
@@ -5562,6 +5586,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose")
     ok(f"size: {model}")
     tag = fam["tag"] + model
+    cfg_path = ROOT / f"strata-{tag.lower()}.json"
     rec_ctx = own_path_context(fam, gpu.get("vram_gb", 0.0))
     if a.context:
         ctx = a.context
@@ -5627,9 +5652,15 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         if vram > 0:
             args += ["--expert-vram", f"{max(vram - 3.0 - a.vram_reserve_mib / 1024, 0):.1f}"]
         ok(f"VRAM kept free for other programs: about {a.vram_reserve_mib} MiB (the experts' share is set lower)")
+    extra_args, extra_text = engine_extra_list(a, cfg_path)
+    if extra_args:
+        args += extra_args
+        ok(f"engine arguments: {' '.join(extra_args)}")
     cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "arch": fam["arch"],
            "log": str(ROOT / f"strata-{tag.lower()}.log"), "lib_dirs": lib_dirs, "port": port}
+    if extra_text:
+        cfg["engine_args_extra"] = extra_text
     if cuda_tk == 12:
         cfg["cuda"] = 12
     if hip:
@@ -5644,7 +5675,6 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if a.browser is not None:
         cfg["open_browser"] = a.browser
     cfg["args"] = recommend_pool_workers(cfg["args"])   # --pool-workers: this engine path's CPU expert threads too
-    cfg_path = ROOT / f"strata-{tag.lower()}.json"
     write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None)
     script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
     ok(f"start script: {script.name}")
@@ -5822,6 +5852,11 @@ def main() -> int:
                          "Linux or Windows (chosen by itself when the PC has no NVIDIA card Strata can use), "
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--engine-args", default=None, metavar="'FLAGS...'",
+                    help="extra arguments for the engine, as one shell-quoted string, appended to the model's "
+                         "arguments (e.g. --engine-args '--prefill 1024 --ple-io ram'); the last value of a "
+                         "repeated flag wins. Saved in the config, so a setup run again keeps them "
+                         "(--engine-args '' clears them). See the engine's own --help for what it accepts")
     a = ap.parse_args()
     if a.model and a.model not in MODELS and a.family not in PREVIEW_FAMILIES:
         ap.error(f"--model {a.model} is a size of " + ", ".join(f"--family {f}" for f, d in PREVIEW_FAMILIES.items()
@@ -6234,6 +6269,7 @@ def main() -> int:
     if MODELS[model].get("license"):                   # the ready-made packs: each size has its own license
         say(f"  Its license: {MODELS[model]['license']}")
     tag = fam["tag"] + model                           # names of the pack, config and start script
+    cfg_path = ROOT / f"strata-{tag.lower()}.json"     # read early: --engine-args may be kept from it
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
     rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072
     if budget is not None:                             # UD-Q4_K_XL: every GB of KV is a GB fewer of cached experts
@@ -6725,9 +6761,15 @@ def main() -> int:
         # the package's profile, with llama.cpp's flags (the engine takes the same ones)
         args += ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",
                  "--cvec-mode", "project", "--cvec-dir", "per-layer"]
+    extra_args, extra_text = engine_extra_list(a, cfg_path)
+    if extra_args:
+        args += extra_args
+        ok(f"engine arguments: {' '.join(extra_args)}")
     cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": port}
+    if extra_text:
+        cfg["engine_args_extra"] = extra_text
     if cuda_tk == 12:                                  # the experimental CUDA 12 engine (engine-cuda12/)
         cfg["cuda"] = 12
     if (uenv := unsloth_default_env(family, model, hip, in_budget)):
@@ -6798,7 +6840,6 @@ def main() -> int:
         warn("--vision-tokens: images are off for this model, so it is not used")
     if a.images:                                       # only when given: else an earlier "images" is carried over
         cfg["images"] = setup_images(a, gpu, hip, Path(a.models_dir))
-    cfg_path = ROOT / f"strata-{tag.lower()}.json"
     cal = setup_calibration(cfg, hip)                  # #566: Linux HIP too; the tuning is offered on NVIDIA only
     if cal is not None:
         sys.path.insert(0, str(ROOT / "tools"))
