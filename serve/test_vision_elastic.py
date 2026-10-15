@@ -23,6 +23,7 @@ class ElasticVision:
         self.dir = Path(d)
         self.rows = self.dir / "img.sve"
         self.rows.write_bytes(b"rows")
+        self.encoded = set()
 
     def alive(self):
         return self.up
@@ -35,7 +36,12 @@ class ElasticVision:
 
     def encode(self, source):
         assert self.up, "a picture reached an encoder that was not started"
+        self.encoded.add(source)
         return self.rows, 3
+
+    def cached(self, source):
+        # the hash cache and its .sve files survive an elastic unload, as the real Vision's do
+        return self.rows if source in self.encoded else None
 
 
 class Elastic(unittest.TestCase):
@@ -117,6 +123,38 @@ class Elastic(unittest.TestCase):
         v = Vision({"exe": "e", "mmproj": "m", "model": "t"}, lazy=True)
         self.assertFalse(v.elastic)
         self.assertEqual((v.elastic_mib, v.elastic_idle_s), (2048, 120.0))
+
+    def tool_picture(self):
+        return [{"role": "user", "content": "read it"},
+                {"role": "tool", "tool_call_id": "t1", "content": [dict(IMAGE)]}]
+
+    def test_a_tool_picture_starts_an_idle_encoder_and_holds_it(self):
+        msg = self.tool_picture()
+        self.svc._note_unreadable_tool_images(msg)
+        self.assertEqual(self.vision.starts, 1)             # the picture woke the encoder (it was down: no picture turn
+        self.assertTrue(self.vision.up)                     # ran yet, and encode died on the missing pipe)
+        self.assertGreater(self.svc.last_image_at, 0)       # the turn counted for the idle timer, as prepare's does
+        self.assertEqual(self.svc._vision_idle_down(), "busy")   # so the sweep leaves the new encoder alone
+        self.assertEqual(msg[1]["content"][0]["type"], "image")  # and the picture stays in the history
+
+    def test_a_tool_picture_whose_encoder_cannot_start_becomes_a_note(self):
+        def fail():
+            raise RuntimeError("the vision encoder did not start")  # what _vision_up's start raises
+        self.vision.restart = fail
+        msg = self.tool_picture()
+        self.svc._note_unreadable_tool_images(msg)          # the start's RuntimeError must not escape: the method's
+        self.assertEqual(msg[1]["content"][0],              # contract is a note in the picture's place, not a 500
+                         {"type": "text", "text": "[image omitted: the vision encoder did not start]"})
+
+    def test_a_tool_picture_the_encoder_already_knows_never_wakes_it(self):
+        self.vision.restart()                               # the picture was encoded while the encoder ran, so its
+        self.vision.encode("x.png")                         # rows sit in the hash cache that survives an unload
+        self.vision.unload()                                # the idle sweep stopped the encoder
+        msg = self.tool_picture()
+        self.svc._note_unreadable_tool_images(msg)          # clients re-send the picture every turn: a known one
+        self.assertEqual(self.vision.starts, 1)             # is readable without waking the encoder for it
+        self.assertFalse(self.vision.up)
+        self.assertEqual(msg[1]["content"][0]["type"], "image")
 
 
 if __name__ == "__main__":
