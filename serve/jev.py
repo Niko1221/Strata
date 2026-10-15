@@ -273,7 +273,7 @@ def _handle_image_direct(svc, req: dict, mode: str, qdefs: list, b64: str) -> tu
         t = sum(pr)
         if t > 0:
             pr = [x / t for x in pr]
-        pr, calib_id = jev_calib.apply(qdef["type"], pr)
+        pr, calib_id = jev_calib.apply(qdef["type"], pr, "D")   # P0-1: per-tuple apply
         answers[qdef["id"]] = answers_from_calibrated(qdef["type"], pr, calib_id)
         jev_calib.log_enqueue({
             "ts": int(time.time()),
@@ -313,6 +313,12 @@ def handle_image(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
         return _err("image_mode", "must be 'summary' (two-call) or 'direct' (one readout)")
 
     if image_mode == "direct":
+        if mode == "V":
+            # P0-3 (Opus plan): D-V does not exist; refuse loudly, not silently
+            return 422, {"error": {"type": "invalid_request_error", "field": "X-Jev-Mode",
+                                   "message": "X-Jev-Mode: V is not supported with image_mode "
+                                              "'direct' (the yes/no branch readout needs a text "
+                                              "state); use image_mode 'summary' or omit the header"}}
         return _handle_image_direct(svc, req, mode, qdefs, b64)
 
     # ---- stage 1: vision summary (Strata's existing path, engine FIFO held) ----
@@ -461,6 +467,7 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
 
     state_text = render_state(req["state"])
     v_mode = mode == "V"
+    image_state = isinstance(req.get("state"), dict) and "image_summary" in req.get("state", {})
     answers, in_tokens, readouts = {}, 0, 0
     with svc.fifo:                                       # the engine turn: one request at a time
         for qdef in qdefs:
@@ -501,7 +508,7 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                 if t > 0:
                     pr = [x / t for x in pr]
                 # donor V applies the choice temperature to softmax(d) (calib_apply :617)
-                pr, calib_id = jev_calib.apply("choice", pr)
+                pr, calib_id = jev_calib.apply("choice", pr, "V")   # P0-1: per-tuple
                 best = max(range(len(pr)), key=lambda i: pr[i])
                 probs = {name: pr[i] for i, name in enumerate(qdef["labels"])}
                 answers[qdef["id"]] = {
@@ -539,12 +546,12 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
             if t > 0:
                 pr = [x / t for x in pr]
             calib_id = None
-            pr, calib_id = jev_calib.apply(qdef["type"], pr)
+            pr, calib_id = jev_calib.apply(qdef["type"], pr, "S" if image_state else "L")
             answers[qdef["id"]] = answers_from_calibrated(qdef["type"], pr, calib_id)
             # M2 B1.1 log row (unrounded raw_p; donor schema minus label_mass, BROW is sparse)
             jev_calib.log_enqueue({
                 "ts": int(time.time()),
-                "tuple": jev_calib.tuple_of("L", qdef["type"]),
+                "tuple": jev_calib.tuple_of("S" if image_state else "L", qdef["type"]),
                 "qid": qdef["id"],
                 "type": qdef["type"],
                 "raw_p": pr_raw,
