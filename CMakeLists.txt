@@ -145,6 +145,11 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(agenda_test tests/core/agenda_test.cpp)
   target_include_directories(agenda_test PRIVATE include)
   add_test(NAME agenda_test COMMAND agenda_test)
+  # the --conversation-cache-spill-dir default's resolution rule (strata-dir vs. user profile vs. explicit
+  # flag).  Header-only, no CUDA and no model: it runs wherever the other host-only conversation tests do.
+  add_executable(conversation_spill_dir_test src/core/conversation_spill_dir_test.cpp)
+  target_include_directories(conversation_spill_dir_test PRIVATE include)
+  add_test(NAME conversation_spill_dir_test COMMAND conversation_spill_dir_test)
 
 endif()
 

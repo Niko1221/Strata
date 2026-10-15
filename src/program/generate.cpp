@@ -27,6 +27,7 @@
 #include "strata/core/session_save_reclaim.hpp"
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/conversation_spill.hpp"
+#include "strata/core/conversation_spill_dir.hpp"   // --conversation-cache-spill-dir's default resolution (pure)
 #include "strata/core/conversation_segments.hpp"   // layer/segmentos-t3: the opt-in per-segment tier (N16 wiring)
 #include "strata/core/conversation_restore_ladder.hpp"   // layer/ladder-t3: the opt-in prefix-restore ladder
 #include "strata/core/conversation_prompt_cache.hpp"
@@ -882,7 +883,8 @@ void usage() {
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
                  "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE needs RAM (opt-in)\n"
                  "  --conversation-cache-spill-dir DIR  --serve: keep conversations the RAM cache evicts on disk,\n"
-                 "                       across restarts (default off; needs --conversation-cache-mib)\n"
+                 "                       across restarts (needs --conversation-cache-mib). Default: <Strata dir>\\slots,\n"
+                 "                       or .strata\\slots in the user profile when the Strata dir sits on the system drive (C:)\n"
                  "  --conversation-cache-disk-mib N  --serve: the spill directory's limit (default 8192; 0 = off)\n"
                  "  --conversation-cache-similarity F  --serve: least common-prefix fraction a disk hit may offer\n"
                  "                       (default 0 = any; range [0,1))\n"
@@ -1933,6 +1935,51 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
         if (el > 0.6) break;
     }
     return el > 0 ? (double) done / el : -1.0;
+}
+
+// The three inputs the --conversation-cache-spill-dir default is resolved from (the rule itself is pure and
+// lives in conversation_spill_dir.hpp, so it is tested without the engine). Windows asks the Win32 API;
+// elsewhere the engine's own executable and the environment. A failure is empty, never a crash: the resolver
+// then falls back on its other rule or turns the tier off (fail-open).
+static std::string engine_directory() {
+#if defined(_WIN32)
+    char exe[MAX_PATH] = {};
+    const DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return std::string();
+    const std::string path(exe, n);
+    const size_t cut = path.find_last_of("\\/");
+    return cut == std::string::npos ? std::string() : path.substr(0, cut);
+#else
+    char buf[4096] = {};
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return std::string();
+    const std::string path(buf, (size_t) n);
+    const size_t cut = path.find_last_of('/');
+    return cut == std::string::npos ? std::string() : path.substr(0, cut);
+#endif
+}
+
+static std::string user_home_directory() {
+#if defined(_WIN32)
+    char buf[1024] = {};
+    const DWORD n = GetEnvironmentVariableA("USERPROFILE", buf, (DWORD) sizeof(buf));
+    if (n == 0 || n >= sizeof(buf)) return std::string();
+    return std::string(buf, n);
+#else
+    const char* home = std::getenv("HOME");   // MSVC's C4996 never sees this: it is the non-Windows branch
+    return home != nullptr ? std::string(home) : std::string();
+#endif
+}
+
+static std::string system_drive() {
+#if defined(_WIN32)
+    char buf[16] = {};
+    const DWORD n = GetEnvironmentVariableA("SystemDrive", buf, (DWORD) sizeof(buf));
+    if (n == 0 || n >= sizeof(buf)) return "C:";
+    return std::string(buf, n);
+#else
+    return std::string();   // no drive letters: no path is "on the system drive", the Strata folder wins
+#endif
 }
 
 int main(int argc, char** argv) {
@@ -8542,6 +8589,27 @@ int main(int argc, char** argv) {
         // conversation and a hand-saved session file are interchangeable.
         strata::core::ConversationSpillCache conversation_spill;
         strata::core::SessionFileIdentity spill_identity;
+        // --conversation-cache-spill-dir's default: when the operator opted into the conversation cache but named
+        // no folder, one is resolved (conversation_spill_dir.hpp) from the engine's own directory and the user
+        // profile, and WHICH rule won is logged here - without that the default would be invisible.
+        const std::string spill_strata_dir = engine_directory();
+        const std::string spill_user_home = user_home_directory();
+        const std::string spill_system_drive = system_drive();
+        strata::core::SpillDirChoice spill_choice;
+        if (o.serve && conversations.enabled() && o.conversation_cache_disk_mib > 0) {
+            spill_choice = strata::core::conversation_spill_dir_resolve(o.conversation_cache_spill_dir, spill_strata_dir,
+                                                                        spill_user_home, spill_system_drive);
+            if (!o.conversation_cache_spill_dir.empty()) {
+                std::fprintf(stderr, "strata serve: conversation cache: spill dir %s (%s)\n",
+                             o.conversation_cache_spill_dir.c_str(), spill_choice.reason.c_str());
+            } else if (!spill_choice.directory.empty()) {
+                o.conversation_cache_spill_dir = spill_choice.directory;
+                std::fprintf(stderr, "strata serve: conversation cache: spill dir %s (%s)\n",
+                             spill_choice.directory.c_str(), spill_choice.reason.c_str());
+            } else {
+                std::fprintf(stderr, "strata serve: conversation cache: %s\n", spill_choice.reason.c_str());
+            }
+        }
         // The disk tier works with a layer split too: one session file per stage plus one joint sidecar (#1271
         // upstream keeps it single-GPU; the stage split is this tree's).
         if (o.serve && conversations.enabled() && !o.conversation_cache_spill_dir.empty() &&
@@ -8550,12 +8618,33 @@ int main(int argc, char** argv) {
             if (!session_identity(spill_identity, identity_error, nullptr)) {
                 std::fprintf(stderr, "strata serve: conversation cache: disk tier disabled (%s)\n", identity_error.c_str());
             } else {
+                const strata::core::SpillWhenFull spill_when_full =
+                    o.conversation_cache_spill_when_full == "reject" ? strata::core::SpillWhenFull::reject
+                                                                     : strata::core::SpillWhenFull::evict_oldest;
                 std::string spill_error;
-                if (!conversation_spill.open(o.conversation_cache_spill_dir, spill_identity,
-                        (uint64_t) o.conversation_cache_disk_mib * 1024 * 1024, spill_error,
-                        o.conversation_cache_spill_when_full == "reject" ? strata::core::SpillWhenFull::reject
-                                                                         : strata::core::SpillWhenFull::evict_oldest,
-                        o.conversation_cache_spill_max_age_days)) {
+                bool spill_opened = conversation_spill.open(o.conversation_cache_spill_dir, spill_identity,
+                        (uint64_t) o.conversation_cache_disk_mib * 1024 * 1024, spill_error, spill_when_full,
+                        o.conversation_cache_spill_max_age_days);
+                // Fail-open, and try the other rule before giving up: a default Strata folder that could not be
+                // created falls back to the user profile, and the log says so.
+                if (!spill_opened && spill_choice.source == strata::core::SpillDirSource::strata_dir) {
+                    const strata::core::SpillDirChoice spill_fallback = strata::core::conversation_spill_dir_resolve(
+                        "", spill_strata_dir, spill_user_home, spill_system_drive, /*skip_strata_dir=*/true);
+                    if (!spill_fallback.directory.empty() && spill_fallback.directory != o.conversation_cache_spill_dir) {
+                        std::string retry_error;
+                        if (conversation_spill.open(spill_fallback.directory, spill_identity,
+                                (uint64_t) o.conversation_cache_disk_mib * 1024 * 1024, retry_error, spill_when_full,
+                                o.conversation_cache_spill_max_age_days)) {
+                            o.conversation_cache_spill_dir = spill_fallback.directory;
+                            spill_opened = true;
+                            std::fprintf(stderr, "strata serve: conversation cache: spill dir %s (%s)\n",
+                                         spill_fallback.directory.c_str(), spill_fallback.reason.c_str());
+                        } else {
+                            spill_error = retry_error;
+                        }
+                    }
+                }
+                if (!spill_opened) {
                     std::fprintf(stderr, "strata serve: conversation cache: disk tier disabled (%s)\n", spill_error.c_str());
                 } else if (conversation_spill.enabled()) {
                     std::fprintf(stderr, "strata serve: conversation cache: spill dir ready (%zu conversations, %llu MiB, "
