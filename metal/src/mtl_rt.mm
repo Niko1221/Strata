@@ -64,6 +64,7 @@ bool Context::supports_metal4() const {
 }
 uint64_t Context::recommended_working_set() const { return [impl_->dev recommendedMaxWorkingSetSize]; }
 uint64_t Context::max_buffer_length() const { return [impl_->dev maxBufferLength]; }
+uint64_t Context::max_threadgroup_memory() const { return [impl_->dev maxThreadgroupMemoryLength]; }
 
 int Context::compile(const std::vector<std::string>& files, const std::string& prelude, bool fast_math) {
     std::string src = prelude + "\n#include <metal_stdlib>\nusing namespace metal;\n";
@@ -96,6 +97,10 @@ int Context::compile(const std::vector<std::string>& files, const std::string& p
     }
     impl_->libs.push_back(lib);
     return (int)impl_->libs.size() - 1;
+}
+
+bool Context::has_function(int lib, const std::string& fn) const {
+    return [[impl_->libs[lib] functionNames] containsObject:[NSString stringWithUTF8String:fn.c_str()]];
 }
 
 Pipeline Context::pipeline(int lib, const std::string& fn, const Constants& c) {

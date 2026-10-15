@@ -1,9 +1,10 @@
 // metal/tests/gemv_parity.cpp - the dense GEMV (gemv.metal) per format: parity against double, and speed per tile
 // shape on the model's projection shapes.
 //
-//   gemv_parity                         parity: every format, n_in 2560/640/10240, 1..8 tokens
+//   gemv_parity                         parity: every format, 1..8 tokens, and gemv_wide.metal
 //   gemv_parity --bench [--pack Q2_0|IQ3_XXS] [--ntok N] [--all]   speed on the pack's shapes (best tile per shape)
 //   gemv_parity --one TYPE NIN NOUT [--ntok N]                      sweep one shape
+//   gemv_parity --sweep [--ntok N] [--only NAME] [-v]   every tile vs today's, bitwise and timed
 #include "gguf_lite.h"
 #include "mtl_rt.h"
 #include "ref_quant.h"
@@ -40,6 +41,24 @@ std::string kname(int t, Cfg c) {
     return "gemv_" + std::to_string(t) + "_" + std::to_string(c.L) + "_" + std::to_string(c.R) + "_" +
            std::to_string(c.S) + "_" + std::to_string(c.K);
 }
+// gemv_wide.metal's kernels
+std::string wname(int t, Cfg c) { return "gemvw" + kname(t, c).substr(4); }
+std::string xname(int t, Cfg c, bool wide) {
+    return std::string(wide ? "gemvxw_" : "gemvx_") + std::to_string(t) + "_" + std::to_string(c.L) + "_" +
+           std::to_string(c.R) + "_" + std::to_string(c.S);
+}
+const std::vector<Cfg> kExtra = {{32, 2, 2, 1}};
+// gemv_x tiles
+const std::vector<Cfg> kX = {{32, 1, 4, 1}, {32, 2, 4, 1}, {16, 1, 4, 1}, {16, 2, 4, 1}, {8, 1, 4, 1}, {8, 2, 4, 1},
+                             {4, 2, 4, 1},  {16, 2, 8, 1}, {8, 2, 8, 1}, {16, 4, 4, 1}, {32, 2, 8, 1}, {2, 2, 4, 1},
+                             {16, 1, 8, 1}};
+// window.cpp's gemv_untuned
+Cfg untuned_cfg(int ty, int n_in, int n_out) {
+    if (n_in >= 6144) return {32, 1, 8, 2};
+    if (n_in == 640) return {8, 1, 4, 1};
+    if (n_out <= 640 || ty == ref::Q2_0 || ty == ref::BF16) return {32, 1, 4, 1};
+    return {16, 1, 4, 1};
+}
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
 // which prepared x a format reads (units.metal XK_*)
 int xkind(int t) {
@@ -73,7 +92,8 @@ struct Shape { const char* name; int type, n_in, n_out, per_token; };   // per_t
 }  // namespace
 
 int main(int argc, char** argv) {
-    bool bench = false, all = false;
+    bool bench = false, all = false, sweep = false, verbose = false, ntok_set = false;
+    std::string only;
     int ntok = 1;
     std::string gguf_path;
     std::string pack = "Q2_0";
@@ -82,7 +102,10 @@ int main(int argc, char** argv) {
         std::string a = argv[i];
         if (a == "--bench") bench = true;
         else if (a == "--all") all = true;
-        else if (a == "--ntok") ntok = std::atoi(argv[++i]);
+        else if (a == "--sweep") sweep = true;
+        else if (a == "-v") verbose = true;
+        else if (a == "--only") only = argv[++i];
+        else if (a == "--ntok") ntok = std::atoi(argv[++i]), ntok_set = true;
         else if (a == "--pack") pack = argv[++i];
         else if (a == "--gguf") gguf_path = argv[++i];
         else if (a == "--one") {
@@ -94,11 +117,116 @@ int main(int argc, char** argv) {
         } else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     mtl::Context cx;
-    const int lib = cx.compile({"quant.metal", "units.metal", "gemv.metal"});
+    const int lib = cx.compile({"quant.metal", "units.metal", "gemv.metal", "gemv_wide.metal"});
     std::printf("device %s\n", cx.device_name().c_str());
     const int MAXT = 8;
     mtl::Pipeline pprep = cx.pipeline(lib, "xprep");
 
+    if (sweep) {
+        const std::vector<Shape> shapes = {
+            {"qkv", ref::IQ4_XS, 2560, 10240, 11},  {"qkv", ref::Q4_K, 2560, 10240, 8},    {"qkv", ref::Q5_K, 2560, 10240, 3},
+            {"qkv", ref::Q6_K, 2560, 10240, 14},    {"gate", ref::IQ3_S, 2560, 6144, 10},  {"gate", ref::IQ4_XS, 2560, 6144, 11},
+            {"gate", ref::Q4_K, 2560, 6144, 7},     {"gate", ref::Q5_K, 2560, 6144, 3},    {"gate", ref::Q6_K, 2560, 6144, 5},
+            {"out", ref::IQ3_S, 6144, 2560, 3},     {"out", ref::IQ4_XS, 6144, 2560, 6},   {"out", ref::Q4_K, 6144, 2560, 5},
+            {"out", ref::Q5_K, 6144, 2560, 5},      {"out", ref::Q6_K, 6144, 2560, 29},    {"attn_q", ref::Q6_K, 2560, 12288, 4},
+            {"k/v", ref::Q6_K, 2560, 512, 15},      {"shexp gu", ref::IQ3_S, 2560, 640, 40}, {"shexp gu", ref::IQ4_XS, 2560, 640, 31},
+            {"shexp gu", ref::Q4_K, 2560, 640, 19}, {"shexp dn", ref::IQ4_NL, 640, 2560, 40}, {"router", ref::BF16, 2560, 512, 48},
+            {"alpha", ref::BF16, 2560, 48, 72},     {"idx k", ref::BF16, 2560, 128, 12},   {"lm head", ref::Q5_K, 2560, 248320, 1},
+            {"mtp q8", ref::Q8_0, 2560, 2560, 1},
+        };
+        const std::vector<int> nts = ntok_set ? std::vector<int>{ntok} : std::vector<int>{1, 2, 3};
+        int not_bitwise = 0;
+        std::printf("%-9s %-7s %5s %6s %4s | %8s %7s | %8s %7s %6s  %s\n", "shape", "type", "n_in", "n_out", "ntok", "base us",
+                    "GB/s", "best us", "GB/s", "x", "best (g gemv / x gemv_x, w wide decoders; L,R,S,K)");
+        for (const Shape& s : shapes) {
+            if (!only.empty() && only != s.name) continue;
+            const size_t rb = ref::row_bytes(s.type, s.n_in), mb = rb * s.n_out;
+            const int copies = (int)std::max<size_t>(4, std::min<size_t>(256, (1ull << 30) / mb));
+            mtl::Buffer W = cx.alloc(mb * copies), x = cx.alloc(4 * s.n_in * MAXT), y = cx.alloc(4 * (size_t)s.n_out * MAXT);
+            {
+                std::vector<uint8_t> tmp(mb);
+                ref::random_blocks(s.type, tmp.data(), s.n_out, s.n_in, 99);
+                for (int c = 0; c < copies; ++c) std::memcpy(W.as<uint8_t>() + (size_t)c * mb, tmp.data(), mb);
+            }
+            ref::Rng r(5);
+            for (int i = 0; i < s.n_in * MAXT; ++i) x.as<float>()[i] = r.sym();
+            mtl::Buffer xp = cx.alloc(4 * (4 * s.n_in * MAXT + s.n_in / 16 * MAXT));
+            cx.run({xprep_dispatch(pprep, x, xp, s.n_in, MAXT)});
+            const size_t plane = (size_t)4 * s.n_in * MAXT;
+            const Cfg base = untuned_cfg(s.type, s.n_in, s.n_out);
+            for (int nt : nts) {
+                struct Var { std::string kn, tag; Cfg c; bool gx; };
+                std::vector<Var> vars = {{kname(s.type, base), "g", base, false}};   // reference
+                std::vector<Cfg> gcs = kCfgs;
+                gcs.insert(gcs.end(), kExtra.begin(), kExtra.end());
+                for (Cfg c : gcs) {
+                    if (c.L != base.L || c.K != base.K || !cfg_ok(c, s.type, s.n_in)) continue;
+                    if (cx.has_function(lib, kname(s.type, c)) && !(c.R == base.R && c.S == base.S))
+                        vars.push_back({kname(s.type, c), "g", c, false});
+                    if (cx.has_function(lib, wname(s.type, c))) vars.push_back({wname(s.type, c), "gw", c, false});
+                }
+                if (base.K == 1)
+                    for (Cfg c : kX) {
+                        if (c.L != base.L || !cfg_ok(c, s.type, s.n_in)) continue;
+                        for (bool w : {false, true})
+                            if (cx.has_function(lib, xname(s.type, c, w))) vars.push_back({xname(s.type, c, w), w ? "xw" : "x", c, true});
+                    }
+                // gemv_x's threadgroup memory
+                const uint32_t tgm = (uint32_t)(4 * nt * (s.n_in + s.n_in / 16) + 15) / 16 * 16;
+                GemvArgs a{(uint32_t)s.n_in, (uint32_t)s.n_out, (uint32_t)nt, (uint32_t)rb, (uint32_t)s.n_in, (uint32_t)s.n_out};
+                std::vector<float> yref;
+                double base_t = 0, best = 1e9;
+                std::string best_name;
+                for (size_t vi = 0; vi < vars.size(); ++vi) {
+                    const Var& v = vars[vi];
+                    mtl::Pipeline p = cx.pipeline(lib, v.kn, mtl::Constants().i(0, nt));
+                    if (v.gx && tgm + (uint64_t)(p.static_tg_mem + 15) / 16 * 16 > cx.max_threadgroup_memory()) continue;
+                    auto disp = [&](size_t woff) {
+                        mtl::Dispatch d;
+                        d.p = &p;
+                        d.args = {mtl::Arg::B(W, woff), mtl::Arg::B(xp, plane * xkind(s.type)), mtl::Arg::B(xp, plane * 4),
+                                  mtl::Arg::B(y), mtl::Arg::V(a)};
+                        d.grid[0] = (s.n_out + rows_per_tg(v.c) - 1) / rows_per_tg(v.c);
+                        d.tg[0] = v.c.S * 32;
+                        if (v.gx) d.tg_mem = tgm;
+                        return d;
+                    };
+                    std::memset(y.ptr, 0, y.bytes);
+                    cx.run({disp(0)});
+                    const float* yo = y.as<float>();
+                    bool same = true;
+                    if (vi == 0) yref.assign(yo, yo + (size_t)nt * s.n_out);
+                    else same = std::memcmp(yref.data(), yo, 4 * (size_t)nt * s.n_out) == 0;
+                    std::vector<mtl::Dispatch> ds;
+                    const int R = std::max(copies, 16);
+                    for (int i = 0; i < R; ++i) ds.push_back(disp((size_t)(i % copies) * mb));
+                    cx.warm(ds, 0.05);
+                    std::vector<double> t;
+                    for (int i = 0; i < 5; ++i) t.push_back(cx.run(ds) / R);
+                    const double m = median(t);
+                    const std::string name = v.tag + " " + std::to_string(v.c.L) + "," + std::to_string(v.c.R) + "," +
+                                             std::to_string(v.c.S) + "," + std::to_string(v.c.K);
+                    if (!same) {
+                        ++not_bitwise;
+                        std::printf("  NOT BITWISE: %s %s ntok %d %s\n", s.name, ref::type_name(s.type), nt, name.c_str());
+                    }
+                    if (verbose) std::printf("    %-14s %8.2f us %7.1f GB/s%s\n", name.c_str(), m * 1e6, mb / m / 1e9, same ? "" : "  NOT BITWISE");
+                    if (vi == 0) base_t = m;
+                    if (same && m < best) { best = m; best_name = name; }
+                }
+                std::printf("%-9s %-7s %5d %6d %4d | %8.2f %7.1f | %8.2f %7.1f %6.2f  %s\n", s.name, ref::type_name(s.type),
+                            s.n_in, s.n_out, nt, base_t * 1e6, mb / base_t / 1e9, best * 1e6, mb / best / 1e9, base_t / best,
+                            best_name.c_str());
+                std::fflush(stdout);
+            }
+            cx.free(W);
+            cx.free(x);
+            cx.free(y);
+            cx.free(xp);
+        }
+        std::printf("%s\n", not_bitwise ? "SOME NOT BITWISE" : "ALL BITWISE");
+        return not_bitwise ? 1 : 0;
+    }
     if (!gguf_path.empty()) {
         // real tensors: the first type-distinct ones of the file (experts: expert 0's matrix), 1 and 3 tokens
         gguf::File f;
@@ -236,6 +364,65 @@ int main(int argc, char** argv) {
                 cx.free(xp);
             }
         }
+        // gemv_wide.metal: every kernel bitwise its stock twin
+        for (int t : {ref::Q4_K, ref::Q5_K, ref::Q6_K, ref::IQ4_XS, ref::BF16}) {
+            for (int n_in : {2560, 10240}) {
+                const int n_out = 100;
+                const size_t rb = ref::row_bytes(t, n_in);
+                mtl::Buffer W = cx.alloc(rb * n_out), x = cx.alloc(4 * n_in * MAXT), y = cx.alloc(4 * n_out * MAXT);
+                mtl::Buffer xp = cx.alloc(4 * (4 * n_in * MAXT + n_in / 16 * MAXT));
+                ref::random_blocks(t, W.as<uint8_t>(), n_out, n_in, 57 + t + n_in);
+                ref::Rng r(11 + n_in);
+                for (int i = 0; i < n_in * MAXT; ++i) x.as<float>()[i] = r.sym();
+                cx.run({xprep_dispatch(pprep, x, xp, n_in, MAXT)});
+                const size_t plane = (size_t)4 * n_in * MAXT;
+                for (int nt : {1, 3, 8}) {
+                    GemvArgs a{(uint32_t)n_in, (uint32_t)n_out, (uint32_t)nt, (uint32_t)rb, (uint32_t)n_in, (uint32_t)n_out};
+                    const uint32_t tgm = (uint32_t)(4 * nt * (n_in + n_in / 16) + 15) / 16 * 16;
+                    auto run = [&](const std::string& kn, Cfg c, bool gx, std::vector<float>& out) {
+                        mtl::Pipeline p = cx.pipeline(lib, kn, mtl::Constants().i(0, nt));
+                        if (gx && tgm + (uint64_t)(p.static_tg_mem + 15) / 16 * 16 > cx.max_threadgroup_memory()) return false;
+                        mtl::Dispatch d;
+                        d.p = &p;
+                        d.args = {mtl::Arg::B(W), mtl::Arg::B(xp, plane * xkind(t)), mtl::Arg::B(xp, plane * 4),
+                                  mtl::Arg::B(y), mtl::Arg::V(a)};
+                        d.grid[0] = (n_out + rows_per_tg(c) - 1) / rows_per_tg(c);
+                        d.tg[0] = c.S * 32;
+                        if (gx) d.tg_mem = tgm;
+                        std::memset(y.ptr, 0, y.bytes);
+                        cx.run({d});
+                        out.assign(y.as<float>(), y.as<float>() + (size_t)nt * n_out);
+                        return true;
+                    };
+                    // gemv_wide.metal's kernels
+                    std::vector<std::pair<std::string, Cfg>> ks;
+                    for (Cfg c : kCfgs) ks.push_back({wname(t, c), c});
+                    for (Cfg c : kExtra) ks.push_back({wname(t, c), c}), ks.push_back({kname(t, c), c});
+                    for (Cfg c : kX) ks.push_back({xname(t, c, true), c});
+                    int n = 0, differ = 0;
+                    for (const auto& [kn, c] : ks) {
+                        if (!cfg_ok(c, t, n_in) || !cx.has_function(lib, kn)) continue;
+                        Cfg twin{c.L, 1, 4, c.K};   // its stock twin
+                        if (!cx.has_function(lib, kname(t, twin))) twin.S = 8;
+                        std::vector<float> yt, yw;
+                        if (!run(kname(t, twin), twin, false, yt) || !run(kn, c, kn.rfind("gemvx", 0) == 0, yw)) continue;
+                        ++n;
+                        if (std::memcmp(yt.data(), yw.data(), 4 * yt.size()) != 0) {
+                            ++differ;
+                            std::printf("  NOT BITWISE: %s vs %s\n", kn.c_str(), kname(t, twin).c_str());
+                        }
+                    }
+                    const bool ok = n > 0 && differ == 0;
+                    fails += !ok;
+                    std::printf("wide   %-7s n_in %5d ntok %d: %2d gemv_wide.metal kernels vs their stock twins: %s  %s\n",
+                                ref::type_name(t), n_in, nt, n, differ ? "NOT bitwise" : "bitwise", ok ? "PASS" : "FAIL");
+                }
+                cx.free(W);
+                cx.free(x);
+                cx.free(y);
+                cx.free(xp);
+            }
+        }
         std::printf("%s\n", fails ? "SOME FAILED" : "ALL PASS");
         return fails ? 1 : 0;
     }
@@ -295,7 +482,7 @@ int main(int argc, char** argv) {
                             : kCfgs) {
                 if (!cfg_ok(c, s.type, s.n_in)) continue;
                 if (!all && !(c.K == 1 || s.n_in >= 6144)) continue;
-                if (gx && tgm > 32768) continue;
+                if (gx && tgm > cx.max_threadgroup_memory()) continue;
                 const std::string kn = gx ? "gemvx_" + std::to_string(s.type) + "_" + std::to_string(c.L) + "_" + std::to_string(c.R) +
                                                  "_" + std::to_string(c.S)
                                           : kname(s.type, c);
