@@ -7735,6 +7735,11 @@ int main(int argc, char **argv) try {
         // states saved at L (a split's mid-prompt checkpoint); without, they are read now (everything is at L)
         // #613: why the last checkpoint_at failed - a failed device sync is the GPU itself (a hang Windows then resets),
         // not the checkpoint, and the error says so
+        // #1906: the checkpoints a batch slot's read takes are mirrored into that slot's own list as they are
+        // created - the main session's list is cleared by the next admission, and a later request branching
+        // inside this conversation (a new question over the same context) resumes from the slot's copies.
+        // Set per BGEN admission (below), cleared when the read ends.
+        std::vector<ConvCheckpoint>* slot_checks_mirror = nullptr;
         std::string ckpt_why;
         auto gpu_sync_ok = [&]() -> bool {
             try {
@@ -7798,6 +7803,26 @@ int main(int argc, char **argv) try {
                 tail_ckpt_len = -1;   // the flagged tail was dropped and a normal checkpoint takes its length
             }
             checks.push_back(std::move(c));
+            if (slot_checks_mirror != nullptr) {
+                // the slot's own copy: the main list is cleared by the next admission (the state itself was
+                // saved out of this slot's session during the read, so the copy is the whole checkpoint)
+                ConvCheckpoint m;
+                m.ids = c.ids;
+                m.imgs = c.imgs;
+                m.used = c.used;
+                if (!checkpoint_save(m, ss, g)) return false;
+                for (auto& st : stages) {
+                    const strata::core::OnDevice on(st->dev);
+                    ConvCheckpoint part;
+                    part.ids = m.ids;
+                    if (!gpu_sync_ok() || !checkpoint_save(part, st->ss, g)) return false;
+                    m.stage_parts.push_back(std::move(part));
+                }
+                slot_checks_mirror->push_back(std::move(m));
+                if (std::getenv("STRATA_RESUME_TRACE") != nullptr)
+                    std::fprintf(stderr, "strata resume-trace: mirrored ck %lld into the slot (%lld checks)\n",
+                                 (long long) m.ids.size(), (long long) slot_checks_mirror->size());
+            }
             while ((int) checks.size() > o.prompt_cache) {
                 std::vector<uint64_t> stamps;
                 std::vector<char> is_tail;
@@ -9295,6 +9320,7 @@ int main(int argc, char **argv) try {
                 }
                 admit_slot = (int) b;
                 admit_max_new = mn;
+                slot_checks_mirror = bimg ? nullptr : &bs[(size_t) b].checks;   // #1906: the read's checkpoints stay with the slot
                 line = std::string(bimg ? "GENI 1" : "GEN 1") + e2;
             }
             // #477: every --expert-profile-save-every minutes, before the next request (at QUIT: after the loop)
@@ -9869,10 +9895,12 @@ int main(int argc, char **argv) try {
                     checks.clear();   // the main session's checkpoints were of the conversation it held before
                     // a read that gave way, the same request again (into its own slot): on with it - its segments and
                     // checkpoints as if it had not stopped
+                    bool took_checks = false;
                     if (slot_ck == nullptr && bs[(size_t) slot_source].partial && admit_slot == slot_source) {
                         resumed_from0 = bs[(size_t) slot_source].partial_from0;
                         for (const ConvCheckpoint& c : bs[(size_t) slot_source].checks) checks.push_back(c);
                         bs[(size_t) slot_source].partial = false;
+                        took_checks = true;
                     }
                     if (slot_ck != nullptr) {
                         live = slot_ck->ids;
@@ -9880,6 +9908,17 @@ int main(int argc, char **argv) try {
                         checks.back().used = ++check_clock;
                     } else {
                         live = bs[(size_t) slot_source].ids;
+                        // #1906: the slot's turn checkpoints come along with its conversation.  The main session now holds
+                        // all of it, so each one is still a valid place to continue from - and the client's next turn,
+                        // sent back without this reply's thinking, matches only up to the turn boundary.  Without them
+                        // a request that moved slot -> solo -> slot (#857) kept none, and its next turn read its whole
+                        // history again.
+                        if (!took_checks)
+                            for (const ConvCheckpoint& c : bs[(size_t) slot_source].checks)
+                                if (c.ids.size() < live.size() && std::equal(c.ids.begin(), c.ids.end(), live.begin())) {
+                                    checks.push_back(c);
+                                    checks.back().used = ++check_clock;
+                                }
                     }
                     live_imgs.clear();
                     resume = slot_tokens;
@@ -10511,7 +10550,8 @@ int main(int argc, char **argv) try {
             }();
             // Only add a snapshot; the existing token and image checks still decide reuse.
             const int64_t message_at = message_checkpoint && !multi_gpu && o.prompt_cache > 0
-                ? strata::program::message_checkpoint_boundary(ids, resume, turn_at, o.turn_token) : -1;
+                ? strata::program::message_checkpoint_boundary(ids, resume, turn_at, o.turn_token,
+                                                               8192, 16384) : -1;
             int64_t at = read_from;
             for (const int64_t to : {reread_to, root_at, message_at, turn_at, n - 1}) {
                 if (to <= at) continue;
@@ -10575,6 +10615,7 @@ int main(int argc, char **argv) try {
                                      "them\n", (long long) il_parts + 1, il_ms);
             const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
             std::printf("REUSED %lld\n", (long long) resume);   // the prompt is read; the first window comes next
+            slot_checks_mirror = nullptr;   // the read's checkpoints are all mirrored; decode takes no more
             std::fflush(stdout);
             // the verify windows: the first holds the last prompt token alone
             int64_t p = n - 1;
@@ -11704,12 +11745,14 @@ int main(int argc, char **argv) try {
                     }
                     sl.cvec = cvec_cached;
                     sl.img = !live_imgs.empty();   // pictures: not matched again by tokens alone, so not cached
-                    const ConvCheckpoint* best = nullptr;
+                    // #1906: keep EVERY checkpoint that prefixes the conversation, not just the longest: the
+                    // message boundary between a shared context and the question is what a later request
+                    // branching inside this conversation resumes from; the longest (the turn) alone diverges
+                    // before it and is useless to that request.
                     for (const ConvCheckpoint& c : checks)
-                        if (c.ids.size() < live.size() && (best == nullptr || c.ids.size() > best->ids.size()) &&
+                        if (!sl.img && c.ids.size() < live.size() &&
                             std::equal(c.ids.begin(), c.ids.end(), live.begin()))
-                            best = &c;
-                    if (best != nullptr && !sl.img) sl.checks.push_back(*best);
+                            sl.checks.push_back(c);
                     std::fprintf(stderr, "strata batch: slot %d takes %lld tokens (copied in %.1f ms)\n", admit_slot,
                                  (long long) live.size(), std::chrono::duration<double, std::milli>(Clock::now() - tc0).count());
                 }
