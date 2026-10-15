@@ -148,6 +148,43 @@ bool rejects(const fs::path& p, const SessionFileIdentity& id, const char* expec
     }
     return !ok && !error.empty();
 }
+
+// same() plus the later stage images, compared stage by stage
+bool same_full(const SavedConversation& a, const SavedConversation& b) {
+    if (!same(a, b)) return false;
+    if (a.stage_images.size() != b.stage_images.size()) return false;
+    for (size_t i = 0; i < a.stage_images.size(); ++i)
+        if (!same(a.stage_images[i], b.stage_images[i])) return false;
+    return true;
+}
+
+uint32_t file_version(const std::vector<char>& d) {
+    uint32_t v = 0; std::memcpy(&v, d.data() + 8, 4); return v;
+}
+
+// a two-stage image: stage 0 is sample() (layers [0,48)), one later stage owns [48,96) with its own checkpoints/K/V
+SavedConversation two_stage() {
+    SavedConversation s = sample();
+    SavedConversation st;
+    for (size_t i = 0; i < st.geometry.size(); ++i) st.geometry[i] = int64_t(100 + i);   // same model geometry
+    st.layer_lo = 48; st.layer_hi = 96;
+    st.cvec = false;
+    st.live = checkpoint(20, 7);
+    st.checkpoints.push_back(checkpoint(5, 8));
+    for (int layer = 0; layer < 2; ++layer) {
+        ConversationKv kv;
+        kv.format = 2 + layer; kv.cells = 512; kv.heads = 2; kv.head_dim = 256;
+        kv.page_size = 64; kv.pooled_rows = 0; kv.idx_dim = 128;
+        kv.k = pattern(1024, uint8_t(50 + layer));
+        kv.v = pattern(1024 + layer, uint8_t(60 + layer));
+        kv.k_scale = pattern(256, uint8_t(70 + layer));
+        kv.v_scale = pattern(256, uint8_t(80 + layer));
+        kv.pooled = pattern(0, 0);
+        st.kv.push_back(std::move(kv));
+    }
+    s.stage_images.push_back(std::move(st));
+    return s;
+}
 } // namespace
 
 int main() {
@@ -241,13 +278,22 @@ int main() {
     // other model or other configuration
     check(rejects(good, {id.model ^ 1, id.config}, "model"), "different model fingerprint rejected");
     check(rejects(good, {id.model, id.config ^ 1}, "config"), "different configuration rejected");
-    // wrong version: header field patched and header hash recomputed so only the version differs
+    // wrong version: header field patched and header hash recomputed so only the version differs.
+    // v1 and v3 are accepted; v2 (reserved for #2247's state codec) and v4+ are rejected.
+    {
+        auto d = image;
+        uint32_t v = 4; std::memcpy(d.data() + 8, &v, 4);
+        const uint64_t h = session_hash64(d.data(), 56, 0); std::memcpy(d.data() + 56, &h, 8);
+        const fs::path p = dir / "ver.bin"; spit(p, d);
+        check(rejects(p, id, "version"), "unknown version (4) rejected");
+    }
+    // v2 is reserved for #2247's state codec; this build rejects it explicitly (not a silent v1 misparse).
     {
         auto d = image;
         uint32_t v = 2; std::memcpy(d.data() + 8, &v, 4);
         const uint64_t h = session_hash64(d.data(), 56, 0); std::memcpy(d.data() + 56, &h, 8);
-        const fs::path p = dir / "ver.bin"; spit(p, d);
-        check(rejects(p, id, "version"), "unknown version rejected");
+        const fs::path p = dir / "ver2.bin"; spit(p, d);
+        check(rejects(p, id, "version"), "version 2 (state codec) rejected by this build");
     }
     // a corrupted element count with a recomputed payload hash must fail on bounds, not allocate
     {
@@ -768,6 +814,123 @@ int main() {
         check(::stat(link.c_str(), &st) == 0 && (st.st_mode & 0777) == 0600, "the session file is mode 0600");
     }
 #endif
+
+    // ---- multi-GPU stage format (v3) ----
+    // a two-stage image writes as v3 and reads back identical, including the later stage
+    {
+        SavedConversation two = two_stage();
+        const fs::path p = dir / "twostage.bin";
+        check(session_file_write(p.string(), two, id, written, error), "two-stage image written");
+        const auto d = slurp(p);
+        check(file_version(d) == 3, "a split image is written as version 3 (never silently truncated to v1)");
+        SavedConversation back; size_t n = 0; std::string err;
+        check(session_file_read(p.string(), id, back, n, err) && back.stage_images.size() == 1 &&
+              same_full(two, back), "two-stage round trip is identical");
+    }
+    // a v3 file truncated inside its stage section is rejected.  A plain truncation is caught by the file-size
+    // check (the header still declares the full payload); a truncation whose header is made self-consistent with
+    // the shorter file reaches the parser, which stops at the truncated stage section ("payload ends early").
+    {
+        const auto d = slurp(dir / "twostage.bin");
+        const size_t V = d.size();
+        // stage 0's payload is byte-identical to the v1 file's, so the stage section begins where the v1 trailer is
+        const size_t stage0_end = image.size() - 16;
+        check(stage0_end + 100 < V - 16, "the v3 file has a stage section to truncate");
+        // plain truncations inside the stage section: rejected (the declared payload no longer matches the file)
+        for (size_t cut : {stage0_end + 1, stage0_end + 8, stage0_end + 100, V - 1}) {
+            const fs::path p = dir / "cutstage.bin";
+            spit(p, std::vector<char>(d.begin(), d.begin() + (std::ptrdiff_t) cut));
+            check(rejects(p, id), "v3 file truncated inside its stage section rejected");
+        }
+        // a truncation the size check accepts: rewrite the payload length and header hash so the declared payload
+        // covers stage 0 only; the parser finishes stage 0 and stops reading the stage-count field, i.e. the
+        // truncated-stage-section path, not the file-size guard.
+        {
+            const size_t cut = stage0_end + 16;   // declared payload = stage 0's payload exactly
+            auto t = std::vector<char>(d.begin(), d.begin() + (std::ptrdiff_t) cut);
+            const uint64_t payload = (uint64_t) cut - 64 - 16;   // kHeader + kTrailer, so the size check passes
+            std::memcpy(t.data() + 32, &payload, 8);
+            const uint64_t hh = session_hash64(t.data(), 56, 0);
+            std::memcpy(t.data() + 56, &hh, 8);
+            const fs::path p = dir / "cutstageparse.bin"; spit(p, t);
+            SavedConversation back; size_t n = 0; std::string err;
+            const bool ok = session_file_read(p.string(), id, back, n, err);
+            check(!ok && !err.empty(), "v3 file truncated at its stage section is rejected");
+            check(err.find("does not match the header") == std::string::npos,
+                  "the truncated stage section reaches the parser, not the file-size guard");
+            check(err.find("payload ends early") != std::string::npos,
+                  "the truncated stage section reports 'payload ends early'");
+        }
+    }
+    // a v1 file (no stage section) still reads, with stage_images empty and the version byte still 1
+    {
+        SavedConversation back; size_t n = 0; std::string err;
+        check(session_file_read(good.string(), id, back, n, err) && back.stage_images.empty() && same(back, original),
+              "a v1 file reads with no stage images");
+        check(file_version(slurp(good)) == 1, "the single-GPU file is still version 1");
+    }
+    // reading a file with 2 later stages when the runtime allows only 1 is refused before allocation
+    {
+        SavedConversation three = two_stage();
+        three.stage_images.push_back(three.stage_images[0]);   // a second later stage -> n_stages = 2
+        const fs::path p = dir / "threestage.bin";
+        check(session_file_write(p.string(), three, id, written, error), "three-stage image written");
+        check(file_version(slurp(p)) == 3, "a multi-stage image is version 3");
+        SessionReadLimits l; l.max_stages = 1;
+        check(rejects(p, id, "count", l), "stage count over the runtime limit refused");
+    }
+    // a stage block whose layer range differs from the runtime's is refused before its state is read
+    {
+        SessionReadLimits l; l.max_stages = 2;
+        SessionReadLimits::SessionStageLimits sl;
+        sl.layer_range = std::make_pair(int64_t(0), int64_t(24));   // the file's later stage is [48,96)
+        l.stage_limits.push_back(sl);
+        check(rejects(dir / "twostage.bin", id, "layer", l), "a foreign stage layer range refused");
+    }
+    // a split image must be given K/V for every stage: a wrong-sized kv_stages list is refused (no silent truncation).
+    // The image's own K/V is cleared so the refusal can only come from the stage-count consistency check.
+    {
+        SavedConversation meta = two_stage();   // stage 0 + 1 later stage -> needs 2 K/V stage lists
+        meta.kv.clear();
+        meta.stage_images[0].kv.clear();
+        const std::vector<std::vector<SessionKvSource>> bad(1);   // only stage 0 given, the later stage's K/V would be dropped
+        const fs::path p = dir / "badstages.bin";
+        std::string err;
+        check(!session_file_write(p.string(), meta, bad, id, written, err), "split image with the wrong K/V stage count refused");
+        check(err.find("stage(s) but the image has") != std::string::npos, "the refusal names both stage counts");
+        check(!fs::exists(p) && no_temp(dir), "refused split write leaves no file");
+    }
+    // fully-specified per-stage limits bound a v3 file, the read succeeds, and a tightened stage bound is refused
+    {
+        SavedConversation two = two_stage();
+        const fs::path p = dir / "bounded.bin";
+        check(session_file_write(p.string(), two, id, written, error), "bounded split written");
+        const auto d = slurp(p);
+        SessionReadLimits l;
+        l.max_tokens = 1000; l.max_checkpoints = 2; l.max_kv_layers = 3;
+        l.geometry = two.geometry;
+        l.layer_range = std::make_pair(two.layer_lo, two.layer_hi);
+        l.max_state_bytes = {two.live.gdn.size(), two.live.ple.size(), two.live.tails.size(), two.live.dead.size(), two.live.block_pos.size()};
+        for (const auto& k : two.kv)
+            l.max_kv_bytes.push_back({k.k.size(), k.v.size(), k.k_scale.size(), k.v_scale.size(), k.pooled.size()});
+        l.max_stages = 1;
+        const SavedConversation& s0 = two.stage_images[0];
+        SessionReadLimits::SessionStageLimits sl;
+        sl.layer_range = std::make_pair(s0.layer_lo, s0.layer_hi);
+        sl.max_state_bytes = {s0.live.gdn.size(), s0.live.ple.size(), s0.live.tails.size(), s0.live.dead.size(), s0.live.block_pos.size()};
+        for (const auto& k : s0.kv)
+            sl.max_kv_bytes.push_back({k.k.size(), k.v.size(), k.k_scale.size(), k.v_scale.size(), k.pooled.size()});
+        l.stage_limits.push_back(sl);
+        check(session_read_max_file_bytes(l) >= d.size() && session_read_max_file_bytes(l) < UINT64_MAX,
+              "limits: the per-stage limits bound the v3 file size");
+        SavedConversation back; size_t n = 0; std::string err;
+        check(session_file_read(p.string(), id, back, n, err, l) && same_full(two, back),
+              "limits: a v3 file within the full per-stage limits reads");
+        auto l2 = l; l2.stage_limits[0].max_state_bytes[0] = s0.live.gdn.size() - 1;
+        check(rejects(p, id, "limit", l2), "limits: a later stage's GDN state over its bound refused");
+        l2 = l; l2.stage_limits[0].max_kv_bytes[0][0] = s0.kv[0].k.size() - 1;
+        check(rejects(p, id, "limit", l2), "limits: a later stage's K buffer over its bound refused");
+    }
 
     fs::remove_all(dir);
     std::printf("conversation_file_test: %d checks passed\n", checks);

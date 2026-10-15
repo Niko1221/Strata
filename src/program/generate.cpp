@@ -1807,6 +1807,16 @@ private:
     bool stop_ = false;
 };
 
+// Which stage's image carries the draft head's K/V: the LAST stage when the drafter is loaded there (!mtp_first),
+// none when there is no draft (--no-mtp); otherwise no later stage (it stays on stage 0).  Shared by the parking
+// path and the session save/restore path so draft placement is edited in one place within this backend (the SYCL
+// port keeps its own variant).  `draft0` (the stage-0 special case, kept at each call site) is NOT this: with no
+// split the single image always carries the draft.
+const strata::core::QsaState* draft_stage_kv(size_t k, size_t n_st, bool mtp_first, bool use_mtp,
+                                             const strata::core::QsaState& mtp_kv) {
+    return use_mtp && !mtp_first && k + 1 == n_st ? &mtp_kv : nullptr;
+}
+
 // --control-vector-scaled: llama.cpp's `common_control_vector_load` (every file's `direction.<l>` times its scale,
 // summed; layer 0 has none) and `llama_adapter_cvec::apply` with the projection-mode patch (project: the unit
 // direction and its norm as the scale), into the tables `cvec_upload` takes.  `summary` is what INFO reports;
@@ -8895,7 +8905,7 @@ int main(int argc, char** argv) {
             // the draft layer's K/V lives on the last stage's GPU (the drafter is loaded there): with a split it is
             // saved with that stage's image, under its device; stage 0's image holds none
             const strata::core::QsaState* draft0 = (n_st > 0 && !mtp_first) || !use_mtp ? nullptr : &mtp.kv_state();   // no --mtp: no draft K/V (snapshots accept null)
-            auto draft_of = [&](size_t k) -> const strata::core::QsaState* { return use_mtp && !mtp_first && k + 1 == n_st ? &mtp.kv_state() : nullptr; };
+            auto draft_of = [&](size_t k) -> const strata::core::QsaState* { return draft_stage_kv(k, n_st, mtp_first, use_mtp, mtp.kv_state()); };
             strata::core::ConversationCheckpointSplit cs;
             if (n_st > 0) cs = strata::core::conversation_checkpoints_split(std::move(checks), n_st);   // #752: two-phase; a bad_alloc leaves `checks` whole
             struct MergeBack {
@@ -11426,7 +11436,6 @@ int main(int argc, char** argv) {
                 };
                 strata::core::progress_at(save ? "saving a session" : "restoring a session");
                 if (path.empty()) { refuse("missing path"); continue; }
-                if (!stages.empty() || multi_gpu) { refuse("session files do not support --layer-split"); continue; }
                 if (o.peer_device >= 1) { refuse("session files do not support --peer-device"); continue; }
                 if (o.batch > 0) { refuse("session files do not support --batch (parallel requests)"); continue; }
                 if (o.prompt_cache <= 0) { refuse("session files need --prompt-cache > 0"); continue; }
@@ -11447,6 +11456,15 @@ int main(int argc, char** argv) {
                     refuse(std::string("session identity: ") + e.what(), strata::core::SessionError::io);
                     continue;
                 }
+                // A layer split saves one image per stage; the draft layer's K/V is written once, with the stage that
+                // owns the draft head.  For a split the routing matches park_current_body (:8248-8249): with !mtp_first
+                // the draft goes to the LAST stage and stage 0 holds none; with mtp_first it stays on stage 0.  With no
+                // split (n_st == 0) the single image always carries the draft, exactly as the single-GPU path did.
+                const size_t n_st = stages.size();
+                const strata::core::QsaState* draft0 = n_st == 0
+                    ? &mtp.kv_state()
+                    : ((!mtp_first || !use_mtp) ? nullptr : &mtp.kv_state());
+                auto draft_of = [&](size_t k) -> const strata::core::QsaState* { return draft_stage_kv(k, n_st, mtp_first, use_mtp, mtp.kv_state()); };
                 if (save) {
                     if (!live_ok || live.empty()) { refuse("no complete session to save"); continue; }
                     size_t bytes = 0, kept = 0;
@@ -11460,18 +11478,30 @@ int main(int argc, char** argv) {
                         // the authoritative pools straight into the file, without a full host capture.
                         strata::core::SessionSaveLive sl;
                         {
-                            strata::core::ConversationStateSizes z;
-                            std::string why;
-                            uint64_t state = UINT64_MAX;   // unknown sizes: the preflight refuses rather than guesses
-                            if (strata::core::conversation_session_sizes(g, ss, z, why)) {
-                                const uint64_t q = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0);
+                            // Sum the live running state over stage 0 (ss) and every later stage: the capture copies
+                            // each stage's state, so the preflight must cover all of them.  An unknown or overflowing
+                            // carve makes the whole estimate unknown (UINT64_MAX): the preflight refuses rather than
+                            // guesses.  K/V layers: every stage's owned QSA layers, plus the one draft ring (written
+                            // once, by whichever stage owns it).
+                            uint64_t state = 0, kv_layers = 0;
+                            bool known = true;
+                            auto add_carve = [&](const strata::core::SessionState& s) {
+                                strata::core::ConversationStateSizes z;
+                                std::string why;
+                                if (!strata::core::conversation_session_sizes(g, s, z, why)) { known = false; return; }
+                                const uint64_t q = (uint64_t) std::max<int64_t>(s.qsa_alloc, 0);
                                 const uint64_t per = (uint64_t) z.tail + z.dead + z.block_pos;
-                                if (q == 0 || per <= (UINT64_MAX - z.gdn - z.ple) / q) state = z.gdn + z.ple + q * per;
-                            }
-                            sl.state_bytes = state;
+                                if (q != 0 && per > (UINT64_MAX - z.gdn - z.ple) / q) { known = false; return; }
+                                const uint64_t carve = z.gdn + z.ple + q * per;
+                                if (carve > UINT64_MAX - state) known = false; else state += carve;
+                                kv_layers += q;
+                            };
+                            add_carve(ss);
+                            for (const auto& st : stages) add_carve(st->ss);
+                            sl.state_bytes = known ? state : UINT64_MAX;
                             sl.tokens = live.size();
                             sl.images = live_imgs.size();
-                            sl.kv_layers = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) + 1;
+                            sl.kv_layers = kv_layers + 1;   // the draft ring, written once
                         }
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                         if (o.session_save_reclaim) {
@@ -11504,23 +11534,51 @@ int main(int argc, char** argv) {
                             continue;
                         }
                         kept = disk_checks.size();
-                        const strata::core::ConversationView view{live, live_imgs, disk_checks, cvec_cached};
+                        // Split the already-copied deepest checkpoint into per-stage parts for the per-stage images.
+                        // `checks` is never moved here - only the throwaway copy is split - so a failed save leaves the
+                        // live chain whole without a merge-back guard.  With no split, stage 0 uses the whole
+                        // checkpoint directly (the single-GPU path, byte-for-byte unchanged).
+                        strata::core::ConversationCheckpointSplit cs;
+                        if (n_st > 0) {
+                            cs = strata::core::conversation_checkpoints_split(std::move(disk_checks), n_st);
+                            if (!cs.rest.empty()) {
+                                refuse("session save: a checkpoint is incomplete for this layer split", strata::core::SessionError::io);
+                                continue;
+                            }
+                        }
+                        const strata::core::ConversationView view0{live, live_imgs,
+                                                                   n_st > 0 ? cs.stage0 : disk_checks, cvec_cached};
                         strata::core::SavedConversation meta;
-                        std::vector<strata::core::SessionKvSource> sources;
+                        std::vector<std::vector<strata::core::SessionKvSource>> kv_stages;
+                        std::vector<strata::core::SessionKvSource> sources0;
                         // the live running state comes off the device in one synchronous copy
                         blocking("capture", sl.state_bytes == UINT64_MAX ? 0 : sl.state_bytes);
-                        if (!strata::core::conversation_snapshot_sources(meta, sources, view, ss, g, mtp.kv_state(),
-                                                                         err)) {
+                        if (!strata::core::conversation_snapshot_sources(meta, sources0, view0, ss, g, draft0, err)) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
                         }
+                        kv_stages.push_back(std::move(sources0));
                         capture_ms = ms();
+                        bool stage_err = false;
+                        for (size_t k = 0; k < n_st; ++k) {   // the later stages (the last one with the draft layer's K/V)
+                            auto& stg = stages[k];
+                            const strata::core::OnDevice on(stg->dev);
+                            if (cudaDeviceSynchronize() != cudaSuccess) { err = "stage capture: device sync failed"; stage_err = true; break; }
+                            const strata::core::ConversationView view_k{live, live_imgs, cs.parts[k], cvec_cached};
+                            strata::core::SavedConversation part;
+                            std::vector<strata::core::SessionKvSource> sources_k;
+                            if (!strata::core::conversation_snapshot_sources(part, sources_k, view_k, stg->ss, g,
+                                                                            draft_of(k), err)) { stage_err = true; break; }
+                            meta.stage_images.push_back(std::move(part));
+                            kv_stages.push_back(std::move(sources_k));
+                        }
+                        if (stage_err) { refuse(err, strata::core::SessionError::io); continue; }
                         strata::core::SessionWriteOptions wo;
                         wo.min_free_bytes = (uint64_t) o.session_min_free_mib << 20;
                         wo.progress = moving;
                         wo.phase = blocking;
                         strata::core::SessionStatus st;
-                        if (!strata::core::session_file_write(path, meta, sources, id, bytes, err, wo, &st)) {
+                        if (!strata::core::session_file_write(path, meta, kv_stages, id, bytes, err, wo, &st)) {
                             refuse(err, st.error, st.published);
                             continue;
                         }
@@ -11560,6 +11618,22 @@ int main(int argc, char** argv) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
                         }
+                        // A layer split's later stages: bound each stage block by its own carve (its layer range,
+                        // running-state and K/V sizes).  The draft layer belongs only to the stage that owns it.
+                        // max_stages caps the stage count so a file from a different split is refused before parsing.
+                        limits.max_stages = n_st;
+                        limits.stage_limits.clear();
+                        bool stage_limit_bad = false;
+                        for (size_t k = 0; k < n_st; ++k) {
+                            strata::core::SessionReadLimits::SessionStageLimits sl;
+                            if (!strata::core::conversation_stage_read_limits(sl, stages[k]->ss, g, draft_of(k),
+                                                                             (uint64_t) o.max_context, err)) {
+                                stage_limit_bad = true;
+                                break;
+                            }
+                            limits.stage_limits.push_back(std::move(sl));
+                        }
+                        if (stage_limit_bad) { refuse(err, strata::core::SessionError::io); continue; }
                         strata::core::SessionStatus st;
                         if (!strata::core::session_file_read(path, id, image, bytes, err, limits, &st)) {
                             refuse(err, st.error);
@@ -11570,9 +11644,23 @@ int main(int argc, char** argv) {
                         continue;
                     }
                     const double read_ms = ms();
-                    // the whole image against this engine, still without any device write
+                    // Validate the whole image against this engine before any device write, stage by stage (mirrors the
+                    // parked restore): a stage-count mismatch or a foreign/invalid stage is refused here, so a bad file
+                    // never reaches the device.  Stage 0 uses the pointer overload (the whole-session form rejects an
+                    // image that carries stage images).
                     blocking("validate", bytes);
-                    if (!strata::core::conversation_snapshot_validate(image, ss, g, mtp.kv_state(), err)) {
+                    if (image.stage_images.size() != n_st) {
+                        refuse("session file: stage count does not match this engine's layer split");
+                        continue;
+                    }
+                    bool stage_bad = false;
+                    for (size_t k = 0; k < n_st; ++k) {
+                        const strata::core::OnDevice on(stages[k]->dev);
+                        if (!strata::core::conversation_snapshot_validate(image.stage_images[k], stages[k]->ss, g,
+                                                                         draft_of(k), err)) { stage_bad = true; break; }
+                    }
+                    if (stage_bad) { refuse(err); continue; }
+                    if (!strata::core::conversation_snapshot_validate(image, ss, g, draft0, err)) {
                         refuse(err);
                         continue;
                     }
@@ -11583,9 +11671,12 @@ int main(int argc, char** argv) {
                     }
                     conversations.take_reuse();   // retained K/V described the outgoing session
                     live_ok = false;
-                    // host -> device in synchronous copies of the whole state: one bounded allowance
+                    // host -> device in synchronous copies of the whole state: one bounded allowance.  Stage 0 first,
+                    // then each later stage under its own device (mirrors the parked restore).  A transfer failure in
+                    // any stage is fatal: a half-restored split is the same class of failure as a half-restored single
+                    // session, and the server starts the engine again.
                     blocking("transfer", bytes);
-                    if (strata::core::conversation_snapshot_restore(image, ss, g, mtp.kv_state(), err) !=
+                    if (strata::core::conversation_snapshot_restore(image, ss, g, draft0, err) !=
                         strata::core::ConversationRestore::restored) {
                         // validated above: a failure here is a transfer failure, after device writes began - never
                         // decode from a partial state; the server starts the engine again
@@ -11596,9 +11687,41 @@ int main(int argc, char** argv) {
                         std::fflush(stdout);
                         return 1;
                     }
+                    for (size_t k = 0; k < n_st; ++k) {
+                        const strata::core::OnDevice on(stages[k]->dev);
+                        if (strata::core::conversation_snapshot_restore(image.stage_images[k], stages[k]->ss, g,
+                                draft_of(k), err) != strata::core::ConversationRestore::restored) {
+                            std::fprintf(stderr, "strata serve: session restore %s: stage CUDA%d transfer failed: %s\n",
+                                         path.c_str(), stages[k]->dev, err.c_str());
+                            std::printf("FATAL restoring the session file failed after the device state was changed "
+                                        "(stage CUDA%d): %s\n", stages[k]->dev, err.c_str());
+                            std::fflush(stdout);
+                            return 1;
+                        }
+                        if (cudaDeviceSynchronize() != cudaSuccess) {
+                            std::printf("FATAL restoring the session file: stage CUDA%d sync failed\n", stages[k]->dev);
+                            std::fflush(stdout);
+                            return 1;
+                        }
+                    }
                     live = std::move(image.live.ids);
                     live_imgs = std::move(image.live.imgs);
-                    checks = std::move(image.checkpoints);
+                    // Re-assemble the checkpoint chain from the per-stage images (the split's inverse).  A restored
+                    // image carries no `complete` flags, so merge treats every position as whole (conversation_cache).
+                    if (n_st == 0) {
+                        checks = std::move(image.checkpoints);
+                    } else {
+                        strata::core::ConversationCheckpointSplit cs;
+                        cs.stage0 = std::move(image.checkpoints);
+                        for (auto& si : image.stage_images) cs.parts.push_back(std::move(si.checkpoints));
+                        if (!strata::core::conversation_checkpoints_merge(std::move(cs), checks)) {
+                            // Prevalidated stage by stage; a merge failure means the per-stage checkpoints do not line
+                            // up (a corrupt file).  The device state is already written: fatal, never decode from it.
+                            std::printf("FATAL restoring the session file: the stage checkpoints do not reassemble\n");
+                            std::fflush(stdout);
+                            return 1;
+                        }
+                    }
                     for (const ConvCheckpoint& c : checks) check_clock = std::max(check_clock, c.used);
                     cvec_cached = image.cvec;
                     live_ok = true;
