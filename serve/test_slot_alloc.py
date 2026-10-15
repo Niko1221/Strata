@@ -246,17 +246,31 @@ class RetentionPolicy(unittest.TestCase):
         b = slot_policy.cache_state(150000, self.NOW - 97, self.NOW)
         self.assertGreater(a['retention'], b['retention'])
 
-    def test_expired_value_is_continuous_then_halves_without_changing_protection(self):
+    def test_expired_value_loses_more_each_interval_and_reaches_zero_at_total_idle_limit(self):
         ttl = slot_policy.cache_ttl(50000)
         base = slot_policy.stale_retention(50000)
         self.assertAlmostEqual(base, slot_policy.cache_state(50000, 0, ttl - 1e-8)['retention'])
         for age in (0, ttl / 2, ttl):
             self.assertEqual(slot_policy.stale_retention(50000, age), base)
-        self.assertAlmostEqual(slot_policy.stale_retention(50000, ttl + 120), base / 2)
-        self.assertAlmostEqual(slot_policy.stale_retention(50000, ttl + 240), base / 4)
+        values = [slot_policy.stale_retention(50000, ttl + (1800 - ttl) * i / 4) for i in range(5)]
+        self.assertAlmostEqual(values[2], base * 0.75)
+        losses = [values[i] - values[i + 1] for i in range(4)]
+        self.assertTrue(all(losses[i] < losses[i + 1] for i in range(3)))
+        self.assertEqual(values[-1], 0)
         self.assertEqual(slot_policy.cache_ttl(50000), ttl)
         self.assertEqual(slot_policy.stale_retention(50000, 1e12), 0)
         self.assertEqual(slot_policy.stale_retention(0, 1e12), 0)
+
+    def test_approved_lengths_cross_the_keep_threshold_before_thirty_minutes(self):
+        for n, crossing in ((8000, 1585), (16000, 1697), (32000, 1745), (50000, 1762),
+                            (100000, 1778), (200000, 1787), (262144, 1789)):
+            with self.subTest(tokens=n):
+                self.assertGreater(slot_policy.stale_retention(n, crossing - 1), 0.01)
+                self.assertLess(slot_policy.stale_retention(n, crossing + 1), 0.01)
+                self.assertEqual(slot_policy.stale_retention(n, 1800), 0)
+                self.assertEqual(slot_policy.stale_retention(n, 1801), 0)
+        for n in (500, 2000):
+            self.assertLess(slot_policy.stale_retention(n), 0.01)
 
     def test_old_long_history_yields_before_a_recent_shorter_one_even_in_busier_group(self):
         e = self.e()
@@ -274,6 +288,7 @@ class RetentionPolicy(unittest.TestCase):
         e.slot_held = [[b] * 50000 for b in range(6)]
         e.slot_held[2] = list(range(100000))
         e.slot_used[2] = self.NOW - 3600
+        self.assertEqual(slot_policy.stale_retention(100000, self.NOW - e.slot_used[2]), 0)
         plan = self.place(e, list(range(100001)), padding_safe=True, allow_eviction=False)
         self.assertEqual((plan.slot, plan.source_hint, plan.reused_hint), (2, 2, 100000))
         self.assertEqual(len(e.slot_held[2]), 100000)
@@ -516,6 +531,7 @@ class ParkMainSession(unittest.TestCase):
         e._park_claims, e.slot_claims = set(), set()
         e.main_held = [7] * 50000
         e.main_peer = "192.0.2.9"
+        e.main_used = self.NOW
         return e
 
     def dest(self, e, exclude=()):
@@ -561,6 +577,51 @@ class ParkMainSession(unittest.TestCase):
         e.main_held = [7] * 50000
         e.slot_held[3] = [7] * 48000                                     # a slot holds 96% of it already
         self.assertEqual(e._claim_park([1] * 60), "")
+
+    def test_parking_inherits_the_main_history_last_use_and_does_not_renew_its_value(self):
+        e = self.e()
+        e.main_used = self.NOW - 1700
+        value = slot_policy.stale_retention(50000, 1700)
+        key = e._claim_park([1] * 60)
+        b = int(key.split('=')[1])
+        # The main session may begin a new request before PARKED is processed; the snapshot owns this age.
+        e.main_used = self.NOW
+        e._on_parked(b, 49999)
+        self.assertEqual(e.slot_used[b], self.NOW - 1700)
+        self.assertAlmostEqual(slot_policy.stale_retention(len(e.slot_held[b]), self.NOW - e.slot_used[b]), value,
+                               delta=0.00001)
+        e.slot_live = [None] * 6
+        with mock.patch('serve.server.time.time', return_value=self.NOW + 30):
+            e.slots_view()
+        self.assertEqual(e.slot_used[b], self.NOW - 1700)   # observation cannot renew the cache either
+
+    def test_main_below_keep_threshold_is_not_parked_even_when_slots_are_blank(self):
+        e = self.e()
+        for age in (1770, 1800, 3600):
+            e.main_used = self.NOW - age
+            self.assertEqual(e._claim_park([1] * 60), '')
+            self.assertFalse(any(e.slot_busy))
+            self.assertFalse(e._park_claims)
+            self.assertEqual(e.main_held, [7] * 50000)   # a skipped park does not itself erase the main cache
+            self.assertEqual(e.cache_events_view()[0]['reason'], 'main_low_value')
+
+    def test_main_above_keep_threshold_is_parked_with_its_old_age(self):
+        e = self.e()
+        e.main_used = self.NOW - 1760
+        key = e._claim_park([1] * 60)
+        self.assertTrue(key.startswith(' park='))
+        b = int(key.split('=')[1])
+        e._on_parked(b, 49999)
+        self.assertEqual(e.slot_used[b], self.NOW - 1760)
+
+    def test_zero_value_main_can_still_continue_without_a_park_or_deletion(self):
+        e = self.e()
+        e.main_used = self.NOW - 3600
+        self.assertEqual(slot_policy.stale_retention(len(e.main_held), 3600), 0)
+        self.assertEqual(e._claim_park(e.main_held + [1, 2, 3]), '')
+        self.assertEqual(e.main_held, [7] * 50000)
+        self.assertFalse(e._park_claims)
+        self.assertEqual(e.cache_events_view(), [])   # no low-value rejection of a continued conversation
 
     def test_own_older_copy_is_refreshed_before_using_a_blank_slot(self):
         e = self.e()
@@ -628,7 +689,7 @@ class PolicyTunables(unittest.TestCase):
         got = slot_policy.configure({"STRATA_SLOT_TTL_MAX_S": "240", "STRATA_SLOT_PROTECT_WAIT_S": "2",
                                      "STRATA_SLOT_PARK_MIN_TOKENS": "x"})
         self.assertEqual(got, {"ttl_max_s": 240.0, "protect_wait_s": 2.0, "park_min_tokens": 8192,
-                               "expired_keep_score": 0.01, "expired_half_life_s": 120.0})
+                               "expired_keep_score": 0.01, "idle_value_zero_s": 1800.0})
         self.assertAlmostEqual(slot_policy.cache_ttl(100000), 180.0)     # the whole curve doubles
         self.assertAlmostEqual(slot_policy.cache_ttl(10 ** 6), 240.0)
         self.assertEqual(slot_policy.configure({})["ttl_max_s"], 120.0)
@@ -638,16 +699,23 @@ class PolicyTunables(unittest.TestCase):
         e = StrataEngine("missing", [], env={"STRATA_SLOT_PARK_MIN_TOKENS": "20000"}, lazy=True)
         self.assertEqual(e.slot_policy_settings["park_min_tokens"], 20000)
 
-    def test_expired_half_life_override_disable_and_invalid_values(self):
+    def test_idle_limit_override_disable_and_invalid_values(self):
         ttl = slot_policy.cache_ttl(50000)
         base = slot_policy.stale_retention(50000)
-        slot_policy.configure({"STRATA_SLOT_EXPIRED_HALF_LIFE_S": "30"})
-        self.assertAlmostEqual(slot_policy.stale_retention(50000, ttl + 30), base / 2)
-        slot_policy.configure({"STRATA_SLOT_EXPIRED_HALF_LIFE_S": "0"})
+        slot_policy.configure({"STRATA_SLOT_IDLE_VALUE_ZERO_S": "3600"})
+        self.assertEqual(slot_policy.stale_retention(50000, 3600), 0)
+        self.assertAlmostEqual(slot_policy.stale_retention(50000, (ttl + 3600) / 2), base * 0.75)
+        slot_policy.configure({"STRATA_SLOT_IDLE_VALUE_ZERO_S": "0"})
         self.assertEqual(slot_policy.stale_retention(50000, ttl + 3600), base)
         for bad in ("nan", "inf", "-1", "bad"):
-            got = slot_policy.configure({"STRATA_SLOT_EXPIRED_HALF_LIFE_S": bad})
-            self.assertEqual(got["expired_half_life_s"], 120)
+            got = slot_policy.configure({"STRATA_SLOT_IDLE_VALUE_ZERO_S": bad})
+            self.assertEqual(got["idle_value_zero_s"], 1800)
+
+    def test_a_configured_idle_limit_cannot_shorten_protection(self):
+        slot_policy.configure({"STRATA_SLOT_IDLE_VALUE_ZERO_S": "30"})
+        base = slot_policy.stale_retention(50000)
+        self.assertEqual(slot_policy.stale_retention(50000, 64), base)
+        self.assertEqual(slot_policy.stale_retention(50000, 65), 0)
 
 
 class NativePaddingSafety(unittest.TestCase):
