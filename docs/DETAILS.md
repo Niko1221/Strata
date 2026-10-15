@@ -366,16 +366,17 @@ base's, then the rest.)
 
 ## Which model?
 
-All three are [ISTA-DASLab's GSQ-RCO quantizations](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
+All four are [ISTA-DASLab's GSQ-RCO quantizations](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
 of [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next).
 
 | Model | Download | RAM it uses | Speed | Quality |
 | --- | ---: | ---: | --- | --- |
 | **Q2_0** | 66 GB | ~34 GB experts + ~6 GB | fastest | good |
 | **IQ2_XS** | 68 GB | ~36 GB experts + ~6 GB | close to Q2_0 | a bit better |
-| **IQ3_XXS** | 76 GB | ~43 GB experts + ~6 GB | slower (more CPU work) | best |
+| **IQ3_XXS** | 76 GB | ~43 GB experts + ~6 GB | slower (more CPU work) | great |
+| **IQ3_S** | 84 GB | ~50 GB experts + ~6 GB | slowest | best (88% the same top token as Q8_0, IQ3_XXS 84%: [QUANTS.md](QUANTS.md)) |
 
-With 64 GB of RAM all three fit (close the browser for IQ3_XXS, and keep its context at 128K or less). With 48 GB only Q2_0 / IQ2_XS may fit. With 32 GB: the Coder (below).
+With 64 GB of RAM all four fit: close the browser for IQ3_XXS and IQ3_S, and keep their context at 128K or less. Setup recommends IQ3_S there for a first install (since 0.1.44). With 48 GB only Q2_0 / IQ2_XS may fit. With 32 GB: the Coder (below).
 
 ### Or: the Coder (half the experts, for code)
 
@@ -454,7 +455,7 @@ Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GP
 **The first time** it asks four questions and does the rest:
 
 1. **Which model?** Qwen3.8-Flash-Next (the original) or Swift 1.5 (the fine-tune that thinks shorter).
-2. **Which size?** Q2_0, IQ2_XS or IQ3_XXS (it recommends one for your RAM).
+2. **Which size?** Q2_0, IQ2_XS, IQ3_XXS or IQ3_S (it recommends one for your RAM; Swift 1.5 has no Q2_0).
 3. **How much context?** 8K to 256K tokens (it recommends one for your VRAM).
 4. **Images?** yes / no (see [Images](#images-vision)).
 
