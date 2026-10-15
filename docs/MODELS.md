@@ -98,7 +98,8 @@ The original, in all four sizes. With images, and with the
 it keeps 256 of each layer's 512 experts, chosen on code (with agentic and image) data, and drops the rest (91% of
 the full model's SWE-bench Verified score, 99% of LiveCodeBench, by its authors). One size (IQ1_M: its experts stored
 like IQ3_S): shard 1 is **29.6 GB**, so it fits a PC with **32 GB of RAM**, runs 262K context on 64 GB, and reads long
-prompts the fastest of all. With half the experts gone it is weaker outside code and in languages other than
+prompts fast (second only to Q2_0 on the RTX 5070 above, the fastest of the three on the RX 9070 XT). With half
+the experts gone it is weaker outside code and in languages other than
 English, Chinese and other CJK text included (#438: Chinese answers came out wrong or looping where English was
 fine). For general use, or whenever your RAM allows, take a size that keeps every expert: Q2_0, IQ2_XS or IQ3_S.
 More: [details](DETAILS.md#or-the-coder-half-the-experts-for-code).
