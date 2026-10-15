@@ -10612,7 +10612,11 @@ int main(int argc, char** argv) {
             }
             std::fputs("]}\n", f);
             const bool ok = std::fclose(f) == 0;
-            if (!ok || std::rename(tmp.c_str(), o.routing_counts.c_str()) != 0)
+            // std::filesystem::rename replaces the last file on every platform (MoveFileEx on Windows, where
+            // std::rename refuses an existing target), as write_expert_profile does
+            std::error_code ec;
+            if (ok) std::filesystem::rename(tmp, o.routing_counts, ec);
+            if (!ok || ec)
                 std::fprintf(stderr, "strata serve: the routing counts were not saved to %s\n", o.routing_counts.c_str());
         };
         // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
