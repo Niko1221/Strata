@@ -371,6 +371,8 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(q6k_align_bench PRIVATE strata_kernels)
   add_executable(gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gr_bench.cpp)   # fused GR read timing
   target_link_libraries(gr_bench PRIVATE strata_kernels)
+  add_executable(gdn_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gdn_bench.cpp)   # decode GDN recurrence timing
+  target_link_libraries(gdn_bench PRIVATE strata_kernels)
   add_executable(sycl_router_fast ${CMAKE_CURRENT_SOURCE_DIR}/probe/router_fast.cpp)
   target_link_libraries(sycl_router_fast PRIVATE strata_kernels)
   add_test(NAME sycl_router_fast COMMAND sycl_router_fast)
