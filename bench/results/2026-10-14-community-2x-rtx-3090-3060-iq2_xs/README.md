@@ -48,8 +48,9 @@ strata --pack iq2_xs --native .../IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001
 
 `tools/strata_bench.py --long --huge` (suite 1, 3 runs per test, medians with ranges), each run starting its
 own server from the install configuration. `--huge` is a local, opt-in addition to the tool (it adds the same
-prompt test at about 65,536 tokens; without the flag the suite is unchanged) - the patch is offered separately and
-the 64K column can be reproduced with `--long` plus that flag, or by hand. Model loading is not timed. One warm-up
+prompt test at about 65,536 tokens; without the flag the suite is unchanged): the diff is in `huge-flag.patch`
+in this folder, apply it with `git apply huge-flag.patch` to repeat the 64K column, and it is offered upstream
+separately. Model loading is not timed. One warm-up
 chat and a 1K prompt are discarded first. Every prompt carries a unique tag, so the conversation cache cannot help
 the fresh-prompt tests; `reused_tokens` was 0 in every prompt test. Thinking off, temperature 0, 24 new tokens for
 the prompt tests and 100 for the short chats, 64 per agent turn.
@@ -63,8 +64,15 @@ the prompt tests and 100 for the short chats, 64 per agent turn.
 | 64K prompt | 64040 | 24 | 3 |
 | agent session | 609 -> 14470 over 5 turns | 64/turn | 3 sessions |
 
-The long-context section uses `tools/ctx_sizes.py` instead: one server start per KV format at
-`--max-context 262144`, two fresh prompts per size, 256 generated tokens each, `reused_tokens` 0 everywhere.
+The long-context section uses `long-context/ctx_sizes.py` (a copy of the tool of the same name we wrote for
+this; it imports `tools/strata_bench.py`, so copy it into `tools/` to run it): one server start per KV format
+at `--max-context 262144`, two fresh prompts per size, 256 generated tokens each, `reused_tokens` 0 everywhere.
+The command that produced `long-context/*.json`:
+
+```bash
+python tools/ctx_sizes.py --config <arm config> --port 8092 --api-key <key> \
+    --sizes 131072,170000,200000,230000,262144 --runs 2 --max-new 256 --out bench/results
+```
 
 ## Results: the standard suite, both cards (medians, range in brackets)
 
@@ -88,7 +96,8 @@ The long-context section uses `tools/ctx_sizes.py` instead: one server start per
 
 For the same machine, same build and same suite, one card at a time: **3090 alone** 103.3 decode, 2132.8 / 2441.4
 / 2449.3 / 2416.4 prompt at 4K / 16K / 32K / 64K; **3060 alone** 44.2 decode, 364.7 / 616.8 / 617.8 / 615.1.
-Per-run data: `../../2026-10-14-rerun/`.
+Per-run data for the two single-card runs: `singles/3090-alone.json` and `singles/3060-alone.json` (the same
+suite, the same day, each card alone).
 
 ## Card order: both orders of the same pair
 
@@ -209,9 +218,13 @@ separately as an issue with the full logs.
 ## Data
 
 - `results.json`, `engine-log-excerpt.txt` - the 3060-first split run, the one in the tables above
+- `singles/3090-alone.json`, `singles/3060-alone.json` - the same suite on each card alone
 - `card-orders/explicit-layer-split-3.json`, `card-orders/order-0-1-control.json` - the card-order runs
 - `long-context/int8.json`, `k8v4.json`, `q4_0.json`, `int8-engine-log-excerpt.txt` - the 128K-256K runs
+- `long-context/ctx_sizes.py` - the long-context tool, so those numbers can be repeated
+- `huge-flag.patch` - the `--huge` addition to `tools/strata_bench.py` used for the 64K column (`git apply`)
 - `options/*.json` - the opt-in settings, one per row of that table
 
-All files are `tools/strata_bench.py` / `tools/ctx_sizes.py` output; only local model paths were shortened.
-The scripts are in the repository, the commands are the two tool names above plus the flags named in the tables.
+All files are `tools/strata_bench.py` / `ctx_sizes.py` output; only local model paths were shortened and no
+host names, user names or API keys are in them. The commands are the tool names above plus the flags named in the
+tables.
