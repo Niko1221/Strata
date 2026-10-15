@@ -214,7 +214,9 @@ counter-based draw (Philox(seed, position)).
 - `--batch-mtp` uses one proposal per slot. With a layer split it needs each stage on its own GPU, does not combine
   with `--batch-groups` above 1 (pipelined slot groups run no drafts, #1413) and has not been run with helper expert
   caches.
-- Repetition / frequency / presence penalties are not applied in batch windows.
+- Repetition / frequency / presence penalties apply in the batch windows of one GPU (and of a layer split with
+  `--batch-groups 1`) on the CUDA and HIP builds: a slot's rows count the tokens that conversation consumed, as the
+  solo path's do. The pipelined slot groups (`--batch-groups` above 1) and the SYCL build do not apply them.
 - A prompt shorter than one chunk is read in one piece (the slots wait for it); a read gives way only at a chunk
   boundary, and not for pictures.
 - Admissions are one at a time: two new long prompts are read one after the other.
@@ -277,7 +279,7 @@ tests the server's side with a scripted engine (no GPU).
 
 | Script | What it checks |
 | --- | --- |
-| `tools/batch_test.py` | the same prompts alone (`GEN`) and together in the batch slots (`BGEN`): every slot's greedy tokens equal its solo tokens; prints the aggregate rate. `--batch-groups` in `--extra` tests the pipeline, `--keys "temperature=0.7"` the sampled rows. |
+| `tools/batch_test.py` | the same prompts alone (`GEN`) and together in the batch slots (`BGEN`): every slot's greedy tokens equal its solo tokens; prints the aggregate rate. `--keys "penalty_repeat=1.5 penalty_last_n=64"` checks the penalties in the slots the same way. `--batch-groups` in `--extra` tests the pipeline, `--keys "temperature=0.7"` the sampled rows. |
 | `tools/batch_interleave_test.py` | a long prompt read while two slots decode, a prompt that gives way (`BYIELD`) and goes on, and a next turn continued from its slot: each equal to its solo tokens. |
 | `tools/parking_test.py` | a follow-up to a conversation decodes the same tokens whether its state stayed live or came back from the parking cache (with a layer split: every stage's image). |
 | `tools/early_close_test.py` | a client that stops reading a streamed answer early (alone, and with a second request running) does not leave its tokens to the next request (server). |

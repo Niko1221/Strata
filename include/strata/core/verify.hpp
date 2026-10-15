@@ -218,12 +218,23 @@ public:
     /// -1 = an error (err).  Serves every layer that has rung so far.
     int batch_poll(PoolMultiFn pool, void* user, std::string& err);
     bool batch_busy() const { return b_running_; }
-    /// A slot's sampling (temperature / top_p / top_k / min_p / seed; penalties are not applied in batch windows):
-    /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by
-    /// default.  Set on the first stage, it reaches the last.
+    /// A slot's sampling (temperature / top_p / top_k / min_p / seed, and its penalties once set_slot_history has
+    /// given the window its rows): its row is drawn again on the last stage with Philox(seed, position), as a solo
+    /// window draws it.  Greedy by default.  Set on the first stage, it reaches the last.
     void set_slot_sampling(int slot, const strata::kernels::SamplerParams& sp) {
         if (slot >= 0 && slot < (int) slot_sp_.size()) slot_sp_[(size_t) slot] = sp;
         if (next_) next_->set_slot_sampling(slot, sp);
+    }
+    /// The penalty histories of the next slot window (run_slot_rows): row t of the window reads
+    /// `history + t * history_len`, built as `strata::kernels::penalty_rows` builds a solo window's rows - the slot's
+    /// tokens so far, then the token the row feeds - most recent LAST, -1 in the unused front slots; only the last
+    /// `penalty_last_n` of the slot's sampling are counted, and a slot whose sampling has no penalties ignores its
+    /// row.  Null (the default) is the path without penalties, byte for byte.  Device memory on the last stage,
+    /// where the rows are sampled.  Set on the first stage, it reaches the last.
+    void set_slot_history(const int32_t* history, int history_len) {
+        slot_hist_d_ = history;
+        slot_hist_len_ = history_len;
+        if (next_) next_->set_slot_history(history, history_len);
     }
     const int32_t* batch_out() const { return b_out_; }
     bool last_stage() const { return g_ != nullptr && le_ == g_->n_layers; }
@@ -388,6 +399,8 @@ private:
     int spec_nq_ = 0;
     int32_t* d_spec_ = nullptr;          ///< device: kVerifyMaxT draft ids, then kVerifyMaxT q rows
     int hist_len_ = 0;
+    const int32_t* slot_hist_d_ = nullptr;   ///< set_slot_history: the slot windows' penalty rows (null = none)
+    int slot_hist_len_ = 0;
     bool head_sampling_ = true;          ///< set_head_sampling
 #if defined(STRATA_GPU_METAL)
     void* metal_ = nullptr;              ///< the Metal decode window (metal/src/engine/window.cpp): init/run/commit go there

@@ -1274,7 +1274,9 @@ penalty is set; llama.cpp's names `repeat_penalty` and `repeat_last_n` work too,
 suppresses what the model itself just said, not the prompt alone. Since engine 0.1.19 they apply to every token
 the speculative decoding checks at once, exactly as if it decoded one token at a time (before, only the first of
 each batch got them). That makes requests with penalties 1-11% slower than in 0.1.18: the draft layer guesses
-without penalties, so more of its guesses are now rejected. Requests without penalties are unchanged. `top_k` keeps at most 64 candidates: `0` ("off") or anything above 64 uses all 64.
+without penalties, so more of its guesses are now rejected. Requests without penalties are unchanged. In the batch
+windows of `parallel` ([BATCHING.md](BATCHING.md); CUDA and HIP builds, one window at a time) a slot's rows count that
+conversation's own tokens, as the solo path's do. `top_k` keeps at most 64 candidates: `0` ("off") or anything above 64 uses all 64.
 
 **Batch MTP on a layer split (`--batch-mtp`).** Our measurement on 2x R9700 with all experts in VRAM: 80.2 -> 62.7 tok/s (-21.9%, 0/5 pairs faster) against the pipelined default, so it pays only when the experts do not all fit in VRAM (docs/BATCHING.md).
 

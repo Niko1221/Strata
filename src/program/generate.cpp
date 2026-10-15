@@ -7762,6 +7762,18 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata serve: the penalty-history allocation failed\n");
             return 1;
         }
+        // --batch: the same for the slot windows (one row per window row, built by batch_step from each slot's own
+        // tokens, so a slot's penalties count what that conversation consumed, as the solo path's do).  The last
+        // stage samples the rows, so the buffer is on its device; a window without penalties hands over none.
+        int32_t* d_bhist = nullptr;
+        std::vector<int32_t> bhist_stage;
+        if (o.batch > 0) {
+            bhist_stage.assign(kHistSlots, -1);
+            if (const strata::core::OnDevice on_h(hist_dev); cudaMalloc(&d_bhist, kHistSlots * sizeof(int32_t)) != cudaSuccess) {
+                std::fprintf(stderr, "strata serve: the batch penalty-history allocation failed\n");
+                return 1;
+            }
+        }
         strata::core::Verifier ver;
         strata::core::VerifyHits vh;
         vh.d_res = thits.d_res;
@@ -9833,6 +9845,9 @@ int main(int argc, char** argv) {
             // #879: it was running when non-finite logits dropped the cached state; its state may have started from
             // that state (a checkpoint, a parked conversation), so it is not kept as a cache when it ends
             bool tainted = false;
+            // the request's penalty window (penalty_last_n, 0 = no penalties): batch_step stages this slot's rows'
+            // histories from `ids` and the token the row feeds, and the verifier applies the penalties to its rows
+            int penalty_last_n = 0;
         };
         std::vector<BSlot> bs((size_t) std::max(o.batch, 0));
         // timing of the batch windows since the slots were last all idle (one stderr line then)
@@ -10011,6 +10026,30 @@ int main(int argc, char** argv) {
                 bt_cpu_ent0 = drive.d.multi_entries; bt_off_ent0 = drive.d.offload_entries;
                 bt_a_rounds0 = a_rounds; bt_a_swapped0 = a_swapped;
             }
+            // the penalties of the slots that have them: row t's history is its slot's tokens so far and the token
+            // the row feeds (with --batch-mtp the proposal row follows the fed token too), exactly the rows
+            // penalty_rows builds for a solo window, so a slot counts what plain decode would count.  The stride is
+            // the widest window among the active slots; a slot without penalties leaves its rows -1 and is sampled
+            // as before.  A window with no penalties at all hands the verifier no rows: the path of 0.1.44.1.
+            int bh = 0;
+            for (int a = 0; a < A; ++a) bh = std::max(bh, std::min(bs[(size_t) active[a]].penalty_last_n, kPenaltyWindowCap));
+            if (bh > 0) {
+                const int per = batch_mtp ? 2 : 1;
+                std::fill(bhist_stage.begin(), bhist_stage.begin() + (size_t) S * (size_t) bh, -1);
+                for (int a = 0; a < A; ++a) {
+                    const BSlot& sl = bs[(size_t) active[a]];
+                    if (sl.penalty_last_n > 0)
+                        strata::kernels::penalty_rows(sl.ids.data(), (int64_t) sl.ids.size(), tok + first[a], per, bh,
+                                                      bhist_stage.data() + (size_t) first[a] * (size_t) bh);
+                }
+                const strata::core::OnDevice on_h(hist_dev);
+                if (cudaMemcpy(d_bhist, bhist_stage.data(), (size_t) S * (size_t) bh * sizeof(int32_t),
+                               cudaMemcpyHostToDevice) != cudaSuccess) {
+                    std::printf("ERR the batch penalty histories could not be uploaded\n");
+                    return false;
+                }
+            }
+            ver.set_slot_history(bh > 0 ? d_bhist : nullptr, bh);
             const Clock::time_point w0 = Clock::now();
             if (!ver.run_slot_rows(rows, S, tok, pos, win_pool_fn, win_pool_user, outb, err) || drive.d.failed) {
                 std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
@@ -12961,6 +13000,7 @@ int main(int argc, char** argv) {
                     sl.max_new = admit_max_new;
                     sl.t0 = Clock::now();
                     sl.ids = live;
+                    sl.penalty_last_n = std::min(req_sp.penalty_last_n, kPenaltyWindowCap);   // its rows' histories (batch_step)
                     if (batch_mtp) {
                         if (!slot_mtp[(size_t) admit_slot]->draft_first(1, ver.final_R_all(), sl.x,
                                                                         sl.p - 1, sl.draft.data(), err)) {
