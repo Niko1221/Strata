@@ -1,8 +1,10 @@
 "use strict";
 const $ = id => document.getElementById(id);
 let selected = null, detail = null, pane = "input", records = [], state = null, operating = false, stamp = "", actionError = "";
-let apiKey = sessionStorage.getItem("strata.monitor.key") || "";
-document.documentElement.dataset.theme = localStorage.getItem("strata.theme") || "dark";
+// the browser may refuse site storage (cookies blocked): the page then works without remembering the key or theme
+const stored = (area, op, ...args) => { try { return window[area][op](...args); } catch (_) { return null; } };
+let apiKey = stored("sessionStorage", "getItem", "strata.monitor.key") || "";
+document.documentElement.dataset.theme = stored("localStorage", "getItem", "strata.theme") || "dark";
 const seconds = n => typeof n === "number" ? `${n.toFixed(2)} s` : "—";
 const speed = n => typeof n === "number" ? n.toFixed(1) : "—";
 const active = r => !["completed", "error", "disconnected"].includes(r.state);
@@ -102,8 +104,8 @@ async function control(load) {
 }
 $("load").onclick = () => control(true); $("unload").onclick = () => control(false);
 $("key").onclick = () => { $("auth").hidden = !$("auth").hidden; if (!$("auth").hidden) $("api-key").focus(); };
-$("auth").onsubmit = async event => { event.preventDefault(); apiKey = $("api-key").value.trim(); sessionStorage.setItem("strata.monitor.key", apiKey); $("auth").hidden = true; await refresh(); };
-$("theme").onclick = () => { const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = theme; localStorage.setItem("strata.theme", theme); };
+$("auth").onsubmit = async event => { event.preventDefault(); apiKey = $("api-key").value.trim(); stored("sessionStorage", "setItem", "strata.monitor.key", apiKey); $("auth").hidden = true; await refresh(); };
+$("theme").onclick = () => { const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = theme; stored("localStorage", "setItem", "strata.theme", theme); };
 $("search").oninput = list; $("filter").onchange = list;
 document.querySelectorAll("[data-pane]").forEach(button => { button.onclick = () => { pane = button.dataset.pane; document.querySelectorAll("[data-pane]").forEach(b => b.setAttribute("aria-selected", String(b === button))); content(); }; });
 $("copy").onclick = async () => { try { await navigator.clipboard.writeText($("content").textContent); text("copy", "Copied"); setTimeout(() => text("copy", "Copy"), 1500); } catch (_) { notice("Clipboard unavailable; select the text to copy it."); } };

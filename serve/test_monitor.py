@@ -193,6 +193,14 @@ class Monitor(unittest.TestCase):
         self.assertNotIn("innerHTML", script)
         self.assertEqual(self.request("/web/../server.py")[0], 404)
 
+    def test_the_page_works_without_site_storage(self):
+        # a browser that refuses site storage (cookies blocked) throws on localStorage / sessionStorage: read at the
+        # top of the script, that stopped the whole page at "Connecting...".  Every use goes through stored() now
+        script = self.request("/web/monitor.js")[1]
+        self.assertIn("const stored = (area, op, ...args) => { try {", script)
+        for use in ("localStorage.", "sessionStorage."):
+            self.assertNotIn(use, script)
+
 
 class ConversationCacheCard(unittest.TestCase):
     """#596: /metrics' "conversation_cache": the parked conversations from the engine's log lines, the budget and
