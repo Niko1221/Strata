@@ -165,8 +165,11 @@ def parse_questions(questions) -> tuple[list | None, dict]:
             if isinstance(criteria, dict):
                 true_d = criteria.get("true")
                 false_d = criteria.get("false")
-                descriptions = [": " + str(false_d) if false_d is not None else "",
-                                ": " + str(true_d) if true_d is not None else ""]
+                # labels are [No, Yes]: descriptions follow the SAME order.  The old
+                # code also baked ': ' in here AND in question_block (doubled) and
+                # question_block unpacked them as (true, false) - Yes showed No's
+                # meaning (found by the image suite + Opus, 2026-10-15).
+                descriptions = [false_d, true_d]
             else:
                 descriptions = ["", ""]
         qdefs.append({"id": qid, "type": qtype, "instructions": ins,
@@ -198,11 +201,11 @@ def question_block(qdef) -> str:
             q += f"{i}. {label}\n"
         q += "Reply with the level number.\n"
     else:
-        true_d, false_d = qdef["descriptions"]
-        if true_d:
-            q += f"Yes means: {true_d}\n"
-        if false_d:
-            q += f"No means: {false_d}\n"
+        no_d, yes_d = qdef["descriptions"]        # [No, Yes] order (was unpacked reversed)
+        if yes_d:
+            q += f"Yes means: {yes_d}\n"
+        if no_d:
+            q += f"No means: {no_d}\n"
         q += "Reply Yes or No.\n"
     q += "Answer:"
     return q

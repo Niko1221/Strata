@@ -70,3 +70,31 @@ class GoldenBattery(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoulPromptDescriptions(unittest.TestCase):
+    """2026-10-15: the image suite caught Yes showing No's meaning (a<=0 Platt fit).
+    Pin the EXACT noul question-block text with criteria present."""
+
+    def test_yes_means_true_no_means_false(self):
+        from serve import jev as J
+        qdefs, _ = J.parse_questions({"q": {
+            "type": "noul", "instructions": "Is there a large green circle?",
+            "criteria": {"true": "a large green circle is visible",
+                         "false": "no large green circle is visible"}}})
+        block = J.question_block(qdefs[0])
+        self.assertIn("Yes means: a large green circle is visible\n", block)
+        self.assertIn("No means: no large green circle is visible\n", block)
+        self.assertNotIn(": :", block)          # the doubled colon is gone
+        i_yes = block.index("Yes means")
+        i_no = block.index("No means")
+        self.assertLess(i_yes, i_no)            # Yes first (donor order)
+
+    def test_choice_descriptions_keep_colon_shape(self):
+        from serve import jev as J
+        qdefs, _ = J.parse_questions({"q": {
+            "type": "choice", "instructions": "Pick",
+            "criteria": {"a": "the a option", "b": None}}})
+        block = J.question_block(qdefs[0])
+        self.assertIn("A. a: the a option\n", block)
+        self.assertIn("B. b\n", block)
