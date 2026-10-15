@@ -660,11 +660,13 @@ class ConvCacheLog:
     EVENT = re.compile(r"conversation cache: (parked on disk|parked|skipped|restored|dropped) (\d+) tokens"
                        r".*?parked=(\d+) bytes=(\d+)(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
-    # the disk tier (#1271 / delta1): its startup line and one line per conversation written to it.  spill-on,
-    # divergence and park-throttle were added after the first form, so they are optional here.
+    # the disk tier (#1271 / delta1): its startup line and one line per conversation written to it.  The middle
+    # fields (spill-on, divergence, park-throttle) are the park-mode additions: optional, so the line of an engine
+    # with --conversation-cache-park and one from before it parse to the same counters.  spill-on is captured (the
+    # Monitor's per-destination row reads it); divergence and park-throttle are matched but not captured.
     SPILL_DIR = re.compile(r"conversation cache: spill dir ready \((\d+) conversations?, (\d+) MiB, "
                            r"when-full=([^,\s]+), max-age=(\d+) d"
-                           r"(?:, spill-on=[^,]+)?(?:, divergence=\d+ tok)?(?:, park-throttle=\d+ s)?"
+                           r"(?:, spill-on=([^,]+))?(?:, divergence=\d+ tok)?(?:, park-throttle=\d+ s)?"
                            r", (\d+) oversized kept, (\d+) stale kept, "
                            r"(\d+) foreign kept, (\d+) orphans kept, (\d+) disk evictions, (\d+) age evictions\)")
     SPILLED = re.compile(r"conversation cache: spilled \d+ tokens .*?disk=(\d+) MiB disk_evictions=(\d+)")
@@ -701,7 +703,7 @@ class ConvCacheLog:
                       # load's end) or a "discard ..." (the image refused) - see metrics()'s live.admission.
                       "loading": 0,
                       "disk": {"ready": False, "conversations": 0, "bytes": 0, "spills": 0, "evictions": 0,
-                               "age_evictions": 0, "when_full": None, "max_age_days": None,
+                               "age_evictions": 0, "when_full": None, "max_age_days": None, "spill_on": None,
                                "kept": {"oversized": 0, "stale": 0, "foreign": 0, "orphan": 0}},
                       "sysprompt": {}}
 
@@ -788,11 +790,12 @@ class ConvCacheLog:
             m = self.SPILL_DIR.search(line)
             if m:
                 d = self.state["disk"]
-                (d["conversations"], d["bytes"], d["when_full"], d["max_age_days"], d["kept"]["oversized"],
-                 d["kept"]["stale"], d["kept"]["foreign"], d["kept"]["orphan"], d["evictions"],
-                 d["age_evictions"]) = (int(m.group(1)), int(m.group(2)) * 1048576, m.group(3), int(m.group(4)),
-                                        int(m.group(5)), int(m.group(6)), int(m.group(7)), int(m.group(8)),
-                                        int(m.group(9)), int(m.group(10)))
+                (d["conversations"], d["bytes"], d["when_full"], d["max_age_days"], d["spill_on"],
+                 d["kept"]["oversized"], d["kept"]["stale"], d["kept"]["foreign"], d["kept"]["orphan"],
+                 d["evictions"], d["age_evictions"]) = (
+                    int(m.group(1)), int(m.group(2)) * 1048576, m.group(3), int(m.group(4)), m.group(5),
+                    int(m.group(6)), int(m.group(7)), int(m.group(8)), int(m.group(9)),
+                    int(m.group(10)), int(m.group(11)))
                 d["ready"] = True
                 continue
             m = self.SPILLED.search(line)
@@ -832,7 +835,9 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
     """#596: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
     --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back.
     Additive since the on-disk layer: a "disk" object (the spill tier's own figures) and a "system_prompt_cache"
-    object (F5's hits, misses, live variants, bytes, evictions and hash changes), both read from the same log."""
+    object (F5's hits, misses, live variants, bytes, evictions and hash changes), both read from the same log.
+    And a "destinations" list: the parking split by destination (RAM, and each on-disk tier that is configured),
+    so the Monitor shows one row per destination instead of hardcoding them."""
     mib = info.get("conversation_cache_mib")
     dmib = info.get("conversation_cache_disk_mib")
     last = hist[-1] if hist else None
@@ -847,7 +852,8 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
             "conversations": d.get("conversations", 0), "spills": d.get("spills", 0),
             "restores": parked.get("restores", 0), "evictions": d.get("evictions", 0),
             "age_evictions": d.get("age_evictions", 0), "when_full": d.get("when_full"),
-            "max_age_days": d.get("max_age_days"), "kept": dict(d.get("kept") or {})}
+            "max_age_days": d.get("max_age_days"), "spill_on": d.get("spill_on"),
+            "kept": dict(d.get("kept") or {})}
     raw_sys = parked.get("sysprompt") or {}
     sysprompt = {"enabled": bool(raw_sys or info.get("system_prompt_cache")
                                  or info.get("system_prompt_cache_dir") or info.get("system_prompt_cache_mib")),
@@ -859,13 +865,25 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
                  **{k: v for k, v in sysprompt_counts(raw_sys).items() if k != "raw"},
                  "raw": dict(raw_sys)}
     legacy = {k: v for k, v in parked.items() if k not in ("disk", "sysprompt")}
+    # the parking, split by destination (the Monitor's rows): RAM while the cache is on, and one row per on-disk
+    # tier that is actually configured.  There is a single spill folder today, so the list is RAM and, when the
+    # spill tier is on, "SSD 1"; the media cascade (fast/slow M.2) is not implemented, so no more rows are invented.
+    destinations = []
+    if isinstance(mib, int) and mib > 0:
+        destinations.append({"tier": "ram", "label": "RAM", "enabled": True, "bytes": parked.get("bytes", 0),
+                             "conversations": parked.get("parked", 0), "budget_mib": mib,
+                             "slots": info.get("conversation_cache_slots")})
+    if disk["enabled"]:
+        destinations.append({"tier": "disk", "label": "SSD 1", "enabled": True, "bytes": disk["bytes"],
+                             "conversations": disk["conversations"], "budget_mib": disk["budget_mib"],
+                             "spill_on": disk["spill_on"], "dir": disk["dir"]})
     return {"enabled": isinstance(mib, int) and mib > 0, "budget_mib": mib if isinstance(mib, int) else None,
             "slots": info.get("conversation_cache_slots"), **legacy,
             "requests": len(hist), "requests_reused": sum(1 for r in hist if (r.get("reused") or 0) > 0),
             "reused_tokens": totals.get("reused", 0), "prompt_tokens": totals.get("prompt_tokens", 0),
             "last_reused": last.get("reused") if last else None,
             "last_prompt": last.get("prompt_tokens") if last else None,
-            "disk": disk, "system_prompt_cache": sysprompt}
+            "disk": disk, "system_prompt_cache": sysprompt, "destinations": destinations}
 
 
 def admission_field(state: str, parked: dict):

@@ -280,6 +280,12 @@ class ConversationCacheCard(unittest.TestCase):
         self.assertEqual((view["enabled"], view["budget_mib"], view["slots"], view["parked"]), (True, 8192, 4, 0))
         self.assertTrue(view["disk"]["enabled"])
         self.assertEqual((view["disk"]["bytes"], view["disk"]["spills"], view["disk"]["restores"]), (420 * 1048576, 1, 0))
+        # the parking split by destination, one row per configured tier (RAM, and the single spill folder today)
+        self.assertEqual([d["tier"] for d in view["destinations"]], ["ram", "disk"])
+        self.assertEqual([d["label"] for d in view["destinations"]], ["RAM", "SSD 1"])
+        self.assertEqual((view["destinations"][0]["conversations"], view["destinations"][1]["conversations"]), (0, 2))
+        self.assertEqual(view["destinations"][0]["budget_mib"], 8192)
+        self.assertFalse(conversation_cache_view({"conversation_cache_mib": 0}, [], {}, {})["destinations"])
         self.assertEqual((view["system_prompt_cache"]["hits"], view["system_prompt_cache"]["variants"]),
                          (3, 2))
         for key in ("hits", "misses", "variants", "bytes", "evicted_by_age", "evicted_by_space", "hash_changes"):
@@ -288,7 +294,7 @@ class ConversationCacheCard(unittest.TestCase):
     def test_the_card_is_on_the_page(self):
         web = Path(__file__).parent / "web"
         html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
-        for el in ("cc-card", "cc-slots-text", "cc-mem-text", "cc-facts", "cc-note"):
+        for el in ("cc-card", "cc-slots-text", "cc-mem-text", "cc-facts", "cc-note", "cc-dest", "state-slots"):
             self.assertIn(f'id="{el}"', html)
             self.assertIn(f'"{el}"', js)
 

@@ -209,8 +209,21 @@ function renderConvCache(c) {
   $("cc-card").hidden = !c;
   if (!c) return;                                  // an older server
   const pct = (a, b) => (b ? `${Math.min(100, (100 * a) / b)}%` : "0%");
-  $("cc-bars").hidden = !c.enabled;
-  if (c.enabled) {
+  // the parking, split by destination (RAM, and each on-disk tier the engine reports): one row each. The list
+  // comes from the server, so a destination that is off or unconfigured is simply not in it; an older server
+  // reports none and the two aggregate rows (cc-bars) stand in.
+  const dest = (c.destinations || []).filter((d) => d && d.enabled && d.label);
+  $("cc-dest").innerHTML = dest.map((d) => {
+    const budget = (d.budget_mib || 0) * 1048576;
+    const count = d.slots != null ? `${fmt(d.conversations)} / ${fmt(d.slots)}` : fmt(d.conversations);
+    const mem = budget ? `${gb(d.bytes)} / ${gb(budget)} GB` : `${gb(d.bytes)} GB`;
+    const width = budget ? pct(d.bytes, budget) : d.slots ? pct(d.conversations, d.slots) : "0%";
+    return `<div><div class="bar-row"><span>${esc(d.label)}</span><span class="muted">${count} · ${mem}</span></div>` +
+           `<div class="st-progress"><div class="st-progress__bar" style="width:${width}"></div></div></div>`;
+  }).join("");
+  $("cc-dest").hidden = !dest.length;
+  $("cc-bars").hidden = !!dest.length || !c.enabled;   // the per-destination rows replace the aggregate ones
+  if (!dest.length && c.enabled) {
     $("cc-slots-text").textContent = `${fmt(c.parked)} / ${fmt(c.slots)}`;
     $("cc-slots-bar").style.width = pct(c.parked, c.slots);
     const budget = c.budget_mib * 1048576;
@@ -267,6 +280,34 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("state-label").textContent = label;
   $("state-detail").textContent = detail;
   $("state-bar").style.width = `${pct}%`;
+  // The engine runs ONE thing at a time: while it admits a request there is NO decode, and live.state is that single
+  // thing. The slots' states are the REQUESTS' states, not parallel execution: while an admission runs, a slot the
+  // engine still calls "decoding" is paused, and its tok_s (a mean that only decays meanwhile) is not a live speed.
+  // live.admission says how the admission brings the state in: "loading" reads a parked conversation back from disk,
+  // "reading" is a new prompt; null (or the field missing on an older shim) says nothing, and the slot keeps its
+  // own word. live.waiting (the requests waiting their turn) rides the same line. One active slot repeats the
+  // figure above: no slot entry.
+  const slots = live.slots || [];
+  const admitting = slots.some((s) => s && s.state === "reading");
+  const decoding = live.state === "generating" && !admitting;   // speeds and an admission never share the line
+  const admission = typeof live.admission === "string" ? live.admission : null;
+  const active = slots.filter((s) => s && s.state !== "idle");
+  const waiting = Number(live.waiting) || 0;
+  const parts = active.length >= 2
+    ? active.map((s) => {
+        const slot = `s#${fmt(s.slot + 1)}`;
+        if (s.state === "reading") {                    // the request being admitted: loading it back, or its prompt
+          const word = admission === "loading" ? "loading" : "reading";
+          return `${slot} ${word}${word === "loading" && s.prompt_tokens != null ? ` ${fmt(s.prompt_tokens)}` : ""}`;
+        }
+        if (!decoding) return `${slot} paused`;         // an admission is running: no decode anywhere
+        return `${slot} ${s.tok_s != null ? `${fmt(s.tok_s, 1)} t/s` : "decoding"}`;
+      })
+    : [];
+  if (waiting > 0) parts.push(`${fmt(waiting)} queued`);
+  const slotsLine = $("state-slots");
+  slotsLine.hidden = !parts.length;
+  slotsLine.textContent = parts.join(" · ");
 
   // the eight cards
   const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
