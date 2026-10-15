@@ -13,11 +13,12 @@ The installer recommends one for your PC; this page explains the choice. Back to
 | --- | --- | --- |
 | **32 GB** | **Coder** | it fits 32 GB; best at code, weaker at everything else ([why](#coder)). With a 24 GB card, Q2_0 and IQ2_XS run too ([low-RAM mode](#a-big-graphics-card-and-little-ram)) and are the better pick for general use |
 | **48 GB** | **IQ2_XS** (or Q2_0, the fastest) | the larger sizes do not fit |
-| **64 GB** | **IQ2_XS** (recommended), or IQ3_XXS / IQ3_S | every size fits (IQ3_S with little else open) |
+| **64 GB** | **IQ3_S** (recommended), or IQ2_XS / IQ3_XXS (faster) | every size fits (IQ3_S with little else open) |
 | **96 GB or more** | **IQ3_S**, or [Unsloth's UD-IQ4_XS or UD-Q4_K_XL](#unsloths-files-ud-iq4_xs-to-q8_0) (~4-bit) | room for the largest sizes |
 | **128-192 GB** | [Unsloth's UD-Q5_K_XL, UD-Q6_K_XL or Q8_0](#unsloths-files-ud-iq4_xs-to-q8_0) | every expert of the 5-8-bit files in RAM |
 
-Not sure? Take **IQ2_XS**. The **Coder** is the one that fits a 32 GB PC, but it keeps only 256 of the 512 experts,
+Not sure? Take the size setup pre-selects: **IQ3_S** on a PC with 62 GB of RAM or more, else the largest size your RAM
+fits (**IQ2_XS** at 48 GB). The **Coder** is the one that fits a 32 GB PC, but it keeps only 256 of the 512 experts,
 chosen on code data, so it is weaker outside code and in languages other than English. For general use, or whenever
 your RAM allows, take a full model (Q2_0, IQ2_XS or IQ3_S).
 
@@ -61,9 +62,9 @@ in a pull request.
 | Model | RAM+VRAM Requirements | Speed | Quality |
 | --- | ---: | --- | --- |
 | **Q2_0** | 37.6 GB | fastest | good |
-| **IQ2_XS** | 39.2 GB | fast | better (**recommended**) |
+| **IQ2_XS** | 39.2 GB | fast | better |
 | **IQ3_XXS** | 47.0 GB | slower | great |
-| **IQ3_S** | 54.8 GB | slowest | best: matches the full model on the published tests |
+| **IQ3_S** | 54.8 GB | slowest | best: matches the full model on the published tests (**recommended**) |
 
 The download is 66-76 GB for the three smaller sizes ([details](DETAILS.md#which-model)); the first start also
 fetches the MTP draft layer (~6 GB, +1 GB with images).

@@ -127,7 +127,7 @@ sizes are faster. Larger sizes are a bit smarter.
 | --- | --- | --- |
 | **32 GB** | **Coder** | it fits 32 GB, and it is made for code (with a 24 GB card, Q2_0 and IQ2_XS run too) |
 | **48 GB** | **IQ2_XS** (or Q2_0, the fastest) | the larger sizes do not fit |
-| **64 GB** | **IQ2_XS** (recommended), or IQ3_XXS / IQ3_S | every size fits; IQ3_S is the best and the slowest |
+| **64 GB** | **IQ3_S** (recommended), or IQ2_XS / IQ3_XXS (faster) | every size fits; IQ3_S is the best and the slowest |
 | **96 GB or more** | **IQ3_S**, or Unsloth's UD-IQ4_XS (~4-bit) | room for the largest sizes with everything else open |
 
 - **[Coder](docs/MODELS.md#coder):** a coding version with half of the experts removed. It reaches 91% of the full

@@ -120,7 +120,7 @@ Os tamanhos menores são mais rápidos. Os maiores são um pouco mais inteligent
 | --- | --- | --- |
 | **32 GB** | **Coder** | cabe em 32 GB e é feito para código (com uma placa de 24 GB, Q2_0 e IQ2_XS também rodam) |
 | **48 GB** | **IQ2_XS** (ou Q2_0, o mais rápido) | os tamanhos maiores não cabem |
-| **64 GB** | **IQ2_XS** (recomendado), ou IQ3_XXS / IQ3_S | todos os tamanhos cabem; IQ3_S é o melhor e o mais lento |
+| **64 GB** | **IQ3_S** (recomendado), ou IQ2_XS / IQ3_XXS (mais rápidos) | todos os tamanhos cabem; IQ3_S é o melhor e o mais lento |
 | **96 GB ou mais** | **IQ3_S**, ou o UD-IQ4_XS da Unsloth (~4-bit) | espaço para os maiores tamanhos com todo o resto aberto |
 
 - **[Coder](docs/MODELS.md#coder):** uma versão para programação com metade dos experts removida. Ela alcança 91%

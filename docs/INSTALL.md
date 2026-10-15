@@ -107,7 +107,8 @@ The same idea, in a container (NVIDIA cards).
    `docker run --rm --gpus all -p 8080:8080 --ulimit memlock=-1 -v strata-data:/data strata`
 
    The setup choices are env vars: `-e MODEL=IQ2_XS -e FAMILY=qwen -e CONTEXT=32768 -e VISION=no`
-   (or `MODEL=Q2_0|IQ3_XXS|IQ3_S`, `FAMILY=swift|coder`; the defaults above are the recommended ones).
+   (or `MODEL=Q2_0|IQ3_XXS|IQ3_S`, `FAMILY=swift|coder`; the image's default IQ2_XS fits 48 GB of RAM, and setup
+   recommends `MODEL=IQ3_S` from 62 GB).
    `-e VISION=cpu` keeps the image encoder on the CPU. `-e KV=int8|q4_0|k8v4` picks the KV cache
    precision; `k8v4` is INT8 K with 4-bit V and keeps its KV in VRAM from 64K up.
    Only the model files, the prepared pack, the MTP layer and the install config live in the
