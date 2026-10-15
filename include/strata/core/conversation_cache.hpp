@@ -278,8 +278,9 @@ public:
     // The parked conversation that has gone unused the longest.  This is make_room()'s loop body, so
     // the parking path can also free RAM one entry at a time on demand (see the physical-RAM admission
     // gate in generate.cpp).  A ConversationBuffer is a list of 16 MiB segments and each segment is its
-    // own allocation, far above glibc's mmap threshold, so dropping an entry returns the whole footprint
-    // to the kernel at once - the next admission check reads it back from /proc/meminfo.
+    // own allocation, but glibc's mmap threshold is dynamic: once it has risen past 16 MiB, dropping an
+    // entry only moves the bytes onto the allocator's free list - RSS, and with it /proc/meminfo, does
+    // not move until the heap is handed back (see admit_ram's release).
     // False when none can go (empty, or only entries that hold a pinned shared prefix are left).
     bool evict_oldest() {
         auto victim = std::find_if(entries_.begin(), entries_.end(), [](const SavedConversation& e) { return !e.pinned(); });
