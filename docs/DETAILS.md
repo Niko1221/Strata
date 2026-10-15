@@ -245,6 +245,9 @@ same (greedy IQ3_XXS and Q2_0 hashes identical, prefetch off vs on). `STRATA_IO_
 expert in a buffer and makes the layer wait for them; `STRATA_IO_PF_AHEAD=0` keeps only the demand reads. The per-request
 log line "file tier I/O" shows what the OS read from the drive (/proc/self/io, major faults) against the engine's expert
 reads; `STRATA_IO_STATS=1` (or prefetch on) adds the page-cache hit / miss split (mincore) and the read-ahead used / unused counts.
+On an MI50 host with 128 GiB of RAM (`--resident-budget-gib 76`) the per-request line said `io prefetch: 0 read
+ahead` in 4 of 4 requests: the OS read 998.5 MB from the drive for 42,282.7 MB of expert reads, the page cache holding
+the rest (#1926). With the experts already in RAM it has nothing to read ahead.
 Measured (interleaved A/B, 10 pairs, 200-token greedy medians, page cache dropped before each run, memory limit by cgroup):
 
 | box, lane | default (fill) | `STRATA_IO_PF_STAGE=1` |
@@ -1651,11 +1654,11 @@ such a missed expert is neither copied nor computed, its contribution is zero, a
 tokens identical to 0.1.42 without the change, on the RTX 3060, the RTX A4000 alone and as a 2-GPU split, and the Tesla P100). Another rank
 (`STRATA_ROUTE_TAIL_SKIP=8`, `=9`; 1-9 are accepted) is taken as given. The start-up line
 `STRATA_ROUTE_TAIL_SKIP=7 is ON (default)` names the opt-out.
-Since 0.1.43 the same default holds on HIP for gfx1200 / gfx1201 (RDNA4), under the same rules and with the same `STRATA_ROUTE_TAIL_SKIP=0` opt-out; other AMD parts are unchanged.
+Since 0.1.43 the same default holds on HIP for gfx1200 / gfx1201 (RDNA4), under the same rules and with the same `STRATA_ROUTE_TAIL_SKIP=0` opt-out; other AMD builds (the `STRATA_ENABLE_HIP` backend, for example gfx11) are unchanged. A gfx906 build (`-DSTRATA_HIP_GFX906=ON`: the CUDA code through HIP) takes the CUDA default, so it is on there too: an MI50 printed `STRATA_ROUTE_TAIL_SKIP=7 is ON (default)` at 12 of 12 starts (#1926).
 
 Where it applies: serve on a CUDA build with one GPU or a layer split (every stage skips by itself). Not applied, and no line printed: when every expert is
 in VRAM (nothing is missed), with `--batch` / `parallel` slots (a window then mixes requests, and one request's skip would depend on another's
-tokens: kept off until measured), with a peer-expert tier or a helper GPU, on HIP and SYCL builds, and (0.1.42.1, #1884) when 90% or more
+tokens: kept off until measured), with a peer-expert tier or a helper GPU, on HIP and SYCL builds (except gfx1200 / gfx1201 and a gfx906 build), and (0.1.42.1, #1884) when 90% or more
 of all the experts are in the GPU cache: the few misses are cheap there and the skip costs more draft acceptance than it saves (a Tesla V100 32 GB
 with Coder IQ1_M, 94.8% of the experts cached, 99.9% decode hits: draft acceptance 70.1% to 68.2%, decode 1-2% slower than 0.1.41). A start-up line
 says so; `STRATA_ROUTE_TAIL_SKIP=7` turns it on anyway, and `STRATA_TAIL_SKIP_MAX_CACHED=<percent>` moves the line (101 = never). On an AMD layer split the line is 60% (2x R9700 at 16 GB-equivalent: Q2_0 with 73% cached lost 6.1% story decode with the skip, IQ3_S with 45% cached gained 7-10%). The request log gets

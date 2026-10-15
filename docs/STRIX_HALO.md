@@ -97,6 +97,11 @@ they change speed, not answers. Nothing here applies to CUDA or to another AMD a
 | `STRATA_GDN_SPLIT`, `STRATA_QFUSE`, `STRATA_PLE_BATCH` | the GDN step over four blocks per head, activation images written by their producers, the PLE key / value projections of a verify window at once |
 | `STRATA_SH_STREAM=1` | the shared expert on a second stream beside the routed experts. It is off by default on other AMD cards (#816), but it pays on gfx1151: decode +1.8% (UD-IQ4_XS) and +6.7% (UD-Q4_K_XL) at 8K |
 
+The decode switches were measured on this chip; they do not carry over to every AMD card. On an Instinct MI50 32 GB
+(gfx906, 0.1.42, UD-IQ4_XS, `--kv k8v4`) `STRATA_Q8_PACKED=1` alone was no faster (decode 23.4 against 23.8 ms per
+step over 10 interleaved runs, inside the runs' spread) and took 1,912.5 MiB more VRAM (#1926); the output was
+bit-identical.
+
 ## 5. What is not on by default (it changes bits)
 
 These are faster on gfx1151 and **round differently** from the default path (a different summation order or a half-precision
