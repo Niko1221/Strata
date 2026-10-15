@@ -1,0 +1,24 @@
+{"round": 0, "arm": "off", "req": "chat0", "decode": 77.0, "prompt": 85.6, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 0, "arm": "off", "req": "chat1", "decode": 79.8, "prompt": 74.5, "prompt_n": 27, "n": 256, "text": "A refrigerator operates on the principle of the vapor-compression refrigeration "}
+{"round": 0, "arm": "off", "req": "chat2", "decode": 76.9, "prompt": 74.7, "prompt_n": 29, "n": 197, "text": "1. Set specific, measurable goals to maintain motivation and track your progress"}
+{"round": 0, "arm": "off", "req": "long", "decode": 70.4, "prompt": 2710.3, "prompt_n": 6345, "n": 152, "text": "The list is composed of a diverse array of nouns that primarily evoke themes of "}
+{"round": 0, "arm": "on", "req": "chat0", "decode": 78.3, "prompt": 84.1, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 0, "arm": "on", "req": "chat1", "decode": 81.5, "prompt": 81.7, "prompt_n": 27, "n": 256, "text": "A refrigerator operates on the principle of the vapor-compression refrigeration "}
+{"round": 0, "arm": "on", "req": "chat2", "decode": 77.0, "prompt": 73.4, "prompt_n": 29, "n": 197, "text": "1. Set specific, measurable goals to maintain motivation and track your progress"}
+{"round": 0, "arm": "on", "req": "long", "decode": 75.2, "prompt": 2582.0, "prompt_n": 6345, "n": 152, "text": "The list is composed of a diverse array of nouns that primarily evoke themes of "}
+{"round": 1, "arm": "on", "req": "chat0", "decode": 75.9, "prompt": 85.3, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 1, "arm": "on", "req": "chat1", "decode": 75.0, "prompt": 72.3, "prompt_n": 27, "n": 256, "text": "A refrigerator operates on the principle of the vapor-compression refrigeration "}
+{"round": 1, "arm": "on", "req": "chat2", "decode": 79.5, "prompt": 68.3, "prompt_n": 29, "n": 204, "text": "1. Set specific, measurable goals to maintain motivation and track your progress"}
+{"round": 1, "arm": "on", "req": "long", "decode": 74.4, "prompt": 2584.6, "prompt_n": 6345, "n": 170, "text": "The list is composed entirely of single, lowercase English words that appear to "}
+{"round": 1, "arm": "off", "req": "chat0", "decode": 78.0, "prompt": 82.2, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 1, "arm": "off", "req": "chat1", "decode": 78.9, "prompt": 82.7, "prompt_n": 27, "n": 256, "text": "A refrigerator operates on the principle of the vapor-compression refrigeration "}
+{"round": 1, "arm": "off", "req": "chat2", "decode": 79.5, "prompt": 75.1, "prompt_n": 29, "n": 204, "text": "1. Set specific, measurable goals to maintain motivation and track your progress"}
+{"round": 1, "arm": "off", "req": "long", "decode": 75.4, "prompt": 2701.8, "prompt_n": 6345, "n": 170, "text": "The list is composed entirely of single, lowercase English words that appear to "}
+{"round": 2, "arm": "off", "req": "chat0", "decode": 78.6, "prompt": 85.9, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 2, "arm": "off", "req": "chat1", "decode": 81.4, "prompt": 81.5, "prompt_n": 27, "n": 256, "text": "A refrigerator operates on the principle of the vapor-compression refrigeration "}
+{"round": 2, "arm": "off", "req": "chat2", "decode": 77.1, "prompt": 74.1, "prompt_n": 29, "n": 197, "text": "1. Set specific, measurable goals to maintain motivation and track your progress"}
+{"round": 2, "arm": "off", "req": "long", "decode": 75.6, "prompt": 2698.6, "prompt_n": 6345, "n": 152, "text": "The list is composed of a diverse array of nouns that primarily evoke themes of "}
+{"round": 2, "arm": "on", "req": "chat0", "decode": 78.6, "prompt": 85.9, "prompt_n": 34, "n": 256, "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    "}
+{"round": 2, "arm": "on", "req": "chat1", "decode": 75.8, "prompt": 74.7, "prompt_n": 27, "n": 256, "text": "A refrigerator operates on the principle of the vapor-compression refrigeration "}
+{"round": 2, "arm": "on", "req": "chat2", "decode": 77.4, "prompt": 69.3, "prompt_n": 29, "n": 197, "text": "1. Set specific, measurable goals to maintain motivation and track your progress"}
+{"round": 2, "arm": "on", "req": "long", "decode": 71.0, "prompt": 2592.3, "prompt_n": 6345, "n": 152, "text": "The list is composed of a diverse array of nouns that primarily evoke themes of "}
