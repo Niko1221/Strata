@@ -5488,6 +5488,7 @@ class UntimedReads(unittest.TestCase):
                     StrataEngine("strata", [])
             self.assertLess(time.monotonic() - t0, 30)
             self.assertIn("did not report READY within 1 s", str(cm.exception))
+            self.assertIn("STRATA_ENGINE_READY_S", str(cm.exception))      # #2331: the setting that raises it
             procs[0].wait(10)                                   # killed, not left running
             self.assertIsNotNone(procs[0].poll())
 

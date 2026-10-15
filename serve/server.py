@@ -877,8 +877,11 @@ class StrataEngine:
                 time.sleep(wait_s)
                 StrataEngine.__init__(self, exe, args, cwd, log, env, lazy, cpus, _attempt + 1)
                 return
-            why = (f"the engine did not report READY within {ENGINE_READY_S:.0f} s" if timed_out else
-                   "the engine exited before it was ready")
+            # #2331: a load from a slow disk (a 28.8 GB PLE table from an HDD-class drive: 454-508 s) ended at this
+            # limit with no engine-side error: the message names the setting that raises it
+            why = (f"the engine did not report READY within {ENGINE_READY_S:.0f} s (STRATA_ENGINE_READY_S; a load from "
+                   "a slow disk can take longer: set it higher, or 0 to wait for ever, before the server starts)"
+                   if timed_out else "the engine exited before it was ready")
             # EngineDied, not bare RuntimeError: a request waiting on this load must end with a 503
             # through the request path's handler - a RuntimeError there left the turn with no answer (#1527)
             note = "" if timed_out else start_exit_note(self.proc.returncode)
