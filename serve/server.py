@@ -5595,6 +5595,10 @@ def make_handler(svc: Service):
                 elif path == "/v1/messages":
                     self._anthropic(req)
                 elif path == "/v1/systemone":
+                    if "decision" not in jev_calib.MODES:      # A0.1 mode gate: fail-closed 404
+                        self._json(404, {"error": {"type": "not_found_error",
+                                                   "message": "decision surface not enabled on this instance"}})
+                        return
                     mode = self.headers.get("X-Jev-Mode", "L")   # A2.6: "V" = choice readout override
                     if isinstance(req, dict) and req.get("image_b64"):
                         code, body = jev.handle_image(svc, req, mode)   # M3.8: image two-call
@@ -5893,6 +5897,10 @@ def make_handler(svc: Service):
             # ---- A3.4 (M3.3): "jev" extension - the decision readout on the chat surface ----
             jev_ext = req.get("jev")
             if isinstance(jev_ext, dict) and jev_ext:
+                if "decision" not in jev_calib.MODES:      # A0.1: no decisions on chat-gated instance
+                    self._json(404, {"error": {"type": "not_found_error",
+                                               "message": "decision surface not enabled on this instance"}})
+                    return
                 if not isinstance(jev_ext.get("questions"), dict) or not jev_ext["questions"]:
                     self._json(400, {"error": {"type": "invalid_request_error",
                                                "param": "jev.questions", "message": "jev.questions is required"}})

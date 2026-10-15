@@ -84,8 +84,19 @@ curl -s $URL/v1/chat/completions -d '{
 #  OpenAI client gets decisions without a second endpoint)
 ```
 
+# MODE GATING — deploy a decision-only (or chat-only) instance (donor --modes)
+# STRATA_JEV_MODES="decision"   env on the serve process; unknown tokens fail
+#                               closed at load (serve refuses to start).
+# "decision" gates /v1/systemone + the chat jev extension;
+# "chat"     gates plain generation + then.generate narration.
+# Gated surfaces return 404 not_found_error (probing learns nothing). Default: both on.
+
 Full surface + examples: `docs/JEV-SYSTEMONE.md`. Refit calibration:
-`calib/README.md` (the suite IS the procedure).
+`calib/README.md` (the suite IS the procedure). Mode gating:
+`STRATA_JEV_MODES` env (`"decision"` = decision-only — no generation path
+exists on the instance at all; outputs are probabilities over the caller's own
+labels. `"chat,decision"` default. Fail-closed on unknown tokens and on gated
+routes).
 
 Why logit readout instead of asking the model for confidence: verbalized
 confidence is systematically miscalibrated (ECE > 0.37 across GPT-3/3.5/Vicuna,
@@ -233,7 +244,7 @@ n=60) must not be read as signal.
 
 | Donor item | Why not |
 |---|---|
-| `--modes chat,decision` gating + `/admin/modes` | One Strata process serves both; a config key (`jev.decision_enabled`) is the right shape here, deferred (Opus G1/G2, post-PR) |
+| `--modes chat,decision` gating | **Ported as `STRATA_JEV_MODES` env** (A0.1): `"decision"`/`"chat"`/`"chat,decision"` (default); fail-closed 404 on gated routes, refuse-to-start on unknown tokens. `/admin/modes` runtime flip not ported — restart is the policy boundary here |
 | Prefix-fork + batched decode + naive differential (A2.7/A2.10) | Strata's engine exposes BROW final-row logits, not seq forks; correctness is anchored by the golden battery + the ported jevref math, not a naive twin |
 | V2 image-in-branch (crashed ggml) | **Superseded** by `image_mode: direct` — same single-readout goal, no fork, D-tuple-calibrated, benched on POPE/CVB/CountBench |
 | Chat-KV reuse for decisions (A3.5, PARTIAL in donor) | Strata's conversation cache provides prefix reuse engine-side (272 ms warm L-mode) |
