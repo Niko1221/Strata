@@ -29,4 +29,12 @@ namespace strata::kernels {
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream);
 
+/// HIP, the STRATA_PA_FAST matrix-core kernel only: the same attention with the prompt path's gate_attn in its epilogue
+/// - out16[t, h * 256 + d] (row stride ld16) = FP16(attn * sigmoid(q_full[t, h, 256 + d])) with gate_attn's bits.
+/// Returns false (nothing launched) wherever qsa_prompt_attn_batch would not run that kernel: the caller then runs
+/// the attention and gate_attn as before.
+bool qsa_prompt_attn_batch_gated(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                                 int64_t cap, const QsaShapes& s, const float* q_full, uint16_t* out16, int64_t ld16,
+                                 int64_t n_q, void* stream);
+
 }  // namespace strata::kernels

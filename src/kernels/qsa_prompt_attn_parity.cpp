@@ -7,12 +7,18 @@
 //   1. against FP64, the new kernel's error is no larger than a small multiple of the old kernel's (both FP32 math);
 //   2. the new and old outputs agree to a relative 1e-4 of the output scale;
 // then times both over a prompt chunk (the old one in batches of 32, as prefill.cpp calls it).
-// HIP builds (S6): the same checks for the RDNA4 matrix-core kernel (STRATA_HIP_WMMA), skipped (77) off gfx12.
-// Usage: qsa_prompt_attn_parity [context=32768] [queries=2048] [reps=5]
+// HIP builds (S6): the same checks for the RDNA4 matrix-core kernel (STRATA_HIP_WMMA), skipped (77) off gfx11 / gfx12.
+//   4. (HIP, with STRATA_PA_FAST=1) the gated epilogue (qsa_prompt_attn_batch_gated) writes the same FP16 bits as the
+//      attention followed by the prompt path's gate_attn, for random gates.  With the argument `gated` only check 4
+//      decides the exit status (the fast kernel misses checks 1 and 2 by design), and the epilogue must be taken.
+// Usage: qsa_prompt_attn_parity [context=32768] [queries=2048] [reps=5] [gated]
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/qsa_prompt_attn.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#if defined(__HIP_PLATFORM_AMD__)
+#include "strata/prefill/kernels.hpp"
+#endif
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -28,6 +34,7 @@
 namespace k = strata::kernels;
 
 namespace {
+bool g_gated_only = false;   // main: the argument `gated`
 void ck(cudaError_t e, const char* w) {
     if (e != cudaSuccess) { std::fprintf(stderr, "%s: %s\n", w, cudaGetErrorString(e)); std::exit(2); }
 }
@@ -270,6 +277,34 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         diff = std::max(diff, (double) std::fabs(o[i] - nw[i]));
         scale = std::max(scale, (double) std::fabs(o[i]));
     }
+    bool ok4 = !g_gated_only;   // `gated`: the epilogue has to be taken and match
+#if defined(__HIP_PLATFORM_AMD__)
+    {   // 4. the gated epilogue against the attention + gate_attn (bitwise)
+        std::vector<float> qfull((size_t) (nq * NH * 2 * HD));
+        for (auto& x : qfull) x = nd(rng) * 2.0f;
+        const float* d_qfull = up(qfull);
+        uint16_t *d_ref16 = nullptr, *d_got16 = nullptr;
+        const size_t n16 = (size_t) (nq * NH * HD);
+        ck(cudaMalloc(&d_ref16, n16 * 2), "malloc");
+        ck(cudaMalloc(&d_got16, n16 * 2), "malloc");
+        ck(cudaMemset(d_got16, 0, n16 * 2), "memset");
+        strata::prefill::gate_attn(d_new, d_qfull, d_ref16, nq, nullptr, NH * HD);
+        const bool taken = k::qsa_prompt_attn_batch_gated(d_q, pl, d_ids, d_steps, cap, s, d_qfull, d_got16, NH * HD, nq, nullptr);
+        ck(cudaDeviceSynchronize(), "run");
+        if (taken) {
+            std::vector<uint16_t> ref(n16), got(n16);
+            ck(cudaMemcpy(ref.data(), d_ref16, n16 * 2, cudaMemcpyDeviceToHost), "down");
+            ck(cudaMemcpy(got.data(), d_got16, n16 * 2, cudaMemcpyDeviceToHost), "down");
+            size_t bad = 0;
+            for (size_t i = 0; i < n16; ++i) bad += ref[i] != got[i];
+            ok4 = bad == 0;
+            std::printf("%s gated epilogue: %zu of %zu FP16 values differ from the attention + gate_attn\n", ok4 ? "PASS" : "FAIL", bad, n16);
+        } else {
+            std::printf("gated epilogue: not taken here (the STRATA_PA_FAST=1 kernel only), not checked\n");
+        }
+        cudaFree((void*) d_qfull); cudaFree(d_ref16); cudaFree(d_got16);
+    }
+#endif
     // 3. speed
     cudaEvent_t e0, e1;
     cudaEventCreate(&e0);
@@ -296,7 +331,8 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     cudaFree((void*) pl.k_q); cudaFree((void*) pl.v_q); cudaFree((void*) pl.k_scale); cudaFree((void*) pl.v_scale);
     cudaFree((void*) pl.k_pool); cudaFree((void*) pl.v_pool); cudaFree((void*) pl.page_table);
     cudaFree((void*) pl.k_q4); cudaFree((void*) pl.v_q4);
-    return ok1 && ok2 ? 0 : 1;
+    if (g_gated_only) return ok4 ? 0 : 1;
+    return ok1 && ok2 && ok4 ? 0 : 1;
 }
 }  // namespace
 
@@ -321,6 +357,7 @@ int main(int argc, char** argv) {
     const int64_t ctx = argc > 1 ? std::atoll(argv[1]) : 32768;
     const int64_t nq = argc > 2 ? std::atoll(argv[2]) : 2048;
     const int reps = argc > 3 ? std::atoi(argv[3]) : 5;
+    g_gated_only = argc > 4 && std::strcmp(argv[4], "gated") == 0;
     int fails = 0;
     fails += run(1, ctx, nq, reps);
 #if !defined(__HIP_PLATFORM_AMD__)

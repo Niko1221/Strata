@@ -1194,19 +1194,25 @@ __device__ __forceinline__ wh8 i8_to_h(const uint32_t* x) {   // PA_KL codes, ex
 
 // SPLIT = true (default): q and p carried as FP16 hi + lo pairs (two WMMAs each: FP32-level). S23 (opt-in
 // STRATA_PA_FAST=1): SPLIT = false, one FP16 image each - half the matrix work, rounding-level (FP16 attention as the
-// usual flash-attention kernels), quality-gated
-template <bool SPLIT>
+// usual flash-attention kernels), quality-gated.
+// GATED (qsa_prompt_attn_batch_gated): the epilogue is the prompt path's gate_attn as well - each value times
+// sigmoid of its gate in q_full (the second half of the head's 512 values), rounded to FP16 into out16 (row stride
+// ld16) - with gate_attn's expression on the same FP32 value, instead of writing attn for gate_attn to read back.
+template <bool SPLIT, bool GATED = false>
 __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                                    const int32_t* __restrict__ ids,
                                                                    const int32_t* __restrict__ steps, int n_kv_heads,
                                                                    int page_size, float scale_log2,
-                                                                   float* __restrict__ attn, int cap) {
+                                                                   float* __restrict__ attn, int cap,
+                                                                   const float* __restrict__ q_full = nullptr,
+                                                                   uint16_t* __restrict__ out16 = nullptr,
+                                                                   int64_t ld16 = 0) {
 #if STRATA_PA_WMMA
     __shared__ SmemW S;
     const int qi = blockIdx.x, kvh = blockIdx.y;
     const int n_head = n_kv_heads * G;
     q += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
-    attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
+    if constexpr (!GATED) attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;   // GATED: attn is null
     ids += (size_t) qi * cap;
     const int n = __ldg(steps + (size_t) qi * kStepCount + kStepWidth);
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
@@ -1392,7 +1398,17 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
 #pragma unroll
         for (int i = 0; i < 8; ++i) {
             const int row = PA_ROW(i, half);
-            if (row < G) attn[(size_t) row * HD + dim0 + j * 16 + col] = acc[j][i] * inv[i];
+            if (row < G) {
+                if constexpr (GATED) {
+                    const int hh = kvh * G + row, d = dim0 + j * 16 + col;
+                    const float a = acc[j][i] * inv[i];
+                    const float g = q_full[(size_t) qi * n_head * 2 * HD + (size_t) hh * 2 * HD + HD + d];
+                    out16[(size_t) qi * ld16 + (size_t) hh * HD + d] =
+                        __half_as_ushort(__float2half_rn(a * (1.0f / (1.0f + expf(-g)))));
+                } else {
+                    attn[(size_t) row * HD + dim0 + j * 16 + col] = acc[j][i] * inv[i];
+                }
+            }
         }
 #else
     __builtin_trap();
@@ -1423,6 +1439,25 @@ bool hip_wmma_usable() {
         }
     }
     return arch[dev] == 1;
+}
+
+// The gated epilogue (STRATA_PA_FAST's kernel only: the one the prompt path's fast configuration runs).
+bool launch_wmma_gated(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
+                       const QsaShapes& s, const float* q_full, uint16_t* out16, int64_t ld16, int64_t n_q,
+                       cudaStream_t st) {
+    const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
+    for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
+        const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
+        prompt_attn_wmma_kernel<false, true><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, 0, st>>>(
+            q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
+            (int) s.page_size, scale_log2, nullptr, (int) cap, q_full + q0 * s.n_head * 2 * HD, out16 + q0 * ld16, ld16);
+    }
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "qsa_prompt_attn_batch_gated (wmma): %s\n", cudaGetErrorString(e));
+        std::exit(1);
+    }
+    return true;
 }
 
 bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
@@ -1522,6 +1557,26 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     if (!pools.k_pool || !pools.v_pool) return false;
     if (volta) return launch70<0>(q, pools, ids, steps, cap, s, attn, n_q, st);
     return launch<0>(q, pools, ids, steps, cap, s, attn, n_q, st);
+}
+
+bool qsa_prompt_attn_batch_gated(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                                 int64_t cap, const QsaShapes& s, const float* q_full, uint16_t* out16, int64_t ld16,
+                                 int64_t n_q, void* stream) {
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+    if (n_q <= 0) return true;
+    static const bool fast = [] { const char* e = std::getenv("STRATA_PA_FAST"); return e != nullptr && e[0] == '1'; }();
+    static const int64_t min_t = [] { const char* e = std::getenv("STRATA_PF_SWITCH_MIN_T"); return e ? (int64_t) std::atoll(e) : (int64_t) 0; }();
+    // launch_wmma's conditions for its STRATA_PA_FAST kernel; anything else is the caller's ungated path
+    if (!fast || n_q < min_t || !q_full || !out16 || ld16 < s.n_head * HD) return false;
+    if (pools.k_q != nullptr && pools.v_q != nullptr && pools.k_scale != nullptr && pools.v_scale != nullptr &&
+        pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
+        cap > 0 && ids && steps && pools.page_table && hip_wmma_usable())
+        return launch_wmma_gated(q, pools, ids, steps, cap, s, q_full, out16, ld16, n_q, (cudaStream_t) stream);
+#else
+    (void) q; (void) pools; (void) ids; (void) steps; (void) cap; (void) s; (void) q_full; (void) out16; (void) ld16;
+    (void) n_q; (void) stream;
+#endif
+    return false;
 }
 
 }  // namespace strata::kernels
