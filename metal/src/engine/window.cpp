@@ -20,10 +20,12 @@
 
 #include "strata/core/layer.hpp"
 #include "strata/core/conversation_cache.hpp"
+#include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/ngram.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -52,6 +54,12 @@ namespace {
 constexpr int N = 2560, HC = 4, LR = 320, NFF = 640, TOPK = 10, NEXP = 512, MAXT = 8, NVOCAB_MAX = 248320;
 constexpr int P_MAXE = 128, P_GEXP = 16, P_GSTART = P_GEXP + P_MAXE, P_ETOK = P_GSTART + P_MAXE + 4,
               P_EW = P_ETOK + P_MAXE, P_TOKENT = P_EW + P_MAXE, P_INTS = P_TOKENT + P_MAXE, P_IGU = 4, P_IDN = 8;
+// state and K/V sizes in bytes (the indexer tail has 4 rows here, CUDA keeps 3)
+constexpr size_t kGdnBytes = 4 * 128 * 48 * 128, kConvBytes = 4 * 10240 * 3, kPleBytes = 4 * 9 * 10240,
+                 kTailBytes = 4 * 4 * 128, kDeadBytes = 4 * 128, kKvCellBytes = 2 * 256, kScaleCellBytes = 2 * 2 * 4,
+                 kPooledRowBytes = 4 * 128;
+constexpr int64_t kIdxBlock = 4;   // qsa_real_shapes().idx_block
+static_assert(kPleBytes == sizeof(float) * strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM, "the PLE history");
 struct GemvArgs { uint32_t n_in, n_out, n_tok, row_bytes, x_stride, y_stride; };
 struct GrArgs { uint32_t n_embd, hc, hc_lr, n_tok, apply; float eps; };
 struct MoeArgs {
@@ -127,6 +135,8 @@ public:
     // PLE history, each QSA layer's indexer tail and tail-block key); the KV and pooled keys are positional
     bool checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err);
     bool checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err);
+    // what the conversation cache copies
+    void cache_layout(strata::core::MetalWindowLayout& l) const;
     void reset();   // a new sequence (session_zero): the running state zeroed
     void set_max_t(int t) { max_t_ = std::min(t, MAXT); }
     // ---- the MTP draft layer (mtp.hpp's math on mac-kern's kernels; the MTP GGUF from tools/mtp_pack.py)
@@ -462,7 +472,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     zL_ = A(4 * (size_t) 36 * MAXT * 6144); ydump_ = A(4 * MAXT * 6144);
     keyn_ = A(4 * MAXT * 10240); qn_ = A(4 * MAXT * 10240); gated_ = A(4 * MAXT * 10240); normW_ = A(4 * MAXT * 10240);
     mrope_ = A(12 * (size_t) (MAXC + 16));
-    pleHist_ = A(4 * 9 * 10240);
+    pleHist_ = A(kPleBytes);
     auto act = [&](int n) { Act a; a.n = n; a.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return a; };
     XA_ = act(N); XF_ = act(N); XY_ = act(6144); XQ_ = act(6144); XH_ = act(NFF); XE_ = act(N);
     // RoPE: cos/sin [pos][32] for the first 64 dims, NEOX pairs (i, i + 32), in double as build_rope_table
@@ -477,17 +487,17 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         for (int c = 0; c < 2051; ++c) qids_.as<int>()[t * 2051 + c] = c;
     for (int l = 0; l < 48; ++l) {
         if (l % 4 != 3) {
-            gst_.push_back(A(4 * 128 * 48 * 128));
-            ghist_[0].push_back(A(4 * 10240 * 3));
-            ghist_[1].push_back(A(4 * 10240 * 3));
+            gst_.push_back(A(kGdnBytes));
+            ghist_[0].push_back(A(kConvBytes));
+            ghist_[1].push_back(A(kConvBytes));
         } else {
-            kq_.push_back(A((size_t) MAXC * 2 * 256));
-            vq_.push_back(A((size_t) MAXC * 2 * 256));
-            ksc_.push_back(A(2 * (size_t) MAXC * 2 * 4));
-            vsc_.push_back(A(2 * (size_t) MAXC * 2 * 4));
-            tail_.push_back(A(4 * 4 * 128));
-            dead_.push_back(A(4 * 128));
-            pooled_.push_back(A(4 * (size_t) MB * 128));
+            kq_.push_back(A((size_t) MAXC * kKvCellBytes));
+            vq_.push_back(A((size_t) MAXC * kKvCellBytes));
+            ksc_.push_back(A((size_t) MAXC * kScaleCellBytes));
+            vsc_.push_back(A((size_t) MAXC * kScaleCellBytes));
+            tail_.push_back(A(kTailBytes));
+            dead_.push_back(A(kDeadBytes));
+            pooled_.push_back(A((size_t) MB * kPooledRowBytes));
         }
     }
     // ---- the HC read in Q8_0 (the owner's default on Metal, as STRATA_HC_Q8 on gfx12): the BF16 down / up / inject
@@ -1381,13 +1391,13 @@ bool Window::checkpoint_save(strata::core::ConversationCheckpoint& c, std::strin
         cx_->run_graph(ds);
         pend_fold_ = 0;
     }
-    const size_t gs = 4 * 128 * 48 * 128, hs = 4 * 10240 * 3, ts = 4 * 4 * 128, dsz = 4 * 128;
+    const size_t gs = kGdnBytes, hs = kConvBytes, ts = kTailBytes, dsz = kDeadBytes;
     c.gdn.resize(gst_.size() * (gs + hs));
     for (size_t i = 0; i < gst_.size(); ++i) {
         std::memcpy(c.gdn.data() + i * (gs + hs), gst_[i].ptr, gs);
         std::memcpy(c.gdn.data() + i * (gs + hs) + gs, ghist_[hp_][i].ptr, hs);
     }
-    c.ple.assign((const uint8_t*) pleHist_.ptr, (const uint8_t*) pleHist_.ptr + 4 * 9 * 10240);
+    c.ple.assign((const uint8_t*) pleHist_.ptr, (const uint8_t*) pleHist_.ptr + kPleBytes);
     c.tails.resize(tail_.size() * ts);
     c.dead.resize(dead_.size() * dsz);
     for (size_t j = 0; j < tail_.size(); ++j) {
@@ -1395,7 +1405,30 @@ bool Window::checkpoint_save(strata::core::ConversationCheckpoint& c, std::strin
         std::memcpy(c.dead.data() + j * dsz, dead_[j].ptr, dsz);
     }
     c.block_pos.clear();
+    // cache on: also the draft layer's tail, so a restored drafter gets its own state
+    if (strata::core::metal_conversation_cache() && mtp_on_) {
+        c.block_pos.resize(mtail_.size() * (ts + dsz));
+        for (size_t j = 0; j < mtail_.size(); ++j) {
+            std::memcpy(c.block_pos.data() + j * (ts + dsz), mtail_[j].ptr, ts);
+            std::memcpy(c.block_pos.data() + j * (ts + dsz) + ts, mdead_[j].ptr, dsz);
+        }
+    }
     return true;
+}
+
+void Window::cache_layout(strata::core::MetalWindowLayout& l) const {
+    l.kv.clear();
+    for (size_t j = 0; j < kq_.size(); ++j) l.kv.push_back({kq_[j].ptr, vq_[j].ptr, ksc_[j].ptr, vsc_[j].ptr, pooled_[j].ptr});
+    l.qsa_layers = l.kv.size();
+    for (size_t j = 0; mtp_on_ && j < mkq_.size(); ++j)
+        l.kv.push_back({mkq_[j].ptr, mvq_[j].ptr, mksc_[j].ptr, mvsc_[j].ptr, mpooled_[j].ptr});
+    l.unit = {kKvCellBytes, kKvCellBytes, kScaleCellBytes, kScaleCellBytes, kPooledRowBytes};
+    l.page = kIdxBlock;
+    l.block = kIdxBlock;
+    l.cells = kq_.empty() ? 0 : (int64_t) (kq_[0].bytes / kKvCellBytes);
+    l.rows = pooled_.empty() ? 0 : (int64_t) (pooled_[0].bytes / kPooledRowBytes);
+    l.state = {gst_.size() * (kGdnBytes + kConvBytes), kPleBytes, tail_.size() * kTailBytes, dead_.size() * kDeadBytes,
+               strata::core::metal_conversation_cache() && mtp_on_ ? mtail_.size() * (kTailBytes + kDeadBytes) : 0};
 }
 
 void Window::reset() {
@@ -1403,25 +1436,28 @@ void Window::reset() {
     last_T_ = 0;
     auto zero = [](const mtl::Buffer& b, size_t n) { std::memset(b.ptr, 0, n); };
     for (size_t i = 0; i < gst_.size(); ++i) {
-        zero(gst_[i], 4 * 128 * 48 * 128);
-        zero(ghist_[0][i], 4 * 10240 * 3);
-        zero(ghist_[1][i], 4 * 10240 * 3);
+        zero(gst_[i], kGdnBytes);
+        zero(ghist_[0][i], kConvBytes);
+        zero(ghist_[1][i], kConvBytes);
     }
-    zero(pleHist_, 4 * 9 * 10240);
+    zero(pleHist_, kPleBytes);
     for (size_t j = 0; j < tail_.size(); ++j) {
-        zero(tail_[j], 4 * 4 * 128);
-        zero(dead_[j], 4 * 128);
+        zero(tail_[j], kTailBytes);
+        zero(dead_[j], kDeadBytes);
     }
     for (size_t j = 0; j < mtail_.size(); ++j) {
-        zero(mtail_[j], 4 * 4 * 128);
-        zero(mdead_[j], 4 * 128);
+        zero(mtail_[j], kTailBytes);
+        zero(mdead_[j], kDeadBytes);
     }
 }
 
 bool Window::checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err) {
-    const size_t gs = 4 * 128 * 48 * 128, hs = 4 * 10240 * 3, ts = 4 * 4 * 128, dsz = 4 * 128;
-    if (c.gdn.size() != gst_.size() * (gs + hs) || c.ple.size() != (size_t) 4 * 9 * 10240 ||
-        c.tails.size() != tail_.size() * ts || c.dead.size() != dead_.size() * dsz) {
+    const size_t gs = kGdnBytes, hs = kConvBytes, ts = kTailBytes, dsz = kDeadBytes;
+    // the draft layer's tail (cache on)
+    const size_t draft = strata::core::metal_conversation_cache() && mtp_on_ ? mtail_.size() * (ts + dsz) : 0;
+    if (c.gdn.size() != gst_.size() * (gs + hs) || c.ple.size() != kPleBytes ||
+        c.tails.size() != tail_.size() * ts || c.dead.size() != dead_.size() * dsz ||
+        (draft && c.block_pos.size() != draft)) {
         err = "metal window: the checkpoint is not this engine's (sizes differ)";
         return false;
     }
@@ -1435,6 +1471,10 @@ bool Window::checkpoint_restore(const strata::core::ConversationCheckpoint& c, s
     for (size_t j = 0; j < tail_.size(); ++j) {
         std::memcpy(tail_[j].ptr, c.tails.data() + j * ts, ts);
         std::memcpy(dead_[j].ptr, c.dead.data() + j * dsz, dsz);
+    }
+    for (size_t j = 0; draft && j < mtail_.size(); ++j) {
+        std::memcpy(mtail_[j].ptr, c.block_pos.data() + j * (ts + dsz), ts);
+        std::memcpy(mdead_[j].ptr, c.block_pos.data() + j * (ts + dsz) + ts, dsz);
     }
     return true;
 }
@@ -1546,9 +1586,9 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
     minj_[0] = A(4 * MAXT * HC); minj_[1] = A(4 * MAXT * HC); mqids_ = A(4 * MAXT * 2051); mlm_ = A(4 * (size_t) n_vocab_);
     auto act = [&](int n) { Act x; x.n = n; x.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return x; };
     XEn_ = act(N); XHn_ = act(N);
-    mkq_.push_back(A((size_t) MAXC * 2 * 256)); mvq_.push_back(A((size_t) MAXC * 2 * 256));
-    mksc_.push_back(A(2 * (size_t) MAXC * 2 * 4)); mvsc_.push_back(A(2 * (size_t) MAXC * 2 * 4));
-    mtail_.push_back(A(4 * 4 * 128)); mdead_.push_back(A(4 * 128)); mpooled_.push_back(A(4 * (size_t) MB * 128));
+    mkq_.push_back(A((size_t) MAXC * kKvCellBytes)); mvq_.push_back(A((size_t) MAXC * kKvCellBytes));
+    mksc_.push_back(A((size_t) MAXC * kScaleCellBytes)); mvsc_.push_back(A((size_t) MAXC * kScaleCellBytes));
+    mtail_.push_back(A(kTailBytes)); mdead_.push_back(A(kDeadBytes)); mpooled_.push_back(A((size_t) MB * kPooledRowBytes));
     {
         std::string vp;
         // the subset setup put beside the draft layer (--draft-vocab: <mtp>/rt/draft_vocab.bin, as CUDA reads it),
@@ -2504,6 +2544,11 @@ bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, std::string
 bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err) {
     if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
     return g_the_window->checkpoint_restore(c, err);
+}
+bool window_cache_layout(strata::core::MetalWindowLayout& l, std::string& err) {
+    if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
+    g_the_window->cache_layout(l);
+    return true;
 }
 bool window_commit(void* w, int n_keep, std::string& err) {
     const double t0 = now_ms();
