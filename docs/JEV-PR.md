@@ -155,8 +155,24 @@ vs the donor's dense-batched loop. In exchange it runs in the Strata serving sta
 (KV cache, vision, MTP, one process for chat+decisions). Image direct ≈ text
 latency (encoder cached); summary costs ~6× direct (full 160-token generation).
 
-Determinism caveat (inherited): GPU expert routing rounds differently per run —
-repeat-item drift is possible (documented in the golden battery).
+Determinism / noise floor (measured, mechanism identified): repeat-decision
+probability drift on this engine is p99 |Δp| ≈ 0.04–0.07 with **zero argmax
+flips in 720 repeated decisions** across idle, 8-decision and mixed 4-chat+4-
+decision load (`blockers-run/noise-floor.json`). The donor's 5e-3 gate was a
+DENSE-model gate and never applied here. Mechanism (verified in engine
+source): MoE expert placement uses `atomicAdd` slot assignment
+(`src/prefill/moe_fused.cu` `place_kernel`), so row order inside each expert is
+warp-dispatch order — nondeterministic per run; float addition is non-
+associative, so the expert GEMM sums differ in the last ulp and the divergence
+compounds across layers; IQ3_XXS keeps the wobble above dequant noise and the
+readout softmax amplifies it near p≈0.5–0.9 (Δp ≈ p(1−p)·Δd). It is a property
+of the model+engine pair, not of load — the three load scenarios measured the
+same floor. Decision margins (>0.9 typical) exceed the floor by an order of
+magnitude; fitted calibrators average it out over the dev split. A
+deterministic-placement option (sort rows by source index after the atomic
+fill) would lower it, as an upstream engine follow-up — out of scope here.
+Single-item probability deltas smaller than this floor (e.g. POPE +1.6pp at
+n=60) must not be read as signal.
 
 ## 5. Artifacts
 
