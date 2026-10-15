@@ -1,3 +1,5 @@
+#include <array>
+#include <algorithm>
 // sycl/src/kernels/gr_bench.cpp - SYCL port: time fused_gr_read_multi (norm + down + up) for 1-6 tokens on random
 // weights at the Coder's shapes; prints a checksum of every output so two builds/switches can be compared bitwise.
 // Both GR decompositions: STRATA_GR_MORE_GROUPS=0 / =1 (default: on for Arc A-series only); STRATA_GR_LARGE_GRF the same.
@@ -30,21 +32,34 @@ int main() {
     auto* d_n = (float*) dev(hn.data(), hn.size() * 4);
     float* xn = sycl::malloc_device<float>((size_t) TM * D, *s);
     float* out = sycl::malloc_device<float>((size_t) TM * (LR + HC + HC + N), *s);
-    FusedGrArgs a[TM];
-    for (int t = 0; t < TM; ++t) {
-        float* o = out + (size_t) t * (LR + HC + HC + N);
-        a[t].R = d_R + (size_t) t * D; a[t].w_norm = d_n; a[t].w_down = d_wd; a[t].w_up = d_wu; a[t].w_inject = d_wi;
-        a[t].lo = o; a[t].rs = o + LR; a[t].inject_out = o + LR + HC; a[t].mixed = o + LR + 2 * HC;
+    // GR_BENCH_LAYERS=N: N copies of the weights, the calls rotating over them, so they stream from VRAM as a
+    // window's layers do (default 1: the same weights every call - L2-resident on a 16 MB-L2 card, optimistic)
+    const int NL = std::getenv("GR_BENCH_LAYERS") ? std::max(1, std::atoi(std::getenv("GR_BENCH_LAYERS"))) : 1;
+    std::vector<uint16_t*> L_wd(NL, d_wd), L_wu(NL, d_wu), L_wi(NL, d_wi);
+    for (int l = 1; l < NL; ++l) {
+        L_wd[l] = (uint16_t*) dev(wd.data(), wd.size() * 2);
+        L_wu[l] = (uint16_t*) dev(wu.data(), wu.size() * 2);
+        L_wi[l] = (uint16_t*) dev(wi.data(), wi.size() * 2);
     }
+    std::vector<std::array<FusedGrArgs, TM>> A(NL);
+    for (int l = 0; l < NL; ++l)
+        for (int t = 0; t < TM; ++t) {
+            FusedGrArgs& x = A[l][t];
+            float* o = out + (size_t) t * (LR + HC + HC + N);
+            x.R = d_R + (size_t) t * D; x.w_norm = d_n; x.w_down = L_wd[l]; x.w_up = L_wu[l]; x.w_inject = L_wi[l];
+            x.lo = o; x.rs = o + LR; x.inject_out = o + LR + HC; x.mixed = o + LR + 2 * HC;
+        }
+    int li = 0;
+    auto* a = A[0].data();
     for (int T = 1; T <= 6; ++T) {
         const auto w0 = std::chrono::steady_clock::now();
         while (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count() < 150) {
-            for (int i = 0; i < 20; ++i) fused_gr_read_multi(a, T, xn, s);
+            for (int i = 0; i < 20; ++i) fused_gr_read_multi(A[li++ % NL].data(), T, xn, s);
             s->wait();
         }
         const int it = 500;
         const auto t0 = std::chrono::steady_clock::now();
-        for (int i = 0; i < it; ++i) fused_gr_read_multi(a, T, xn, s);
+        for (int i = 0; i < it; ++i) fused_gr_read_multi(A[li++ % NL].data(), T, xn, s);
         s->wait();
         const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / it;
         std::vector<float> h((size_t) T * (LR + HC + HC + N));
@@ -55,5 +70,6 @@ int main() {
         std::printf("fused GR read, %d tokens: %7.1f us (%.0f GB/s of weights)  checksum %016llx  sum %.9e\n", T, us,
                     (wd.size() + wu.size() + wi.size()) * 2.0 / us / 1e3, (unsigned long long) cs, sum);
     }
+    (void) a;
     return 0;
 }

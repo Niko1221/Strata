@@ -4,6 +4,7 @@
 #include "strata/core/geometry.hpp"
 #include <unordered_map>
 #include <sycl/sycl.hpp>
+#include <type_traits>
 #include <utility>
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <dpct/dpct.hpp>
@@ -942,8 +943,160 @@ uint32_t* slice_counters(sycl::queue* q) {
     bufs[q] = p;
     return p;
 }
+// STRATA_GR_DOWN_COLS=256 / 512 (A/B): the norm-folded down projection with wider slices (40 / 20 instead of 80): each
+// lane holds COLS/32 uint4 of its row (all loaded before the dots), and the row block's last slice reduces only
+// COLS-wide partials - the 80-partial tail (20 rounds of load latency on 6 work-groups) was most of the old kernel's
+// time. Another fp32 order than the 128-column kernel (as that one is to the norm kernel's).
+template <int COLS>
+__dpct_inline__ void gr_down_nf2_kernel(GrMulti m, float* tile) {
+    constexpr int NS = D / COLS, SPS = N / COLS, CPL = COLS / 32;   // slices, slices a stream, uint4 a lane
+    auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    auto& red = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[WARPS][kFusedGrMaxT]>(item.get_group());
+    auto& flag = *sycl::ext::oneapi::group_local_memory_for_overwrite<int>(item.get_group());
+    auto& rsm = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[kFusedGrMaxT][HC]>(item.get_group());
+    const int t = (int) item.get_local_id(2), lane = t & 31, warp = t >> 5;
+    const int g = (int) item.get_group(2), T = m.T;
+    const int sl = g / GRS_RB, rb = g % GRS_RB, c0 = sl * COLS, cs = sl / SPS;
+    const int r_first = rb * WARPS * 8;
+    auto sg = item.get_sub_group();
+    const int rsub = lane >> 2, q = lane & 3;
+    const bool inj = m.a[0].w_inject != nullptr;
+    const int r = r_first + warp * 8 + rsub;
+    const bool ok = r < LR || (r < GRS_ROWS && inj);
+    const uint16_t* wrow = r < LR ? m.a[0].w_down + (size_t) r * D : m.a[0].w_inject + (size_t) (ok ? r - LR : 0) * D;
+    sycl::uint4 wv[CPL];   // the weights first: their DRAM latency overlaps the staging below
+#pragma unroll
+    for (int cc = 0; cc < CPL; ++cc)
+        wv[cc] = ok ? reinterpret_cast<const sycl::uint4*>(wrow + c0)[q + 4 * cc] : sycl::uint4(0, 0, 0, 0);
+    float ssq[kFusedGrMaxT];
+#pragma unroll
+    for (int k = 0; k < kFusedGrMaxT; ++k) ssq[k] = 0.0f;
+#pragma unroll
+    for (int k = 0; k < kFusedGrMaxT; ++k) {
+        if (k >= T) break;
+        for (int col = t; col < COLS; col += THREADS) {
+            float x = GR_PICK(m, k, R)[c0 + col];
+            if (GR_PICK(m, k, apply)) {
+                const float gw = 2.0f * sigmoidf_(GR_PICK(m, k, inj_prev)[cs] / (float) HC);
+                x = sycl::fma(GR_PICK(m, k, bo_prev)[c0 + col - cs * N], gw, x);
+            }
+            tile[k * COLS + col] = x * GR_PICK(m, k, w_norm)[c0 + col];
+            ssq[k] += x * x;
+        }
+    }
+#pragma unroll
+    for (int k = 0; k < kFusedGrMaxT; ++k) {
+        if (k >= T) break;
+        const float v = sycl::reduce_over_group(sg, ssq[k], sycl::plus<float>());
+        if (lane == 0) red[warp][k] = v;
+    }
+    item.barrier(sycl::access::fence_space::local_space);
+    if (t < T) {   // every row block keeps its own copy of the slice's sums of squares (its reducer reads them)
+        float v = 0.0f;
+#pragma unroll
+        for (int w = 0; w < WARPS; ++w) v += red[w][t];
+        m.ssp[((size_t) rb * GRS_SLICES + sl) * kFusedGrMaxT + t] = v;
+    }
+    float acc[kFusedGrMaxT];
+#pragma unroll
+    for (int k = 0; k < kFusedGrMaxT; ++k) {
+        acc[k] = 0.0f;
+        if (k < T) {
+#pragma unroll
+            for (int cc = 0; cc < CPL; ++cc) acc[k] += dot8(wv[cc], tile + k * COLS + (q + 4 * cc) * 8);
+        }
+    }
+#pragma unroll
+    for (int k = 0; k < kFusedGrMaxT; ++k) {
+        if (k >= T) break;
+        float v = acc[k];
+        v += sycl::permute_group_by_xor(sg, v, 1);
+        v += sycl::permute_group_by_xor(sg, v, 2);
+        if (q == 0 && ok) m.part2[((size_t) sl * kFusedGrMaxT + k) * GRS_ROWS + r] = v;
+    }
+    sycl::atomic_fence(sycl::memory_order::release, sycl::memory_scope::device);
+    item.barrier(sycl::access::fence_space::global_and_local);
+    if (t == 0) {
+        sycl::atomic_ref<uint32_t, sycl::memory_order::acq_rel, sycl::memory_scope::device,
+                         sycl::access::address_space::global_space> c(m.cnt[rb]);
+        flag = c.fetch_add(1u) == (uint32_t) (NS - 1) ? 1 : 0;
+    }
+    item.barrier(sycl::access::fence_space::local_space);
+    if (flag == 0) return;
+    sycl::atomic_fence(sycl::memory_order::acquire, sycl::memory_scope::device);
+    if (t < T * HC) {
+        const int k = t / HC, c = t % HC;
+        float ss = 0.0f;
+#pragma unroll
+        for (int j = 0; j < SPS; ++j) ss += m.ssp[((size_t) rb * GRS_SLICES + c * SPS + j) * kFusedGrMaxT + k];
+        const float v = sycl::rsqrt(ss / (float) N + GR_PICK(m, k, eps));
+        rsm[k][c] = v;
+        if (rb == 0) GR_PICK(m, k, rs)[c] = v;
+    }
+    item.barrier(sycl::access::fence_space::local_space);
+    constexpr size_t SL_STRIDE = (size_t) kFusedGrMaxT * GRS_ROWS;
+    for (int i = t; i < T * WARPS * 8; i += THREADS) {
+        const int k = i / (WARPS * 8), rr = r_first + i % (WARPS * 8);
+        if (rr >= GRS_ROWS || (rr >= LR && !inj)) continue;
+        const float* src = m.part2 + (size_t) k * GRS_ROWS + rr;
+        float pv[HC][SPS];   // all of this output's partials in flight at once
+#pragma unroll
+        for (int c = 0; c < HC; ++c)
+#pragma unroll
+            for (int j = 0; j < SPS; ++j) pv[c][j] = src[(size_t) (c * SPS + j) * SL_STRIDE];
+        float x = 0.0f;
+#pragma unroll
+        for (int c = 0; c < HC; ++c) {
+            float xc = 0.0f;
+#pragma unroll
+            for (int j = 0; j < SPS; ++j) xc += pv[c][j];
+            x += rsm[k][c] * xc;
+        }
+        if (rr < LR) {
+            m.part[(size_t) k * LR + rr] = x;
+            const float y = x / (float) HC;
+            GR_PICK(m, k, lo)[rr] = y / (1.0f + sycl::native::exp(-y));
+        } else {
+            GR_PICK(m, k, inject_out)[rr - LR] = x;
+        }
+    }
+    if (t == 0) m.cnt[rb] = 0u;
+}
+// A770, gr_bench (48 layers' weights, from VRAM), 2 / 4 / 6 tokens: 128 columns 68.8 / 83.4 / 100.5 us, 256 columns
+// 62.9 / 78.4 / 95.3 us, 512 slower (131-178 us: the lane's 16 uint4 spill). Default 256 on Alchemist (with the norm fold);
+// STRATA_GR_DOWN_COLS=128 / 256 / 512 chooses.
+inline int gr_down_cols() {
+    static const int v = [] {
+        const char* e = std::getenv("STRATA_GR_DOWN_COLS");
+        const int c = e ? std::atoi(e)
+                        : (strata::intel_gpu_gen(dpct::get_in_order_queue().get_device()) == strata::IntelGpuGen::Alchemist ? 256 : 128);
+        return c == 256 || c == 512 ? c : 128;
+    }();
+    return v;
+}
+
 template <bool BIG>
 void launch_gr_down_more(dpct::queue_ptr st, const GrMulti& m) {
+    if (BIG && gr_fused_reduce(st) && gr_norm_fold() && gr_down_cols() != 128) {
+        GrMulti mf = m;
+        mf.cnt = slice_counters(st);
+        mf.ssp = slice_squares(st);
+        auto go = [&](auto colsc) {
+            constexpr int C = decltype(colsc)::value;
+            st->submit([&](sycl::handler& cgh) {
+                sycl::local_accessor<float, 1> tl(sycl::range<1>((size_t) kFusedGrMaxT * C), cgh);
+                const sycl::nd_range<3> nr(sycl::range(1, 1, (D / C) * GRS_RB) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS));
+                cgh.parallel_for<dpct_kernel_name<class gr_down_nf2, dpct_kernel_scalar<C>, dpct_kernel_scalar<BIG ? 1 : 0>>>(
+                    nr, sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>},
+                    [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                        gr_down_nf2_kernel<C>(mf, tl.get_multi_ptr<sycl::access::decorated::no>().get());
+                    });
+            });
+        };
+        if (gr_down_cols() == 512) go(std::integral_constant<int, 512>{});
+        else go(std::integral_constant<int, 256>{});
+        return;
+    }
     if (gr_fused_reduce(st) && gr_norm_fold()) {
         GrMulti mf = m;
         mf.cnt = slice_counters(st);
