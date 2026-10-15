@@ -1256,6 +1256,8 @@ def engine_archs(toolkit=13):
         meta = json.loads(info.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    if meta.get("backend") == "hip":
+        return None
     return [int(x) for x in meta.get("archs", [])], bool(meta.get("ptx"))
 
 
@@ -1270,9 +1272,11 @@ def engine_archs_hip():
 
 def engine_runs_on(g, toolkit=13) -> bool:
     ea = engine_archs(toolkit)
-    if ea is None or not ea[0]:
+    if ea is None:
         return True
     archs, ptx = ea
+    if not archs:                                   # the installed engine is for another backend (a HIP engine
+        return False                                # where a CUDA card starts, or the other way round): compile
     return int(g["arch"]) in archs or (ptx and int(g["arch"]) > max(archs))
 
 
@@ -2850,7 +2854,7 @@ def hip_runtime_beside_exe(eng: Path) -> None:
                 if dst.exists() and dst.stat().st_size == src.stat().st_size and \
                         dst.stat().st_mtime >= src.stat().st_mtime:
                     continue
-                shutil.copy2(src, dst)
+                place_binary(src, dst)
             except OSError as e:                   # e.g. the engine is running and holds the old copy
                 warn(f"could not put {src.name} next to the AMD engine ({e}); if the engine stops on its first "
                      "request, close Strata and run START-HERE.bat again")
@@ -2983,15 +2987,18 @@ def rocm_dev_missing(sysroot: Path) -> list:
 
 def rocm_root(archs):
     """ROCm for compiling and running the HIP engine for `archs` (one arch or a list: the cards of a layer split):
-    (root, library folders).  A system ROCm 7 with hipcc, hipBLAS and the HIP development files (#446), else AMD's
-    TheRock wheels (rocm_wanted: a version per card family, from the family's index) installed into .venv."""
+    (root, library folders).  A system ROCm 7 with hipcc, hipBLAS and the HIP development files (#446) - on Gentoo
+    the ebuilds install to /usr, which is the sysroot there unless ROCM_PATH says otherwise, and setup.py's AMD
+    flow emerges them when they are not installed yet - else AMD's TheRock wheels (rocm_wanted: a version per
+    card family, from the family's index) installed into .venv."""
     archs = [archs] if isinstance(archs, str) else list(archs)
-    sysroot = Path(os.environ.get("ROCM_PATH") or "/opt/rocm")
-    if (sysroot / "bin" / "hipcc").exists() and list((sysroot / "lib").glob("libhipblas.so*")):
+    sysroot = Path(os.environ.get("ROCM_PATH") or ("/usr" if is_gentoo() else "/opt/rocm"))
+    hipblas = next((d for d in (sysroot / "lib", sysroot / "lib64") if list(d.glob("libhipblas.so*"))), None)
+    if (sysroot / "bin" / "hipcc").exists() and hipblas:
         ver = rocm_version(sysroot)
         missing = rocm_dev_missing(sysroot)
         if (ver is None or ver >= ROCM_SYSTEM_MIN) and not missing:
-            return sysroot, [str(sysroot / "lib")]
+            return sysroot, [str(hipblas)]
         if ver is not None and ver < ROCM_SYSTEM_MIN:
             warn(f"the ROCm in {sysroot} is {ver[0]}.{ver[1]}; Strata needs {ROCM_SYSTEM_MIN[0]}.{ROCM_SYSTEM_MIN[1]} "
                  "or newer: using AMD's wheels in .venv instead")
@@ -3070,6 +3077,38 @@ def hipblaslt_table(arch, lib_dirs, ver=None):
     return None
 
 
+def fresh_cache_if(bdir: Path, defs) -> None:
+    """CMake re-runs a configure WITHOUT the command-line -Ds when it decides the cache must go (a compiler that
+    changed between configures - Gentoo's hipcc for a folder first configured with clang++), which drops Strata's
+    -DSTRATA_ENABLE_* flags and leaves the target unregistered. A cache whose stored values disagree with the
+    requested -D definitions is removed before configuring, so the next configure is a real first one."""
+    cache = bdir / "CMakeCache.txt"
+    if not cache.exists():
+        return
+    want = {}
+    for d in defs:
+        m = re.match(r"-D([A-Za-z0-9_]+)=(.*)", str(d))
+        if m:
+            want[m.group(1)] = m.group(2)
+    have = {}
+    for line in cache.read_text(encoding="utf-8", errors="ignore").splitlines():
+        m = re.match(r"([A-Za-z0-9_]+):[^=]+=(.*)", line)
+        if m:
+            have[m.group(1)] = m.group(2)
+    if any(k in have and have[k] != v for k, v in want.items()):
+        cache.unlink()
+
+
+def place_binary(src: Path, dst: Path) -> None:
+    """Put a freshly built binary at dst without opening the old one for writing: Linux refuses that with
+    'Text file busy' (errno 26) while the server runs the engine, so the new file is copied to a temporary name
+    beside dst and renamed over it - the rename unlinks the old file, which is allowed while it runs, and the
+    running server keeps its old copy until it restarts."""
+    tmp = dst.parent / (dst.name + ".new")
+    shutil.copy2(src, tmp)
+    os.replace(str(tmp), str(dst))
+
+
 def build_engine_hip(gpu, llama, vision="none") -> Path:
     """Compile the HIP engine for this AMD GPU into engine/ (again only when its source changed: a `git pull`).
     gpu["archs"]: every architecture it needs code for (the cards of a layer split), else gpu["arch"].  vision "cpu"
@@ -3095,8 +3134,27 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
              "Ubuntu/Debian: sudo apt install build-essential git   Fedora: sudo dnf install gcc-c++ git")
     root, dirs = rocm_root(archs)
     libs = [str(Path(d).parent) for d in dirs[1:]]
-    bitcode = next((p for p in (root / "lib" / "llvm" / "amdgcn" / "bitcode", root / "amdgcn" / "bitcode") if p.is_dir()),
+    bitcode = next((p for p in (root / "lib" / "llvm" / "amdgcn" / "bitcode", root / "lib" / "amdgcn" / "bitcode",
+                                root / "amdgcn" / "bitcode") if p.is_dir()),
                    root / "amdgcn" / "bitcode")
+    clang = root / "llvm" / "bin" / "clang++"
+    if not clang.exists():
+        # Gentoo's ROCm (the ebuilds install to /usr): upstream clang needs `-x hip` for a .cu TU (the wheel ROCm's
+        # clang is AMD's patched build, which takes gfx archs in CUDA mode), and only when compiling - the same
+        # flag on the link line makes clang read the .o files as source. hipcc's driver gets both right, but CMake
+        # refuses a compiler named hipcc (CMakeDetermineHIPCompiler warns and stops on that name) - so hipcc behind
+        # another name, as a one-line wrapper in the build folder.
+        hipcc = shutil.which("hipcc")
+        if hipcc:
+            (ROOT / "build-hip").mkdir(exist_ok=True)
+            wrap = ROOT / "build-hip" / "hip-clang++"
+            wrap.write_text('#!/bin/sh\n'
+                            'c=;s=\n'
+                            'for a in "$@"; do case "$a" in -c) c=1;; *.hip|*.cu) s=1;; esac; done\n'
+                            '[ -z "$c" ] && [ -n "$s" ] && set -- -c -o /dev/null "$@"\n'
+                            'exec "%s" "$@"\n' % hipcc, encoding="utf-8")
+            os.chmod(wrap, 0o755)
+            clang = wrap
     os.environ.update({"HIP_PLATFORM": "amd", "HIP_COMPILER": "clang", "HIP_RUNTIME": "rocclr", "ROCM_PATH": str(root),
                        "HIP_PATH": str(root)})
     os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(dirs + [os.environ.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)
@@ -3108,7 +3166,7 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     cmake_build(ROOT, ROOT / "build-hip", "strata",
                 ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_BUILD_TESTS=OFF",
                  "-DSTRATA_PREFILL_MMQ=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
-                 f"-DCMAKE_HIP_COMPILER={root / 'llvm' / 'bin' / 'clang++'}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
+                 f"-DCMAKE_HIP_COMPILER={clang}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
                  "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
                  f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
                  f"-DSTRATA_GGML_DIR={llama}", *isa_floor_defs(floor, ROOT / "build-hip", meta)], None, "")
@@ -3116,7 +3174,7 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
         fail(f"the engine build finished without a new engine ({EXE} is version "
              f"{binary_engine_version(ROOT / 'build-hip' / EXE)}, this source is {source_version()}): "
              "the installed engine is left as it was", "delete the folder build-hip and run this again")
-    shutil.copy2(ROOT / "build-hip" / EXE, eng / EXE)
+    place_binary(ROOT / "build-hip" / EXE, eng / EXE)
     meta = {"source": "local-hip", "backend": "hip", "version": source_version(), "archs": archs, "vision": "none",
             "lib_dirs": dirs, "src": src, **({"isa_floor": floor} if floor else {})}
     if vision != "none":
@@ -3844,6 +3902,62 @@ def cuda_apt_repo(osr):
     return repo if repo in ("ubuntu2204", "ubuntu2404", "debian12", "debian13") else None
 
 
+def is_gentoo() -> bool:
+    """/etc/os-release says Gentoo and portage's emerge is there."""
+    try:
+        osr = dict(line.split("=", 1) for line in open("/etc/os-release").read().splitlines() if "=" in line)
+    except OSError:
+        return False
+    return osr.get("ID", "").strip("\"'") == "gentoo" and shutil.which("emerge") is not None
+
+
+# dev-util/nvidia-cuda-toolkit's ebuilds cap nvcc's host gcc (GCC_MAX_VER: 12.9 -> 14, 13.4 -> 16): a newer system
+# gcc breaks nvcc there, so setup picks the newest installed gcc at or below the cap with gcc-config (see below).
+GENTOO_CUDA_GCC_MAX = {12: 14, 13: 16}
+# the ROCm packages Strata's HIP build needs on Gentoo (emerge pulls their dependencies: rocm-core, rocr-runtime,
+# rocminfo, hipBLAS-common, rocBLAS ...); they install to /usr, so ROCM_PATH points there:
+GENTOO_ROCM_EBUILDS = ("dev-util/hip", "dev-util/hipcc", "dev-libs/rocm-core", "dev-libs/rocm-device-libs",
+                       "sci-libs/rocBLAS", "sci-libs/hipBLAS", "sci-libs/hipBLASLt")
+
+
+def gentoo_gcc_env(cuda_v):
+    """Gentoo: nvcc's host compiler is the gcc in PATH - the system's gcc-config pick, which can be a newer gcc than
+    the toolkit supports (the ebuild caps it: 12.9 supports gcc up to 14, 13.4 up to 16; a system on gcc-16 with
+    CUDA 12.9 fails there). Pick the newest installed gcc at or below the cap from gcc-config -l, and put its
+    environment in this process from gcc-config -E <index> (`export NAME="value"` lines: PATH first, so gcc, g++ and
+    nvcc's default --ccbin use it). The system's pick is never changed and no sudo is used."""
+    if shutil.which("gcc-config") is None:
+        return
+    cap = GENTOO_CUDA_GCC_MAX.get(cuda_v[0]) if cuda_v else None
+    if cap is None:
+        return
+    picks = []
+    for line in out(["gcc-config", "-l"]).splitlines():
+        m = re.search(r"\[(\d+)\]\s+(\S+)", line)
+        v = re.search(r"(\d+)(?:\.\d+)*$", m.group(2)) if m else None
+        if v and int(v.group(1)) <= cap:
+            picks.append((int(v.group(1)), int(m.group(1))))
+    if not picks:
+        warn("no installed gcc version nvcc's CUDA toolkit supports: the engine build may fail; "
+             "STRATA_NVCC=<nvcc> picks another toolkit")
+        return
+    ver, idx = max(picks)
+    env = {}
+    for line in out(["gcc-config", "-E", str(idx)]).splitlines():
+        m = re.match(r'\s*export\s+([A-Za-z_]\w*)="([^"]*)"', line)
+        if m:
+            env[m.group(1)] = m.group(2)
+    if "PATH" not in env:
+        return
+    os.environ.update(env)
+    gccbin = env["PATH"].split(os.pathsep)[0]
+    for var, exe in (("CC", "gcc"), ("CXX", "g++")):
+        p = Path(gccbin) / exe
+        if p.exists():
+            os.environ[var] = str(p)
+    ok(f"gcc {ver} is nvcc's host compiler (gcc-config choice {idx}, this run only; the system default is untouched)")
+
+
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
     archs = [int(x) for x in gpu.get("archs", [gpu["arch"]])]
@@ -3864,6 +3978,7 @@ def install_build_tools(gpu, yes):
     # RTX 50 (sm_120): CUDA 13.0 - an engine built with 12.8 crashed in the prompt path on Linux (#220)
     need_cuda = need12 if old else (13, 0) if max(archs) >= 120 else (12, 0)
     vcvars = find_vcvars(cuda_v) if WIN else None
+    gentoo = not WIN and is_gentoo()
     have_cc = vcvars is not None if WIN else shutil.which("g++") is not None
     missing = []
     if not have_cc:
@@ -3872,6 +3987,8 @@ def install_build_tools(gpu, yes):
         missing.append("the NVIDIA CUDA Toolkit 13.0")
     if not missing:
         nvcc, cuda_v = sm120_nvcc(nvcc, cuda_v, archs)
+        if gentoo:
+            gentoo_gcc_env(cuda_v)
         ok(f"build tools present (CUDA {cuda_v[0]}.{cuda_v[1]})")
         return nvcc, vcvars
     say("  The engine has to be compiled for your PC, which needs: " + " and ".join(missing) + ".")
@@ -3894,50 +4011,57 @@ def install_build_tools(gpu, yes):
         vcvars = find_vcvars(cuda_v)
     else:
         apt = shutil.which("apt-get")
-        if apt is None:
+        if gentoo:
+            if nvcc is None or cuda_v < need_cuda:
+                run(["sudo", "emerge", "--quiet", "dev-util/nvidia-cuda-toolkit"])
+        elif apt is None:
             fail("missing: " + " and ".join(missing) + " (the automatic install is only done on Ubuntu/Debian)",
                  "install them with your distribution's packages (Arch: pacman -S base-devel cuda; nvcc is found on "
                  "PATH, in /usr/local/cuda* and in /opt/cuda*), then run it again")
-        if not have_cc:
-            run(["sudo", "apt-get", "install", "-y", "build-essential"])
-        if nvcc is None or cuda_v < need_cuda:
-            osr = dict(line.split("=", 1) for line in open("/etc/os-release").read().splitlines() if "=" in line)
-            repo = cuda_apt_repo(osr)
-            if repo is None:
-                fail("the CUDA Toolkit can be installed automatically on Ubuntu 22.04 / 24.04 and Debian 12 / 13 only",
-                     "install it from https://developer.nvidia.com/cuda-downloads and run it again")
-            deb = Path("/tmp/cuda-keyring.deb")
-            download(f"https://developer.download.nvidia.com/compute/cuda/repos/{repo}/x86_64/cuda-keyring_1.1-1_all.deb",
-                     deb, "CUDA repository key")
-            run(["sudo", "dpkg", "-i", str(deb)])
-            run(["sudo", "apt-get", "update"])
-            if repo.startswith("ubuntu"):                  # as before: 13.0, and a failed install stops setup here
-                run(["sudo", "apt-get", "install", "-y", "cuda-toolkit-13-0"])
-            else:
-                # Debian 13's CUDA repo carries no 13.0 package: take the oldest 13.x minor it has
-                for minor in range(10):
-                    if run(["sudo", "apt-get", "install", "-y", f"cuda-toolkit-13-{minor}"], check=False).returncode == 0:
-                        break
+        else:
+            if not have_cc:
+                run(["sudo", "apt-get", "install", "-y", "build-essential"])
+            if nvcc is None or cuda_v < need_cuda:
+                osr = dict(line.split("=", 1) for line in open("/etc/os-release").read().splitlines() if "=" in line)
+                repo = cuda_apt_repo(osr)
+                if repo is None:
+                    fail("the CUDA Toolkit can be installed automatically on Ubuntu 22.04 / 24.04 and Debian 12 / 13 only",
+                         "install it from https://developer.nvidia.com/cuda-downloads and run it again")
+                deb = Path("/tmp/cuda-keyring.deb")
+                download(f"https://developer.download.nvidia.com/compute/cuda/repos/{repo}/x86_64/cuda-keyring_1.1-1_all.deb",
+                         deb, "CUDA repository key")
+                run(["sudo", "dpkg", "-i", str(deb)])
+                run(["sudo", "apt-get", "update"])
+                if repo.startswith("ubuntu"):                  # as before: 13.0, and a failed install stops setup here
+                    run(["sudo", "apt-get", "install", "-y", "cuda-toolkit-13-0"])
                 else:
-                    fail(f"no cuda-toolkit-13-x package could be installed from NVIDIA's {repo} repository",
-                         "install the CUDA Toolkit 13 from https://developer.nvidia.com/cuda-downloads and run it again")
+                    # Debian 13's CUDA repo carries no 13.0 package: take the oldest 13.x minor it has
+                    for minor in range(10):
+                        if run(["sudo", "apt-get", "install", "-y", f"cuda-toolkit-13-{minor}"], check=False).returncode == 0:
+                            break
+                    else:
+                        fail(f"no cuda-toolkit-13-x package could be installed from NVIDIA's {repo} repository",
+                             "install the CUDA Toolkit 13 from https://developer.nvidia.com/cuda-downloads and run it again")
     nvcc, cuda_v = find_nvcc(below=(13, 0)) if old else find_nvcc()
     if (WIN and find_vcvars(cuda_v) is None) or (not WIN and shutil.which("g++") is None):
         fail("the C++ build tools did not install", "install them by hand (README.md) and run it again")
     if nvcc is None or cuda_v < need_cuda:
         fail("the CUDA Toolkit did not install", "install it from https://developer.nvidia.com/cuda-downloads, then run it again")
     nvcc, cuda_v = sm120_nvcc(nvcc, cuda_v, archs)
+    if gentoo:
+        gentoo_gcc_env(cuda_v)
     ok(f"build tools installed (CUDA {cuda_v[0]}.{cuda_v[1]})")
     return nvcc, find_vcvars(cuda_v) if WIN else None
 
 
 def cmake_build(src, bdir, target, defs, vcvars, bat_name):
+    fresh_cache_if(Path(bdir), defs)
     cmake, ninja = find_tool("cmake"), find_tool("ninja")
     if cmake is None or ninja is None:
         fail("cmake / ninja not found after installing them", "run: .venv python -m pip install cmake ninja")
     conf = [cmake, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}", "-S", str(src), "-B", str(bdir),
             "-DCMAKE_BUILD_TYPE=Release", *defs]
-    build = [cmake, "--build", str(bdir), "--target", target, "-j", str(max(2, (os.cpu_count() or 4) // 2))]
+    build = [ninja, "-C", str(bdir), "-j", str(max(2, os.cpu_count() or 4)), target]
     # A failed build is tried once more: CUDA 13.0's ptxas now and then fails to parse a PTX file it just wrote, and
     # the same command then gets past it (issue #45); a second attempt only compiles what is still missing.
     if WIN:
@@ -4071,7 +4195,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
             fail(f"the engine build finished without a new engine ({EXE} is version {binary_engine_version(bdir / EXE)}, "
                  f"this source is {source_version()}): the installed engine and its stamp are left as they were",
                  "the build folder " + str(bdir) + " may be configured for something else: delete it and run this again")
-        shutil.copy2(bdir / EXE, eng / EXE)
+        place_binary(bdir / EXE, eng / EXE)
         if (bdir / KQ_LIB).exists():                      # built with it (Phase 1): it goes next to the engine
             shutil.copy2(bdir / KQ_LIB, eng / KQ_LIB)
         elif (eng / KQ_LIB).exists():                     # an older one of another build would only be refused
@@ -4085,7 +4209,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
                      *toolkit_root_defs(nvcc)]
         cmake_build(ROOT / "tools" / "vision", vdir, "strata-vision", defs, vcvars,
                     "build-vision-cuda12.bat" if t12 else "build-vision.bat")
-        shutil.copy2(vdir / "bin" / VEXE, eng / VEXE)
+        place_binary(vdir / "bin" / VEXE, eng / VEXE)
     bindir = Path(nvcc).parent                            # the toolkit's own libraries (bin, bin/x64, lib64)
     dirs = [str(d) for d in (bindir, bindir / "x64", bindir.parent / "lib64") if d.is_dir()]
     stamp.write_text(json.dumps({"source": "local", "version": source_version(), "archs": archs,
@@ -5610,6 +5734,9 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision):
         else:
             vision = prebuilt_vision(json.loads((eng / "BUILD.json").read_text(encoding="utf-8")), gpu, vision)
     if eng is None:
+        if hip and not WIN and is_gentoo() and not (Path("/usr/bin/hipcc").exists() and list(Path("/usr/lib64").glob("libhipblas.so*"))):
+            say("  Installing the ROCm packages with portage (emerge, sudo) ...")
+            run(["sudo", "emerge", "--quiet", *GENTOO_ROCM_EBUILDS])
         eng = build_engine_hip(gpu, llama, vision) if hip else build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk)
     meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
     if hip and WIN:                                    # the ready-made engine's rocm/bin, first on the engine's PATH
