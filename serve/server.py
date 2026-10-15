@@ -735,6 +735,18 @@ FATAL_PREFIXES = ("ERR verify: timed out at layer ", "ERR verify batch: timed ou
                   "ERR verify: an earlier window never finished", "ERR verify batch: an earlier window never finished")
 
 
+def slot_expire_s() -> float:
+    """STRATA_SLOT_EXPIRE_S, in seconds, from the server's environment: which held batch slot pick_slot gives a new
+    conversation when none is empty.  Off (unset, 0 or unreadable): the one used longest ago, as in earlier releases.
+    Set (600 suits coding agents): a slot idle that long has expired and goes first, the one used longest ago among
+    them; else the one holding the shortest history, so a short side request does not take the slot of a long
+    conversation that is still going."""
+    try:
+        return max(0.0, float(os.environ.get("STRATA_SLOT_EXPIRE_S", "0")))
+    except ValueError:
+        return 0.0
+
+
 class StrataEngine:
     """The resident engine: `strata --serve` reads `GEN <max_new> <ids>` lines and streams `T <id>` lines, then
     `DONE ...`.  Requests are serialized by the service's FIFO, so one pipe is enough.
@@ -1803,11 +1815,13 @@ class StrataEngine:
 
     slot_groups = 1         # --batch-groups (set when the engine starts)
     SLOT_PREFIX_MIN = 512   # a held prefix shorter than this is not worth unbalancing the pipeline's groups
+    SLOT_EXPIRE_S = slot_expire_s()
 
     def pick_slot(self, prompt: list[int]) -> int | None:
         """A free slot for `prompt` (the caller holds slot_cv): the one whose held tokens are the longest start of the
-        prompt (the engine then reads only the rest), else an empty one, else the one used longest ago - so the
-        conversations other slots hold stay for their next turns.  None: every slot is busy."""
+        prompt (the engine then reads only the rest), else an empty one, else the one used longest ago (with
+        STRATA_SLOT_EXPIRE_S set: the one cheapest to lose, see slot_expire_s) - so the conversations other slots hold
+        stay for their next turns.  None: every slot is busy."""
         free = [b for b in self.slot_order if not self.slot_busy[b]]
         if not free:
             return None
@@ -1834,8 +1848,19 @@ class StrataEngine:
         for b in range(self.batch):
             if self.slot_busy[b]:
                 busy_in[self.slot_group[b]] = busy_in.get(self.slot_group[b], 0) + 1
+        # An empty slot, then an expired one, then the shortest held history, the least recent among equals.
+        # STRATA_SLOT_EXPIRE_S off (0): every held slot has expired, so the least recent goes, as before.  Set, a
+        # 57-token side request no longer wipes a live 160K-token agent history (whose next turn read it all again).
+        now = time.time()
+        def keep_value(b):
+            h = self.slot_held[b]
+            if not h:
+                return 0, 0
+            if now - self.slot_used[b] >= self.SLOT_EXPIRE_S:
+                return 1, 0
+            return 2, len(h)
         return min(free, key=lambda b: (busy_in.get(self.slot_group[b], 0) if self.slot_groups > 1 else 0,
-                                        bool(self.slot_held[b]), self.slot_used[b]))
+                                        keep_value(b), self.slot_used[b]))
 
     def slots_view(self) -> list[dict]:
         """/metrics: each batch slot - idle (with the tokens it holds for a next turn), reading or decoding."""
