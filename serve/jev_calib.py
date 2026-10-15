@@ -39,18 +39,22 @@ class Calib:
 
 
 # ---- active calibrator + lock ----
-_ACTIVE: dict[str, Calib | None] = {"c": None}
+# P0-1 (Opus plan): keyed by READOUT letter, not one global Calib - an image fit
+# must never change text decisions.  "" (empty string) = the donor's text/legacy
+# tuple: calib.json keeps working for L exactly as before.  Unknown keys -> None
+# (identity), so a missing per-mode file cannot silently reuse another mode's fit.
+_ACTIVE: dict[str, "Calib | None"] = {"": None}
 _MU = threading.Lock()
 
 
-def active() -> Calib | None:
+def active(mode: str = "") -> Calib | None:
     with _MU:
-        return _ACTIVE["c"]
+        return _ACTIVE.get(mode)
 
 
-def _set_for_test(c: Calib | None) -> None:
+def _set_for_test(c: Calib | None, mode: str = "") -> None:
     with _MU:
-        _ACTIVE["c"] = c
+        _ACTIVE[mode] = c
 
 
 # ---- file load (donor calib_load :565-586) ----
@@ -78,24 +82,34 @@ def load(path: Path) -> Calib:
     return c
 
 
-def swap(dir: Path | None = None) -> Calib:
-    """Hot-reload from CALIB_DIR (or the argument): calib.json, then v1.json."""
+def swap(dir: Path | None = None) -> dict[str, bool]:
+    """Hot-reload from CALIB_DIR (or the argument): the donor's calib.json (legacy
+    text tuple, key "") plus per-readout files calib-<mode>.json for L/V/D/S.
+    Returns which modes loaded (state_json shows it)."""
     d = Path(dir) if dir is not None else CALIB_DIR
-    best: Calib | None = None
-    for name in ("calib.json", "v1.json"):
-        c = load(d / name)
-        if c.loaded:
-            best = c
-            break
+    loaded: dict[str, bool] = {}
     with _MU:
-        _ACTIVE["c"] = best
-    return best if best is not None else Calib()
+        for mode, names in (("", ("calib.json", "v1.json")),
+                            ("L", ("calib-L.json",)),
+                            ("V", ("calib-V.json",)),
+                            ("D", ("calib-D.json",)),
+                            ("S", ("calib-S.json",))):
+            best: Calib | None = None
+            for name in names:
+                c = load(d / name)
+                if c.loaded:
+                    best = c
+                    break
+            _ACTIVE[mode] = best
+            loaded[mode or "text(legacy)"] = best is not None
+    return loaded
 
 
-# ---- apply (donor calib_apply :603-629) ----
-def apply(qtype: str, pr: list[float]) -> tuple[list[float], str]:
-    """Calibrate label-normalized probabilities in place; -> (pr, calib_id)."""
-    c = active()
+# ---- apply (donor calib_apply :603-629; P0-1: per readout mode) ----
+def apply(qtype: str, pr: list[float], mode: str = "") -> tuple[list[float], str]:
+    """Calibrate label-normalized probabilities in place; -> (pr, calib_id).
+    `mode`: the readout letter ("" text legacy / L / V / D / S)."""
+    c = active(mode) or active("")       # a mode with no own fit falls back to the text fit
     if c is None or not c.loaded or not pr:
         return pr, "identity"
     if qtype == "noul":
@@ -170,9 +184,16 @@ def tuple_of(readout_mode: str, qtype: str) -> str:
 
 
 def state_json() -> dict:
-    c = active()
-    if c is None or not c.loaded:
-        return {"loaded": False, "tuple": "", "T_choice": 1.0,
-                "T_score": 1.0, "a_noul": 1.0, "c_noul": 0.0}
-    return {"loaded": True, "tuple": c.tuple_str, "T_choice": c.T_choice,
+    out: dict = {"loaded": False, "modes": {}}
+    for mode in ("", "L", "V", "D", "S"):
+        c = active(mode)
+        if c is None or not c.loaded:
+            out["modes"][mode or "text(legacy)"] = {"loaded": False}
+            continue
+        if mode == "":
+            out.update({"loaded": True, "tuple": c.tuple_str, "T_choice": c.T_choice,
+                        "T_score": c.T_score, "a_noul": c.a_noul, "c_noul": c.c_noul})
+        out["modes"][mode or "text(legacy)"] = {
+            "loaded": True, "tuple": c.tuple_str, "T_choice": c.T_choice,
             "T_score": c.T_score, "a_noul": c.a_noul, "c_noul": c.c_noul}
+    return out
