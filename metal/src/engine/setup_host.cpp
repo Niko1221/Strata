@@ -1,8 +1,8 @@
 // metal/src/engine/setup_host.cpp - the host-side state and sizes of the CUDA kernel files that the shared host code
 // sets and reads while it starts the engine (path switches, scratch sizes, the RoPE table and its config).  Copied
-// from gr.cu, shared_expert.cu, native_*.cu, ple.cu, qsa_decode_attn.cu, rope.cu, native_rope.cu,
-// s2_expert_grouped.cu; keep in step.  On Metal none of these steers a kernel: the decode window runs mac-kern's
-// chain (metal/src/engine/window.cpp); they keep the host side's allocations and checks as on the PC.
+// from gr.cu, shared_expert.cu, native_*.cu, ple.cu, qsa_decode_attn.cu, rope.cu, native_rope.cu, s2_expert_grouped.cu;
+// keep in step.  On Metal none steers a kernel (the decode window runs mac-kern's chain, window.cpp) but rope_scaling()
+// and build_rope_table, which fill its RoPE table (rope_window.h); the rest keep the PC's host allocations and checks.
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/native_gdn.hpp"
 #include "strata/kernels/native_moe.hpp"
@@ -123,6 +123,12 @@ void build_rope_table(int n_rot, double theta, int max_pos, float* cos_tab, floa
             sin_tab[(size_t) p * half + i] = (float) std::sin(ang);
         }
 }
+// Flattened, so the rope_scaling.hpp helpers it calls (freq_scale, mscale, corr_dims, rope_yarn_ramp) are inlined and
+// compiled under this file's -ffp-contract=off (metal/CMakeLists.txt), not bound to another object's contracted copy
+// (generate.cpp.o keeps one of mscale, with a fused multiply-add).  Clang flattens one level: the calls inside those
+// helpers (freq_scale, rope_yarn_corr_dim) can stay out of line, and they contain no multiply-add.
+__attribute__((flatten)) void build_rope_table(int n_rot, const RopeScaling& sc, int max_pos, float* cos_tab,
+                                               float* sin_tab);
 void build_rope_table(int n_rot, const RopeScaling& sc, int max_pos, float* cos_tab, float* sin_tab) {
     if (sc.type == RopeScalingType::None) {
         build_rope_table(n_rot, sc.freq_base, max_pos, cos_tab, sin_tab);
