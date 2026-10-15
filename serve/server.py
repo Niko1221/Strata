@@ -1097,36 +1097,58 @@ class StrataEngine:
         if len(f) >= 16:                                  # #588 (engine 0.1.39+): routed experts read over PCIe
             self.last.update(offloaded=int(f[15]))
 
-    def vram(self, reserve_mib: int | None, timeout: float = 120.0) -> dict:
-        """#533: `VRAM <reserve_mib>` between requests (the caller holds the service's FIFO): the engine shrinks its
-        expert cache until that much VRAM is free, or grows it back when more is free; None: back to the reserve it
-        started with.  -> the engine's figures (expert_slots, expert_cache_mib, vram_free_mib, ...); raises ValueError
-        with the engine's reason (e.g. it was not started with --vram-elastic), EngineDied when it ended."""
+    def vram(self, reserve_mib: int | None, gpu: int | None = None, timeout: float = 120.0) -> dict:
+        """#533: `VRAM <reserve_mib|- [device]` between requests (the caller holds the service's FIFO): the engine
+        shrinks an expert cache until that much VRAM is free, or grows it back when more is free; None: back to the
+        reserve it started with, sent as the dash the engine's grammar needs to put a device after it.  `gpu` is the
+        engine's GPU number (0 = the main card, the --split-device numbering); None: every GPU of the run.  -> the
+        engine's figures, summed over the GPUs it moved, with one entry per GPU in "gpus"; raises ValueError with the
+        engine's reason (e.g. it was not started with --vram-elastic), EngineDied when it ended."""
         if not self.alive():
             raise EngineDied("the engine is not running")
-        self.proc.stdin.write("VRAM" + ("" if reserve_mib is None else f" {int(reserve_mib)}") + "\n")
+        # the dash names the start's reserve only so a device can follow it: with no device, an engine from before
+        # this change parses the reserve slot with strtoll and refuses, so send it a bare `VRAM`.
+        line = "VRAM" + ("" if reserve_mib is None else f" {int(reserve_mib)}")
+        if gpu is not None:
+            line += (" -" if reserve_mib is None else "") + f" {int(gpu)}"
+        self.proc.stdin.write(line + "\n")
         self.proc.stdin.flush()
         deadline = time.time() + timeout
+        parts: list[dict] = []
         while True:
+            # the engine answers with one line per GPU and a VRAM-DONE; an engine older than the per-GPU protocol
+            # answers with a single line and no VRAM-DONE, so a short follow window after the first answer ends it
             try:
-                line = self.lines.get(timeout=max(0.1, deadline - time.time()))
+                line = self.lines.get(timeout=min(1.0 if parts else timeout, max(0.1, deadline - time.time())))
             except queue.Empty:
+                if parts:
+                    break
                 raise EngineDied("the engine did not answer the VRAM command") from None
             if line is None:
                 raise EngineDied("the engine ended")
             line = line.strip()
             if line.startswith("ERR"):
                 raise ValueError(line[4:].strip() or "the engine refused the VRAM command")
+            if line.startswith("VRAM-DONE"):
+                break
             if line.startswith("VRAM "):
                 out = {}
                 for kv in line.split()[1:]:
                     k, _, v = kv.partition("=")
                     out[k] = int(v) if v.lstrip("-").isdigit() else v
-                self.info.update({k: out[k] for k in ("expert_slots", "vram_free_mib") if k in out})
-                self.info["vram"] = out
-                return out
-            if time.time() > deadline:
-                raise EngineDied("the engine did not answer the VRAM command")
+                parts.append(out)
+        if not parts:
+            raise EngineDied("the engine did not answer the VRAM command")
+        out = dict(parts[0])
+        out["gpus"] = parts
+        out["expert_slots"] = sum(p.get("expert_slots", 0) for p in parts)
+        out["expert_slots_full"] = sum(p.get("expert_slots_full", 0) for p in parts)
+        out["expert_cache_mib"] = sum(p.get("expert_cache_mib", 0) for p in parts)
+        out["expert_cache_full_mib"] = sum(p.get("expert_cache_full_mib", 0) for p in parts)
+        out["vram_free_mib"] = min(p.get("vram_free_mib", 0) for p in parts)
+        self.info.update({k: out[k] for k in ("expert_slots", "vram_free_mib") if k in out})
+        self.info["vram"] = out
+        return out
 
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
@@ -3096,6 +3118,7 @@ class Service:
         self.vision_held = False                         # an elastic encoder holds VRAM the expert cache gave it
         self.last_image_at = 0.0                         # when an image turn last ended (the elastic encoder's idle)
         self.reasoning_loop_recovery = False
+        self.vram_gpu = None                             # ... and the GPU it named (None: every GPU of the run)
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
@@ -3295,15 +3318,16 @@ class Service:
                     print(f"[strata] images: stopping the idle image encoder: {e}", flush=True)
         threading.Thread(target=loop, daemon=True).start()
 
-    def free_vram_mib(self) -> int | None:
-        """Free VRAM on the engine's (first) GPU, from NVML (AMD backend: amdgpu's sysfs files, #301); None when it can't
-        be read (then nothing is refused)."""
+    def free_vram_mib(self, index: int | None = None) -> int | None:
+        """Free VRAM on one of the engine's GPUs (`index`: its nvidia-smi / NVML number; default the first), from
+        NVML (AMD backend: amdgpu's sysfs files, #301); None when it can't be read (then nothing is refused)."""
         try:
+            idx = int(getattr(self, "gpu_index", 0) or 0) if index is None else int(index)
             if getattr(self, "backend", None) == "hip":
                 from serve.telemetry import free_vram_mib
-                return free_vram_mib(int(getattr(self, "gpu_index", 0) or 0), amd=True)
+                return free_vram_mib(idx, amd=True)
             from serve.telemetry import _Nvml
-            nv = _Nvml(int(getattr(self, "gpu_index", 0) or 0))
+            nv = _Nvml(idx)
             if not nv.ok():
                 return None
             m = nv.Mem()
@@ -3312,6 +3336,13 @@ class Service:
             return int(m.free >> 20)
         except Exception:
             return None
+
+    def gpu_label(self, device: int | None) -> int:
+        """#533: the engine's GPU number (0 = the main card, the --split-device numbering) -> the nvidia-smi number
+        the telemetry and the user's `nvidia-smi -i` use."""
+        lst = [int(i) for i in (getattr(self, "gpu_indices", None) or [0])]
+        d = int(device or 0)
+        return lst[d] if 0 <= d < len(lst) else lst[0]
 
     def ensure_loaded(self):
         """Start the engine if it is not running (unloaded, or it died - issue #27), after the before_load hook and
@@ -3351,22 +3382,30 @@ class Service:
                 else:
                     print(f"[strata] the before_load command failed ({why}); checking the free VRAM", flush=True)
         if self.min_free_vram_mib and not (hook_failed and self.before_load_ignore_failure):
-            free = self.free_vram_mib()
+            # every card the engine will run on: a layer split starts into the least free of them
+            cards = list(getattr(self, "gpu_indices", None) or [getattr(self, "gpu_index", 0) or 0])
+            free = {c: self.free_vram_mib(c) for c in cards}
             deadline = time.time() + self.vram_free_wait_s   # memory another process just gave back can take a moment
-            while free is not None and free < self.min_free_vram_mib and time.time() < deadline:
+            while any(v is not None and v < self.min_free_vram_mib for v in free.values()) and time.time() < deadline:
                 time.sleep(0.5)
-                free = self.free_vram_mib()
-            if free is not None and free < self.min_free_vram_mib:
+                free = {c: self.free_vram_mib(c) for c in cards}
+            busy = {c: v for c, v in free.items() if v is not None and v < self.min_free_vram_mib}
+            if busy:
+                lows = ", ".join(f"GPU {c} has {v} MiB free" for c, v in sorted(busy.items()))
                 if hook_failed and not self.before_load_ignore_failure:
-                    print(f"[strata] the before_load command failed ({hook_failed}) and only {free} MiB of VRAM is "
-                          f"free (the model needs {self.min_free_vram_mib}): not loading; 503", flush=True)
-                raise GpuBusy(f"the GPU is in use by another program: {free} MiB of VRAM free, the model needs "
-                              f"{self.min_free_vram_mib} (min_free_vram_mib) - it stays unloaded until that is free"
+                    print(f"[strata] the before_load command failed ({hook_failed}) and {lows} (the model needs "
+                          f"{self.min_free_vram_mib}): not loading; 503", flush=True)
+                raise GpuBusy("the GPU is in use by another program: " + lows +
+                              f", the model needs {self.min_free_vram_mib} (min_free_vram_mib) - it stays unloaded "
+                              "until that is free"
                               + (f"; the before_load command failed ({hook_failed})" if hook_failed else ""),
                               retry_after=15)
             if hook_failed and not self.before_load_ignore_failure:
-                print(f"[strata] the before_load command failed ({hook_failed}), but {free} MiB of VRAM is free: "
-                      "loading", flush=True)
+                readable = [v for v in free.values() if v is not None]
+                print(f"[strata] the before_load command failed ({hook_failed}), but "
+                      + (f"the least free card has {min(readable)} MiB free" if readable
+                         else "no card's free VRAM is readable")
+                      + f" (the model needs {self.min_free_vram_mib}): loading", flush=True)
         vision_started = False
         if self._vision_down():                         # first, as at a start: a GPU encoder takes its VRAM before
             print("[strata] starting the vision encoder ...", flush=True)   # the engine sizes its cache
@@ -3394,19 +3433,25 @@ class Service:
             images_api.restore_session(self)
         if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
             try:
-                self.engine.vram(self.vram_reserve)
+                self.engine.vram(self.vram_reserve, self.vram_gpu)
             except (ValueError, EngineDied) as e:
-                print(f"[strata] the VRAM reserve ({self.vram_reserve} MiB) was not applied: {e}", flush=True)
+                print(f"[strata] the VRAM reserve ({self.vram_reserve} MiB"
+                      f"{'' if self.vram_gpu is None else f' on GPU {self.vram_gpu}'}) was not applied: {e}", flush=True)
 
     vram_wait_s = 300.0                                  # #533: how long POST /v1/vram waits for a running request
 
-    def vram(self, reserve_mib: int | None) -> dict:
+    def vram(self, reserve_mib: int | None, gpu: int | None = None) -> dict:
         """#533, POST /v1/vram: keep `reserve_mib` of VRAM free for other programs (None: the reserve the engine
-        started with), applied between requests - a request that is running finishes first (up to wait_s).  Only an
-        engine started with --vram-elastic (the config's "vram_elastic": true) can do it; it never resizes on its own.
-        An unloaded engine applies it when it loads.  -> {"status": ..., and the engine's figures}."""
+        started with), applied between requests - a request that is running finishes first (up to wait_s).  `gpu` is
+        the engine's GPU number (0 = the main card, the same numbers as --split-device); None: every GPU of the run.
+        Only an engine started with --vram-elastic (the config's "vram_elastic": true) can do it; it never resizes on
+        its own.  An unloaded engine applies it when it loads.  -> {"status": ..., and the engine's figures, one per
+        GPU in "gpus"}."""
         if not hasattr(self.engine, "vram"):
             raise ValueError("this engine cannot resize its VRAM use")
+        n = len(getattr(self, "gpu_indices", None) or [0])
+        if gpu is not None and not 0 <= int(gpu) < n:
+            raise ValueError(f"gpu: this run has {n} GPU{'' if n == 1 else 's'}, numbered 0 to {n - 1}")
         if not self.fifo.acquire(timeout=self.vram_wait_s):
             raise ModelBusy("a request is still running; try again when it has finished")
         # parallel requests do not hold the fifo: the engine's control lines (a prompt being admitted) are taken too,
@@ -3417,14 +3462,18 @@ class Service:
             raise ModelBusy("a request is still running; try again when it has finished")
         try:
             if not self.loaded():
-                self.vram_reserve, self.vram_reserve_asked = reserve_mib, True
-                return {"status": "not loaded", "reserve_mib": reserve_mib,
+                self.vram_reserve, self.vram_gpu, self.vram_reserve_asked = reserve_mib, gpu, True
+                return {"status": "not loaded", "reserve_mib": reserve_mib, "gpu": gpu,
                         "note": "applied when the model loads"}
             # an elastic encoder that runs keeps its VRAM on top of the asked reserve
-            out = self.engine.vram((reserve_mib or 0) + self.vision.elastic_mib if self.vision_held else reserve_mib)
-            self.vram_reserve, self.vram_reserve_asked = reserve_mib, True
-            print(f"[strata] VRAM: {out.get('vram_free_mib')} MiB free, expert cache {out.get('expert_cache_mib')} of "
-                  f"{out.get('expert_cache_full_mib')} MiB ({out.get('expert_slots')} experts)", flush=True)
+            ask = (reserve_mib or 0) + self.vision.elastic_mib if self.vision_held else reserve_mib
+            out = self.engine.vram(ask, gpu)
+            self.vram_reserve, self.vram_gpu, self.vram_reserve_asked = reserve_mib, gpu, True
+            for p in out.get("gpus") or [out]:
+                d = int(p.get("gpu", 0) or 0)
+                print(f"[strata] VRAM on GPU {d} (nvidia-smi {self.gpu_label(d)}): {p.get('vram_free_mib')} MiB free, "
+                      f"expert cache {p.get('expert_cache_mib')} of {p.get('expert_cache_full_mib')} MiB "
+                      f"({p.get('expert_slots')} experts)", flush=True)
             return {"status": "ok", **out}
         finally:
             if ctl is not None:
@@ -5497,8 +5546,11 @@ def make_handler(svc: Service):
                     r = req.get("reserve_mib")
                     if r is not None and (isinstance(r, bool) or not isinstance(r, int) or r < 0):
                         raise ValueError("reserve_mib: a whole number of MiB (0 or more), or null for the start's")
+                    g = req.get("gpu")
+                    if g is not None and (isinstance(g, bool) or not isinstance(g, int) or g < 0):
+                        raise ValueError("gpu: the engine's GPU number (0 = the main card), or null for every GPU")
                     try:
-                        self._json(200, svc.vram(r))
+                        self._json(200, svc.vram(r, g))
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
