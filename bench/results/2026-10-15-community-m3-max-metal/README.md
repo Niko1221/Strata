@@ -209,8 +209,9 @@ single knob under roughly 5% is not measurable in one session, mine included.
 
 ## U(2), the factor the byte model was missing
 
-`tools/quant_bound.py` needs U(P), the distinct experts a pass of P tokens reads per expert a single token reads, and
-says it is usually not measured. I tried to measure it with `--dump-routing` on a one-shot run and with
+`tools/quant_bound.py` wants U(P), the distinct experts a pass of P tokens reads per expert a single token reads, from
+the engine's window logs, and falls back to `--union` (default 1.0) without them. I tried to measure it with
+`--dump-routing` on a one-shot run and with
 `tools/collect_profile_traces.py --mode routing`, with and without `--mmap-experts`. Both runs generated correctly and
 both wrote empty traces:
 
@@ -220,15 +221,16 @@ verify window            wait for rings 0.000  pool 0.000  host 0.000  commit 0.
                          CPU experts 0.00 distinct / 0.00 routed per layer
 ```
 
-`generate.cpp:5927` explains it: the routed ids reach the host through the doorbell the expert pool reads, and the
-Metal engine has no host pool, it reads experts in place from the mapped file. So on a Mac the flag accepts the path
-and produces nothing, and `collect_profile_traces.py` does not notice because the file exists.
+`generate.cpp:5929` prints that explanation when you pass `--no-pool`: the routed ids reach the host through the
+doorbell the expert pool reads. The Metal engine has no host pool, it reads experts in place from the mapped file, and
+the core does not notice, so on a Mac the flag accepts the path and produces nothing. `collect_profile_traces.py` does
+not notice either, because the file exists.
 
 What the KPROF numbers gave first was a ceiling: the two token over one token time ratio of the classes that read
 expert weights is 1.54 (`moe_down_20_4_2_4`), 1.38, 1.43 and 1.39, a mean of 1.45, which put U(2) at 1.45 or below.
-Then I made the measurement direct with a small opt-in patch, Metal only: a `route_dump` kernel copies each layer's
-`moe_route` output into its own slot, because `ids_` is reused by the next layer and a resident window has no host
-turn between layers, and `finish()` writes the records in the `--dump-routing` format. The variable is
+Then I made the measurement direct with a small opt-in patch, Metal only, sent as #2652: a `route_dump` kernel copies
+each layer's `moe_route` output into its own slot, because `ids_` is reused by the next layer and a resident window has
+no host turn between layers, and `finish()` writes the records in the `--dump-routing` format. The variable is
 `STRATA_METAL_DUMP_ROUTING=path`. Measured on this machine over 48 layers and 123 window rows, greedy, one prompt:
 
 | Pass | U(P) mean | across layers | experts repeated in the pass |
@@ -242,9 +244,10 @@ less than their cost in bytes. With U(2)=1.684 and U(8)=4.615 and the 393.1 GB/s
 `tools/quant_bound.py` puts the floor of a two token window at 135.1 tok/s, against the 26.18 ms verify pass I
 measured (56% of that floor), and the floor of an eight token pass at 361.5 tok/s. That eight token figure wants
 4.8 TFLOP/s of matmul, while `mm_bench` measures 2.0 to 3.1 TFLOP/s at batch shapes that small, and that is the kernel
-work batching would need rather than the bandwidth. The trace costs 2.9% of decode when it is on (61.31 against 63.11
-tok/s on a 120 token greedy run), and with the variable unset the rebuilt binary returned the same 120 output ids as
-the binary before it on the same prompt.
+work batching would need rather than the bandwidth. The trace is cheap and I cannot pin the cost down: one pair gave
+61.31 against 63.11 tok/s (2.9%) and a later pair 60.97 against 61.21 (0.4%) on a 120 token greedy run, and pure decode
+moves about 7% boot to boot here. A build of `main` and the patched build with the variable unset printed the same 120
+output ids, byte for byte.
 
 ## Not tested
 
