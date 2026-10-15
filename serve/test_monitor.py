@@ -498,5 +498,92 @@ class ParkingLifecycleAndAdmission(unittest.TestCase):
         self.assertIn('admission === "loading" ? "loading" : "reading"', js)
 
 
+class Cascade(unittest.TestCase):
+    """Delta 6: the cascade (RAM -> warm -> cold) as the Monitor sees it. The engine names the level it writes to,
+    so a row is drawn per level that exists - and with NO warm level the log, the rows and the labels are exactly
+    the ones of a single disk tier (the byte-compatibility case, asserted here explicitly)."""
+
+    WARM = ("strata serve: conversation cache: warm dir ready (12 conversations, 9800 MiB, mib=10240, "
+            "when-full=evict-oldest, max-age=0 d, 5 degraded to cold, 1 oversized kept, 0 stale kept, "
+            "0 foreign kept, 0 orphans kept)\n")
+    SPILL = "strata serve: conversation cache: spilled 4000 tokens (120 MiB); disk=420 MiB disk_evictions=4\n"
+    MIRROR = ("strata serve: conversation cache: park mirror queued (4000 tokens, copy 1.2 ms); writes=3 collapsed=1 "
+              "throttled=0 disk=420 MiB disk_evictions=4 conversations=2\n")
+    SPILL_WARM = "strata serve: conversation cache: spilled 4000 tokens (120 MiB); warm=9600 MiB warm_degraded=6\n"
+    MIRROR_WARM = ("strata serve: conversation cache: park mirror queued (4000 tokens, copy 1.2 ms); writes=3 "
+                   "collapsed=1 throttled=0 warm=9600 MiB warm_degraded=6 conversations=15\n")
+    DEGRADED = ("strata serve: conversation cache: degraded 2 conversations to the cold level; warm=15 conversations "
+                "/ 9600 MiB; cold=3 conversations / 240 MiB, cold_evictions=1\n")
+
+    def _poll(self, text):
+        import tempfile
+        from serve.server import ConvCacheLog
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(text, encoding="utf-8")
+            return ConvCacheLog().poll(str(log), 0)
+
+    def test_the_warm_line_and_its_own_writes_are_read(self):
+        st = self._poll(self.WARM + self.SPILL_WARM + self.MIRROR_WARM)
+        w = st["warm"]
+        self.assertTrue(w["ready"])
+        self.assertEqual((w["spills"], w["conversations"]), (2, 15))       # the mirror line's own count wins
+        self.assertEqual((w["bytes"], w["degraded"]), (9600 * 1048576, 6))
+        self.assertEqual((w["budget_mib"], w["kept"]["oversized"]), (10240, 1))
+        self.assertFalse(st["disk"]["ready"])                              # the cold level wrote nothing yet
+
+    def test_the_degradation_moves_both_levels(self):
+        st = self._poll(self.WARM + self.DEGRADED)
+        w, d = st["warm"], st["disk"]
+        self.assertEqual((w["degraded"], w["conversations"]), (5 + 2, 15))  # the ready line's count plus the event
+        self.assertEqual((w["bytes"], d["bytes"]), (9600 * 1048576, 240 * 1048576))
+        self.assertEqual((d["conversations"], d["evictions"]), (3, 1))      # the cold level's row moves too
+
+    def test_the_three_rows_with_a_warm_level_and_two_without_it(self):
+        from serve.server import conversation_cache_view
+        empty = {}
+        st = self._poll(self.WARM + self.DEGRADED)
+        info = {"conversation_cache_mib": 8192, "conversation_cache_slots": 4, "conversation_cache_disk_mib": 460800,
+                "conversation_cache_spill_dir": r"D:\AI\servers\strata\slots\xl",
+                "conversation_cache_warm_dir": r"C:\AI\servers\strata\warm", "conversation_cache_warm_mib": 10240}
+        view = conversation_cache_view(info, [], {}, st)
+        self.assertEqual([d["tier"] for d in view["destinations"]], ["ram", "warm", "cold"])
+        self.assertEqual([d["label"] for d in view["destinations"]], ["RAM", "SSD 1", "SSD 2"])
+        warm_row, cold_row = view["destinations"][1], view["destinations"][2]
+        self.assertEqual((warm_row["conversations"], warm_row["budget_mib"], warm_row["dir"]),
+                         (15, 10240, r"C:\AI\servers\strata\warm"))
+        self.assertEqual((cold_row["conversations"], cold_row["budget_mib"], cold_row["dir"]),
+                         (3, 460800, r"D:\AI\servers\strata\slots\xl"))
+        self.assertEqual(view["warm"]["degraded"], 7)
+        # byte-compatibility: NO warm level configured -> the single disk tier keeps its own row and its label
+        view2 = conversation_cache_view({k: v for k, v in info.items() if "warm" not in k}, [], {},
+                                        self._poll(self.SPILL + self.MIRROR))
+        self.assertEqual([d["tier"] for d in view2["destinations"]], ["ram", "disk"])
+        self.assertEqual([d["label"] for d in view2["destinations"]], ["RAM", "SSD 1"])
+        self.assertEqual(view2["destinations"][1]["bytes"], 420 * 1048576)
+        self.assertFalse(view2["warm"]["enabled"])                        # and no warm row is invented
+        self.assertEqual(len(conversation_cache_view(empty, [], {}, {})["destinations"]), 0)
+
+    def test_a_warm_dir_with_spaces_survives_the_info_line(self):
+        from serve.server import parse_info_line, conversation_cache_view
+        info = {}
+        parse_info_line(info, 'INFO conversation_cache_mib=8192 conversation_cache_spill_dir="" '
+                              'conversation_cache_warm_dir="C:\\Strata Cache\\warm" conversation_cache_warm_mib=10240 '
+                              'engine=0.1.99')
+        self.assertEqual(info["conversation_cache_warm_dir"], r"C:\Strata Cache\warm")   # the folder's spaces kept
+        self.assertEqual((info["conversation_cache_warm_mib"], info["engine"]), (10240, "0.1.99"))
+        view = conversation_cache_view(info, [], {}, {})
+        self.assertTrue(view["warm"]["enabled"])
+        self.assertEqual(view["warm"]["dir"], r"C:\Strata Cache\warm")
+
+    def test_a_cold_load_is_an_admission_in_progress(self):
+        from serve.server import admission_field
+        st = self._poll("strata serve: conversation cache: loading 4096 tokens from cold\n")
+        self.assertEqual(st["loading"], 4096)                             # the engine said "cold": it is loading
+        self.assertEqual(admission_field("reading", st), "loading")
+        st2 = self._poll("strata serve: conversation cache: loading 4096 tokens from nothing\n")
+        self.assertEqual(st2["loading"], 0)                              # an unknown source is not an admission
+
+
 if __name__ == "__main__":
     unittest.main()
