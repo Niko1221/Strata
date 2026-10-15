@@ -49,13 +49,14 @@ inline constexpr int PLE_ROW_BYTES_FP8 = PLE_HEAD_DIM;                   // 160:
 inline constexpr int PLE_ROW_BYTES_Q5_1 = (PLE_HEAD_DIM / 32) * 24;     // 120: a Q5_1 row (a Q5_K_M finetune)
 inline constexpr int PLE_ROW_BYTES_Q8_0 = (PLE_HEAD_DIM / 32) * 34;     // 170: a Q8_0 row (UD-Q6_K_XL, Swift-1.5 Q4_K_L)
 inline constexpr int PLE_ROW_BYTES_BF16 = PLE_HEAD_DIM * 2;             // 320: a BF16 row, two bytes a value
+inline constexpr int PLE_ROW_BYTES_MXFP4 = (PLE_HEAD_DIM / 32) * 17;   // 85: an MXFP4 row (17-byte blocks)
 inline constexpr int PLE_ROW_BYTES_MAX = PLE_ROW_BYTES_BF16;             // the widest row any format in `ple_formats()` has
 
 /// THE FORMATS OF THE TABLE, ONE ROW EACH. A table type is one entry here (its GGUF type name, the bytes of one
 /// 160-value row, how to turn a row into floats) and nothing else: `PleTable::open`, `format()`, the reader's row size,
 /// the error string and the buffers' size all read this list, so a new format cannot be in one switch and missing from
 /// another. A row is always `PLE_HEAD_DIM` = 160 values = 5 blocks of 32 for the block formats.
-enum class PleFormat : uint8_t { IQ4_NL, Q5_0, F8_E4M3, Q5_1, Q8_0, Q4_0, BF16 };
+enum class PleFormat : uint8_t { IQ4_NL, Q5_0, F8_E4M3, Q5_1, Q8_0, Q4_0, BF16, MXFP4 };
 
 struct PleFormatInfo {
     PleFormat id;
