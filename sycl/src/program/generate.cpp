@@ -11745,12 +11745,14 @@ int main(int argc, char **argv) try {
                     }
                     sl.cvec = cvec_cached;
                     sl.img = !live_imgs.empty();   // pictures: not matched again by tokens alone, so not cached
-                    const ConvCheckpoint* best = nullptr;
+                    // #1906: keep EVERY checkpoint that prefixes the conversation, not just the longest: the
+                    // message boundary between a shared context and the question is what a later request
+                    // branching inside this conversation resumes from; the longest (the turn) alone diverges
+                    // before it and is useless to that request.
                     for (const ConvCheckpoint& c : checks)
-                        if (c.ids.size() < live.size() && (best == nullptr || c.ids.size() > best->ids.size()) &&
+                        if (!sl.img && c.ids.size() < live.size() &&
                             std::equal(c.ids.begin(), c.ids.end(), live.begin()))
-                            best = &c;
-                    if (best != nullptr && !sl.img) sl.checks.push_back(*best);
+                            sl.checks.push_back(c);
                     std::fprintf(stderr, "strata batch: slot %d takes %lld tokens (copied in %.1f ms)\n", admit_slot,
                                  (long long) live.size(), std::chrono::duration<double, std::milli>(Clock::now() - tc0).count());
                 }
