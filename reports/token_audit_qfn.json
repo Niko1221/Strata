@@ -1,0 +1,238 @@
+{
+ "tokenizer": "pack:/cfg/strata-data/packs/iq3_xxs/tokenizer",
+ "labels": {
+  "A": {
+   "group": "choice_letters",
+   "token_ids": [
+    32
+   ]
+  },
+  "B": {
+   "group": "choice_letters",
+   "token_ids": [
+    33
+   ]
+  },
+  "C": {
+   "group": "choice_letters",
+   "token_ids": [
+    34
+   ]
+  },
+  "D": {
+   "group": "choice_letters",
+   "token_ids": [
+    35
+   ]
+  },
+  "E": {
+   "group": "choice_letters",
+   "token_ids": [
+    36
+   ]
+  },
+  "F": {
+   "group": "choice_letters",
+   "token_ids": [
+    37
+   ]
+  },
+  "G": {
+   "group": "choice_letters",
+   "token_ids": [
+    38
+   ]
+  },
+  "H": {
+   "group": "choice_letters",
+   "token_ids": [
+    39
+   ]
+  },
+  "I": {
+   "group": "choice_letters",
+   "token_ids": [
+    40
+   ]
+  },
+  "J": {
+   "group": "choice_letters",
+   "token_ids": [
+    41
+   ]
+  },
+  "K": {
+   "group": "choice_letters",
+   "token_ids": [
+    42
+   ]
+  },
+  "L": {
+   "group": "choice_letters",
+   "token_ids": [
+    43
+   ]
+  },
+  "M": {
+   "group": "choice_letters",
+   "token_ids": [
+    44
+   ]
+  },
+  "N": {
+   "group": "choice_letters",
+   "token_ids": [
+    45
+   ]
+  },
+  "O": {
+   "group": "choice_letters",
+   "token_ids": [
+    46
+   ]
+  },
+  "P": {
+   "group": "choice_letters",
+   "token_ids": [
+    47
+   ]
+  },
+  "Q": {
+   "group": "choice_letters",
+   "token_ids": [
+    48
+   ]
+  },
+  "R": {
+   "group": "choice_letters",
+   "token_ids": [
+    49
+   ]
+  },
+  "S": {
+   "group": "choice_letters",
+   "token_ids": [
+    50
+   ]
+  },
+  "T": {
+   "group": "choice_letters",
+   "token_ids": [
+    51
+   ]
+  },
+  "U": {
+   "group": "choice_letters",
+   "token_ids": [
+    52
+   ]
+  },
+  "V": {
+   "group": "choice_letters",
+   "token_ids": [
+    53
+   ]
+  },
+  "W": {
+   "group": "choice_letters",
+   "token_ids": [
+    54
+   ]
+  },
+  "X": {
+   "group": "choice_letters",
+   "token_ids": [
+    55
+   ]
+  },
+  "Y": {
+   "group": "choice_letters",
+   "token_ids": [
+    56
+   ]
+  },
+  "Z": {
+   "group": "choice_letters",
+   "token_ids": [
+    57
+   ]
+  },
+  "No": {
+   "group": "noul",
+   "token_ids": [
+    2665
+   ]
+  },
+  "Yes": {
+   "group": "noul",
+   "token_ids": [
+    9175
+   ]
+  },
+  "0": {
+   "group": "score_digits",
+   "token_ids": [
+    15
+   ]
+  },
+  "1": {
+   "group": "score_digits",
+   "token_ids": [
+    16
+   ]
+  },
+  "2": {
+   "group": "score_digits",
+   "token_ids": [
+    17
+   ]
+  },
+  "3": {
+   "group": "score_digits",
+   "token_ids": [
+    18
+   ]
+  },
+  "4": {
+   "group": "score_digits",
+   "token_ids": [
+    19
+   ]
+  },
+  "5": {
+   "group": "score_digits",
+   "token_ids": [
+    20
+   ]
+  },
+  "6": {
+   "group": "score_digits",
+   "token_ids": [
+    21
+   ]
+  },
+  "7": {
+   "group": "score_digits",
+   "token_ids": [
+    22
+   ]
+  },
+  "8": {
+   "group": "score_digits",
+   "token_ids": [
+    23
+   ]
+  },
+  "9": {
+   "group": "score_digits",
+   "token_ids": [
+    24
+   ]
+  }
+ },
+ "collisions": [],
+ "multi_token_labels": [],
+ "prefix_free": true,
+ "verdict": "PASS",
+ "notes": "letters A-Z + Yes/No + digits must be single-token and collision-free (donor A1.3; PASS/FAIL verdict)"
+}
