@@ -78,7 +78,19 @@ void physical_pressure() {
     const auto budget = live_memory_gpu_budget(4096 * MiB, 32 * MiB, 576 * MiB, quantum, false);
     require(floor == current && budget == 32 * MiB, "healthy hold below normal floor does not regrow");
     require(live_prefill_retained(off.data(), current, loan, 0) == 16, "reduced geometry retains every slot that fits");
+    const auto retained = live_prefill_retained(off.data(), current, loan, 0);
+    const auto first = live_prefill_first(off.data(), current, loan, retained);
+    require(live_prefill_loan_fits(current, current - first, retained),
+            "next request can lend the complete minimum chunk after pressure rebind");
+    require(!live_prefill_loan_fits(current, current - first),
+            "ordinary 128-slot default must not silently adopt the pressure opt-in");
+    require(!live_prefill_loan_fits(current, current - first + 1, retained),
+            "larger request chunk must be reduced before consuming the retained prefix");
     require(live_prefill_retained(off.data(), 144, loan, 0) == 128, "legitimate recovery restores normal retention");
+    require(live_prefill_loan_fits(144, 16), "regrowth recovers the ordinary retained-prefix loan");
+    require(!live_prefill_loan_fits(144, -1) && !live_prefill_loan_fits(144, 0) &&
+            !live_prefill_loan_fits(144, 16, -1) && !live_prefill_loan_fits(144, 16, 129) &&
+            !live_prefill_loan_fits(1, INT64_MAX, 0), "invalid or overflowing loan sizes are refused");
     require(live_prefill_mapped_bytes(UINT64_MAX, quantum) == UINT64_MAX &&
             live_prefill_mapped_bytes(3, 0) == UINT64_MAX, "invalid rounded sizes cannot wrap into a small commitment");
 }

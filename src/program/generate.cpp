@@ -12122,12 +12122,13 @@ int main(int argc, char** argv) {
                         // a request's smaller chunk can need MORE slots than the auto chunk's region (p.first) holds.  The
                         // loan starts where the chunk itself needs it (the retained-prefix floor aside); a chunk that cannot be
                         // lent even then is halved until it can, instead of ending the engine.
+                        const int64_t keep = live_borrow ? live_retained : 128;
                         int64_t need_p = part_slots(p, want_p);
-                        while ((need_p <= 0 || need_p + 128 > p.cache->slots()) && want_p > 256) {
+                        while (!strata::core::live_prefill_loan_fits(p.cache->slots(), need_p, keep) && want_p > 256) {
                             want_p = std::max<int64_t>(256, want_p / 2 / 256 * 256);
                             need_p = part_slots(p, want_p);
                         }
-                        if (need_p <= 0 || need_p + 128 > p.cache->slots()) {
+                        if (!strata::core::live_prefill_loan_fits(p.cache->slots(), need_p, keep)) {
                             e = "prefill: no chunk of this request fits the slots that can be lent (#2090)";
                             return false;
                         }

@@ -67,6 +67,12 @@ inline int64_t live_prefill_retained(const uint64_t* offsets, int64_t slots, uin
     return first < 0 ? -1 : std::min<int64_t>(128, first);
 }
 
+// Request-level chunk fitting must honor the prefix selected by the most recent
+// live rebind. Reimposing 128 here would reject a valid pressure-shrunk cache.
+inline bool live_prefill_loan_fits(int64_t slots, int64_t need, int64_t keep = 128) {
+    return keep >= 0 && keep <= 128 && slots >= keep && need > 0 && need <= slots - keep;
+}
+
 // A lower logical floor is useful only when it releases a physical VMM block. Fresh GPU
 // shortage may select it; RAM-only controls do not. Once lowered, a hold must not regrow
 // just because free memory rebounds. Ordinary growth remains the caller's separate policy.
