@@ -1,0 +1,4 @@
+{
+ "error": "too many values to unpack (expected 2)",
+ "tb": "Traceback (most recent call last):\n  File \"/cfg/strata-data/eval/blockers_gpu.py\", line 319, in main\n    fn()\n  File \"/cfg/strata-data/eval/blockers_gpu.py\", line 269, in phase_d\n    for pref, (kind, fit) in ((\"pope\", fits[\"pope\"]), (\"cvb\", fits[\"cvb\"]), (\"cb\", fits[\"cb\"])):\n              ^^^^^^^^^^^\nValueError: too many values to unpack (expected 2)\n"
+}
