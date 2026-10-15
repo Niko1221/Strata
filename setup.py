@@ -4752,7 +4752,8 @@ def calibrate_config(cfg_path: Path) -> bool:
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     say()
     say("  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the")
-    say("  draft depth, the CPU threads, the expert cache). It takes roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.")
+    say("  draft depth, the CPU threads, the expert cache) and the prompt speed with the CPU share's range. It takes")
+    say("  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.")
     try:
         since = os.path.getsize(cfg["log"]) if cfg.get("log") and os.path.isfile(cfg["log"]) else 0
     except OSError:
@@ -4766,13 +4767,20 @@ def calibrate_config(cfg_path: Path) -> bool:
             say(f"       the engine said: {why}")
         return False
     cfg["args"] = CAL.apply(cfg["args"], res["settings"])
+    env = CAL.apply_env(cfg.get("env"), res.get("env"))   # the share's range (an engine variable), the same way
+    if env:
+        cfg["env"] = env
+    else:
+        cfg.pop("env", None)
     write_config(cfg_path, cfg)
     st = load_settings()
-    st.setdefault("calibration", {})[hardware_key(cfg)] = {"settings": res["settings"], "tok_s": res["report"].get("tok_s"),
+    st.setdefault("calibration", {})[hardware_key(cfg)] = {"settings": res["settings"], "env": res.get("env") or {},
+                                                           "tok_s": res["report"].get("tok_s"),
                                                            "date": time.strftime("%Y-%m-%d")}
     save_settings(st)
-    if res["settings"]:
-        ok("tuned for this PC: " + ", ".join(f"{k} {v}" for k, v in res["settings"].items())
+    chosen = {**res["settings"], **(res.get("env") or {})}
+    if chosen:
+        ok("tuned for this PC: " + ", ".join(f"{k} {v}" for k, v in chosen.items())
            + (f" ({res['report']['tok_s']} tok/s)" if res["report"].get("tok_s") else ""))
     else:
         ok("tuned for this PC: the default settings are already the fastest here"
@@ -6804,6 +6812,11 @@ def main() -> int:
         sys.path.insert(0, str(ROOT / "tools"))
         import calibrate as CAL
         cfg["args"] = CAL.apply(cfg["args"], cal.get("settings") or {})
+        env = CAL.apply_env(cfg.get("env"), cal.get("env"))
+        if env:
+            cfg["env"] = env
+        else:
+            cfg.pop("env", None)
         ok("the settings tuned for this PC earlier are used" + (f" ({cal['date']})" if cal.get("date") else ""))
     else:                                              # #642: measured counts (a calibration) win over the rule
         cfg["args"] = recommend_pool_workers(cfg["args"])

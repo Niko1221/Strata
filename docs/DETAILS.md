@@ -486,7 +486,7 @@ START-HERE.bat --calibrate                      tune the engine for this PC (abo
 
 With more than one model installed, it asks which one to start. `run-<model>.bat` starts a model directly.
 
-**Tuning for your PC (`--calibrate`, engine 0.1.19).** Four engine settings depend on the PC more than on the model:
+**Tuning for your PC (`--calibrate`, engine 0.1.19).** Five engine settings depend on the PC more than on the model:
 - the share of the experts missing from VRAM that are copied to the GPU instead of computed by the CPU
   (`--pcie-frac`: a fast PCIe link and a slower CPU want more, a laptop's narrower link less);
 - how sure the draft layer must be to add another guess to a check (`--spec-min-p`);
@@ -495,10 +495,14 @@ With more than one model installed, it asks which one to start. `run-<model>.bat
   whose CPU reads the missed experts slowly (DDR3 or DDR4 in few channels) gains from swapping more. On a Xeon
   E5-2673 v3 with DDR3 and an RTX 4060 Ti on PCIe 3.0 x8, 160 swaps every window measured +7.9% over the default
   (Q2_0, with the swaps taking effect a window later, #764); see #906.
+- how large a prompt chunk still hands the idle CPU some of the experts the GPU would stream
+  (`STRATA_PREFILL_CPU_SHARE_MAX`, written into the config's `env`): 1,024 tokens by default where the share is on
+  (CUDA, one GPU, no `--batch` slots; below), 3,072 where the CPU keeps up with the PCIe link. This one is measured on
+  the read speed of a fresh 2K-token prompt, not on the output speed, and skipped where the share is off.
 
 The defaults were measured on a Ryzen 5 7600 with an RTX 5070. Setup offers to measure them on your PC after an
 install; `START-HERE.bat --calibrate` (Linux: `./setup.sh --calibrate`) does it any time. It measures the output
-speed with each setting and keeps one only when it is more than 3% faster. The result is remembered per PC and model
+speed with each of the first four settings (and the prompt's read speed for the fifth) and keeps one only when it is more than 3% faster. The result is remembered per PC and model
 (in the settings file next to the data folder's record), so updates keep it.
 
 Measuring the worker count needs a fresh engine, so the model is loaded more than once: the PC is busy, and can
@@ -1602,7 +1606,7 @@ expert that is not in VRAM over PCIe, while the CPU pool that decodes sits idle 
 long each side takes and gives the CPU the share at which both end together (`STRATA_PREFILL_CPU_SHARE=0.4` fixes a
 share). `auto` also checks that sharing pays: it times layers with the share and without it (the first ones alternate until three comparisons are in, then one in 29 runs the other way) and shares only while the layers that share are the faster ones. Where sharing is slower (every share was, on an RX 7900 GRE with a Ryzen 7 5700X3D under ROCm, #1282), the experts stay on the GPU apart from those measuring layers. It is off unless you set it, and then the output is byte-identical to the build without it.
 
-**0.1.41: on by default** on CUDA builds with one GPU and no `--batch` slots, for prompt chunks below 1,024 tokens: unset behaves as `auto` with `STRATA_PREFILL_CPU_SHARE_MAX=1024`, and the engine prints one line at start saying so. Measured (interleaved whole-engine runs, 8 rounds, medians): 512 tokens -28..-34% and 1,000 tokens -20..-26% prompt time on an RTX 3060, a Tesla P100 and an RTX 5070, 8/8 pairs each; mean KL against the share off 0.004 (max 0.025). The answers can differ slightly from 0.1.40.3. **`STRATA_PREFILL_CPU_SHARE=0` turns it off and gives 0.1.40.3's exact bytes.** The layer split, batch slots and AMD (HIP) builds keep it off unless you set the variable; `STRATA_PREFILL_CPU_SHARE_MAX=3072` (the extension to larger chunks) also stays opt-in: it lost 2% at 2,048 tokens on the 5070.
+**0.1.41: on by default** on CUDA builds with one GPU and no `--batch` slots, for prompt chunks below 1,024 tokens: unset behaves as `auto` with `STRATA_PREFILL_CPU_SHARE_MAX=1024`, and the engine prints one line at start saying so. Measured (interleaved whole-engine runs, 8 rounds, medians): 512 tokens -28..-34% and 1,000 tokens -20..-26% prompt time on an RTX 3060, a Tesla P100 and an RTX 5070, 8/8 pairs each; mean KL against the share off 0.004 (max 0.025). The answers can differ slightly from 0.1.40.3. **`STRATA_PREFILL_CPU_SHARE=0` turns it off and gives 0.1.40.3's exact bytes.** The layer split, batch slots and AMD (HIP) builds keep it off unless you set the variable; `STRATA_PREFILL_CPU_SHARE_MAX=3072` (the extension to larger chunks) also stays opt-in, because it depends on the CPU: it lost 2% at 2,048 tokens on the 5070 (Ryzen 5 7600), and on an RTX 5070 Ti 16 GB with a Ryzen 7 5800X3D (Linux, Swift 1.5 IQ3_S, fresh turns of real prose and code on a cached 57K-token conversation, the engine restarted for every run, 3 of 3 alternating pairs) a 1,537-token chunk read in 1,979 -> 1,501 ms (-24%), 2,142 tokens 2,041 -> 1,748 ms (-14%), 2,848 tokens 2,173 -> 2,113 ms (-3%), while 600- and 4,600-token chunks and the decode after them were unchanged. Setup's `--calibrate` measures it on your PC and writes it into the config's `env` when it is more than 3% faster.
 
 With it on, chunks below 3,072 tokens are staged after their routing (only those can hand the CPU a share) instead of
 streaming every expert from 1,024 tokens on; `STRATA_PREFILL_CPU_SHARE_MAX=1024` keeps the old limit. The CPU takes
