@@ -2991,16 +2991,9 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     bitcode = next((p for p in (root / "lib" / "llvm" / "amdgcn" / "bitcode", root / "amdgcn" / "bitcode",
                                 root / "core" / "lib" / "llvm" / "amdgcn" / "bitcode") if p.is_dir()),
                    root / "amdgcn" / "bitcode")
-    # ROCm 10 moved the LLVM toolchain and headers under core/ (and ships amdclang++ in bin/); older layouts
-    # keep llvm/bin/clang++.  A missing compiler makes CMake reset the build cache and configure CPU-only, so
-    # pick the first path that exists.
     hip_compiler = next((p for p in (root / "bin" / "amdclang++", root / "llvm" / "bin" / "clang++",
                                      root / "core" / "lib" / "llvm" / "bin" / "clang++") if p.is_file()),
                         root / "llvm" / "bin" / "clang++")
-    # --rocm-path and HIP_PATH must point where the HIP headers actually live: ROCm 10 keeps them in core/include,
-    # and pointing either at the old top level makes device-context math (fmaxf, __expf, ...) resolve to host-only
-    # glibc functions and fail every kernel compile.  (HIP_PATH alone is enough to break it: with HIP_PATH=/opt/rocm
-    # the ROCm-10 clang skips injecting the HIP device runtime wrapper, so __fmul_rn & friends go undeclared.)
     rocm_inc = root / "core" if (root / "core" / "include").is_dir() else root
     os.environ.update({"HIP_PLATFORM": "amd", "HIP_COMPILER": "clang", "HIP_RUNTIME": "rocclr", "ROCM_PATH": str(root),
                        "HIP_PATH": str(rocm_inc)})
@@ -3166,7 +3159,6 @@ def build_image_engine(backend: str, gpu: dict) -> tuple[Path, list[str]]:
         lib_dirs = [str(root / "bin")] if WIN else [str(d) for d in (root / "lib64", root / "lib") if d.is_dir()]
     elif backend == "hip":
         root, dirs = rocm_root([arch])
-        # ROCm 10 keeps headers under core/include; HIP_PATH at the top level breaks device compiles (see build_engine_hip)
         rocm_inc = root / "core" if (root / "core" / "include").is_dir() else root
         os.environ.update({"HIP_PLATFORM": "amd", "ROCM_PATH": str(root), "HIP_PATH": str(rocm_inc)})
         os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(dirs + [os.environ.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)
