@@ -5,7 +5,7 @@ Measured on 2026-10-15 with `tools/strata_bench.py` (suite 1, 3 runs per test, m
 ## Hardware and software
 
 - GPU and VRAM: NVIDIA GeForce RTX 3090, 24 GiB VRAM
-- CPU: Intel(R) Core(TM) Ultra 9 285K (24 cores, 24 threads); installed RAM: 95.5 GiB DDR5 (a 6800 kit running at 5600); storage: WD SN8100 NVMe (the model's files)
+- CPU: Intel(R) Core(TM) Ultra 9 285K (24 cores, 24 threads); installed RAM: 95.5 GiB DDR5 at 6800 MT/s (2 of 4 slots); storage: WD SN8100 NVMe (the model's files)
 - OS: Windows 11 (10.0.26300); GPU driver: 617.42; CUDA: 13.4 toolkit for the build
 - Strata: project 0.1.44.1, commit 296b59d2; engine 0.1.44.1, a source build of that commit (CUDA 13.4, sm_86, Visual Studio 2026), no changes; `strata-base.exe` in the command below is that build
 - Background workloads and power limits: other processes used 5-20% of the CPU during the runs (WSL and desktop apps; sampled during the extra measurements below, not during the suite); default power limits
