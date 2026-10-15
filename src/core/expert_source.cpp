@@ -3963,11 +3963,11 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             ++jb.nt;
             ++d.multi_entries;
         }
-    // STRATA_VERIFY_DEFER_HEAVY (verify.cpp): the experts of the heavy CPU entries (routing weight >= ps->heavy) run
+    // STRATA_VERIFY_DEFER_CPU_BELOW (verify.cpp): the experts of the heavy CPU entries (routing weight >= ps->heavy) run
     // first and ps->partial tells the GPU they are done.  A row comes out as in one pass: the pool cuts every phase by
     // output rows, so a row never depends on the other jobs (the S2 pool's one-token path for more than kMaxSplitMulti
     // experts would not: no split there).  Not with a peer GPU or a helper cache GPU, whose rows land only after the
-    // CPU's (the verifier turns HEAVY off at init then: pool_gpu_helper).  Not split: one pass, the verifier raises the
+    // CPU's (the verifier turns the split off at init then: pool_gpu_helper).  Not split: one pass, the verifier raises the
     // partial flag with the full one, and that layer waits for all its rows (said once).
     const GpuPlanSink* ps = d.plan;
     const bool heavy = ps != nullptr && ps->partial != nullptr && ps->weights != nullptr && ps->heavy > 0.0f;
@@ -3981,7 +3981,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     if (no_split != nullptr) {
         static std::atomic<bool> said{false};
         if (!said.exchange(true))
-            std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_HEAVY: a layer's CPU rows not split (%s): it waits "
+            std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU_BELOW: a layer's CPU rows not split (%s): it waits "
                                  "for all of them (said once)\n", no_split);
     }
     int nfirst = njobs;
