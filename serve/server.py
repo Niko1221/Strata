@@ -963,6 +963,7 @@ class StrataEngine:
         # park= copy of it until the engine says PARKED
         self.main_held: list[int] = []
         self.main_peer = None
+        self.main_used = 0.0    # last actual use; a park copies this age instead of refreshing it
         self._park_claims: set[int] = set()
         self.slot_cache_peer = [None] * self.batch
         self._cache_expiry_seen = [None] * self.batch
@@ -1746,6 +1747,7 @@ class StrataEngine:
                         park_slot = None
                     # the main session now holds this leg's conversation (a read that gave way did not finish)
                     self.main_held = [] if self._yielded is not None else solo_leg[0] + out[solo_leg[1]:]
+                    self.main_used = time.time()
                     self.main_peer, solo_leg = peer_ip, None
                     if self._done_finish() == "nonfinite":    # #879 (never promoted to a slot)
                         raise EngineNonFinite("the engine's logits became non-finite (#879)")
@@ -2007,6 +2009,7 @@ class StrataEngine:
                 # the consumer stopped mid-leg (usually right after the last token): the main session holds
                 # the leg all the same; a read that gave way (YIELDED) went into its slot instead
                 self.main_held = [] if self._yielded is not None else solo_leg[0] + out[solo_leg[1]:]
+                self.main_used = time.time()
                 self.main_peer = peer_ip
             if holding:
                 self._solo_ended()
@@ -2063,15 +2066,22 @@ class StrataEngine:
         turn = next((i for i in range(len(main) - 1, 0, -1) if main[i] == turn_token), len(main))
         if prompt[:turn] == main[:turn]:
             return ""          # nothing held, or the same conversation: nothing to keep
+        now = time.time()
+        main_used = getattr(self, "main_used", 0.0)
+        value = slot_policy.stale_retention(len(main), max(0.0, now - main_used))
+        if value <= 0 or value < slot_policy.EXPIRED_KEEP_SCORE:
+            self.cache_event("park_skip", reason="main_low_value", held_tokens=len(main), value=value)
+            return ""          # an unused main history need not be copied into a slot just to be reclaimed
         with self.slot_cv:
             b = slot_policy.park_destination(main, self.slot_busy, self.slot_held, self.slot_used, self.slot_order,
-                                             self.slot_gs, time.time(), getattr(self, "slot_cache_valid", None),
+                                             self.slot_gs, now, getattr(self, "slot_cache_valid", None),
                                              self.slot_padding_safe, exclude)
             if b is not None:
                 self.slot_busy[b] = True
                 self.slot_claims.add(b)
                 self._park_claims.add(b)
                 self._park_main, self._park_peer = list(main), getattr(self, "main_peer", None)
+                self._park_used = main_used
         # outside slot_cv: cache_event takes its own lock
         self.cache_event("park_claim" if b is not None else "park_skip", slot=b, held_tokens=len(main))
         return f" park={b}" if b is not None else ""
@@ -2091,7 +2101,7 @@ class StrataEngine:
         with self.slot_cv:
             if 0 <= b < self.batch:
                 self.slot_held[b] = list(main[:n]) if n > 0 else []   # the engine may hold a few more tail tokens
-                self.slot_used[b] = time.time()
+                self.slot_used[b] = getattr(self, "_park_used", 0.0)
                 if hasattr(self, "slot_cache_valid"):
                     self.slot_cache_valid[b] = n > 0
                 if hasattr(self, "slot_cache_peer"):
