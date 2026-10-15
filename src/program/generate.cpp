@@ -666,6 +666,16 @@ struct Options {
     /// restart. Empty = off.
     std::string conversation_cache_spill_dir;
     int64_t conversation_cache_disk_mib = 8192;   // the spill directory's limit (0 = off)
+    /// --conversation-cache-cold-dir / --conversation-cache-cold-mib: the CANONICAL names of the disk tier above.
+    /// They write the SAME two fields as --conversation-cache-spill-dir / --conversation-cache-disk-mib, which
+    /// stay accepted as the historical aliases - so a config that names the old pair keeps naming the same
+    /// level, and the conversations already parked there are inherited without moving a byte.  Naming the same
+    /// field twice with two different values is a start-up error instead of a silent last-one-wins; the four
+    /// booleans only remember WHICH name was used, so the log can say it.
+    bool conversation_cache_spill_dir_named = false;   // --conversation-cache-spill-dir named the directory
+    bool conversation_cache_cold_dir_named = false;    // --conversation-cache-cold-dir named the directory
+    bool conversation_cache_disk_mib_named = false;    // --conversation-cache-disk-mib named the budget
+    bool conversation_cache_cold_mib_named = false;    // --conversation-cache-cold-mib named the budget
     double conversation_cache_similarity = 0.0;   // least LCP/new-prompt fraction a disk hit may offer (range [0,1))
     int64_t conversation_cache_n_min = 0;         // least common-prefix tokens a disk hit may offer
     /// --conversation-cache-spill-when-full: what the disk tier does at its budget. "evict-oldest" (default, what
@@ -886,6 +896,11 @@ void usage() {
                  "                       across restarts (needs --conversation-cache-mib). Default: <Strata dir>\\slots,\n"
                  "                       or .strata\\slots in the user profile when the Strata dir sits on the system drive (C:)\n"
                  "  --conversation-cache-disk-mib N  --serve: the spill directory's limit (default 8192; 0 = off)\n"
+                 "  --conversation-cache-cold-dir DIR  --serve: the CANONICAL name of the same field as\n"
+                 "                       --conversation-cache-spill-dir (the alias is still accepted). Passing the two\n"
+                 "                       names with two different folders is an error at start\n"
+                 "  --conversation-cache-cold-mib N  --serve: the CANONICAL name of the same field as\n"
+                 "                       --conversation-cache-disk-mib, the spill directory's limit in MiB\n"
                  "  --conversation-cache-similarity F  --serve: least common-prefix fraction a disk hit may offer\n"
                  "                       (default 0 = any; range [0,1))\n"
                  "  --conversation-cache-n-min N  --serve: least common-prefix tokens a disk hit may offer (default 0)\n"
@@ -2294,7 +2309,8 @@ int main(int argc, char** argv) {
                  a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-min-tokens" ||
                  a == "--conversation-cache-park-min-free-mib" ||
                  a == "--session-min-free-mib" || a == "--memory-limit-mib" ||
-                 a == "--conversation-cache-disk-mib" || a == "--conversation-cache-n-min") {
+                 a == "--conversation-cache-disk-mib" || a == "--conversation-cache-cold-mib" ||
+                 a == "--conversation-cache-n-min") {
             const std::string value = next(a.c_str());
             int64_t number = 0;
             const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
@@ -2312,7 +2328,19 @@ int main(int argc, char** argv) {
             else if (a == "--session-min-free-mib") o.session_min_free_mib = number;
             else if (a == "--memory-limit-mib") o.memory_limit_mib = number;
             else if (a == "--conversation-cache-slots") o.conversation_cache_slots = (int) number;
-            else if (a == "--conversation-cache-disk-mib") o.conversation_cache_disk_mib = number;
+            else if (a == "--conversation-cache-disk-mib" || a == "--conversation-cache-cold-mib") {
+                // The historical name and the canonical one are the SAME budget: two different values are a
+                // start-up error, so a config that names both does not silently get one of them.
+                const bool canonical = a == "--conversation-cache-cold-mib";
+                const bool earlier = canonical ? o.conversation_cache_disk_mib_named : o.conversation_cache_cold_mib_named;
+                if (earlier && o.conversation_cache_disk_mib != number) {
+                    std::fprintf(stderr, "--conversation-cache-disk-mib and --conversation-cache-cold-mib name the "
+                                 "same budget with different values\n");
+                    return 2;
+                }
+                o.conversation_cache_disk_mib = number;
+                (canonical ? o.conversation_cache_cold_mib_named : o.conversation_cache_disk_mib_named) = true;
+            }
             else o.conversation_cache_n_min = number;
         }
         else if (a == "--conversation-cache-park") {
@@ -2325,7 +2353,20 @@ int main(int argc, char** argv) {
                 return 2;
             }
         }
-        else if (a == "--conversation-cache-spill-dir") o.conversation_cache_spill_dir = next("--conversation-cache-spill-dir");
+        else if (a == "--conversation-cache-spill-dir" || a == "--conversation-cache-cold-dir") {
+            // The current tier IS the cold level.  --conversation-cache-cold-dir is its canonical name and
+            // --conversation-cache-spill-dir stays accepted (the production config already carries it), both
+            // writing the same field.  Two names with two different folders is a start-up error, not a coin toss.
+            const std::string value = next(a.c_str());
+            if (!o.conversation_cache_spill_dir.empty() && o.conversation_cache_spill_dir != value) {
+                std::fprintf(stderr, "--conversation-cache-spill-dir and --conversation-cache-cold-dir name the "
+                             "same directory with different values\n");
+                return 2;
+            }
+            o.conversation_cache_spill_dir = value;
+            if (a == "--conversation-cache-cold-dir") o.conversation_cache_cold_dir_named = true;
+            else o.conversation_cache_spill_dir_named = true;
+        }
         else if (a == "--conversation-cache-similarity") {
             const std::string value = next("--conversation-cache-similarity");
             char* end = nullptr;
@@ -8596,12 +8637,17 @@ int main(int argc, char** argv) {
         const std::string spill_user_home = user_home_directory();
         const std::string spill_system_drive = system_drive();
         strata::core::SpillDirChoice spill_choice;
+        // Which of the disk tier's two names the operator used - the log says it, because the alias is what keeps a
+        // config from before the rename pointing at the same folder, and therefore at the same parked conversations.
+        const char* const cold_dir_flag = o.conversation_cache_cold_dir_named ? "--conversation-cache-cold-dir"
+                                            : o.conversation_cache_spill_dir_named ? "--conversation-cache-spill-dir"
+                                                                                   : "(unnamed)";
         if (o.serve && conversations.enabled() && o.conversation_cache_disk_mib > 0) {
             spill_choice = strata::core::conversation_spill_dir_resolve(o.conversation_cache_spill_dir, spill_strata_dir,
                                                                         spill_user_home, spill_system_drive);
             if (!o.conversation_cache_spill_dir.empty()) {
-                std::fprintf(stderr, "strata serve: conversation cache: spill dir %s (%s)\n",
-                             o.conversation_cache_spill_dir.c_str(), spill_choice.reason.c_str());
+                std::fprintf(stderr, "strata serve: conversation cache: spill dir %s (%s; named by %s)\n",
+                             o.conversation_cache_spill_dir.c_str(), spill_choice.reason.c_str(), cold_dir_flag);
             } else if (!spill_choice.directory.empty()) {
                 o.conversation_cache_spill_dir = spill_choice.directory;
                 std::fprintf(stderr, "strata serve: conversation cache: spill dir %s (%s)\n",
