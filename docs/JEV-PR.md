@@ -161,21 +161,6 @@ dense, and quant — not separable at this n). Donor noul calibration HURT it
 donor's under both definitions — T_score=2.263 is doing damage control on a weak
 5-way readout, not achieving donor-grade confidence. Stated plainly.
 
-## 4d. Not ported / diverged (deliberate, vs the donor plan)
-
-| Donor item | Why not |
-|---|---|
-| `--modes chat,decision` gating + `/admin/modes` | One Strata process serves both; a config key (`jev.decision_enabled`) is the right shape here, deferred (Opus G1/G2, post-PR) |
-| Prefix-fork + batched decode + naive differential (A2.7/A2.10) | Strata's engine exposes BROW final-row logits, not seq forks; correctness is anchored by the golden battery + the ported jevref math, not a naive twin |
-| V2 image-in-branch (crashed ggml) | **Superseded** by `image_mode: direct` — same single-readout goal, no fork, D-tuple-calibrated, benched on POPE/CVB/CountBench |
-| Chat-KV reuse for decisions (A3.5, PARTIAL in donor) | Strata's conversation cache provides prefix reuse engine-side (272 ms warm L-mode) |
-| B2 LoRA decision adapter | Donor's own gate: only if B1 left gaps; the score tuple is the candidate, deferred |
-| Batched/naive/fallback golden HTTP variants | One serve path exists; the golden battery + 7×3 concurrency arm cover it |
-
-Known-open pre-PR (Opus review, `/opt/data/reviews/jevport-prereview-opus.md`):
-noise-floor measurement, a211 metamorphic battery, soak, S-tuple fit, bootstrap CIs
-on the 4a table, token audit on the QFN tokenizer.
-
 ### 4c. Performance (warm, single client, n=10 per cell)
 
 | workload | p50 | p95 | rps |
@@ -224,6 +209,24 @@ deterministic-placement option (sort rows by source index after the atomic
 fill) would lower it, as an upstream engine follow-up — out of scope here.
 Single-item probability deltas smaller than this floor (e.g. POPE +1.6pp at
 n=60) must not be read as signal.
+
+## 4d. Not ported / diverged (deliberate, vs the donor plan)
+
+| Donor item | Why not |
+|---|---|
+| `--modes chat,decision` gating + `/admin/modes` | One Strata process serves both; a config key (`jev.decision_enabled`) is the right shape here, deferred (Opus G1/G2, post-PR) |
+| Prefix-fork + batched decode + naive differential (A2.7/A2.10) | Strata's engine exposes BROW final-row logits, not seq forks; correctness is anchored by the golden battery + the ported jevref math, not a naive twin |
+| V2 image-in-branch (crashed ggml) | **Superseded** by `image_mode: direct` — same single-readout goal, no fork, D-tuple-calibrated, benched on POPE/CVB/CountBench |
+| Chat-KV reuse for decisions (A3.5, PARTIAL in donor) | Strata's conversation cache provides prefix reuse engine-side (272 ms warm L-mode) |
+| B2 LoRA decision adapter | Donor's own gate: only if B1 left gaps; the score tuple is the candidate, deferred |
+| Batched/naive/fallback golden HTTP variants | One serve path exists; the golden battery + 7×3 concurrency arm cover it |
+
+All 10 pre-PR blockers from the Opus review
+(`/opt/data/reviews/jevport-prereview-opus.md`) are closed: strict per-tuple
+fallback, per-tuple log files, B1.4 tuple refusal, fail-closed /admin/calib,
+token audit (PASS), a211 metamorphic battery, noise floor (see 4c), soak
+(2,200 req, 0 jev errors, VRAM drift 0.026%), S-tuple fit (live), bootstrap
+CIs + Brier (`blockers-run/cis-brier.json`).
 
 ## 5. Artifacts
 
