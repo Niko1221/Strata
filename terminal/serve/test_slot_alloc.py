@@ -246,6 +246,46 @@ class RetentionPolicy(unittest.TestCase):
         b = slot_policy.cache_state(150000, self.NOW - 97, self.NOW)
         self.assertGreater(a['retention'], b['retention'])
 
+    def test_expired_value_is_continuous_then_halves_without_changing_protection(self):
+        ttl = slot_policy.cache_ttl(50000)
+        base = slot_policy.stale_retention(50000)
+        self.assertAlmostEqual(base, slot_policy.cache_state(50000, 0, ttl - 1e-8)['retention'])
+        for age in (0, ttl / 2, ttl):
+            self.assertEqual(slot_policy.stale_retention(50000, age), base)
+        self.assertAlmostEqual(slot_policy.stale_retention(50000, ttl + 120), base / 2)
+        self.assertAlmostEqual(slot_policy.stale_retention(50000, ttl + 240), base / 4)
+        self.assertEqual(slot_policy.cache_ttl(50000), ttl)
+        self.assertEqual(slot_policy.stale_retention(50000, 1e12), 0)
+        self.assertEqual(slot_policy.stale_retention(0, 1e12), 0)
+
+    def test_old_long_history_yields_before_a_recent_shorter_one_even_in_busier_group(self):
+        e = self.e()
+        e.slot_held = [[b] * 50000 for b in range(6)]
+        e.slot_busy[1] = True
+        e.slot_held[0], e.slot_used[0] = [0] * 150000, self.NOW - 1800
+        e.slot_held[4], e.slot_used[4] = [4] * 8000, self.NOW - 15
+        self.assertEqual(self.place(e, [9999], padding_safe=True, allow_eviction=False).slot, 0)
+        # A use refreshes the age: the long history is protected again and the expired shorter one yields.
+        e.slot_used[0] = self.NOW
+        self.assertEqual(self.place(e, [9999], padding_safe=True, allow_eviction=False).slot, 4)
+
+    def test_long_unused_history_still_matches_after_its_value_falls_below_keep_score(self):
+        e = self.e()
+        e.slot_held = [[b] * 50000 for b in range(6)]
+        e.slot_held[2] = list(range(100000))
+        e.slot_used[2] = self.NOW - 3600
+        plan = self.place(e, list(range(100001)), padding_safe=True, allow_eviction=False)
+        self.assertEqual((plan.slot, plan.source_hint, plan.reused_hint), (2, 2, 100000))
+        self.assertEqual(len(e.slot_held[2]), 100000)
+
+    def test_decayed_history_does_not_wait_for_a_cheaper_protected_side_request(self):
+        e = self.e()
+        e.slot_held = [[b] * 50000 for b in range(6)]
+        e.slot_used[0] = self.NOW - 1800
+        e.slot_held[2], e.slot_used[2] = [2] * 1500, self.NOW - 0.5
+        plan = self.place(e, [9999], padding_safe=True, allow_eviction=False)
+        self.assertEqual((plan.slot, plan.reason), (0, 'reclaim'))
+
     def test_unexpired_fifty_k_is_selected_before_similarly_fresh_150k(self):
         e = self.e()
         e.slot_held = [[b] * (50000 if b == 2 else 150000) for b in range(6)]
@@ -334,7 +374,7 @@ class RetentionPolicy(unittest.TestCase):
 
     def test_protected_history_is_kept_and_expired_ones_go_lowest_score_first(self):
         # Under the TTL rules an expired history is reclaimable and a protected one is not, whatever their lengths;
-        # among expired ones the retention formula (freshness 0) decides.
+        # among expired ones the retention at expiry, decayed by time past expiry, decides.
         e = self.e()
         e.slot_busy[1] = e.slot_busy[4] = e.slot_busy[5] = True
         e.slot_held[0], e.slot_used[0] = [0] * 37365, self.NOW - 300   # expired
@@ -348,7 +388,7 @@ class RetentionPolicy(unittest.TestCase):
         # slot 1 on group load and the two overwrote each other every turn.  Old 1.5K filler histories were free.
         e = self.e()
         e.slot_busy[2] = e.slot_busy[4] = True
-        e.slot_held[0], e.slot_used[0] = [0] * 37365, self.NOW - 300   # parked A, expired
+        e.slot_held[0], e.slot_used[0] = [0] * 37365, self.NOW - 100   # parked A, expired
         e.slot_held[1], e.slot_used[1] = [1] * 8970, self.NOW - 20     # B, expired
         e.slot_held[3], e.slot_used[3] = [3] * 1526, self.NOW - 30     # filler leftovers, expired
         e.slot_held[5], e.slot_used[5] = [5] * 1526, self.NOW - 30
@@ -459,6 +499,11 @@ class ParkMainSession(unittest.TestCase):
     """Engine park=: before a side request replaces the main (solo) session, its conversation is copied into a slot."""
     NOW = 100000.0
 
+    def setUp(self):
+        clock = mock.patch('serve.server.time.time', return_value=self.NOW)
+        clock.start()
+        self.addCleanup(clock.stop)
+
     def e(self):
         e = engine(6, 3)
         e.slot_cache_affinity = True
@@ -532,7 +577,7 @@ class ParkMainSession(unittest.TestCase):
     def test_an_expired_history_worth_less_than_the_keep_score_takes_the_park(self):
         e = self.e()
         e.slot_held = [[b] * 40000 for b in range(6)]     # every slot holds another conversation
-        e.slot_used = [self.NOW - 3600] * 6                # all expired
+        e.slot_used = [self.NOW - 100] * 6                 # all expired, still worth keeping
         self.assertIsNone(self.dest(e))                    # each still worth keeping: nowhere to park
         e.slot_held[1] = [1] * 1000                        # a short side chat, below EXPIRED_KEEP_SCORE
         e.slot_held[4] = [4] * 2000
@@ -542,6 +587,20 @@ class ParkMainSession(unittest.TestCase):
         self.assertEqual(self.dest(e), 1)                  # same load: the lowest score
         e.slot_used[1] = self.NOW                          # protected: not a park target
         self.assertEqual(self.dest(e), 4)
+
+    def test_a_long_unused_history_can_take_a_park_but_busy_and_excluded_slots_cannot(self):
+        e = self.e()
+        e.slot_held = [[b] * 40000 for b in range(6)]
+        e.slot_used = [self.NOW - 100] * 6
+        self.assertIsNone(self.dest(e))
+        e.slot_used[4] = self.NOW - 1800
+        self.assertEqual(self.dest(e), 4)
+        self.assertIsNone(self.dest(e, exclude=(4,)))
+        e.slot_busy[4] = True
+        self.assertIsNone(self.dest(e))
+        e.slot_busy[4] = False
+        e.slot_used[4] = self.NOW
+        self.assertIsNone(self.dest(e))
 
     def test_admission_slot_is_never_the_park_slot_and_claim_is_released(self):
         e = self.e()
@@ -569,7 +628,7 @@ class PolicyTunables(unittest.TestCase):
         got = slot_policy.configure({"STRATA_SLOT_TTL_MAX_S": "240", "STRATA_SLOT_PROTECT_WAIT_S": "2",
                                      "STRATA_SLOT_PARK_MIN_TOKENS": "x"})
         self.assertEqual(got, {"ttl_max_s": 240.0, "protect_wait_s": 2.0, "park_min_tokens": 8192,
-                               "expired_keep_score": 0.01})
+                               "expired_keep_score": 0.01, "expired_half_life_s": 120.0})
         self.assertAlmostEqual(slot_policy.cache_ttl(100000), 180.0)     # the whole curve doubles
         self.assertAlmostEqual(slot_policy.cache_ttl(10 ** 6), 240.0)
         self.assertEqual(slot_policy.configure({})["ttl_max_s"], 120.0)
@@ -578,6 +637,17 @@ class PolicyTunables(unittest.TestCase):
     def test_engine_reads_them_from_its_environment(self):
         e = StrataEngine("missing", [], env={"STRATA_SLOT_PARK_MIN_TOKENS": "20000"}, lazy=True)
         self.assertEqual(e.slot_policy_settings["park_min_tokens"], 20000)
+
+    def test_expired_half_life_override_disable_and_invalid_values(self):
+        ttl = slot_policy.cache_ttl(50000)
+        base = slot_policy.stale_retention(50000)
+        slot_policy.configure({"STRATA_SLOT_EXPIRED_HALF_LIFE_S": "30"})
+        self.assertAlmostEqual(slot_policy.stale_retention(50000, ttl + 30), base / 2)
+        slot_policy.configure({"STRATA_SLOT_EXPIRED_HALF_LIFE_S": "0"})
+        self.assertEqual(slot_policy.stale_retention(50000, ttl + 3600), base)
+        for bad in ("nan", "inf", "-1", "bad"):
+            got = slot_policy.configure({"STRATA_SLOT_EXPIRED_HALF_LIFE_S": bad})
+            self.assertEqual(got["expired_half_life_s"], 120)
 
 
 class NativePaddingSafety(unittest.TestCase):
