@@ -11482,7 +11482,10 @@ int main(int argc, char** argv) {
                         sl.active = false;
                         sl.cached = o.prompt_cache > 0 && !sl.img && !sl.tainted;
                         sl.used = ++slot_clock;
-                        if (!sl.cached) kv_pool.release(*bslot_ss[0][(size_t) b]);
+                        if (!sl.cached) {   // holds nothing worth keeping: its checkpoints (up to --prompt-cache of them) go too
+                            sl.checks.clear();
+                            kv_pool.release(*bslot_ss[0][(size_t) b]);
+                        }
                         break;
                     }
                     sl.x = y;
@@ -12639,6 +12642,7 @@ int main(int argc, char** argv) {
                     from_live = false;
                 } else {
                     checks.clear();   // the main session's checkpoints were of the conversation it held before
+                    const bool slot_partial = bs[(size_t) slot_source].partial;   // (the branch below ends it)
                     // a read that gave way, the same request again (into its own slot): on with it - its segments and
                     // checkpoints as if it had not stopped
                     if (slot_ck == nullptr && bs[(size_t) slot_source].partial && admit_slot == slot_source) {
@@ -12650,24 +12654,34 @@ int main(int argc, char** argv) {
                         bs[(size_t) slot_source].partial = false;
                         bs[(size_t) slot_source].partial_plan = {};
                     }
+                    // --kv-pool-tokens: the slot's K/V came back to the main session (copy_from_slot moved its chunks),
+                    // so its checkpoint chain comes with it - the slot is left holding nothing.  Without the pool the
+                    // slot stays a cache of its own and keeps its checkpoints.
+                    const bool carry_chain = kv_pool.active() && !slot_partial;
                     if (slot_ck != nullptr) {
                         live = slot_ck->ids;
-                        if (slot_ckpt_move_env() && admit_slot == slot_source) {
-                            // STRATA_SLOT_CKPT_MOVE: the slot this request continues in drops its checkpoints at the
-                            // admission, so this one moves (and moves on into the slot then: moved_in)
-                            std::vector<ConvCheckpoint>& sc = bs[(size_t) slot_source].checks;
-                            const auto it = sc.begin() + (slot_ck - sc.data());
-                            checks.push_back(std::move(*it));
-                            sc.erase(it);
-                            slot_ck = &checks.back();
-                            moved_in = (int64_t) slot_ck->ids.size();
-                        } else {
-                            checks.push_back(*slot_ck);   // the main session's chain has it now
+                        if (!carry_chain) {
+                            if (slot_ckpt_move_env() && admit_slot == slot_source) {
+                                // STRATA_SLOT_CKPT_MOVE: the slot this request continues in drops its checkpoints at the
+                                // admission, so this one moves (and moves on into the slot then: moved_in)
+                                std::vector<ConvCheckpoint>& sc = bs[(size_t) slot_source].checks;
+                                const auto it = sc.begin() + (slot_ck - sc.data());
+                                checks.push_back(std::move(*it));
+                                sc.erase(it);
+                                slot_ck = &checks.back();
+                                moved_in = (int64_t) slot_ck->ids.size();
+                            } else {
+                                checks.push_back(*slot_ck);   // the main session's chain has it now
+                            }
                         }
-                        checks.back().used = ++check_clock;
                     } else {
                         live = bs[(size_t) slot_source].ids;
                     }
+                    if (carry_chain)   // every checkpoint that is a prefix of what main holds now (slot_ck is not used after)
+                        strata::core::conversation_checkpoints_carry(bs[(size_t) slot_source].checks, live, checks);
+                    if (slot_ck != nullptr)
+                        for (ConvCheckpoint& c : checks)
+                            if (c.ids.size() == live.size()) c.used = ++check_clock;   // mounting through it is a use
                     live_imgs.clear();
                     resume = slot_tokens;
                     from_live = true;
@@ -15300,47 +15314,56 @@ int main(int argc, char** argv) {
                     }
                     sl.cvec = cvec_cached;
                     sl.img = !live_imgs.empty();   // pictures: not matched again by tokens alone, so not cached
+                    // --kv-pool-tokens: the K/V moved with the conversation (copy_to_slot), so the slot takes the main
+                    // session's whole checkpoint chain - root, periodic and turn - not only the deepest one: a changed
+                    // last question (or a client that re-renders its history) resumes from the periodic ones, which the
+                    // main session cannot offer any more.  Without the pool the main session keeps its copy and parks it.
                     const ConvCheckpoint* best = nullptr;
                     size_t best_at = 0;   // its place in `checks` (STRATA_SLOT_CKPT_MOVE)
-                    for (size_t i = 0; i < checks.size(); ++i) {
-                        const ConvCheckpoint& c = checks[i];
-                        if (c.ids.size() < live.size() && (best == nullptr || c.ids.size() > best->ids.size()) &&
-                            std::equal(c.ids.begin(), c.ids.end(), live.begin())) {
-                            best = &c;
-                            best_at = i;
-                        }
-                    }
-                    bool best_lent = false;
-                    // STRATA_SLOT_CKPT_MOVE: the checkpoint this request mounted from another slot (that slot keeps it)
-                    if (lent_slot >= 0 && lent_slot != admit_slot && (best == nullptr || (int64_t) best->ids.size() < resume))
-                        for (const ConvCheckpoint& c : bs[(size_t) lent_slot].checks)
-                            if ((int64_t) c.ids.size() == resume && c.ids.size() < live.size() &&
+                    bool best_lent = false, move_best = false;
+                    const auto tc3 = Clock::now();
+                    if (kv_pool.active()) {   // the chain moves whole; the checkpoint move/copy below is the no-pool path
+                        if (!sl.img) strata::core::conversation_checkpoints_carry(checks, live, sl.checks);
+                    } else {
+                        for (size_t i = 0; i < checks.size(); ++i) {
+                            const ConvCheckpoint& c = checks[i];
+                            if (c.ids.size() < live.size() && (best == nullptr || c.ids.size() > best->ids.size()) &&
                                 std::equal(c.ids.begin(), c.ids.end(), live.begin())) {
                                 best = &c;
-                                best_lent = true;
+                                best_at = i;
                             }
-                    // STRATA_SLOT_CKPT_MOVE: this request's own turn checkpoint (or the one it moved out of this slot)
-                    // moves into the slot; a pinned prefix, a root and any other the chain shares are copied as before
-                    const bool move_best = slot_ckpt_move_env() && best != nullptr && !best_lent && !sl.img &&
-                                           !best->pinned && ((turn_at > 0 && (int64_t) best->ids.size() == turn_at) ||
-                                            (int64_t) best->ids.size() == moved_in);
-                    const auto tc3 = Clock::now();
-                    if (move_best) {
-                        sl.checks.push_back(std::move(checks[best_at]));
-                        checks.erase(checks.begin() + (std::ptrdiff_t) best_at);
-                    } else if (best != nullptr && !sl.img) {
-                        if (ckpt_pool.on()) {   // a copy into a dropped checkpoint's vectors (their pages are in)
-                            ConvCheckpoint c = ckpt_pool.take();
-                            c = *best;
-                            sl.checks.push_back(std::move(c));
-                        } else {
-                            sl.checks.push_back(*best);
+                        }
+                        // STRATA_SLOT_CKPT_MOVE: the checkpoint this request mounted from another slot (that slot keeps it)
+                        if (lent_slot >= 0 && lent_slot != admit_slot && (best == nullptr || (int64_t) best->ids.size() < resume))
+                            for (const ConvCheckpoint& c : bs[(size_t) lent_slot].checks)
+                                if ((int64_t) c.ids.size() == resume && c.ids.size() < live.size() &&
+                                    std::equal(c.ids.begin(), c.ids.end(), live.begin())) {
+                                    best = &c;
+                                    best_lent = true;
+                                }
+                        // STRATA_SLOT_CKPT_MOVE: this request's own turn checkpoint (or the one it moved out of this slot)
+                        // moves into the slot; a pinned prefix, a root and any other the chain shares are copied as before
+                        move_best = slot_ckpt_move_env() && best != nullptr && !best_lent && !sl.img &&
+                                    !best->pinned && ((turn_at > 0 && (int64_t) best->ids.size() == turn_at) ||
+                                     (int64_t) best->ids.size() == moved_in);
+                        if (move_best) {
+                            sl.checks.push_back(std::move(checks[best_at]));
+                            checks.erase(checks.begin() + (std::ptrdiff_t) best_at);
+                        } else if (best != nullptr && !sl.img) {
+                            if (ckpt_pool.on()) {   // a copy into a dropped checkpoint's vectors (their pages are in)
+                                ConvCheckpoint c = ckpt_pool.take();
+                                c = *best;
+                                sl.checks.push_back(std::move(c));
+                            } else {
+                                sl.checks.push_back(*best);
+                            }
                         }
                     }
                     const auto tc4 = Clock::now();
-                    std::fprintf(stderr, "strata batch: slot %d takes %lld tokens (%s in %.1f ms)\n", admit_slot,
-                                 (long long) live.size(), kv_pool.active() ? "moved" : "copied",
-                                 std::chrono::duration<double, std::milli>(tc4 - tc0).count());
+                    std::fprintf(stderr, "strata batch: slot %d takes %lld tokens (%s in %.1f ms; %zu checkpoint%s kept)\n",
+                                 admit_slot, (long long) live.size(), kv_pool.active() ? "moved" : "copied",
+                                 std::chrono::duration<double, std::milli>(tc4 - tc0).count(), sl.checks.size(),
+                                 sl.checks.size() == 1 ? "" : "s");
                     if (trace) {   // STRATA_TRACE: the admission's phases (ms), from the drain before BGEN to this copy
                         auto span = [](Clock::time_point a, Clock::time_point b) {
                             return std::chrono::duration<double, std::milli>(b - a).count();
