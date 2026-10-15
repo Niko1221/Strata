@@ -153,6 +153,22 @@ of reused and freshly read tokens from the engine log. Describe how you reset or
 retained state between runs. A warmed expert cache and a reused prompt prefix are
 different conditions; record both when possible.
 
+The expert profile decides which experts the cache starts with, so keep it fixed
+while you measure: run with `--expert-profile FILE` and no profile save. A save
+(`--expert-profile-save PATH` in the engine arguments, or `"expert_profile_save"`
+in the config) writes what the engine learned to PATH when the server stops and
+every 10 minutes between requests, and a later start that loads PATH begins from
+what that run learned. Since
+0.1.43.1 a server that `strata_bench.py` starts has `--expert-profile-save`
+removed from its arguments, but not the config's `"expert_profile_save"`, and a
+server you start yourself keeps both (#2088). The start-up line
+`profile FILE: N ranked pairs, built for M slots` names the profile each run
+started from. If you build a profile from routing traces
+(`tools/collect_profile_traces.py` with `tools/make_profile.py` or
+`tools/make_profile_mix.py`), leave the prompts you measure with out of the
+traces: a profile built from the test prompts makes those prompts faster than
+other work (#2088).
+
 Keep these measurements separate:
 
 - **Prompt throughput:** freshly processed prompt tokens per second, from the
