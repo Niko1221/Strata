@@ -178,13 +178,18 @@ async function poll() {
 function setPill(state, text) {
   $("pill").dataset.state = state === "error" ? "queued" : state;
   $("pill-text").textContent = text;
+  // a screen reader hears the state when it changes, not the number that changes every second
+  const say = text.split(" · ")[0];
+  if ($("pill-say").textContent !== say) $("pill-say").textContent = say;
 }
 
 function render(m) {
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
-  // the header pill
-  if (live.state === "reading") {
+  // the header pill (set once per poll: its live region would otherwise flip between two states every second)
+  if (live.queued > 0) {
+    setPill("queued", `${live.queued} queued`);
+  } else if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
     setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
   } else if (live.state === "generating") {
@@ -192,7 +197,6 @@ function render(m) {
   } else {
     setPill("idle", "Idle");
   }
-  if (live.queued > 0) setPill("queued", `${live.queued} queued`);
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
   if (tab === "about") renderAbout(eng, hw, st);

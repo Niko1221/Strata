@@ -3005,6 +3005,17 @@ class WebApp(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.get(path)[0], 404)
 
+    def test_the_status_pill_announces_states_not_numbers(self):
+        # the header pill's text changes every second while a request runs ("Generating · 45.3 tok/s"); a live region
+        # around it had a screen reader read it every second, so only the state goes into one, and only on a change
+        html, js = self.get("/")[2].decode(), self.get("/web/app.js")[2].decode()
+        pill = html[html.index('id="pill"'):]
+        self.assertNotIn("aria-live", pill[:pill.index(">")])
+        self.assertNotIn('role="status"', pill[:pill.index(">")])
+        self.assertIn('id="pill-say" role="status"', html)
+        self.assertIn('$("pill-say").textContent', js)
+        self.assertEqual(js.count('setPill("queued"'), 1)
+
     def test_metrics(self):
         data = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5}).encode()
         urllib.request.urlopen(urllib.request.Request(self.base + "/v1/chat/completions", data=data,
