@@ -432,7 +432,7 @@ Everything else is installed for you the first time.
 | GPU | NVIDIA **RTX 20, 30, 40 or 50 series**, **12 GB VRAM or more** (8 GB runs, slowly). Measured on an RTX 5070 and an RTX 3090; RTX 20 (Turing, since 0.1.27) was tested by a contributor on an RTX 2070. Or AMD **Radeon RX 7900 XT / XTX, RX 7800 XT / 7700 XT, RX 9060 XT, RX 9070 / 9070 XT, Radeon AI PRO R9700, RX 6800 / 6900 series**: [AMD_HIP.md](AMD_HIP.md). |
 | RAM | **64 GB** recommended (see the table above). |
 | CPU | x86-64 with AVX2 (any Intel/AMD desktop CPU from the last ~8 years). AVX-512 (Ryzen 7000/9000) is a bit faster. Older CPUs without AVX2 are experimental and slow: [Older CPUs](INSTALL.md#older-cpus-experimental). |
-| Disk | ~70-80 GB free for the model, ~6 GB for the MTP layer (+1 GB with images). **Q2_0 on an AVX-512 CPU** also writes a one-time ~40 GB pack for the fast CPU kernel (34 GB of experts in its layout, plus the dense weights). An NVMe SSD is strongly recommended. |
+| Disk | 66-84 GB free for the model (by size), ~6 GB for the MTP layer (+1 GB with images). **Q2_0 on an AVX-512 CPU** also writes a one-time ~40 GB pack for the fast CPU kernel (34 GB of experts in its layout, plus the dense weights). An NVMe SSD is strongly recommended. |
 | OS | Windows 10/11, or Linux (Ubuntu 22.04/24.04 and Debian 12/13 get everything installed automatically). |
 
 What the first start installs: in this folder `.venv/`, `engine/` and `third_party/`; the model files (`models/`,
@@ -458,7 +458,7 @@ Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GP
 3. **How much context?** 8K to 256K tokens (it recommends one for your VRAM).
 4. **Images?** yes / no (see [Images](#images-vision)).
 
-Then it downloads and prepares everything (the model is 66-76 GB, so the first start takes a while; an interrupted
+Then it downloads and prepares everything (the model is 66-84 GB, so the first start takes a while; an interrupted
 download continues where it stopped) and **starts the model**: your browser opens `http://127.0.0.1:8080`, the Strata
 app. It has three tabs:
 - **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button, pictures when

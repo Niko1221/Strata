@@ -65,7 +65,7 @@ in a pull request.
 | **IQ3_XXS** | 47.0 GB | slower | great |
 | **IQ3_S** | 54.8 GB | slowest | best: matches the full model on the published tests |
 
-The download is 66-76 GB for the three smaller sizes ([details](DETAILS.md#which-model)); the first start also
+The download is 66-84 GB for these four sizes ([details](DETAILS.md#which-model)); the first start also
 fetches the MTP draft layer (~6 GB, +1 GB with images).
 
 ## Will it fit?

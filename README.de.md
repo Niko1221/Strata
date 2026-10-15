@@ -59,7 +59,7 @@ RTX 3090 (24 GB) sollte etwa 100-140 Tokens pro Sekunde schreiben. Lange Chats u
 | --- | --- |
 | **Grafikkarte** | **NVIDIA** GeForce RTX 20, 30, 40 oder 50 Serie, oder **AMD** Radeon RX 7900 XT / XTX, RX 7800 XT / 7700 XT, RX 9060 XT, RX 9070 / 9070 XT, Radeon AI PRO R9700 oder RX 6800 / 6900 Serie. Sie braucht **12 GB VRAM oder mehr**. |
 | **RAM** | 32 GB oder mehr. Dein RAM entscheidet, [welches Modell](#welches-modell-soll-ich-nehmen) passt. Mit 64 GB laufen alle Größen. |
-| **Festplatte** | Etwa 80 GB frei. Nimm wenn möglich eine SSD: Der erste Start geht dann viel schneller. |
+| **Festplatte** | Etwa 95 GB frei für die größte Größe (IQ3_S), weniger für die anderen. Nimm wenn möglich eine SSD: Der erste Start geht dann viel schneller. |
 | **System** | Windows 10 / 11 oder Linux und ein aktueller Grafiktreiber von NVIDIA oder AMD. |
 
 Alles andere richtet der Installer ein. Zwei oder drei Karten können sich das Modell teilen ([Multi-GPU](docs/MULTI_GPU.md)).
@@ -101,7 +101,7 @@ dafür ein. Er stellt dir ein paar Fragen:
 - wie viel Kontext (wie viel Text sich das Modell merkt),
 - ob es Bilder lesen soll.
 
-Drück jedes Mal Enter, um die empfohlene Antwort zu nehmen. Dann lädt er das Modell herunter (etwa 70 GB) und
+Drück jedes Mal Enter, um die empfohlene Antwort zu nehmen. Dann lädt er das Modell herunter (66-84 GB, je nach Größe) und
 startet es. Bricht der Download ab, starte ihn einfach neu: Er macht dort weiter, wo er aufgehört hat. Dein Browser
 öffnet die Strata-App unter `http://127.0.0.1:8080`.
 

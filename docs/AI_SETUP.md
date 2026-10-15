@@ -14,7 +14,7 @@ Work through the steps in order. Tell the user what you are doing in plain words
   user the key. Never put a tunnel or port forward in front of a server without a key.
 - Do not change the user's system beyond what setup does (setup installs Python for the user account if needed,
   and everything else inside the Strata folder and its `Strata-data` folder). Ask before installing drivers.
-- The model download is ~70 GB (94 GB for Unsloth's UD-IQ4_XS, 111 GB for UD-Q4_K_XL). Confirm the user is fine with that before you
+- The model download is 66-84 GB (58 GB for the Coder, 94 GB for Unsloth's UD-IQ4_XS, 111 GB for UD-Q4_K_XL). Confirm the user is fine with that before you
   start, especially on a metered connection.
 - Setup is long-running (an hour or more on a slow connection). Run it in the background or with a long timeout and
   poll its output; do not kill it because it is quiet for a while. It is resumable: running the same command again
@@ -49,7 +49,7 @@ Requirements (details: [INSTALL.md](INSTALL.md#what-you-need)):
 - **Driver:** NVIDIA 580 or newer. AMD on Linux: the kernel's amdgpu driver; on Windows: a current AMD Adrenalin
   driver. If the driver is missing or too old, tell the user to update it (NVIDIA App / nvidia.com/drivers, or AMD
   Software) and restart; do not install drivers yourself unless they ask.
-- **RAM:** 32 GB or more (see step 3). **Disk:** ~80 GB free, ideally on an NVMe SSD. **CPU:** x86-64 with AVX2. Without AVX2 (Xeon E5 v1/v2 and older) setup still installs, as an experimental and slow build it compiles on the PC (10-20 minutes): tell the user that before starting ([INSTALL.md](INSTALL.md#older-cpus-experimental)).
+- **RAM:** 32 GB or more (see step 3). **Disk:** ~95 GB free, ideally on an NVMe SSD. **CPU:** x86-64 with AVX2. Without AVX2 (Xeon E5 v1/v2 and older) setup still installs, as an experimental and slow build it compiles on the PC (10-20 minutes): tell the user that before starting ([INSTALL.md](INSTALL.md#older-cpus-experimental)).
 - **OS:** Windows 10/11 or Linux (Ubuntu 22.04/24.04 and Debian 12/13 are fully automatic; Debian 13 gets the oldest CUDA 13 its NVIDIA repo has, currently 13.1).
 
 If the PC does not meet them, say which part is missing and stop.
@@ -123,7 +123,7 @@ Notes:
 
 ## 5. While it downloads, tell the user
 
-- It downloads about 70 GB from Hugging Face; how long depends on their connection (at 100 Mbit/s roughly 1.5-2
+- It downloads 66-84 GB from Hugging Face; how long depends on their connection (at 100 Mbit/s roughly 1.5-2.5
   hours). It can be stopped and continues where it left off.
 - Then it prepares the model for their PC (a few minutes) and, on AMD on Linux, compiles the engine.
 - **When the model starts, the PC can be slow or stop responding for 1-3 minutes** (longest the first time): Strata

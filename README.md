@@ -57,7 +57,7 @@ about 100-140 tokens per second. Long chats and other cards: [speed of each mode
 | --- | --- |
 | **Graphics card** | **NVIDIA** GeForce RTX 20, 30, 40 or 50 series, or **AMD** Radeon RX 7900 XT / XTX, RX 7800 XT / 7700 XT, RX 9060 XT, RX 9070 / 9070 XT, Radeon AI PRO R9700 or RX 6800 / 6900 series. It needs **12 GB of VRAM or more**. |
 | **RAM** | 32 GB or more. Your RAM decides [which model](#which-model-should-i-pick) fits. 64 GB runs every size. |
-| **Disk** | About 80 GB free. Use an SSD if you can: the first start is much faster. |
+| **Disk** | About 95 GB free for the largest size (IQ3_S), less for the others. Use an SSD if you can: the first start is much faster. |
 | **System** | Windows 10 / 11 or Linux, and a current graphics driver from NVIDIA or AMD. |
 
 The installer sets up everything else. Two or three cards can share the model ([multi-GPU](docs/MULTI_GPU.md)).
@@ -104,7 +104,7 @@ asks you a few questions:
 - how much context (how much text the model keeps in mind),
 - whether it should read pictures.
 
-Press Enter each time for the recommended answer. Then it downloads the model (about 70 GB) and starts it. If the
+Press Enter each time for the recommended answer. Then it downloads the model (66-84 GB, by size) and starts it. If the
 download stops, run it again: it continues where it left off. Your browser opens the Strata app at
 `http://127.0.0.1:8080`.
 

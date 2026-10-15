@@ -57,7 +57,7 @@ RTX 3090 (24 Go) devrait écrire environ 100-140 tokens par seconde. Longues dis
 | --- | --- |
 | **Carte graphique** | **NVIDIA** GeForce RTX série 20, 30, 40 ou 50, ou **AMD** Radeon RX 7900 XT / XTX, RX 7800 XT / 7700 XT, RX 9060 XT, RX 9070 / 9070 XT, Radeon AI PRO R9700 ou série RX 6800 / 6900. Il faut **12 Go de VRAM ou plus**. |
 | **RAM** | 32 Go ou plus. Votre RAM décide [quel modèle](#quel-modèle-choisir-) tient. Avec 64 Go, toutes les tailles tournent. |
-| **Disque** | Environ 80 Go libres. Prenez un SSD si possible : le premier démarrage est bien plus rapide. |
+| **Disque** | Environ 95 Go libres pour la plus grande taille (IQ3_S), moins pour les autres. Prenez un SSD si possible : le premier démarrage est bien plus rapide. |
 | **Système** | Windows 10 / 11 ou Linux, avec un pilote graphique NVIDIA ou AMD à jour. |
 
 L'installateur s'occupe de tout le reste. Deux ou trois cartes peuvent se partager le modèle ([multi-GPU](docs/MULTI_GPU.md)).
@@ -99,7 +99,7 @@ Il vous pose quelques questions :
 - combien de contexte (la quantité de texte que le modèle garde en tête),
 - s'il doit lire les images.
 
-Appuyez sur Entrée à chaque fois pour garder la réponse recommandée. Ensuite il télécharge le modèle (environ 70 Go)
+Appuyez sur Entrée à chaque fois pour garder la réponse recommandée. Ensuite il télécharge le modèle (66-84 Go selon la taille)
 et le démarre. Si le téléchargement s'arrête, relancez-le : il reprend là où il s'était arrêté. Votre navigateur
 ouvre l'application Strata à l'adresse `http://127.0.0.1:8080`.
 
