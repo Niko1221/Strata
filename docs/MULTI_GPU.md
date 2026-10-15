@@ -80,7 +80,10 @@ VRAM keep its own prompt buffers - the same output as 0.1.31, measured on an R97
 1,265 tok/s, 16K 1,852 -> 1,950, decode unchanged. `STRATA_SPLIT_OWN=1` (opt-in) gives every card its own buffers:
 2K 1,450 and 16K 2,227 tok/s there, but a full card then keeps a different set of experts resident, so the output
 differs from the default's (stable and coherent); `STRATA_SPLIT_OWN=auto` does that only where the buffers are at
-most 12% of each card's VRAM.
+most 12% of each card's VRAM. The buffers come out of the expert cache, so where decode needs that cache the trade
+can lose: on a Radeon VII + Instinct MI50 (gfx906, engine 0.1.42, Coder IQ1_M, every expert resident by default)
+`STRATA_SPLIT_OWN=1` cut the first card's cache from 6,889 to 5,353 slots, 4K / 16K prompts read 2.2% / 0.8% faster
+and decode ran 3.6% / 5.3% slower (#2461). `auto` stays off there: the buffers are ~3.2 GiB, about 20% of a 16 GB card.
 
 **The idle card can help one-chunk prompts (opt-in, `STRATA_PREFILL_HELP=1`).** A prompt that fits one chunk runs the stages one after the other, so while
 one card reads its layers the other idles. With it on, each stage hands a share of its streamed experts to the idle card: it
@@ -94,7 +97,10 @@ costs no VRAM (the idle card's own prompt buffers) and ~110 KB of mapped host me
 helped (~360 MB at 3.3K tokens). The rows it computes round like a different MMQ grouping, so the output is not
 bit-identical to the default's (it is repeatable: same prompt, same output), which is why it is **opt-in**:
 `STRATA_PREFILL_HELP=1` turns it on. Native packs on the MMQ prompt path only (not with the fused prompt kernels,
-`STRATA_PF_FUSED=1`, nor with `--peer-device`). With it on, `STRATA_PREFILL_HELP_FRAC=f` fixes the share.
+`STRATA_PF_FUSED=1`, nor with `--peer-device`). With it on, `STRATA_PREFILL_HELP_FRAC=f` fixes the share. It hands
+over only streamed experts, so where every expert is resident in VRAM there is little for it to take: on the gfx906
+pair above (`STRATA_STAGE_TRIM=1`, all resident) 1.5K and 3K prompts read within 1.1% of the default with it, 3 runs
+each (#2461).
 
 The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D1[,D2..]` (the later stages'
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing
