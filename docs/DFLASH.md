@@ -308,6 +308,24 @@ verifier keeps its original head. The file is loaded before automatic expert-cac
 sizing, so its extra device memory reduces the space available for experts.
 Without this flag DFlash uses the shared target head and allocates no extra head.
 
+Setup (`./setup.sh --setup`) offers **Share the target model's head** (default) or
+**Original BF16 head**, separately from the drafter weight quantization menu.
+For an unattended install:
+
+```bash
+./setup.sh --setup --yes --drafter dflash --dflash-quant q4 --dflash-head original
+```
+
+This copies the original Qwen checkpoint's `lm_head.weight` BF16 bytes into a cached
+one-tensor GGUF. Only this tensor is downloaded, using checked HTTP ranges from the
+checkpoint revision pinned in `tools/mtp_fetch.py`. The cache records and checks its
+SHA-256; no precision is reconstructed from a quantized target head. The file contains
+248320 x 2560 BF16 values (1271398400 bytes, about 1.18 GiB extra VRAM). BF16 weights
+use F32 activations directly and the full vocabulary; `--draft-vocab` only selects rows
+of a shared quantized head. No speed or acceptance improvement is claimed.
+`--dflash-head target` restores the shared head. The choice is saved across starts.
+The engine's `--dflash-head` argument takes a GGUF path; setup's argument takes a choice.
+
 Export a head with the offline tool (the repository's gguf-py is used only here):
 
 ```bash

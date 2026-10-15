@@ -206,6 +206,14 @@ Use `--setup --yes --drafter none` to skip both draft models and keep suffix/pro
 with `--setup --yes` for non-interactive DFlash setup. It fetches the pinned drafter automatically,
 prepares its GGUF and skips MTP. Quantization affects the drafter's matrices; norms retain BF16.
 The resulting server defaults to greedy decoding and chooses the draft block length from measured throughput.
+The DFlash setup menu also offers an output head independently of drafter quantization.
+The default shares the target head. Choose **Original BF16 head** or pass
+`--dflash-head original` to fetch only the original Qwen `lm_head.weight` (about 1.27 GB),
+without quantizing it. This takes about 1.18 GiB of extra VRAM and uses the full vocabulary;
+`--draft-vocab` applies to the shared head. The target verifier keeps its selected head.
+For example: `./setup.sh --setup --yes --drafter dflash --dflash-quant q4 --dflash-head original`.
+Use `--dflash-head target` to return to the shared head.
+
 On supported CUDA configurations the draft K/V and scratch grow with the used context. Sampling requests also use DFlash;
 the target's sampler applies the requested temperature, filters and penalties before accepting any proposal.
 DFlash currently needs one GPU and serial requests and rereads prompts. Its FP16 draft KV uses

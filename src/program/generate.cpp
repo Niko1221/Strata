@@ -940,7 +940,7 @@ void usage() {
                  "                       instead of the MTP layer; needs --spec 2..8 (the window = 1 anchor + K\n"
                  "                       candidates, K <= the artifact's trained block) and is exclusive with --mtp\n"
                  "  --dflash-vocab FILE  draft over these int32 token ids in the shared head (full vocabulary if omitted)\n"
-                 "  --dflash-head GGUF   experimental draft-only output.weight; target verification keeps its own head\n"
+                 "  --dflash-head GGUF   experimental draft-only BF16 or quantized output.weight; target verification keeps its own head\n"
                  "  --dflash-block K     fixed candidates per pass; 0 = trained pass with confidence gating\n"
                  "  --dflash-window N    the drafter's attention window in cells (default 32768; the reference model\n"
                  "                       attends to every cell)\n"
@@ -11904,10 +11904,11 @@ int main(int argc, char** argv) {
                     else if (key == "pcie_frac" || key == "spec_min_p") {
                         char* tail = nullptr;
                         const double value = std::strtod(tok.c_str() + eq + 1, &tail);
-                        bad_tune = bad_tune || tail == tok.c_str() + eq + 1 || *tail != '\0' ||
-                                   !std::isfinite(value) || value < 0.0 || value > 1.0;
-                        if (key == "pcie_frac") { req_pcie_frac = value; req_pcie_set = true; }
-                        else req_spec_min_p = value;
+                        bad_tune = bad_tune || (has_dflash && (tail == tok.c_str() + eq + 1 || *tail != '\0' ||
+                                   !std::isfinite(value) || value < 0.0 || value > 1.0));
+                        const double tune_value = has_dflash ? value : std::clamp((double) fv, 0.0, 1.0);
+                        if (key == "pcie_frac") { req_pcie_frac = tune_value; req_pcie_set = true; }
+                        else req_spec_min_p = tune_value;
                     }
                     else if (key == "pipe") req_pipe = std::max(0.0, (double) fv);
                     else if (key == "aux_cpus") req_aux_cpus = std::atoi(tok.c_str() + eq + 1) != 0 ? 1 : 0;

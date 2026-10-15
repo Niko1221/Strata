@@ -5,6 +5,7 @@
 #include "strata/core/dflash.hpp"
 #include "gguf_fixture.hpp"
 
+#include <limits>
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
@@ -209,7 +210,7 @@ int main() {
              fixture::str("dflash.attention.key_length", "not-an-integer"),
              fixture::str("dflash.attention.causal", "maybe"),
              fixture::i32("dflash.attention.key_length", (uint64_t) -1),
-             fixture::Kv{"dflash.rope.frequency_base", 6, {}, 0x7fc00000}}) {
+             fixture::f32("dflash.rope.frequency_base", std::numeric_limits<float>::quiet_NaN())}) {
         auto kv = meta();
         bool present = false;
         for (auto& k : kv) if (k.key == bad.key) { k = bad; present = true; }

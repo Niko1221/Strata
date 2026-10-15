@@ -4,7 +4,7 @@
     START-HERE.bat  (Windows)   /   ./setup.sh  (Linux)      - they install Python if needed and run this file
 
 The first time it asks which model, size, drafter, context and image support to use. DFlash also asks for
-its weight quantization. It then installs everything and starts the model on http://127.0.0.1:8080
+its weight quantization and output head. It then installs everything and starts the model on http://127.0.0.1:8080
 (OpenAI- and Anthropic-compatible API; a small page there shows that it runs). Later starts reuse the
 saved choices and files.
 
@@ -29,7 +29,7 @@ answers, no questions), --setup (install another model / change settings instead
 (EXPERIMENTAL, off by default),
 --models-dir DIR, --gguf-dir DIR (use GGUF files you already have), --build (compile instead of the ready-made
 engine), --check (only check this PC), --resident-budget-gib N (UD-Q4_K_XL's or UD-IQ4_XS's experts in RAM),
---kv-streaming on|off|auto, --drafter mtp|dflash|none, --dflash [GGUF], --dflash-quant original|q8|q5|q4.
+--kv-streaming on|off|auto, --drafter mtp|dflash|none, --dflash [GGUF], --dflash-quant original|q8|q5|q4, --dflash-head target|original.
 
 Setup recommends, it never forces: the recommended answers are the defaults (--yes, or Enter), and a bigger choice
 than it recommends - a longer context, more GPUs, a bigger RAM budget, a size it thinks will not fit - is kept, with
@@ -4522,7 +4522,7 @@ def write_config(path: Path, cfg: dict):
 # #629: the run config's keys setup writes itself (and rewrites on every setup run); any other key is the user's - a
 # "sampling" or "mcp_servers" block, "allowed_hosts", "cors_origins", "open_browser" - and is kept when setup runs again
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
-                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "drafter", "dflash", "dflash_quant", "dflash_source", "vision"})
+                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "drafter", "dflash", "dflash_quant", "dflash_source", "dflash_head", "vision"})
 SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_ROCBLAS_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
                        "STRATA_ROUTE_TAIL_SKIP"}) | frozenset(GFX1103_SWITCHES) | frozenset(GFX1150_SWITCHES)   # the "env" entries setup writes (the gfx1103 switches are setup's too: a re-run refreshes them, they do not linger)
 # 0.1.44 added these three, written for Unsloth's files only (unsloth_default_env).  In any other model's config they are the
@@ -4709,6 +4709,7 @@ def choices_from_config(cfg_path: Path) -> dict:
             val("--dflash") if cfg.get("dflash_quant", "original") == "original" else "auto")
     return {"drafter": drafter,
             "dflash": dflash_source,
+            "dflash_head": cfg.get("dflash_head", "target") if drafter == "dflash" else None,
             "dflash_quant": cfg.get("dflash_quant", "original") if drafter == "dflash" else None,
             "family": family, "model": model if model in MODELS else None,
             "context": int(val("--max-context")) if val("--max-context") else None,
@@ -5183,10 +5184,31 @@ def choose_drafter(method, path, quant, yes):
     return method, quant or "original"
 
 
-def drafter_args(dflash, rt, draft_vocab=None):
+def choose_dflash_head(choice, yes):
+    if choice is not None:
+        return choice
+    say()
+    say("  DFlash output head (separate from drafter weight quantization):")
+    say("  1) Share the target model's head (default)")
+    say("  2) Original BF16 head (unquantized; ~1.27 GB download and extra VRAM)")
+    say("     Original uses the full vocabulary; --draft-vocab applies to the shared head only.")
+    return {"1": "target", "2": "original"}[ask("DFlash output head?", ["1", "2"], "1", yes)]
+
+
+def prepare_dflash_head(data, roots, choice, env):
+    if choice == "target":
+        return None
+    output = find_in(roots, "dflash/head-original-bf16.gguf") or data / "dflash/head-original-bf16.gguf"
+    run([sys.executable, str(ROOT / "tools/dflash_head_original.py"), "--output", str(output)],
+        env={**env, "STRATA_SOURCE": model_source()})
+    return output
+
+
+def drafter_args(dflash, rt, draft_vocab=None, dflash_head=None):
     if dflash:
         return ["--spec", "8", "--spec-min-p", "0.5", "--dflash", str(dflash), "--dflash-window", "0",
-                "--dflash-vocab", str(ROOT / "data" / DRAFT_VOCABS[draft_vocab or "cjk"])]
+                *(["--dflash-head", str(dflash_head)] if dflash_head else
+                  ["--dflash-vocab", str(ROOT / "data" / DRAFT_VOCABS[draft_vocab or "cjk"])])]
     if rt:
         return ["--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt)]
     # Leave the engine's prompt-lookup defaults in place without loading a model
@@ -6253,6 +6275,8 @@ def main() -> int:
                     help="model drafter: MTP (default), DFlash or none (prompt lookup remains enabled)")
     ap.add_argument("--dflash", metavar="GGUF", nargs="?", const="auto",
                     help="select DFlash; omit GGUF to download the pinned drafter automatically")
+    ap.add_argument("--dflash-head", choices=["target", "original"],
+                    help="DFlash output head: share target (default) or download original unquantized BF16 head")
     ap.add_argument("--dflash-quant", choices=["original", "q8", "q5", "q4"],
                     help="DFlash weights: original BF16, Q8_0, Q5_0 or Q4_0 (target weights are unchanged)")
     ap.add_argument("--low-ram", choices=["auto", "on", "off", "resident", "mmap"], default="auto",
@@ -6290,7 +6314,7 @@ def main() -> int:
     if a.inspect:                                      # headers only: nothing is installed
         sys.exit(subprocess.run([sys.executable, str(ROOT / "tools" / "strata_inspect.py"), *a.inspect[:2]]).returncode)
     if a.backend == "sycl":                            # Intel Arc: the SYCL port's own setup (sycl/setup_intel.py)
-        if a.drafter == "dflash" or a.dflash or a.dflash_quant:
+        if a.drafter == "dflash" or a.dflash or a.dflash_quant or a.dflash_head:
             fail("DFlash is currently supported by the CUDA/HIP engine; choose MTP for SYCL")
         return sycl_setup(sys.argv[1:])
     if a.resident_budget_gib is not None and not a.resident_budget_gib > 0:
@@ -6319,9 +6343,9 @@ def main() -> int:
     have = installed_configs()
     if a.update:                                       # #475: UPDATE.bat / update.sh - never starts the model
         return update_install(have, a)
-    explicit = a.setup or a.model or a.family or a.check or a.no_start or a.drafter or a.dflash or a.dflash_quant
+    explicit = a.setup or a.model or a.family or a.check or a.no_start or a.drafter or a.dflash or a.dflash_quant or a.dflash_head
     adopted = None                                     # #629: the earlier install this copy is set up like
-    if have and (a.drafter or a.dflash or a.dflash_quant) and not (a.model or a.family):
+    if have and (a.drafter or a.dflash or a.dflash_quant or a.dflash_head) and not (a.model or a.family):
         ch = choices_from_config(have[0])
         a.family, a.model = ch["family"], ch["model"]
         a.context = a.context or ch["context"]
@@ -6340,6 +6364,7 @@ def main() -> int:
             a.gpu = a.gpu if a.gpu is not None else ch.get("gpu")
         if a.drafter in (None, "dflash") and not a.dflash and ch["drafter"] == "dflash":
             a.dflash = ch["dflash"]
+            a.dflash_head = a.dflash_head or ch.get("dflash_head")
     if not have and not explicit:                      # a new copy of Strata (an update unzipped elsewhere): set it
         prev = previous_config(elsewhere, load_settings())   # up like the last one, from the files already here
         if prev is not None:
@@ -6352,6 +6377,7 @@ def main() -> int:
                 a.drafter = a.drafter or ch["drafter"]
                 a.dflash = a.dflash or ch["dflash"]
                 a.dflash_quant = a.dflash_quant or ch["dflash_quant"]
+                a.dflash_head = a.dflash_head or ch.get("dflash_head")
                 a.kv = a.kv or ch["kv"]
                 a.vision = a.vision or ch["vision"]
                 a.experimental_speed_projection = a.experimental_speed_projection or ch["esp"]
@@ -6720,9 +6746,14 @@ def main() -> int:
     if MODELS[model].get("license"):                   # the ready-made packs: each size has its own license
         say(f"  Its license: {MODELS[model]['license']}")
     tag = fam["tag"] + model                           # names of the pack, config and start script
+    if a.dflash_head:
+        if a.drafter in ("mtp", "none"):
+            fail("--dflash-head requires the DFlash drafter")
+        a.drafter = "dflash"
     a.drafter, a.dflash_quant = choose_drafter(a.drafter, a.dflash, a.dflash_quant, a.yes)
     if a.drafter == "dflash":
         a.dflash = a.dflash or "auto"
+        a.dflash_head = choose_dflash_head(a.dflash_head, a.yes)
         if multi or (a.parallel is not None and a.parallel > 1):
             fail("DFlash currently needs one GPU and --parallel 1; choose MTP for batched or split inference")
         if a.backend == "sycl":
@@ -6919,7 +6950,7 @@ def main() -> int:
     pack_bin = ready or ((pack_now / "experts.bin").exists() and (pack_now / "index.txt").exists())   # ready: in the download
     mtp_have = find_in(roots, "mtp/rt/experts.bin") is not None
     q2_avx = model == "Q2_0" and avx512 and family == "qwen"
-    need = to_fetch + (0 if a.drafter == "none" else 3 if a.dflash else (2 if mtp_have else 8)) + \
+    need = to_fetch + (0 if a.drafter == "none" else (5 if a.dflash_head == "original" else 3) if a.dflash else (2 if mtp_have else 8)) + \
         (40 if q2_avx and not pack_bin else 0) + (1 if vision != "none" else 0) + \
         (MODELS[model]["arena_gb"] + 1 if low_ram and not q2_avx and not pack_bin else 0)
     if free_gb(models_dir) < need:
@@ -6951,6 +6982,9 @@ def main() -> int:
         key = "PATH" if WIN else "LD_LIBRARY_PATH"
         probe_env[key] = os.pathsep.join([*(str(d) for d in dirs), probe_env.get(key, "")])
         probe = subprocess.run([str(eng / EXE), "--help"], capture_output=True, text=True, env=probe_env, timeout=30)
+        if a.dflash_head == "original" and "draft-only BF16 or quantized" not in probe.stdout + probe.stderr:
+            fail("this engine does not support the original BF16 DFlash output head",
+                 "build this branch's engine, or supply a compatible build with --prebuilt")
         if "BF16/Q8_0/Q5_0/Q4_0; CLI and server" not in probe.stdout + probe.stderr:
             fail("this engine does not support DFlash server quantization", "build the engine from this branch (CUDA/Linux HIP), or supply a compatible HIP build with --prebuilt")
 
@@ -7045,6 +7079,7 @@ def main() -> int:
              "--experts-bin"], env=env)
     ok(f"model prepared: {pack}")
     dflash = prepare_dflash(data, roots, a.dflash, a.dflash_quant, env) if a.dflash else None
+    dflash_head = prepare_dflash_head(data, roots, a.dflash_head, env) if dflash else None
     draft_vocab = None
     rt = None
     if dflash is not None:
@@ -7101,12 +7136,9 @@ def main() -> int:
         model_args = ["--pack", str(pack), "--native", str(shards[0]),
                       *(["--ple-gguf", str(ple)] if len(shards) <= 2 else [])]
     args = [*model_args,
-
-
-
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
             "--prefill", "auto",
-            *drafter_args(dflash, rt, draft_vocab),
+            *drafter_args(dflash, rt, draft_vocab, dflash_head),
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
@@ -7332,6 +7364,7 @@ def main() -> int:
         cfg["dflash"] = str(dflash)
         cfg["dflash_quant"] = a.dflash_quant
         cfg["dflash_source"] = a.dflash
+        cfg["dflash_head"] = a.dflash_head
         cfg["parallel"] = 1
         previous = ROOT / f"strata-{tag.lower()}.json"
         source = previous if previous.is_file() else adopted
