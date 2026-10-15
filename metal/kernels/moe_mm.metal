@@ -77,6 +77,7 @@ kernel void mm_scan(device const uint* bcnt [[buffer(0)]], device uint* boff [[b
         for (uint k = 0; k < nt; ++k) tiles[t0 + k] = int2(int(e), int(r0 + k * a.tm));
     }
     if (tid == 0) {
+        eoff[a.n_expert] = all_rows;   // sentinel: mm_expand skips untouched experts with eoff[e] == eoff[e + 1]
         meta[0] = all_tiles;
         meta[1] = all_rows;
         meta[3] = all_tiles;   // indirect grid of the gate/up GEMM: (meta[2] given, tiles, 1)
@@ -125,6 +126,8 @@ struct MmArgs {
     uint d_row;      // bytes per down row (n_ff values)
     uint n_embd;
     uint n_ff;
+    uint ebase;      // mpp slabs only: the batch of experts EG/ED currently holds (ebase .. ebase+ecount)
+    uint ecount;
 };
 
 // TN x TK weights of `nrow`-strided rows into threadgroup half: thread-strided units of the format
@@ -343,6 +346,7 @@ kernel void mm_gu2(device const uchar* W [[buffer(0)]], device const half* XS [[
     }
 }
 
+
 template <int F, int TM, int TN, int TK, int SG>
 kernel void mm_down2(device const uchar* W [[buffer(0)]], device const half* HS [[buffer(1)]],
                      device float* YE [[buffer(2)]], device const int2* tiles [[buffer(3)]],
@@ -395,6 +399,107 @@ MMGU2(T_IQ4_XS, 64, 64, 32, 4)
 MM_GU2_SET(T_Q2_0) MM_GU2_SET(T_IQ3_XXS) MM_GU2_SET(T_IQ2_XXS) MM_GU2_SET(T_IQ2_XS) MM_GU2_SET(T_IQ2_S) MM_GU2_SET(T_IQ3_S)
 MM_DN2_SET(T_Q2_0)
 MMDN2(T_IQ4_NL, 16, 64, 32, 2) MMDN2(T_IQ4_NL, 16, 64, 64, 2) MMDN2(T_IQ4_NL, 16, 32, 32, 2) MMDN2(T_IQ4_NL, 32, 32, 32, 2) MMDN2(T_IQ4_NL, 16, 128, 32, 4)
+// the heights the v2 plan takes when the gate/up tile is taller (window.cpp gu2_tile drives p.TM, dn2_tile the width)
+MMDN2(T_IQ4_NL, 32, 64, 32, 2) MMDN2(T_IQ4_NL, 32, 64, 32, 4) MMDN2(T_IQ4_NL, 32, 64, 64, 4) MMDN2(T_IQ4_NL, 64, 64, 32, 4) MMDN2(T_IQ4_NL, 64, 64, 32, 2)
+
+// ---- mpp: the expert GEMMs as ONE dynamic-K matmul2d run over fp16 slabs (mm_bench mpp_mm_half_16_*: 6.3-6.7
+// TF/s at the 16-row shapes where mm_gu2's static TK loop tops out at ~2.9 - the barriers and desc updates of the
+// 160-step K loop dominate).  mm_expand decodes a batch of this layer's experts (arena slots, quantized) into:
+//   EG[j][2*n_ff/128 pairs][2][64][n_embd] - gate rows then up rows of f-block b, adjacent as one 128-row block
+//   ED[j][n_embd][n_ff]                     - down's n_embd rows; K = n_ff.
+// The GEMMs read dense device memory: no threadgroup staging, no K loop, no arena addressing; the batch bounds and
+// expert base ride in MmArgs (ebase, ecount), tiles keeps absolute rows (XS, HS, YE are the whole chunk's).
+// mm_expand<F> (64 threads): grid (n_ff/64, batch) with ea.x = 0 decodes each block's 64 gate rows AND 64 up rows
+// into one 128-row EG pair; grid (n_embd/64, batch) with ea.x = 1 decodes down's row blocks into ED.
+template <int F>
+kernel void mm_expand(device const uchar* W [[buffer(0)]], constant MmArgs& a [[buffer(1)]],
+                      device half* EG [[buffer(2)]], device half* ED [[buffer(3)]], constant uint4& ea [[buffer(4)]],
+                      device const uint* smap [[buffer(5)]], device const uchar* W1 [[buffer(6)]],
+                      device const uchar* W2 [[buffer(7)]], device const uchar* W3 [[buffer(8)]],
+                      uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]],
+                      device const uint* eoff [[buffer(9)]]) {
+    constexpr int TK = 64, NTH = 64;
+    const uint e = a.ebase + tg.y, dn = ea.x;
+    if (e >= a.ebase + a.ecount || eoff[e] == eoff[e + 1]) return;   // short tail; a zero-row expert is untouched: no tile reads its slab rows
+    const uint rb = dn ? a.d_row : a.gu_row, klen = dn ? a.n_ff : a.n_embd;
+    const ulong pitch = klen;
+    device const uchar* E = kArena ? arena_slot(smap[e], W, W1, W2, W3) : W + ulong(e) * (dn ? a.d_stride : a.gu_stride);
+    device half* drow = dn ? ED + (ulong(tg.y) * a.n_embd + ulong(tg.x) * 64) * a.n_ff
+                           : EG + (ulong(tg.y) * 2 * a.n_ff + ulong(tg.x) * 128) * a.n_embd;
+    device const uchar* s0 = E + (dn ? a.down_off : a.gate_off) + ulong(tg.x) * 64 * rb;
+    device const uchar* s1 = dn ? s0 : E + a.up_off + ulong(tg.x) * 64 * rb;   // dn never reads it
+    threadgroup half wg[64 * TK];
+    threadgroup uint tab[fmt<F>::TAB];
+    load_tab<F>(tab, tid, NTH);
+    for (uint w = 0, nrow = dn ? 1 : 2; w < nrow; ++w) {
+        device const uchar* src = w ? s1 : s0;
+        device half* dst = drow + w * 64 * a.n_embd;
+        for (uint k0 = 0; k0 < klen; k0 += TK) {
+            stage_w<F, 64, TK>(src, rb, k0, wg, tab, tid, NTH);
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            for (uint it = tid; it < 64 * TK; it += NTH)
+                dst[ulong(it / TK) * pitch + k0 + it % TK] = wg[it];
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+    }
+}
+
+// gate and up as ONE (TM x TN) dynamic-K run over the paired slab block, swiglu's pairing in the epilogue;
+// grid.x = n_ff/TN (meta[2]), each block's TN rows are gate's 64 then up's 64, and it writes TN/2 HS columns
+template <int TM, int TN, int SG>
+kernel void mm_gu_mpp(device const half* XS [[buffer(0)]], device const half* EG [[buffer(1)]],
+                      device half* HS [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]],
+                      uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]]) {
+    const int2 tl = tiles[tg.y];
+    const int j = tl.x - int(a.ebase);
+    if (j < 0 || j >= int(a.ecount)) return;
+    threadgroup float ot[TM * TN];
+    tensor<device half, dextents<int32_t, 2>, tensor_inline> tX((device half*)XS, dextents<int32_t, 2>(a.n_embd, 1 << 30));
+    tensor<device half, dextents<int32_t, 2>, tensor_inline> tG((device half*)EG, dextents<int32_t, 2>(a.n_embd, 1 << 30));
+    constexpr auto desc = matmul2d_descriptor(TM, TN, dynamic_length_v<int>, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<desc, execution_simdgroups<SG>> op;
+    auto mA = tX.slice(0, tl.y);
+    auto mB = tG.slice(0, uint(j) * 2 * a.n_ff + tg.x * TN);
+    auto acc = op.template get_destination_cooperative_tensor<decltype(mA), decltype(mB), float>();
+    for (uint16_t i = 0; i < acc.get_capacity(); ++i)
+        if (acc.is_valid_element(i)) acc[i] = 0.0f;
+    op.run(mA, mB, acc);
+    tensor<threadgroup float, dextents<int32_t, 2>, tensor_inline> tO(ot, dextents<int32_t, 2>(TN, TM));
+    acc.store(tO);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int row0 = tl.y, hf = TN / 2;
+    for (int it = tid; it < TM * hf; it += SG * 32) {
+        const int m = it / hf, f = it - m * hf;
+        const float g = ot[m * TN + f], u = ot[m * TN + hf + f];
+        HS[ulong(row0 + m) * a.n_ff + int(tg.x) * hf + f] = half(g / (1.0f + exp(-g)) * u);
+    }
+}
+
+// down over its slab: one dynamic-K run straight into YE (the store-mode twin of mm_bench's mpp_mm)
+template <int TM, int TN, int SG>
+kernel void mm_dn_mpp(device const half* HS [[buffer(0)]], device const half* ED [[buffer(1)]],
+                      device float* YE [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]],
+                      uint3 tg [[threadgroup_position_in_grid]]) {
+    const int2 tl = tiles[tg.y];
+    const int j = tl.x - int(a.ebase);
+    if (j < 0 || j >= int(a.ecount)) return;
+    tensor<device half, dextents<int32_t, 2>, tensor_inline> tH((device half*)HS, dextents<int32_t, 2>(a.n_ff, 1 << 30));
+    tensor<device half, dextents<int32_t, 2>, tensor_inline> tD((device half*)ED, dextents<int32_t, 2>(a.n_ff, 1 << 30));
+    tensor<device float, dextents<int32_t, 2>, tensor_inline> tY(YE, dextents<int32_t, 2>(a.n_embd, 1 << 30));
+    constexpr auto desc = matmul2d_descriptor(TM, TN, dynamic_length_v<int>, false, true, false);
+    matmul2d<desc, execution_simdgroups<SG>> op;
+    auto mA = tH.slice(0, tl.y), mB = tD.slice(0, uint(j) * a.n_embd + tg.x * TN);
+    auto mY = tY.slice(tg.x * TN, tl.y);
+    op.run(mA, mB, mY);
+}
+
+#define MMEXP_(F) template [[host_name("mm_expand_" #F)]] kernel decltype(mm_expand<F>) mm_expand<F>;
+#define MMEXP(F) MMEXP_(F)
+#define MMGUM_(M, N, S) template [[host_name("mm_gu_mpp_" #M "_" #N "_" #S)]] kernel decltype(mm_gu_mpp<M, N, S>) mm_gu_mpp<M, N, S>;
+#define MMDNM_(M, N, S) template [[host_name("mm_dn_mpp_" #M "_" #N "_" #S)]] kernel decltype(mm_dn_mpp<M, N, S>) mm_dn_mpp<M, N, S>;
+MMEXP(T_Q2_0) MMEXP(T_IQ3_XXS) MMEXP(T_IQ2_XXS) MMEXP(T_IQ2_XS) MMEXP(T_IQ2_S) MMEXP(T_IQ3_S) MMEXP(T_IQ4_XS) MMEXP(T_Q8_0)
+MMEXP(T_IQ4_NL) MMEXP(T_Q5_1)
+MMGUM_(16, 128, 4) MMDNM_(16, 64, 2) MMDNM_(16, 128, 4)
 
 // ---- v3: the weights decoded straight into matmul2d's right-input cooperative tensor (single-simdgroup scope),
 // no threadgroup staging and no barriers in the K loop.  Each simdgroup owns TN output rows; a threadgroup SG * TN.
