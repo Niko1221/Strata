@@ -62,10 +62,22 @@ CALIB_DIR = Path(os.environ.get("STRATA_JEV_CALIB_DIR", "calib"))
 
 
 def load(path: Path) -> Calib:
-    """Parse one calib.json; missing/corrupt -> not loaded (identity)."""
+    """Parse one calib.json; missing/corrupt -> not loaded (identity).
+    B1.4 tuple refusal: a file whose tuple names a DIFFERENT readout letter than
+    the mode it is being loaded for is refused (logged, identity) — copying
+    calib-D.json to calib-S.json would otherwise apply silently (Opus G13)."""
     c = Calib()
     try:
         j = json.loads(Path(path).read_text())
+        stem = path.stem
+        want = stem.split("calib-")[-1] if stem.startswith("calib-") else ""
+        if len(want) != 1 or want not in "LVDS":
+            want = ""                            # legacy calib.json / v1.json: no mode binding
+        got = str(j.get("tuple", "")).split("|")[4] if str(j.get("tuple", "")).count("|") >= 5 else ""
+        if want and got and got != want:
+            print(f"[jev-calib] refusing {path.name}: tuple readout '{got}' != '{want}' "
+                  f"(B1.4 mismatch; identity until a matching file is fitted)", flush=True)
+            return c
         if "T_choice" in j:
             c.T_choice = float(j["T_choice"])
         if "T_score" in j:
@@ -108,8 +120,14 @@ def swap(dir: Path | None = None) -> dict[str, bool]:
 # ---- apply (donor calib_apply :603-629; P0-1: per readout mode) ----
 def apply(qtype: str, pr: list[float], mode: str = "") -> tuple[list[float], str]:
     """Calibrate label-normalized probabilities in place; -> (pr, calib_id).
-    `mode`: the readout letter ("" text legacy / L / V / D / S)."""
-    c = active(mode) or active("")       # a mode with no own fit falls back to the text fit
+    `mode`: the readout letter ("" text legacy / L / V / D / S).
+    Fallback is STRICT: only the text modes ("" and L) may fall back to the
+    legacy calib.json fit; V/D/S use their own calib-<mode>.json or identity —
+    an image mode silently inheriting the TEXT fit is the exact cross-tuple
+    contamination the per-tuple split exists to prevent (Opus R1)."""
+    c = active(mode)
+    if c is None and mode in ("", "L"):
+        c = active("")
     if c is None or not c.loaded or not pr:
         return pr, "identity"
     if qtype == "noul":
@@ -157,17 +175,29 @@ def log_enqueue(row: dict) -> None:
 
 
 def log_flush(dir: Path | None = None) -> int:
-    """Drain the queue to <CALIB_DIR>/data/log.jsonl; -> rows written."""
+    """Drain the queue to <CALIB_DIR>/data/log-<mode>.jsonl (one file per readout
+    tuple; the donor's fit.py pools a single log by type, so a mixed file would
+    fit text+image rows into one calibrator — Opus G3); -> rows written."""
     d = Path(dir) if dir is not None else CALIB_DIR
     (d / "data").mkdir(parents=True, exist_ok=True)
     with _LOGMU:
         rows, _LOGQ[:] = _LOGQ[:], []
     if not rows:
         return 0
-    with open(d / "data" / "log.jsonl", "a", encoding="utf-8") as f:
-        for line in rows:
-            f.write(line + "\n")
-    return len(rows)
+    by_mode = {}
+    for line in rows:
+        try:
+            mode = json.loads(line).get("tuple", "|").split("|")[4] if line.count("|") >= 5 else ""
+        except ValueError:
+            mode = ""
+        by_mode.setdefault(mode or "", []).append(line)
+    n = 0
+    for mode, lines in by_mode.items():
+        with open(d / "data" / f"log{'-' + mode if mode else ''}.jsonl", "a", encoding="utf-8") as f:
+            for line in lines:
+                f.write(line + "\n")
+        n += len(lines)
+    return n
 
 
 def log_thread(stop: threading.Event | None = None):
