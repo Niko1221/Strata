@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <istream>
 #include <optional>
@@ -69,6 +70,49 @@ std::optional<uint64_t> conversation_mem_available(std::istream& meminfo);
 inline bool conversation_memory_admit(std::optional<uint64_t> available,
                                       uint64_t allocation, uint64_t floor) {
     return available && *available >= floor && allocation <= *available - floor;
+}
+
+// --conversation-cache-park: where a parking capture goes.  ram is the behaviour before the flag; disk captures,
+// hands the copy to the asynchronous writer and frees the RAM copy at once, so the RAM cache keeps nothing for it;
+// auto resolves once at startup (conversation_park_fits_ram) against the RAM the arena and the model left free.
+enum class ConversationParkTarget { ram, disk, automatic };
+
+inline const char* conversation_park_target_name(ConversationParkTarget target) {
+    switch (target) {
+        case ConversationParkTarget::ram: return "ram";
+        case ConversationParkTarget::disk: return "disk";
+        case ConversationParkTarget::automatic: return "auto";
+    }
+    return "ram";
+}
+
+// What a parking capture is given when the physical-RAM admission gate is read.  ram: the parking floor holds and
+// the capture is parked in RAM as before.  disk: the parking floor does not hold but the transient floor of a
+// disk-only park does, and the disk tier is on: the capture is spilled and NO RAM entry is kept.  discard: neither
+// holds - the refusal that, before this flag, dropped the conversation unmirrored even though the disk tier was
+// right there (the hole the upstream #1529 "takes what RAM cannot hold" closes).  In one place so the rule is
+// testable without the engine.
+enum class ConversationParkPlacement { ram, disk, discard };
+
+inline ConversationParkPlacement conversation_park_placement(std::optional<uint64_t> available,
+                                                             uint64_t allocation, uint64_t floor,
+                                                             uint64_t disk_floor, bool disk_target,
+                                                             bool disk_capable) {
+    if (!disk_target && conversation_memory_admit(available, allocation, floor))
+        return ConversationParkPlacement::ram;
+    if (disk_capable && conversation_memory_admit(available, allocation, disk_floor))
+        return ConversationParkPlacement::disk;
+    return ConversationParkPlacement::discard;
+}
+
+// --conversation-cache-park auto: park in RAM while the free RAM can hold one snapshot per cache slot beside the
+// floor; below that the parking goes to disk.  Called once, after the arena and the model are resident, so
+// `available` is already net of the arena (the spec's `arena + slots x ~2.5 GiB + piso`).
+inline bool conversation_park_fits_ram(std::optional<uint64_t> available, size_t slots,
+                                       uint64_t snapshot_bytes, uint64_t floor) {
+    if (!available || *available < floor) return false;
+    const uint64_t room = *available - floor;
+    return slots == 0 || snapshot_bytes <= room / slots;
 }
 
 } // namespace strata::core

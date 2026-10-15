@@ -639,6 +639,17 @@ struct Options {
     int64_t conversation_cache_mib = 0; // opt-in host RAM for independent conversations
     int conversation_cache_slots = 4;
     int64_t conversation_cache_min_free_mib = 2560;
+    /// --conversation-cache-park: where a parked conversation goes.  "ram" (default) captures to host RAM as before;
+    /// "disk" captures, hands the copy to the asynchronous writer and frees the RAM copy at once, so the RAM cache
+    /// keeps nothing for it; "auto" resolves to disk when the free RAM cannot hold one snapshot per slot beside the
+    /// floor.  A disk target needs the disk tier (--conversation-cache-spill-dir with --conversation-cache-spill-on
+    /// park): without it the parking stays in RAM, with a warning.
+    strata::core::ConversationParkTarget conversation_cache_park = strata::core::ConversationParkTarget::ram;
+    /// --conversation-cache-park-min-free-mib: the TRANSIENT floor a disk-only parking capture may take, as opposed
+    /// to conversation_cache_min_free_mib (the floor a RAM park, which stays, must leave).  Measured: refusing does
+    /// not save RAM - the next turn re-prefills the same K/V - so a disk spill is admitted under this smaller floor.
+    /// The rejection also falls back to it before discarding, whatever the target.
+    int64_t conversation_cache_park_min_free_mib = 512;
     /// --serve: park only conversations of at least this many tokens.  Every parked conversation costs one of
     /// conversation_cache_slots whatever its length, so without it a client that interleaves short side requests
     /// with one long conversation evicts the long one (oldest first).  0 = park every conversation.
@@ -861,6 +872,13 @@ void usage() {
                  "                       wins; 0 = none). Parking and session save/restore keep their floor under it\n"
                  "  --conversation-cache-min-tokens N  --serve: park only conversations of at least N tokens, so\n"
                  "                       short side requests do not take the slots a long one needs (default 0 = park any)\n"
+                 "  --conversation-cache-park MODE  --serve: where a parked conversation goes: ram (default) keeps it\n"
+                 "                       in host RAM; disk captures, hands the copy to the asynchronous writer and frees\n"
+                 "                       the RAM copy at once (needs the disk tier: --conversation-cache-spill-dir); auto\n"
+                 "                       picks disk when the free RAM cannot hold one snapshot per slot beside the floor\n"
+                 "  --conversation-cache-park-min-free-mib N  --serve: the TRANSIENT RAM floor a disk-only park may\n"
+                 "                       take - and the floor a rejected capture falls back to before it is discarded\n"
+                 "                       (default 512)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
                  "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE needs RAM (opt-in)\n"
                  "  --conversation-cache-spill-dir DIR  --serve: keep conversations the RAM cache evicts on disk,\n"
@@ -2227,6 +2245,7 @@ int main(int argc, char** argv) {
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
         else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
                  a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-min-tokens" ||
+                 a == "--conversation-cache-park-min-free-mib" ||
                  a == "--session-min-free-mib" || a == "--memory-limit-mib" ||
                  a == "--conversation-cache-disk-mib" || a == "--conversation-cache-n-min") {
             const std::string value = next(a.c_str());
@@ -2241,12 +2260,23 @@ int main(int argc, char** argv) {
             }
             if (a == "--conversation-cache-mib") o.conversation_cache_mib = number;
             else if (a == "--conversation-cache-min-free-mib") o.conversation_cache_min_free_mib = number;
+            else if (a == "--conversation-cache-park-min-free-mib") o.conversation_cache_park_min_free_mib = number;
             else if (a == "--conversation-cache-min-tokens") o.conversation_cache_min_tokens = number;
             else if (a == "--session-min-free-mib") o.session_min_free_mib = number;
             else if (a == "--memory-limit-mib") o.memory_limit_mib = number;
             else if (a == "--conversation-cache-slots") o.conversation_cache_slots = (int) number;
             else if (a == "--conversation-cache-disk-mib") o.conversation_cache_disk_mib = number;
             else o.conversation_cache_n_min = number;
+        }
+        else if (a == "--conversation-cache-park") {
+            const std::string value = next("--conversation-cache-park");
+            if (value == "ram") o.conversation_cache_park = strata::core::ConversationParkTarget::ram;
+            else if (value == "disk") o.conversation_cache_park = strata::core::ConversationParkTarget::disk;
+            else if (value == "auto") o.conversation_cache_park = strata::core::ConversationParkTarget::automatic;
+            else {
+                std::fprintf(stderr, "--conversation-cache-park takes ram, disk or auto\n");
+                return 2;
+            }
         }
         else if (a == "--conversation-cache-spill-dir") o.conversation_cache_spill_dir = next("--conversation-cache-spill-dir");
         else if (a == "--conversation-cache-similarity") {
@@ -8611,6 +8641,32 @@ int main(int argc, char** argv) {
         const bool spill_on_park = conversation_spill.enabled() && o.conversation_cache_spill_on == "park";
         strata::core::ConversationSpillWriter park_writer;
         if (spill_on_park) park_writer.start(&conversation_spill, o.conversation_cache_spill_park_throttle_s);
+        // --conversation-cache-park: resolve the destination ONCE, here.  The arena and the model are resident by now,
+        // so available_host_bytes() is what the park itself will see and `auto` can grade the free RAM against one
+        // snapshot per slot beside the floor (the spec's `arena + slots x ~2.5 GiB + piso`).  A disk target needs the
+        // park writer: without the disk tier the parking stays in RAM, with a note, rather than parking nothing.
+        strata::core::ConversationParkTarget park_target = o.conversation_cache_park;
+        if (park_target == strata::core::ConversationParkTarget::automatic) {
+            const bool fits = strata::core::conversation_park_fits_ram(
+                strata::core::available_host_bytes(), (size_t) std::max(0, o.conversation_cache_slots),
+                (uint64_t) 2560 << 20, (uint64_t) o.conversation_cache_min_free_mib << 20);
+            const strata::core::ConversationParkTarget picked =
+                fits ? strata::core::ConversationParkTarget::ram : strata::core::ConversationParkTarget::disk;
+            std::fprintf(stderr, "strata serve: conversation cache: park target auto -> %s (%s)\n",
+                         strata::core::conversation_park_target_name(picked),
+                         fits ? "one snapshot per slot fits beside the floor" : "the free RAM cannot hold one snapshot per slot");
+            park_target = picked;
+        }
+        const bool disk_park = park_target == strata::core::ConversationParkTarget::disk && spill_on_park;
+        if (park_target == strata::core::ConversationParkTarget::disk && !spill_on_park)
+            std::fprintf(stderr, "strata serve: conversation cache: --conversation-cache-park disk needs the disk tier "
+                                 "(--conversation-cache-spill-dir with --conversation-cache-spill-on park); parking stays in RAM\n");
+        else if (o.conversation_cache_park != strata::core::ConversationParkTarget::automatic)
+            std::fprintf(stderr, "strata serve: conversation cache: park target %s\n",
+                         strata::core::conversation_park_target_name(park_target));
+        // The captures dropped because even the transient disk floor did not hold - the hole this flag closes is
+        // only closed if the ones that still do not fit are counted, so the line is in the refusal below.
+        size_t park_discards = 0;
         // The per-segment tier's WRITER (layer/segwriter-t3, opt-in): at the SAME point the disk tier writes a
         // conversation to disk - the eviction (spill_evicted) and the park mirror - the parked image is split into
         // its phase segments (segment_plan_split: sys / prefix / effort+answer, cut at --turn-token and
@@ -8803,6 +8859,7 @@ int main(int argc, char** argv) {
             const auto t0 = Clock::now();
             try {
                 const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
+                const uint64_t disk_floor = (uint64_t) o.conversation_cache_park_min_free_mib * 1024 * 1024;
                 const size_t retained = reuse.bytes() + stage_retained;
                 const size_t additional = estimate > retained ? estimate - retained : 0;
                 // The physical-RAM gate: the incoming snapshot has to fit beside the floor.  make_room()
@@ -8817,26 +8874,46 @@ int main(int argc, char** argv) {
                 // limits above the engine, --memory-limit-mib); `mem` keeps the last one for the refusal line.
                 // With the disk tier on, evict_oldest() takes the spill hook: RAM pressure is exactly when a
                 // parked conversation would otherwise be destroyed unmirrored.
+                // --conversation-cache-park: a provisional park (a cancelled request, R4) is a RAM park whatever the
+                // target - it publishes no durable copy and the RAM reuse is exactly what it is for.  Everything else
+                // picks its floor from the destination: the transient disk floor for a disk-only park, the parking
+                // floor otherwise.
+                const bool target_disk = disk_park && !provisional;
+                const uint64_t gate_floor = target_disk ? disk_floor : floor;
                 size_t evicted = 0;
                 std::optional<strata::core::HostMemoryReading> mem;
-                auto admit = [&] {
+                auto admit = [&](uint64_t gate) {
                     mem = strata::core::sample_host_memory();
                     return strata::core::conversation_memory_admit(
-                        mem ? std::optional<uint64_t>(mem->available) : std::nullopt, additional, floor);
+                        mem ? std::optional<uint64_t>(mem->available) : std::nullopt, additional, gate);
                 };
-                while (!admit() && conversations.size() > 0 && evicted < conversations.slots() &&
+                while (!admit(gate_floor) && conversations.size() > 0 && evicted < conversations.slots() &&
                        conversations.evict_oldest(spill_evicted))
                     ++evicted;
-                if (!admit()) {
-                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked)\n",
-                                 additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
-                                 evicted, conversations.size());
+                // The rejection no longer discards: when the big floor does not hold, the capture spills to disk
+                // under the transient floor (conversation_park_placement).  Only when neither holds does it go, and
+                // then it is counted.
+                const strata::core::ConversationParkPlacement placement = strata::core::conversation_park_placement(
+                    mem ? std::optional<uint64_t>(mem->available) : std::nullopt, additional, floor, disk_floor,
+                    target_disk, spill_on_park);
+                if (placement == strata::core::ConversationParkPlacement::discard) {
+                    ++park_discards;
+                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor%s, %s; evicted %zu, %zu still parked; discards=%zu)\n",
+                                 additional >> 20, (long long) o.conversation_cache_min_free_mib,
+                                 spill_on_park ? " or the transient disk floor" : "", ram_note(mem).c_str(),
+                                 evicted, conversations.size(), park_discards);
                     return true;
                 }
+                bool park_ram = placement == strata::core::ConversationParkPlacement::ram;
                 if (evicted)
                     std::fprintf(stderr, "strata serve: conversation cache: evicted %zu parked conversation%s to admit this snapshot (%zu MiB plus %lld MiB floor)\n",
                                  evicted, evicted == 1 ? "" : "s", additional >> 20,
-                                 (long long) o.conversation_cache_min_free_mib);
+                                 (long long) (park_ram ? o.conversation_cache_min_free_mib
+                                                       : o.conversation_cache_park_min_free_mib));
+                if (!park_ram)
+                    std::fprintf(stderr, "strata serve: conversation cache: parking to disk only (physical RAM short of %lld MiB + snapshot; transient floor %lld MiB, %s)\n",
+                                 (long long) o.conversation_cache_min_free_mib,
+                                 (long long) o.conversation_cache_park_min_free_mib, ram_note(mem).c_str());
                 strata::core::SavedConversation image;
                 size_t reused_bytes = 0;
                 if (!strata::core::conversation_snapshot_save(image, view, ss, g, draft0, err,
@@ -8852,37 +8929,72 @@ int main(int argc, char** argv) {
                         return false;
                     image.stage_images.push_back(std::move(part));
                 }
-                const auto mem_after = strata::core::sample_host_memory();
-                if (!strata::core::conversation_memory_admit(
-                        mem_after ? std::optional<uint64_t>(mem_after->available) : std::nullopt, 0, floor)) {
-                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (RAM floor after capture: %lld MiB needed, %s)\n",
-                                 (long long) o.conversation_cache_min_free_mib, ram_note(mem_after).c_str());
-                    return true;
+                // The post-capture floor is the RAM park's own check: the copy is going to STAY in RAM, so it must
+                // leave the floor.  A disk-only park (the target or the fallback below) never applies it - the RAM is
+                // freed right after - but a RAM park that no longer leaves the floor tries the transient disk floor
+                // before it gives the capture up, exactly as the gate above does.
+                if (park_ram) {
+                    const auto mem_after = strata::core::sample_host_memory();
+                    const std::optional<uint64_t> avail_after =
+                        mem_after ? std::optional<uint64_t>(mem_after->available) : std::nullopt;
+                    if (!strata::core::conversation_memory_admit(avail_after, 0, floor)) {
+                        if (spill_on_park && strata::core::conversation_memory_admit(avail_after, 0, disk_floor)) {
+                            park_ram = false;
+                            std::fprintf(stderr, "strata serve: conversation cache: parking to disk only (RAM floor after capture: %lld MiB needed, %s; transient floor %lld MiB holds)\n",
+                                         (long long) o.conversation_cache_min_free_mib, ram_note(mem_after).c_str(),
+                                         (long long) o.conversation_cache_park_min_free_mib);
+                        } else {
+                            ++park_discards;
+                            std::fprintf(stderr, "strata serve: conversation cache: skip parking (RAM floor after capture: %lld MiB needed, %s; discards=%zu)\n",
+                                         (long long) o.conversation_cache_min_free_mib, ram_note(mem_after).c_str(),
+                                         park_discards);
+                            return true;
+                        }
+                    }
                 }
                 const size_t snapshot_bytes = image.bytes();
                 // The per-segment tier (opt-in): mirror the captured image's phase segments now (inert unless on).
                 if (!provisional) mirror_segments(image);
-                // R3: mirror the parked state to disk (asynchronous, collapsed). The writer takes a copy - put()
-                // below takes the original, and the writer's cell must not alias the RAM cache's entry. wants()
-                // keeps the copy from being built when the writer would only discard it.
+                // R3: mirror the parked state to disk (asynchronous, collapsed).  In RAM mode the writer takes a
+                // copy - put() below takes the original, and the writer's cell must not alias the RAM cache's entry;
+                // in a disk-only park the writer takes the captured image itself, so no second copy is built and the
+                // RAM is freed the moment it goes out of scope.  wants() keeps a copy from being built for a write
+                // the writer would only discard.
+                bool posted = false;
                 if (spill_on_park && !provisional) {
                     const uint64_t key = strata::core::conversation_key(live, o.turn_token);
                     if (park_writer.wants(key, live.size())) {
-                        const auto tc = Clock::now();
-                        strata::core::SavedConversation mirrored = image;
-                        const double copy_ms = std::chrono::duration<double, std::milli>(Clock::now() - tc).count();
-                        park_writer.post(key, std::move(mirrored));
-                        std::fprintf(stderr, "strata serve: conversation cache: park mirror queued (%zu tokens, copy %.1f ms); "
-                                     "writes=%zu collapsed=%zu throttled=%zu\n", live.size(), copy_ms,
-                                     park_writer.writes(), park_writer.collapsed(), park_writer.throttled());
+                        if (park_ram) {
+                            const auto tc = Clock::now();
+                            strata::core::SavedConversation mirrored = image;
+                            const double copy_ms = std::chrono::duration<double, std::milli>(Clock::now() - tc).count();
+                            posted = park_writer.post(key, std::move(mirrored));
+                            std::fprintf(stderr, "strata serve: conversation cache: park mirror queued (%zu tokens, copy %.1f ms); "
+                                         "writes=%zu collapsed=%zu throttled=%zu\n", live.size(), copy_ms,
+                                         park_writer.writes(), park_writer.collapsed(), park_writer.throttled());
+                        } else {
+                            posted = park_writer.post(key, std::move(image));
+                            std::fprintf(stderr, "strata serve: conversation cache: park mirror queued (%zu tokens, disk only, no RAM copy); "
+                                         "writes=%zu collapsed=%zu throttled=%zu\n", live.size(),
+                                         park_writer.writes(), park_writer.collapsed(), park_writer.throttled());
+                        }
                     }
                 }
                 // put() reserves again with the captured size, so it carries the spill hook too: an eviction it makes
                 // here is as final as make_room's, and the same conversation must not be lost for want of a callback.
-                const bool stored = conversations.put(std::move(image), held, spill_evicted);
+                // A disk-only park skips put() entirely - conversations.size() does not grow and the RAM cache keeps
+                // nothing for it, which is the point of the mode: the copy is on disk and the writer's thread owns it.
+                bool stored = false;
+                if (park_ram) {
+                    stored = conversations.put(std::move(image), held, spill_evicted);
+                } else if (!posted) {
+                    ++park_discards;
+                    std::fprintf(stderr, "strata serve: conversation cache: parking to disk dropped (the writer would not take it; discards=%zu)\n",
+                                 park_discards);
+                }
                 std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens in %.1f ms; parked=%zu bytes=%zu evictions=%zu archived=%zu archived_bytes=%zu snapshot_bytes=%zu reused_kv_bytes=%zu\n",
 
-                             stored ? "parked" : "skipped", live.size(),
+                             park_ram ? (stored ? "parked" : "skipped") : (posted ? "parked on disk" : "dropped"), live.size(),
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes(), conversations.evictions(),
                              conversation_spill.archived(), (size_t) conversation_spill.archived_bytes(),
@@ -11592,20 +11704,32 @@ int main(int argc, char** argv) {
                         conversation_spill.unpin(disk_match.path);
                     } else {
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
-                        if (!strata::core::conversation_memory_admit(strata::core::available_host_bytes(),
-                                estimate, floor)) {
+                        const uint64_t disk_floor = (uint64_t) o.conversation_cache_park_min_free_mib << 20;
+                        // The copy is read in a two-pass stream and is never kept in RAM, so when the parking floor
+                        // does not hold the TRANSIENT disk floor is what decides - the copy beats being ignored,
+                        // exactly as a rejected park now spills instead of discarding.
+                        const std::optional<uint64_t> avail_hit = strata::core::available_host_bytes();
+                        if (strata::core::conversation_memory_admit(avail_hit, estimate, disk_floor) &&
+                            !strata::core::conversation_memory_admit(avail_hit, estimate, floor))
+                            std::fprintf(stderr, "strata serve: conversation cache: disk hit under the transient RAM floor "
+                                         "(need %llu MiB plus %lld MiB, not %lld MiB)\n",
+                                         (unsigned long long) (estimate >> 20),
+                                         (long long) o.conversation_cache_park_min_free_mib,
+                                         (long long) o.conversation_cache_min_free_mib);
+                        if (!strata::core::conversation_memory_admit(avail_hit, estimate, disk_floor)) {
                             std::fprintf(stderr, "strata serve: conversation cache: disk hit skipped (physical RAM admission; "
                                          "need %llu MiB plus a %lld MiB floor, or telemetry unavailable)\n",
-                                         (unsigned long long) (estimate >> 20), (long long) o.conversation_cache_min_free_mib);
+                                         (unsigned long long) (estimate >> 20), (long long) o.conversation_cache_park_min_free_mib);
                             conversation_spill.unpin(disk_match.path);
                         } else {
                             // One read limit per stage file: the main image's carve, then each later stage's. The
                             // disk tier writes one session file per stage (conversation_spill.hpp), so the limits
-                            // must match the stage they bound.
+                            // must match the stage they bound.  A stage read is a stream, so its floor is the same
+                            // transient disk floor, not the parking one.
                             std::vector<strata::core::SessionReadLimits> limits(1 + stages.size());
-                            for (auto& l : limits) l.admit = [floor, &o](uint64_t need, std::string& why) {
+                            for (auto& l : limits) l.admit = [disk_floor](uint64_t need, std::string& why) {
                                 const auto avail = strata::core::available_host_bytes();
-                                if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
+                                if (strata::core::conversation_memory_admit(avail, need, disk_floor)) return true;
                                 why = "not enough RAM to read it";
                                 return false;
                             };
