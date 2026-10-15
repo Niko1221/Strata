@@ -9,7 +9,6 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
-#include "strata/b70.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/iq_dequant_expert.hpp"
 #include "strata/kernels/dp4a.hpp"
@@ -2590,7 +2589,7 @@ inline void dq_iq2_xxs(const void *vx, int64_t ibs, dst_t *yy, int tid) {
 template <typename dst_t>
 inline void dq_iq2_xxs_metadata(const void *vx, int64_t ibs, dst_t *yy, int tid, sycl::sub_group sg) {
     const block_iq2_xxs* x = (const block_iq2_xxs*) vx;
-    const int64_t il = tid / 8, ib = tid % 8;
+    const int64_t il = tid % 4, ib = tid / 4;
     dst_t* y = yy + 32 * ib + 8 * il;
     const uint16_t* q2 = x[ibs].qs + 4 * ib;
     const uint8_t* aux8 = (const uint8_t*) q2;
@@ -4665,86 +4664,66 @@ void iq_dequant_f32(int t, const void* src, int64_t n, float* dst, void* stream)
 }
 
 namespace {
-template <int Type, uint32_t PerRow = 0>
+// One subgroup decodes one 256-value block. Packing eight subgroups per work-group
+// is independent of row width: a group may cross rows, and its last subgroups can
+// be inactive. Metadata sharing is confined to the four lanes for one IQ2_XXS
+// code group, so it adds no matrix-shape restriction.
+template <int Type, bool Metadata = false>
 void launch_dequant_gu_bounded(const void* gate, const void* up, uint32_t n_ff,
                                uint32_t n_embd, uint16_t* dst, void* stream) {
-    using Block = std::conditional_t<Type == 16, block_iq2_xxs,
-                  std::conditional_t<Type == 22, block_iq2_s, block_iq1_m>>;
+    static_assert(Type == 16 || Type == 22);
+    static_assert(!Metadata || Type == 16);
+    using Block = std::conditional_t<Type == 16, block_iq2_xxs, block_iq2_s>;
+    using Kernel = std::conditional_t<Metadata, class dequant_gu_metadata, class dequant_gu_bounded>;
     constexpr uint32_t subgroups = 8;
-    const uint32_t per_row = PerRow ? PerRow : n_embd / QK_K;
+    const uint32_t per_row = n_embd / QK_K;
     const uint32_t blocks = n_ff * per_row;
+    // A rounded-up reciprocal avoids per-block integer division for any width.
+    // Its quotient estimate is at most one too high. The bounded extent below
+    // keeps block + per_row < 2^23, so the correction product cannot overflow.
+    const uint32_t reciprocal = uint32_t(((uint64_t{1} << 32) + per_row - 1) / per_row);
     const size_t groups = (blocks + subgroups - 1) / subgroups;
     const auto properties = sycl::ext::oneapi::experimental::properties{
         sycl::ext::oneapi::experimental::use_root_sync};
-    strata::q_of(stream)->parallel_for<dpct_kernel_name<class dequant_gu_bounded,
-                                                       dpct_kernel_scalar<Type>,
-                                                       dpct_kernel_scalar<PerRow>>>(
+    strata::q_of(stream)->parallel_for<dpct_kernel_name<Kernel, dpct_kernel_scalar<Type>>>(
         sycl::nd_range<3>(sycl::range<3>(1, 2, groups * subgroups * 32),
                           sycl::range<3>(1, 1, subgroups * 32)), properties,
         [=](sycl::nd_item<3> item) [[sycl::reqd_sub_group_size(32)]] {
             const auto sg = item.get_sub_group();
             const uint32_t block = uint32_t(item.get_group(2)) * subgroups + sg.get_group_linear_id();
-            if (block >= blocks) return;
+            if (block >= blocks) return;  // uniform across the subgroup, before its collectives
             const uint32_t parity = item.get_group(1);
-            const uint32_t row = block / per_row, col = block % per_row;
-            const uint32_t bytes = ((2u * row + parity) * per_row + col) * QK_K * 2u;
-            const Block* selected = reinterpret_cast<const Block*>(static_cast<const uint8_t*>(parity ? up : gate) + block * uint32_t(sizeof(Block)));
-            // The IQ2_S decoder already maps adjacent lanes to adjacent runs.
-            // Keep the earlier caller permutation for the other formats.
+            uint32_t row = per_row == 1 ? block : sycl::mul_hi(block, reciprocal);
+            row -= row * per_row > block;
+            // block = row * per_row + col; add the intervening role rows.
+            const uint32_t bytes = (block + (row + parity) * per_row) * QK_K * 2u;
+            const Block* selected = reinterpret_cast<const Block*>(
+                static_cast<const uint8_t*>(parity ? up : gate) + block * uint32_t(sizeof(Block)));
+            auto* out = reinterpret_cast<sycl::half*>(reinterpret_cast<uint8_t*>(dst) + bytes);
             const uint32_t lane = sg.get_local_linear_id();
-            const uint32_t dequant_thread = Type == 22 ? lane : (lane & 3u) * 8u + (lane >> 2);
-            dq_dispatch<sycl::half>(Type, selected, 0,
-                reinterpret_cast<sycl::half*>(reinterpret_cast<uint8_t*>(dst) + bytes),
-                dequant_thread);
+            if constexpr (Metadata)
+                dq_iq2_xxs_metadata<sycl::half>(selected, 0, out, lane, sg);
+            else
+                dq_dispatch<sycl::half>(Type, selected, 0, out, lane);
         });
 }
-}
+}  // namespace
 
-namespace {
-template <int Type, uint32_t PerRow = 0>
-sycl::event launch_dequant_gu_metadata(const void* gate, const void* up, uint32_t n_ff,
-                               uint32_t n_embd, uint16_t* dst, void* stream) {
-    using Block = std::conditional_t<Type == 16, block_iq2_xxs,
-                  std::conditional_t<Type == 22, block_iq2_s, block_iq1_m>>;
-    constexpr uint32_t subgroups = 8;
-    const uint32_t per_row = PerRow ? PerRow : n_embd / QK_K;
-    const uint32_t blocks = n_ff * per_row;
-    const size_t groups = (blocks + subgroups - 1) / subgroups;
-    const auto properties = sycl::ext::oneapi::experimental::properties{
-        sycl::ext::oneapi::experimental::use_root_sync};
-    return strata::q_of(stream)->parallel_for<dpct_kernel_name<class dequant_gu_metadata,
-                                                       dpct_kernel_scalar<Type>,
-                                                       dpct_kernel_scalar<PerRow>>>(
-        sycl::nd_range<3>(sycl::range<3>(1, 2, groups * subgroups * 32),
-                          sycl::range<3>(1, 1, subgroups * 32)), properties,
-        [=](sycl::nd_item<3> item) [[sycl::reqd_sub_group_size(32)]] {
-            const auto sg = item.get_sub_group();
-            const uint32_t block = uint32_t(item.get_group(2)) * subgroups + sg.get_group_linear_id();
-            if (block >= blocks) return;
-            const uint32_t parity = item.get_group(1);
-            const uint32_t row = block / per_row, col = block % per_row;
-            const uint32_t bytes = ((2u * row + parity) * per_row + col) * QK_K * 2u;
-            const Block* selected = reinterpret_cast<const Block*>(static_cast<const uint8_t*>(parity ? up : gate) + block * uint32_t(sizeof(Block)));
-            // These formats independently emit eight consecutive values per
-            // logical dequant thread. Transpose the original 8-by-4 lane map
-            // so adjacent hardware lanes store adjacent 16-byte runs.
-            const uint32_t lane = sg.get_local_linear_id();
-            const uint32_t dequant_thread = (lane & 3u) * 8u + (lane >> 2);
-            dq_iq2_xxs_metadata<sycl::half>(selected, 0,
-                reinterpret_cast<sycl::half*>(reinterpret_cast<uint8_t*>(dst) + bytes),
-                dequant_thread, sg);
-        });
-}
-}
 bool iq_dequant_gu_f16_bounded(int type, const void* gate, const void* up,
                               int64_t n_ff, int64_t n_embd, uint16_t* dst, void* stream) {
+    // Two FP16 role matrices occupy 4 * n_ff * n_embd bytes. Bounding that extent
+    // also bounds the block count and packed-input offsets, without overflowing
+    // the host-side product. Other sizes keep the original 64-bit decoder.
     if (n_ff <= 0 || n_embd <= 0 || n_embd % QK_K != 0 ||
         uint64_t(n_embd) > UINT32_MAX / 4u ||
         uint64_t(n_ff) > UINT32_MAX / (uint64_t(n_embd) * 4u)) return false;
-    // The measured B70 expert geometry; other formats/shapes retain the original decoder.
-    if (n_ff != 640 || n_embd != 2560) return false;
-    if (type == 16) launch_dequant_gu_metadata<16, 10>(gate, up, 640, 2560, dst, stream);
-    else if (type == 22) launch_dequant_gu_bounded<22, 10>(gate, up, n_ff, n_embd, dst, stream);
+    static const bool metadata = [] {
+        const char* v = std::getenv("STRATA_SYCL_GU16_METADATA_QUARTET");
+        return !v || v[0] == '1';
+    }();
+    if (type == 16 && metadata) launch_dequant_gu_bounded<16, true>(gate, up, n_ff, n_embd, dst, stream);
+    else if (type == 16) launch_dequant_gu_bounded<16>(gate, up, n_ff, n_embd, dst, stream);
+    else if (type == 22) launch_dequant_gu_bounded<22>(gate, up, n_ff, n_embd, dst, stream);
     else return false;
     return true;
 }
@@ -4754,7 +4733,12 @@ void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, in
     // checked like the other entry points: an unknown type used to leave `dst` unwritten, a wrong prompt and no error
     // (tail: NVFP4's per-expert scales, CUDA only - never given on SYCL)
     if (n_embd % 256 != 0 || !is_iq(t) || tail != nullptr) { std::fprintf(stderr, "iq_dequant_gu_f16: type %d / %lld\n", t, (long long) n_embd); std::exit(1); }
-    if (strata::is_b70(stream) && iq_dequant_gu_f16_bounded(t, gate, up, n_ff, n_embd, dst, stream)) return;
+    static const bool bounded = [] {
+        const char* v = std::getenv("STRATA_SYCL_DEQUANT_GU_BOUNDED");
+        return !v || (v[0] != '\0' && v[0] != '0');
+    }();
+    if (bounded && strata::intel_gpu_gen(strata::q_of(stream)->get_device()) == strata::IntelGpuGen::Battlemage &&
+        iq_dequant_gu_f16_bounded(t, gate, up, n_ff, n_embd, dst, stream)) return;
     const int64_t per_row = n_embd / 256;
     {
 
