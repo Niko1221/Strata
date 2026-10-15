@@ -49,7 +49,8 @@ def main():
         sys.exit(1)
     a = sys.argv
     model = a[a.index("--model") + 1].lower()
-    cfg = {"exe": sys.executable, "args": ["--max-context", a[a.index("--context") + 1]], "port": 8080,
+    cfg = {"exe": sys.executable, "args": ["--max-context", a[a.index("--context") + 1]],
+           "port": int((root / "port").read_text()) if (root / "port").exists() else 8080,
            "model_name": "qwen3.8-flash-next-" + model, "log": str(root / f"strata-{model}.log")}
     (root / f"strata-{model}.json").write_text(json.dumps(cfg))
     print("All set.", flush=True)
@@ -155,6 +156,13 @@ class FakeRoot(unittest.TestCase):
         (self.root / "serve").mkdir(parents=True)
         (self.root / "setup.py").write_text(FAKE_SETUP)
         (self.root / "serve" / "server.py").write_text(FAKE_SERVER)
+        # a Strata server this PC really runs on 8080 must not show up in the fake folder's status: the tools look at
+        # the default port and every config's port, so the fake folder's default and its configs use a free one
+        self.port = free_port()
+        patch = mock.patch.object(M, "DEFAULT_PORT", self.port)
+        patch.start()
+        self.addCleanup(patch.stop)
+        (self.root / "port").write_text(str(self.port))              # the fake setup.py's config port
         self.env_backup = {k: os.environ.get(k) for k in ("APPDATA", "XDG_CONFIG_HOME")}
         os.environ["APPDATA"] = os.environ["XDG_CONFIG_HOME"] = str(base / "config")
         self.strata = M.Strata(self.root)
@@ -203,8 +211,8 @@ class FakeRoot(unittest.TestCase):
         res = r["result"]
         return json.loads(res["content"][0]["text"]), res["isError"]
 
-    def write_config(self, tag="q2_0", port=8080, **extra):
-        cfg = {"exe": sys.executable, "args": ["--max-context", "32768"], "port": port,
+    def write_config(self, tag="q2_0", port=None, **extra):
+        cfg = {"exe": sys.executable, "args": ["--max-context", "32768"], "port": port or self.port,
                "model_name": f"qwen3.8-flash-next-{tag}", "log": str(self.root / f"strata-{tag}.log"), **extra}
         (self.root / f"strata-{tag}.json").write_text(json.dumps(cfg))
         (self.root / f"strata-{tag}.log").write_text("engine line 1\nengine line 2\n")
@@ -385,6 +393,7 @@ class Install(FakeRoot):
         self.assertEqual(res["next"], "strata_start")
         st, _ = self.call("strata_status", {"hardware": False})
         self.assertEqual([m["model"] for m in st["installed"]["models"]], ["q2_0"])
+        self.assertEqual(st["running"], [])                              # not a server this PC runs on 8080
 
     def test_progress_while_running_and_cancel(self):
         (self.root / "slow").write_text("")
