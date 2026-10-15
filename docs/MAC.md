@@ -5,8 +5,8 @@ kernels are replaced by Metal ones (`metal/`), and the host code and the server 
 `START-HERE.bat` does on Windows. There is no ready-made Mac engine: setup builds it from source on your Mac
 (about 1-15 minutes). The NVIDIA, AMD and Intel engines are unchanged.
 
-**Status:** new. It is measured on two Macs: an M5 Max with 128 GB, where the model stays in memory, and an M4 Mac mini
-with 32 GB, where the experts stream from the SSD. Other chips and memory sizes are untested, and reports help
+**Status:** new. It is measured on three Macs: an M5 Max with 128 GB, where the model stays in memory, and an M4 Mac mini
+with 32 GB and an M4 Pro with 48 GB, where the experts stream from the SSD. Other chips and memory sizes are untested, and reports help
 ([COMMUNITY_BENCHMARKS.md](COMMUNITY_BENCHMARKS.md)).
 
 ## What you need
@@ -173,15 +173,18 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
   on a Mac; `--kv k8v4` is refused at startup. Measured as q4_0 against that shared path, on the M4 Pro, 48 GB, Q2_0 streamed
   from the SSD: teacher-forced over 4,995 positions (the harness above, five segments) top-1 agreement 94.45%, mean KL 0.034
   (p99 0.4467), perplexity 4.517 against 4.442 (+1.7%; the worst segment, an agent transcript, +7.3%). The batched prompt fast
-  path under q4_0 answered 20 full-vocabulary prompts without one flipped argmax (top-1 100%, full-vocab KL 0.03565 mean /
-  0.00434 median / 0.19546 max). Same-day speed pairs, only `--kv` differing: decode 20.84 against 21.09 tok/s (−1.2%) and a
+path under q4_0 answered 20 full-vocabulary prompts without one flipped argmax (top-1 100%, full-vocab KL 0.03565 mean /
+0.00434 median (upper-middle of 20) / 0.19546 max). Same-day speed pairs, only `--kv` differing: decode 20.84 against 21.09 tok/s (−1.2%) and a
   2,200-id prefill (2,199 tokens prefilled) 213.15 against 215.54 tok/s (−1.1%) — both at the edge of the run-to-run noise,
   which the same-code fp16-vs-int8 pair puts near 1% (it measured −1.3%). Needles under q4_0: 8 of 9 (the shared path found its 3
   controls); the one miss is the deepest needle at the longest length (32K at 90% depth), a prompt-injection refusal, not a
-  garbled retrieval. Not tested: the M5's k4-layout q4 kernels (they compile but an M4 Pro never dispatches them), MTP drafting
-  over q4_0 pools end to end, long contexts (every quality segment is 1,000 tokens; the PC's round measured the q4_0 cost
-  growing with context, so the +1.7% perplexity is a short-context number), and other Macs. Every number, the scripts that
-  reproduce it and the needle disclosures live in `bench/results/2026-10-15-mac-kv-q4/`.
+garbled retrieval. Not tested: the M5's k4-layout q4 kernels (they compile but an M4 Pro never dispatches them), MTP drafting
+over q4_0 pools end to end, long contexts (every quality segment is 1,000 tokens; the PC's round measured the q4_0 cost
+growing with context, so the +1.7% perplexity is a short-context number), and other Macs. Note that setup's default config
+carries the MTP draft layer (a resident Mac, and a streaming Mac with 96 GB or more), so `./setup.sh --kv q4_0` there runs
+the MTP drafter over q4_0 pools — the one combination above that was not measured; every run in the round used
+`--spec 2 --suffix-draft 0`, which never calls the drafter. Every number, the scripts that
+reproduce it and the needle disclosures live in `bench/results/2026-10-15-mac-kv-q4/`.
 - **Same answers as on a PC:**
   - against the CUDA engine on a Tesla P100 (IQ3_XXS and IQ3_S), the first 200 tokens of a reply are identical on the short question;
   - on the story, the first IQ3_S tokens differ at token 1, a near-tie (margin 0.12). Following the CUDA engine's tokens, 4 of 200 picks differ, all at margins 0.06-0.21;
@@ -195,6 +198,9 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming:** measured at 32 GB only. The model's file must be on the internal SSD; an external disk is untested and likely much slower.
+- **`--kv q4_0` (opt-in):** the whole measurement is one Mac, the M4 Pro with 48 GB (the Quality section above); the M5's
+  k4-layout q4 kernels were compiled but never dispatched by it, and MTP drafting over q4_0 pools was not run end to end.
+  `--kv k8v4` and `STRATA_KV_ROT=1` (the PC's rotated K/V, without q4_0) are refused at startup.
 - **Families:** the original Qwen3.8-Flash-Next and Unsloth's UD-Q4/Q5/Q6_K_XL are measured (above). Setup repacks Unsloth's shards into one file for the GPU. The Swift and Coder releases are not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
 - **Engine only from source.** There is no ready-made Mac engine in the release zips.
 

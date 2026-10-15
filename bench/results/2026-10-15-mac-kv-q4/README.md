@@ -15,6 +15,11 @@ machine. The PC round (bench/results/2026-09-27-kv-q4, commit history) is a diff
   streamed from the SSD (`--mmap-experts`, `STRATA_METAL_STREAM=1`), as in `strata-q2_0.json`.
 - No server was started: the engine ran as one-shot `generate` or stdin `--serve` processes; nothing bound a
   port.
+- Measured on the tree before it merged upstream main (the merge is b056ff8d in the PR: upstream 0.1.44.1,
+  whose Metal changes — gdn_step's launch size, the dispatch thread-limit checks, the qsa_prompt macOS 26.3
+  compile fix — touch code this round timed). After the merge the metal tests and an int8 and a q4_0 engine
+  determinism run were re-run and matched the pre-merge outputs byte for byte; the numbers below were not
+  re-measured on the merged tree.
 
 ## The backend fact that frames every table: on Metal, fp16 and int8 are one path
 
@@ -78,7 +83,7 @@ only `--kv` differs. "none" = no `--kv` flag (the fp16 default).
 | decode tok/s (4-id prompt, --max-new 64) | 20.84 | 21.09 | 20.82 | −1.2% |
 | prefill tok/s (2200-id prompt, 2199 tokens prefilled, --max-new 16) | 213.15 | 215.54 | | −1.1% |
 | time to first token, 2200-id prompt | 10.71 s | 10.60 s | | +1.1% |
-| decode tok/s after the 2200-id prompt | 19.84 | 19.87 | | −0.2% |
+| decode tok/s after the 2200-id prompt | 19.84 | 19.87 | | −0.1% |
 
 The noise scale: `none` and `int8` run the same code on this backend (see above), so their −1.3% decode
 delta is pure run-to-run noise. The q4_0 deltas (−1.2% decode, −1.1% prefill) sit at that noise edge: q4_0
@@ -86,8 +91,11 @@ is, at worst, a ~1% cost on this machine — the dequant arithmetic roughly pays
 KV traffic, and the KV saving shows up as resident experts instead (next section). Single runs per cell, no
 repeats; the 2200-id prompt (2199 tokens prefilled; the last id seeds generation) is
 `data/long-prompt-2200.ids` (ids 100..2299, the M1 baseline file; the engine's own line reads "prefill 2199
-tokens in 1 chunks"). The time-to-first-token delta is computed from the raw ms (10714.3 vs 10600.5,
-`data/speed-runs.txt`), so +1.1%; the one-decimal seconds shown above would give +1.0%.
+tokens in 1 chunks"). Every q4_0-vs-int8 delta in this table is computed from the raw ms in
+`data/speed-runs.txt`: the decode-after-prompt row is 806.4 vs 805.3 ms, so −0.1% (the one-decimal tok/s shown
+above would give −0.2%), the time-to-first-token row is 10714.3 vs 10600.5 ms, so +1.1% (the one-decimal
+seconds would give +1.0%), and the first two rows round the same way from either (3071.4 vs 3034.3 ms,
+10316.9 vs 10202.5 ms).
 
 ## KV bytes and arena (`kvmem.sh`, run lines in `data/kvmem-runs.txt`)
 

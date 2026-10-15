@@ -521,6 +521,9 @@ def main(argv=None) -> int:
 
     have = mac_configs()
     if have and not (a.setup or a.model or a.check or a.no_start or a.update or a.build):
+        if a.kv:
+            S.warn(f"--kv {a.kv}: {have[0].name} is already installed and starts as it was written; "
+                   "run ./setup.sh --setup --kv q4_0 to write a new config with it")
         return start(have[0], a.port, a.browser is not False)
 
     # ---- 1. the Mac
