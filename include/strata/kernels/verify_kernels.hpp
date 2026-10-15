@@ -87,7 +87,7 @@ void copy_i32_from_mapped_unless(int32_t* dst, const int32_t* src, long long n, 
 /// copy_from_mapped, or zeros when *skip == value (n a multiple of 4, 16-byte aligned).
 void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const uint32_t* skip, uint32_t value,
                               void* stream);
-/// STRATA_VERIFY_DEFER: a layer's CPU expert rows added to the residual late.  For token t < n_tok, column d:
+/// STRATA_VERIFY_DEFER_CPU: a layer's CPU expert rows added to the residual late.  For token t < n_tok, column d:
 /// s = sum_j w[t*k + j] * parts[(t*k + j)*n_embd + d] (the combine's order), then for every stream c < hc
 /// R[(t*hc + c)*n_embd + d] += 2*sigmoid(inject[t*hc + c] / hc) * s (the pending write of the fused read).
 /// Graph-capturable.
