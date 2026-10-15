@@ -10308,6 +10308,11 @@ int main(int argc, char** argv) {
                     slots_all += remote_experts[(size_t) r].resident();
                     mib_all += (int64_t) (remote_experts[(size_t) r].gib() * 1024.0);
                 }
+            // The system-prompt cache's folder and budget go out the same way the disk tier's folder does: a
+            // QUOTED key=value field, because a folder can hold spaces (serve/server.py lifts it out before the
+            // whitespace split).  Both are the EFFECTIVE ones the engine is running with - the folder it opened and
+            // --system-prompt-cache-mib after its own default (2048), which the server cannot guess from the config.
+            // Observability only: no byte or policy of the cache changes here.
             std::printf("INFO logit_bias=1 context=%lld kv=%s kv_resident=%lld expert_slots=%lld expert_cache_mib=%lld "
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
@@ -10316,6 +10321,7 @@ int main(int argc, char** argv) {
                         "conversation_cache_min_free_mib=%lld conversation_cache_disk_mib=%lld "
                         "conversation_cache_similarity=%.3f conversation_cache_n_min=%lld "
                         "conversation_cache_spill_dir=\"%s\" conversation_cache_disk=%d "
+                        "system_prompt_cache_dir=\"%s\" system_prompt_cache_mib=%lld "
                         "tail_role_token=%lld vram_elastic=%d%s engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
@@ -10331,6 +10337,7 @@ int main(int argc, char** argv) {
                         (long long) o.conversation_cache_min_free_mib, (long long) o.conversation_cache_disk_mib,
                         o.conversation_cache_similarity, (long long) o.conversation_cache_n_min,
                         o.conversation_cache_spill_dir.c_str(), conversation_spill.enabled() ? 1 : 0,
+                        o.system_prompt_cache_dir.c_str(), (long long) o.system_prompt_cache_mib,
                         (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
