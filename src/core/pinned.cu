@@ -32,7 +32,9 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/vfs.h>
+#if defined(__linux__)
+#include <sys/vfs.h>   // fstatfs: --shared-expert-arena's hugetlbfs check
+#endif
 #include <unistd.h>
 #include <linux/mman.h>
 #ifndef MAP_HUGE_2MB
@@ -92,6 +94,10 @@ uint64_t free_huge_bytes() {
     return total;
 }
 
+// --shared-expert-arena is Linux only (OFD locks, posix_fallocate, fstatfs, /proc/self/smaps).  The Mac engine
+// compiles this file too (metal/CMakeLists.txt), so all of it stays behind __linux__; elsewhere reserve() refuses
+// a shared file as the Windows branch does.
+#if defined(__linux__)
 #ifndef F_OFD_SETLK
 #define F_OFD_SETLK 37
 #define F_OFD_SETLKW 38
@@ -217,7 +223,7 @@ void* open_shared(uint64_t bytes, const std::string& file, uint64_t pack_hash, s
             // SIGBUS part-way through the load
             const int e = posix_fallocate(fd, 0, (off_t) file_bytes);
             if (e != 0) {
-                (void) ftruncate(fd, 0);
+                if (ftruncate(fd, 0) != 0) {}   // best effort: the error returned below says why
                 std::snprintf(num, sizeof num, "%.2f GiB", (double) file_bytes / gib);
                 return fail("cannot allocate shared arena " + file + " (" + num + "): " + std::strerror(e) +
                             (e == ENOSPC ? " - its filesystem is smaller than the arena (tmpfs size=)" : ""));
@@ -292,6 +298,7 @@ void* open_shared(uint64_t bytes, const std::string& file, uint64_t pack_hash, s
     note = "shared arena " + file + " kept being replaced while it was opened";
     return nullptr;
 }
+#endif  // __linux__: --shared-expert-arena
 #endif
 
 // A 2 MB-aligned reservation.  Large pages first, then the largest alignment the OS will give us for free.
@@ -365,9 +372,14 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
             note = "shared arena size overflows its file";
             return nullptr;
         }
+#if defined(__linux__)
         got = PageBacking::NormalPages;
         return open_shared(bytes, shared_file, shared_pack_hash, note, shared_fd, shared_loaded, mapping_base,
                            mapping_bytes);
+#else
+        note = "shared-file arena backing is implemented on Linux only";
+        return nullptr;
+#endif
     }
 
     // STRATA_NO_LARGEPAGES=1 is the same-run A/B switch the Windows branch documents; honor it
@@ -796,7 +808,7 @@ PinnedArena::~PinnedArena() {
 }
 
 bool PinnedArena::shared_publish(std::string& err) {
-#ifndef _WIN32
+#if defined(__linux__)
     if (shared_fd < 0 || shared_loaded) return true;
     // The arena's bytes are in the file's pages before the flag: the waiting engines read the flag after the lock.
     std::atomic_thread_fence(std::memory_order_release);
