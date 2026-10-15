@@ -179,6 +179,16 @@ donor's under both definitions — T_score=2.263 is doing damage control on a we
 | image direct, 1 question | 275 ms | 362 ms | 3.6 |
 | image summary, 1 question | 1625 ms | 2731 ms | 0.6 |
 
+These cells are the **warm-repeat regime** (identical or near-identical prompts;
+the engine's prefix mount fires). Instrumented per-turn measurements
+(temporary build, since reverted) showed the two regimes explicitly, at a
+67-token prompt: fresh question ≈ 1.0 s end-to-end (~0.97–1.14 s prefill +
+decode + readout); identical repeat ≈ 0.35–0.45 s (mount skips prefill).
+Multi-question requests and benchmark items are mostly fresh-prompt, so
+expect the fresh column when prompts vary; the p50s above reflect settled
+repeat traffic. Prefill dominates in both — that is the case for the
+state-KV-reuse follow-up.
+
 vs donor (27B dense, its m1_perf matrix, 1q-1c-warm): **71 ms p50 / 14.0 rps**.
 Measured budget of the port's ~350 ms (proxy, fresh connection), decomposed live:
 
