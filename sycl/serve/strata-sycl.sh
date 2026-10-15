@@ -9,7 +9,8 @@
 #   STRATA_SYCL_NAME   the container's name                   (default: strata-sycl-serve)
 # Passed into the container: every variable of this script's environment that starts with STRATA_ (the config's
 # "env" block arrives that way: the server puts it in the engine's environment), ONEAPI_ (level_zero:* for a
-# two-card split, #423), UR_, IGC_, SYCL_ or ZES_. The port's own defaults (below) are overridden the same way,
+# two-card split, #423), UR_, IGC_, SYCL_ or ZES_, and Intel's NEOReadDebugKeys, OverrideDefaultFP64Settings and
+# EnableRecoverablePageFaults. The port's own defaults (below) are overridden the same way,
 # e.g. "env": {"STRATA_VERIFY_NO_HOST": "0"} in the config.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/../.." && pwd)                 # the repo
@@ -26,13 +27,19 @@ declare -A setting=([STRATA_VERIFY_DEVICE_PLAN]=1 [STRATA_VERIFY_NO_HOST]=1 [STR
 while IFS= read -r k; do
     case "$k" in
         STRATA_SYCL_*) ;;                                 # this script's own settings
-        STRATA_*|ONEAPI_*|UR_*|IGC_*|SYCL_*|ZES_*|NEOReadDebugKeys|OverrideDefaultFP64Settings) setting[$k]=${!k} ;;
+        STRATA_*|ONEAPI_*|UR_*|IGC_*|SYCL_*|ZES_*|NEOReadDebugKeys|OverrideDefaultFP64Settings|EnableRecoverablePageFaults)
+            setting[$k]=${!k} ;;
     esac
 done < <(compgen -e)
 envs=()
 for k in "${!setting[@]}"; do
-    # the engine tests the switches by presence: a value of 0 (or empty) means "not set", so it is not passed on
-    case "${setting[$k]}" in 0|"") ;; *) envs+=(-e "$k=${setting[$k]}") ;; esac
+    # the engine tests the switches by presence: a value of 0 (or empty) means "not set", so it is not passed on -
+    # except EnableRecoverablePageFaults, a key of Intel's runtime whose 0 is the setting (with NEOReadDebugKeys=1, #2157)
+    if [ "$k" = EnableRecoverablePageFaults ]; then
+        [ -z "${setting[$k]}" ] || envs+=(-e "$k=${setting[$k]}")
+    else
+        case "${setting[$k]}" in 0|"") ;; *) envs+=(-e "$k=${setting[$k]}") ;; esac
+    fi
 done
 exec docker run --rm -i --name "$name" --device /dev/dri --oom-score-adj 1000 --stop-timeout 30 --no-healthcheck \
     --ulimit memlock=-1 \
