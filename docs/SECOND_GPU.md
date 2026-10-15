@@ -21,7 +21,7 @@ with the previous full-row transfer. The input and routing metadata use pinned
 host staging. This reduces transfer traffic and launch overhead, but does not
 release the expert arena in system RAM or significantly change VRAM use.
 
-The optional `--gpu-placement layer` gives each layer to exactly one secondary
+The optional `--expert-cache-remote-placement layer` gives each layer to exactly one secondary
 GPU (layer number modulo the number of enabled cards). It fills that card with
 the most frequently routed experts of its layers first, then the unranked ones.
 This can reduce USB4 device switches and synchronization when several secondary
@@ -41,31 +41,26 @@ available to the CPU pool; the PCIe expert path is available only for the
 registered layers. Without secondary GPUs, the original uncapped registration
 behavior applies.
 
-On an existing Linux installation, apply the patch to its source tree, then run:
+These are engine options. Add them to the `"args"` list of the run config, `strata-<model>.json` in the Strata
+data folder ([where](INSTALL.md#where-things-are-stored)), and start Strata again (`START-HERE.bat` or
+`./setup.sh`). For 5,000 experts on each of three secondary cards:
 
-```sh
-./setup.sh --setup --gpu1-experts 5000 --gpu2-experts 5000 --gpu3-experts 5000
+```json
+"args": [ ..., "--expert-cache-device1", "5000", "--expert-cache-device2", "5000", "--expert-cache-device3", "5000" ]
 ```
 
-On Windows, from PowerShell in the installation folder:
+`auto` instead of a number fills that card with as many experts as fit. The engine must see the cards. On a PC with
+several graphics cards, setup writes `"gpu"` with the one card it runs on, and the engine then sees only that card.
+Add the other cards in the config's `"env"` block, numbered as `nvidia-smi` numbers them, the main card first:
+`"env": { "CUDA_VISIBLE_DEVICES": "0,1,2,3" }`. Do not list several cards in `"gpu"` for this: that is a layer split
+([MULTI_GPU.md](MULTI_GPU.md)), every card in it runs a stage, and the engine stops because no card is left for
+these caches.
 
-```powershell
-.\START-HERE.bat --setup --gpu1-experts 5000 --gpu2-experts 5000 --gpu3-experts 5000
-```
-
-To test the layer placement instead, add `--gpu-placement layer` to the setup
-command. To go back, run the same command with `--gpu-placement stripe`. After
-the new engine is built, the mode can also be changed without a rebuild: edit
-`--expert-cache-remote-placement` in `strata-iq3_xxs.json` from `layer` to
-`stripe` or vice versa and restart the server. If the argument is absent, the
-default is `stripe`.
-
-Choose the same model, size, context and image settings as your current
-installation when prompted. Setup recompiles the engine, updates its server
-configuration, and starts it. Later starts keep those settings. To tune the
-slots without recompiling, edit the values after `--expert-cache-device1`,
-`--expert-cache-device2` and `--expert-cache-device3` in the stored
-`strata-iq3_xxs.json`, then restart with `.\run-iq3_xxs.bat`.
+To test the layer placement instead, add `"--expert-cache-remote-placement", "layer"` to the same list. Without it
+the placement is `stripe`. To tune the slots, change the numbers after `--expert-cache-device1`,
+`--expert-cache-device2` and `--expert-cache-device3` and start Strata again. Setup has no options of its own for
+these caches, and running it again for the model (`--setup`) leaves options added by hand out of `"args"` (it keeps
+`"env"`): add them again after it.
 
 Compare identical requests at one, two and four GPUs, preferably with several
 repeats. VRAM use alone does not show useful offload: compare the per-request
