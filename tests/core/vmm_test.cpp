@@ -3,9 +3,13 @@
 #include "strata/core/vmm.hpp"
 
 #include <cuda_runtime.h>
+#if defined(STRATA_USE_HIP) && defined(__linux__)
+#include <sys/resource.h>
+#endif
 
 #include <chrono>
 #include <cstdio>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -16,12 +20,39 @@ static int fails = 0;
 #define CHECK(c) do { if (!(c)) { std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); ++fails; } } while (0)
 
 int main() {
-    if (cudaFree(nullptr) != cudaSuccess || !strata::core::vmm_available()) {
-        std::printf("vmm_test: no CUDA device with virtual memory - skipped\n");
+    if (cudaFree(nullptr) != cudaSuccess) {
+        std::printf("vmm_test: no GPU - skipped\n");
         return 0;
     }
+    if (!strata::core::vmm_available()) {
+        // off is an answer, but never without its reason (the engine logs it when --kv-grow / --vram-elastic stay off)
+        const std::string why = strata::core::vmm_off_reason();
+        CHECK(!why.empty() && !strata::core::vmm_device_supported() && strata::core::vmm_granularity() == 0);
+        std::printf("vmm_test: no GPU virtual memory here (%s) - skipped\n", why.c_str());
+        return fails ? 1 : 0;
+    }
+    CHECK(strata::core::vmm_off_reason().empty() && strata::core::vmm_device_supported());
     const uint64_t G = strata::core::vmm_granularity();
     CHECK(G >= 4096);
+#if defined(STRATA_USE_HIP)
+    // HIP's minimum granularity is 4 KiB on gfx1201 and hipMemGetInfo counts each such chunk as 2 MiB: the chunk is the
+    // recommended granularity, and the check at first use turns HIP's virtual memory off below 2 MiB (vmm.cpp)
+    CHECK(G >= (2u << 20));
+#if defined(__linux__)
+    {   // ROCm keeps an open file per chunk: the check raised the soft limit to cover every chunk of the card, and a
+        // range of more chunks than the usual soft limit of 1,024 maps whole (it failed at chunk 1,017 before)
+        size_t f = 0, t = 0;
+        rlimit rl{};
+        CHECK(cudaMemGetInfo(&f, &t) == cudaSuccess && getrlimit(RLIMIT_NOFILE, &rl) == 0 &&
+              (rl.rlim_cur == RLIM_INFINITY || rl.rlim_cur >= t / G));
+        if (f > (4ull << 30)) {
+            VmmRange big;
+            CHECK(big.reserve(1100 * G) && big.map_range(0, big.chunks(), [] { return (VmmChunk) 0; }) &&
+                  big.mapped_count() == 1100);
+        }
+    }
+#endif
+#endif
     VmmRange a, b;
     CHECK(a.reserve(8 * G + 1));   // rounds up
     CHECK(a.chunks() == 9);
