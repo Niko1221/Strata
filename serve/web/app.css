@@ -108,6 +108,15 @@ main { flex: 1; min-height: 0; display: flex; }
 .ctx-gauge__label { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
                     font-size: var(--st-fs-xs); }
 .ctx-gauge__pct { font-weight: var(--st-fw-black); font-size: var(--st-fs-xl); line-height: 1.1; font-variant-numeric: tabular-nums; }
+/* Context fill: one small clock per batch slot under the aggregate one; its "s#N" sits over the slot's share. */
+.ctx-slots { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--st-s-3); margin-bottom: var(--st-s-2); }
+.ctx-mini { position: relative; width: 54px; height: 54px; }
+.ctx-mini__gauge { width: 54px; height: 54px; }
+.ctx-mini .st-gauge__fill { transition: stroke-dasharray 400ms var(--st-ease); }
+.ctx-mini__label { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+                   line-height: 1.05; font-variant-numeric: tabular-nums; }
+.ctx-mini__slot { font-size: var(--st-fs-xs); color: var(--st-ink-muted); }
+.ctx-mini__pct { font-size: var(--st-fs-xs); font-weight: var(--st-fw-bold); color: var(--st-ink); }
 .bar-row { display: flex; justify-content: space-between; font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium);
            margin-top: var(--st-s-2); font-variant-numeric: tabular-nums; }
 .req-card { display: flex; flex-direction: column; gap: var(--st-s-3); min-width: 0; }

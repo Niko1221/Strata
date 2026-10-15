@@ -585,5 +585,69 @@ class Cascade(unittest.TestCase):
         self.assertEqual(st2["loading"], 0)                              # an unknown source is not an admission
 
 
+class SlotsOnTheCards(unittest.TestCase):
+    """The batch slots on the Monitor's two cards: the Model state list - one entry per CONFIGURED slot, the idle
+    ones at 0 t/s - and the Context fill clocks, one small gauge per slot under the aggregate. The engine's /metrics
+    carries live.slots (one entry per batch slot) and engine.batch_slots; a server that sends neither leaves both
+    cards standing instead of breaking them."""
+
+    def _metrics(self, engine):
+        svc = Service(engine, ByteTokenizer(), ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            with urllib.request.urlopen(base + "/metrics", timeout=10) as r:
+                return json.loads(r.read())
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_metrics_carries_one_entry_per_configured_slot(self):
+        engine = MockEngine(ByteTokenizer(), "ok", max_context=4096)
+        engine.batch = 4
+        engine.info = {"batch_slots": 4}
+        engine.slots_view = lambda: [
+            {"slot": 0, "state": "decoding", "prompt_tokens": 512, "generated": 128, "tok_s": 15.2},
+            {"slot": 1, "state": "idle", "held_tokens": 0},
+            {"slot": 2, "state": "reading", "prompt_tokens": 1024, "generated": 0},
+            {"slot": 3, "state": "idle", "held_tokens": 4096},
+        ]
+        m = self._metrics(engine)
+        self.assertEqual(m["engine"]["batch_slots"], 4)
+        self.assertEqual(m["live"]["parallel"], 4)
+        self.assertEqual([s["slot"] for s in m["live"]["slots"]], [0, 1, 2, 3])   # every slot the config declares
+        self.assertEqual(m["live"]["slots"][1], {"slot": 1, "state": "idle", "held_tokens": 0})
+        self.assertEqual(m["live"]["slots"][2]["state"], "reading")
+        self.assertEqual(m["live"]["slots"][3]["held_tokens"], 4096)             # the idle slot's held state is there
+
+    def test_an_engine_without_batch_slots_sends_no_slot_list(self):
+        m = self._metrics(MockEngine(ByteTokenizer(), "ok", max_context=4096))
+        self.assertNotIn("slots", m["live"])           # an engine without batching: no list to draw - the cards degrade
+        self.assertNotIn("batch_slots", m["engine"])
+
+    def test_the_state_card_lists_every_configured_slot(self):
+        js = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
+        # one entry per slot the configuration declares, idle included and reading "0 t/s": a --batch 4 engine shows
+        # s#1..s#4, never only the ones working
+        self.assertIn('if (s.state === "idle") return `${slot} 0 t/s`', js)
+        self.assertNotIn("active.length >= 2", js)     # the old "only 2+ active slots" gate is gone
+
+    def test_the_context_card_has_one_clock_per_slot(self):
+        web = Path(__file__).parent / "web"
+        html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="ctx-slots"', html)          # where the small clocks land
+        self.assertIn("ctx-mini", js)                  # the small clock markup; the big one stays the aggregate
+        # each slot's own share of the same context: the request it runs, or the tokens it holds for a next turn
+        self.assertIn('s.state === "idle" ? (s.held_tokens || 0) : ((s.prompt_tokens || 0) + (s.generated || 0))', js)
+
+    def test_the_page_treats_a_missing_slots_array_as_no_slots(self):
+        js = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
+        # live.slots is read only when it IS an array: null, or the field missing on an older shim (an engine without
+        # batching), means "no slots" - the state line stays empty and no clocks are drawn, and nothing prints
+        # "undefined" or throws
+        self.assertIn("Array.isArray(live.slots) ? live.slots.filter((s) => s) : []", js)
+        self.assertIn("wrap.hidden = !list.length", js)
+
+
 if __name__ == "__main__":
     unittest.main()

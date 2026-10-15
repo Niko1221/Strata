@@ -253,6 +253,38 @@ function renderTotals(t) {
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
+// Context fill: one small clock per batch slot under the aggregate one. A slot's used tokens are its own - the
+// request it runs (prompt read + tokens written) or, while idle, the tokens it holds for a next turn.
+function slotContextTokens(s) {
+  return s.state === "idle" ? (s.held_tokens || 0) : ((s.prompt_tokens || 0) + (s.generated || 0));
+}
+function renderCtxSlots(slots, ctx) {
+  const wrap = $("ctx-slots");
+  const list = slots || [];
+  wrap.hidden = !list.length;                      // no batch slots (an engine without them): no clocks at all
+  if (!list.length) { wrap.textContent = ""; return; }
+  const key = list.map((s) => s.slot).join(",");   // rebuilt only when the slots change, so the rings keep their transition
+  if (wrap.dataset.slots !== key) {
+    wrap.dataset.slots = key;
+    wrap.innerHTML = list.map((s) => `
+      <div class="ctx-mini">
+        <svg class="st-gauge ctx-mini__gauge" viewBox="0 0 120 120" aria-hidden="true">
+          <circle class="st-gauge__track" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round"
+                  stroke-dasharray="235.6 314.2" transform="rotate(135 60 60)"/>
+          <circle class="st-gauge__fill" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round"
+                  stroke-dasharray="0 314.2" transform="rotate(135 60 60)"/></svg>
+        <div class="ctx-mini__label"><span class="ctx-mini__slot">s#${esc(s.slot + 1)}</span><span class="ctx-mini__pct"></span></div>
+      </div>`).join("");
+  }
+  list.forEach((s, i) => {
+    const mini = wrap.children[i];
+    const frac = ctx ? Math.min(1, slotContextTokens(s) / ctx) : 0;
+    const arc = mini.querySelector(".st-gauge__fill");
+    arc.setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
+    arc.style.opacity = 235.6 * frac >= 3 ? "1" : "0";    // a near-zero arc would draw just its round cap
+    mini.querySelector(".ctx-mini__pct").textContent = `${Math.round(frac * 100)}%`;
+  });
+}
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // model state
   const on = live.queued > 0 ? "queued" : live.state;
@@ -285,25 +317,26 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // engine still calls "decoding" is paused, and its tok_s (a mean that only decays meanwhile) is not a live speed.
   // live.admission says how the admission brings the state in: "loading" reads a parked conversation back from disk,
   // "reading" is a new prompt; null (or the field missing on an older shim) says nothing, and the slot keeps its
-  // own word. live.waiting (the requests waiting their turn) rides the same line. One active slot repeats the
-  // figure above: no slot entry.
-  const slots = live.slots || [];
-  const admitting = slots.some((s) => s && s.state === "reading");
+  // own word. live.waiting (the requests waiting their turn) rides the same line.
+  // One entry per slot the CONFIGURATION declares: live.slots carries one per batch slot (so --batch 4 is always
+  // s#1..s#4), idle ones included and reading "0 t/s". live.slots is read only when it IS an array - null, or the
+  // field missing on an older shim (an engine without batching), means no slots: the line stays empty under the
+  // figure above, and nothing prints "undefined" or throws.
+  const slots = Array.isArray(live.slots) ? live.slots.filter((s) => s) : [];
+  const admitting = slots.some((s) => s.state === "reading");
   const decoding = live.state === "generating" && !admitting;   // speeds and an admission never share the line
   const admission = typeof live.admission === "string" ? live.admission : null;
-  const active = slots.filter((s) => s && s.state !== "idle");
   const waiting = Number(live.waiting) || 0;
-  const parts = active.length >= 2
-    ? active.map((s) => {
-        const slot = `s#${fmt(s.slot + 1)}`;
-        if (s.state === "reading") {                    // the request being admitted: loading it back, or its prompt
-          const word = admission === "loading" ? "loading" : "reading";
-          return `${slot} ${word}${word === "loading" && s.prompt_tokens != null ? ` ${fmt(s.prompt_tokens)}` : ""}`;
-        }
-        if (!decoding) return `${slot} paused`;         // an admission is running: no decode anywhere
-        return `${slot} ${s.tok_s != null ? `${fmt(s.tok_s, 1)} t/s` : "decoding"}`;
-      })
-    : [];
+  const parts = slots.map((s) => {
+    const slot = `s#${fmt(s.slot + 1)}`;
+    if (s.state === "idle") return `${slot} 0 t/s`;    // a slot the configuration declares, quiet right now
+    if (s.state === "reading") {                       // the request being admitted: loading it back, or its prompt
+      const word = admission === "loading" ? "loading" : "reading";
+      return `${slot} ${word}${word === "loading" && s.prompt_tokens != null ? ` ${fmt(s.prompt_tokens)}` : ""}`;
+    }
+    if (!decoding) return `${slot} paused`;            // an admission is running: no decode anywhere
+    return `${slot} ${s.tok_s != null ? `${fmt(s.tok_s, 1)} t/s` : "0 t/s"}`;
+  });
   if (waiting > 0) parts.push(`${fmt(waiting)} queued`);
   const slotsLine = $("state-slots");
   slotsLine.hidden = !parts.length;
@@ -360,6 +393,9 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";         // a near-zero arc would draw just its round cap
   $("ctx-pct").textContent = `${Math.round(frac * 100)}%`;
   $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
+  // ...and one small clock per batch slot, the big one staying the aggregate. Same degrade as the state line: no
+  // live.slots, no clocks.
+  renderCtxSlots(slots, ctx);
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
   $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
