@@ -1,0 +1,29 @@
+[
+ {
+  "length": "256k",
+  "depth": 50,
+  "prompt_tokens": 257323,
+  "seconds": 92.6,
+  "found": true,
+  "word": "meadow-copper-504",
+  "answer": "meadow-copper-504"
+ },
+ {
+  "length": "512k",
+  "depth": 50,
+  "prompt_tokens": 505716,
+  "seconds": 198.5,
+  "found": true,
+  "word": "meadow-copper-504",
+  "answer": "meadow-copper-504"
+ },
+ {
+  "length": "1000k",
+  "depth": 50,
+  "prompt_tokens": 1034541,
+  "seconds": 518.7,
+  "found": true,
+  "word": "meadow-copper-504",
+  "answer": "meadow-copper-504"
+ }
+]

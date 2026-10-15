@@ -1,0 +1,118 @@
+{
+ "config": "<strata>/strata-swift-iq3_s.json",
+ "arms": [
+  "ctx1m:",
+  "ctx262k:drop=--rope-scaling;--rope-scale;--max-context,xargs=--max-context;262144"
+ ],
+ "rounds": [
+  {
+   "round": 0,
+   "arm": "ctx1m",
+   "ready_s": 48.5,
+   "pooled_decode": 73.38,
+   "median_decode": 73.75,
+   "long_decode": 64.7,
+   "long_prompt": 2577.9,
+   "long_prompt_n": 6345
+  },
+  {
+   "round": 0,
+   "arm": "ctx262k",
+   "ready_s": 30.5,
+   "pooled_decode": 78.19,
+   "median_decode": 77.2,
+   "long_decode": 62.8,
+   "long_prompt": 2719.3,
+   "long_prompt_n": 6345
+  },
+  {
+   "round": 1,
+   "arm": "ctx262k",
+   "ready_s": 30.4,
+   "pooled_decode": 75.91,
+   "median_decode": 76.55000000000001,
+   "long_decode": 64.4,
+   "long_prompt": 2686.1,
+   "long_prompt_n": 6345
+  },
+  {
+   "round": 1,
+   "arm": "ctx1m",
+   "ready_s": 60.5,
+   "pooled_decode": 71.77,
+   "median_decode": 72.6,
+   "long_decode": 62.7,
+   "long_prompt": 2580.5,
+   "long_prompt_n": 6345
+  },
+  {
+   "round": 2,
+   "arm": "ctx1m",
+   "ready_s": 39.5,
+   "pooled_decode": 72.21,
+   "median_decode": 72.80000000000001,
+   "long_decode": 64.0,
+   "long_prompt": 2600.9,
+   "long_prompt_n": 6345
+  },
+  {
+   "round": 2,
+   "arm": "ctx262k",
+   "ready_s": 30.4,
+   "pooled_decode": 77.54,
+   "median_decode": 76.35,
+   "long_decode": 65.5,
+   "long_prompt": 2714.2,
+   "long_prompt_n": 6345
+  }
+ ],
+ "medians": {
+  "ctx1m": {
+   "median": {
+    "pooled_decode": 72.21,
+    "long_decode": 64.0,
+    "long_prompt": 2580.5
+   },
+   "range": {
+    "pooled_decode": [
+     71.77,
+     73.38
+    ],
+    "long_decode": [
+     62.7,
+     64.7
+    ],
+    "long_prompt": [
+     2577.9,
+     2600.9
+    ]
+   }
+  },
+  "ctx262k": {
+   "median": {
+    "pooled_decode": 77.54,
+    "long_decode": 64.4,
+    "long_prompt": 2714.2
+   },
+   "range": {
+    "pooled_decode": [
+     75.91,
+     78.19
+    ],
+    "long_decode": [
+     62.8,
+     65.5
+    ],
+    "long_prompt": [
+     2686.1,
+     2719.3
+    ]
+   }
+  }
+ },
+ "paired_pct_B_vs_A": [
+  6.55,
+  5.77,
+  7.38
+ ]
+}

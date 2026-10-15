@@ -1,0 +1,92 @@
+# Raw captures behind the README's hardware lines (2026-10-14, CDT). Host and user names removed.
+## free -m before window 1 (22:51)
+               total        used        free      shared  buff/cache   available
+Mem:           78301       71854        2638       14497       18822        6447
+Swap:           8191        3199        4992
+## free -m after window 1 (22:56)
+               total        used        free      shared  buff/cache   available
+Mem:           78301       75280         609       16358       19505        3021
+Swap:           8191        2978        5213
+## free -m after each needle of window 3 (256k, 512k, 1000k)
+               total        used        free      shared  buff/cache   available
+Mem:           78301       74186        1173       16287       19937        4114
+Swap:           8191        3868        4323
+               total        used        free      shared  buff/cache   available
+Mem:           78301       73973        1320       16061       19770        4328
+Swap:           8191        3555        4636
+               total        used        free      shared  buff/cache   available
+Mem:           78301       74512        1248       16352       19616        3789
+Swap:           8191        3537        4654
+## swap and huge pages
+MemTotal:       80181068 kB
+SwapTotal:       8388604 kB
+SwapFree:        3375656 kB
+AnonHugePages:  49074176 kB
+HugePages_Total:       0
+transparent_hugepage: always [madvise] never
+## DIMMs (dmidecode -t memory, size / type / speed)
+	Size: 8 GB
+	Type: DDR4
+	Speed: 3200 MT/s
+	Configured Memory Speed: 3200 MT/s
+	Size: 32 GB
+	Type: DDR4
+	Speed: 3200 MT/s
+	Configured Memory Speed: 3200 MT/s
+	Size: 8 GB
+	Type: DDR4
+	Speed: 3200 MT/s
+	Configured Memory Speed: 3200 MT/s
+	Size: 32 GB
+	Type: DDR4
+	Speed: 3200 MT/s
+	Configured Memory Speed: 3200 MT/s
+## lspci -vv, GPU link
+		LnkCap:	Port #0, Speed 32GT/s, Width x16, ASPM L1, Exit Latency L1 unlimited
+		LnkSta:	Speed 16GT/s (downgraded), Width x16
+## nvidia-smi -q -d POWER (taken after the measurements, card idle)
+GPU 00000000:2B:00.0
+    GPU Power Readings
+        Average Power Draw                             : 43.82 W
+        Instantaneous Power Draw                       : 43.80 W
+        Current Power Limit                            : 300.00 W
+        Requested Power Limit                          : 300.00 W
+        Default Power Limit                            : 300.00 W
+        Min Power Limit                                : 250.00 W
+        Max Power Limit                                : 300.00 W
+    Power Samples
+        Duration                                       : 2.36 sec
+        Number of Samples                              : 119
+        Max                                            : 44.26 W
+        Min                                            : 43.21 W
+        Avg                                            : 43.72 W
+    GPU Memory Power Readings 
+        Average Power Draw                             : N/A
+        Instantaneous Power Draw                       : N/A
+    Module Power Readings
+        Average Power Draw                             : N/A
+        Instantaneous Power Draw                       : N/A
+        Current Power Limit                            : N/A
+        Requested Power Limit                          : N/A
+        Default Power Limit                            : N/A
+        Min Power Limit                                : N/A
+        Max Power Limit                                : N/A
+    EDPp Multiplier                                    : N/A
+## sha256sum of the two shards (taken after window 3, before window 4)
+46cb3996cd1a17fe8bc5ae1f9bb16869480de5a03f17f868d6047a20a46edd3b  Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
+70ce6fb48a94fe34bd7e9a53a526be68066c64b5a5077cdc82fb31350b66b608  Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf
+## nvidia-smi at the start of window 1
+Wed Oct 14 22:51:59 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 595.99.02              Driver Version: 595.99.02      CUDA Version: 13.2     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 5070 Ti     Off |   00000000:2B:00.0 Off |                  N/A |
+|  0%   35C    P8             21W /  300W |   15571MiB /  16303MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
