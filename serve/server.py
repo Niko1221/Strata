@@ -1546,6 +1546,11 @@ class StrataEngine:
             self.slot_cv.notify_all()
         return freed
 
+    def _solo_ended(self):
+        """/metrics: no request on the solo path now (its key and cache source would otherwise stay until the next one)."""
+        self.solo_peer_ip = self.solo_request_key = None
+        self.solo_cache_source_slot = self.solo_cache_reused_tokens = None
+
     YIELDS_MAX = 2   # #656: how often one request's prompt read gives way to a shorter waiting one
 
     def _take_control(self, cancel, plen: int, after_epoch: int | None = None, new: bool = False):
@@ -1731,7 +1736,7 @@ class StrataEngine:
                         if x is None:                       # a heartbeat (False: a token, flushed above)
                             give_way()
                             yield None
-                    self.solo_peer_ip = None
+                    self._solo_ended()
                     phase = "none"                          # its DONE is read
                     while pending:
                         t = pending.pop(0)
@@ -2005,7 +2010,7 @@ class StrataEngine:
                 self.main_held = [] if self._yielded is not None else solo_leg[0] + out[solo_leg[1]:]
                 self.main_peer = peer_ip
             if holding:
-                self.solo_peer_ip = None
+                self._solo_ended()
                 self.ctl.release()
             if admit_wait:
                 with self.slot_cv:
