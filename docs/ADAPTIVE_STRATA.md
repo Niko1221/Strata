@@ -1,11 +1,11 @@
 # Adaptive Strata: research and experimental groundwork
 
-Status: isolated research branch, 2026-10-08. Not a released feature or a proven general speed improvement.
+Status: experimental draft, source updated 2026-10-15. Not a released feature or a proven general speed improvement.
 Production configuration is unchanged. The intended objective is correct agentic task completion in less
 wall-clock time while leaving resources available to foreground applications.
 
-The source port includes upstream **v0.1.42**, commit
-[`61b3fb5dd3f1e8ec09cf7e4e05208bc6d3c46406`](https://github.com/Niko1221/Strata/commit/61b3fb5dd3f1e8ec09cf7e4e05208bc6d3c46406).
+The source port includes upstream **v0.1.44.1**, commit
+[`296b59d2f73c8f04a805df29c2fa97655adace78`](https://github.com/Niko1221/Strata/commit/296b59d2f73c8f04a805df29c2fa97655adace78).
 Its queue heartbeats and CPU-assignment restart metadata are composed with adaptive admission and lease
 ownership. Replica and helper-GPU modes remain unsupported for the adaptive controller and are rejected
 before native or vision allocation. Ordinary replica serving remains available without adaptive ownership.
@@ -14,6 +14,15 @@ needs them. The server rejects this combination before startup, matching the exi
 The upstream route-tail-skip default is retained in source; matched quality comparisons must explicitly use
 `STRATA_ROUTE_TAIL_SKIP=0`. Earlier validation below retains its original source and binary identities.
 Results are not transferred to this revision; port validation is pending.
+
+The .44.1 merge retains the upstream byte-based image identity, detached input-reader lifetime and
+non-monotonic prompt-loan sizing. Adaptive cancellation epochs and queued controls remain in shared reader
+state. A guarded reload returns to its resource owner before retrying; ordinary startup retains the upstream
+transient retry path. Background-idle worker control preserves the upstream wait implementation.
+
+For the opt-in pressure floor, request-level prompt loans use the prefix actually retained by the most recent
+live rebind. The normal floor stays at 128, and the upstream chunk-halving fallback remains in place. The
+separate local parked-conversation disk-bank experiment is not part of this public source update.
 
 Built-in image generation (`POST /v1/images/generations`) cannot currently be combined with adaptive memory,
 idle parking or supervisor tool leases. Its image-job controller has a separate GPU lifecycle and does not
