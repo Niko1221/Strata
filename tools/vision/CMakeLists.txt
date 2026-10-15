@@ -2,7 +2,7 @@
 # the vision encoder is chosen).  Uses llama.cpp's mtmd library at the same pinned commit as the engine's ggml.
 #
 #   cmake -S tools/vision -B build-vision -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR=third_party/llama.cpp
-#         [-DSTRATA_VISION_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native] [-DSTRATA_PORTABLE=OFF]
+#         [-DSTRATA_VISION_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native] [-DSTRATA_VISION_HIP=ON] [-DSTRATA_PORTABLE=OFF]
 #   cmake --build build-vision --target strata-vision
 #
 # Portable (AVX2 baseline) is the default, so an encoder built without extra flags runs on any AVX2 PC: the 0.1.32
@@ -14,6 +14,7 @@ project(strata_vision C CXX)
 
 set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/llama.cpp" CACHE PATH "llama.cpp checkout")
 option(STRATA_VISION_CUDA "run the vision encoder on the GPU (builds ggml-cuda)" OFF)
+option(STRATA_VISION_HIP "run the vision encoder on an AMD GPU (builds ggml-hip, setup.py's build_vision_hip)" OFF)
 option(STRATA_PORTABLE "build for other PCs: AVX2 baseline, static MSVC runtime" ON)
 if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
@@ -52,6 +53,7 @@ else()
 endif()
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA ${STRATA_VISION_CUDA} CACHE BOOL "" FORCE)
+set(GGML_HIP ${STRATA_VISION_HIP} CACHE BOOL "" FORCE)
 
 add_subdirectory(${LLAMA_DIR} llama EXCLUDE_FROM_ALL)
 

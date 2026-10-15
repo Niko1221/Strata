@@ -96,6 +96,25 @@ class Units(unittest.TestCase):
         self.assertNotIn(("strata:gpu_power_watts", lab + ',gpu="0"'), got)   # not measured: no sample
         self.assertEqual(got[("strata:ram_total_bytes", lab)], 64 << 30)
 
+    def test_vision_series_follow_the_json(self):
+        m = {"engine": {"model": "m", "max_context": 1000},
+             "live": {"state": "idle"},
+             "totals": {},
+             "vision": {"alive": True, "cache": {"images": 3, "max": 64},
+                        "totals": {"images": 2, "cached": 1, "image_tokens": 392, "encode_ms": 2864.0, "failures": 1},
+                        "last_encode": {"tokens": 196, "cached": True}}}       # the last was a cache hit: no ms
+        got = parse(render(m, Latencies().snapshot()))
+        lab = 'model_name="m"'
+        self.assertEqual(got[("strata:vision_images_total", lab)], 2)
+        self.assertEqual(got[("strata:vision_image_tokens_total", lab)], 392)
+        self.assertEqual(got[("strata:vision_encode_seconds_total", lab)], 2.864)
+        self.assertEqual(got[("strata:vision_encode_failures_total", lab)], 1)
+        self.assertEqual(got[("strata:vision_cache_images", lab)], 3)
+        self.assertEqual(got[("strata:vision_encoder_up", lab)], 1)
+        self.assertNotIn(("strata:vision_encode_ms_last", lab), got)           # a cache hit: no time, no sample
+        without = parse(render({**m, "vision": None}, Latencies().snapshot()))
+        self.assertFalse([k for k in without if k[0].startswith("strata:vision")])   # no encoder: no series
+
 
 class Endpoint(unittest.TestCase):
     @classmethod

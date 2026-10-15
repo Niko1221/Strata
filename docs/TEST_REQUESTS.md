@@ -15,5 +15,7 @@ This list is edited by the maintainers. An item stays until a report answers it.
 | Pascal (sm_61: Tesla P40, P100, GTX 10 series) | Older cards run on the fp32 path and can behave differently from newer ones | #875, #876 |
 | A Linux host with 32 GB of RAM or less | The expert file tier and the resident mode depend on how much of the model fits in RAM | #1194 |
 | A long soak (an hour or more of back-to-back requests) on a split or resident setup | Shows crashes, drift and heat that a short run does not | #848 |
+| A Windows AMD PC running setup with `--vision cpu` (0.1.45: the ready-made zip carries the CPU image encoder) | The Windows zip path for images is new: what a picture costs to encode on that CPU, and whether text speed stays the same | |
+| Any AMD card trying `--vision gpu` (0.1.45: a local build compiles a HIP image encoder; it has never run on hardware) | Does it start, encode, and fit - on Windows with 3,260 MiB kept free - and what text slowdown the encoder's VRAM costs | |
 
 To add a request, open a pull request that adds a row, or tell the maintainers in an issue.

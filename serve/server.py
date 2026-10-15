@@ -2249,6 +2249,14 @@ class Vision:
         self.elastic = cfg.get("elastic") is True
         self.elastic_mib = int(cfg.get("elastic_mib") or 2048)
         self.elastic_idle_s = float(cfg.get("elastic_idle_s") or 120)
+        # what the Monitor's image card shows: the config, the encoder's READY line, and one record per encode
+        self.cfg = dict(cfg)
+        self.n_embd = None                               # the encoder's "READY <n_embd>" line
+        self.started_at = None                           # when the encoder process last came up
+        self.starts = self.stops = 0                     # encoder process starts / stops (elastic shows both)
+        self.last_encode_at = None
+        self.totals = {"images": 0, "cached": 0, "image_tokens": 0, "encode_ms": 0.0, "failures": 0}
+        self.encodes = collections.deque(maxlen=60)      # the last encodes: {at, tokens, nx, ny, ms, cached}
         if not lazy and not self.elastic:
             self._start()
 
@@ -2274,6 +2282,10 @@ class Vision:
                 pass
             raise RuntimeError(vision_start_error(line, self.spawn[1]))
         self.stopped = False
+        parts = line.split()                             # "READY <n_embd>" (strata_vision.cpp)
+        self.n_embd = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        self.started_at = time.time()
+        self.starts = getattr(self, "starts", 0) + 1
 
     def _readline(self, timeout: float, what: str) -> str:
         """One line from the encoder, waiting at most `timeout` s (#1317).  On a timeout the encoder is killed, so the
@@ -2299,6 +2311,25 @@ class Vision:
 
     def alive(self) -> bool:
         return self.proc is not None and not self.stopped and self.proc.poll() is None
+
+    def _note(self, rec: dict, failures: bool = False):
+        """One encode (or cache hit, or failure) recorded for the Monitor's image card.  A Vision built without
+        __init__ (a test stand-in) gets its counters here, so every stand-in keeps working."""
+        if not hasattr(self, "totals"):
+            self.totals = {"images": 0, "cached": 0, "image_tokens": 0, "encode_ms": 0.0, "failures": 0}
+            self.encodes = collections.deque(maxlen=60)
+            self.last_encode_at = None
+        if failures:
+            self.totals["failures"] += 1
+            return
+        self.last_encode_at = time.time()
+        self.encodes.append({**rec, "at": self.last_encode_at})
+        if rec.get("cached"):
+            self.totals["cached"] += 1
+        else:
+            self.totals["images"] += 1
+            self.totals["image_tokens"] += rec.get("tokens") or 0
+            self.totals["encode_ms"] += rec.get("ms") or 0.0
 
     def unload(self):
         """Stop the encoder process (its VRAM or RAM goes back); the encoded images stay cached on disk."""
@@ -2419,6 +2450,7 @@ class Vision:
         with self.lock:
             if key in self.cache:
                 self.cache[key] = self.cache.pop(key)                  # most recently used last
+                self._note({"tokens": self.cache[key][1], "cached": True})
                 return self.cache[key]
             img, out = self.dir / f"{key}.img", self.dir / f"{key}.sve"
             img.write_bytes(data)
@@ -2429,13 +2461,20 @@ class Vision:
                     line = self._readline(VISION_ENCODE_S, "the image could not be read").strip()
                 except RuntimeError as e:                 # silent for VISION_ENCODE_S: the encoder was ended (#1317)
                     self.stopped = True                   # alive() is False, so the next request starts it again
+                    self._note({}, failures=True)
                     raise ValueError(str(e)) from None
             finally:                                                   # #352: also when the encoder's pipe is gone
                 img.unlink(missing_ok=True)
             if not line.startswith("OK"):
+                self._note({}, failures=True)
                 raise ValueError("the image could not be read: " + (line[4:] if line.startswith("ERR") else
                                                                      "the vision encoder stopped"))
-            self.cache[key] = (out, int(line.split()[1]))
+            parts = line.split()                            # "OK <n> <nx> <ny> <ms>"; older encoders print only <n>
+            self.cache[key] = (out, int(parts[1]))
+            self._note({"tokens": int(parts[1]),
+                        "nx": int(parts[2]) if len(parts) > 2 else None,
+                        "ny": int(parts[3]) if len(parts) > 3 else None,
+                        "ms": float(parts[4]) if len(parts) > 4 else None, "cached": False})
             held = {str(p) for p in keep} | {str(out)}
             for old in list(self.cache):                               # oldest first, but never one still in use
                 if len(self.cache) <= 64:
@@ -2449,6 +2488,7 @@ class Vision:
         if proc is None:
             self.stopped = True
             return
+        self.stops = getattr(self, "stops", 0) + 1       # the encoder process ended (the image card)
         try:
             proc.stdin.write("QUIT\n")
             proc.stdin.flush()
@@ -2583,8 +2623,11 @@ def engine_args(cfg: dict) -> list[str]:
         args.append("--vision")
         note = "added --vision"
         if cfg["vision"].get("gpu") and "--vram-reserve-mib" not in args:
-            args += ["--vram-reserve-mib", "700"]
-            note += " and --vram-reserve-mib 700"
+            # on Windows AMD the encoder sits on top of the engine's own WDDM floor (2560 MiB on a 16 GB card,
+            # #1376 #1709): 700 alone would fall under it, so this mirrors setup's 3260 there
+            res = "3260" if cfg.get("backend") == "hip" and os.name == "nt" else "700"
+            args += ["--vram-reserve-mib", res]
+            note += f" and --vram-reserve-mib {res}"
         print(f'[strata] the config has a "vision" section but no --vision in its args: {note} (run setup again with '
               "--vision to write them)", flush=True)
     if layer_split_of(cfg) and "--layer-split" not in args:
@@ -2741,12 +2784,17 @@ def gpu_vram_mib(indices: list[int], hip: bool = False) -> dict[int, int] | None
     out = {}
     for i in indices:
         g = gpu_reader(i, amd=hip)
-        if not g.ok():
-            return None
-        total = g.read().get("mem_total")
-        if total is None:
-            return None
-        out[i] = int(total) >> 20
+        try:
+            if not g.ok():
+                return None
+            total = g.read().get("mem_total")
+            if total is None:
+                return None
+            out[i] = int(total) >> 20
+        finally:
+            close = getattr(g, "close", None)   # a throwaway reader: the AMD driver handles go back now (#1434)
+            if close is not None:
+                close()
     return out
 
 
@@ -3296,7 +3344,8 @@ class Service:
         threading.Thread(target=loop, daemon=True).start()
 
     def free_vram_mib(self) -> int | None:
-        """Free VRAM on the engine's (first) GPU, from NVML (AMD backend: amdgpu's sysfs files, #301); None when it can't
+        """Free VRAM on the engine's (first) GPU, from NVML (AMD backend: amdgpu's sysfs on Linux, the driver's
+        ADL2 PMLog on Windows, #301); None when it can't
         be read (then nothing is refused)."""
         try:
             if getattr(self, "backend", None) == "hip":
@@ -3689,10 +3738,33 @@ class Service:
             live["replicas"] = self.engine.replica_view()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
+        vision = None
+        if self.vision is not None:                     # the Monitor's image card: what the encoder is and has done
+            v, vc = self.vision, getattr(self.vision, "cfg", {}) or {}
+            vision = {
+                "device": "gpu" if vc.get("gpu") else "cpu",
+                "mmproj": Path(str(vc.get("mmproj") or "")).name or None,
+                "threads": vc.get("threads"), "max_tokens": vc.get("max_tokens"), "min_tokens": vc.get("min_tokens"),
+                "n_embd": getattr(v, "n_embd", None),
+                "elastic": getattr(v, "elastic", False), "elastic_mib": getattr(v, "elastic_mib", None),
+                "elastic_idle_s": getattr(v, "elastic_idle_s", None),
+                "alive": v.alive() if hasattr(v, "alive") else None,
+                "held": bool(self.vision_held),         # elastic: the engine is keeping VRAM free for it right now
+                "idle_s": round(now - self.last_image_at, 1) if self.last_image_at else None,
+                "started_at": getattr(v, "started_at", None),
+                "starts": getattr(v, "starts", 0), "stops": getattr(v, "stops", 0),
+                "cache": {"images": len(v.cache) if hasattr(v, "cache") else None, "max": 64},
+                "totals": dict(getattr(v, "totals", {})) or None,
+                "last_encode": (v.encodes[-1] if getattr(v, "encodes", None) else None),
+                "encode_ms_recent": [r.get("ms") for r in getattr(v, "encodes", []) if r.get("ms") is not None],
+            }
+        if s.get("encoding_images"):                    # a request is encoding its pictures right now
+            live["encoding_images"] = s["encoding_images"]
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
+                "vision": vision,
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
@@ -3857,6 +3929,7 @@ class Service:
             ids = ids + self.tok.encode(force, parse_special=True)
         self.embeddings.path = None
         self.embeddings.keys = None
+        self.embeddings.stats = None
         images = images_of(messages)
         if images:
             if self.vision is None:
@@ -3878,11 +3951,19 @@ class Service:
             # same FIFO as the requests.
             with self._turn(cancel):
                 self._vision_up()
+                with self.status_lock:                   # the Monitor shows "reading N pictures" during a long encode
+                    self.status["encoding_images"] = len(images)
                 try:
                     encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
                                else [self.vision.encode(src) for src in images])
                 finally:
+                    with self.status_lock:
+                        self.status.pop("encoding_images", None)
                     self.last_image_at = time.time()
+                    recs = list(getattr(self.vision, "encodes", []))[-len(images):]   # this request's encodes
+                    self.embeddings.stats = {"images": len(images),
+                                             "image_tokens": sum(r.get("tokens") or 0 for r in recs),
+                                             "encode_ms": round(sum(r.get("ms") or 0.0 for r in recs), 1)}
             # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
             # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
             # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
@@ -4127,6 +4208,7 @@ class Service:
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb, self.embeddings.path = getattr(self.embeddings, "path", None), None   # this run's to delete now
         img_keys, self.embeddings.keys = getattr(self.embeddings, "keys", None), None
+        img_stats, self.embeddings.stats = getattr(self.embeddings, "stats", None), None   # this run's picture stats
         if emb and img_keys:
             sampling = {**(sampling or {}), "strata_img_keys": img_keys}   # #2228: sent beside the embeddings file
         # Only a DONE line replaces engine.last, so a request that died, errored or was disconnected must not have
@@ -4462,7 +4544,11 @@ class Service:
                                 "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
                                 # #457: the speculative drafts from the DONE line (None: the engine did not say)
                                 "drafts_offered": last.get("drafts_offered"),
-                                "drafts_accepted": last.get("drafts_accepted")})
+                                "drafts_accepted": last.get("drafts_accepted"),
+                                # this request's pictures (None: it had none; encode_ms 0 when all were cache hits)
+                                "images": (img_stats or {}).get("images"),
+                                "image_tokens": (img_stats or {}).get("image_tokens"),
+                                "encode_ms": (img_stats or {}).get("encode_ms")})
                             t = self.totals
                             t["requests"] += 1
                             t["prompt_tokens"] += seen

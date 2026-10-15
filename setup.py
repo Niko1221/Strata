@@ -461,6 +461,9 @@ ESP_VECTOR = ROOT / "data" / "experimental-speed-projection" / "Qwen3.8-Flash-Ne
 # the image encoder on the GPU (~1.2 GB at 1024 image tokens) warms up before the engine starts, so the engine
 # sizes its expert slots around it and the default reserve (700 MiB) is enough; engines before 0.1.2 need more
 VISION_GPU_SMALL_RESERVE_MIB = 1000    # the tip for images on a <= 12 GB card (the engine's LOW line asked ~1003)
+VISION_WIN_HIP_GPU_RESERVE_MIB = 3260  # a GPU image encoder on Windows AMD: the engine's WDDM floor (2560 MiB on a
+                                       # 16 GB card, #1376 #1709) plus the encoder's 700 - the CPU encoder takes no
+                                       # VRAM and is why it stays the AMD default
 VISION = {"gpu": {"max_tokens": 1024, "reserve_mib": 700},
           "cpu": {"max_tokens": 300, "reserve_mib": 700}}
 EXE = "strata.exe" if WIN else "strata"
@@ -2522,6 +2525,30 @@ def amd_parse_gpus(text, amd) -> list:
     return [byid[i] for i in sel]
 
 
+def previous_amd_split(amd) -> list:
+    """A setup run again with no --gpu/--gpus: the cards an installed model's config already shares the model across,
+    when every one of them is still here and usable (the newest config wins).  Setup used to write a single card back
+    over a working layer split - and on a PC whose model does not fit one card, that config dies at start (the expert
+    cache, the KV and the head exhaust the VRAM: "the embedding buffer failed").  []: no installed split to keep."""
+    for c in installed_configs():
+        try:
+            g = json.loads(c.read_text(encoding="utf-8-sig")).get("gpu")
+        except (OSError, ValueError):
+            continue
+        items = g if isinstance(g, (list, tuple)) else str(g or "").split(",")
+        try:
+            sel = [int(str(x).strip()) for x in items if str(x).strip() != ""]
+        except ValueError:
+            continue
+        if len(sel) < 2:
+            continue
+        byid = {x["index"]: x for x in amd}
+        cards = [byid.get(i) for i in sel]
+        if all(x is not None and amd_problem(x) is None for x in cards):
+            return cards
+    return []
+
+
 # ------------------------------------------------------------------------------------------------ AMD on Windows
 # Windows has no KFD topology: the cards are found from the display adapters (Win32_VideoController: the ones present,
 # with their PCI ids) and the display-class registry (each adapter's 64-bit VRAM size), before any AMD software is
@@ -2667,6 +2694,10 @@ def hip_devices(probe: Path | None = None, text: str | None = None) -> list[dict
             hip_runtime_beside_exe(probe.parent)       # #468 #461: not the driver's System32 copy
             env = dict(os.environ)                     # the ready-made engine's ROCm DLLs (rocm/bin beside it)
             env["PATH"] = os.pathsep.join([str(d) for d in hip_lib_dirs(probe.parent)] + [env.get("PATH", "")])
+            # the runtime's own numbering, whatever the shell exports: a HIP_VISIBLE_DEVICES left in the
+            # environment (a config's cards, or one set by hand once) hides the cards it filters out and
+            # renumbers the rest, and then a saved split like "0,2" names a card that is no longer at 2
+            env.pop("HIP_VISIBLE_DEVICES", None)
             r = subprocess.run([str(probe), "--list-devices"], capture_output=True, text=True, timeout=120,
                                cwd=str(probe.parent), env=env)
         except (OSError, subprocess.TimeoutExpired):
@@ -2966,7 +2997,7 @@ def hipblaslt_table(arch, lib_dirs, ver=None):
 def build_engine_hip(gpu, llama, vision="none") -> Path:
     """Compile the HIP engine for this AMD GPU into engine/ (again only when its source changed: a `git pull`).
     gpu["archs"]: every architecture it needs code for (the cards of a layer split), else gpu["arch"].  vision "cpu"
-    (#304): the image encoder too, for the CPU (there is no HIP encoder build yet)."""
+    (#304): the image encoder too, for the CPU; "gpu": the HIP one (build_vision_hip)."""
     eng = ROOT / "engine"
     eng.mkdir(exist_ok=True)
     stamp = eng / "BUILD.json"
@@ -2977,12 +3008,14 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
     engine_ok = meta.get("backend") == "hip" and (eng / EXE).exists() and meta.get("src") == src and has_archs and \
         (meta.get("isa_floor") or "") == floor and not stale_binary(eng / EXE)
-    vision_ok = vision == "none" or ((eng / VEXE).exists() and meta.get("vision_src") == vsrc)
+    vision_ok = vision == "none" or ((eng / VEXE).exists() and meta.get("vision_src") == vsrc and
+                                     meta.get("vision") == vision)
     if engine_ok and vision_ok:
         ok("engine already built for this PC")
         return eng
     if engine_ok:
-        return build_vision_cpu(eng, stamp, meta, llama, vsrc)
+        return (build_vision_hip(eng, stamp, meta, llama, vsrc, archs) if vision == "gpu"
+                else build_vision_cpu(eng, stamp, meta, llama, vsrc))
     if not (shutil.which("c++") or shutil.which("g++")) or not shutil.which("git"):
         fail("a C++ compiler and git are needed to compile the AMD engine",
              "Ubuntu/Debian: sudo apt install build-essential git   Fedora: sudo dnf install gcc-c++ git")
@@ -3012,6 +3045,8 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     shutil.copy2(ROOT / "build-hip" / EXE, eng / EXE)
     meta = {"source": "local-hip", "backend": "hip", "version": source_version(), "archs": archs, "vision": "none",
             "lib_dirs": dirs, "src": src, **({"isa_floor": floor} if floor else {})}
+    if vision == "gpu":
+        return build_vision_hip(eng, stamp, meta, llama, vsrc, archs)
     if vision != "none":
         return build_vision_cpu(eng, stamp, meta, llama, vsrc)
     stamp.write_text(json.dumps(meta, indent=1))
@@ -3020,16 +3055,11 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
 
 
 def hip_vision(asked) -> str:
-    """The image encoder with the AMD backend (--vision): the CPU one when asked for (#304); a HIP (GPU) encoder build
-    is a later step, so `yes`/`gpu` leave images off, as before, and say how to get them."""
-    if asked in ("yes", "gpu"):
-        warn("the AMD backend has no GPU image encoder yet: images off"
-             + ("" if WIN else " (--vision cpu reads them on the CPU)"))
-    if asked == "cpu" and WIN:
-        warn("images on the CPU with an AMD card are Linux-only for now (the ready-made Windows AMD engine has no "
-             "image encoder): images off")
-        return "none"
-    return "cpu" if asked == "cpu" else "none"
+    """The image encoder with the AMD backend (--vision): the CPU one when asked for (#304; on Windows too - the
+    ready-made engine takes --vision and the CPU encoder compiles with MSVC, no ROCm).  `yes`/`gpu` ask for the GPU
+    one: the engine step delivers it when the engine carries an encoder for this card (the ready-made zip's
+    vision_archs, or a HIP build here on Linux) and the CPU one with a warning when it does not."""
+    return "gpu" if asked in ("yes", "gpu") else ("cpu" if asked == "cpu" else "none")
 
 
 def build_vision_cpu(eng: Path, stamp: Path, meta: dict, llama, vsrc) -> Path:
@@ -3044,6 +3074,67 @@ def build_vision_cpu(eng: Path, stamp: Path, meta: dict, llama, vsrc) -> Path:
     stamp.write_text(json.dumps({**meta, "vision": "cpu", "vision_src": vsrc}, indent=1))
     ok(f"engine: {eng / EXE}, image encoder (CPU): {eng / VEXE}")
     return eng
+
+
+def build_vision_hip(eng: Path, stamp: Path, meta: dict, llama, vsrc, archs) -> Path:
+    """The GPU image encoder beside the HIP engine (tools/vision with ggml-hip), recorded in its BUILD.json.
+    Linux: the ROCm the engine was compiled with (rocm_root).  Windows: the ready-made zip carries one
+    (tools/hip/build_windows.bat); compiling ggml-hip there needs AMD's ROCm wheels - docs/AMD_HIP.md."""
+    if not ((eng / VEXE).exists() and meta.get("vision_src") == vsrc and meta.get("vision") == "gpu"):
+        say("  Compiling the image encoder (for the GPU) ...")
+        root, dirs = rocm_root(archs)
+        libs = [str(Path(d).parent) for d in dirs[1:]]
+        bitcode = next((p for p in (root / "lib" / "llvm" / "amdgcn" / "bitcode",
+                                    root / "amdgcn" / "bitcode") if p.is_dir()), root / "amdgcn" / "bitcode")
+        os.environ.update({"HIP_PLATFORM": "amd", "HIP_COMPILER": "clang", "HIP_RUNTIME": "rocclr",
+                           "ROCM_PATH": str(root), "HIP_PATH": str(root)})
+        os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(dirs + [os.environ.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)
+        os.environ["PATH"] = os.pathsep.join([str(root / "bin"), str(root / "llvm" / "bin"),
+                                              os.environ.get("PATH", "")])
+        cmake_build(ROOT / "tools" / "vision", ROOT / "build-vision-hip", "strata-vision",
+                    [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_HIP=ON", "-DSTRATA_PORTABLE=OFF",
+                     "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
+                     f"-DCMAKE_HIP_COMPILER={root / 'llvm' / 'bin' / 'clang++'}",
+                     f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
+                     "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
+                     f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}"],
+                    None, "")
+        shutil.copy2(ROOT / "build-vision-hip" / "bin" / VEXE, eng / VEXE)
+    stamp.write_text(json.dumps({**meta, "vision": "gpu", "vision_src": vsrc, "vision_archs": archs}, indent=1))
+    ok(f"engine: {eng / EXE}, image encoder (GPU): {eng / VEXE}")
+    return eng
+
+
+def hip_vision_windows(eng: Path, vision: str, gpu, llama, yes) -> str:
+    """The image encoder beside the ready-made Windows AMD engine (the engine takes --vision either way).  The zip
+    may carry the encoder itself (its BUILD.json "vision" and "vision_archs", tools/hip/package_windows.py); when it
+    does not - or tools/vision changed since it was packed - the CPU encoder is compiled here with MSVC (#881's
+    vcvars path; no ROCm, no CUDA).  A GPU encoder comes from the zip only: ggml-hip on Windows needs AMD's ROCm
+    wheels (the .rocm-win venv tools/hip/build_windows.bat makes).  Returns the encoder delivered ("cpu", "gpu" or "none")."""
+    stamp = eng / "BUILD.json"
+    meta = json.loads(stamp.read_text(encoding="utf-8"))
+    vsrc = source_hash(VISION_SOURCES)
+    if vision == "gpu":
+        if meta.get("vision") == "gpu" and str(gpu["arch"]) in [str(x) for x in meta.get("vision_archs", [])] \
+                and (eng / VEXE).exists():
+            ok(f"image encoder (GPU): {eng / VEXE}")
+            return "gpu"
+        warn("the ready-made AMD engine has no GPU image encoder for this card: images on the CPU instead "
+             "(--vision gpu needs a zip that carries one; the ready-made zip carries the CPU encoder - "
+             "docs/AMD_HIP.md)")
+        vision = "cpu"
+    if meta.get("vision") == "cpu" and (eng / VEXE).exists() and meta.get("vision_src") == vsrc:
+        ok(f"image encoder (CPU): {eng / VEXE}")
+        return "cpu"
+    if find_vcvars() is None:
+        say("  The image encoder has to be compiled here (for the CPU): it needs the Visual Studio C++ Build Tools.")
+        if not install_msvc_build_tools(yes):
+            warn("no C++ compiler: images off (install the Visual Studio Build Tools - 'Desktop development with "
+                 "C++' - and run this again, or use a Strata release whose zip carries the encoder)")
+            return "none"
+    warn("the ready-made AMD engine has no current image encoder: compiling it (for the CPU)")
+    build_vision_cpu(eng, stamp, meta, llama, vsrc)
+    return "cpu"
 
 
 # ------------------------------------------------------------------------------------------------ image generation
@@ -3737,6 +3828,34 @@ def cuda_apt_repo(osr):
     return repo if repo in ("ubuntu2204", "ubuntu2404", "debian12", "debian13") else None
 
 
+MSVC_BUILD_TOOLS = ("Microsoft.VisualStudio.2022.BuildTools",
+                    "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended")
+
+
+def install_msvc_build_tools(yes) -> bool:
+    """The Visual Studio C++ Build Tools on Windows (winget, asks first): True when a compiler is found afterwards.
+    On the ready-made AMD path the image encoder is the only thing that needs one (the engine itself is
+    ready-made), so this asks on its own - no CUDA toolkit."""
+    if find_vcvars() is not None:
+        return True
+    if shutil.which("winget") is None:
+        warn("no C++ compiler and winget (Windows package manager) is not available: install the Visual Studio "
+             "C++ Build Tools by hand (README.md)")
+        return False
+    say("  The image encoder has to be compiled here, which needs the Visual Studio C++ Build Tools")
+    say("  (about 2 GB, 5-15 minutes, Windows will ask for permission).")
+    if ask("  Install them now?", ["y", "n"], "y", yes) != "y":
+        return False
+    run(["winget", "install", "-e", "--source", "winget", "--accept-package-agreements",
+         "--accept-source-agreements", "--disable-interactivity", "--id", MSVC_BUILD_TOOLS[0],
+         "--override", MSVC_BUILD_TOOLS[1]], check=False)
+    if find_vcvars() is None:
+        warn("the install finished but no C++ compiler was found: images stay off until setup runs again")
+        return False
+    ok("Visual Studio C++ Build Tools installed")
+    return True
+
+
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
     archs = [int(x) for x in gpu.get("archs", [gpu["arch"]])]
@@ -3779,9 +3898,7 @@ def install_build_tools(gpu, yes):
         wg = ["winget", "install", "-e", "--source", "winget", "--accept-package-agreements",
               "--accept-source-agreements", "--disable-interactivity"]
         if not have_cc:
-            run([*wg, "--id", "Microsoft.VisualStudio.2022.BuildTools", "--override",
-                 "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"],
-                check=False)
+            run([*wg, "--id", MSVC_BUILD_TOOLS[0], "--override", MSVC_BUILD_TOOLS[1]], check=False)
         if nvcc is None or cuda_v < need_cuda:
             run([*wg, "--id", "Nvidia.CUDA", "--version", "13.0"], check=False)
         vcvars = find_vcvars(cuda_v)
@@ -3826,6 +3943,9 @@ def install_build_tools(gpu, yes):
 
 def cmake_build(src, bdir, target, defs, vcvars, bat_name):
     cmake, ninja = find_tool("cmake"), find_tool("ninja")
+    if cmake is None or ninja is None:                 # an install from before cmake / ninja joined requirements.txt
+        pip_install(["cmake", "ninja"], "cmake and ninja (the build tools)")
+        cmake, ninja = find_tool("cmake"), find_tool("ninja")
     if cmake is None or ninja is None:
         fail("cmake / ninja not found after installing them", "run: .venv python -m pip install cmake ninja")
     conf = [cmake, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}", "-S", str(src), "-B", str(bdir),
@@ -5485,6 +5605,22 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision):
                  "START-HERE.bat --backend hip --prebuilt <its dist folder> (docs/AMD_HIP.md)")
         gpu = hip_card(eng, gpu, amd)
         a.gpu = gpu["index"] if gpu["count"] > 1 else a.gpu
+        if len(gpu.get("chosen") or []) > 1:           # a layer split: HIP numbers every card, not just the main one -
+            devs = hip_devices(eng / "strata-device.exe") or []   # an integrated Radeon takes HIP 0 and shifts the rest
+            sel = []
+            for i in gpu["chosen"]:
+                g = next((x for x in amd if x["index"] == i), None)
+                m = (next((x for x in devs if x["index"] == i), None) if g is None or g.get("driver") == "hip"
+                     else hip_match(g, amd, devs))
+                if m is None:
+                    fail(f"the HIP runtime does not list {g['name'] if g else 'GPU ' + str(i)}",
+                         f"{eng / 'strata-device.exe'} --list-devices shows what the HIP runtime sees")
+                sel.append(m["index"])
+            if sel != gpu["chosen"]:
+                ok("HIP numbers the split's cards " + ", ".join(map(str, sel)) + " (an integrated Radeon comes first)")
+            gpu["chosen"] = sel
+        if eng is not None and vision != "none":       # the encoder the zip carries, or compiled here for the CPU
+            vision = hip_vision_windows(eng, vision, gpu, llama, a.yes)
     else:
         eng = None if a.build or hip else get_prebuilt(a.prebuilt, gpu, vision, **({"toolkit": 12} if cuda_tk == 12
                                                                                     else {}))
@@ -5878,8 +6014,11 @@ def main() -> int:
                     a.vram_reserve_mib = ch.get("vram_reserve_mib")
                 if a.cuda is None and ch.get("cuda") == 12:   # the experimental CUDA 12 engine, as before
                     a.cuda = "12"
-                if isinstance(ch.get("gpu"), list):     # a layer split: set up across the same cards again
-                    a.gpus = a.gpus or ",".join(str(g) for g in ch["gpu"])
+                gs = ch.get("gpu")                      # the config's cards, written as a list or as "0,2"
+                gs = ",".join(x for x in (str(y).strip() for y in (gs if isinstance(gs, (list, tuple))
+                                                                   else str(gs or "").split(","))) if x)
+                if "," in gs:                           # a layer split: set up across the same cards again
+                    a.gpus = a.gpus or gs
                     a.layer_split = a.layer_split or ch.get("layer_split")
                 else:
                     a.gpu = a.gpu if a.gpu is not None else ch.get("gpu")
@@ -5954,15 +6093,15 @@ def main() -> int:
             + "   (recommended)")
         say("  2) AMD: " + ", ".join(f"{g['name']} ({g['vram_gb']:.0f} GB{', unified memory' if g.get('uma') else ''})"
                                for g in amd_ok)
-            + f"   ({'the ready-made AMD engine, no images' if WIN else 'compiled here, images on the CPU'}"
+            + f"   ({'the ready-made AMD engine, images on the CPU' if WIN else 'compiled here, images on the CPU'}"
               " - docs/AMD_HIP.md)")
         hip = ask("Which cards?", ["1", "2"], "1", a.yes or a.check) == "2"
         if a.check and not hip:
             say(f"  (the AMD card: {'START-HERE.bat' if WIN else './setup.sh'} --backend hip)")
     cuda_tk = 13                                       # NVIDIA: the toolkit of this model's engine (cuda_choice)
     if hip:                                            # AMD: compiled here; Windows: ready-made
-        if WIN and a.gpus:
-            fail("several AMD cards sharing one model (--gpus) is Linux-only for now", "use one card: --gpu N")
+        # 0.1.45: --gpus works on Windows too - the ready-made zip carries code for every supported card, and the
+        # engine splits the layers across two HIP devices there (measured: an AI PRO R9700 + RX 9070 XT, docs/MULTI_GPU.md).
         say("  Your AMD GPUs:" if amd else "  No AMD GPU found (" + ("Windows lists no AMD display adapter)." if WIN
                                                                    else "the amdgpu driver's KFD topology is empty)."))
         for g in amd:
@@ -5989,17 +6128,25 @@ def main() -> int:
                 fail(f"AMD GPU {a.gpu} cannot be used", "use one of: " + ", ".join(f"--gpu {g['index']}" for g in usable))
             chosen = [gpu]
         else:
-            gpu = min(usable, key=amd_rank)            # a discrete card before an APU, then the most memory
-            chosen = [gpu]
-            if len(usable) > 1 and any(g.get("uma") for g in usable) != all(g.get("uma") for g in usable):
-                others = [g for g in usable if g is not gpu]
-                say(f"  Using GPU {gpu['index']} ({gpu['name']}); setup recommends the card with its own memory over "
-                    "the APU's shared memory. To use another: "
-                    + ", ".join(f"--gpu {g['index']} ({g['name']})" for g in others))
+            prev = previous_amd_split(amd)             # setup run again: keep the split the installed model runs on
+            if prev:
+                say("  Keeping your layer split across " + " + ".join(gpu_name(g) for g in prev) + " from your "
+                    "earlier setup: one card: --gpu N, a different pair: --gpus N,M")
+                chosen = prev
+            else:
+                gpu = min(usable, key=amd_rank)        # a discrete card before an APU, then the most memory
+                chosen = [gpu]
+                if len(usable) > 1 and any(g.get("uma") for g in usable) != all(g.get("uma") for g in usable):
+                    others = [g for g in usable if g is not gpu]
+                    say(f"  Using GPU {gpu['index']} ({gpu['name']}); setup recommends the card with its own memory "
+                        "over the APU's shared memory. To use another: "
+                        + ", ".join(f"--gpu {g['index']} ({g['name']})" for g in others))
+            gpu = chosen[0]
         # the engine is compiled for every chosen card's architecture
         gpu = {**gpu, "count": len(amd), "archs": sorted({g["arch"] for g in chosen})}
         chosen = [gpu] + chosen[1:]
         sel = [g["index"] for g in chosen]
+        gpu["chosen"] = sel                            # the whole split, in layer order; engine_step renumbers it on Windows
         multi = sel if len(sel) > 1 else []
         a.gpu = gpu["index"] if len(amd) > 1 else a.gpu
         if multi:
@@ -6299,9 +6446,18 @@ def main() -> int:
             warn(f"images are not available with {model} yet: off")
     elif hip:
         # MODEL-UPDATE: Unsloth's files on AMD (Linux) read images with the CPU encoder by default where their experts
-        # all stay in RAM (it takes no VRAM; measured on an R9700 with UD-Q4_K_XL and UD-Q5_K_XL, docs/QUANTS.md)
-        vision = hip_vision(a.vision if a.vision is not None or not unsloth_images_default(model, family, ram, gpu)
-                            else "cpu")
+        # all stay in RAM (it takes no VRAM; measured on an R9700 with UD-Q4_K_XL and UD-Q5_K_XL, docs/QUANTS.md).
+        # 0.1.45: AMD asks the images question everywhere, Windows included - the ready-made zip carries the CPU
+        # encoder.  Off by default, and "yes" picks the CPU one (no VRAM, about 3 s a picture); the GPU encoder
+        # stays an expert's choice through --vision gpu.
+        if a.vision is None and not unsloth_images_default(model, family, ram, gpu):
+            say()
+            say("  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB")
+            say("  download; on AMD the pictures are read on the CPU (about 3 s each), so no VRAM is taken and text")
+            say("  speed is unchanged.")
+            vision = "cpu" if ask("Do you want images?", ["y", "n"], "n", a.yes) == "y" else "none"
+        else:
+            vision = hip_vision(a.vision if a.vision is not None else "cpu")
     elif a.vision:
         vision = {"yes": "gpu", "no": "none"}.get(a.vision, a.vision)
     else:
@@ -6431,6 +6587,8 @@ def main() -> int:
     # ---- 4. the engine
     step(4, "the Strata engine")
     llama, eng, meta, lib_dirs, gpu, vision = engine_step(a, gpu, hip, amd, cuda_tk, vision)
+    if multi and gpu.get("chosen") and gpu["chosen"] != multi:
+        multi = gpu["chosen"]                          # Windows: the split's cards as the installed engine numbers them
     if ready and meta.get("source") != "local" and \
             tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit()) < MODELS[model]["engine"]:
         # a ready-made engine from before NVFP4 cannot read these experts: one compiled from this source can
@@ -6652,8 +6810,17 @@ def main() -> int:
                      "cache: it stays on auto, which may take the room the OS needs (#1715). A smaller "
                      "--resident-budget-gib leaves room")
     if vision != "none":
-        args += ["--vision", "--vram-reserve-mib", str(VISION[vision]["reserve_mib"])]
-        if vision == "gpu" and a.vram_reserve_mib is None and 0 < gpu.get("vram_gb", 0.0) <= 12.5:
+        args += ["--vision"]
+        if hip and WIN and vision == "cpu":            # the CPU encoder takes no VRAM: write nothing and the engine
+            pass                                       # keeps its own reserve - on Windows AMD that is the 2560 MiB
+                                                       # WDDM floor on 16 GB cards and up (#1376 #1709); a written 700
+                                                       # would defeat it
+        else:
+            reserve = VISION[vision]["reserve_mib"]
+            if hip and WIN and vision == "gpu":        # the GPU encoder sits on top of that same floor there
+                reserve = max(reserve, VISION_WIN_HIP_GPU_RESERVE_MIB)
+            args += ["--vram-reserve-mib", str(reserve)]
+        if vision == "gpu" and not (hip and WIN) and a.vram_reserve_mib is None and 0 < gpu.get("vram_gb", 0.0) <= 12.5:
             # a tip only (recommend, never force): on a 12 GB card the encoder's 700 MiB can leave ~200 MiB free
             print(f"  tip: images on a {gpu['vram_gb']:.0f} GB card can leave little VRAM free; if a request stalls, "
                   f"run setup again with --vram-reserve-mib {VISION_GPU_SMALL_RESERVE_MIB}")

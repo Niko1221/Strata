@@ -89,6 +89,10 @@ main { flex: 1; min-height: 0; display: flex; }
                    font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
 .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--st-s-4); }
 .metric-card { padding: var(--st-s-4) var(--st-s-5); }
+.gpu-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--st-s-4); }
+.gpu-cards:empty, .gpu-cards[hidden] { display: none; }
+.gpu-tile { display: flex; flex-direction: column; gap: var(--st-s-3); }
+.gpu-tile .facts { grid-template-columns: minmax(64px, max-content) 1fr; }
 .st-metric__value small { font-size: var(--st-fs-md); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin-left: 4px; }
 .st-metric__sub { font-size: var(--st-fs-xs); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; min-height: 1em; }
 .st-metric__spark { display: block; overflow: visible; }
@@ -121,7 +125,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .table-wrap.all { max-height: 420px; overflow-y: auto; }
 .req-totals { margin: 0; font-size: var(--st-fs-sm); }
 .req-totals:empty { display: none; }
-.cc-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
+.cc-card, .vision-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
 .cc-bars { display: grid; grid-template-columns: 1fr 1fr; gap: var(--st-s-2) var(--st-s-6); }
 .cc-bars[hidden] { display: none; }
 .cc-note { margin: 0; }

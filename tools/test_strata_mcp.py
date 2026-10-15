@@ -309,18 +309,16 @@ class Validation(FakeRoot):
         self.assertRejected("strata_install", {"vision": "yes\nrm"}, "control characters")
 
     def test_amd_vision_follows_setups_rules(self):
-        """#990: --vision cpu is allowed with the AMD backend on Linux (setup.hip_vision); a GPU encoder is not."""
-        with mock.patch.object(M, "WIN", False):
-            self.assertRejected("strata_install", {"backend": "hip", "vision": "yes"}, "no GPU image encoder")
-            self.assertRejected("strata_install", {"backend": "hip", "vision": "gpu"}, "vision=cpu")
-            res, err = self.call("strata_install", {"backend": "hip", "vision": "cpu"})
-            self.assertFalse(err, res)
-            self.assertEqual(res["plan"]["images"], "cpu")
-            self.assertIn("--vision cpu", res["plan"]["setup_command"])
-            res, err = self.call("strata_install", {"backend": "hip", "vision": "no"})
-            self.assertFalse(err, res)
-        with mock.patch.object(M, "WIN", True):
-            self.assertRejected("strata_install", {"backend": "hip", "vision": "cpu"}, "Linux")
+        """#990: --vision cpu works with the AMD backend on Linux and Windows (setup.hip_vision); yes/gpu ask for
+        the GPU encoder, and setup itself delivers the CPU one when the engine has none for the card."""
+        for win in (False, True):
+            with self.subTest(win=win), mock.patch.object(M, "WIN", win):
+                for v in ("cpu", "yes", "gpu", "no"):
+                    res, err = self.call("strata_install", {"backend": "hip", "vision": v})
+                    self.assertFalse(err, res)
+                    self.assertEqual(res["plan"]["images"], v)
+                    self.assertIn(f"--vision {v}", res["plan"]["setup_command"])
+                    self.assertIn("--backend hip", res["plan"]["setup_command"])
 
     def test_data_dir_paths(self):
         self.assertRejected("strata_install", {"data_dir": "models"}, "absolute")

@@ -117,7 +117,9 @@ Notes:
 - **AMD on Windows (new in 0.1.34):** setup downloads the ready-made AMD engine (~550 MB, ROCm included) - nothing
   is compiled and only the AMD driver is needed. Before the model download it runs `engine\strata-device.exe
   --list-devices`; if that does not list the card, the driver is the problem (tell the user to update AMD Software).
-  One card per model and no images on Windows for now. It is new: ask the user to report how it runs (docs/AMD_HIP.md).
+  One card per model for now. Setup asks about images (off by default, `--yes` never asks); say yes or pass
+  `--vision cpu` to read them with the CPU encoder the zip carries, no compiler needed (0.1.45). It is new: ask the
+  user to report how it runs (docs/AMD_HIP.md).
 - **NVIDIA with no ready-made engine for the card:** setup offers to install build tools and compile (20-40 minutes);
   `--yes` accepts.
 

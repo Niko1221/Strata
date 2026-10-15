@@ -2,11 +2,15 @@
 """Package the Windows HIP engine as the ready-made zip setup.py downloads (strata-windows-x64-hip.zip).
 
     python tools/hip/package_windows.py --build build-hip-win --rocm <rocm-sdk path --root> \\
-        --archs "gfx1100;gfx1201" --rocm-version 10.2.0a20260930 --out dist
+        --archs "gfx1100;gfx1201" --rocm-version 10.2.0a20260930 --out dist \\
+        --vision build-hip-win-vision/bin/strata-vision.exe
 
 tools/hip/build_windows.bat runs it after the build.  The zip holds:
 
     strata.exe, strata-device.exe, BUILD.json      (backend "hip", the archs, the ROCm and hipBLASLt versions)
+    strata-vision.exe                              (--vision) the CPU image encoder: setup.py's hip_vision_windows
+                                                   runs it as-is when BUILD.json says the zip carries it and
+                                                   tools/vision has not changed since (its "vision_src")
     amdhip64_7.dll, amd_comgr.dll + what they import   the HIP runtime beside the exes too (#468 #461: before System32)
     rocm/bin/*.dll                                 the ROCm DLLs the two programs load (their import tables, followed
                                                    through the ROCm DLLs, + amd_comgr.dll, which the HIP runtime loads
@@ -72,6 +76,9 @@ def main() -> int:
     ap.add_argument("--archs", required=True, help="the archs the engine was compiled for, ';'-separated")
     ap.add_argument("--rocm-version", required=True)
     ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--vision", type=Path, default=None,
+                    help="strata-vision.exe (CPU, portable) to ship beside the engine; BUILD.json then carries "
+                         "\"vision\": \"cpu\" and setup.py uses it without a compiler on the user's PC")
     a = ap.parse_args()
     archs = [x for x in re.split(r"[;, ]+", a.archs) if x]
     rbin = a.rocm / "bin"
@@ -82,10 +89,15 @@ def main() -> int:
 
     for p in PROGRAMS:
         shutil.copy2(a.build / p, stage / p)
+    if a.vision is not None:
+        if not a.vision.exists():
+            sys.exit(f"--vision {a.vision}: not found (build tools/vision first, tools/hip/build_windows.bat step 3b)")
+        shutil.copy2(a.vision, stage / "strata-vision.exe")
 
     # the ROCm DLLs: the programs' imports, followed through the ROCm DLLs themselves
     rocm_dlls = {p.name.lower(): p for p in rbin.glob("*.dll")}
-    need, todo, crt = [], [stage / p for p in PROGRAMS] + [rbin / d for d in DYNAMIC], set()
+    exes = [stage / p for p in PROGRAMS] + ([stage / "strata-vision.exe"] if a.vision is not None else [])
+    need, todo, crt = [], exes + [rbin / d for d in DYNAMIC], set()
     while todo:
         f = todo.pop()
         for name in imports(objdump, f):
@@ -153,8 +165,16 @@ def main() -> int:
     hl = (a.rocm / "include" / "hipblaslt" / "hipblaslt-version.h").read_text(encoding="utf-8")
     hlv = [int(re.search(rf"#define\s+HIPBLASLT_VERSION_{k}\s+(\d+)", hl).group(1)) for k in ("MAJOR", "MINOR", "PATCH")]
     meta = {"source": "prebuilt", "backend": "hip", "platform": "windows-x64", "version": version, "archs": archs,
-            "rocm": a.rocm_version, "hipblaslt_version": hlv[0] * 100000 + hlv[1] * 100 + hlv[2], "vision": "none",
+            "rocm": a.rocm_version, "hipblaslt_version": hlv[0] * 100000 + hlv[1] * 100 + hlv[2],
             "lib_dirs": ["rocm/bin"]}
+    if a.vision is not None:
+        # setup.py's hip_vision_windows: it runs the shipped encoder as-is when "vision_src" still matches
+        # tools/vision - the same fingerprint (setup.source_hash) setup.py writes when it compiles one itself
+        sys.path.insert(0, str(ROOT))
+        import setup
+        meta |= {"vision": "cpu", "vision_src": setup.source_hash(setup.VISION_SOURCES), "vision_archs": []}
+    else:
+        meta["vision"] = "none"
     (stage / "BUILD.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
 
     z = a.out / ASSET
@@ -165,7 +185,8 @@ def main() -> int:
                 f.write(p, p.relative_to(stage).as_posix())
     size = sum(p.stat().st_size for p in stage.rglob("*") if p.is_file())
     print(f"{z}: {z.stat().st_size / 2**20:.0f} MiB ({size / 2**20:.0f} MiB unpacked), engine {version}, "
-          f"{', '.join(archs)}, ROCm {a.rocm_version}, DLLs: {', '.join(shipped)}")
+          f"{', '.join(archs)}, ROCm {a.rocm_version}, vision {'cpu' if a.vision is not None else 'none'}, "
+          f"DLLs: {', '.join(shipped)}")
     return 0
 
 

@@ -148,7 +148,7 @@ NVIDIA 和 AMD 的步骤完全一样。安装程序会识别你的显卡，并�
 - **思考：** 在聊天菜单或应用的“reasoning effort”里选择 **off、low、medium 或 high**。off 最快，
   high 最适合难题。
 - **图片：** 在安装时对“Images?”选是。然后在聊天里点 **Picture**，或在你的应用里附上图片。
-  AMD 显卡在 Linux 上通过处理器识别图片；在 Windows 上暂时还不行。
+  AMD 显卡在 Linux 和 Windows 上都通过处理器识别图片。
 - **从手机或另一台电脑访问：** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>`。一定要设置 key。
 - **一次处理一个请求：** 默认情况下 Strata 一次只回答一个请求，其他请求排队等待。想同时回答多个，
   设置 `"parallel": 2`（[BATCHING.md](docs/BATCHING.md)）。在 12 GB 显卡上，这会让每个回答变慢。

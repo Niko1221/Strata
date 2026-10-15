@@ -51,7 +51,8 @@ now on; the answer is kept.
   own prompt buffers) - unless you name it with `--gpus`: then setup says the risk and asks (`--yes` with the named
   cards goes ahead);
 - Intel GPUs, and a mix of NVIDIA and AMD cards. (AMD cards share a model among themselves: `./setup.sh --backend
-  hip --gpus 1,0`, see [AMD_HIP.md](AMD_HIP.md).)
+  hip --gpus 1,0`, or on Windows `START-HERE.bat --backend hip --gpus 1,0` - the ready-made engine carries code for
+  every supported card, see [AMD_HIP.md](AMD_HIP.md).)
 
 Or edit an existing config (`strata-*.json`), then restart:
 

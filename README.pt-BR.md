@@ -158,7 +158,7 @@ Tamanhos, downloads e o que cabe onde: [docs/MODELS.md](docs/MODELS.md). Para ad
 - **Raciocínio:** escolha **off, low, medium ou high** no menu do chat ou no "reasoning effort" do seu app. Off é o
   mais rápido. High é o melhor para perguntas difíceis.
 - **Imagens:** responda sim para "Images?" na instalação. Depois clique em **Picture** no chat, ou anexe imagens no
-  seu app. Placas AMD entendem imagens no Linux usando o processador; no Windows, ainda não.
+  seu app. Placas AMD entendem imagens usando o processador, tanto no Linux quanto no Windows.
 - **Do seu celular ou de outro PC:** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>`. Sempre defina uma chave.
 - **Uma requisição por vez:** por padrão, o Strata responde uma requisição e as outras esperam. Para responder
   várias ao mesmo tempo, defina `"parallel": 2` ([BATCHING.md](docs/BATCHING.md)). Numa placa de 12 GB, isso deixa

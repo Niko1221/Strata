@@ -1,7 +1,9 @@
 @echo off
 rem Strata's HIP (AMD) engine for Windows, and the ready-made zip setup.py downloads (strata-windows-x64-hip.zip).
 rem
-rem   tools\hip\build_windows.bat              build strata.exe + strata-device.exe and package dist\strata-windows-x64-hip.zip
+rem   tools\hip\build_windows.bat              build strata.exe + strata-device.exe + the CPU image encoder and
+rem                                            package dist\strata-windows-x64-hip.zip (setup.py runs that encoder
+rem                                            as-is, so an AMD Windows PC gets images with no compiler of its own)
 rem   tools\hip\build_windows.bat tests        also build the HIP unit tests (ctest in build-hip-win; they need an AMD GPU)
 rem
 rem Needs: Visual Studio 2022 (or 2019) Build Tools with the C++ workload (the linker, the CRT and the Windows SDK),
@@ -79,9 +81,31 @@ if "%TESTS%"=="ON" (
   cmake --build "%BUILD_DIR%" --target strata strata-device || exit /b 1
 )
 
-rem ---- 4. the zip: the two programs, the ROCm DLLs they load (+ rocBLAS/hipBLASLt kernels for these archs), licenses
+rem ---- 3b. the image encoder the zip carries: CPU, portable (AVX2 baseline, static CRT, cl.exe from vcvars - no
+rem HIP in it, no CUDA).  setup.py's hip_vision_windows runs it as-is when BUILD.json says the zip carries it.
+rem llama.cpp (mtmd) at the pinned commit: the same checkout setup.py uses, fetched when this clone lacks it.
+set "VDIR=%BUILD_DIR%-vision"
+>"%TEMP%\strata_llama_dir.py" echo import sys
+>>"%TEMP%\strata_llama_dir.py" echo sys.path.insert(0, sys.argv[1])
+>>"%TEMP%\strata_llama_dir.py" echo import setup
+>>"%TEMP%\strata_llama_dir.py" echo print(setup.get_llama_cpp())
+set "LLAMA="
+rem the doubled outer quotes are needed: the command starts AND ends with a quote, and cmd would otherwise
+rem strip those two and try to run the whole line as one file name (the rocm-sdk/vswhere calls end unquoted and
+rem are fine as they are).
+for /f "delims=" %%L in ('""%ROCM_VENV%\Scripts\python.exe" "%TEMP%\strata_llama_dir.py" "%SRC%""') do set "LLAMA=%%L"
+if not exist "%LLAMA%\tools\mtmd\mtmd.cpp" (echo llama.cpp at the pinned commit is missing from third_party & exit /b 1)
+if not exist "%VDIR%\build.ninja" (
+  cmake -G Ninja -S "%SRC%\tools\vision" -B "%VDIR%" -DCMAKE_BUILD_TYPE=Release ^
+    -DLLAMA_DIR="%LLAMA:\=/%" -DSTRATA_VISION_CUDA=OFF -DSTRATA_PORTABLE=ON || exit /b 1
+)
+cmake --build "%VDIR%" --target strata-vision || exit /b 1
+
+rem ---- 4. the zip: the two programs + the image encoder, the ROCm DLLs they load (+ rocBLAS/hipBLASLt kernels for
+rem these archs), licenses
 "%ROCM_VENV%\Scripts\python.exe" "%SRC%\tools\hip\package_windows.py" --build "%BUILD_DIR%" --rocm "%ROCM%" ^
-  --archs "%STRATA_HIP_ARCHS%" --rocm-version "%STRATA_ROCM_VERSION%" --out "%DIST_DIR%" || exit /b 1
+  --archs "%STRATA_HIP_ARCHS%" --rocm-version "%STRATA_ROCM_VERSION%" --out "%DIST_DIR%" ^
+  --vision "%VDIR%\bin\strata-vision.exe" || exit /b 1
 echo.
 echo Done: %DIST_DIR%\strata-windows-x64-hip.zip
 endlocal

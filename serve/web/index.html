@@ -7,7 +7,7 @@
 <link rel="icon" href="web/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="web/tokens.css">
 <link rel="stylesheet" href="web/components.css">
-<link rel="stylesheet" href="web/app.css">
+<link rel="stylesheet" href="web/app.css?v=3">
 <script>
   // the theme before the first paint: the saved choice, else the system's
   try {
@@ -116,6 +116,10 @@
         <!-- filled by app.js: Speed, GPU load, VRAM, GPU temp, Power, PCIe, CPU, Disk read -->
       </div>
 
+      <div class="gpu-cards" id="gpu-cards" hidden>
+        <!-- filled by app.js: one tile per GPU (load, VRAM, temp, power, PCIe link) when the PC has several cards -->
+      </div>
+
       <div class="monitor-row">
         <div class="st-card ctx-card">
           <span class="card-title">Context fill</span>
@@ -159,6 +163,20 @@
         </div>
         <dl class="facts" id="cc-facts"></dl>
         <p class="muted small cc-note" id="cc-note"></p>
+      </div>
+
+      <div class="st-card vision-card" id="vision-card" hidden>
+        <div class="req-head"><span class="card-title">Image encoder</span><span class="muted small" id="vision-sum"></span></div>
+        <div class="cc-bars">
+          <div><div class="bar-row"><span>Encoder cache</span><span class="muted" id="vision-cache-text">&ndash;</span></div>
+            <div class="st-progress"><div class="st-progress__bar" id="vision-cache-bar" style="width:0%"></div></div></div>
+          <div><div class="bar-row"><span>Encode times</span><span class="muted" id="vision-enc-text">&ndash;</span></div>
+            <svg class="st-metric__spark" id="sp-vision" viewBox="0 0 100 32" preserveAspectRatio="none" data-tone="info">
+              <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
+              stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg></div>
+        </div>
+        <dl class="facts" id="vision-facts"></dl>
+        <p class="muted small cc-note" id="vision-note"></p>
       </div>
 
       <div class="st-card mcp-card" id="mcp-card" hidden>
@@ -262,6 +280,6 @@
 </aside>
 <div class="scrim" id="scrim" hidden></div>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
-<script src="web/app.js"></script>
+<script src="web/app.js?v=3"></script>
 </body>
 </html>

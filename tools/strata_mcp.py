@@ -706,7 +706,8 @@ class Strata:
             notes.append("this CPU has no AVX2: EXPERIMENTAL and slow - setup compiles the engine on this PC for the "
                          "older CPU (10-20 minutes), and the CPU's share of the experts runs a few times slower")
         if backend == "hip":
-            notes.append("AMD (experimental, Linux): the engine is compiled during setup; no images")
+            notes.append("AMD: " + ("the ready-made engine installs during setup, images on the CPU" if WIN else
+                                    "experimental, Linux: the engine is compiled during setup, images on the CPU"))
         cmd = (("START-HERE.bat --setup" if WIN else "./setup.sh --setup") +
                f" --yes --family {fam} --model {model} --context {ctx}" + (" --backend hip" if backend == "hip" else ""))
         return {"family": fam, "model": model, "title": families[fam]["title"] + " " + model, "context": ctx,
@@ -1227,9 +1228,6 @@ class Tools:
         models, families, contexts, _src = s.tables()
         if gpu is not None and gpus is not None:
             raise ToolError("give gpu (one card) or gpus (several), not both")
-        if backend == "hip" and WIN:
-            raise ToolError("the AMD (hip) backend runs on Linux only; on Windows Strata needs an NVIDIA RTX 20 "
-                            "series or newer card")
         if sys.version_info < (3, 10) or (WIN and sys.maxsize <= 2**32):
             raise ToolError("this Python is too old or 32-bit: Strata's setup needs 64-bit Python 3.10+; run "
                             + ("START-HERE.bat" if WIN else "./setup.sh") + " once instead (it installs Python)")
@@ -1259,16 +1257,11 @@ class Tools:
                 context = 8192 if vram < 14 else 32768
         if vision in ("yes", "gpu", "cpu") and models[model].get("vision", families[family].get("vision")) is False:
             raise ToolError(f"images are not available with {families[family]['title']} {model} yet: use vision=no")
-        if vision is not None and backend == "hip" and vision != "no":
-            # setup.py's hip_vision rules (#990): the AMD backend has no GPU image encoder, but --vision cpu reads
-            # images on the CPU beside it (Linux; the ready-made Windows AMD engine has no encoder)
-            if vision == "cpu" and not WIN:
-                pass
-            elif vision == "cpu":
-                raise ToolError("images on the CPU with an AMD card are Linux-only for now: use vision=no")
-            else:
-                raise ToolError("the AMD backend has no GPU image encoder yet: use vision=cpu (images on the CPU, "
-                                "Linux) or vision=no")
+        if vision is not None and backend == "hip" and vision not in ("no", "none", "cpu", "yes", "gpu"):
+            # setup.py's hip_vision rules (#990): the AMD backend takes the CPU encoder on Linux and Windows;
+            # vision=yes/gpu asks for the GPU one, and setup itself falls back to the CPU encoder when the engine
+            # has none for this card - nothing to refuse here
+            raise ToolError(f"vision={vision} is not an option: use no, cpu or gpu")
         target = self.check_data_dir(data_dir) if data_dir else s.data_dir()
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag

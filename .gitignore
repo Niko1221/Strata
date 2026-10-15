@@ -36,6 +36,7 @@ td.log
 /run-*.sh
 /strata-*.json
 /strata-*.log
+/strata-*.bak
 /build-strata.bat
 /build-strata-cuda12.bat
 /build-cuda12/
@@ -45,6 +46,7 @@ td.log
 build-vision*/
 build-vision.bat
 build-vision-cuda12.bat
+build-vision-cpu.bat
 
 # setup.py outputs (engine, downloads) and release builds
 /engine/
@@ -61,3 +63,6 @@ build-vision-cuda12.bat
 
 /.ccache/
 /.rocm-win/
+
+# local agent notes for this machine (paths, GPU arch, local BUILD.json stamps) - not contributor-accurate
+/strata-dev.instructions.md

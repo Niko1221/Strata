@@ -158,8 +158,8 @@ tard, lancez `SETUP.bat` (Linux : `./setup.sh --setup`).
 - **Réflexion :** choisissez **off, low, medium ou high** dans le menu du chat ou dans le « reasoning effort » de
   votre application. Off est le plus rapide. High est le meilleur pour les questions difficiles.
 - **Images :** répondez oui à « Images? » pendant l'installation. Ensuite cliquez sur **Picture** dans le chat, ou
-  joignez des images dans votre application. Les cartes AMD lisent les images sous Linux via le processeur ; sous
-  Windows, pas encore.
+  joignez des images dans votre application. Les cartes AMD lisent les images via le processeur, sous Linux comme sous
+  Windows.
 - **Depuis votre téléphone ou un autre PC :** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>`. Définissez
   toujours une clé.
 - **Une requête à la fois :** par défaut, Strata répond à une requête et les autres attendent. Pour répondre à

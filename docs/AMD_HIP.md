@@ -49,10 +49,21 @@ the kernel's amdgpu driver (no ROCm install needed):
   architectures above; the engine is compiled for each of them (cards of two families, e.g. gfx1100 + gfx1201, need
   a system ROCm 7: AMD's wheels hold one family). A split pays only when no single card holds the model's experts
   (see RDNA4 below).
-- **Limits for now:** images only through the CPU encoder (`--vision cpu`, 0.1.32). Setup does not offer the tuning
+- **Limits for now:** images through the CPU encoder by default (`--vision cpu`, 0.1.32); since 0.1.45 `--vision gpu`
+  compiles a HIP image encoder for the card with the same ROCm as the engine (not yet validated on hardware).
+  Setup does not offer the tuning
   (calibration) on AMD yet: its controls are being checked on HIP one at a time (#566). Since 0.1.39 a tuning run by
   hand (`./setup.sh --calibrate`) is saved for the AMD card it ran on and reused when setup runs again. The Monitor
-  shows the card's load, VRAM, temperature and power from Linux sysfs (0.1.32).
+  shows the card's load, VRAM, temperature and power from Linux sysfs (0.1.32). On Windows the same readings come
+  from the driver's own AMD Display Library (ADL2 PMLog, the interface HWInfo and LibreHardwareMonitor use), and
+  power is read even at idle (the driver's BOARD_POWER, in watts). When the PC has more than one AMD card the
+  Monitor gives each card its own tile, and each tile's PCIe link is the slot's bus speed (generation) from
+  Windows Device Manager (DEVPKEY_PciDevice_MaxLinkSpeed, matched by the card's DEV code) plus the negotiated
+  width from ADL PMLog BUS_LANES - the lanes the card actually runs at, which a motherboard's PCI bifurcation
+  limits. Device Manager's CurrentLinkWidth reports the slot's x16 capability, not the negotiated width, and
+  PMLog's BUS_SPEED is the GPU's own internal bus, which Adrenalin power-saves down to Gen4 while idle. Measured
+  on a B650E with an RX 9070 XT (Gen5 x8) and an AI PRO R9700 (Gen5 x4), matching HWInfo's "PCIe v5.0 x16 @ x4",
+  Adrenalin 26.9.2 (0.1.40).
 
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
 
@@ -82,8 +93,28 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   the PATH): if the HIP runtime does not see the card, setup stops there and points to the driver. It also gives the
   card's HIP number: with an integrated Radeon that is device 1, not 0 (#325). From then on setup lists the AMD cards
   as HIP numbers them, so `--gpu N` and the config's `"gpu"` are HIP numbers.
-- **Differences from Windows-on-NVIDIA and Linux-on-AMD:** no images yet (the CPU image encoder is Linux-only for
-  now), one card per model (`--gpus` is Linux-only for now), no calibration.
+- **Differences from Windows-on-NVIDIA and Linux-on-AMD:** images are opt-in and read on the CPU encoder (the zip
+  carries it, see "Images" below), no calibration.
+- **Two cards, one model (0.1.45):** `--gpus N,M` works on Windows too - the ready-made zip carries code for every
+  supported card, and the engine splits the layers across two HIP devices there (measured on a Windows 11 PC with an
+  AI PRO R9700 and an RX 9070 XT: the R9700 ran layers 0-30, the 9070 XT layers 31-47 plus the head, at 131K context;
+  [MULTI_GPU.md](MULTI_GPU.md)). setup writes the config's `"gpu"` as the pair, in layer order, as HIP numbers them;
+  running setup again keeps the split the installed model already runs on (`--gpu N` for one card, `--gpus N,M` for a
+  different pair).
+- **Images (0.1.45):** the ready-made zip carries `strata-vision.exe`, the CPU image encoder (the pinned llama.cpp
+  `mtmd`, AVX2 baseline, static CRT; `tools\hip\build_windows.bat` builds it into the zip), and `engine\BUILD.json`
+  records it (`"vision": "cpu"`, `"vision_src"`). `START-HERE.bat --backend hip --vision cpu` runs it as-is: no
+  compiler on the PC, and the encoder takes no VRAM (measured here: 2.7-2.9 s to read a 512x512 picture, 256 image
+  tokens, Ryzen 7 7800X3D, Windows 11). Setup asks "Do you want images?" and leaves them off unless the user says
+  yes - the images-on default for
+  Unsloth's files on 16 GB cards is NVIDIA-only for now. If the zip's encoder predates this checkout's
+  `tools\vision`, setup recompiles it on the PC with the Visual Studio C++ Build Tools, offered through winget
+  (~2 GB, 5-15 min). A CPU encoder gets no `--vram-reserve-mib` flag: the engine's own Windows floor (2560 MiB on
+  HIP cards of 15 GiB or more, #1376 #1709) already holds VRAM back, and a smaller flag written over it would
+  defeat that floor. `--vision gpu` works only when a GPU encoder is there for the card - a zip built to carry one
+  (`"vision": "gpu"` and `"vision_archs"` in BUILD.json; ggml-hip on Windows builds against the ROCm wheels in the
+  `.rocm-win` venv the bat makes); asked without one, setup says so and uses the CPU encoder. With a GPU encoder
+  setup reserves 3260 MiB: the 2560 floor plus the encoder's 700.
 - Two Windows-only engine details (#247, #325): hipBLAS can return success and still leave `hipErrorInvalidValue`
   set after some BF16/FP16 GEMMs (seen on gfx1201); the engine clears that one stale error after a GEMM that
   succeeded, on Windows only. `hipHostGetDevicePointer` returns the host pointer itself on Windows: kernels read
@@ -200,7 +231,8 @@ sizes itself automatically and leaves 1 GiB of VRAM headroom.
 GPU memory to system RAM (GTT), the OOM killer then ends KWin/plasmashell or `systemd-oomd` ends apps, or the
 compositor fails with "Failed to pin framebuffer with error -12".
 
-The installer supports this backend (see "Install with setup" above). Images run through the CPU encoder for now (`--vision cpu`).
+The installer supports this backend (see "Install with setup" above). Images run through the CPU encoder by default
+(`--vision cpu`); `--vision gpu` compiles a HIP encoder for the card (0.1.45, not yet validated on hardware).
 Setup installs one AMD card, or several with `--gpus` (the engine's layer split; see RDNA4 below).
 
 **Opt-in switches for RDNA2 prompts and hangs (0.1.40, off by default):** `STRATA_DENSE_MMQ=1` (#820, HIP) runs the

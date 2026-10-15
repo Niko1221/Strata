@@ -161,7 +161,7 @@ hinzuzufügen, starte `SETUP.bat` (Linux: `./setup.sh --setup`).
 - **Nachdenken:** Wähle **aus, niedrig, mittel oder hoch** im Chat-Menü oder unter „Reasoning Effort“ in deiner
   App. Aus ist am schnellsten. Hoch ist am besten für schwierige Fragen.
 - **Bilder:** Antworte im Setup mit Ja auf „Images?“. Klick dann im Chat auf **Picture** oder hänge Bilder in deiner
-  App an. AMD-Karten lesen Bilder unter Linux über den Prozessor; unter Windows geht das noch nicht.
+  App an. AMD-Karten lesen Bilder unter Linux und unter Windows über den Prozessor.
 - **Vom Handy oder einem anderen PC:** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>`. Setz immer einen
   Key.
 - **Eine Anfrage nach der anderen:** Standardmäßig beantwortet Strata eine Anfrage, die anderen warten. Um mehrere

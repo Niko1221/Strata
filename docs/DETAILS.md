@@ -464,7 +464,12 @@ app. It has three tabs:
 - **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button, pictures when
   images are on, and sampling and thinking-level settings. Chats stay in your browser.
 - **Monitor:** what the model is doing (reading the prompt, with progress, or writing, at how many tokens/s); GPU load,
-  VRAM, temperature, power and PCIe traffic; CPU, RAM and disk; the context in use; the last requests.
+  VRAM, temperature, power and PCIe traffic; CPU, RAM and disk; the context in use; the last requests; and when images
+  are on, the image encoder ([below](#images-vision)). The GPU numbers
+  come from NVML on NVIDIA, and on AMD from the amdgpu sysfs files on Linux or the driver's AMD Display Library
+  (ADL2 PMLog) on Windows; each card's PCIe tile is the slot's bus speed from Windows Device Manager (DEVPKEY
+  MaxLinkSpeed, matched by the card's DEV code) plus the negotiated width from PMLog BUS_LANES, so a motherboard's
+  PCI bifurcation shows the real width per slot. A reading the driver does not report is blank rather than guessed.
 - **About:** the model and engine settings, and the addresses to connect other apps.
 
 `http://127.0.0.1:8080/?q=your question` opens it with a new chat already asking. The API is at
@@ -714,7 +719,8 @@ so a Monitor-tab panel and a Grafana panel read the same value: `strata:live_sta
 `strata:totals_prompt_seconds_total` / `strata:totals_decode_seconds_total`, `strata:last_hit_rate` and
 `strata:last_decode_tok_s` (the last request's), and the hardware - `strata:gpu_util`, `strata:gpu_mem_used_bytes`,
 `strata:gpu_mem_total_bytes`, `strata:gpu_temp_celsius`, `strata:gpu_power_watts` (one sample per card, label
-`gpu`), `strata:cpu`, `strata:ram_used_bytes`, `strata:ram_total_bytes`. A value the server does not have (no GPU
+`gpu`), `strata:cpu`, `strata:ram_used_bytes`, `strata:ram_total_bytes`, and with images on the `strata:vision_*`
+series ([the image encoder card, below](#images-vision)). A value the server does not have (no GPU
 telemetry, an older engine) has no sample rather than a zero.
 
 Ready to use, in `docs/monitoring/`: `prometheus.yml` (a scrape config, the API key as a bearer token),
@@ -1473,6 +1479,13 @@ helper (`strata-vision`, from llama.cpp's `mtmd` library) and adds it to your st
 | **GPU** (recommended) | **0.1-0.5 s** (up to 1,024 image tokens) | ~1.4 GB of VRAM is kept free for it, so the expert cache is smaller: text output is a few % slower (table below) |
 | CPU | about 3 s at 300 image tokens on 8 cores (6-13 s on 4 threads); more tokens take longer, in proportion (#767, #625) | nothing on the GPU |
 
+**AMD cards:** the CPU encoder is the standard path (`--vision cpu`): it takes no VRAM, so the engine's expert cache
+is untouched. The ready-made Windows AMD zip carries it since 0.1.45 (no compiler on the PC; if it needs recompiling,
+setup uses the Visual Studio C++ Build Tools); on Linux setup compiles it either way. `--vision gpu` on AMD needs a
+HIP encoder: a local engine build compiles one since 0.1.45 (not yet validated on hardware), or a zip built to carry
+one; on Windows that path keeps 3,260 MiB free - the engine's own 2,560 MiB Windows floor (#1376 #1709) plus the
+encoder's 700, since a smaller flag written over it would defeat the floor. See [AMD_HIP.md](AMD_HIP.md).
+
 A picture becomes up to 1,024 tokens of the context (a 640x480 photo: 300). The same picture sent again, as chat apps
 do on every turn, is encoded only once.
 
@@ -1530,6 +1543,17 @@ after `"elastic_idle_s"` (default 120) without a picture it stops and the cache 
 took 1,339 MiB and started in 4.7 s (2.7 s the next time); a request with one picture took 8.6 s with the start and
 5.0 s on a later cold start, and 2 / 5 / 10 pictures with the encoder running took 3.8 / 5.6 / 9.0 s (~0.45 s to encode
 each, the same as on a second card). Without the key nothing changes.
+
+**The Monitor's Image encoder card (0.1.45):** when images are on, the Monitor tab gains a card for the image encoder:
+whether its process runs or sleeps (with `"elastic"`, and its starts and stops), the card or CPU and threads it runs
+on, the mmproj file, the last picture's encode time, image-token count and grid, how many pictures the encoder's cache
+holds (the last 64, keyed by the picture's bytes), and the totals since the server started: pictures encoded, pictures
+answered from the cache, image tokens added, seconds spent encoding, and pictures refused. While a request is reading
+its pictures, the Monitor's state line says "Reading N pictures". `/metrics` has the same under `"vision"`, and a
+Prometheus scrape carries it as `strata:vision_images_total`, `strata:vision_image_tokens_total`,
+`strata:vision_encode_seconds_total`, `strata:vision_encode_failures_total`, `strata:vision_cache_images`,
+`strata:vision_encoder_up` and `strata:vision_encode_ms_last` (no sample when the last picture was a cache hit).
+A request's own row in `/metrics` keeps its `"images"`, `"image_tokens"` and `"encode_ms"`.
 
 ### Sending a picture
 
@@ -1887,7 +1911,7 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 | `prompt ... exceeds the context` | The request is longer than the context you chose: run setup again with a bigger `--context`. |
 | `the setup refuses --rope-scaling none for a past-trained context` | A context past the trained 262,144 needs the rotary angles rescaled (experimental rope scaling), and the setup will not configure one with the stock angles there. Let it pick (`START-HERE.bat --setup --context 393216` adds yarn and a covering factor), or pass `--rope-scaling linear` or `yarn` yourself. |
 | Slower than the tables | The monitor plugged into the GPU and other GPU programs take VRAM from the expert cache; RAM running below its rated speed (enable EXPO/XMP in the BIOS) slows the CPU half. |
-| `this server was started without the vision encoder` | The model was set up for text only: run setup again with `--vision gpu`. |
+| `this server was started without the vision encoder` | The model was set up for text only: run setup again with `--vision gpu` (or `--vision cpu`). |
 | Setup puts the model on an old drive after you moved or reinstalled Strata (#1070) | Setup remembers the data folder you used last in its settings file (`%APPDATA%\Strata\settings.json` on Windows, `~/.config/strata/settings.json` on Linux; the `data_dir` entry) and uses it again. Choose another place with `--data-dir DIR` (model files, packs, MTP layer) or `--models-dir DIR` (the GGUF files only), or delete the `data_dir` line; `--gguf-dir DIR` uses GGUF files you already have without copying. To move a model, copy its folder and run setup with the new `--data-dir`. |
 | A picture is refused or `cannot read the image` | The file is not a picture Pillow can open (JPEG, PNG, WebP, GIF, BMP, TIFF, AVIF work). |
 | Pictures are slow (3-30 s) | The encoder runs on the CPU: run setup again with `--vision gpu` (needs ~1.4 GB of VRAM). |

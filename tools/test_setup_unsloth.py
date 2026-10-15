@@ -148,9 +148,10 @@ class Base(unittest.TestCase):
         self.tmp.cleanup()
 
     def main(self, argv, ram=63.7, version="0.1.32", n_gpus=1, model=True, amd=(), free=500.0, m=M, answers=None,
-             family=True, vram=11.9):
+             family=True, vram=11.9, fam="unsloth", configs=()):
         """answers: None = --yes; else {words of a question: its answer} (Enter for the others), and every question
-        asked is kept in self.asked.  family=False: no --family (the first menu is shown)."""
+        asked is kept in self.asked.  family=False: no --family (the first menu is shown).  fam: the family flag and
+        the config it writes.  configs: installed config files a setup run again finds (installed_configs)."""
         self.asked = []
 
         def fake_input(prompt=""):
@@ -178,7 +179,7 @@ class Base(unittest.TestCase):
             mock.patch.object(setup, "ROOT", self.t),
             mock.patch.object(setup, "GPU_PICK", None),
             mock.patch.object(setup, "data_folder", lambda d: (self.t / "data", [])),
-            mock.patch.object(setup, "installed_configs", lambda: []),
+            mock.patch.object(setup, "installed_configs", lambda: list(configs)),
             mock.patch.object(setup, "gpus", lambda: found),
             mock.patch.object(setup, "amd_gpus", lambda *a: list(amd)),
             mock.patch.object(setup, "ram_gb", lambda: ram),
@@ -200,7 +201,7 @@ class Base(unittest.TestCase):
             mock.patch.object(setup, "saved_calibration", lambda cfg: None),
             mock.patch.object(setup, "start", mock.Mock(side_effect=AssertionError("started"))),
             mock.patch.dict(sys.modules, {"gguf_reader": types.SimpleNamespace(GGUFFile=FakeGGUF)}),
-            mock.patch.object(sys, "argv", ["setup.py", *(["--family", "unsloth"] if family else []),
+            mock.patch.object(sys, "argv", ["setup.py", *(["--family", fam] if family else []),
                                             *(["--model", m] if model else []),
                                             *(["--yes"] if answers is None else []), "--no-start",
                                             "--models-dir", str(self.t / "models"), *argv]),
@@ -210,7 +211,7 @@ class Base(unittest.TestCase):
             for p in patches:
                 st.enter_context(p)
             code, out = quiet(setup.main)
-        cfg = self.t / f"strata-unsloth-{m.lower()}.json"
+        cfg = self.t / f"strata-{setup.FAMILIES[fam]['tag']}{m.lower()}.json"
         return code, out, (json.loads(cfg.read_text()) if cfg.exists() else None)
 
 class Main(Base):
@@ -564,6 +565,153 @@ class IQ4XS(Base):
             code, out, cfg = self.main(["--context", "8192", "--backend", "hip"], version="0.1.38", amd=r9700, m=X)
         self.assertNotIn("has not been run on AMD cards yet", out)
         self.assertIn("RAM budget: 40 GiB of UD-IQ4_XS's experts", out)
+
+
+class HipImages(Base):
+    """0.1.45: AMD asks the images question - setup used to answer it off on its own when no --vision was given.
+    "yes" picks the CPU encoder: no VRAM, text speed unchanged (docs/AMD_HIP.md); on Windows the ready-made zip
+    carries it, so the question is asked there too.  The GPU encoder stays a --vision gpu expert choice."""
+
+    R9700 = [{"index": 0, "name": "AMD Radeon AI PRO R9700", "vram_gb": 31.9, "arch": "gfx1201", "driver": "amdgpu"}]
+
+    def hip(self, argv=(), win=False, exe=False, **kw):
+        def prebuilt(*a, **k):
+            eng = self.t / "engine"
+            eng.mkdir(exist_ok=True)
+            if exe:                                      # a zip (or an earlier install) carrying the CPU encoder
+                (eng / setup.VEXE).write_bytes(b"")
+                (eng / "BUILD.json").write_text(json.dumps(
+                    {"version": "0.1.45", "source": "prebuilt", "backend": "hip", "vision": "cpu",
+                     "vision_src": setup.source_hash(setup.VISION_SOURCES), "archs": ["gfx1201"]}))
+            return eng
+        with contextlib.ExitStack() as st:
+            for p in (mock.patch.object(setup, "get_prebuilt_hip", prebuilt),
+                      mock.patch.object(setup, "build_engine_hip", lambda *a, **k: self.t / "engine"),
+                      mock.patch.object(setup, "hip_card", lambda e, g, l: {**g, "count": 1, "driver": "hip"}),
+                      mock.patch.object(setup, "WIN", win)):
+                st.enter_context(p)
+            return self.main([*argv, "--backend", "hip", "--context", "8192"], version="0.1.45",
+                             amd=self.R9700, **kw)
+
+    def test_windows_asks_and_yes_picks_the_cpu_encoder(self):
+        code, out, cfg = self.hip(win=True, exe=True, answers={"Do you want images": "y"})
+        self.assertEqual(code, 0, out)
+        self.assertTrue(any("Do you want images" in q and "[n]" in q for q in self.asked), self.asked)
+        self.assertIn("images: on (encoder on the CPU)", out)
+        self.assertEqual(self.downloads[-1], setup.hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF")
+                         + "mmproj-Qwen3.8-Flash-Next-BF16.gguf")
+        self.assertFalse(cfg["vision"]["gpu"])
+        self.assertTrue(cfg["vision"]["exe"].endswith(setup.VEXE))
+        self.assertNotIn("--vram-reserve-mib", cfg["args"])   # the CPU encoder takes no VRAM: the engine's floor stays
+
+    def test_windows_default_is_off(self):
+        code, out, cfg = self.hip(win=True, exe=True, answers={})
+        self.assertEqual(code, 0, out)
+        self.assertTrue(any("Do you want images" in q and "[n]" in q for q in self.asked), self.asked)
+        self.assertIn("images: off", out)
+        self.assertNotIn("vision", cfg)
+        self.assertNotIn("mmproj-Qwen3.8-Flash-Next-BF16.gguf", [Path(u).name for u in self.downloads])
+
+    def test_yes_never_asks(self):
+        code, out, cfg = self.hip(win=True)              # answers=None: --yes, which keeps the default (off)
+        self.assertEqual(code, 0, out)
+        self.assertIn("images: off", out)
+        self.assertNotIn("vision", cfg)
+
+    def test_flag_skips_the_question(self):
+        code, out, cfg = self.hip(["--vision", "cpu"], win=True, exe=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("images: on (encoder on the CPU)", out)
+        self.assertFalse(cfg["vision"]["gpu"])
+
+    def test_linux_unsloth_default_stays_on(self):
+        # 0.1.32: Unsloth's files on AMD with every expert in RAM read images on the CPU by default, without asking
+        code, out, cfg = self.hip(ram=256.0)             # --yes; 256 GB: no RAM budget, so the default is on
+        self.assertEqual(code, 0, out)
+        self.assertIn("images: on (encoder on the CPU)", out)
+        self.assertFalse(cfg["vision"]["gpu"])
+
+
+class HipSplit(Base):
+    """0.1.45: AMD layer splits on Windows.  setup used to refuse --gpus there and to write a single card back over a
+    working split on every re-setup (gpu is a SETUP_KEY) - on a PC whose model does not fit one card that config dies
+    at start ("the embedding buffer failed").  The ready-made zip carries code for every supported card, so Windows
+    splits like Linux; the config carries the numbers the installed HIP engine uses (an integrated Radeon takes 0).
+    IQ3_S on the user's PC: an AI PRO R9700 + RX 9070 XT (docs/MULTI_GPU.md)."""
+
+    DISPLAY = [{"index": 0, "name": "AMD Radeon AI PRO R9700", "vram_gb": 31.9, "arch": "gfx1201", "driver": "amdgpu"},
+               {"index": 1, "name": "AMD Radeon 780M", "vram_gb": 0.5, "arch": "gfx1103", "driver": "amdgpu",
+                "uma": True, "dedicated_gb": 0.5, "shared_gb": 31.0},   # the 7800X3D iGPU: HIP sees it, Strata does not
+               {"index": 2, "name": "AMD Radeon RX 9070 XT", "vram_gb": 16.0, "arch": "gfx1201", "driver": "amdgpu"}]
+    HIP = [{**g, "driver": "hip"} for g in DISPLAY]              # a PC where HIP keeps this order (the user's: #325
+    DEVS_HIP = [{"index": g["index"], "name": g["name"], "vram_gb": g["vram_gb"], "arch": g["arch"], "driver": "hip"}
+                for g in HIP]                                   # puts the R9700 at 0 and the iGPU at 1)
+    DEVS = [{"index": i, "name": g["name"], "vram_gb": g["vram_gb"], "arch": g["arch"], "driver": "hip"}
+            for i, g in enumerate([DISPLAY[1], DISPLAY[0], DISPLAY[2]])]   # another PC: the iGPU takes HIP 0 (#325)
+
+    def split(self, argv=(), win=False, amd=None, configs=(), devs=None, **kw):
+        def prebuilt(*a, **k):
+            eng = self.t / "engine"
+            eng.mkdir(exist_ok=True)
+            return eng
+        with contextlib.ExitStack() as st:
+            for p in (mock.patch.object(setup, "get_prebuilt_hip", prebuilt),
+                      mock.patch.object(setup, "build_engine_hip", lambda *a, **k: self.t / "engine"),
+                      mock.patch.object(setup, "hip_devices", lambda *a, **k: self.DEVS_HIP if devs is None else devs),
+                      mock.patch.object(setup, "amd_gpus", lambda *a, **k: list(self.HIP if amd is None else amd)),
+                      mock.patch.object(setup, "WIN", win)):
+                st.enter_context(p)
+            return self.main([*argv, "--backend", "hip", "--context", "8192"], version="0.1.45", fam="qwen",
+                             m="IQ3_S", amd=self.HIP if amd is None else amd, configs=configs, **kw)
+
+    def seed(self, gpu):                                         # an installed config, as a setup run again finds it
+        p = self.t / "strata-iq3_s.json"
+        p.write_text(json.dumps({"exe": str(self.t / "engine" / setup.EXE), "args": ["--max-context", "8192"],
+                                 "cwd": str(self.t), "port": 8080, "gpu": gpu}))
+        return p
+
+    def test_windows_gpus_splits_and_renumbers(self):
+        # --gpus on Windows: the split is written with the numbers the installed HIP engine uses, not the display order
+        code, out, cfg = self.split(["--gpus", "0,2"], win=True, amd=self.DISPLAY, devs=self.DEVS)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["gpu"], [1, 2], out)                # HIP: the 780M takes 0, the two cards become 1 and 2
+        self.assertEqual(cfg["layer_split"], "auto")
+        self.assertIn("HIP numbers the split's cards 1, 2", out)
+        self.assertIn("layer split across GPUs [1, 2]", out)
+
+    def test_windows_setup_again_keeps_the_split(self):
+        # the reported bug: SETUP.bat overwrote the config's "gpu": [0, 2] with the single best card, and the model
+        # then exhausted one card's VRAM at start
+        code, out, cfg = self.split(win=True, configs=[self.seed([0, 2])])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["gpu"], [0, 2], out)
+        self.assertEqual(cfg["layer_split"], "auto")
+        self.assertIn("Keeping your layer split", out)
+
+    def test_windows_keeps_a_string_split(self):
+        # a hand-written config says "gpu": "0,2" - the same split, kept the same way
+        code, out, cfg = self.split(win=True, configs=[self.seed("0,2")])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["gpu"], [0, 2], out)
+
+    def test_windows_fresh_pc_stays_on_one_card(self):
+        # no installed split and no --gpus: one card, as before - no layer_split key
+        code, out, cfg = self.split(win=True, amd=self.DISPLAY, devs=self.DEVS)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["gpu"], 1, out)                     # the R9700, as HIP numbers it
+        self.assertNotIn("layer_split", cfg)
+
+    def test_linux_setup_again_keeps_the_split(self):
+        code, out, cfg = self.split(configs=[self.seed([0, 2])])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["gpu"], [0, 2], out)
+        self.assertIn("Keeping your layer split", out)
+
+    def test_linux_gpus_flag_unchanged(self):
+        code, out, cfg = self.split(["--gpus", "0,2"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["gpu"], [0, 2], out)
+        self.assertEqual(cfg["layer_split"], "auto")
 
 
 class StrixHaloCache(Base):

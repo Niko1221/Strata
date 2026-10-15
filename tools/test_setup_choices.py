@@ -316,17 +316,15 @@ class ExperimentalSm60(unittest.TestCase):
 
 
 class HipVision(unittest.TestCase):
-    """#304: --vision cpu with --backend hip builds the CPU image encoder beside the HIP engine."""
+    """#304: --vision cpu with --backend hip builds the CPU image encoder beside the HIP engine - on Windows too,
+    where the ready-made zip may carry one (hip_vision_windows) or MSVC compiles it here."""
 
-    @mock.patch.object(setup, "WIN", False)            # Linux: compiled here (Windows has no AMD image encoder yet)
     def test_the_choice(self):
         self.assertEqual(quiet(setup.hip_vision, "cpu"), ("cpu", ""))
         for asked in (None, "no", "none"):
             self.assertEqual(quiet(setup.hip_vision, asked), ("none", ""))
-        for asked in ("yes", "gpu"):
-            got, out = quiet(setup.hip_vision, asked)
-            self.assertEqual(got, "none")
-            self.assertIn("--vision cpu", out)
+        for asked in ("yes", "gpu"):        # the GPU one comes from the engine step: the zip's vision_archs,
+            self.assertEqual(quiet(setup.hip_vision, asked), ("gpu", ""))   # or a HIP build on Linux
 
     def build(self, meta, vision, vexe=False):
         """build_engine_hip with an engine that is already built: only the encoder can be missing."""
@@ -366,6 +364,47 @@ class HipVision(unittest.TestCase):
         built, meta, have = self.build({}, "none")
         self.assertEqual((built, have), ([], False))
         self.assertNotIn("vision_src", meta)
+
+    def windows(self, meta, vision, arch="gfx1201", vexe=False, vcvars=True, msvc=True):
+        """hip_vision_windows with the ready-made engine already in place: only the encoder can be missing."""
+        with tempfile.TemporaryDirectory() as d:
+            eng = Path(d) / "engine"
+            eng.mkdir()
+            if vexe:
+                (eng / setup.VEXE).write_bytes(b"vision")
+            (eng / "BUILD.json").write_text(json.dumps({"backend": "hip", "source": "prebuilt", **meta}))
+            built, installs = [], []
+            with mock.patch.object(setup, "source_hash", lambda paths: "V"), \
+                    mock.patch.object(setup, "find_vcvars", lambda: "vcvars" if vcvars else None), \
+                    mock.patch.object(setup, "install_msvc_build_tools", lambda yes: installs.append(yes) or msvc), \
+                    mock.patch.object(setup, "build_vision_cpu", lambda e, s, m, l, v: built.append("cpu") or e):
+                got, out = quiet(setup.hip_vision_windows, eng, vision, {"arch": arch}, "llama", True)
+            return got, out, built, installs
+
+    def test_windows_the_zip_carries_the_encoder(self):
+        got, out, built, installs = self.windows({"vision": "cpu", "vision_src": "V"}, "cpu", vexe=True)
+        self.assertEqual((got, built, installs), ("cpu", [], []))       # runs as-is: no compiler on the PC
+
+    def test_windows_a_gpu_encoder_from_the_zip(self):
+        got, _, built, _ = self.windows({"vision": "gpu", "vision_src": "V", "vision_archs": ["gfx1201"]},
+                                        "gpu", vexe=True)
+        self.assertEqual((got, built), ("gpu", []))
+
+    def test_windows_gpu_without_one_for_this_card_falls_to_cpu(self):
+        got, out, built, _ = self.windows({"vision": "gpu", "vision_src": "V", "vision_archs": ["gfx1100"]},
+                                          "gpu", vexe=True)
+        self.assertEqual((got, built), ("cpu", ["cpu"]))                # this card is not in vision_archs
+        self.assertIn("images on the CPU instead", out)
+
+    def test_windows_stale_zip_encoder_is_compiled_here(self):
+        got, out, built, _ = self.windows({"vision": "cpu", "vision_src": "old"}, "cpu", vexe=True)
+        self.assertEqual((got, built), ("cpu", ["cpu"]))                # tools/vision changed since it was packed
+        self.assertIn("compiling it (for the CPU)", out)
+
+    def test_windows_no_compiler_asks_and_gives_up_cleanly(self):
+        got, out, built, installs = self.windows({"vision": "none"}, "cpu", vcvars=False, msvc=False)
+        self.assertEqual((got, built, installs), ("none", [], [True]))  # asked (yes=True): declined
+        self.assertIn("images off", out)
 
 
 class RotationalDisk(unittest.TestCase):

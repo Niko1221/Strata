@@ -158,3 +158,20 @@ def strata(m: dict, out: list, lab: str):
     metric("cpu", "gauge", "CPU busy, percent (hardware.cpu).", hw.get("cpu"))
     metric("ram_used_bytes", "gauge", "RAM in use (hardware.ram_used).", hw.get("ram_used"))
     metric("ram_total_bytes", "gauge", "RAM (hardware.ram_total).", hw.get("ram_total"))
+    vis = m.get("vision")
+    if vis:                                              # no vision config: no vision samples at all
+        vt, vc = vis.get("totals") or {}, vis.get("cache") or {}
+        metric("vision_images_total", "counter", "Pictures the image encoder encoded (vision.totals.images).",
+               vt.get("images"))
+        metric("vision_image_tokens_total", "counter", "Image tokens the encoded pictures added "
+               "(vision.totals.image_tokens).", vt.get("image_tokens"))
+        metric("vision_encode_seconds_total", "counter", "Time the image encoder spent encoding pictures "
+               "(vision.totals.encode_ms).", round((vt.get("encode_ms") or 0) / 1000, 3))
+        metric("vision_encode_failures_total", "counter", "Pictures the image encoder refused (vision.totals.failures).",
+               vt.get("failures"))
+        metric("vision_cache_images", "gauge", "Pictures in the image encoder's cache (vision.cache.images).",
+               vc.get("images"))
+        metric("vision_encoder_up", "gauge", "1 while the image encoder process runs (vision.alive).",
+               int(bool(vis.get("alive"))))
+        metric("vision_encode_ms_last", "gauge", "The last picture's encode time in ms (vision.last_encode.ms); "
+               "no sample when it was a cache hit.", (vis.get("last_encode") or {}).get("ms"))

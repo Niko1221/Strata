@@ -313,6 +313,26 @@ class WindowsDetection(unittest.TestCase):
             (eng / "BUILD.json").write_text('{"backend": "cuda"}')     # an NVIDIA engine is never asked
             self.assertIsNone(setup.hip_devices(eng / "strata-device.exe"))
 
+    def test_probe_ignores_a_visible_devices_env(self):
+        """A HIP_VISIBLE_DEVICES left in the environment - a config's cards, or one set by hand once and never
+        removed - must not compact what setup sees: the probe runs with it cleared, so the runtime's full
+        numbering comes back and a saved split like "0,2" still names the cards it named when it was saved."""
+        import os
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            eng = Path(d)
+            (eng / "strata-device.exe").write_text("x")
+            (eng / "BUILD.json").write_text('{"backend": "hip"}')
+            seen = {}
+
+            def fake_run(cmd, **kw):
+                seen["env"] = kw.get("env")
+                return subprocess.CompletedProcess(cmd, 0, stdout=self.LIST, stderr="")
+            with mock.patch.dict(os.environ, {"HIP_VISIBLE_DEVICES": "0,2"}),                     mock.patch.object(setup.subprocess, "run", fake_run),                     mock.patch.object(setup, "hip_runtime_beside_exe", lambda *a: None),                     mock.patch.object(setup, "hip_lib_dirs", lambda *a: []):
+                h = setup.hip_devices(eng / "strata-device.exe")
+            self.assertNotIn("HIP_VISIBLE_DEVICES", seen["env"])
+            self.assertEqual([x["index"] for x in h], [0, 1, 2])       # the full list, not the filtered pair
+
     def test_prebuilt_hip_zip(self):
         """get_prebuilt_hip: a published zip (here a local folder) is unpacked into engine/; one without code for the
         card, or older than the first Windows HIP release, is refused."""
@@ -430,11 +450,16 @@ class CalibrationKey(unittest.TestCase):
 
 
 class WindowsHipVision(unittest.TestCase):
-    def test_no_cpu_encoder_on_windows(self):
-        with mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "warn", lambda *a: None):
-            self.assertEqual(setup.hip_vision("cpu"), "none")
-            self.assertEqual(setup.hip_vision("yes"), "none")
-        with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "warn", lambda *a: None):
+    """hip_vision is platform-neutral now: the Windows AMD path gets the zip's CPU encoder or compiles one with
+    MSVC (hip_vision_windows), and yes/gpu ask for the GPU one, which the engine step downgrades if needed."""
+
+    def test_the_choice_on_windows(self):
+        with mock.patch.object(setup, "WIN", True):
+            self.assertEqual(setup.hip_vision("cpu"), "cpu")
+            self.assertEqual(setup.hip_vision("yes"), "gpu")
+            self.assertEqual(setup.hip_vision("gpu"), "gpu")
+            self.assertEqual(setup.hip_vision(None), "none")
+        with mock.patch.object(setup, "WIN", False):
             self.assertEqual(setup.hip_vision("cpu"), "cpu")
 
 

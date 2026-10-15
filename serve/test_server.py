@@ -2026,6 +2026,19 @@ class PeerDevice(unittest.TestCase):
         self.assertEqual(engine_args({"args": list(done), "vision": {"gpu": True}}), done)
         self.assertEqual(engine_args({"args": list(args)}), args)                # no section: no images
 
+    def test_hip_on_windows_reserves_above_the_wddm_floor(self):
+        # a GPU image encoder on Windows AMD sits on top of the engine's own WDDM floor (#1376 #1709): 700 alone
+        # would fall under it, so the reserve is 3260 there - and a CPU encoder needs no flag at all, the floor stands
+        args = ["--native", "x"]
+        hip = {"args": list(args), "backend": "hip", "vision": {"exe": "v", "gpu": True}}
+        with mock.patch.object(os, "name", "nt"):
+            self.assertEqual(engine_args(dict(hip)), args + ["--vision", "--vram-reserve-mib", "3260"])
+        with mock.patch.object(os, "name", "posix"):
+            self.assertEqual(engine_args(dict(hip)), args + ["--vision", "--vram-reserve-mib", "700"])
+        cpu = {"args": list(args), "backend": "hip", "vision": {"exe": "v", "gpu": False}}
+        with mock.patch.object(os, "name", "nt"):
+            self.assertEqual(engine_args(dict(cpu)), args + ["--vision"])
+
     def test_split_added_for_several_gpus(self):
         self.assertEqual(engine_args({"args": ["--native", "x"], "gpu": [0, 1]}),
                          ["--native", "x", "--layer-split", "auto"])
@@ -2991,7 +3004,8 @@ class WebApp(unittest.TestCase):
         code, ctype, body = self.get("/")
         self.assertEqual(code, 200)
         self.assertIn("text/html", ctype)
-        self.assertIn(b"\"web/app.js\"", body)   # relative since #82 (works behind a path-prefixed proxy)
+        self.assertIn(b"\"web/app.js", body)   # relative since #82 (works behind a path-prefixed proxy); the
+        # "?v=N" after it is the cache-bust, so an open tab cannot keep a stale script
         for path, want in (("/web/app.js", "javascript"), ("/web/app.css", "text/css"), ("/web/tokens.css", "text/css"),
                            ("/web/components.css", "text/css"), ("/web/sprite.svg", "image/svg+xml")):
             with self.subTest(path=path):
@@ -4414,6 +4428,14 @@ class AmdTelemetry(unittest.TestCase):
                 (hw / "power1_input").write_text("120000000\n")
             (hw / "power1_cap").write_text("300000000\n")
 
+    def linux_reader(self):
+        """These tests fake an amdgpu sysfs tree, so they must read it through the Linux reader on any machine:
+        with the AMD backend on Windows, gpu_reader() is the ADL reader (#1380) and would report this PC's real
+        cards instead of the fake tree.  Patching the module's gpu_reader covers free_vram_mib() and the Telemetry
+        sampler as well, since both call it by name."""
+        from serve import telemetry
+        return mock.patch.object(telemetry, "gpu_reader", lambda index=0, amd=False: telemetry._Amd(index))
+
     def test_pcie_link_is_the_narrowest_slowest_hop(self):
         """#1733: the link is the slowest/narrowest hop between the root port and the card; the bottleneck is only
         claimed when every hop could be read (pcie_path says how many were)."""
@@ -4428,7 +4450,7 @@ class AmdTelemetry(unittest.TestCase):
                 hops.append(str(h))
             (Path(hops[-1]) / "current_link_speed").write_text("16.0 GT/s PCIe\n")
             (Path(hops[-1]) / "current_link_width").write_text("16\n")
-            a = telemetry.gpu_reader(0, amd=True)
+            a = telemetry._Amd(0)          # the sysfs reader directly: on Windows gpu_reader() would be ADL
             a.dev = hops[-1]
             with mock.patch.object(telemetry._Amd, "_hops", lambda self: hops):
                 self.assertEqual(a.link(), {"pcie_gen": 3, "pcie_gen_max": 3, "pcie_own_gen": 4, "pcie_width": 8,
@@ -4445,7 +4467,9 @@ class AmdTelemetry(unittest.TestCase):
         from serve import telemetry
         with tempfile.TemporaryDirectory() as d:
             self.tree(d)
-            with mock.patch.object(telemetry, "SYSFS", d):
+            # the fake tree has two cards, so the sampler's Windows card count is pinned to 2 as well
+            with mock.patch.object(telemetry, "SYSFS", d), self.linux_reader(), \
+                    mock.patch.object(telemetry, "amd_card_count", lambda: 2):
                 self.assertTrue(telemetry.amd_device_dir(0).endswith(os.path.join("renderD129", "device")))
                 self.assertTrue(telemetry.amd_device_dir(1).endswith(os.path.join("renderD128", "device")))
                 self.assertIsNone(telemetry.amd_device_dir(2))
@@ -4466,7 +4490,7 @@ class AmdTelemetry(unittest.TestCase):
                 self.assertEqual((s["gpu_mem_used"], s["gpu_util"], s["gpu_temp"], s["gpu_power"]),
                                  (8 << 30, 68.0, 64.0, 205.0))
         with tempfile.TemporaryDirectory() as d:                    # no amdgpu: nothing, and nothing breaks
-            with mock.patch.object(telemetry, "SYSFS", d):
+            with mock.patch.object(telemetry, "SYSFS", d), self.linux_reader():
                 self.assertFalse(telemetry.gpu_reader(0, amd=True).ok())
                 self.assertIsNone(telemetry.free_vram_mib(0, amd=True))
 
@@ -4477,7 +4501,7 @@ class AmdTelemetry(unittest.TestCase):
         svc.backend, svc.gpu_index = "hip", 1
         with tempfile.TemporaryDirectory() as d:
             self.tree(d)
-            with mock.patch.object(telemetry, "SYSFS", d):
+            with mock.patch.object(telemetry, "SYSFS", d), self.linux_reader():
                 self.assertEqual(svc.free_vram_mib(), 26 << 10)
 
 
@@ -5233,6 +5257,89 @@ class VisionCacheEviction(unittest.TestCase):
                 v.encode(f"image {i}".encode())
             self.assertEqual(len(v.cache), 64)
             self.assertFalse(first.exists())
+
+
+class VisionStats(unittest.TestCase):
+    """The Monitor's image card: what one Vision records about its encodes (the READY line, _note)."""
+
+    def make(self, d, replies):
+        import serve.server as server
+        v = server.Vision.__new__(server.Vision)
+        v.dir, v.cache, v.lock = d, {}, threading.Lock()
+        v.load = lambda src: src
+        v.normalize = staticmethod(lambda data: data)
+
+        class Pipe:
+            def __init__(self):
+                self.q, self.last = list(replies), ""
+
+            def write(self, text):
+                self.last = text
+
+            def flush(self):
+                (d / self.last.split()[2]).write_bytes(b"x")
+
+            def readline(self):
+                return self.q.pop(0) + chr(10)
+
+        pipe = Pipe()
+        v.proc = SimpleNamespace(stdin=pipe, stdout=pipe)
+        return v
+
+    def test_an_encode_records_its_numbers(self):
+        with tempfile.TemporaryDirectory() as t:
+            v = self.make(Path(t), ["OK 196 14 14 1432"])
+            v.encode(b"a picture")
+            self.assertEqual(v.totals, {"images": 1, "cached": 0, "image_tokens": 196,
+                                        "encode_ms": 1432.0, "failures": 0})
+            rec = v.encodes[-1]
+            self.assertEqual((rec["tokens"], rec["nx"], rec["ny"], rec["ms"], rec["cached"]),
+                             (196, 14, 14, 1432.0, False))
+
+    def test_a_cache_hit_counts_but_adds_no_time(self):
+        with tempfile.TemporaryDirectory() as t:
+            v = self.make(Path(t), ["OK 196 14 14 1432"])
+            v.encode(b"a picture")
+            v.encode(b"a picture")
+            self.assertEqual((v.totals["images"], v.totals["cached"], v.totals["encode_ms"]), (1, 1, 1432.0))
+            self.assertTrue(v.encodes[-1]["cached"])
+            self.assertIsNone(v.encodes[-1].get("ms"))
+
+    def test_an_older_encoder_printing_only_the_token_count_still_counts(self):
+        with tempfile.TemporaryDirectory() as t:
+            v = self.make(Path(t), ["OK 3"])
+            v.encode(b"a picture")
+            self.assertEqual((v.totals["images"], v.totals["image_tokens"], v.totals["encode_ms"]), (1, 3, 0.0))
+            self.assertIsNone(v.encodes[-1]["ms"])
+
+    def test_a_refused_picture_counts_as_a_failure(self):
+        with tempfile.TemporaryDirectory() as t:
+            v = self.make(Path(t), ["ERR the mmproj could not read it"])
+            with self.assertRaises(ValueError):
+                v.encode(b"a picture")
+            self.assertEqual((v.totals["failures"], v.totals["images"]), (1, 0))
+            self.assertEqual(list(v.encodes), [])
+
+    def test_the_ready_line_and_the_process_lifetime(self):
+        import serve.server as server
+
+        class Proc:
+            stdout = io.StringIO("READY 2560\n")
+            stdin = io.StringIO()
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                return 0
+
+        with mock.patch.object(server.subprocess, "Popen", lambda args, **kw: Proc()), \
+                mock.patch.object(server, "contain"):
+            v = server.Vision({"exe": "strata-vision", "mmproj": "m.gguf", "model": "t.gguf"})
+            self.assertEqual((v.n_embd, v.starts, v.stops), (2560, 1, 0))
+            self.assertIsNotNone(v.started_at)
+            v.close()
+            self.assertEqual(v.stops, 1)
 
 
 class BudgetOverRam(unittest.TestCase):

@@ -118,6 +118,23 @@ class Elastic(unittest.TestCase):
         self.assertFalse(v.elastic)
         self.assertEqual((v.elastic_mib, v.elastic_idle_s), (2048, 120.0))
 
+    def test_the_monitor_image_card_reads_the_encoder(self):
+        self.picture()
+        v = self.svc.metrics()["vision"]
+        self.assertTrue(v["alive"])
+        self.assertTrue(v["elastic"])
+        self.assertEqual((v["elastic_mib"], v["starts"]), (2048, 1))
+        self.assertTrue(v["held"])                              # the engine is keeping its VRAM free right now
+        self.assertIsNotNone(v["idle_s"])                       # a picture came just now
+        self.assertIsNone(v["totals"])                          # a stand-in without counters: the card shows none
+        self.assertIsNone(v["cache"]["images"])
+        self.assertEqual(v["encode_ms_recent"], [])
+        self.svc.last_image_at = time.time() - 61
+        self.svc._vision_idle_down()
+        v = self.svc.metrics()["vision"]
+        self.assertFalse(v["alive"])
+        self.assertFalse(v["held"])
+
 
 if __name__ == "__main__":
     unittest.main()

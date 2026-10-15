@@ -133,7 +133,9 @@ setup warns when it finds 13.2.0 or 13.2.1 for such a card, and takes an older 1
 **Pictures are refused, or slow.**
 "this server was started without the vision encoder": the model was set up for text only - run setup again with
 `--vision gpu` (or `--vision cpu`). Pictures that take several seconds (about 3 s at 300 image tokens on 8 cores, more with more tokens) are read by the encoder on the CPU; `--vision gpu`
-(NVIDIA, ~1.4 GB of VRAM) makes it 0.1-0.5 s.
+(NVIDIA, ~1.4 GB of VRAM) makes it 0.1-0.5 s. The Monitor tab's **Image encoder** card shows what the encoder is doing:
+whether its process runs or sleeps, each picture's encode time, and how many pictures were refused - a refused one is
+explained in the server log.
 
 ## AMD cards
 
@@ -180,6 +182,18 @@ in order, one at a time, and tell us what changed:
 7. **Driver:** use the newest AMD Software release for your card (Adrenalin, not a Windows Update driver) and restart
    after installing. If it started after a driver update, tell us both versions; going back one version is a fair
    test.
+
+**Windows: SETUP.bat forgets a two-card split and writes a single card back into `strata-<model>.json`.**
+If `HIP_VISIBLE_DEVICES` is set as a Windows environment variable (User or System level - other tools like Ollama,
+LM Studio or ComfyUI often use it to hide an integrated GPU), setup's device probe used to inherit it, and the HIP
+runtime then hides the filtered cards and renumbers the rest: a saved split `"gpu": "0,2"` names a card that is no
+longer at 2, and setup falls back to one card. Strata 0.1.45 and newer probe with the variable cleared, so setup
+always sees the runtime's own numbering, and the server sets it per model when it starts the engine. **You can keep
+the variable for your other software - Strata works with it set or unset.** Check with
+`[Environment]::GetEnvironmentVariable('HIP_VISIBLE_DEVICES','User')` in PowerShell. Measured on a Windows 11 PC
+with an AI PRO R9700 (HIP 0), an integrated Radeon (HIP 1) and an RX 9070 XT (HIP 2): with the variable set to
+`0,2` the old probe returned two cards numbered 0 and 1 and the saved split collapsed; with the fix it returns all
+three and the split is kept.
 
 **Large pinned host allocations fail on ROCm although RAM is free.**
 See [AMD_HIP.md](AMD_HIP.md#model-and-serving-configuration): the mapped expert mode avoids the full pinned arena.

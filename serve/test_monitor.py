@@ -257,5 +257,61 @@ class ConversationCacheCard(unittest.TestCase):
             self.assertIn(f'"{el}"', js)
 
 
+class VisionCard(unittest.TestCase):
+    """The Monitor's image card: /metrics' "vision" block, the "reading N pictures" live line, and the card's
+    elements on the page."""
+
+    class Enc:
+        """A running encoder stand-in: its config, its READY line, and the records of its last encodes."""
+
+        def __init__(self):
+            self.cfg = {"mmproj": "mmproj-f16.gguf", "gpu": True, "threads": 8, "max_tokens": 1024}
+            self.n_embd, self.started_at, self.starts, self.stops = 4096, time.time(), 1, 0
+            self.elastic, self.elastic_mib, self.elastic_idle_s = True, 2048, 60.0
+            self.totals = {"images": 2, "cached": 1, "image_tokens": 392, "encode_ms": 2864.0, "failures": 0}
+            now = time.time()
+            self.encodes = [{"at": now - 9, "tokens": 196, "nx": 14, "ny": 14, "ms": 1432.0, "cached": False},
+                            {"at": now, "tokens": 196, "cached": True}]
+            self.cache = {f"k{i}": (Path(f"f{i}.sve"), 196) for i in range(3)}
+
+        def alive(self):
+            return True
+
+    def service(self, vision=None):
+        tok = ByteTokenizer()
+        return Service(MockEngine(tok, "Hello.", max_context=4096), tok,
+                       ChatTemplate(Path(__file__).parent / "chat_template.jinja"), vision=vision)
+
+    def test_no_encoder_no_block(self):
+        self.assertIsNone(self.service().metrics()["vision"])
+
+    def test_the_block_follows_the_encoder(self):
+        v = self.service(self.Enc()).metrics()["vision"]
+        self.assertEqual((v["device"], v["mmproj"], v["threads"], v["n_embd"], v["alive"]),
+                         ("gpu", "mmproj-f16.gguf", 8, 4096, True))
+        self.assertEqual((v["elastic"], v["elastic_mib"], v["starts"], v["stops"]), (True, 2048, 1, 0))
+        self.assertEqual((v["cache"]["images"], v["cache"]["max"]), (3, 64))
+        self.assertEqual(v["totals"]["images"], 2)
+        self.assertTrue(v["last_encode"]["cached"])
+        self.assertEqual(v["encode_ms_recent"], [1432.0])
+
+    def test_a_request_encoding_its_pictures_shows_in_live(self):
+        svc = self.service(self.Enc())
+        with svc.status_lock:
+            svc.status["encoding_images"] = 2
+        self.assertEqual(svc.metrics()["live"]["encoding_images"], 2)
+        with svc.status_lock:
+            svc.status.pop("encoding_images")
+        self.assertNotIn("encoding_images", svc.metrics()["live"])
+
+    def test_the_card_is_on_the_page(self):
+        web = Path(__file__).parent / "web"
+        html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
+        for el in ("vision-card", "vision-sum", "vision-cache-text", "vision-cache-bar", "vision-enc-text",
+                   "sp-vision", "vision-facts", "vision-note"):
+            self.assertIn(f'id="{el}"', html)
+        self.assertIn("renderVision", js)
+
+
 if __name__ == "__main__":
     unittest.main()
