@@ -848,7 +848,11 @@ print(r.choices[0].message.content)
   without `<tool_call>` (outside code), or as a second call inside the same `<tool_call>` (without the switch the
   second call's parameters merge into the first). Anything else in those forms stays the text it is. Measured on
   1,462 agent turns (Qwen3.8 under Claude Code, from signalnine/q27's drift corpus): 98.3% read as intended with it,
-  92.9% without. Off by default, so what a client gets back is unchanged unless you turn it on.
+  92.9% without. Since #2451 it also reads a parameter written `<parameter name="NAME">` (quoted or not) or as one
+  `<parameter>` holding every argument as JSON, where a parameter opens (not inside a value): on Coder IQ1_M with a
+  coding agent, 19 of 35 broken Bash calls in one session were in these forms and reached the client with empty
+  arguments (not part of the 1,462-turn measurement). Off by default, so what a client gets back is unchanged unless
+  you turn it on.
 - **opencode's environment block in the user turn (opt-in).** opencode writes an `<env>` block (working directory,
   today's date) near the start of its system message, ahead of ~40K characters of instructions and tool definitions that
   are the same in every session. The prefix cache only reuses a prompt's start, so every new folder and every new day
