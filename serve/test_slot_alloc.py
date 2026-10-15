@@ -534,9 +534,9 @@ class ParkMainSession(unittest.TestCase):
         e.main_used = self.NOW
         return e
 
-    def dest(self, e, exclude=()):
+    def dest(self, e, exclude=(), main_value=0.0):
         return slot_policy.park_destination(e.main_held, e.slot_busy, e.slot_held, e.slot_used, e.slot_order,
-                                            e.slot_gs, self.NOW, e.slot_cache_valid, True, exclude)
+                                            e.slot_gs, self.NOW, e.slot_cache_valid, True, exclude, main_value)
 
     def test_another_conversation_is_told_by_the_main_history_up_to_its_last_turn(self):
         # main: system (turn 1 at 0), user turn at 20000, reply turn at 29000; a prompt that shares all of it up to
@@ -657,6 +657,36 @@ class ParkMainSession(unittest.TestCase):
         e.slot_used[1] = self.NOW                          # protected: not a park target
         self.assertEqual(self.dest(e), 4)
 
+    def test_park_uses_the_reclaim_order_a_lighter_group_before_a_blank_slot(self):
+        e = self.e()
+        e.slot_held = [[b] * 40000 for b in range(6)]
+        e.slot_used = [self.NOW - 100] * 6                 # expired, worth keeping
+        e.slot_held[1] = []                                # blank, in the group of busy slot 0
+        e.slot_busy[0] = True
+        e.slot_held[4] = [4] * 1000                        # not worth keeping, in an idle group
+        self.assertEqual(self.dest(e), 4)                  # group load first, as place() does
+        e.slot_busy[0] = False
+        self.assertEqual(self.dest(e), 1)                  # the same load: the lower value (a blank slot is 0)
+
+    def test_a_history_worth_keeping_takes_a_park_only_at_the_value_ratio(self):
+        e = self.e()
+        e.slot_held = [[b] * 40000 for b in range(6)]
+        e.slot_used = [self.NOW - 100] * 6                 # all expired, worth keeping
+        worth = slot_policy.stale_retention(40000, 100)
+        self.assertIsNone(self.dest(e, main_value=worth * 1.9))      # less than twice as much: every one is kept
+        self.assertEqual(self.dest(e, main_value=worth * 2), 0)      # twice as much: the slot order breaks the tie
+        e.slot_busy[0] = True
+        e.slot_used[3] = self.NOW - 1000                   # worth less than the others
+        self.assertEqual(self.dest(e, main_value=worth * 2), 3)      # least loaded group, then the lowest value
+        cheap = slot_policy.stale_retention(40000, 1000)
+        self.assertEqual(self.dest(e, main_value=cheap * 2), 3)      # only slot 3 is cheap enough
+        self.assertIsNone(self.dest(e, main_value=cheap * 1.5))
+        slot_policy.configure({"STRATA_SLOT_PARK_VALUE_RATIO": "0"})
+        try:
+            self.assertIsNone(self.dest(e, main_value=100.0))         # 0: a park never takes one
+        finally:
+            slot_policy.configure({})
+
     def test_a_long_unused_history_can_take_a_park_but_busy_and_excluded_slots_cannot(self):
         e = self.e()
         e.slot_held = [[b] * 40000 for b in range(6)]
@@ -697,7 +727,7 @@ class PolicyTunables(unittest.TestCase):
         got = slot_policy.configure({"STRATA_SLOT_TTL_MAX_S": "240", "STRATA_SLOT_PROTECT_WAIT_S": "2",
                                      "STRATA_SLOT_PARK_MIN_TOKENS": "x"})
         self.assertEqual(got, {"ttl_max_s": 240.0, "protect_wait_s": 2.0, "park_min_tokens": 8192,
-                               "expired_keep_score": 0.01, "idle_value_zero_s": 1800.0})
+                               "expired_keep_score": 0.01, "idle_value_zero_s": 1800.0, "park_value_ratio": 2.0})
         self.assertAlmostEqual(slot_policy.cache_ttl(100000), 180.0)     # the whole curve doubles
         self.assertAlmostEqual(slot_policy.cache_ttl(10 ** 6), 240.0)
         self.assertEqual(slot_policy.configure({})["ttl_max_s"], 120.0)
