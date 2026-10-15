@@ -11,8 +11,7 @@ don't have to dig through the repo yourself.
 Quick start
 -----------
 1. Double-click view-amd.html (AMD only) or view-all.html (everything).
-   They open in your web browser. You need an internet connection for the
-   formatting and diagrams.
+   They open in your web browser, but internet is not required to use them.
 2. Start with the README page shown first. It explains the engine in plain
    English, and sections 3-7 have diagrams.
 3. Click any doc link to jump to that topic.
