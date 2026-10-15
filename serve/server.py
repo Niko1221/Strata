@@ -2069,7 +2069,7 @@ class StrataEngine:
         now = time.time()
         main_used = getattr(self, "main_used", 0.0)
         value = slot_policy.stale_retention(len(main), max(0.0, now - main_used))
-        if value <= 0 or value < slot_policy.EXPIRED_KEEP_SCORE:
+        if value <= 0 or value < slot_policy.PARK_MIN_VALUE:
             self.cache_event("park_skip", reason="main_low_value", held_tokens=len(main), value=value)
             return ""          # an unused main history need not be copied into a slot just to be reclaimed
         with self.slot_cv:

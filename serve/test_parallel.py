@@ -18,6 +18,7 @@ from unittest import mock
 
 from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, Service, StrataEngine, engine_args, parallel_args, serve
+from serve import slot_policy
 
 # The fake engine: one token every STEP seconds per active slot (a "window" serves every active slot at once);
 # GEN (solo) streams T lines; BGEN reads the prompt (one T line, DONE), answers BADM and continues in the slot.
@@ -395,6 +396,28 @@ class ParallelService(unittest.TestCase):
         finally:
             cancel.set()
             t.join(3)
+
+    def test_affinity_protection_wait_zero_admits_at_once(self):
+        # STRATA_SLOT_PROTECT_WAIT_S=0: every idle history protected, the request overwrites one without waiting
+        self.start(6, says_groups=3, affinity=True)
+        slot_policy.configure({"STRATA_SLOT_PROTECT_WAIT_S": "0"})
+        e = self.engine
+        try:
+            with e.slot_cv:
+                e.slot_held = [[9000 + b] * 50000 for b in range(6)]
+                e.slot_used = [time.time()] * 6
+                e.slot_cache_valid = [True] * 6
+                e.slot_busy[0] = True
+                e.slot_claims.add(0)
+            started = time.monotonic()
+            tokens = list(e.generate_batched([9999], 8, {}, threading.Event()))
+            self.assertTrue(tokens)
+            self.assertLess(time.monotonic() - started, 1.0)
+            waits = [x for x in e.cache_events_view() if x["kind"] == "protection_end"]
+            self.assertTrue(waits)
+            self.assertLess(waits[-1]["waited_s"], 0.5)
+        finally:
+            slot_policy.configure({})
 
     def test_affinity_wait_wakes_when_a_short_history_expires(self):
         cancel, result, t = self._protected_waiter()
