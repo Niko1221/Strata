@@ -32,13 +32,17 @@ this PC only. The details and every setting are in [docs/DETAILS.md](docs/DETAIL
 - **Origin check (0.1.38).** Without an API key, a browser `POST` to `/v1/*` from another web site's page (it carries
   an `Origin` header) gets 403 unless that origin is Strata's own page, `localhost`, an allowed host, or listed in
   `"trusted_origins"` / `"cors_origins"`. Changing settings (`/settings`, and `/config`: the few run config keys the
-  page's Model settings may change - never the network, key, MCP or program keys), `/load` and `/unload` and the
-  MCP tools are accepted only as JSON from Strata's own page (or `"trusted_origins"`), so a page elsewhere cannot
-  change settings or run tools.
+  page's Model settings may change - never the network, key, MCP or program keys), `/load` and `/unload`, the
+  MCP tools, `/profile/run` and `/profile/tune` are accepted only as JSON from Strata's own page (or `"trusted_origins"`), so a page
+  elsewhere cannot change settings or run tools.
 - **CORS** is off unless `"cors_origins"` lists origins, and then only for `/v1/*`.
 - **MCP tools** are opt-in: only the servers you put in the run config, only for requests from Strata's own page
   that ask for them. They run with your user's rights, and the model decides when to call them.
 - **The request monitor** (`/api-monitor`, which keeps the last prompts and answers in memory) is off unless
   `"api_monitor": true` is set.
+- **The Profile tab** (`#profile` in the web app; `/profile` redirects there), which can start a measured run that
+  keeps the model busy for a minute or more, and a tuning run that unloads the model for the time setup's calibration
+  takes and writes the winners into the run config, is off unless `"profile": true` is set; both runs start only from
+  Strata's own page. The tab keeps the timings of the last 50 requests in memory, without prompts or answers.
 
 Strata has not had an outside security audit yet.

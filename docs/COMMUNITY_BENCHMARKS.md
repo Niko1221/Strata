@@ -109,6 +109,14 @@ python tools/strata_bench.py --compare bench/results/2026-10-01-community-rtx-30
 python tools/strata_bench.py --compare OLD_FOLDER --compare-only NEW_FOLDER   # two saved runs, nothing is started
 ```
 
+To see *where* the time goes rather than how much, `python tools/strata_profile.py` runs a similar set of requests
+with the engine's timing switches on and writes `bench/results/<date>-profile-<gpu>-<model>/README.md`: the prompt
+read by phase, the decode window by what it waited for, and findings that name the setting on each path
+(docs/DETAILS.md, "Where a decode window's time goes"). Attach it to a speed report or an issue; its tokens per
+second were measured with the timing switches on, so quote speeds from the benchmark.
+With `"profile": true` the web app's Profile tab runs the same tool with one click and shows its tables and findings;
+the report lands in the same folder.
+
 The tool is a speed check, not a quality test. For recall and other checks, see [Optional correctness
 checks](#optional-correctness-checks); for A/B tests of two builds use `tools/ab_engine.py`.
 

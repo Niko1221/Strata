@@ -1,0 +1,1978 @@
+{
+ "schema": 1,
+ "tool": "tools/strata_profile.py",
+ "date": "2026-10-15",
+ "params": {
+  "long": 32768,
+  "verify_profile": false,
+  "started_server": true,
+  "engine_log": true
+ },
+ "elapsed_s": 50.40118980407715,
+ "machine": {
+  "gpu": [
+   "NVIDIA GeForce RTX 5070 Ti"
+  ],
+  "gpu_vram_mib": 16303,
+  "gpu_driver": "595.99.02",
+  "cuda": "13.2",
+  "cpu": "AMD Ryzen 7 5800X3D 8-Core Processor",
+  "cpu_cores": 8,
+  "cpu_threads": 16,
+  "ram_gib": 76.5,
+  "os": "Linux 7.0.0-38-generic",
+  "python": "3.14.4",
+  "strata_version": "0.1.44.1",
+  "strata_commit": "0a2f1966",
+  "engine_version": "0.1.44.1",
+  "model": "swift-1.5-iq3_s",
+  "quant": "IQ3_S",
+  "context": 262144,
+  "parallel_slots": 1,
+  "config": {
+   "exe": "strata",
+   "args": [
+    "--pack",
+    "swift-iq3_s",
+    "--native",
+    "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf",
+    "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--expert-profile",
+    "expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "rt",
+    "--max-context",
+    "262144",
+    "--kv",
+    "int8",
+    "--kv-resident",
+    "32768"
+   ],
+   "model_name": "swift-1.5-iq3_s",
+   "lib_dirs": [
+    "/usr/local/cuda-13.1/bin",
+    "/usr/local/cuda-13.1/lib64"
+   ],
+   "port": 8080,
+   "gpu": 0,
+   "gpus_asked": true
+  },
+  "launch": "strata --pack swift-iq3_s --native Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --ple-gguf Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768",
+  "engine_info": {
+   "model": "swift-1.5-iq3_s",
+   "max_context": 262144,
+   "images": false,
+   "version": "0.1.44.1",
+   "logit_bias": 1,
+   "context": 262144,
+   "kv": "int8",
+   "kv_resident": 32768,
+   "expert_slots": 3880,
+   "expert_cache_mib": 7586,
+   "expert_slots_primary": 3880,
+   "expert_cache_primary_mib": 7586,
+   "spec": 6,
+   "mtp_max": 4,
+   "lookup": 3,
+   "vram_free_mib": 332,
+   "cvec": 0,
+   "arena_mib": 47962,
+   "pool_workers": 7,
+   "pcie_frac": "0.55",
+   "spec_min_p": "0.50",
+   "conversation_cache_mib": 0,
+   "conversation_cache_slots": 4,
+   "conversation_cache_min_free_mib": 2560,
+   "conversation_cache_min_tokens": 0,
+   "tail_role_token": -1,
+   "vram_elastic": 0,
+   "engine": "0.1.44.1"
+  },
+  "vram_after": {
+   "elastic": false
+  }
+ },
+ "results": {
+  "chat": {
+   "requests": [
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.49,
+     "total_s": 2.143,
+     "prompt_tokens": 49,
+     "reused_tokens": 0,
+     "read_tokens": 49,
+     "generated_tokens": 128,
+     "prompt_tps": 103.3,
+     "prompt_tps_source": "engine",
+     "decode_tps": 76.8,
+     "decode_tps_source": "engine",
+     "prompt_ms": 474.5,
+     "decode_ms": 1665.6,
+     "drafts_offered": 112,
+     "drafts_accepted": 91,
+     "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    Merge two sorted lists into one sorted list.\n    \n    Args:\n        list1: A sorted list of comparable elements.\n        list2: A sorted list of comparable elements.\n    \n    Returns:\n        A new sorted list containing all elements from both input lists.\n    \"\"\"\n    merged = []\n    i, j = 0, 0\n    while i < len(list1) and j < len(list2):\n        if list1[i] <= list2[j",
+     "engine": {
+      "decode": {
+       "windows": 39,
+       "avg_T": 3.87,
+       "tokens_per_window": 3.28,
+       "ms_per_window": 42.71,
+       "verify": 39.39,
+       "gpu": 13.17,
+       "host": 25.34,
+       "host_plan": 0.15,
+       "host_actq": 0.16,
+       "host_jobs": 0.07,
+       "host_cpu": 24.94,
+       "stage": 0.01,
+       "commit": 0.03,
+       "draft": 1.98,
+       "cpu_experts": 5.73,
+       "cpu_entries": 8.64,
+       "vram_hits": 18.05,
+       "pcie": 4.94,
+       "adapt_wait": 1.29,
+       "adapt_join": 0.01,
+       "swaps": 24.6
+      },
+      "summary": {
+       "prompt_tokens": 49,
+       "reused": 0,
+       "read": 49,
+       "prompt_ms": 474.0,
+       "prompt_tok_s": 103.3,
+       "generated": 128,
+       "decode_ms": 1666.0,
+       "decode_tok_s": 76.8,
+       "drafts_accepted": 91,
+       "drafts_offered": 112
+      },
+      "hit": {
+       "hit_rate": 0.676,
+       "hits": 33796,
+       "lookups": 49973,
+       "pcie_share": 0.182,
+       "offloaded": 11112,
+       "routed": 61085
+      },
+      "kv": {
+       "kv_hit": 0.9901,
+       "block_reads": 54804,
+       "ram_mib": 2.2,
+       "misses": 546
+      },
+      "kv_request": null
+     }
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.459,
+     "total_s": 2.137,
+     "prompt_tokens": 41,
+     "reused_tokens": 0,
+     "read_tokens": 41,
+     "generated_tokens": 128,
+     "prompt_tps": 92.6,
+     "prompt_tps_source": "engine",
+     "decode_tps": 75.7,
+     "decode_tps_source": "engine",
+     "prompt_ms": 442.6,
+     "decode_ms": 1690.4,
+     "drafts_offered": 117,
+     "drafts_accepted": 71,
+     "text": "A refrigerator operates by utilizing a closed-loop system of refrigerant that cycles through phase changes to absorb and release thermal energy. Inside the refrigerator, the refrigerant flows through coils known as the evaporator, where it is kept at a low pressure. At this low pressure, the refrigerant boils and evaporates, a process that requires energy in the form of heat. This heat is absorbed from the air inside the refrigerator, thereby lowering the internal temperature. As the refrigerant absorbs this heat, it transforms from a liquid to a gas, carrying the thermal energy away from the food and interior surfaces.\n\nThe gaseous refrigerant is then",
+     "engine": {
+      "decode": {
+       "windows": 58,
+       "avg_T": 3.02,
+       "tokens_per_window": 2.21,
+       "ms_per_window": 29.14,
+       "verify": 25.95,
+       "gpu": 9.26,
+       "host": 15.95,
+       "host_plan": 0.1,
+       "host_actq": 0.11,
+       "host_jobs": 0.04,
+       "host_cpu": 15.69,
+       "stage": 0.01,
+       "commit": 0.04,
+       "draft": 1.72,
+       "cpu_experts": 4.27,
+       "cpu_entries": 6.19,
+       "vram_hits": 18.13,
+       "pcie": 1.93,
+       "adapt_wait": 1.44,
+       "adapt_join": 0.0,
+       "swaps": 23.2
+      },
+      "summary": {
+       "prompt_tokens": 41,
+       "reused": 0,
+       "read": 41,
+       "prompt_ms": 443.0,
+       "prompt_tok_s": 92.6,
+       "generated": 128,
+       "decode_ms": 1690.0,
+       "decode_tok_s": 75.7,
+       "drafts_accepted": 71,
+       "drafts_offered": 117
+      },
+      "hit": {
+       "hit_rate": 0.745,
+       "hits": 50486,
+       "lookups": 67722,
+       "pcie_share": 0.083,
+       "offloaded": 6166,
+       "routed": 73888
+      },
+      "kv": {
+       "kv_hit": 0.9909,
+       "block_reads": 56736,
+       "ram_mib": 2.1,
+       "misses": 521
+      },
+      "kv_request": null
+     }
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.515,
+     "total_s": 2.247,
+     "prompt_tokens": 44,
+     "reused_tokens": 0,
+     "read_tokens": 44,
+     "generated_tokens": 128,
+     "prompt_tps": 88.6,
+     "prompt_tps_source": "engine",
+     "decode_tps": 73.3,
+     "decode_tps_source": "engine",
+     "prompt_ms": 496.8,
+     "decode_ms": 1746.6,
+     "drafts_offered": 105,
+     "drafts_accepted": 73,
+     "text": "1. Set specific, measurable goals to maintain motivation and track your progress effectively.\n2. Immerse yourself in the target language through media, music, and podcasts to build intuitive understanding.\n3. Practice speaking from day one, even with basic phrases, to overcome fear and build confidence.\n4. Use spaced repetition systems to efficiently memorize vocabulary and retain long-term knowledge.\n5. Find a language exchange partner or tutor to practice real-world conversation and receive immediate feedback.\n6. Focus on high-frequency words and phrases that are most useful for daily communication.\n7. Create a consistent daily study routine, even if it",
+     "engine": {
+      "decode": {
+       "windows": 55,
+       "avg_T": 2.91,
+       "tokens_per_window": 2.33,
+       "ms_per_window": 31.76,
+       "verify": 28.5,
+       "gpu": 9.14,
+       "host": 18.6,
+       "host_plan": 0.12,
+       "host_actq": 0.12,
+       "host_jobs": 0.05,
+       "host_cpu": 18.29,
+       "stage": 0.01,
+       "commit": 0.04,
+       "draft": 1.7,
+       "cpu_experts": 4.48,
+       "cpu_entries": 6.72,
+       "vram_hits": 16.25,
+       "pcie": 2.07,
+       "adapt_wait": 1.5,
+       "adapt_join": 0.02,
+       "swaps": 24.4
+      },
+      "summary": {
+       "prompt_tokens": 44,
+       "reused": 0,
+       "read": 44,
+       "prompt_ms": 497.0,
+       "prompt_tok_s": 88.6,
+       "generated": 128,
+       "decode_ms": 1747.0,
+       "decode_tok_s": 73.3,
+       "drafts_accepted": 73,
+       "drafts_offered": 105
+      },
+      "hit": {
+       "hit_rate": 0.708,
+       "hits": 42904,
+       "lookups": 60632,
+       "pcie_share": 0.095,
+       "offloaded": 6337,
+       "routed": 66969
+      },
+      "kv": {
+       "kv_hit": 0.9907,
+       "block_reads": 55644,
+       "ram_mib": 2.1,
+       "misses": 521
+      },
+      "kv_request": null
+     }
+    }
+   ]
+  },
+  "prompts": {
+   "2K": {
+    "ok": true,
+    "err": null,
+    "ttft_s": 1.829,
+    "total_s": 2.191,
+    "prompt_tokens": 2023,
+    "reused_tokens": 0,
+    "read_tokens": 2023,
+    "generated_tokens": 24,
+    "prompt_tps": 1118.1,
+    "prompt_tps_source": "engine",
+    "decode_tps": 63.7,
+    "decode_tps_source": "engine",
+    "prompt_ms": 1809.4,
+    "decode_ms": 377.0,
+    "drafts_offered": 23,
+    "drafts_accepted": 12,
+    "text": "The list is composed entirely of common English nouns that represent a diverse mix of natural, man-made, and abstract concepts.",
+    "engine": {
+     "prefill": {
+      "tokens": 2016,
+      "gpu_ms": 1614.0,
+      "wall_ms": 1618.0,
+      "host_staging_ms": 154.0,
+      "phases": {
+       "embed+steps": 3.0,
+       "hc read": 62.0,
+       "gdn": 111.0,
+       "qsa proj": 58.0,
+       "qsa indexer": 0.0,
+       "qsa select": 2.0,
+       "qsa attn": 27.0,
+       "router+shared": 23.0,
+       "host grouping": 10.0,
+       "gather": 6.0,
+       "wait copy": 680.0,
+       "dequant": 240.0,
+       "gemm gate/up": 145.0,
+       "gemm down": 88.0,
+       "combine": 51.0,
+       "ple": 3.0,
+       "kv stage": 0.0,
+       "gdn conv+gates": 12.0,
+       "gdn recurrence": 38.0,
+       "gdn out proj": 53.0
+      }
+     },
+     "prefill_host": {
+      "chunk_setup_ms": 3.0,
+      "wait_chunk_ms": 31.0,
+      "after_chunk_ms": 4.0,
+      "ple_ms": 33.0
+     },
+     "decode": {
+      "windows": 13,
+      "avg_T": 2.77,
+      "tokens_per_window": 1.85,
+      "ms_per_window": 29.0,
+      "verify": 25.89,
+      "gpu": 9.11,
+      "host": 16.05,
+      "host_plan": 0.1,
+      "host_actq": 0.1,
+      "host_jobs": 0.04,
+      "host_cpu": 15.79,
+      "stage": 0.01,
+      "commit": 0.02,
+      "draft": 1.61,
+      "cpu_experts": 4.29,
+      "cpu_entries": 6.47,
+      "vram_hits": 15.55,
+      "pcie": 1.9,
+      "adapt_wait": 1.44,
+      "adapt_join": 0.03,
+      "swaps": 22.2
+     },
+     "summary": {
+      "prompt_tokens": 2023,
+      "reused": 0,
+      "read": 2023,
+      "prompt_ms": 1809.0,
+      "prompt_tok_s": 1118.0,
+      "generated": 24,
+      "decode_ms": 377.0,
+      "decode_tok_s": 63.7,
+      "drafts_accepted": 12,
+      "drafts_offered": 23
+     },
+     "hit": {
+      "hit_rate": 0.706,
+      "hits": 9706,
+      "lookups": 13742,
+      "pcie_share": 0.091,
+      "offloaded": 1375,
+      "routed": 15117
+     },
+     "kv": {
+      "kv_hit": 0.976,
+      "block_reads": 256212,
+      "ram_mib": 24.8,
+      "misses": 6156
+     },
+     "kv_request": {
+      "kv_hit": 0.9719,
+      "block_reads": 200568,
+      "ram_mib": 22.7
+     }
+    },
+    "groups": {
+     "ms": {
+      "experts over PCIe": 696.0,
+      "dequant": 240.0,
+      "expert GEMM": 284.0,
+      "attention": 87.0,
+      "GDN": 214.0,
+      "other": 91.0
+     },
+     "share": {
+      "experts over PCIe": 0.4312267657992565,
+      "dequant": 0.14869888475836432,
+      "expert GEMM": 0.17596034696406443,
+      "attention": 0.05390334572490706,
+      "GDN": 0.1325898389095415,
+      "other": 0.0563816604708798
+     },
+     "gpu_ms": 1614.0,
+     "tokens": 2016,
+     "top": [
+      [
+       "wait copy",
+       680.0
+      ],
+      [
+       "dequant",
+       240.0
+      ],
+      [
+       "gemm gate/up",
+       145.0
+      ],
+      [
+       "gdn",
+       111.0
+      ],
+      [
+       "gemm down",
+       88.0
+      ]
+     ]
+    },
+    "summary": {
+     "prompt_tokens": 2023,
+     "reused": 0,
+     "read": 2023,
+     "prompt_ms": 1809.0,
+     "prompt_tok_s": 1118.0,
+     "generated": 24,
+     "decode_ms": 377.0,
+     "decode_tok_s": 63.7,
+     "drafts_accepted": 12,
+     "drafts_offered": 23
+    },
+    "prefill_host": {
+     "chunk_setup_ms": 3.0,
+     "wait_chunk_ms": 31.0,
+     "after_chunk_ms": 4.0,
+     "ple_ms": 33.0
+    }
+   },
+   "16K": {
+    "ok": true,
+    "err": null,
+    "ttft_s": 5.411,
+    "total_s": 5.725,
+    "prompt_tokens": 16058,
+    "reused_tokens": 0,
+    "read_tokens": 16058,
+    "generated_tokens": 24,
+    "prompt_tps": 2982.0,
+    "prompt_tps_source": "engine",
+    "decode_tps": 73.1,
+    "decode_tps_source": "engine",
+    "prompt_ms": 5384.9,
+    "decode_ms": 328.1,
+    "drafts_offered": 24,
+    "drafts_accepted": 13,
+    "text": "The list is composed entirely of common English nouns that represent a diverse mix of natural, man-made, and abstract concepts.",
+    "engine": {
+     "prefill": {
+      "tokens": 16051,
+      "gpu_ms": 5099.0,
+      "wall_ms": 5113.0,
+      "host_staging_ms": 253.0,
+      "phases": {
+       "embed+steps": 49.0,
+       "hc read": 498.0,
+       "gdn": 594.0,
+       "qsa proj": 346.0,
+       "qsa indexer": 0.0,
+       "qsa select": 61.0,
+       "qsa attn": 388.0,
+       "router+shared": 138.0,
+       "host grouping": 34.0,
+       "gather": 51.0,
+       "wait copy": 206.0,
+       "dequant": 376.0,
+       "gemm gate/up": 691.0,
+       "gemm down": 428.0,
+       "combine": 397.0,
+       "ple": 24.0,
+       "kv stage": 119.0,
+       "gdn conv+gates": 94.0,
+       "gdn recurrence": 302.0,
+       "gdn out proj": 304.0
+      }
+     },
+     "prefill_host": {
+      "chunk_setup_ms": 3.0,
+      "wait_chunk_ms": 33.0,
+      "after_chunk_ms": 29.0,
+      "ple_ms": 178.0
+     },
+     "decode": {
+      "windows": 13,
+      "avg_T": 2.85,
+      "tokens_per_window": 1.85,
+      "ms_per_window": 25.24,
+      "verify": 22.09,
+      "gpu": 9.66,
+      "host": 11.68,
+      "host_plan": 0.1,
+      "host_actq": 0.1,
+      "host_jobs": 0.03,
+      "host_cpu": 11.43,
+      "stage": 0.01,
+      "commit": 0.06,
+      "draft": 1.87,
+      "cpu_experts": 3.23,
+      "cpu_entries": 4.13,
+      "vram_hits": 20.07,
+      "pcie": 1.27,
+      "adapt_wait": 1.21,
+      "adapt_join": 0.0,
+      "swaps": 22.2
+     },
+     "summary": {
+      "prompt_tokens": 16058,
+      "reused": 0,
+      "read": 16058,
+      "prompt_ms": 5385.0,
+      "prompt_tok_s": 2982.1,
+      "generated": 24,
+      "decode_ms": 328.0,
+      "decode_tok_s": 73.2,
+      "drafts_accepted": 13,
+      "drafts_offered": 24
+     },
+     "hit": {
+      "hit_rate": 0.829,
+      "hits": 12523,
+      "lookups": 15101,
+      "pcie_share": 0.055,
+      "offloaded": 873,
+      "routed": 15974
+     },
+     "kv": {
+      "kv_hit": 0.9174,
+      "block_reads": 264948,
+      "ram_mib": 88.2,
+      "misses": 21895
+     },
+     "kv_request": {
+      "kv_hit": -0.8016,
+      "block_reads": 8736,
+      "ram_mib": 63.4
+     }
+    },
+    "groups": {
+     "ms": {
+      "experts over PCIe": 291.0,
+      "dequant": 376.0,
+      "expert GEMM": 1516.0,
+      "attention": 914.0,
+      "GDN": 1294.0,
+      "other": 709.0
+     },
+     "share": {
+      "experts over PCIe": 0.057070013728182,
+      "dequant": 0.07373994900960973,
+      "expert GEMM": 0.29731319866640515,
+      "attention": 0.17925083349676407,
+      "GDN": 0.25377525004902923,
+      "other": 0.13904687193567367
+     },
+     "gpu_ms": 5099.0,
+     "tokens": 16051,
+     "top": [
+      [
+       "gemm gate/up",
+       691.0
+      ],
+      [
+       "gdn",
+       594.0
+      ],
+      [
+       "hc read",
+       498.0
+      ],
+      [
+       "gemm down",
+       428.0
+      ],
+      [
+       "combine",
+       397.0
+      ]
+     ]
+    },
+    "summary": {
+     "prompt_tokens": 16058,
+     "reused": 0,
+     "read": 16058,
+     "prompt_ms": 5385.0,
+     "prompt_tok_s": 2982.1,
+     "generated": 24,
+     "decode_ms": 328.0,
+     "decode_tok_s": 73.2,
+     "drafts_accepted": 13,
+     "drafts_offered": 24
+    },
+    "prefill_host": {
+     "chunk_setup_ms": 3.0,
+     "wait_chunk_ms": 33.0,
+     "after_chunk_ms": 29.0,
+     "ple_ms": 178.0
+    }
+   },
+   "32K (long)": {
+    "ok": true,
+    "err": null,
+    "ttft_s": 10.571,
+    "total_s": 12.119,
+    "prompt_tokens": 32049,
+    "reused_tokens": 0,
+    "read_tokens": 32049,
+    "generated_tokens": 128,
+    "prompt_tps": 3041.3,
+    "prompt_tps_source": "engine",
+    "decode_tps": 82.0,
+    "decode_tps_source": "engine",
+    "prompt_ms": 10537.8,
+    "decode_ms": 1560.9,
+    "drafts_offered": 116,
+    "drafts_accepted": 71,
+    "text": "The list is composed entirely of common English nouns that represent a diverse mix of natural, man-made, and abstract concepts. Natural elements are prominently featured, including geological features like \"canyon,\" \"stone,\" and \"quartz,\" as well as celestial terms such as \"orbit\" and \"winter.\" Man-made objects and materials appear frequently, with words like \"lantern,\" \"anchor,\" \"needle,\" \"velvet,\" and \"copper\" recurring throughout the sequence. Abstract and commercial terms are also present, notably \"market,\" \"signal,\" \"ledger,\" and \"garden,\" which suggest themes of trade, communication, and organization",
+    "engine": {
+     "prefill": {
+      "tokens": 32042,
+      "gpu_ms": 10257.0,
+      "wall_ms": 10271.0,
+      "host_staging_ms": 449.0,
+      "phases": {
+       "embed+steps": 194.0,
+       "hc read": 989.0,
+       "gdn": 1180.0,
+       "qsa proj": 684.0,
+       "qsa indexer": 1.0,
+       "qsa select": 220.0,
+       "qsa attn": 800.0,
+       "router+shared": 282.0,
+       "host grouping": 64.0,
+       "gather": 102.0,
+       "wait copy": 463.0,
+       "dequant": 680.0,
+       "gemm gate/up": 1351.0,
+       "gemm down": 829.0,
+       "combine": 560.0,
+       "ple": 47.0,
+       "kv stage": 421.0,
+       "gdn conv+gates": 185.0,
+       "gdn recurrence": 602.0,
+       "gdn out proj": 605.0
+      }
+     },
+     "prefill_host": {
+      "chunk_setup_ms": 4.0,
+      "wait_chunk_ms": 66.0,
+      "after_chunk_ms": 109.0,
+      "ple_ms": 186.0
+     },
+     "decode": {
+      "windows": 57,
+      "avg_T": 3.04,
+      "tokens_per_window": 2.25,
+      "ms_per_window": 27.39,
+      "verify": 23.78,
+      "gpu": 9.97,
+      "host": 13.05,
+      "host_plan": 0.1,
+      "host_actq": 0.11,
+      "host_jobs": 0.03,
+      "host_cpu": 12.79,
+      "stage": 0.01,
+      "commit": 0.02,
+      "draft": 2.28,
+      "cpu_experts": 3.62,
+      "cpu_entries": 4.67,
+      "vram_hits": 20.77,
+      "pcie": 1.52,
+      "adapt_wait": 1.29,
+      "adapt_join": 0.01,
+      "swaps": 25.3
+     },
+     "summary": {
+      "prompt_tokens": 32049,
+      "reused": 0,
+      "read": 32049,
+      "prompt_ms": 10538.0,
+      "prompt_tok_s": 3041.3,
+      "generated": 128,
+      "decode_ms": 1561.0,
+      "decode_tok_s": 82.0,
+      "drafts_accepted": 71,
+      "drafts_offered": 116
+     },
+     "hit": {
+      "hit_rate": 0.816,
+      "hits": 56830,
+      "lookups": 69611,
+      "pcie_share": 0.062,
+      "offloaded": 4588,
+      "routed": 74199
+     },
+     "kv": {
+      "kv_hit": 0.9533,
+      "block_reads": 1103052,
+      "ram_mib": 207.4,
+      "misses": 51485
+     },
+     "kv_request": {
+      "kv_hit": 0.9647,
+      "block_reads": 838104,
+      "ram_mib": 119.2
+     }
+    },
+    "groups": {
+     "ms": {
+      "experts over PCIe": 629.0,
+      "dequant": 680.0,
+      "expert GEMM": 2740.0,
+      "attention": 2126.0,
+      "GDN": 2572.0,
+      "other": 1512.0
+     },
+     "share": {
+      "experts over PCIe": 0.06132397387150239,
+      "dequant": 0.06629618796919177,
+      "expert GEMM": 0.2671346397582139,
+      "attention": 0.20727308179779663,
+      "GDN": 0.25075558155406064,
+      "other": 0.14741152383737935
+     },
+     "gpu_ms": 10257.0,
+     "tokens": 32042,
+     "top": [
+      [
+       "gemm gate/up",
+       1351.0
+      ],
+      [
+       "gdn",
+       1180.0
+      ],
+      [
+       "hc read",
+       989.0
+      ],
+      [
+       "gemm down",
+       829.0
+      ],
+      [
+       "qsa attn",
+       800.0
+      ]
+     ]
+    },
+    "summary": {
+     "prompt_tokens": 32049,
+     "reused": 0,
+     "read": 32049,
+     "prompt_ms": 10538.0,
+     "prompt_tok_s": 3041.3,
+     "generated": 128,
+     "decode_ms": 1561.0,
+     "decode_tok_s": 82.0,
+     "drafts_accepted": 71,
+     "drafts_offered": 116
+    },
+    "prefill_host": {
+     "chunk_setup_ms": 4.0,
+     "wait_chunk_ms": 66.0,
+     "after_chunk_ms": 109.0,
+     "ple_ms": 186.0
+    }
+   }
+  },
+  "decode": {
+   "chat": {
+    "context": 44,
+    "decode_tps": {
+     "median": 75.7,
+     "min": 73.3,
+     "max": 76.8,
+     "n": 3
+    },
+    "groups": {
+     "ms": {
+      "GPU": 10.219802631578949,
+      "CPU experts": 19.318157894736842,
+      "draft": 1.7794736842105265,
+      "adapt wait": 1.4232236842105261,
+      "other": 0.8291447368421063
+     },
+     "share": {
+      "GPU": 0.30443439729863736,
+      "CPU experts": 0.57546236141896,
+      "draft": 0.053008166408955414,
+      "adapt wait": 0.042395950307783654,
+      "other": 0.024699124565663484
+     },
+     "ms_per_window": 33.56980263157895,
+     "tokens_per_window": 2.5279605263157894,
+     "windows": 152,
+     "cpu_entries": 7.0103947368421045,
+     "cpu_experts": 4.720592105263158,
+     "vram_hits": 17.42921052631579,
+     "pcie": 2.75296052631579,
+     "swaps": 23.99342105263158
+    },
+    "decode": {
+     "windows": 152,
+     "avg_T": 3.1982894736842105,
+     "tokens_per_window": 2.5279605263157894,
+     "ms_per_window": 33.56980263157895,
+     "verify": 30.321118421052628,
+     "gpu": 10.219802631578949,
+     "host": 19.318157894736842,
+     "host_plan": 0.12006578947368421,
+     "host_actq": 0.1264473684210526,
+     "host_jobs": 0.05131578947368422,
+     "host_cpu": 19.004144736842107,
+     "stage": 0.01,
+     "commit": 0.037434210526315785,
+     "draft": 1.7794736842105265,
+     "cpu_experts": 4.720592105263158,
+     "cpu_entries": 7.0103947368421045,
+     "vram_hits": 17.42921052631579,
+     "pcie": 2.75296052631579,
+     "adapt_wait": 1.4232236842105261,
+     "adapt_join": 0.00980263157894737,
+     "swaps": 23.99342105263158
+    },
+    "hit": {
+     "hit_rate": 0.708,
+     "pcie_share": 0.095
+    },
+    "summary": null,
+    "gpu_stages": null
+   },
+   "long context": {
+    "context": 32049,
+    "decode_tps": {
+     "median": 82.0,
+     "min": 82.0,
+     "max": 82.0,
+     "n": 1
+    },
+    "groups": {
+     "ms": {
+      "GPU": 9.97,
+      "CPU experts": 13.05,
+      "draft": 2.28,
+      "adapt wait": 1.29,
+      "other": 0.8000000000000012
+     },
+     "share": {
+      "GPU": 0.3640014603870026,
+      "CPU experts": 0.4764512595837897,
+      "draft": 0.08324205914567359,
+      "adapt wait": 0.047097480832420595,
+      "other": 0.029207740051113585
+     },
+     "ms_per_window": 27.39,
+     "tokens_per_window": 2.25,
+     "windows": 57,
+     "cpu_entries": 4.67,
+     "cpu_experts": 3.62,
+     "vram_hits": 20.77,
+     "pcie": 1.52,
+     "swaps": 25.3
+    },
+    "decode": {
+     "windows": 57,
+     "avg_T": 3.04,
+     "tokens_per_window": 2.25,
+     "ms_per_window": 27.39,
+     "verify": 23.78,
+     "gpu": 9.97,
+     "host": 13.05,
+     "host_plan": 0.1,
+     "host_actq": 0.11,
+     "host_jobs": 0.03,
+     "host_cpu": 12.79,
+     "stage": 0.01,
+     "commit": 0.02,
+     "draft": 2.28,
+     "cpu_experts": 3.62,
+     "cpu_entries": 4.67,
+     "vram_hits": 20.77,
+     "pcie": 1.52,
+     "adapt_wait": 1.29,
+     "adapt_join": 0.01,
+     "swaps": 25.3
+    },
+    "hit": {
+     "hit_rate": 0.816,
+     "hits": 56830,
+     "lookups": 69611,
+     "pcie_share": 0.062,
+     "offloaded": 4588,
+     "routed": 74199
+    },
+    "summary": {
+     "prompt_tokens": 32049,
+     "reused": 0,
+     "read": 32049,
+     "prompt_ms": 10538.0,
+     "prompt_tok_s": 3041.3,
+     "generated": 128,
+     "decode_ms": 1561.0,
+     "decode_tok_s": 82.0,
+     "drafts_accepted": 71,
+     "drafts_offered": 116
+    },
+    "kv": {
+     "kv_hit": 0.9647,
+     "block_reads": 838104,
+     "ram_mib": 119.2
+    },
+    "gpu_stages": null
+   },
+   "agent turns": {
+    "context": 8721,
+    "decode_tps": {
+     "median": 71.7,
+     "min": 65.4,
+     "max": 98.3,
+     "n": 5
+    },
+    "groups": {
+     "ms": {
+      "GPU": 10.14015503875969,
+      "CPU experts": 17.86953488372093,
+      "draft": 2.015426356589147,
+      "adapt wait": 1.2513953488372094,
+      "other": 0.9020930232558153
+     },
+     "share": {
+      "GPU": 0.3151210299105766,
+      "CPU experts": 0.5553234851988899,
+      "draft": 0.06263249691643538,
+      "adapt wait": 0.03888904949121184,
+      "other": 0.028033938482886257
+     },
+     "ms_per_window": 32.17860465116279,
+     "tokens_per_window": 2.378682170542636,
+     "windows": 129,
+     "cpu_entries": 6.617674418604651,
+     "cpu_experts": 4.667131782945737,
+     "vram_hits": 22.517984496124033,
+     "pcie": 1.8495348837209302,
+     "swaps": 24.537209302325582
+    },
+    "decode": {
+     "windows": 129,
+     "avg_T": 3.4948837209302326,
+     "tokens_per_window": 2.378682170542636,
+     "ms_per_window": 32.17860465116279,
+     "verify": 28.867441860465117,
+     "gpu": 10.14015503875969,
+     "host": 17.86953488372093,
+     "host_plan": 0.13077519379844962,
+     "host_actq": 0.1345736434108527,
+     "host_jobs": 0.04364341085271318,
+     "host_cpu": 17.538062015503876,
+     "stage": 0.01,
+     "commit": 0.033643410852713176,
+     "draft": 2.015426356589147,
+     "cpu_experts": 4.667131782945737,
+     "cpu_entries": 6.617674418604651,
+     "vram_hits": 22.517984496124033,
+     "pcie": 1.8495348837209302,
+     "adapt_wait": 1.2513953488372094,
+     "adapt_join": 0.010697674418604652,
+     "swaps": 24.537209302325582
+    },
+    "hit": {
+     "hit_rate": 0.793,
+     "pcie_share": 0.063
+    },
+    "summary": null,
+    "gpu_stages": null
+   }
+  },
+  "agent": {
+   "turns": [
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 1.251,
+     "total_s": 1.507,
+     "prompt_tokens": 609,
+     "reused_tokens": 0,
+     "read_tokens": 609,
+     "generated_tokens": 13,
+     "prompt_tps": 495.8,
+     "prompt_tps_source": "engine",
+     "decode_tps": 47.5,
+     "decode_tps_source": "engine",
+     "prompt_ms": 1228.4,
+     "decode_ms": 273.5,
+     "drafts_offered": 16,
+     "drafts_accepted": 8,
+     "text": "Understood. Please go ahead and show me the files.",
+     "turn": 0,
+     "engine": {
+      "prefill": {
+       "tokens": 602,
+       "gpu_ms": 1076.0,
+       "wall_ms": 1077.0,
+       "host_staging_ms": 489.0,
+       "phases": {
+        "embed+steps": 0.0,
+        "hc read": 17.0,
+        "gdn": 64.0,
+        "qsa proj": 29.0,
+        "qsa indexer": 0.0,
+        "qsa select": 1.0,
+        "qsa attn": 3.0,
+        "router+shared": 14.0,
+        "host grouping": 18.0,
+        "gather": 3.0,
+        "wait copy": 376.0,
+        "dequant": 266.0,
+        "gemm gate/up": 88.0,
+        "gemm down": 52.0,
+        "combine": 104.0,
+        "ple": 1.0,
+        "kv stage": 0.0,
+        "gdn conv+gates": 3.0,
+        "gdn recurrence": 11.0,
+        "gdn out proj": 26.0
+       }
+      },
+      "prefill_host": {
+       "chunk_setup_ms": 0.0,
+       "wait_chunk_ms": 0.0,
+       "after_chunk_ms": 1.0,
+       "ple_ms": 199.0
+      },
+      "decode": {
+       "windows": 7,
+       "avg_T": 3.29,
+       "tokens_per_window": 1.86,
+       "ms_per_window": 39.08,
+       "verify": 36.67,
+       "gpu": 9.52,
+       "host": 26.39,
+       "host_plan": 0.12,
+       "host_actq": 0.12,
+       "host_jobs": 0.05,
+       "host_cpu": 26.07,
+       "stage": 0.01,
+       "commit": 0.02,
+       "draft": 1.62,
+       "cpu_experts": 6.89,
+       "cpu_entries": 12.12,
+       "vram_hits": 12.66,
+       "pcie": 2.96,
+       "adapt_wait": 0.77,
+       "adapt_join": 0.0,
+       "swaps": 13.7
+      },
+      "summary": {
+       "prompt_tokens": 609,
+       "reused": 0,
+       "read": 609,
+       "prompt_ms": 1228.0,
+       "prompt_tok_s": 495.8,
+       "generated": 13,
+       "decode_ms": 274.0,
+       "decode_tok_s": 47.5,
+       "drafts_accepted": 8,
+       "drafts_offered": 16
+      },
+      "hit": {
+       "hit_rate": 0.511,
+       "hits": 4253,
+       "lookups": 8325,
+       "pcie_share": 0.127,
+       "offloaded": 1215,
+       "routed": 9540
+      },
+      "kv": {
+       "kv_hit": 0.965,
+       "block_reads": 53508,
+       "ram_mib": 7.5,
+       "misses": 1862
+      },
+      "kv_request": null
+     },
+     "groups": {
+      "ms": {
+       "GPU": 9.52,
+       "CPU experts": 26.39,
+       "draft": 1.62,
+       "adapt wait": 0.77,
+       "other": 0.779999999999998
+      },
+      "share": {
+       "GPU": 0.2436028659160696,
+       "CPU experts": 0.675281473899693,
+       "draft": 0.04145342886386899,
+       "adapt wait": 0.019703172978505632,
+       "other": 0.019959058341862797
+      },
+      "ms_per_window": 39.08,
+      "tokens_per_window": 1.86,
+      "windows": 7,
+      "cpu_entries": 12.12,
+      "cpu_experts": 6.89,
+      "vram_hits": 12.66,
+      "pcie": 2.96,
+      "swaps": 13.7
+     },
+     "hit": {
+      "hit_rate": 0.511,
+      "hits": 4253,
+      "lookups": 8325,
+      "pcie_share": 0.127,
+      "offloaded": 1215,
+      "routed": 9540
+     },
+     "summary": {
+      "prompt_tokens": 609,
+      "reused": 0,
+      "read": 609,
+      "prompt_ms": 1228.0,
+      "prompt_tok_s": 495.8,
+      "generated": 13,
+      "decode_ms": 274.0,
+      "decode_tok_s": 47.5,
+      "drafts_accepted": 8,
+      "drafts_offered": 16
+     }
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 2.173,
+     "total_s": 3.137,
+     "prompt_tokens": 3744,
+     "reused_tokens": 623,
+     "read_tokens": 3121,
+     "generated_tokens": 64,
+     "prompt_tps": 1452.3,
+     "prompt_tps_source": "engine",
+     "decode_tps": 65.4,
+     "decode_tps_source": "engine",
+     "prompt_ms": 2149.0,
+     "decode_ms": 978.4,
+     "drafts_offered": 63,
+     "drafts_accepted": 39,
+     "text": "This is the project's main README, introducing Strata as a free, open-source tool that runs the 125B-parameter Qwen3.8-Flash-Next AI model locally on a gaming PC (NVIDIA/AMD, Windows/Linux) with hardware requirements, benchmarks, and installation instructions. It also",
+     "turn": 1,
+     "engine": {
+      "prefill": {
+       "tokens": 3114,
+       "gpu_ms": 1941.0,
+       "wall_ms": 1947.0,
+       "host_staging_ms": 537.0,
+       "phases": {
+        "embed+steps": 1.0,
+        "hc read": 99.0,
+        "gdn": 147.0,
+        "qsa proj": 77.0,
+        "qsa indexer": 0.0,
+        "qsa select": 6.0,
+        "qsa attn": 68.0,
+        "router+shared": 30.0,
+        "host grouping": 12.0,
+        "gather": 9.0,
+        "wait copy": 174.0,
+        "dequant": 323.0,
+        "gemm gate/up": 225.0,
+        "gemm down": 133.0,
+        "combine": 207.0,
+        "ple": 5.0,
+        "kv stage": 278.0,
+        "gdn conv+gates": 18.0,
+        "gdn recurrence": 59.0,
+        "gdn out proj": 68.0
+       }
+      },
+      "prefill_host": {
+       "chunk_setup_ms": 1.0,
+       "wait_chunk_ms": 11.0,
+       "after_chunk_ms": 5.0,
+       "ple_ms": 385.0
+      },
+      "decode": {
+       "windows": 26,
+       "avg_T": 3.42,
+       "tokens_per_window": 2.46,
+       "ms_per_window": 37.63,
+       "verify": 34.17,
+       "gpu": 9.98,
+       "host": 23.44,
+       "host_plan": 0.13,
+       "host_actq": 0.13,
+       "host_jobs": 0.05,
+       "host_cpu": 23.11,
+       "stage": 0.01,
+       "commit": 0.03,
+       "draft": 1.91,
+       "cpu_experts": 6.23,
+       "cpu_entries": 10.07,
+       "vram_hits": 16.5,
+       "pcie": 2.62,
+       "adapt_wait": 1.52,
+       "adapt_join": 0.0,
+       "swaps": 25.8
+      },
+      "summary": {
+       "prompt_tokens": 3744,
+       "reused": 623,
+       "read": 3121,
+       "prompt_ms": 2149.0,
+       "prompt_tok_s": 1452.3,
+       "generated": 64,
+       "decode_ms": 978.0,
+       "decode_tok_s": 65.4,
+       "drafts_accepted": 39,
+       "drafts_offered": 63
+      },
+      "hit": {
+       "hit_rate": 0.621,
+       "hits": 20595,
+       "lookups": 33157,
+       "pcie_share": 0.104,
+       "offloaded": 3837,
+       "routed": 36994
+      },
+      "kv": {
+       "kv_hit": 0.9822,
+       "block_reads": 638904,
+       "ram_mib": 45.8,
+       "misses": 11370
+      },
+      "kv_request": {
+       "kv_hit": 0.9838,
+       "block_reads": 585396,
+       "ram_mib": 38.3
+      }
+     },
+     "groups": {
+      "ms": {
+       "GPU": 9.98,
+       "CPU experts": 23.44,
+       "draft": 1.91,
+       "adapt wait": 1.52,
+       "other": 0.7800000000000007
+      },
+      "share": {
+       "GPU": 0.2652139250597927,
+       "CPU experts": 0.6229072548498539,
+       "draft": 0.050757374435290985,
+       "adapt wait": 0.04039330321551953,
+       "other": 0.020728142439542935
+      },
+      "ms_per_window": 37.63,
+      "tokens_per_window": 2.46,
+      "windows": 26,
+      "cpu_entries": 10.07,
+      "cpu_experts": 6.23,
+      "vram_hits": 16.5,
+      "pcie": 2.62,
+      "swaps": 25.8
+     },
+     "hit": {
+      "hit_rate": 0.621,
+      "hits": 20595,
+      "lookups": 33157,
+      "pcie_share": 0.104,
+      "offloaded": 3837,
+      "routed": 36994
+     },
+     "summary": {
+      "prompt_tokens": 3744,
+      "reused": 623,
+      "read": 3121,
+      "prompt_ms": 2149.0,
+      "prompt_tok_s": 1452.3,
+      "generated": 64,
+      "decode_ms": 978.0,
+      "decode_tok_s": 65.4,
+      "drafts_accepted": 39,
+      "drafts_offered": 63
+     }
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 1.931,
+     "total_s": 2.876,
+     "prompt_tokens": 5277,
+     "reused_tokens": 3808,
+     "read_tokens": 1469,
+     "generated_tokens": 64,
+     "prompt_tps": 769.3,
+     "prompt_tps_source": "engine",
+     "decode_tps": 66.8,
+     "decode_tps_source": "engine",
+     "prompt_ms": 1909.6,
+     "decode_ms": 958.5,
+     "drafts_offered": 73,
+     "drafts_accepted": 38,
+     "text": "This document explains Strata's architecture: how it fits a 125B MoE model into a consumer PC by splitting work across GPU (cached hot experts + attention), CPU (experts computed in RAM), and SSD (n-gram lookup table), plus speculative decoding via the MTP layer. It also",
+     "turn": 2,
+     "engine": {
+      "prefill": {
+       "tokens": 1462,
+       "gpu_ms": 1734.0,
+       "wall_ms": 1737.0,
+       "host_staging_ms": 586.0,
+       "phases": {
+        "embed+steps": 1.0,
+        "hc read": 48.0,
+        "gdn": 92.0,
+        "qsa proj": 46.0,
+        "qsa indexer": 0.0,
+        "qsa select": 4.0,
+        "qsa attn": 38.0,
+        "router+shared": 20.0,
+        "host grouping": 8.0,
+        "gather": 5.0,
+        "wait copy": 436.0,
+        "dequant": 308.0,
+        "gemm gate/up": 163.0,
+        "gemm down": 95.0,
+        "combine": 77.0,
+        "ple": 2.0,
+        "kv stage": 314.0,
+        "gdn conv+gates": 8.0,
+        "gdn recurrence": 28.0,
+        "gdn out proj": 42.0
+       }
+      },
+      "prefill_host": {
+       "chunk_setup_ms": 0.0,
+       "wait_chunk_ms": 9.0,
+       "after_chunk_ms": 3.0,
+       "ple_ms": 473.0
+      },
+      "decode": {
+       "windows": 27,
+       "avg_T": 3.7,
+       "tokens_per_window": 2.37,
+       "ms_per_window": 35.5,
+       "verify": 32.26,
+       "gpu": 10.24,
+       "host": 20.79,
+       "host_plan": 0.13,
+       "host_actq": 0.14,
+       "host_jobs": 0.05,
+       "host_cpu": 20.45,
+       "stage": 0.01,
+       "commit": 0.04,
+       "draft": 2.01,
+       "cpu_experts": 5.58,
+       "cpu_entries": 7.92,
+       "vram_hits": 22.16,
+       "pcie": 2.31,
+       "adapt_wait": 1.17,
+       "adapt_join": 0.02,
+       "swaps": 24.9
+      },
+      "summary": {
+       "prompt_tokens": 5277,
+       "reused": 3808,
+       "read": 1469,
+       "prompt_ms": 1910.0,
+       "prompt_tok_s": 769.3,
+       "generated": 64,
+       "decode_ms": 959.0,
+       "decode_tok_s": 66.8,
+       "drafts_accepted": 38,
+       "drafts_offered": 73
+      },
+      "hit": {
+       "hit_rate": 0.737,
+       "hits": 28721,
+       "lookups": 38986,
+       "pcie_share": 0.079,
+       "offloaded": 3352,
+       "routed": 42338
+      },
+      "kv": {
+       "kv_hit": 0.9876,
+       "block_reads": 1292064,
+       "ram_mib": 64.3,
+       "misses": 15962
+      },
+      "kv_request": {
+       "kv_hit": 0.993,
+       "block_reads": 653160,
+       "ram_mib": 18.5
+      }
+     },
+     "groups": {
+      "ms": {
+       "GPU": 10.24,
+       "CPU experts": 20.79,
+       "draft": 2.01,
+       "adapt wait": 1.17,
+       "other": 1.2899999999999991
+      },
+      "share": {
+       "GPU": 0.28845070422535213,
+       "CPU experts": 0.5856338028169014,
+       "draft": 0.05661971830985915,
+       "adapt wait": 0.032957746478873236,
+       "other": 0.03633802816901406
+      },
+      "ms_per_window": 35.5,
+      "tokens_per_window": 2.37,
+      "windows": 27,
+      "cpu_entries": 7.92,
+      "cpu_experts": 5.58,
+      "vram_hits": 22.16,
+      "pcie": 2.31,
+      "swaps": 24.9
+     },
+     "hit": {
+      "hit_rate": 0.737,
+      "hits": 28721,
+      "lookups": 38986,
+      "pcie_share": 0.079,
+      "offloaded": 3352,
+      "routed": 42338
+     },
+     "summary": {
+      "prompt_tokens": 5277,
+      "reused": 3808,
+      "read": 1469,
+      "prompt_ms": 1910.0,
+      "prompt_tok_s": 769.3,
+      "generated": 64,
+      "decode_ms": 959.0,
+      "decode_tok_s": 66.8,
+      "drafts_accepted": 38,
+      "drafts_offered": 73
+     }
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 2.181,
+     "total_s": 2.972,
+     "prompt_tokens": 8721,
+     "reused_tokens": 5341,
+     "read_tokens": 3380,
+     "generated_tokens": 64,
+     "prompt_tps": 1570.7,
+     "prompt_tps_source": "engine",
+     "decode_tps": 79.7,
+     "decode_tps_source": "engine",
+     "prompt_ms": 2151.9,
+     "decode_ms": 802.7,
+     "drafts_offered": 71,
+     "drafts_accepted": 32,
+     "text": "This is Strata's technical reference page, collecting all measured benchmark numbers (prompt/decode speeds per model size and context length), GPU estimates, and requirements/install notes. It also documents the API, image support, troubleshooting, and the many optional engine settings and flags (KV cache formats, speculative decoding, reproducibility knobs",
+     "turn": 3,
+     "engine": {
+      "prefill": {
+       "tokens": 3373,
+       "gpu_ms": 1951.0,
+       "wall_ms": 1957.0,
+       "host_staging_ms": 635.0,
+       "phases": {
+        "embed+steps": 1.0,
+        "hc read": 106.0,
+        "gdn": 156.0,
+        "qsa proj": 83.0,
+        "qsa indexer": 0.0,
+        "qsa select": 12.0,
+        "qsa attn": 87.0,
+        "router+shared": 33.0,
+        "host grouping": 11.0,
+        "gather": 9.0,
+        "wait copy": 151.0,
+        "dequant": 320.0,
+        "gemm gate/up": 234.0,
+        "gemm down": 138.0,
+        "combine": 174.0,
+        "ple": 5.0,
+        "kv stage": 272.0,
+        "gdn conv+gates": 20.0,
+        "gdn recurrence": 64.0,
+        "gdn out proj": 75.0
+       }
+      },
+      "prefill_host": {
+       "chunk_setup_ms": 1.0,
+       "wait_chunk_ms": 12.0,
+       "after_chunk_ms": 6.0,
+       "ple_ms": 623.0
+      },
+      "decode": {
+       "windows": 32,
+       "avg_T": 3.22,
+       "tokens_per_window": 2.0,
+       "ms_per_window": 25.08,
+       "verify": 21.91,
+       "gpu": 10.05,
+       "host": 11.1,
+       "host_plan": 0.1,
+       "host_actq": 0.11,
+       "host_jobs": 0.03,
+       "host_cpu": 10.83,
+       "stage": 0.01,
+       "commit": 0.02,
+       "draft": 1.91,
+       "cpu_experts": 3.22,
+       "cpu_entries": 4.24,
+       "vram_hits": 24.01,
+       "pcie": 1.12,
+       "adapt_wait": 1.23,
+       "adapt_join": 0.01,
+       "swaps": 24.0
+      },
+      "summary": {
+       "prompt_tokens": 8721,
+       "reused": 5341,
+       "read": 3380,
+       "prompt_ms": 2152.0,
+       "prompt_tok_s": 1570.7,
+       "generated": 64,
+       "decode_ms": 803.0,
+       "decode_tok_s": 79.7,
+       "drafts_accepted": 32,
+       "drafts_offered": 71
+      },
+      "hit": {
+       "hit_rate": 0.85,
+       "hits": 36882,
+       "lookups": 43394,
+       "pcie_share": 0.041,
+       "offloaded": 1866,
+       "routed": 45260
+      },
+      "kv": {
+       "kv_hit": 0.987,
+       "block_reads": 1963752,
+       "ram_mib": 102.8,
+       "misses": 25519
+      },
+      "kv_request": {
+       "kv_hit": 0.9858,
+       "block_reads": 671688,
+       "ram_mib": 38.5
+      }
+     },
+     "groups": {
+      "ms": {
+       "GPU": 10.05,
+       "CPU experts": 11.1,
+       "draft": 1.91,
+       "adapt wait": 1.23,
+       "other": 0.7899999999999978
+      },
+      "share": {
+       "GPU": 0.40071770334928236,
+       "CPU experts": 0.4425837320574163,
+       "draft": 0.07615629984051037,
+       "adapt wait": 0.04904306220095694,
+       "other": 0.03149920255183405
+      },
+      "ms_per_window": 25.08,
+      "tokens_per_window": 2.0,
+      "windows": 32,
+      "cpu_entries": 4.24,
+      "cpu_experts": 3.22,
+      "vram_hits": 24.01,
+      "pcie": 1.12,
+      "swaps": 24.0
+     },
+     "hit": {
+      "hit_rate": 0.85,
+      "hits": 36882,
+      "lookups": 43394,
+      "pcie_share": 0.041,
+      "offloaded": 1866,
+      "routed": 45260
+     },
+     "summary": {
+      "prompt_tokens": 8721,
+      "reused": 5341,
+      "read": 3380,
+      "prompt_ms": 2152.0,
+      "prompt_tok_s": 1570.7,
+      "generated": 64,
+      "decode_ms": 803.0,
+      "decode_tok_s": 79.7,
+      "drafts_accepted": 32,
+      "drafts_offered": 71
+     }
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 2.164,
+     "total_s": 2.669,
+     "prompt_tokens": 11647,
+     "reused_tokens": 8784,
+     "read_tokens": 2863,
+     "generated_tokens": 51,
+     "prompt_tps": 1339.7,
+     "prompt_tps_source": "engine",
+     "decode_tps": 98.3,
+     "decode_tps_source": "engine",
+     "prompt_ms": 2137.0,
+     "decode_ms": 518.7,
+     "drafts_offered": 46,
+     "drafts_accepted": 33,
+     "text": "This is Strata's installation guide, covering hardware requirements and step-by-step setup on Windows (`START-HERE.bat`) and Linux (`./setup.sh`) for both NVIDIA and AMD cards. It also documents advanced options like multi-GPU configurations, Docker",
+     "turn": 4,
+     "engine": {
+      "prefill": {
+       "tokens": 2856,
+       "gpu_ms": 1900.0,
+       "wall_ms": 1905.0,
+       "host_staging_ms": 687.0,
+       "phases": {
+        "embed+steps": 1.0,
+        "hc read": 91.0,
+        "gdn": 139.0,
+        "qsa proj": 72.0,
+        "qsa indexer": 0.0,
+        "qsa select": 13.0,
+        "qsa attn": 74.0,
+        "router+shared": 29.0,
+        "host grouping": 11.0,
+        "gather": 8.0,
+        "wait copy": 199.0,
+        "dequant": 327.0,
+        "gemm gate/up": 219.0,
+        "gemm down": 130.0,
+        "combine": 158.0,
+        "ple": 4.0,
+        "kv stage": 290.0,
+        "gdn conv+gates": 17.0,
+        "gdn recurrence": 54.0,
+        "gdn out proj": 64.0
+       }
+      },
+      "prefill_host": {
+       "chunk_setup_ms": 1.0,
+       "wait_chunk_ms": 11.0,
+       "after_chunk_ms": 5.0,
+       "ple_ms": 766.0
+      },
+      "decode": {
+       "windows": 18,
+       "avg_T": 3.56,
+       "tokens_per_window": 2.83,
+       "ms_per_window": 28.82,
+       "verify": 25.61,
+       "gpu": 10.31,
+       "host": 14.53,
+       "host_plan": 0.16,
+       "host_actq": 0.14,
+       "host_jobs": 0.04,
+       "host_cpu": 14.17,
+       "stage": 0.01,
+       "commit": 0.03,
+       "draft": 2.01,
+       "cpu_experts": 3.45,
+       "cpu_entries": 4.32,
+       "vram_hits": 26.68,
+       "pcie": 1.27,
+       "adapt_wait": 1.17,
+       "adapt_join": 0.0,
+       "swaps": 21.3
+      },
+      "summary": {
+       "prompt_tokens": 11647,
+       "reused": 8784,
+       "read": 2863,
+       "prompt_ms": 2137.0,
+       "prompt_tok_s": 1339.7,
+       "generated": 51,
+       "decode_ms": 519.0,
+       "decode_tok_s": 98.3,
+       "drafts_accepted": 33,
+       "drafts_offered": 46
+      },
+      "hit": {
+       "hit_rate": 0.861,
+       "hits": 23050,
+       "lookups": 26780,
+       "pcie_share": 0.044,
+       "offloaded": 1232,
+       "routed": 28012
+      },
+      "kv": {
+       "kv_hit": 0.9859,
+       "block_reads": 2395092,
+       "ram_mib": 135.8,
+       "misses": 33711
+      },
+      "kv_request": {
+       "kv_hit": 0.981,
+       "block_reads": 431340,
+       "ram_mib": 33.0
+      }
+     },
+     "groups": {
+      "ms": {
+       "GPU": 10.31,
+       "CPU experts": 14.53,
+       "draft": 2.01,
+       "adapt wait": 1.17,
+       "other": 0.7999999999999989
+      },
+      "share": {
+       "GPU": 0.3577376821651631,
+       "CPU experts": 0.5041637751561415,
+       "draft": 0.06974323386537126,
+       "adapt wait": 0.04059680777238029,
+       "other": 0.027758501040943753
+      },
+      "ms_per_window": 28.82,
+      "tokens_per_window": 2.83,
+      "windows": 18,
+      "cpu_entries": 4.32,
+      "cpu_experts": 3.45,
+      "vram_hits": 26.68,
+      "pcie": 1.27,
+      "swaps": 21.3
+     },
+     "hit": {
+      "hit_rate": 0.861,
+      "hits": 23050,
+      "lookups": 26780,
+      "pcie_share": 0.044,
+      "offloaded": 1232,
+      "routed": 28012
+     },
+     "summary": {
+      "prompt_tokens": 11647,
+      "reused": 8784,
+      "read": 2863,
+      "prompt_ms": 2137.0,
+      "prompt_tok_s": 1339.7,
+      "generated": 51,
+      "decode_ms": 519.0,
+      "decode_tok_s": 98.3,
+      "drafts_accepted": 33,
+      "drafts_offered": 46
+     }
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 2.056,
+     "total_s": 2.936,
+     "prompt_tokens": 14596,
+     "reused_tokens": 11697,
+     "read_tokens": 2899,
+     "generated_tokens": 64,
+     "prompt_tps": 1427.9,
+     "prompt_tps_source": "engine",
+     "decode_tps": 71.7,
+     "decode_tps_source": "engine",
+     "prompt_ms": 2030.2,
+     "decode_ms": 892.7,
+     "drafts_offered": 69,
+     "drafts_accepted": 40,
+     "text": "This page is Strata's model selection guide, explaining which quantized size of Qwen3.8-Flash-Next (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S, Coder, Unsloth's 4–8-bit files) fits a given amount of",
+     "turn": 5,
+     "engine": {
+      "prefill": {
+       "tokens": 2892,
+       "gpu_ms": 1838.0,
+       "wall_ms": 1843.0,
+       "host_staging_ms": 739.0,
+       "phases": {
+        "embed+steps": 1.0,
+        "hc read": 92.0,
+        "gdn": 139.0,
+        "qsa proj": 73.0,
+        "qsa indexer": 0.0,
+        "qsa select": 15.0,
+        "qsa attn": 75.0,
+        "router+shared": 29.0,
+        "host grouping": 11.0,
+        "gather": 8.0,
+        "wait copy": 169.0,
+        "dequant": 337.0,
+        "gemm gate/up": 220.0,
+        "gemm down": 130.0,
+        "combine": 109.0,
+        "ple": 4.0,
+        "kv stage": 288.0,
+        "gdn conv+gates": 17.0,
+        "gdn recurrence": 55.0,
+        "gdn out proj": 67.0
+       }
+      },
+      "prefill_host": {
+       "chunk_setup_ms": 1.0,
+       "wait_chunk_ms": 11.0,
+       "after_chunk_ms": 5.0,
+       "ple_ms": 857.0
+      },
+      "decode": {
+       "windows": 26,
+       "avg_T": 3.65,
+       "tokens_per_window": 2.46,
+       "ms_per_window": 34.34,
+       "verify": 30.86,
+       "gpu": 10.19,
+       "host": 19.91,
+       "host_plan": 0.15,
+       "host_actq": 0.16,
+       "host_jobs": 0.05,
+       "host_cpu": 19.53,
+       "stage": 0.01,
+       "commit": 0.05,
+       "draft": 2.26,
+       "cpu_experts": 4.78,
+       "cpu_entries": 6.33,
+       "vram_hits": 24.19,
+       "pcie": 1.9,
+       "adapt_wait": 1.15,
+       "adapt_join": 0.02,
+       "swaps": 25.8
+      },
+      "summary": {
+       "prompt_tokens": 14596,
+       "reused": 11697,
+       "read": 2899,
+       "prompt_ms": 2030.0,
+       "prompt_tok_s": 1427.9,
+       "generated": 64,
+       "decode_ms": 893.0,
+       "decode_tok_s": 71.7,
+       "drafts_accepted": 40,
+       "drafts_offered": 69
+      },
+      "hit": {
+       "hit_rate": 0.793,
+       "hits": 30190,
+       "lookups": 38085,
+       "pcie_share": 0.063,
+       "offloaded": 2552,
+       "routed": 40637
+      },
+      "kv": {
+       "kv_hit": 0.9859,
+       "block_reads": 3017460,
+       "ram_mib": 170.9,
+       "misses": 42425
+      },
+      "kv_request": {
+       "kv_hit": 0.986,
+       "block_reads": 622368,
+       "ram_mib": 35.1
+      }
+     },
+     "groups": {
+      "ms": {
+       "GPU": 10.19,
+       "CPU experts": 19.91,
+       "draft": 2.26,
+       "adapt wait": 1.15,
+       "other": 0.8300000000000058
+      },
+      "share": {
+       "GPU": 0.29673849737914965,
+       "CPU experts": 0.5797903319743739,
+       "draft": 0.0658124635993011,
+       "adapt wait": 0.033488642981945246,
+       "other": 0.02417006406523022
+      },
+      "ms_per_window": 34.34,
+      "tokens_per_window": 2.46,
+      "windows": 26,
+      "cpu_entries": 6.33,
+      "cpu_experts": 4.78,
+      "vram_hits": 24.19,
+      "pcie": 1.9,
+      "swaps": 25.8
+     },
+     "hit": {
+      "hit_rate": 0.793,
+      "hits": 30190,
+      "lookups": 38085,
+      "pcie_share": 0.063,
+      "offloaded": 2552,
+      "routed": 40637
+     },
+     "summary": {
+      "prompt_tokens": 14596,
+      "reused": 11697,
+      "read": 2899,
+      "prompt_ms": 2030.0,
+      "prompt_tok_s": 1427.9,
+      "generated": 64,
+      "decode_ms": 893.0,
+      "decode_tok_s": 71.7,
+      "drafts_accepted": 40,
+      "drafts_offered": 69
+     }
+    }
+   ]
+  },
+  "skipped": {},
+  "failures": [],
+  "findings": [
+   "The 2K read (2,023 tokens, 1,118 tok/s) waits for the experts streamed over PCIe: 43% of its GPU time waiting for their copies and 15% dequantizing them.",
+   "The 16K read (16,058 tokens, 2,982 tok/s) is compute-bound: expert GEMM 30%, attention 18%, GDN 25% of its GPU time; the experts' copies and dequant 13%.",
+   "The 32K (long) read (32,049 tokens, 3,041 tok/s) is compute-bound: expert GEMM 27%, attention 21%, GDN 25% of its GPU time; the experts' copies and dequant 13%.",
+   "chat (44 tokens of context, 76 tok/s, expert cache hit rate 71%): of a 33.6 ms window the card takes 10.2 ms and the experts computed on the CPU 19.3 ms (4.7 experts, 7.0 entries per layer-window): the misses of the VRAM expert cache take the larger share of the window.",
+   "long context (32,049 tokens of context, 82 tok/s, expert cache hit rate 82%): of a 27.4 ms window the card takes 10.0 ms and the experts computed on the CPU 13.1 ms (3.6 experts, 4.7 entries per layer-window): the misses of the VRAM expert cache take the larger share of the window.",
+   "agent turns (8,721 tokens of context, 72 tok/s, expert cache hit rate 79%): of a 32.2 ms window the card takes 10.1 ms and the experts computed on the CPU 17.9 ms (4.7 experts, 6.6 entries per layer-window): the misses of the VRAM expert cache take the larger share of the window.",
+   "Agent turns: the expert cache hit rate per turn runs from 51% (turn 0) to 86% (turn 4).",
+   "Agent turns: each follow-up turn read 1,469-3,380 tokens after what the conversation cache reused.",
+   "A short read that waits for expert copies is on the path the CPU prefill share works on (STRATA_PREFILL_CPU_SHARE, its range STRATA_PREFILL_CPU_SHARE_MAX; docs/DETAILS.md, \"Short prompts: the CPU shares the experts\"). Its range stops at 1,024 tokens by default and a wider one is not a sure win (2,048-token chunks measured 2% slower on one PC, docs/DETAILS.md): measure it here before setting it (tools/ab_engine.py A/Bs an environment variable).",
+   "A decode whose larger share is the experts computed on the CPU follows the expert cache's hit rate: the settings on that path are the cache's slots (VRAM: --max-context, --kv-resident, --vram-reserve-mib; docs/DETAILS.md, \"The expert cache size is a budget\"), the PCIe share and the adaptive tier (setup --calibrate measures both on this PC) and a saved expert profile (expert_profile_save)."
+  ]
+ }
+}
