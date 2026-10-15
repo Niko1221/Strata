@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import getpass
+import ipaddress
 import json
 import os
 import platform
@@ -43,6 +44,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -596,6 +598,36 @@ def gpu_selection(cfg: dict | None, gpu_arg: str | None = None) -> list[int]:
     return sel
 
 
+def on_this_pc(base: str) -> bool:
+    """#2062: whether the server at `base` runs on the PC the bench runs on: a loopback or unspecified address, or one
+    this PC owns (it can bind to it - a LAN address, another network card).  A server elsewhere (--url over the
+    network) has its own RAM, OS, driver and GPUs; reading this PC's would put the client's machine into the report."""
+    try:
+        host = urllib.parse.urlsplit(base).hostname or ""
+        if host.lower() == "localhost":
+            return True
+        addrs = {ai[4][0] for ai in socket.getaddrinfo(host, None)}
+    except (OSError, ValueError):                      # UnicodeError is a ValueError
+        return False
+    for a in addrs:
+        try:
+            ip = ipaddress.ip_address(a.split("%")[0])
+        except ValueError:
+            continue
+        ip = getattr(ip, "ipv4_mapped", None) or ip
+        if ip.is_loopback or ip.is_unspecified:
+            return True
+        if ip.is_multicast or str(ip) == "255.255.255.255":   # a UDP socket binds to these on any PC
+            continue
+        try:
+            with socket.socket(socket.AF_INET6 if ip.version == 6 else socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.bind((str(ip), 0))
+            return True
+        except OSError:
+            continue
+    return False
+
+
 def collect_machine(base: str, key: str, cfg: dict | None, gpu_arg: str | None = None) -> dict:
     status = try_json(base, "/v1/status", key) or {}
     metrics = try_json(base, "/metrics", key, 30) or {}
@@ -603,7 +635,8 @@ def collect_machine(base: str, key: str, cfg: dict | None, gpu_arg: str | None =
     models = try_json(base, "/v1/models", key) or {}
     static = metrics.get("hardware_static") or {}
     eng = metrics.get("engine") or {}
-    local = gpu_info_local()
+    here = on_this_pc(base)
+    local = gpu_info_local() if here else {"gpus": [], "cuda": None}
     view = config_view(cfg) if cfg else {}
     # #1985: only the GPUs the engine uses - the config's / --gpu selection; with none given the engine runs on one card
     # (the one the server reports), not on every card the PC has
@@ -630,11 +663,16 @@ def collect_machine(base: str, key: str, cfg: dict | None, gpu_arg: str | None =
     for d in models.get("data") or []:
         n_ctx = (d.get("meta") or {}).get("n_ctx") or n_ctx
     n_ctx = n_ctx or (props.get("default_generation_settings") or {}).get("n_ctx")
+    os_name = None                                 # a server on another PC does not report its OS
+    if here:
+        os_name = (f"{platform.system()} {platform.release()} ({platform.version()})" if os.name == "nt"
+                   else f"{platform.system()} {platform.release()}")
     return {
         "gpu": gpu_names, "gpu_vram_mib": vram_mib, "gpu_driver": (used[0].get("driver") if used else local.get("rocm_driver")),
-        "cuda": local.get("cuda"), "cpu": static.get("cpu_name") or cpu_name(), "cpu_cores": static.get("cores"),
-        "cpu_threads": static.get("threads") or os.cpu_count(), "ram_gib": total_ram_gib(),
-        "os": f"{platform.system()} {platform.release()} ({platform.version()})" if os.name == "nt" else f"{platform.system()} {platform.release()}",
+        "cuda": local.get("cuda"), "cpu": static.get("cpu_name") or (cpu_name() if here else None),
+        "cpu_cores": static.get("cores"), "cpu_threads": static.get("threads") or (os.cpu_count() if here else None),
+        "ram_gib": total_ram_gib() if here else ((m.get("ram") or {}).get("total_gib") or None),
+        "os": os_name,
         "python": platform.python_version(),
         "strata_version": project_version(), "strata_commit": git_commit(),
         "engine_version": (eng.get("version") or status.get("engine") or str(props.get("build_info", "")).replace("Strata ", "") or None),
@@ -817,7 +855,7 @@ def render_readme(res: dict) -> str:
          f"- GPU and VRAM: {gpu}, {vram}",
          f"- CPU: {mc.get('cpu') or 'not read'} ({mc.get('cpu_cores') or '?'} cores, {mc.get('cpu_threads') or '?'} threads); "
          f"installed RAM: {mc.get('ram_gib') or '?'} GiB; storage: not measured",
-         f"- OS: {mc.get('os')}; GPU driver: {mc.get('gpu_driver') or 'not read'}; CUDA: {mc.get('cuda') or 'not read'}",
+         f"- OS: {mc.get('os') or 'not read'}; GPU driver: {mc.get('gpu_driver') or 'not read'}; CUDA: {mc.get('cuda') or 'not read'}",
          f"- Strata: project {mc.get('strata_version') or '?'}, commit {mc.get('strata_commit') or 'not a git checkout'}; "
          f"engine {mc.get('engine_version') or 'not read'}",
          "- Background workloads and power limits: not recorded", "",
