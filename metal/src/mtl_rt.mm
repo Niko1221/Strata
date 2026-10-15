@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 
 namespace mtl {
@@ -38,6 +39,7 @@ struct Context::Impl {
 static inline id<MTLBuffer> B(const Buffer& b) { return (__bridge id<MTLBuffer>)b.handle; }
 static inline id<MTLComputePipelineState> P(const Pipeline* p) { return (__bridge id<MTLComputePipelineState>)p->handle; }
 static std::string g_device_name = "unknown GPU";
+static std::mutex g_libs_mu;   // compile() may run on two threads
 
 Context::Context() : impl_(new Impl) {
     impl_->dev = MTLCreateSystemDefaultDevice();
@@ -94,6 +96,7 @@ int Context::compile(const std::vector<std::string>& files, const std::string& p
                      files.empty() ? "?" : files.back().c_str(), [[err localizedDescription] UTF8String]);
         std::exit(3);
     }
+    std::lock_guard<std::mutex> lk(g_libs_mu);
     impl_->libs.push_back(lib);
     return (int)impl_->libs.size() - 1;
 }
@@ -102,11 +105,16 @@ Pipeline Context::pipeline(int lib, const std::string& fn, const Constants& c) {
     NSError* err = nil;
     id<MTLFunction> f;
     NSString* name = [NSString stringWithUTF8String:fn.c_str()];
+    id<MTLLibrary> L;
+    {
+        std::lock_guard<std::mutex> lk(g_libs_mu);
+        L = impl_->libs[lib];
+    }
     if (c.vals.empty()) {
-        f = [impl_->libs[lib] newFunctionWithName:name];
+        f = [L newFunctionWithName:name];
         // a function with (optional) function constants needs a specialization even when none is set
         if (f && f.functionConstantsDictionary.count > 0)
-            f = [impl_->libs[lib] newFunctionWithName:name constantValues:[MTLFunctionConstantValues new] error:&err];
+            f = [L newFunctionWithName:name constantValues:[MTLFunctionConstantValues new] error:&err];
     } else {
         MTLFunctionConstantValues* cv = [MTLFunctionConstantValues new];
         for (const auto& v : c.vals) {
@@ -119,7 +127,7 @@ Pipeline Context::pipeline(int lib, const std::string& fn, const Constants& c) {
                 default: [cv setConstantValue:&uv type:MTLDataTypeUInt atIndex:v.index]; break;
             }
         }
-        f = [impl_->libs[lib] newFunctionWithName:name constantValues:cv error:&err];
+        f = [L newFunctionWithName:name constantValues:cv error:&err];
     }
     if (!f) {
         std::fprintf(stderr, "mtl: no function %s %s\n", fn.c_str(), err ? [[err localizedDescription] UTF8String] : "");

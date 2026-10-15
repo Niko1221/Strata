@@ -187,6 +187,7 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 | `STRATA_HC_Q8=0` | The BF16 hyper-connection read (exact) instead of Q8_0 |
 | `STRATA_METAL_PROMPT=window` | Read the prompt through decode windows (the slow, exact fallback; ~190 tok/s) |
 | `STRATA_METAL_PROMPT_CHUNK=N` | Prompt chunk size (default 2048) |
+| `STRATA_METAL_PROMPT_WARM=0` / `=1` | Build the prompt kernels' pipelines on the first long prompt instead of at load / at load on any Mac (default: at load on an M1 or M2, Apple GPU family 7-8; same answers either way) |
 | `STRATA_METAL_MTP_Q8=0` | The draft layer's matrices in BF16 instead of Q8_0 |
 | `STRATA_METAL_MTP_CHAIN=0` | One GPU submission per draft step instead of one per round |
 | `STRATA_METAL_FUSE=0`, `STRATA_METAL_LAZY_FOLD=0` | Turn off two decode fusions (same tokens, slower) |

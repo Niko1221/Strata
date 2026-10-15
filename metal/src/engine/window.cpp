@@ -98,7 +98,8 @@ struct PromptBufs {
     bool k4 = false;
     int C = 0, maxrows = 0;
     double gpu_ms = 0, host_ms = 0, mtp_ms = 0;
-    int gu3[4] = {}, dn3[4] = {};
+    // the expert GEMM tiles: v3 with the M5 layout, else v2
+    int gu3[4] = {16, 32, 32, 4}, dn3[4] = {16, 64, 32, 2};
     mtl::Buffer R, bo, inj[2], xn, xnh, V, loh, mixed, mixh, qkv, z, al, be, yg, ygh, gqn, gkn, gvc, ggb, gkq, go, qfull,
         kcur, vcur, iqr, ikr, qcur, qcurh, qidx, scores, qids, part, XQ, xqh, logits, ids, wts, bcnt, boff, eoff, tiles, meta,
         stok, sw, pos, XS, HS, YE, yr, gsh, ush, hh, ys, sgv, WD, WU, Wqkv, Wz, Wal, Wbe, Wout, Wq, Wk, Wv, Wiq, Wik, Wr,
@@ -376,7 +377,10 @@ private:
     int m5_layout_ = -1;   // the M5's matmul2d layout (coop_k4), asked once: the M4's tiles differ
     bool m5_layout() { if (m5_layout_ < 0) m5_layout_ = coop_k4() ? 1 : 0; return m5_layout_ == 1; }
     bool pc_setup(int C);
-    bool pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& err);
+    bool pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& err, bool dry = false);
+    void pc_compile();
+    bool prompt_warm_wanted() const;
+    void prompt_warm();
     // the draft round in one command buffer (msl/mtp_chain.metal): STRATA_METAL_MTP_CHAIN=0 runs a command buffer
     // per step with the host's pick and embedding (as before)
     int lchain_ = -1;
@@ -435,6 +439,13 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         if (W_.handle == nullptr) { err = "metal window: cannot wrap " + shard1 + " as a Metal buffer"; return false; }
     }
     n_vocab_ = (int64_t) T("output.weight").shape[1];
+    // the prompt libraries compile on a second thread beside the decode window's
+    std::thread pc_th;
+    if (prompt_warm_wanted()) pc_th = std::thread([this] { pc_compile(); });
+    struct Join {
+        std::thread& t;
+        ~Join() { if (t.joinable()) t.join(); }
+    } pc_join{pc_th};
     lib_ = cx_->compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "router.metal", "gr.metal", "gr2.metal",
                          "glue.metal"});
     rcounter_ = cx_->alloc(16);
@@ -557,6 +568,8 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     }
     ple_hist_.assign((size_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM, 0.0f);
     last_norm_.assign((size_t) MAXT * strata::kernels::NG_HC_DIM, 0.0f);
+    if (pc_th.joinable()) pc_th.join();
+    prompt_warm();
     std::fprintf(stderr, "strata metal: decode window on %s: %s %s (%.1f GB), %d cells, PLE %s, ready in %.0f ms\n",
                  cx_->device_name().c_str(), shard1.c_str(), stream_ ? "streamed from the SSD (experts)" : "wrapped",
                  f_.file_bytes / 1e9, MAXC, ple_on_ ? "on" : "OFF", now_ms() - t0);

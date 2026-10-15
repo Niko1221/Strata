@@ -8,7 +8,8 @@
 // The 8-row-window prompt path stays as the fallback: STRATA_METAL_PROMPT=window, and prompts shorter than
 // STRATA_METAL_PROMPT_MIN rows (default 32).  STRATA_METAL_PROMPT_CHUNK = C (default 2048).  The kernel variants
 // follow prompt_chain's defaults: matrix-unit register operands where the GPU has the M5's right-input layout
-// (COOP_K4, function constant 7), else the older expert and attention kernels (the M4).
+// (COOP_K4, function constant 7), else the older expert and attention kernels (the M4).  The libraries and pipelines
+// are built at load on M1 / M2 (prompt_warm), elsewhere on the first long prompt.
 
 namespace {
 constexpr int PC_QB = 2051, PC_QCHUNKS = 33, PC_TM = 16;
@@ -50,13 +51,8 @@ bool Window::pc_setup(int C) {
     PromptBufs& b = pb_;
     if (b.C >= C) return true;
     const double t0 = now_ms();
-    if (b.C == 0) {
-        b.lib = cx_->compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "moe_mm.metal", "gr.metal",
-                              "gemv.metal", "prompt.metal"});
-        b.lgdn = cx_->compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
-        b.lqsa = cx_->compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
-        b.k4 = coop_k4();
-    }
+    if (b.lib < 0) pc_compile();
+    if (b.C == 0) b.k4 = m5_layout();
     b = PromptBufs{b.lib, b.lgdn, b.lqsa, b.k4};   // (re)allocated below for the larger chunk
     b.C = C;
     const size_t MT = (size_t) C;
@@ -89,10 +85,6 @@ bool Window::pc_setup(int C) {
     b.pemb = F32(MT * N); b.pembh = F16(MT * N); b.pkey = F32(MT * 10240); b.pval = F32(MT * N); b.keyn = F32(MT * 10240);
     b.qn = F32(MT * 10240); b.gated = F32(MT * 10240); b.normW = F32(MT * 10240);
     b.Wpk = F16((size_t) 10240 * N); b.Wpv = F16((size_t) N * N);
-    // the expert GEMM tiles (prompt_chain's defaults): v3 gate/up 16,32,32,4 and down 16,64,32,2 with the M5 layout,
-    // else v2
-    b.gu3[0] = 16; b.gu3[1] = 32; b.gu3[2] = 32; b.gu3[3] = 4;
-    b.dn3[0] = 16; b.dn3[1] = 64; b.dn3[2] = 32; b.dn3[3] = 2;
     b.meta.as<uint32_t>()[2] = b.k4 ? NFF / (b.gu3[1] * b.gu3[3]) : NFF / 64;
     b.meta.as<uint32_t>()[5] = b.k4 ? N / (b.dn3[1] * b.dn3[3]) : N / 64;
     std::fprintf(stderr, "strata metal: prompt kernels (mac-kern's prompt chain) for chunks of %d rows, %s, ready in %.0f ms\n",
@@ -101,37 +93,40 @@ bool Window::pc_setup(int C) {
     return true;
 }
 
-// one chunk of nT rows at cells pos0.. (the window state is exactly at pos0 before, at pos0 + nT after)
-bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& err) {
+// one chunk of nT rows at cells pos0.. (the window state is exactly at pos0 before, at pos0 + nT after).  dry:
+// encoded only (its pipelines get built), nothing run or written
+bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& err, bool dry) {
     PromptBufs& b = pb_;
     strata::core::SessionState& ss = *ss_;
     const double th0 = now_ms();
-    // ---- the rows: the embedding into every stream; the PLE table rows
-    const gguf::Tensor& te = T("token_embd.weight");
-    const size_t rb = ref::row_bytes(te.type, N);
-    mrope_sync(pos0, nT);
-    for (int t = 0; t < nT; ++t) {
-        float* r = b.R.as<float>() + (size_t) t * HC * N;
-        if (const float* img = img_row(pos0 + t)) std::memcpy(r, img, (size_t) N * 4);
-        else ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) tokens[t] * rb, r, N);
-        for (int c = 1; c < HC; ++c) std::memcpy(r + (size_t) c * N, r, (size_t) N * 4);
-    }
-    if (ple_on_) {
-        std::vector<uint32_t> rows((size_t) nT * strata::kernels::PLE_N_HEADS);
-        int32_t prev[2] = {ss.ple_prev[0], ss.ple_prev[1]};
+    if (!dry) {
+        // ---- the rows: the embedding into every stream; the PLE table rows
+        const gguf::Tensor& te = T("token_embd.weight");
+        const size_t rb = ref::row_bytes(te.type, N);
+        mrope_sync(pos0, nT);
         for (int t = 0; t < nT; ++t) {
-            const int32_t tk = (int32_t) tokens[t];
-            strata::kernels::ngram_rows(&tk, prev, 1, ss.ple.consts, rows.data() + (size_t) t * strata::kernels::PLE_N_HEADS);
-            prev[0] = prev[1];
-            prev[1] = tk;
+            float* r = b.R.as<float>() + (size_t) t * HC * N;
+            if (const float* img = img_row(pos0 + t)) std::memcpy(r, img, (size_t) N * 4);
+            else ref::dequant(te.type, (const uint8_t*) W_.ptr + te.offset + (size_t) tokens[t] * rb, r, N);
+            for (int c = 1; c < HC; ++c) std::memcpy(r + (size_t) c * N, r, (size_t) N * 4);
         }
-        if (!ss.ple.table->gather_batch(rows.data(), (size_t) nT, b.pemb.as<float>(), err)) return false;
+        if (ple_on_) {
+            std::vector<uint32_t> rows((size_t) nT * strata::kernels::PLE_N_HEADS);
+            int32_t prev[2] = {ss.ple_prev[0], ss.ple_prev[1]};
+            for (int t = 0; t < nT; ++t) {
+                const int32_t tk = (int32_t) tokens[t];
+                strata::kernels::ngram_rows(&tk, prev, 1, ss.ple.consts, rows.data() + (size_t) t * strata::kernels::PLE_N_HEADS);
+                prev[0] = prev[1];
+                prev[1] = tk;
+            }
+            if (!ss.ple.table->gather_batch(rows.data(), (size_t) nT, b.pemb.as<float>(), err)) return false;
+        }
+        b.host_ms += now_ms() - th0;
     }
-    b.host_ms += now_ms() - th0;
     std::vector<mtl::Dispatch> ds;
     ds.reserve(2400);
     nb_ = false;
-    if (pend_fold_ > 0) {   // the last window's commit, first
+    if (!dry && pend_fold_ > 0) {   // the last window's commit, first
         fold(ds, pend_fold_, 1 - hp_);
         pend_fold_ = 0;
     }
@@ -365,6 +360,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         D(P_(b.lib, "gr_norm"), {mtl::Arg::B(b.R), mtl::Arg::B(b.bo), mtl::Arg::B(b.inj[cur_inj]),
                                 mtl::Arg::B(W_, T("output_hc_norm.weight").offset), mtl::Arg::B(b.xn), mtl::Arg::V(a)}, HC, nT, 256);
     }
+    if (dry) return true;
     const double g = cx_->run(ds);
     b.gpu_ms += 1000.0 * g;
     hp_ = 1 - hp_;
@@ -389,6 +385,37 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
     }
     last_T_ = 0;   // nothing to commit
     return true;
+}
+
+void Window::pc_compile() {
+    PromptBufs& b = pb_;
+    b.lib = cx_->compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "moe_mm.metal", "gr.metal",
+                          "gemv.metal", "prompt.metal"});
+    b.lgdn = cx_->compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+    b.lqsa = cx_->compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+}
+
+// On M1 / M2 by default; STRATA_METAL_PROMPT_WARM=0 / 1 decides on any Mac.
+bool Window::prompt_warm_wanted() const {
+    if (stream_) return false;   // streaming reads prompts through prompt_gemm
+    if (const char* p = std::getenv("STRATA_METAL_PROMPT"); p && std::string(p) == "window") return false;
+    if (const char* e = std::getenv("STRATA_METAL_PROMPT_WARM")) return std::string(e) != "0";
+    return cx_->has_family_apple(7) && !cx_->has_family_apple(9);   // M1, M2
+}
+
+// At load: one 64-row dry chunk past the indexer budget, so every prompt pipeline (scoring included) is built.
+void Window::prompt_warm() {
+    if (!prompt_warm_wanted()) return;
+    const double t0 = now_ms();
+    if (pb_.lib < 0) pc_compile();
+    pb_.k4 = m5_layout();
+    std::string err;
+    const std::vector<int64_t> tk(64, 0);
+    if (!pc_chunk(tk.data(), 64, PC_QB, err, true)) {
+        std::fprintf(stderr, "strata metal: prompt warm-up skipped (%s)\n", err.c_str());
+        return;
+    }
+    std::fprintf(stderr, "strata metal: prompt kernels built at load in %.0f ms\n", now_ms() - t0);
 }
 
 bool Window::prompt(const int64_t* tokens, int64_t n, int64_t pos0,
