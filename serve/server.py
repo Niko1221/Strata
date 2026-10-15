@@ -6579,7 +6579,13 @@ def make_handler(svc: Service):
             if path == "/admin/calib":                     # M3.2: hot calibrator reload (Bearer admin key)
                 key = jev_calib.ADMIN_KEY
                 auth = self.headers.get("Authorization", "")
-                if key and auth != "Bearer " + key:
+                if not key:
+                    # fail-closed like the donor's --admin-key routes: with no key
+                    # configured the admin surface does not exist (404, not 401:
+                    # probing must not learn that it ever could) — Opus G2
+                    self._json(404, {"error": {"message": "not found"}})
+                    return
+                if auth != "Bearer " + key:
                     self._json(401, {"error": {"message": "admin key required"}})
                     return
                 jev_calib.swap()
