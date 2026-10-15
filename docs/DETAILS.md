@@ -293,6 +293,15 @@ RTX 5070, against ~3 tokens/s before these changes.
 - Elsewhere: HIP `STRATA_DENSE_MMQ=1` and `STRATA_HIP_ADAPT_KERNEL_COPY=1` in [AMD_HIP.md](AMD_HIP.md#model-and-serving-configuration);
   `STRATA_KEEP_EMPTY_TURNS=1` and `STRATA_TOPK_STREAM=0` in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
+**`STRATA_GR_V3=1` (opt-in since 0.1.31): the hyper-connection read in two kernels**, its `down` part spread over more
+blocks. It sums in another order than the default read, so answers can differ in the last bits. It needs 80 KB of
+shared memory per block (8 tokens x 2,560 floats), which NVIDIA cards from Volta on have, except Turing (RTX 20 and
+GTX 16, 64 KB). On a card with less - Turing, Pascal (GTX 10, P40, P100), every AMD card - it would have to split the
+read in two halves, which failed its parity check on Turing (#375) and is not used, so the engine logs `strata:
+STRATA_GR_V3=1 needs the two-half split on this card, which fails its checks (#375): the default read is used` and
+the switch does nothing (an RX 7900 XTX measured no change, #2524). On an Intel Arc B70 (the SYCL port, decode) it
+was 4-6% slower ([INTEL.md](INTEL.md)).
+
 
 **Read-ahead at start (Linux):** the weights, the native dense matrices, the GPU cache's fill from the profile, the
 resident RAM copy and the MTP draft files are asked for ahead of their reads (madvise / posix_fadvise WILLNEED in
