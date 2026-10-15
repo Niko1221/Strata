@@ -64,6 +64,10 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-15: RTX 5070 Ti 16 GB, Ryzen 7 5800X3D, 80 GiB RAM, Linux: five opt-in settings](../bench/results/2026-10-15-community-rtx-5070-ti-opt-in-ab/README.md):
+  Strata 0.1.44.1 source build, Swift 1.5 IQ3_S; A/B of 4 alternating rounds each, fresh server per arm: turning the default
+  route tail skip off (`STRATA_ROUTE_TAIL_SKIP=0`) cost 22-25% of short decode; `--spec 5` -3 to -5% against 4; PR #2529's
+  `STRATA_MTP_ADAPTIVE=1` -1 to -3.5%; `--adapt-async 1` and `--mtp-window 8192` within the noise.
 
 ## Run the benchmark
 

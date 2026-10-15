@@ -1,0 +1,139 @@
+{
+ "config": "<strata>/strata-swift-iq3_s.json",
+ "arms": [
+  "skip7:",
+  "skip0:STRATA_ROUTE_TAIL_SKIP=0"
+ ],
+ "rounds": [
+  {
+   "round": 0,
+   "arm": "skip7",
+   "ready_s": 30.5,
+   "pooled_decode": 79.05,
+   "median_decode": 77.75,
+   "long_decode": 65.7,
+   "long_prompt": 2702.2,
+   "long_prompt_n": 6345
+  },
+  {
+   "round": 0,
+   "arm": "skip0",
+   "ready_s": 30.5,
+   "pooled_decode": 60.34,
+   "median_decode": 60.75,
+   "long_decode": 54.5,
+   "long_prompt": 2679.4,
+   "long_prompt_n": 6345
+  },
+  {
+   "round": 1,
+   "arm": "skip0",
+   "ready_s": 30.5,
+   "pooled_decode": 60.15,
+   "median_decode": 60.150000000000006,
+   "long_decode": 49.9,
+   "long_prompt": 2669.3,
+   "long_prompt_n": 6345
+  },
+  {
+   "round": 1,
+   "arm": "skip7",
+   "ready_s": 30.4,
+   "pooled_decode": 79.87,
+   "median_decode": 78.19999999999999,
+   "long_decode": 66.2,
+   "long_prompt": 2715.6,
+   "long_prompt_n": 6345
+  },
+  {
+   "round": 2,
+   "arm": "skip7",
+   "ready_s": 30.4,
+   "pooled_decode": 76.52,
+   "median_decode": 76.6,
+   "long_decode": 62.0,
+   "long_prompt": 2718.3,
+   "long_prompt_n": 6345
+  },
+  {
+   "round": 2,
+   "arm": "skip0",
+   "ready_s": 30.6,
+   "pooled_decode": 59.89,
+   "median_decode": 60.7,
+   "long_decode": 46.7,
+   "long_prompt": 2687.6,
+   "long_prompt_n": 6345
+  },
+  {
+   "round": 3,
+   "arm": "skip0",
+   "ready_s": 30.5,
+   "pooled_decode": 60.08,
+   "median_decode": 59.65,
+   "long_decode": 44.0,
+   "long_prompt": 2687.0,
+   "long_prompt_n": 6345
+  },
+  {
+   "round": 3,
+   "arm": "skip7",
+   "ready_s": 33.4,
+   "pooled_decode": 78.41,
+   "median_decode": 78.94999999999999,
+   "long_decode": 71.2,
+   "long_prompt": 2701.0,
+   "long_prompt_n": 6345
+  }
+ ],
+ "medians": {
+  "skip7": {
+   "median": {
+    "pooled_decode": 78.72999999999999,
+    "long_decode": 65.95,
+    "long_prompt": 2708.8999999999996
+   },
+   "range": {
+    "pooled_decode": [
+     76.52,
+     79.87
+    ],
+    "long_decode": [
+     62.0,
+     71.2
+    ],
+    "long_prompt": [
+     2701.0,
+     2718.3
+    ]
+   }
+  },
+  "skip0": {
+   "median": {
+    "pooled_decode": 60.114999999999995,
+    "long_decode": 48.3,
+    "long_prompt": 2683.2
+   },
+   "range": {
+    "pooled_decode": [
+     59.89,
+     60.34
+    ],
+    "long_decode": [
+     44.0,
+     54.5
+    ],
+    "long_prompt": [
+     2669.3,
+     2687.6
+    ]
+   }
+  }
+ },
+ "paired_pct_B_vs_A": [
+  -23.67,
+  -24.69,
+  -21.73,
+  -23.38
+ ]
+}

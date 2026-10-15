@@ -1,0 +1,6 @@
+samples 598, busy (util>=50%) 301
+  clocks.current.sm: median 2895, range 2557-2910
+  power.draw: median 125, range 30-254
+  temperature.gpu: median 46, range 39-59
+  memory.used: median 15543, range 7837-15585
+  event reasons: {'0x0000000000000000': 298, '0x0000000000000004': 3}
