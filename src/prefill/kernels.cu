@@ -1671,6 +1671,48 @@ __global__ void gate_attn_kernel(const float* __restrict__ a, const float* __res
     o16[t * ld16 + h * 256 + d] = hf(a[i] * (1.0f / (1.0f + expf(-qf[t * 24 * 512 + h * 512 + 256 + d]))));
 }
 
+// split_q_kernel, rms_rows_kernel and rope_kernel (the first 64 of the 256 values) in one block per (token, head)
+// row: the norm reads q_full's row directly (no split copy) and the rotation rereads the 64 values it turns from the
+// row it just wrote, as rope_kernel does.  The loops keep rms_rows_kernel's and rope_kernel's shapes (a version with
+// the row in registers and a constant 256 gave other bits in ~5% of the rows; the cause was not isolated).
+// hip_prefill_q_prep checks it against the three kernels bit for bit.
+template <bool TAB>
+__global__ void __launch_bounds__(256) q_prep_kernel(const float* __restrict__ qf, const float* __restrict__ w,
+                                                     float* __restrict__ q, int64_t cols, float eps, int64_t pos0,
+                                                     float theta_scale, float freq_scale, float corr_low,
+                                                     float corr_high, float ext_factor, float mscale,
+                                                     const int32_t* __restrict__ mtab, strata::kernels::RopeTab rt) {
+    __shared__ float sh[32];
+    const int64_t row = blockIdx.x;             // t * 24 + h
+    const int64_t t = row / 24, h = row % 24;
+    const float* in = qf + t * 24 * 512 + h * 512;
+    float* r = q + row * 256;
+    // rms_rows_kernel's loops (the row read from q_full instead of the split copy), the same expressions in the same
+    // shape
+    float ss = 0.0f;
+    for (int64_t c = threadIdx.x; c < cols; c += blockDim.x) ss += in[c] * in[c];
+    const float s = rsqrtf(block_sum(ss, sh) / (float) cols + eps);
+    __syncthreads();
+    for (int64_t c = threadIdx.x; c < cols; c += blockDim.x) r[c] = s * in[c] * w[c];
+    __syncthreads();   // the row's normed values are visible to the block before the rotation reads them
+    // rope_kernel's body for this row: threads 0-31 are its pairs
+    if (threadIdx.x < 32) {
+        const int pair = threadIdx.x;
+        float* p = r;
+        float c, sn;
+        if (!(TAB && strata::kernels::rope_tab_cs(rt, strata::kernels::mrope_pos(mtab, (int) (pos0 + t), pair), pair, c,
+                                                  sn))) {
+            const float theta_extrap =
+                (float) strata::kernels::mrope_pos(mtab, (int) (pos0 + t), pair) * powf(theta_scale, (float) pair);
+            strata::kernels::rope_scaled_angle(theta_extrap, freq_scale, corr_low, corr_high, ext_factor, mscale,
+                                               pair, c, sn);
+        }
+        const float a = p[pair], b = p[pair + 32];
+        p[pair] = a * c - b * sn;
+        p[pair + 32] = a * sn + b * c;
+    }
+}
+
 // one block per (token, kv head, 64-value group); 64 threads. KV streaming: the pool page only if the block is
 // resident (table >= 0), and the host copy and the prompt path's staging pool (both identity layout) when given.
 __global__ void kv_append_kernel(const float* __restrict__ K, const float* __restrict__ V, int64_t pos0,
@@ -2215,6 +2257,26 @@ void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t p
 void split_q(const float* q_full, float* q, int64_t T, void* stream) {
     split_q_kernel<<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(q_full, q, T);
     check("split_q");
+}
+void q_prep(const float* q_full, const float* w, float* q, int64_t T, float eps, int64_t pos0,
+            const strata::kernels::RopeScaling& scaling, void* stream) {
+    if (T <= 0) return;
+    if (const char* why = strata::kernels::rope_scaling_invalid(scaling)) {   // rope()'s check
+        std::fprintf(stderr, "prefill q_prep: invalid rope scaling: %s\n", why);
+        std::exit(1);
+    }
+    const float theta_scale = powf((float) scaling.freq_base, -2.0f / 64.0f);
+    const strata::kernels::RopeKernelArgs k = scaling.kernel_args(64);
+    const strata::kernels::RopeTab rt = strata::kernels::rope_table_for(scaling);
+    if (rt.cos != nullptr)
+        q_prep_kernel<true><<<(unsigned) (T * 24), 256, 0, (cudaStream_t) stream>>>(
+            q_full, w, q, 256, eps, pos0, theta_scale, k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor,
+            strata::kernels::mrope_table(), rt);
+    else
+        q_prep_kernel<false><<<(unsigned) (T * 24), 256, 0, (cudaStream_t) stream>>>(
+            q_full, w, q, 256, eps, pos0, theta_scale, k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor,
+            strata::kernels::mrope_table(), rt);
+    check("q_prep");
 }
 void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream, int64_t ld16) {
     gate_attn_kernel<<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(attn, q_full, out16, T,
