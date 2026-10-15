@@ -181,6 +181,19 @@ chunks its conversation has reached.
   checkpoint is only usable beside the K/V below it: a slot that takes a conversation keeps all of them, and a
   conversation handed back to the solo path brings them along. Without that, a client that changes its last
   question (or re-renders its history) in a later turn finds no checkpoint below the change and reads everything again.
+  What a changed last question needs, measured with two lanes on 2 x RTX 3080 20 GB: it resumes from the deepest
+  **periodic** checkpoint (one every `--prompt-cache-every` read tokens, 16,384 by default) below the change, so an edit
+  below the first periodic checkpoint reuses nothing (a 30k-token prompt: 0 on both lanes; a 60k one: 31,232), and the
+  idle lane's parked image has to fit `--conversation-cache-mib`. At about 133k tokens per lane the default 4096 is
+  enough: both lanes reuse 118,784 tokens and the first token comes after 24.5 s and 13.3 s instead of 142 s and 53 s
+  (engine 0.1.44.1 plus the pool and the separately proposed slot choice that counts a prompt sharing three quarters of
+  a slot's tokens as that conversation's next turn; without that rule the changed request can take the other lane's slot
+  and these figures do not apply).
+  At 256k per lane both lanes reuse (225,792 tokens) only with `--conversation-cache-mib` of at least 4528 (one parked
+  image with its 6 checkpoints; 4608 tested); at 4096 one lane reads its 256k again. Each cached slot now keeps up to
+  `--prompt-cache` (6) checkpoints, about 0.7 GB of host RAM per slot; they are moved from the main session, not
+  copied. A turn that only appends to the history needs none of this (133k per lane: 133,287 and 133,306 tokens
+  reused).
 - **When the pool is full**, in this order: an idle slot's cached conversation gives its K/V back (a slot holding
   nothing worth keeping first, then the one used longest ago, a prompt read that gave way last - and nobody at all when
   every idle slot together would not cover what is needed); then a **new request is refused** (`ERR KV pool full`:
@@ -258,9 +271,10 @@ a single 512K conversation (it needs `--rope-scaling yarn --rope-scale 2`).
   half as long is waiting, the server sends `BYIELD`; at its next chunk boundary the long read stops, the part read
   so far is copied into a slot, the short request is admitted, and the long one then goes on from its slot with the
   same chunks (at most twice per request).
-- **Each slot is a conversation cache.** A finished slot keeps what it holds (the prompt, the answer, and the
-  checkpoint at the prompt's last turn boundary); the next turn of that conversation goes to that slot and the
-  engine copies its state back (50-60 ms for a short conversation) instead of reading the history again - also for
+- **Each slot is a conversation cache.** A finished slot keeps what it holds (the prompt, the answer, and its
+  checkpoints: all of its chain with `--kv-pool-tokens`, otherwise the one at the prompt's last turn boundary); the
+  next turn of that conversation goes to that slot and the engine copies its state back (50-60 ms for a short
+  conversation) instead of reading the history again - also for
   a client that drops the reply's thinking from the history (the checkpoint matches up to the new turn). A new
   conversation takes an empty slot, else the one used longest ago.
 - Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
