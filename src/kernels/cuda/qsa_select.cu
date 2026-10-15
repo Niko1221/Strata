@@ -642,14 +642,29 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
             hist[0][t] = s;
         }
         __syncthreads();
-        if (t == 0) {
-            int cum = above, d = 255;
-            for (; d > 0; --d) {
-                if (cum + hist[0][d] >= width) break;
-                cum += hist[0][d];
+        // the digit: the first bin from the top whose count, added to the count above it, reaches `width` (bin 0 when
+        // none of 255..1 does).  Threads 0-255 (warps 0-7) prefix-sum the 256 bins in descending order instead of one
+        // thread walking them: the same digit and count above.
+        int v = 0, x = 0;
+        if (t < 256) {
+            v = hist[0][255 - t];
+            x = v;
+#pragma unroll
+            for (int o = 1; o < 32; o <<= 1) {
+                const int y = __shfl_up_sync(0xffffffffu, x, o);
+                if (lane >= o) x += y;
             }
-            s_digit = d;
-            s_above = cum;
+            if (lane == 31) s_warp[warp] = x;
+        }
+        __syncthreads();
+        if (t < 256) {
+            int inc = x;
+            for (int w2 = 0; w2 < warp; ++w2) inc += s_warp[w2];
+            const int before = above + inc - v;
+            if (before < width && (above + inc >= width || t == 255)) {
+                s_digit = 255 - t;
+                s_above = before;
+            }
         }
         __syncthreads();
         prefix |= (uint32_t) s_digit << shift;
@@ -1330,7 +1345,13 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
     const int64_t reach = counted && active_blocks < max_blocks ? active_blocks : max_blocks;
     const int64_t fit = (int64_t) TK_T * (counted ? TK_PER_MAX : TK_PER);
 #if defined(__HIPCC__)
-    constexpr int64_t kRegMinBlocks = 7168;   // gfx1201: below ~28K cells the 1,024-thread kernel's fixed cost loses to the ref
+    // gfx1201: below ~28K cells (7,168 blocks) the 1,024-thread kernel's fixed cost loses to the ref.  STRATA_TOPK_REG_MIN_BLOCKS
+    // moves the line (0 removes it; STRATA_TOPK_OLD and the capacity check still apply); gfx1151's table sets 4096 (16K
+    // cells), where the register kernel with the cooperative scan was measured faster than the ref
+    static const int64_t kRegMinBlocks = [] {
+        const char* v = std::getenv("STRATA_TOPK_REG_MIN_BLOCKS");
+        return v != nullptr ? (int64_t) std::atoll(v) : (int64_t) 7168;
+    }();
     const bool too_small = counted && reach < kRegMinBlocks;
     if (old || too_small || reach > fit) {
 #else
