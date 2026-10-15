@@ -71,11 +71,14 @@ struct KvStreamMap {
     int32_t* ctl = nullptr;         ///< kKvCtlInts: epoch, hand, misses of the last call, overflow, u64 counters
     int32_t* miss_block = nullptr;  ///< (n_slots,)
     int32_t* miss_slot = nullptr;   ///< (n_slots,)
+    float* block_ks = nullptr;      ///< (n_blocks,) #2415's LRFU keep scores (evict_mode 1): they survive eviction
     int64_t n_blocks = 0;
     int64_t n_slots = 0;
+    int32_t evict_mode = 0;         ///< 0: the clock sweep (the engine's own); 1: LRFU, the lowest-score victim
 };
 
 inline constexpr int kKvCtlInts = 16;   ///< [0] epoch [1] hand [2] misses [3] overflow; u64 at [4] misses, [6] lookups, [8] calls
+inline constexpr float kKvLrfuLambda = 0.9892f;   ///< per-call decay: the policy bench's lambda=0.5 every 64 calls
 /// Bytes of the map's arrays besides the page table (which the state already has): 5 per-slot ints + ctl.
 inline uint64_t kv_stream_map_bytes(int64_t n_slots) { return (uint64_t) n_slots * 4 * 5 + kKvCtlInts * 4; }
 

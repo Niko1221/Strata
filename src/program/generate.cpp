@@ -404,6 +404,9 @@ struct Options {
     bool ple_sync_submit = false;      ///< A/B arm: submit reads on the token thread, no I/O worker
     std::string kv = "fp16";           ///< plan v0.3 P7: KV storage, fp16 (default) or int8 (half the VRAM)
     int64_t kv_resident = 0;           ///< KV streaming: resident cells per QSA layer (0: all in VRAM)
+    /// #2415: the streamed page pool's victim pick - "clock" (the engine's own sweep) or "lrfu" (the lowest
+    /// keep score wins, ActKV's rule).  The output is identical either way; this is a measured question.
+    std::string kv_evict = "clock";
     bool kv_grow = false;              ///< the elastic K/V (--kv-grow, STRATA_KV_GROW=1; kvg_ensure)
     std::string dump_residual;
     /// The head input, `bb.mixed`.  It exists so the head can be SPLIT: steps 1-4 (the per-stream norm, the two
@@ -726,6 +729,8 @@ void usage() {
                  "  --kv-resident N      KV streaming: keep N cells of each QSA layer in VRAM (min 20480) and the\n"
                  "                       whole K/V in pinned RAM; the freed VRAM goes to expert slots. 0 (default):\n"
                  "                       all of it in VRAM. A context of N cells or fewer is not streamed\n"
+                 "  --kv-evict clock|lrfu  the streamed page pool's victim pick: the clock sweep (default) or the\n"
+                 "                       lowest LRFU keep score (same output, a different miss pattern; #2415)\n"
                  "  --kv-grow            the K/V takes VRAM only for the cells the requests reach and the expert\n"
                  "                       cache holds the rest, giving slots back as the context grows (one GPU, with\n"
                  "                       --expert-profile; STRATA_KV_GROW=1/0 also). Default: the whole --max-context\n"
@@ -1949,6 +1954,7 @@ int main(int argc, char** argv) {
         else if (a == "--ple-sync-submit") o.ple_sync_submit = true;
         else if (a == "--kv") o.kv = next("--kv");
         else if (a == "--kv-resident") o.kv_resident = std::atoll(next("--kv-resident"));
+        else if (a == "--kv-evict") o.kv_evict = next("--kv-evict");
         else if (a == "--kv-grow") o.kv_grow = true;
         else if (a == "--no-kv-grow") o.kv_grow = false;
         else if (a == "--stream-token") o.stream_token = true;
@@ -2561,6 +2567,11 @@ int main(int argc, char** argv) {
         return 2;
     }
     strata::core::qsa_set_kv_resident(o.kv_resident);
+    if (o.kv_evict != "clock" && o.kv_evict != "lrfu") {
+        std::fprintf(stderr, "strata generate: --kv-evict must be clock or lrfu, not %s\n", o.kv_evict.c_str());
+        return 2;
+    }
+    strata::core::qsa_set_kv_evict_lrfu(o.kv_evict == "lrfu");   // #2415: same output, a different miss pattern
     // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be
     // up to 2 tokens longer; the draft policy (strata/spec/draft_policy.hpp) takes one only where it pays. Code
     // edits +6-11%, ordinary text unchanged (bench/results/2026-09-27-spec). --suffix-draft 0 turns it off.

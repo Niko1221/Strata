@@ -114,7 +114,7 @@ std::vector<int32_t> selection(int64_t n_kv, int64_t width, std::mt19937& rng) {
     return ids;
 }
 
-bool run(int fmt) {
+bool run(int fmt, int evict_mode = 0) {   // evict_mode 1: #2415's LRFU victim pick instead of the clock sweep
     const char* name = fmt == k::kKvHybrid ? "k8v4" : fmt == k::kKvQ4 ? "q4_0" : fmt == k::kKvInt8 ? "int8" : "fp16";
     k::QsaShapes s = k::qsa_real_shapes();
     const int64_t N = 40000, n_blocks = (N + 3) / 4, n_slots = 8 * 516 + 700;   // must evict: slots < blocks
@@ -138,7 +138,9 @@ bool run(int fmt) {
     m.slot_block = dalloc<int32_t>(n_slots); m.slot_stamp = dalloc<int32_t>(n_slots); m.slot_ref = dalloc<int32_t>(n_slots);
     m.miss_block = dalloc<int32_t>(n_slots); m.miss_slot = dalloc<int32_t>(n_slots);
     m.ctl = dalloc<int32_t>(k::kKvCtlInts);
+    m.block_ks = dalloc<float>(n_blocks);      // #2415: the LRFU keep scores (unused by the clock sweep)
     m.n_blocks = n_blocks; m.n_slots = n_slots;
+    m.evict_mode = evict_mode;
     k::kv_stream_reset(m, nullptr);
 
     float* kc = dalloc<float>(H * D);
@@ -241,6 +243,9 @@ int main() {
     std::printf("kv_stream_parity: streamed vs resident KV, bitwise\n");
     const bool a = run(k::kKvInt8), b = run(k::kKvF16), c = run(k::kKvQ4), d = run(k::kKvHybrid);
     if (!a || !b || !c || !d) ++g_fail;
+    // #2415: the LRFU victim pick must hold the same invariant - the pool is a cache whatever evicts from it
+    const bool la = run(k::kKvInt8, 1), lb = run(k::kKvHybrid, 1);
+    if (!la || !lb) ++g_fail;
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }

@@ -515,6 +515,8 @@ namespace {
 // KV streaming (docs/kv-streaming-design.md): 0 keeps every cell in VRAM.
 int64_t g_kv_resident = 0;
 uint64_t g_kv_host_bytes = 0;
+// #2415's --kv-evict lrfu: the page pool's victim pick is the lowest LRFU keep score, not the clock sweep.
+bool g_kv_evict_lrfu = false;
 
 // ---- the elastic K/V (--kv-grow): one VMM range per state, each pool array at a chunk boundary in it
 bool g_kv_elastic = false;
@@ -662,6 +664,7 @@ uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8
 }  // namespace
 
 void qsa_set_kv_resident(int64_t cells) { g_kv_resident = cells > 0 ? cells : 0; }
+void qsa_set_kv_evict_lrfu(bool on) { g_kv_evict_lrfu = on; }
 int64_t qsa_kv_resident() { return g_kv_resident; }
 int64_t qsa_kv_resident_min() { return 20480; }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
@@ -674,7 +677,10 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
         n += kv_pool_bytes(s, p.slots, g_kv_hybrid && ring_cells <= 0,
                            g_kv_int8 || g_kv_hybrid) + 4 * 16;   // K/V pools (the VRAM slots)
     n += (uint64_t) p.pages * 4;                                               // page_table
-    if (p.mode == 1) n += strata::kernels::kv_stream_map_bytes(p.slots) + 6 * 16;   // the residency map
+    if (p.mode == 1) {
+        n += strata::kernels::kv_stream_map_bytes(p.slots) + 6 * 16;           // the residency map
+        if (g_kv_evict_lrfu) n += (uint64_t) p.pages * 4 + 16;                 // #2415: the LRFU keep scores
+    }
     n += (uint64_t) (s.idx_block - 1) * s.idx_dim * 4;                         // tail
     n += (uint64_t) s.idx_dim * 4;                                             // dead
     n += (uint64_t) p.pooled_rows * s.idx_dim * 4;                             // pooled
@@ -771,6 +777,11 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         st.map.miss_block = c.take<int32_t>((uint64_t) p.slots);
         st.map.miss_slot = c.take<int32_t>((uint64_t) p.slots);
         st.map.ctl = c.take<int32_t>((uint64_t) strata::kernels::kKvCtlInts);
+        if (g_kv_evict_lrfu) {   // #2415: the LRFU keep scores, only with --kv-evict lrfu (the arena is sized for it)
+            st.map.block_ks = c.take<float>((uint64_t) pages);
+            st.map.evict_mode = 1;
+            cudaMemset(st.map.block_ks, 0, (size_t) pages * 4);
+        }
     }
     st.idx_tail = c.take<float>((uint64_t) (s.idx_block - 1) * s.idx_dim);
     st.idx_dead = c.take<float>((uint64_t) s.idx_dim);

@@ -83,6 +83,20 @@ costs ~13.7 KB of RAM per context token (1.7 GB at 128K). Existing installs: run
 it on. Setup turns it on when the RAM has room for it; `--kv-streaming on|off` overrides that (on past the RAM test with a
 note; never under WSL, which cannot stream).
 
+**The page pool's victim pick (opt-in, `--kv-evict clock|lrfu`, #2415).** When the streamed pool is full, the
+resolve kernel evicts one block per miss. `clock` (the default, the engine's own) sweeps slots from a hand and
+takes the first that is unreferenced - the classic second chance. `lrfu` instead keeps a per-block score that
+survives eviction, decays a little every call (the policy bench's lambda = 0.5 per 64 calls) and gains on a hit,
+and evicts the lowest-scoring block (a tie goes to the least recently used slot). Verification keeps the same
+attention values either way - the pool is a cache over an authoritative RAM copy - so the flag changes only which
+blocks are re-read from RAM, never an answer. Which one is faster is a measured question and the answer depends
+on the access pattern: on real selection traces (a 4K-token prompt and a 64K-token one, captured for
+`tools/replay_kv_stream_policy.py`) LRFU re-reads 2.6-6.0% fewer blocks than CLOCK at pool sizes between one
+call's width and the working set, while on the `kv_stream_parity` synthetic workload (a sliding recent window
+mixed with uniform random draws) CLOCK wins and LRFU matches its offline model, so the flag is opt-in and the
+default stays CLOCK.
+
+
 **4-bit KV cache (engine 0.1.8, optional):** `START-HERE.bat --setup` asks above 8K context (or pass `--kv q4_0`). It
 halves the KV cache's memory with a Hadamard rotation before 4-bit rounding (PR #21), about 4% faster at 128K, but it
 is measurably less precise on long documents (perplexity +8-12%; needle tests still pass). 8-bit stays the default.

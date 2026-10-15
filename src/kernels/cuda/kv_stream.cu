@@ -90,9 +90,17 @@ __global__ void __launch_bounds__(RT) resolve_kernel(KvStreamMap m, const int32_
                                                      const int32_t* __restrict__ steps, int n_q, int cap, int page_size) {
     __shared__ int s_nmiss, s_lookups, s_cut;
     __shared__ int warp_sums[32];
+    __shared__ float s_ks[RT];        // #2415's LRFU pick: the per-thread minimum (score, last use) and its slot
+    __shared__ int s_kst[RT], s_ksj[RT];
     const int epoch = m.ctl[0] + 1;
     if (threadIdx.x == 0) { s_nmiss = 0; s_lookups = 0; }
     __syncthreads();
+    if (m.evict_mode == 1) {
+        // LRFU: every block's keep score decays once per call (the policy bench's lambda=0.5 every 64 calls), so a
+        // hit added below is KS = lambda*KS + 1
+        for (int j = threadIdx.x; j < (int) m.n_blocks; j += RT) m.block_ks[j] *= kKvLrfuLambda;
+        __syncthreads();
+    }
     // 1. hits take this epoch and their reference bit; a missing block is claimed exactly once (-1 -> -2)
     int lookups = 0;
     for (int q = 0; q < n_q; ++q) {
@@ -106,6 +114,7 @@ __global__ void __launch_bounds__(RT) resolve_kernel(KvStreamMap m, const int32_
             if (sl >= 0) {
                 m.slot_stamp[sl] = epoch;
                 m.slot_ref[sl] = 1;
+                if (m.evict_mode == 1) atomicAdd(&m.block_ks[b], 1.0f);   // the LRFU gain per hit
             } else if (sl == -1 && atomicCAS(&m.page_table[b], -1, -2) == -1) {
                 m.miss_block[atomicAdd(&s_nmiss, 1)] = b;
             }
@@ -113,11 +122,54 @@ __global__ void __launch_bounds__(RT) resolve_kernel(KvStreamMap m, const int32_
     }
     if (lookups > 0) atomicAdd(&s_lookups, lookups);   // (#783, stuchapin909) most threads see none: skip the shared atomic
     __syncthreads();
-    // 2. one victim per miss: a clock sweep from the hand. A slot this call uses (stamp == epoch) is never taken;
-    //    a referenced one loses its bit as the hand passes it and is taken on the next pass.
+    // 2. one victim per miss.  A slot this call uses (stamp == epoch) is never taken.
     const int need = s_nmiss, n = (int) m.n_slots;
     int hand = m.ctl[1], got = 0;
-    for (int scanned = 0; got < need && scanned < 3 * n; scanned += RT) {
+    if (m.evict_mode == 1) {
+        // LRFU (#2415): the slot holding the block with the lowest keep score - an empty slot first - one per miss,
+        // a block-wide argmin each (n_slots is small and need is a handful).  Ties go to the least recently used
+        // slot, so a block just loaded (score 0) is not the first victim - the clock sweep's ref bit gives it the
+        // same second chance.
+        if (threadIdx.x == 0) s_cut = 0;
+        __syncthreads();
+        for (int v = 0; v < need; ++v) {
+            float best = 3.4e38f;
+            int best_j = -1, best_t = 0x7fffffff;
+            for (int j = threadIdx.x; j < n; j += RT) {
+                if (m.slot_stamp[j] == epoch) continue;
+                const int b = m.slot_block[j];
+                const float s = b < 0 ? -3.4e38f : m.block_ks[b];       // an empty slot always wins
+                const int t = b < 0 ? -0x7fffffff : m.slot_stamp[j];    // ties: the least recently used
+                if (s < best || (s == best && t < best_t)) { best = s; best_t = t; best_j = j; }
+            }
+            s_ks[threadIdx.x] = best;
+            s_kst[threadIdx.x] = best_t;
+            s_ksj[threadIdx.x] = best_j;
+            __syncthreads();
+            for (int off = RT / 2; off > 0; off >>= 1) {
+                if (threadIdx.x < off) {
+                    const float so = s_ks[threadIdx.x + off];
+                    if (so < s_ks[threadIdx.x] ||
+                        (so == s_ks[threadIdx.x] && s_kst[threadIdx.x + off] < s_kst[threadIdx.x])) {
+                        s_ks[threadIdx.x] = so;
+                        s_kst[threadIdx.x] = s_kst[threadIdx.x + off];
+                        s_ksj[threadIdx.x] = s_ksj[threadIdx.x + off];
+                    }
+                }
+                __syncthreads();
+            }
+            if (threadIdx.x == 0 && s_ksj[0] >= 0) {   // none: this call needs more slots than n_slots has (overflow)
+                m.miss_slot[v] = s_ksj[0];
+                m.slot_stamp[s_ksj[0]] = epoch;
+                s_cut = v + 1;
+            }
+            __syncthreads();
+        }
+        got = s_cut;
+    } else {
+        // the clock sweep from the hand.  A referenced one loses its bit as the hand passes it and is taken on the
+        // next pass.
+        for (int scanned = 0; got < need && scanned < 3 * n; scanned += RT) {
         const int j = (int) (((long long) hand + threadIdx.x) % n);
         const bool mine = m.slot_stamp[j] == epoch;
         const bool cand = !mine && (m.slot_block[j] < 0 || m.slot_ref[j] == 0);
@@ -138,6 +190,7 @@ __global__ void __launch_bounds__(RT) resolve_kernel(KvStreamMap m, const int32_
         got += total < want ? total : want;
         hand = (int) (((long long) hand + cut) % n);
         __syncthreads();
+        }
     }
     // 3. re-point the table; the copy kernel fills the slots
     const int placed = got < need ? got : need;
@@ -179,7 +232,10 @@ __global__ void copy_kernel(KvStreamMap m, Runs r) {
 
 __global__ void reset_kernel(KvStreamMap m) {
     const long long i0 = (long long) blockIdx.x * blockDim.x + threadIdx.x, st = (long long) gridDim.x * blockDim.x;
-    for (long long i = i0; i < m.n_blocks; i += st) m.page_table[i] = -1;
+    for (long long i = i0; i < m.n_blocks; i += st) {
+        m.page_table[i] = -1;
+        if (m.block_ks != nullptr) m.block_ks[i] = 0.0f;   // #2415: a new sequence starts with no keep scores
+    }
     for (long long i = i0; i < m.n_slots; i += st) {
         m.slot_block[i] = -1;
         m.slot_stamp[i] = -1;
