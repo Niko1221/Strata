@@ -64,6 +64,18 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-15: Tesla V100-PCIE-32GB (sm_70, PCIe 3.0 x16), Ryzen 5 3600, 31 GiB RAM + 23 GiB swap - three reports, one box and one settings set](../bench/results/2026-10-15-community-v100-pcie-32gb-iq2-xs/README.md):
+  Strata 0.1.42 source build for sm_70, original Flash-Next at 262,144-token context and `--kv k8v4`,
+  `tools/strata_bench.py --long`, three runs per test. **IQ2_XS in `--resident-experts`** (the production mode):
+  chat decode **76.1 tok/s**, agent decode 74.4 tok/s, prompt **1251.6 / 1373.8 / 1344.9 tok/s** with first token
+  3.23 / 11.72 / 23.87 s at 4,019 / 16,058 / 32,049 fresh tokens, agent cache hit 68.7 %.
+  **IQ3_XXS in `--resident-experts`** ([report](../bench/results/2026-10-15-community-v100-pcie-32gb-iq3-xxs/README.md)):
+  chat decode 66.6 tok/s, agent 76.1 tok/s, prompt **1176.9 / 1355.4 / 1275.1 tok/s**, first token
+  3.44 / 11.88 / 25.18 s, cache hit 68.8 % - so the denser quant costs ~6 % on chat decode and ~6/1/6 % on prompt
+  throughput, and its start log shows 2076 of 2076 lendable prompt slots resident (nothing read from disk).
+  **IQ3_XXS in `--mmap-experts`** ([report](../bench/results/2026-10-15-community-v100-pcie-32gb-iq3-xxs-mmap/README.md)):
+  chat decode 62.5 tok/s, prompt **930.7 / 1180.1 / 1206.8 tok/s**, the first 4K run a cold file-cache read at 438 tok/s
+  against 1015 warm. Speed only in all three; no recall, coding or concurrency test.
 
 ## Run the benchmark
 
