@@ -1,0 +1,11 @@
+{
+  "verified_shard_signatures_unchanged": true,
+  "identity_matches_pin": true,
+  "pack_hashes_match": {
+    "index.txt": true,
+    "dense.bin": true,
+    "native_experts.txt": true,
+    "compat-bf16.json": true,
+    "conversions.json": true
+  }
+}

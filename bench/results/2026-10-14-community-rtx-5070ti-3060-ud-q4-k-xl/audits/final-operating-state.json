@@ -1,0 +1,77 @@
+[
+  {
+    "command": [
+      "systemctl",
+      "--user",
+      "is-enabled",
+      "ai-llama.service"
+    ],
+    "returncode": 1,
+    "stdout": "disabled\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "systemctl",
+      "--user",
+      "is-active",
+      "ai-llama.service"
+    ],
+    "returncode": 3,
+    "stdout": "inactive\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "systemctl",
+      "--user",
+      "is-active",
+      "ai-strata-q4k.service"
+    ],
+    "returncode": 3,
+    "stdout": "inactive\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "systemctl",
+      "--user",
+      "list-units",
+      "ai-strata-contribution-*",
+      "--all",
+      "--no-pager"
+    ],
+    "returncode": 0,
+    "stdout": "  UNIT LOAD ACTIVE SUB DESCRIPTION\n\n0 loaded units listed.\nTo show all installed unit files use 'systemctl list-unit-files'.\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "ss",
+      "-ltnp",
+      "( sport >= 8080 and sport <= 8083 )"
+    ],
+    "returncode": 0,
+    "stdout": "State Recv-Q Send-Q Local Address:Port Peer Address:PortProcess\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "nvidia-smi",
+      "--query-gpu=index,name,memory.used,temperature.gpu,power.limit",
+      "--format=csv"
+    ],
+    "returncode": 0,
+    "stdout": "index, name, memory.used [MiB], temperature.gpu, power.limit [W]\n0, NVIDIA GeForce RTX 5070 Ti, 23 MiB, 36, 330.00 W\n1, NVIDIA GeForce RTX 3060, 422 MiB, 63, 187.00 W\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "free",
+      "-k"
+    ],
+    "returncode": 0,
+    "stdout": "               total        used        free      shared  buff/cache   available\nMem:       127365092     6164532    96467144       72012    25795544   121200560\nSwap:        8388604      302260     8086344\n",
+    "stderr": ""
+  }
+]

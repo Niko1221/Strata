@@ -1,0 +1,108 @@
+{
+  "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+  "revision": "38bb39ee97821de2c9009abb7e93950eec396e66",
+  "quantization": "UD-Q4_K_XL",
+  "source_sha": "296b59d2f73c8f04a805df29c2fa97655adace78",
+  "engine_sha256": "baa94307564d44cb41027d19f25afc3e55995c4a3807c4d7746b1e6be2e6d47f",
+  "kq_sha256": "3bcf9f32ba47ea24da49b6c5827b9e26ca9a6abeec3e2fe67efd07aaeff06e66",
+  "engine_version": "0.1.44.1",
+  "shards": [
+    {
+      "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+      "size": 10946624,
+      "sha256": "4448186216b3af4cc558bbce2c3213f01608f8f8b2e5267a9767971dd3ec8082"
+    },
+    {
+      "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "size": 49859583136,
+      "sha256": "3f342f1c1580473f1ee94ddd5b28206e8c07a70fa1a366f59d1d6c922919a6c9"
+    },
+    {
+      "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "size": 49376141504,
+      "sha256": "56758f40269cad5cd9b0d3d6fbae0f40f6d5be6de49e4ab392dbe83157d9cbd3"
+    },
+    {
+      "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "size": 12087983520,
+      "sha256": "753bda48b98ba4f1636134a90a967de1b2d3908a236c026e464777342e53510a"
+    }
+  ],
+  "shards_verified_sha256": true,
+  "model_total_bytes": 111334654784,
+  "pack_files_sha256": {
+    "index.txt": "cfc07e91c4d9b8e8c999fd1f70fa364e584748e70fa377b30e0fc85426f52711",
+    "dense.bin": "f53174059b262ed342b82e143af62056081948ef5e5f1903a1a70eeb73fa4a23",
+    "native_experts.txt": "5ed2c4a55910616db1efe16f0c989e9bec80cc8b9e95bf1c42f886aadfffd2d6",
+    "compat-bf16.json": "2fd56db8b91d23e12b9f9e540bd5707fac7520861c5d7b5e0f95ab7ae9189622",
+    "conversions.json": "722a102cb500b9097d1890cffebf142904fa6534c209ac44c6445f0aec3d0cc4"
+  },
+  "pack_mode": "--compat-bf16; native experts reference GGUF; no experts.bin",
+  "assets": {
+    "mtp": {
+      "dense.bin": {
+        "sha256": "c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a",
+        "bytes": 116099072
+      },
+      "dense.txt": {
+        "sha256": "991456cf4eb266eb8a888c349e548d11bc640f5dbd9149439aa9786af0f732fd",
+        "bytes": 1851
+      },
+      "draft_vocab.bin": {
+        "sha256": "369151522226a5edaa5f12cfd1e2ae7db8f4fbdbd222f3dcf327dced9597fb25",
+        "bytes": 162100
+      },
+      "experts.bin": {
+        "sha256": "09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f",
+        "bytes": 707788800
+      }
+    },
+    "tokenizer": {
+      "chat_template.jinja": {
+        "sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+        "bytes": 9993
+      },
+      "merges.txt": {
+        "sha256": "4ba698529766c7a2f5052083ea10cdf2485577f5237a332ee291054eb11e3332",
+        "bytes": 3353258
+      },
+      "token_type.json": {
+        "sha256": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b",
+        "bytes": 744960
+      },
+      "tokenizer.json": {
+        "sha256": "c0bd435efbc6c3b28964b47999afe16c4ad268c7c7c4e8cb3af410796a6f30bf",
+        "bytes": 541
+      },
+      "vocab.json": {
+        "sha256": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4",
+        "bytes": 5737005
+      }
+    },
+    "expert-profile.bin": {
+      "sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf",
+      "bytes": 196632
+    }
+  },
+  "upstream_scripts_sha256": {
+    "tools/strata_bench.py": "de3942b91986433eb8af190bd90ec47e263efc8d608a786eab708cb043097146",
+    "tools/ab_engine.py": "694b563dc7d422a61be05523c75d6bfd473530dee257b71ac65517886f918f77",
+    "tools/calibrate.py": "41f71f0d3fa4a3aff033365c7111974dae4f1c879627011a62ab447df5b354ec",
+    "tools/iq_pack.py": "21b73cdb06031d2fe65bd87ebcd1ccfd8c40ac15cdb1c54d6dbe84d233c8049b"
+  },
+  "build_options": {
+    "CMAKE_BUILD_TYPE:STRING": "Release",
+    "CMAKE_CUDA_ARCHITECTURES:UNINITIALIZED": "86;120",
+    "STRATA_BUILD_CONVERSATION_TESTS:BOOL": "OFF",
+    "STRATA_BUILD_TESTS:BOOL": "OFF",
+    "STRATA_ENABLE_CUDA:BOOL": "ON",
+    "STRATA_ENABLE_HIP:BOOL": "OFF",
+    "STRATA_ENABLE_SYCL:BOOL": "OFF",
+    "STRATA_ISA_FLOOR:STRING": "",
+    "STRATA_MMQ_KQUANTS:BOOL": "ON",
+    "STRATA_NATIVE_EXPERTS:BOOL": "ON",
+    "STRATA_PORTABLE:BOOL": "OFF",
+    "STRATA_PREFILL_MMQ:BOOL": "OFF",
+    "STRATA_WERROR:BOOL": "OFF"
+  }
+}

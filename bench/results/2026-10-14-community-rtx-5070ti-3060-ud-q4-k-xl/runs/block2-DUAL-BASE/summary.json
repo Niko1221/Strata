@@ -1,0 +1,151 @@
+{
+  "block": 2,
+  "arm": "DUAL-BASE",
+  "folder": "runs/block2-DUAL-BASE",
+  "effective_engine_settings": {
+    "max_context": 65536,
+    "version": "0.1.44.1",
+    "kv": "int8",
+    "pool_workers": 7,
+    "pcie_frac": "0.17",
+    "spec_min_p": "0.50"
+  },
+  "load_wall_s": 98.02789427500102,
+  "suite_wall_s": 555.3598401546478,
+  "all_requests_including_initial_agent_turn": 36,
+  "cgroup_events": {
+    "high": 12288,
+    "max": 0,
+    "oom": 0,
+    "oom_kill": 0
+  },
+  "disk_reads_bytes": {
+    "loop0": 0,
+    "loop1": 0,
+    "loop2": 0,
+    "loop3": 0,
+    "loop4": 0,
+    "loop5": 0,
+    "loop6": 0,
+    "loop7": 0,
+    "nvme2n1": 0,
+    "nvme2n1p1": 0,
+    "nvme2n1p2": 0,
+    "nvme0n1": 98312634368,
+    "nvme0n1p1": 0,
+    "nvme0n1p2": 98312634368,
+    "nvme1n1": 0,
+    "nvme1n1p1": 0,
+    "nvme1n1p2": 0,
+    "nvme1n1p3": 0,
+    "nvme1n1p4": 0,
+    "sda": 0,
+    "sda1": 0,
+    "sda2": 0,
+    "sdb": 0,
+    "sdb1": 0,
+    "sdc": 0,
+    "sdc1": 0,
+    "sdd": 0,
+    "sde": 0,
+    "sdf": 0,
+    "sdg": 0,
+    "sdh": 0,
+    "loop10": 0,
+    "loop11": 0,
+    "loop9": 0,
+    "loop13": 418816,
+    "loop8": 0,
+    "loop17": 0,
+    "loop16": 0,
+    "loop15": 0,
+    "loop12": 0,
+    "loop14": 0,
+    "loop18": 0,
+    "loop20": 0,
+    "loop21": 0,
+    "loop19": 0,
+    "loop22": 0,
+    "loop25": 0,
+    "loop23": 2401280,
+    "loop26": 0,
+    "loop24": 0,
+    "loop27": 0
+  },
+  "placement": [
+    "strata generate: PCIe probe: 6.1 GB/s host->device (best of 6.1 6.1 6.1 6.1) -> pcie_frac 0.17 (default 0.55)",
+    "strata generate: layer split: CUDA1 PCIe probe 6.7 GB/s (best of 6.7 6.7 6.7 6.7) -> pcie_frac 0.18",
+    "strata generate: layer split: CUDA1 holds its weights; 9.99 GiB free (its session follows the split search)",
+    "strata generate: layer split auto: K=2 would give a stage fewer than 3 layers (a tiny expert cache there clamps the prompt chunk of every card, #1616); chose K=3 instead (36.7 ms per decode window, not 36.1)",
+    "strata generate: layer split: CUDA1 holds its weights, session [3, 48) and the head; 8.74 GiB free",
+    "strata generate: 7 pool workers on logical processors 1,2,3,4,5,6,7, the host thread on 0 (draining too) (--host-core first)"
+  ],
+  "telemetry_summary": {
+    "chat_decode": 28.9,
+    "chat_ttft": 1.21,
+    "agent_decode": 29.0,
+    "agent_ttft": 11.435,
+    "agent_cache_hit": 68.771,
+    "failed": 0,
+    "skipped": 0,
+    "4K_prefill": 350.6,
+    "4K_ttft": 11.502,
+    "16K_prefill": 597.8,
+    "16K_ttft": 26.893,
+    "32K_prefill": 645.8,
+    "32K_ttft": 49.68,
+    "service_wall_s": 706.1466879920008,
+    "calibration_probe_decode": 28.6,
+    "calibration_probe_count": 9,
+    "min_available_gib": 36.34934997558594,
+    "peak_service_gib": 100.00132751464844,
+    "global_swap_max_bytes": 328224768,
+    "service_swap_max_bytes": 0,
+    "gpu": {
+      "0": {
+        "max_temp_c": 66.0,
+        "peak_used_mib": 14669.0,
+        "max_power_w": 100.79,
+        "busy_sm_mhz_median": 2827.0,
+        "pcie_gen_seen": [
+          1.0,
+          3.0
+        ],
+        "pcie_width_seen": [
+          8.0
+        ]
+      },
+      "1": {
+        "max_temp_c": 65.0,
+        "peak_used_mib": 10597.0,
+        "max_power_w": 99.96,
+        "busy_sm_mhz_median": 2040.0,
+        "pcie_gen_seen": [
+          3.0
+        ],
+        "pcie_width_seen": [
+          8.0
+        ]
+      }
+    }
+  },
+  "oc_hashes": [
+    "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b",
+    "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b"
+  ],
+  "effective_limits_unchanged": true,
+  "probe_output_hashes": [
+    "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+    "ec50599035d3bab88f7cdb2621753bee9d88442e5d356b6dfcca6b10e75a2a06",
+    "b1f08ffcb8af4c23c0c2b5c18885f6449eecf4bb0f411b434240355afcc12126",
+    "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+    "6cbafc5dc209de3d35df9c743a8388568e813b06b71ab5a5ff393491933f45f8",
+    "bd1e194b4ec31fc50e4825105a37ac1a91f0eb169253c92455554a06ccb3ebb3",
+    "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+    "a9c5c6829708996319dc39a29e7c606e481ebc86c5430f2cc9d2dfc7bd43787d",
+    "e22500f74580664e0a8cf4821ba340f626964ecf5bf5331f9c4eff3f2abe03ef"
+  ],
+  "original_run_id": "20261014T174635241376Z-DUAL-BASE-bench",
+  "started_at_epoch_s": 1791999995.1998646,
+  "finished_at_epoch_s": 1792000716.9930449
+}

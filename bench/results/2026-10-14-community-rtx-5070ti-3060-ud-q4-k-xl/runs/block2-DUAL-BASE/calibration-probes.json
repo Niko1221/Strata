@@ -1,0 +1,470 @@
+[
+  {
+    "repeat": 0,
+    "prompt_index": 0,
+    "prompt": "[matched-match-20261014T162442Z-0-0] Write a Python function that merges two sorted lists into one sorted list, with a docstring and two tests.",
+    "response": {
+      "first": 1.370678418999887,
+      "total": 5.539934933998666,
+      "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    Merge two sorted lists into one sorted list.\n    \n    Args:\n        list1: A sorted list of comparable elements.\n        list2: A sorted list of comparable elements.\n    \n    Returns:\n        A new sorted list containing all elements from both input lists.\n    \"\"\"\n    merged = []\n    i, j = 0, 0\n    \n    while i < len(list1) and j < len(list2):\n        if list1[i] <= list2[j",
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 128,
+        "total_tokens": 187,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 59,
+        "prompt_ms": 1342.0,
+        "prompt_per_token_ms": 22.746,
+        "prompt_per_second": 44.0,
+        "predicted_n": 128,
+        "predicted_ms": 4195.8,
+        "predicted_per_token_ms": 32.78,
+        "predicted_per_second": 30.5,
+        "draft_n": 108,
+        "draft_n_accepted": 90
+      },
+      "err": null,
+      "pieces": 116
+    },
+    "metrics": {
+      "ok": true,
+      "err": null,
+      "ttft_s": 1.371,
+      "total_s": 5.54,
+      "prompt_tokens": 59,
+      "reused_tokens": 0,
+      "read_tokens": 59,
+      "generated_tokens": 128,
+      "prompt_tps": 44.0,
+      "prompt_tps_source": "engine",
+      "decode_tps": 30.5,
+      "decode_tps_source": "engine",
+      "prompt_ms": 1342.0,
+      "decode_ms": 4195.8,
+      "drafts_offered": 108,
+      "drafts_accepted": 90
+    },
+    "answer_sha256": "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710"
+  },
+  {
+    "repeat": 0,
+    "prompt_index": 1,
+    "prompt": "[matched-match-20261014T162442Z-0-1] Explain in two paragraphs how a refrigerator moves heat from inside to outside.",
+    "response": {
+      "first": 1.1614145639996423,
+      "total": 5.938427668999793,
+      "text": "A refrigerator operates by utilizing a closed-loop system filled with a specialized refrigerant that undergoes continuous phase changes to transport thermal energy. Inside the refrigerator compartment, the refrigerant flows through coils known as the evaporator, where it exists as a low-pressure liquid. As this liquid absorbs heat from the air and contents within the fridge, it boils and turns into a gas, effectively cooling the interior space. This process exploits the physical principle that evaporation requires energy, which the refrigerant draws from its surroundings, thereby lowering the temperature inside the cabinet.\n\nOnce the refrigerant has absorbed heat and transformed into a low-pressure gas, it is drawn",
+      "usage": {
+        "prompt_tokens": 51,
+        "completion_tokens": 128,
+        "total_tokens": 179,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 51,
+        "prompt_ms": 1133.7,
+        "prompt_per_token_ms": 22.229,
+        "prompt_per_second": 45.0,
+        "predicted_n": 128,
+        "predicted_ms": 4802.9,
+        "predicted_per_token_ms": 37.523,
+        "predicted_per_second": 26.7,
+        "draft_n": 134,
+        "draft_n_accepted": 66
+      },
+      "err": null,
+      "pieces": 127
+    },
+    "metrics": {
+      "ok": true,
+      "err": null,
+      "ttft_s": 1.161,
+      "total_s": 5.938,
+      "prompt_tokens": 51,
+      "reused_tokens": 0,
+      "read_tokens": 51,
+      "generated_tokens": 128,
+      "prompt_tps": 45.0,
+      "prompt_tps_source": "engine",
+      "decode_tps": 26.7,
+      "decode_tps_source": "engine",
+      "prompt_ms": 1133.7,
+      "decode_ms": 4802.9,
+      "drafts_offered": 134,
+      "drafts_accepted": 66
+    },
+    "answer_sha256": "ec50599035d3bab88f7cdb2621753bee9d88442e5d356b6dfcca6b10e75a2a06"
+  },
+  {
+    "repeat": 0,
+    "prompt_index": 2,
+    "prompt": "[matched-match-20261014T162442Z-0-2] List twelve European capitals with one sentence about each.",
+    "response": {
+      "first": 1.2026010249992396,
+      "total": 5.8868139529986365,
+      "text": "Here are twelve European capitals, each accompanied by a brief description:\n\n1. **London, United Kingdom**: A global cultural and financial hub known for its iconic landmarks like Big Ben and the Tower of London.\n2. **Paris, France**: Renowned for its romantic ambiance, world-class art museums, and the Eiffel Tower.\n3. **Berlin, Germany**: A city of historical significance and vibrant modern culture, marked by the remnants of the Berlin Wall.\n4. **Madrid, Spain**: The heart of Spanish culture, famous for its royal palace, bustling plazas, and exceptional art museums like the Prado.\n5",
+      "usage": {
+        "prompt_tokens": 47,
+        "completion_tokens": 128,
+        "total_tokens": 175,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 47,
+        "prompt_ms": 1164.7,
+        "prompt_per_token_ms": 24.781,
+        "prompt_per_second": 40.4,
+        "predicted_n": 128,
+        "predicted_ms": 4720.1,
+        "predicted_per_token_ms": 36.876,
+        "predicted_per_second": 27.1,
+        "draft_n": 116,
+        "draft_n_accepted": 73
+      },
+      "err": null,
+      "pieces": 123
+    },
+    "metrics": {
+      "ok": true,
+      "err": null,
+      "ttft_s": 1.203,
+      "total_s": 5.887,
+      "prompt_tokens": 47,
+      "reused_tokens": 0,
+      "read_tokens": 47,
+      "generated_tokens": 128,
+      "prompt_tps": 40.4,
+      "prompt_tps_source": "engine",
+      "decode_tps": 27.1,
+      "decode_tps_source": "engine",
+      "prompt_ms": 1164.7,
+      "decode_ms": 4720.1,
+      "drafts_offered": 116,
+      "drafts_accepted": 73
+    },
+    "answer_sha256": "b1f08ffcb8af4c23c0c2b5c18885f6449eecf4bb0f411b434240355afcc12126"
+  },
+  {
+    "repeat": 1,
+    "prompt_index": 0,
+    "prompt": "[matched-match-20261014T162442Z-1-0] Write a Python function that merges two sorted lists into one sorted list, with a docstring and two tests.",
+    "response": {
+      "first": 1.3923381490003521,
+      "total": 5.451119491999634,
+      "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    Merge two sorted lists into one sorted list.\n    \n    Args:\n        list1: A sorted list of comparable elements.\n        list2: A sorted list of comparable elements.\n    \n    Returns:\n        A new sorted list containing all elements from both input lists.\n    \"\"\"\n    merged = []\n    i, j = 0, 0\n    \n    while i < len(list1) and j < len(list2):\n        if list1[i] <= list2[j",
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 128,
+        "total_tokens": 187,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 59,
+        "prompt_ms": 1349.9,
+        "prompt_per_token_ms": 22.88,
+        "prompt_per_second": 43.7,
+        "predicted_n": 128,
+        "predicted_ms": 4099.3,
+        "predicted_per_token_ms": 32.026,
+        "predicted_per_second": 31.2,
+        "draft_n": 106,
+        "draft_n_accepted": 92
+      },
+      "err": null,
+      "pieces": 116
+    },
+    "metrics": {
+      "ok": true,
+      "err": null,
+      "ttft_s": 1.392,
+      "total_s": 5.451,
+      "prompt_tokens": 59,
+      "reused_tokens": 0,
+      "read_tokens": 59,
+      "generated_tokens": 128,
+      "prompt_tps": 43.7,
+      "prompt_tps_source": "engine",
+      "decode_tps": 31.2,
+      "decode_tps_source": "engine",
+      "prompt_ms": 1349.9,
+      "decode_ms": 4099.3,
+      "drafts_offered": 106,
+      "drafts_accepted": 92
+    },
+    "answer_sha256": "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710"
+  },
+  {
+    "repeat": 1,
+    "prompt_index": 1,
+    "prompt": "[matched-match-20261014T162442Z-1-1] Explain in two paragraphs how a refrigerator moves heat from inside to outside.",
+    "response": {
+      "first": 1.1896738609993918,
+      "total": 5.799145132999911,
+      "text": "A refrigerator operates by utilizing a closed-loop refrigeration cycle that relies on the phase changes of a specialized fluid known as a refrigerant. Inside the refrigerator compartment, the refrigerant flows through coils called evaporators, where it exists as a low-pressure liquid. As this liquid absorbs thermal energy from the air and food within the compartment, it undergoes evaporation, turning into a low-pressure gas. This absorption of heat is what lowers the internal temperature, effectively removing warmth from the interior space and transferring it into the refrigerant itself.\n\nOnce the refrigerant has absorbed heat and become a gas, it is drawn into a compressor, which significantly",
+      "usage": {
+        "prompt_tokens": 51,
+        "completion_tokens": 128,
+        "total_tokens": 179,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 51,
+        "prompt_ms": 1153.8,
+        "prompt_per_token_ms": 22.624,
+        "prompt_per_second": 44.2,
+        "predicted_n": 128,
+        "predicted_ms": 4643.3,
+        "predicted_per_token_ms": 36.276,
+        "predicted_per_second": 27.6,
+        "draft_n": 131,
+        "draft_n_accepted": 66
+      },
+      "err": null,
+      "pieces": 127
+    },
+    "metrics": {
+      "ok": true,
+      "err": null,
+      "ttft_s": 1.19,
+      "total_s": 5.799,
+      "prompt_tokens": 51,
+      "reused_tokens": 0,
+      "read_tokens": 51,
+      "generated_tokens": 128,
+      "prompt_tps": 44.2,
+      "prompt_tps_source": "engine",
+      "decode_tps": 27.6,
+      "decode_tps_source": "engine",
+      "prompt_ms": 1153.8,
+      "decode_ms": 4643.3,
+      "drafts_offered": 131,
+      "drafts_accepted": 66
+    },
+    "answer_sha256": "6cbafc5dc209de3d35df9c743a8388568e813b06b71ab5a5ff393491933f45f8"
+  },
+  {
+    "repeat": 1,
+    "prompt_index": 2,
+    "prompt": "[matched-match-20261014T162442Z-1-2] List twelve European capitals with one sentence about each.",
+    "response": {
+      "first": 1.2023999440007174,
+      "total": 5.640093490999789,
+      "text": "Here are twelve European capitals, each described in one sentence:\n\n1. **London**: As the capital of the United Kingdom, London blends historic landmarks like the Tower of London with modern financial districts and diverse cultural hubs.\n2. **Paris**: Known as the City of Light, Paris is renowned for its iconic Eiffel Tower, world-class museums like the Louvre, and romantic caf\u00e9 culture.\n3. **Berlin**: Germany\u2019s capital, Berlin, is a vibrant city marked by its complex history, including the remnants of the Berlin Wall, and a thriving contemporary arts scene.\n4. **Madrid**: The capital of Spain,",
+      "usage": {
+        "prompt_tokens": 47,
+        "completion_tokens": 128,
+        "total_tokens": 175,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 47,
+        "prompt_ms": 1164.4,
+        "prompt_per_token_ms": 24.774,
+        "prompt_per_second": 40.4,
+        "predicted_n": 128,
+        "predicted_ms": 4473.8,
+        "predicted_per_token_ms": 34.952,
+        "predicted_per_second": 28.6,
+        "draft_n": 119,
+        "draft_n_accepted": 79
+      },
+      "err": null,
+      "pieces": 124
+    },
+    "metrics": {
+      "ok": true,
+      "err": null,
+      "ttft_s": 1.202,
+      "total_s": 5.64,
+      "prompt_tokens": 47,
+      "reused_tokens": 0,
+      "read_tokens": 47,
+      "generated_tokens": 128,
+      "prompt_tps": 40.4,
+      "prompt_tps_source": "engine",
+      "decode_tps": 28.6,
+      "decode_tps_source": "engine",
+      "prompt_ms": 1164.4,
+      "decode_ms": 4473.8,
+      "drafts_offered": 119,
+      "drafts_accepted": 79
+    },
+    "answer_sha256": "bd1e194b4ec31fc50e4825105a37ac1a91f0eb169253c92455554a06ccb3ebb3"
+  },
+  {
+    "repeat": 2,
+    "prompt_index": 0,
+    "prompt": "[matched-match-20261014T162442Z-2-0] Write a Python function that merges two sorted lists into one sorted list, with a docstring and two tests.",
+    "response": {
+      "first": 1.405642360999991,
+      "total": 5.616488461000699,
+      "text": "```python\ndef merge_sorted_lists(list1: list, list2: list) -> list:\n    \"\"\"\n    Merge two sorted lists into one sorted list.\n    \n    Args:\n        list1: A sorted list of comparable elements.\n        list2: A sorted list of comparable elements.\n    \n    Returns:\n        A new sorted list containing all elements from both input lists.\n    \"\"\"\n    merged = []\n    i, j = 0, 0\n    \n    while i < len(list1) and j < len(list2):\n        if list1[i] <= list2[j",
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 128,
+        "total_tokens": 187,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 59,
+        "prompt_ms": 1368.9,
+        "prompt_per_token_ms": 23.202,
+        "prompt_per_second": 43.1,
+        "predicted_n": 128,
+        "predicted_ms": 4245.7,
+        "predicted_per_token_ms": 33.17,
+        "predicted_per_second": 30.1,
+        "draft_n": 113,
+        "draft_n_accepted": 91
+      },
+      "err": null,
+      "pieces": 116
+    },
+    "metrics": {
+      "ok": true,
+      "err": null,
+      "ttft_s": 1.406,
+      "total_s": 5.616,
+      "prompt_tokens": 59,
+      "reused_tokens": 0,
+      "read_tokens": 59,
+      "generated_tokens": 128,
+      "prompt_tps": 43.1,
+      "prompt_tps_source": "engine",
+      "decode_tps": 30.1,
+      "decode_tps_source": "engine",
+      "prompt_ms": 1368.9,
+      "decode_ms": 4245.7,
+      "drafts_offered": 113,
+      "drafts_accepted": 91
+    },
+    "answer_sha256": "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710"
+  },
+  {
+    "repeat": 2,
+    "prompt_index": 1,
+    "prompt": "[matched-match-20261014T162442Z-2-1] Explain in two paragraphs how a refrigerator moves heat from inside to outside.",
+    "response": {
+      "first": 1.17645630700099,
+      "total": 6.055958348000786,
+      "text": "A refrigerator operates by utilizing a closed-loop refrigeration cycle that relies on the phase changes of a specialized fluid known as a refrigerant. Inside the refrigerator, the refrigerant circulates through coils called evaporators, where it exists as a low-pressure liquid. As this liquid absorbs thermal energy from the air and contents within the insulated compartment, it undergoes evaporation, turning into a low-pressure gas. This phase change is critical because it allows the refrigerant to capture heat from the interior, effectively lowering the temperature inside the unit while the refrigerant itself becomes warmer and gaseous.\n\nOnce the refrigerant has absorbed heat, it is",
+      "usage": {
+        "prompt_tokens": 51,
+        "completion_tokens": 128,
+        "total_tokens": 179,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 51,
+        "prompt_ms": 1141.3,
+        "prompt_per_token_ms": 22.378,
+        "prompt_per_second": 44.7,
+        "predicted_n": 128,
+        "predicted_ms": 4912.7,
+        "predicted_per_token_ms": 38.38,
+        "predicted_per_second": 26.1,
+        "draft_n": 140,
+        "draft_n_accepted": 63
+      },
+      "err": null,
+      "pieces": 127
+    },
+    "metrics": {
+      "ok": true,
+      "err": null,
+      "ttft_s": 1.176,
+      "total_s": 6.056,
+      "prompt_tokens": 51,
+      "reused_tokens": 0,
+      "read_tokens": 51,
+      "generated_tokens": 128,
+      "prompt_tps": 44.7,
+      "prompt_tps_source": "engine",
+      "decode_tps": 26.1,
+      "decode_tps_source": "engine",
+      "prompt_ms": 1141.3,
+      "decode_ms": 4912.7,
+      "drafts_offered": 140,
+      "drafts_accepted": 63
+    },
+    "answer_sha256": "a9c5c6829708996319dc39a29e7c606e481ebc86c5430f2cc9d2dfc7bd43787d"
+  },
+  {
+    "repeat": 2,
+    "prompt_index": 2,
+    "prompt": "[matched-match-20261014T162442Z-2-2] List twelve European capitals with one sentence about each.",
+    "response": {
+      "first": 1.2046267460009403,
+      "total": 5.5770469840008445,
+      "text": "Here are twelve European capitals, each described in one sentence:\n\n1. **London**: As the capital of the United Kingdom, London is a global cultural and financial hub known for landmarks like Big Ben and the Tower of London.\n2. **Paris**: The capital of France, Paris is renowned for its art, fashion, gastronomy, and iconic landmarks such as the Eiffel Tower and the Louvre Museum.\n3. **Berlin**: Germany\u2019s capital, Berlin, is a city of historical significance and modern creativity, featuring remnants of the Berlin Wall and vibrant contemporary art scenes.\n4. **Madrid**: The capital of Spain",
+      "usage": {
+        "prompt_tokens": 47,
+        "completion_tokens": 128,
+        "total_tokens": 175,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 47,
+        "prompt_ms": 1165.1,
+        "prompt_per_token_ms": 24.789,
+        "prompt_per_second": 40.3,
+        "predicted_n": 128,
+        "predicted_ms": 4410.0,
+        "predicted_per_token_ms": 34.453,
+        "predicted_per_second": 29.0,
+        "draft_n": 118,
+        "draft_n_accepted": 81
+      },
+      "err": null,
+      "pieces": 124
+    },
+    "metrics": {
+      "ok": true,
+      "err": null,
+      "ttft_s": 1.205,
+      "total_s": 5.577,
+      "prompt_tokens": 47,
+      "reused_tokens": 0,
+      "read_tokens": 47,
+      "generated_tokens": 128,
+      "prompt_tps": 40.3,
+      "prompt_tps_source": "engine",
+      "decode_tps": 29.0,
+      "decode_tps_source": "engine",
+      "prompt_ms": 1165.1,
+      "decode_ms": 4410.0,
+      "drafts_offered": 118,
+      "drafts_accepted": 81
+    },
+    "answer_sha256": "e22500f74580664e0a8cf4821ba340f626964ecf5bf5331f9c4eff3f2abe03ef"
+  }
+]

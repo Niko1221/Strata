@@ -1,0 +1,2060 @@
+{
+  "arms": {
+    "DUAL-BASE": {
+      "chat": {
+        "prompt_tps": {
+          "n": 18,
+          "median": 46.3,
+          "min": 41.4,
+          "max": 49.2
+        },
+        "decode_tps": {
+          "n": 18,
+          "median": 28.45,
+          "min": 23.5,
+          "max": 33.9
+        },
+        "ttft_s": {
+          "n": 18,
+          "median": 1.2045,
+          "min": 1.069,
+          "max": 1.359
+        },
+        "prompt_tokens": {
+          "n": 18,
+          "median": 53.0,
+          "min": 50,
+          "max": 58
+        },
+        "generated_tokens": {
+          "n": 18,
+          "median": 100.0,
+          "min": 100,
+          "max": 100
+        },
+        "weighted_decode_tps": 28.488811019472102,
+        "tokens_generated_total": 1800
+      },
+      "4K": {
+        "prompt_tps": {
+          "n": 6,
+          "median": 351.15,
+          "min": 350.1,
+          "max": 352.9
+        },
+        "decode_tps": {
+          "n": 6,
+          "median": 27.549999999999997,
+          "min": 23.8,
+          "max": 33.7
+        },
+        "ttft_s": {
+          "n": 6,
+          "median": 11.487,
+          "min": 11.424,
+          "max": 11.523
+        },
+        "prompt_tokens": {
+          "n": 6,
+          "median": 4020.0,
+          "min": 4020,
+          "max": 4020
+        },
+        "generated_tokens": {
+          "n": 6,
+          "median": 24.0,
+          "min": 24,
+          "max": 24
+        },
+        "weighted_decode_tps": 27.73177213727227,
+        "tokens_generated_total": 144
+      },
+      "16K": {
+        "prompt_tps": {
+          "n": 6,
+          "median": 598.5999999999999,
+          "min": 596.4,
+          "max": 599.7
+        },
+        "decode_tps": {
+          "n": 6,
+          "median": 37.849999999999994,
+          "min": 32.2,
+          "max": 43.6
+        },
+        "ttft_s": {
+          "n": 6,
+          "median": 26.858,
+          "min": 26.808,
+          "max": 26.963
+        },
+        "prompt_tokens": {
+          "n": 6,
+          "median": 16058.0,
+          "min": 16058,
+          "max": 16058
+        },
+        "generated_tokens": {
+          "n": 6,
+          "median": 24.0,
+          "min": 24,
+          "max": 24
+        },
+        "weighted_decode_tps": 37.30376664421533,
+        "tokens_generated_total": 144
+      },
+      "32K": {
+        "prompt_tps": {
+          "n": 6,
+          "median": 646.4,
+          "min": 645.6,
+          "max": 647.5
+        },
+        "decode_tps": {
+          "n": 6,
+          "median": 28.25,
+          "min": 24.5,
+          "max": 31.8
+        },
+        "ttft_s": {
+          "n": 6,
+          "median": 49.631,
+          "min": 49.54,
+          "max": 49.689
+        },
+        "prompt_tokens": {
+          "n": 6,
+          "median": 32049.0,
+          "min": 32049,
+          "max": 32049
+        },
+        "generated_tokens": {
+          "n": 6,
+          "median": 24.0,
+          "min": 24,
+          "max": 24
+        },
+        "weighted_decode_tps": 27.80405862022359,
+        "tokens_generated_total": 144
+      },
+      "agent": {
+        "prompt_tps": {
+          "n": 30,
+          "median": 255.3,
+          "min": 134.2,
+          "max": 298.0
+        },
+        "decode_tps": {
+          "n": 30,
+          "median": 29.35,
+          "min": 21.3,
+          "max": 40.1
+        },
+        "ttft_s": {
+          "n": 30,
+          "median": 11.4245,
+          "min": 10.92,
+          "max": 11.659
+        },
+        "prompt_tokens": {
+          "n": 30,
+          "median": 8731.0,
+          "min": 3748,
+          "max": 14631
+        },
+        "generated_tokens": {
+          "n": 30,
+          "median": 64.0,
+          "min": 5,
+          "max": 64
+        },
+        "weighted_decode_tps": 29.68293472796011,
+        "tokens_generated_total": 1659
+      },
+      "calibration": {
+        "prompt_tps": {
+          "n": 18,
+          "median": 42.75,
+          "min": 38.7,
+          "max": 45.0
+        },
+        "decode_tps": {
+          "n": 18,
+          "median": 28.75,
+          "min": 25.6,
+          "max": 31.2
+        },
+        "ttft_s": {
+          "n": 18,
+          "median": 1.218,
+          "min": 1.156,
+          "max": 1.521
+        },
+        "prompt_tokens": {
+          "n": 18,
+          "median": 51.0,
+          "min": 47,
+          "max": 59
+        },
+        "generated_tokens": {
+          "n": 18,
+          "median": 128.0,
+          "min": 128,
+          "max": 128
+        },
+        "weighted_decode_tps": 28.656288712108772,
+        "tokens_generated_total": 2304
+      }
+    },
+    "SINGLE-BASE": {
+      "chat": {
+        "prompt_tps": {
+          "n": 18,
+          "median": 46.3,
+          "min": 42.0,
+          "max": 48.4
+        },
+        "decode_tps": {
+          "n": 18,
+          "median": 25.049999999999997,
+          "min": 21.3,
+          "max": 29.8
+        },
+        "ttft_s": {
+          "n": 18,
+          "median": 1.2125,
+          "min": 1.066,
+          "max": 1.32
+        },
+        "prompt_tokens": {
+          "n": 18,
+          "median": 53.0,
+          "min": 50,
+          "max": 58
+        },
+        "generated_tokens": {
+          "n": 18,
+          "median": 100.0,
+          "min": 100,
+          "max": 100
+        },
+        "weighted_decode_tps": 25.071034598027744,
+        "tokens_generated_total": 1800
+      },
+      "4K": {
+        "prompt_tps": {
+          "n": 6,
+          "median": 348.29999999999995,
+          "min": 343.6,
+          "max": 350.5
+        },
+        "decode_tps": {
+          "n": 6,
+          "median": 25.05,
+          "min": 18.4,
+          "max": 29.7
+        },
+        "ttft_s": {
+          "n": 6,
+          "median": 11.5775,
+          "min": 11.501,
+          "max": 11.74
+        },
+        "prompt_tokens": {
+          "n": 6,
+          "median": 4020.0,
+          "min": 4020,
+          "max": 4020
+        },
+        "generated_tokens": {
+          "n": 6,
+          "median": 24.0,
+          "min": 24,
+          "max": 24
+        },
+        "weighted_decode_tps": 23.94333410927472,
+        "tokens_generated_total": 144
+      },
+      "16K": {
+        "prompt_tps": {
+          "n": 6,
+          "median": 678.45,
+          "min": 674.2,
+          "max": 679.6
+        },
+        "decode_tps": {
+          "n": 6,
+          "median": 29.25,
+          "min": 26.0,
+          "max": 35.1
+        },
+        "ttft_s": {
+          "n": 6,
+          "median": 23.705,
+          "min": 23.662,
+          "max": 23.853
+        },
+        "prompt_tokens": {
+          "n": 6,
+          "median": 16058.0,
+          "min": 16058,
+          "max": 16058
+        },
+        "generated_tokens": {
+          "n": 6,
+          "median": 24.0,
+          "min": 24,
+          "max": 24
+        },
+        "weighted_decode_tps": 29.638167373317415,
+        "tokens_generated_total": 144
+      },
+      "32K": {
+        "prompt_tps": {
+          "n": 6,
+          "median": 681.3,
+          "min": 679.7,
+          "max": 682.6
+        },
+        "decode_tps": {
+          "n": 6,
+          "median": 24.8,
+          "min": 21.0,
+          "max": 29.9
+        },
+        "ttft_s": {
+          "n": 6,
+          "median": 47.0895,
+          "min": 46.997,
+          "max": 47.203
+        },
+        "prompt_tokens": {
+          "n": 6,
+          "median": 32049.0,
+          "min": 32049,
+          "max": 32049
+        },
+        "generated_tokens": {
+          "n": 6,
+          "median": 24.0,
+          "min": 24,
+          "max": 24
+        },
+        "weighted_decode_tps": 24.568347778611887,
+        "tokens_generated_total": 144
+      },
+      "agent": {
+        "prompt_tps": {
+          "n": 30,
+          "median": 250.05,
+          "min": 130.4,
+          "max": 294.5
+        },
+        "decode_tps": {
+          "n": 30,
+          "median": 25.45,
+          "min": 15.5,
+          "max": 35.3
+        },
+        "ttft_s": {
+          "n": 30,
+          "median": 11.5815,
+          "min": 11.193,
+          "max": 11.824
+        },
+        "prompt_tokens": {
+          "n": 30,
+          "median": 8737.0,
+          "min": 3748,
+          "max": 14604
+        },
+        "generated_tokens": {
+          "n": 30,
+          "median": 62.0,
+          "min": 2,
+          "max": 64
+        },
+        "weighted_decode_tps": 26.17702871972578,
+        "tokens_generated_total": 1396
+      },
+      "calibration": {
+        "prompt_tps": {
+          "n": 18,
+          "median": 43.099999999999994,
+          "min": 38.8,
+          "max": 45.4
+        },
+        "decode_tps": {
+          "n": 18,
+          "median": 25.15,
+          "min": 23.0,
+          "max": 28.2
+        },
+        "ttft_s": {
+          "n": 18,
+          "median": 1.2085,
+          "min": 1.149,
+          "max": 1.44
+        },
+        "prompt_tokens": {
+          "n": 18,
+          "median": 51.0,
+          "min": 47,
+          "max": 59
+        },
+        "generated_tokens": {
+          "n": 18,
+          "median": 128.0,
+          "min": 128,
+          "max": 128
+        },
+        "weighted_decode_tps": 25.232115752331016,
+        "tokens_generated_total": 2304
+      }
+    },
+    "SINGLE-TUNED": {
+      "chat": {
+        "prompt_tps": {
+          "n": 18,
+          "median": 45.45,
+          "min": 41.1,
+          "max": 54.1
+        },
+        "decode_tps": {
+          "n": 18,
+          "median": 21.799999999999997,
+          "min": 19.7,
+          "max": 28.6
+        },
+        "ttft_s": {
+          "n": 18,
+          "median": 1.2125,
+          "min": 1.074,
+          "max": 1.36
+        },
+        "prompt_tokens": {
+          "n": 18,
+          "median": 53.0,
+          "min": 50,
+          "max": 58
+        },
+        "generated_tokens": {
+          "n": 18,
+          "median": 100.0,
+          "min": 100,
+          "max": 100
+        },
+        "weighted_decode_tps": 22.213802916672325,
+        "tokens_generated_total": 1800
+      },
+      "4K": {
+        "prompt_tps": {
+          "n": 6,
+          "median": 347.6,
+          "min": 342.0,
+          "max": 350.2
+        },
+        "decode_tps": {
+          "n": 6,
+          "median": 21.6,
+          "min": 15.0,
+          "max": 29.4
+        },
+        "ttft_s": {
+          "n": 6,
+          "median": 11.5975,
+          "min": 11.506,
+          "max": 11.797
+        },
+        "prompt_tokens": {
+          "n": 6,
+          "median": 4020.0,
+          "min": 4020,
+          "max": 4020
+        },
+        "generated_tokens": {
+          "n": 6,
+          "median": 24.0,
+          "min": 24,
+          "max": 24
+        },
+        "weighted_decode_tps": 20.44351060507113,
+        "tokens_generated_total": 144
+      },
+      "16K": {
+        "prompt_tps": {
+          "n": 6,
+          "median": 679.3499999999999,
+          "min": 676.0,
+          "max": 680.8
+        },
+        "decode_tps": {
+          "n": 6,
+          "median": 33.65,
+          "min": 28.2,
+          "max": 40.3
+        },
+        "ttft_s": {
+          "n": 6,
+          "median": 23.6655,
+          "min": 23.615,
+          "max": 23.785
+        },
+        "prompt_tokens": {
+          "n": 6,
+          "median": 16058.0,
+          "min": 16058,
+          "max": 16058
+        },
+        "generated_tokens": {
+          "n": 6,
+          "median": 24.0,
+          "min": 24,
+          "max": 24
+        },
+        "weighted_decode_tps": 33.2855623873145,
+        "tokens_generated_total": 144
+      },
+      "32K": {
+        "prompt_tps": {
+          "n": 6,
+          "median": 681.4,
+          "min": 680.0,
+          "max": 682.4
+        },
+        "decode_tps": {
+          "n": 6,
+          "median": 23.95,
+          "min": 18.0,
+          "max": 30.1
+        },
+        "ttft_s": {
+          "n": 6,
+          "median": 47.08,
+          "min": 47.011,
+          "max": 47.188
+        },
+        "prompt_tokens": {
+          "n": 6,
+          "median": 32049.0,
+          "min": 32049,
+          "max": 32049
+        },
+        "generated_tokens": {
+          "n": 6,
+          "median": 24.0,
+          "min": 24,
+          "max": 24
+        },
+        "weighted_decode_tps": 23.024895668441502,
+        "tokens_generated_total": 144
+      },
+      "agent": {
+        "prompt_tps": {
+          "n": 30,
+          "median": 251.0,
+          "min": 130.4,
+          "max": 291.0
+        },
+        "decode_tps": {
+          "n": 30,
+          "median": 24.05,
+          "min": 17.7,
+          "max": 32.0
+        },
+        "ttft_s": {
+          "n": 30,
+          "median": 11.579,
+          "min": 11.19,
+          "max": 11.779
+        },
+        "prompt_tokens": {
+          "n": 30,
+          "median": 8731.0,
+          "min": 3748,
+          "max": 14603
+        },
+        "generated_tokens": {
+          "n": 30,
+          "median": 60.5,
+          "min": 3,
+          "max": 64
+        },
+        "weighted_decode_tps": 24.168505516549647,
+        "tokens_generated_total": 1506
+      },
+      "calibration": {
+        "prompt_tps": {
+          "n": 18,
+          "median": 41.400000000000006,
+          "min": 39.6,
+          "max": 42.9
+        },
+        "decode_tps": {
+          "n": 18,
+          "median": 21.85,
+          "min": 19.9,
+          "max": 23.6
+        },
+        "ttft_s": {
+          "n": 18,
+          "median": 1.2385000000000002,
+          "min": 1.156,
+          "max": 1.526
+        },
+        "prompt_tokens": {
+          "n": 18,
+          "median": 51.0,
+          "min": 47,
+          "max": 59
+        },
+        "generated_tokens": {
+          "n": 18,
+          "median": 128.0,
+          "min": 128,
+          "max": 128
+        },
+        "weighted_decode_tps": 21.81035404906762,
+        "tokens_generated_total": 2304
+      }
+    },
+    "DUAL-TUNED": {
+      "chat": {
+        "prompt_tps": {
+          "n": 18,
+          "median": 44.8,
+          "min": 43.2,
+          "max": 55.8
+        },
+        "decode_tps": {
+          "n": 18,
+          "median": 27.0,
+          "min": 24.8,
+          "max": 32.4
+        },
+        "ttft_s": {
+          "n": 18,
+          "median": 1.2229999999999999,
+          "min": 1.053,
+          "max": 1.382
+        },
+        "prompt_tokens": {
+          "n": 18,
+          "median": 53.0,
+          "min": 50,
+          "max": 58
+        },
+        "generated_tokens": {
+          "n": 18,
+          "median": 100.0,
+          "min": 100,
+          "max": 100
+        },
+        "weighted_decode_tps": 27.06807621167236,
+        "tokens_generated_total": 1800
+      },
+      "4K": {
+        "prompt_tps": {
+          "n": 6,
+          "median": 351.15,
+          "min": 347.8,
+          "max": 352.1
+        },
+        "decode_tps": {
+          "n": 6,
+          "median": 27.450000000000003,
+          "min": 19.1,
+          "max": 34.8
+        },
+        "ttft_s": {
+          "n": 6,
+          "median": 11.475999999999999,
+          "min": 11.451,
+          "max": 11.602
+        },
+        "prompt_tokens": {
+          "n": 6,
+          "median": 4020.0,
+          "min": 4020,
+          "max": 4020
+        },
+        "generated_tokens": {
+          "n": 6,
+          "median": 24.0,
+          "min": 24,
+          "max": 24
+        },
+        "weighted_decode_tps": 25.60045511920212,
+        "tokens_generated_total": 144
+      },
+      "16K": {
+        "prompt_tps": {
+          "n": 6,
+          "median": 599.0,
+          "min": 597.4,
+          "max": 599.5
+        },
+        "decode_tps": {
+          "n": 6,
+          "median": 41.1,
+          "min": 34.7,
+          "max": 46.7
+        },
+        "ttft_s": {
+          "n": 6,
+          "median": 26.836,
+          "min": 26.813,
+          "max": 26.911
+        },
+        "prompt_tokens": {
+          "n": 6,
+          "median": 16058.0,
+          "min": 16058,
+          "max": 16058
+        },
+        "generated_tokens": {
+          "n": 6,
+          "median": 24.0,
+          "min": 24,
+          "max": 24
+        },
+        "weighted_decode_tps": 40.51430661452326,
+        "tokens_generated_total": 144
+      },
+      "32K": {
+        "prompt_tps": {
+          "n": 6,
+          "median": 647.0999999999999,
+          "min": 645.0,
+          "max": 648.2
+        },
+        "decode_tps": {
+          "n": 6,
+          "median": 27.1,
+          "min": 23.1,
+          "max": 34.4
+        },
+        "ttft_s": {
+          "n": 6,
+          "median": 49.57299999999999,
+          "min": 49.485,
+          "max": 49.75
+        },
+        "prompt_tokens": {
+          "n": 6,
+          "median": 32049.0,
+          "min": 32049,
+          "max": 32049
+        },
+        "generated_tokens": {
+          "n": 6,
+          "median": 24.0,
+          "min": 24,
+          "max": 24
+        },
+        "weighted_decode_tps": 27.41395065488882,
+        "tokens_generated_total": 144
+      },
+      "agent": {
+        "prompt_tps": {
+          "n": 30,
+          "median": 254.85000000000002,
+          "min": 133.9,
+          "max": 299.5
+        },
+        "decode_tps": {
+          "n": 30,
+          "median": 30.25,
+          "min": 23.4,
+          "max": 39.8
+        },
+        "ttft_s": {
+          "n": 30,
+          "median": 11.423,
+          "min": 10.927,
+          "max": 11.642
+        },
+        "prompt_tokens": {
+          "n": 30,
+          "median": 8726.5,
+          "min": 3748,
+          "max": 14614
+        },
+        "generated_tokens": {
+          "n": 30,
+          "median": 61.5,
+          "min": 12,
+          "max": 64
+        },
+        "weighted_decode_tps": 29.864510875430454,
+        "tokens_generated_total": 1522
+      },
+      "calibration": {
+        "prompt_tps": {
+          "n": 18,
+          "median": 41.7,
+          "min": 39.6,
+          "max": 43.5
+        },
+        "decode_tps": {
+          "n": 18,
+          "median": 27.7,
+          "min": 25.3,
+          "max": 29.7
+        },
+        "ttft_s": {
+          "n": 18,
+          "median": 1.2269999999999999,
+          "min": 1.169,
+          "max": 1.495
+        },
+        "prompt_tokens": {
+          "n": 18,
+          "median": 51.0,
+          "min": 47,
+          "max": 59
+        },
+        "generated_tokens": {
+          "n": 18,
+          "median": 128.0,
+          "min": 128,
+          "max": 128
+        },
+        "weighted_decode_tps": 27.577258815686,
+        "tokens_generated_total": 2304
+      }
+    }
+  },
+  "evidence": [
+    {
+      "block": 1,
+      "arm": "DUAL-BASE",
+      "folder": "runs/block1-DUAL-BASE",
+      "effective_engine_settings": {
+        "max_context": 65536,
+        "version": "0.1.44.1",
+        "kv": "int8",
+        "pool_workers": 7,
+        "pcie_frac": "0.17",
+        "spec_min_p": "0.50"
+      },
+      "load_wall_s": 98.02522316300019,
+      "suite_wall_s": 554.6552891731262,
+      "all_requests_including_initial_agent_turn": 36,
+      "cgroup_events": {
+        "high": 11685,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "disk_reads_bytes": {
+        "loop0": 0,
+        "loop1": 0,
+        "loop2": 0,
+        "loop3": 0,
+        "loop4": 0,
+        "loop5": 0,
+        "loop6": 0,
+        "loop7": 0,
+        "nvme2n1": 0,
+        "nvme2n1p1": 0,
+        "nvme2n1p2": 0,
+        "nvme0n1": 100283559936,
+        "nvme0n1p1": 0,
+        "nvme0n1p2": 100283559936,
+        "nvme1n1": 0,
+        "nvme1n1p1": 0,
+        "nvme1n1p2": 0,
+        "nvme1n1p3": 0,
+        "nvme1n1p4": 0,
+        "sda": 0,
+        "sda1": 0,
+        "sda2": 0,
+        "sdb": 0,
+        "sdb1": 0,
+        "sdc": 0,
+        "sdc1": 0,
+        "sdd": 0,
+        "sde": 0,
+        "sdf": 0,
+        "sdg": 0,
+        "sdh": 0,
+        "loop10": 0,
+        "loop11": 0,
+        "loop9": 0,
+        "loop13": 0,
+        "loop8": 0,
+        "loop17": 0,
+        "loop16": 0,
+        "loop15": 0,
+        "loop12": 0,
+        "loop14": 0,
+        "loop18": 0,
+        "loop20": 0,
+        "loop21": 0,
+        "loop19": 0,
+        "loop22": 0,
+        "loop25": 0,
+        "loop23": 0,
+        "loop26": 0,
+        "loop24": 0,
+        "loop27": 0
+      },
+      "placement": [
+        "strata generate: PCIe probe: 6.1 GB/s host->device (best of 6.1 6.1 6.1 6.1) -> pcie_frac 0.17 (default 0.55)",
+        "strata generate: layer split: CUDA1 PCIe probe 6.7 GB/s (best of 6.6 6.7 6.7 6.7) -> pcie_frac 0.18",
+        "strata generate: layer split: CUDA1 holds its weights; 9.99 GiB free (its session follows the split search)",
+        "strata generate: layer split auto: K=2 would give a stage fewer than 3 layers (a tiny expert cache there clamps the prompt chunk of every card, #1616); chose K=3 instead (36.7 ms per decode window, not 36.1)",
+        "strata generate: layer split: CUDA1 holds its weights, session [3, 48) and the head; 8.74 GiB free",
+        "strata generate: 7 pool workers on logical processors 1,2,3,4,5,6,7, the host thread on 0 (draining too) (--host-core first)"
+      ],
+      "telemetry_summary": {
+        "chat_decode": 28.0,
+        "chat_ttft": 1.199,
+        "agent_decode": 29.7,
+        "agent_ttft": 11.403,
+        "agent_cache_hit": 68.555,
+        "failed": 0,
+        "skipped": 0,
+        "4K_prefill": 352.2,
+        "4K_ttft": 11.451,
+        "16K_prefill": 599.4,
+        "16K_ttft": 26.823,
+        "32K_prefill": 647.0,
+        "32K_ttft": 49.582,
+        "service_wall_s": 704.9491341249995,
+        "calibration_probe_decode": 28.9,
+        "calibration_probe_count": 9,
+        "min_available_gib": 35.768611907958984,
+        "peak_service_gib": 100.0012092590332,
+        "global_swap_max_bytes": 0,
+        "service_swap_max_bytes": 0,
+        "gpu": {
+          "0": {
+            "max_temp_c": 68.0,
+            "peak_used_mib": 14911.0,
+            "max_power_w": 102.16,
+            "busy_sm_mhz_median": 2842.0,
+            "pcie_gen_seen": [
+              1.0,
+              2.0,
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          },
+          "1": {
+            "max_temp_c": 66.0,
+            "peak_used_mib": 10742.0,
+            "max_power_w": 100.26,
+            "busy_sm_mhz_median": 2032.0,
+            "pcie_gen_seen": [
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          }
+        }
+      },
+      "oc_hashes": [
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b",
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b"
+      ],
+      "effective_limits_unchanged": true,
+      "probe_output_hashes": [
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "b081eea017c070156c108555f42fd1d2ef6bc79b3808fb1280b4f21b75191b61",
+        "253421582bbc46d81f3c6f182d86631730e063a60bd465b31306d5c097202443",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "db1709b6cc75c5920db38b5712916a7d890989b6cea9f65c617c88f6fb48dea4",
+        "5d0bb2a30d5f34911dcd4877b9a18caf07f19c4650c1ddf4d5a1c40007d10f24",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "5d5acae13a29c932a843cc20f3bf6c924a38da95efa490a6ae4c4f514bf70a4b",
+        "2ee08dd56fd99f8bba6d31181f0338390948805d752073dca0cec91857d12e05"
+      ],
+      "original_run_id": "20261014T162442718758Z-DUAL-BASE-bench",
+      "started_at_epoch_s": 1791995082.6789558,
+      "finished_at_epoch_s": 1791995803.219857
+    },
+    {
+      "block": 1,
+      "arm": "SINGLE-BASE",
+      "folder": "runs/block1-SINGLE-BASE",
+      "effective_engine_settings": {
+        "max_context": 65536,
+        "version": "0.1.44.1",
+        "kv": "int8",
+        "pool_workers": 7,
+        "pcie_frac": "0.18",
+        "spec_min_p": "0.50"
+      },
+      "load_wall_s": 72.02181053099957,
+      "suite_wall_s": 530.8042049407959,
+      "all_requests_including_initial_agent_turn": 36,
+      "cgroup_events": {
+        "high": 7055,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "disk_reads_bytes": {
+        "loop0": 0,
+        "loop1": 0,
+        "loop2": 0,
+        "loop3": 0,
+        "loop4": 0,
+        "loop5": 0,
+        "loop6": 0,
+        "loop7": 0,
+        "nvme2n1": 0,
+        "nvme2n1p1": 0,
+        "nvme2n1p2": 0,
+        "nvme0n1": 97930788864,
+        "nvme0n1p1": 0,
+        "nvme0n1p2": 97930788864,
+        "nvme1n1": 0,
+        "nvme1n1p1": 0,
+        "nvme1n1p2": 0,
+        "nvme1n1p3": 0,
+        "nvme1n1p4": 0,
+        "sda": 0,
+        "sda1": 0,
+        "sda2": 0,
+        "sdb": 0,
+        "sdb1": 0,
+        "sdc": 0,
+        "sdc1": 0,
+        "sdd": 0,
+        "sde": 0,
+        "sdf": 0,
+        "sdg": 0,
+        "sdh": 0,
+        "loop10": 0,
+        "loop11": 0,
+        "loop9": 0,
+        "loop13": 0,
+        "loop8": 0,
+        "loop17": 0,
+        "loop16": 0,
+        "loop15": 0,
+        "loop12": 0,
+        "loop14": 0,
+        "loop18": 0,
+        "loop20": 0,
+        "loop21": 0,
+        "loop19": 0,
+        "loop22": 0,
+        "loop25": 0,
+        "loop23": 79872,
+        "loop26": 0,
+        "loop24": 0,
+        "loop27": 0
+      },
+      "placement": [
+        "strata generate: PCIe probe: 6.7 GB/s host->device (best of 6.7 6.7 6.7 6.7) -> pcie_frac 0.18 (default 0.55)",
+        "strata generate: 7 pool workers on logical processors 1,2,3,4,5,6,7, the host thread on 0 (draining too) (--host-core first)",
+        "strata serve: PCIe share: the CPU pool takes 147 us per missed expert (21.4 GB/s of expert bytes), the link 6.7 GB/s -> pcie_frac 0.15 (was 0.18; --pcie-frac N fixes it, STRATA_PCIE_FRAC_DEFAULT=old keeps the start-up rule)"
+      ],
+      "telemetry_summary": {
+        "chat_decode": 25.4,
+        "chat_ttft": 1.263,
+        "agent_decode": 25.2,
+        "agent_ttft": 11.642,
+        "agent_cache_hit": 68.672,
+        "failed": 0,
+        "skipped": 0,
+        "4K_prefill": 348.2,
+        "4K_ttft": 11.582,
+        "16K_prefill": 677.9,
+        "16K_ttft": 23.718,
+        "32K_prefill": 680.6,
+        "32K_ttft": 47.131,
+        "service_wall_s": 660.556589844,
+        "calibration_probe_decode": 24.8,
+        "calibration_probe_count": 9,
+        "min_available_gib": 43.3092155456543,
+        "peak_service_gib": 100.00134658813477,
+        "global_swap_max_bytes": 335872,
+        "service_swap_max_bytes": 0,
+        "gpu": {
+          "0": {
+            "max_temp_c": 67.0,
+            "peak_used_mib": 14647.0,
+            "max_power_w": 98.75,
+            "busy_sm_mhz_median": 2827.0,
+            "pcie_gen_seen": [
+              1.0,
+              2.0,
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          },
+          "1": {
+            "max_temp_c": 64.0,
+            "peak_used_mib": 442.0,
+            "max_power_w": 39.99,
+            "busy_sm_mhz_median": null,
+            "pcie_gen_seen": [
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          }
+        }
+      },
+      "oc_hashes": [
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b",
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b"
+      ],
+      "effective_limits_unchanged": true,
+      "probe_output_hashes": [
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "41b988c5fe20d1274c94421b5041ea0c6dcfb2b0e2e3fbc5c61931d98f8aaf0c",
+        "f501a91b0ff00175977ffef74807c943fa9961bd3142848336a4058de1de88aa",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "a7fc05e7081fa82e45b1a0f27696b2a2b69e10991fa52f8452a6c7e2369bda6b",
+        "512b0a42068d8f6ee08b2ae051c7bff030eb46281ce5204652602b5101ee6c71",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "654c56716231537f98cb8f8ae6d86c2659ed108581faf46fc9cde571121faf94",
+        "c9d60508e21c1d86a40bba8ad263a8c93b3f5e8ce1668875d813caf2ec971348"
+      ],
+      "original_run_id": "20261014T163643722932Z-SINGLE-BASE-bench",
+      "started_at_epoch_s": 1791995803.6834867,
+      "finished_at_epoch_s": 1791996478.9830935
+    },
+    {
+      "block": 1,
+      "arm": "SINGLE-TUNED",
+      "folder": "runs/block1-SINGLE-TUNED",
+      "effective_engine_settings": {
+        "max_context": 65536,
+        "version": "0.1.44.1",
+        "kv": "int8",
+        "pool_workers": 5,
+        "pcie_frac": "0.00",
+        "spec_min_p": "0.70"
+      },
+      "load_wall_s": 84.02551534099985,
+      "suite_wall_s": 540.8034262657166,
+      "all_requests_including_initial_agent_turn": 36,
+      "cgroup_events": {
+        "high": 10752,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "disk_reads_bytes": {
+        "loop0": 0,
+        "loop1": 0,
+        "loop2": 0,
+        "loop3": 0,
+        "loop4": 0,
+        "loop5": 0,
+        "loop6": 0,
+        "loop7": 0,
+        "nvme2n1": 0,
+        "nvme2n1p1": 0,
+        "nvme2n1p2": 0,
+        "nvme0n1": 99104661504,
+        "nvme0n1p1": 0,
+        "nvme0n1p2": 99104661504,
+        "nvme1n1": 0,
+        "nvme1n1p1": 0,
+        "nvme1n1p2": 0,
+        "nvme1n1p3": 0,
+        "nvme1n1p4": 0,
+        "sda": 0,
+        "sda1": 0,
+        "sda2": 0,
+        "sdb": 0,
+        "sdb1": 0,
+        "sdc": 0,
+        "sdc1": 0,
+        "sdd": 0,
+        "sde": 0,
+        "sdf": 0,
+        "sdg": 0,
+        "sdh": 0,
+        "loop10": 0,
+        "loop11": 0,
+        "loop9": 0,
+        "loop13": 0,
+        "loop8": 0,
+        "loop17": 0,
+        "loop16": 0,
+        "loop15": 0,
+        "loop12": 0,
+        "loop14": 0,
+        "loop18": 0,
+        "loop20": 0,
+        "loop21": 0,
+        "loop19": 0,
+        "loop22": 0,
+        "loop25": 0,
+        "loop23": 0,
+        "loop26": 0,
+        "loop24": 0,
+        "loop27": 0
+      },
+      "placement": [
+        "strata generate: 5 pool workers on logical processors 1,2,3,4,5, the host thread on 0 (draining too) (--host-core first)"
+      ],
+      "telemetry_summary": {
+        "chat_decode": 21.4,
+        "chat_ttft": 1.221,
+        "agent_decode": 24.7,
+        "agent_ttft": 11.564,
+        "agent_cache_hit": 68.749,
+        "failed": 0,
+        "skipped": 0,
+        "4K_prefill": 347.3,
+        "4K_ttft": 11.606,
+        "16K_prefill": 679.3,
+        "16K_ttft": 23.668,
+        "32K_prefill": 681.4,
+        "32K_ttft": 47.079,
+        "service_wall_s": 690.8354309429997,
+        "calibration_probe_decode": 21.7,
+        "calibration_probe_count": 9,
+        "min_available_gib": 43.37440490722656,
+        "peak_service_gib": 100.00130844116211,
+        "global_swap_max_bytes": 335872,
+        "service_swap_max_bytes": 0,
+        "gpu": {
+          "0": {
+            "max_temp_c": 65.0,
+            "peak_used_mib": 14647.0,
+            "max_power_w": 98.63,
+            "busy_sm_mhz_median": 2827.0,
+            "pcie_gen_seen": [
+              1.0,
+              2.0,
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          },
+          "1": {
+            "max_temp_c": 64.0,
+            "peak_used_mib": 424.0,
+            "max_power_w": 40.31,
+            "busy_sm_mhz_median": null,
+            "pcie_gen_seen": [
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          }
+        }
+      },
+      "oc_hashes": [
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b",
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b"
+      ],
+      "effective_limits_unchanged": true,
+      "probe_output_hashes": [
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "24378c1480dfe9bc25302745652f96f59ceeca4b063ebf6e03729c146a6ceb31",
+        "c4f17eff18126add49b5eaed0308dfb14418c1dd875c512ab01795cd6af80bd1",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "0b71278e0167b9344ccd067f693951203032957ac7429e4055d3e98bb38ca929",
+        "6ac8196e56c37d3822092455f858282e300a36f8616ac51f885e5d2de8a81feb",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "446d7dfc39616702584d8559bed0186fe661876c4e48bd8a5b432e577b071aa6",
+        "f3c88c0346342eb92508d4e45bfbf71e983352952928b80be919b2054a0219b6"
+      ],
+      "original_run_id": "20261014T164759494615Z-SINGLE-TUNED-bench",
+      "started_at_epoch_s": 1791996479.454902,
+      "finished_at_epoch_s": 1791997184.7776542
+    },
+    {
+      "block": 1,
+      "arm": "DUAL-TUNED",
+      "folder": "runs/block1-DUAL-TUNED",
+      "effective_engine_settings": {
+        "max_context": 65536,
+        "version": "0.1.44.1",
+        "kv": "int8",
+        "pool_workers": 5,
+        "pcie_frac": "0.00",
+        "spec_min_p": "0.70"
+      },
+      "load_wall_s": 96.02360908900027,
+      "suite_wall_s": 555.9850790500641,
+      "all_requests_including_initial_agent_turn": 36,
+      "cgroup_events": {
+        "high": 12379,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "disk_reads_bytes": {
+        "loop0": 0,
+        "loop1": 0,
+        "loop2": 0,
+        "loop3": 0,
+        "loop4": 0,
+        "loop5": 0,
+        "loop6": 0,
+        "loop7": 0,
+        "nvme2n1": 0,
+        "nvme2n1p1": 0,
+        "nvme2n1p2": 0,
+        "nvme0n1": 98019827712,
+        "nvme0n1p1": 0,
+        "nvme0n1p2": 98019827712,
+        "nvme1n1": 0,
+        "nvme1n1p1": 0,
+        "nvme1n1p2": 0,
+        "nvme1n1p3": 0,
+        "nvme1n1p4": 0,
+        "sda": 0,
+        "sda1": 0,
+        "sda2": 0,
+        "sdb": 0,
+        "sdb1": 0,
+        "sdc": 0,
+        "sdc1": 0,
+        "sdd": 0,
+        "sde": 0,
+        "sdf": 0,
+        "sdg": 0,
+        "sdh": 0,
+        "loop10": 0,
+        "loop11": 0,
+        "loop9": 0,
+        "loop13": 0,
+        "loop8": 0,
+        "loop17": 0,
+        "loop16": 0,
+        "loop15": 0,
+        "loop12": 0,
+        "loop14": 0,
+        "loop18": 0,
+        "loop20": 0,
+        "loop21": 0,
+        "loop19": 0,
+        "loop22": 0,
+        "loop25": 0,
+        "loop23": 0,
+        "loop26": 0,
+        "loop24": 0,
+        "loop27": 0
+      },
+      "placement": [
+        "strata generate: layer split: CUDA1 holds its weights; 9.99 GiB free (its session follows the split search)",
+        "strata generate: layer split auto: K=2 would give a stage fewer than 3 layers (a tiny expert cache there clamps the prompt chunk of every card, #1616); chose K=3 instead (36.7 ms per decode window, not 36.1)",
+        "strata generate: layer split: CUDA1 holds its weights, session [3, 48) and the head; 8.74 GiB free",
+        "strata generate: 5 pool workers on logical processors 1,2,3,4,5, the host thread on 0 (draining too) (--host-core first)"
+      ],
+      "telemetry_summary": {
+        "chat_decode": 27.1,
+        "chat_ttft": 1.222,
+        "agent_decode": 30.4,
+        "agent_ttft": 11.45,
+        "agent_cache_hit": 68.625,
+        "failed": 0,
+        "skipped": 0,
+        "4K_prefill": 350.7,
+        "4K_ttft": 11.49,
+        "16K_prefill": 598.8,
+        "16K_ttft": 26.845,
+        "32K_prefill": 647.4,
+        "32K_ttft": 49.547,
+        "service_wall_s": 706.6790408480001,
+        "calibration_probe_decode": 27.5,
+        "calibration_probe_count": 9,
+        "min_available_gib": 36.471160888671875,
+        "peak_service_gib": 100.00121688842773,
+        "global_swap_max_bytes": 335872,
+        "service_swap_max_bytes": 0,
+        "gpu": {
+          "0": {
+            "max_temp_c": 67.0,
+            "peak_used_mib": 14671.0,
+            "max_power_w": 99.04,
+            "busy_sm_mhz_median": 2827.0,
+            "pcie_gen_seen": [
+              1.0,
+              2.0,
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          },
+          "1": {
+            "max_temp_c": 64.0,
+            "peak_used_mib": 10593.0,
+            "max_power_w": 97.06,
+            "busy_sm_mhz_median": 2032.5,
+            "pcie_gen_seen": [
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          }
+        }
+      },
+      "oc_hashes": [
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b",
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b"
+      ],
+      "effective_limits_unchanged": true,
+      "probe_output_hashes": [
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "58bea83f337d59280d9adb49e71a0b19c984ef1a65771ec3a7f3e85c88c0d6fe",
+        "b8ecfbea885aad5292da63e67fa423a5dcd1e259d9f724623c6d17abe030e685",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "0d4a38e245ff5192cd89721010945947d73d790c2525d605c3c4d0264c2039a8",
+        "b3f3f8ab02c999b4c0a3502bf0983d55860922ab18d9eb8aedaea2ba98c567ae",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "8ee276c2407c3893e8a7483aa19ad8bbdea81a69185ee93ae147ef051f3b9c4e",
+        "795a5b7248c19f27d9a17975fa5ad021b38cd68a9e76713a5d050df65380144f"
+      ],
+      "original_run_id": "20261014T165945285794Z-DUAL-TUNED-bench",
+      "started_at_epoch_s": 1791997185.245624,
+      "finished_at_epoch_s": 1791997907.4893332
+    },
+    {
+      "block": 2,
+      "arm": "DUAL-TUNED",
+      "folder": "runs/block2-DUAL-TUNED",
+      "effective_engine_settings": {
+        "max_context": 65536,
+        "version": "0.1.44.1",
+        "kv": "int8",
+        "pool_workers": 5,
+        "pcie_frac": "0.00",
+        "spec_min_p": "0.70"
+      },
+      "load_wall_s": 96.02665665299992,
+      "suite_wall_s": 551.1060276031494,
+      "all_requests_including_initial_agent_turn": 36,
+      "cgroup_events": {
+        "high": 11596,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "disk_reads_bytes": {
+        "loop0": 0,
+        "loop1": 0,
+        "loop2": 0,
+        "loop3": 0,
+        "loop4": 0,
+        "loop5": 0,
+        "loop6": 0,
+        "loop7": 0,
+        "nvme2n1": 0,
+        "nvme2n1p1": 0,
+        "nvme2n1p2": 0,
+        "nvme0n1": 100287565824,
+        "nvme0n1p1": 0,
+        "nvme0n1p2": 100287565824,
+        "nvme1n1": 0,
+        "nvme1n1p1": 0,
+        "nvme1n1p2": 0,
+        "nvme1n1p3": 0,
+        "nvme1n1p4": 0,
+        "sda": 0,
+        "sda1": 0,
+        "sda2": 0,
+        "sdb": 0,
+        "sdb1": 0,
+        "sdc": 0,
+        "sdc1": 0,
+        "sdd": 0,
+        "sde": 0,
+        "sdf": 0,
+        "sdg": 0,
+        "sdh": 0,
+        "loop10": 0,
+        "loop11": 0,
+        "loop9": 0,
+        "loop13": 0,
+        "loop8": 0,
+        "loop17": 0,
+        "loop16": 0,
+        "loop15": 0,
+        "loop12": 0,
+        "loop14": 0,
+        "loop18": 0,
+        "loop20": 0,
+        "loop21": 0,
+        "loop19": 0,
+        "loop22": 0,
+        "loop25": 0,
+        "loop23": 0,
+        "loop26": 0,
+        "loop24": 0,
+        "loop27": 0
+      },
+      "placement": [
+        "strata generate: layer split: CUDA1 holds its weights; 9.99 GiB free (its session follows the split search)",
+        "strata generate: layer split auto: K=2 would give a stage fewer than 3 layers (a tiny expert cache there clamps the prompt chunk of every card, #1616); chose K=3 instead (36.7 ms per decode window, not 36.1)",
+        "strata generate: layer split: CUDA1 holds its weights, session [3, 48) and the head; 8.74 GiB free",
+        "strata generate: 5 pool workers on logical processors 1,2,3,4,5, the host thread on 0 (draining too) (--host-core first)"
+      ],
+      "telemetry_summary": {
+        "chat_decode": 26.9,
+        "chat_ttft": 1.224,
+        "agent_decode": 30.1,
+        "agent_ttft": 11.408,
+        "agent_cache_hit": 68.608,
+        "failed": 0,
+        "skipped": 0,
+        "4K_prefill": 351.6,
+        "4K_ttft": 11.462,
+        "16K_prefill": 599.4,
+        "16K_ttft": 26.82,
+        "32K_prefill": 646.8,
+        "32K_ttft": 49.599,
+        "service_wall_s": 701.4880800000001,
+        "calibration_probe_decode": 27.9,
+        "calibration_probe_count": 9,
+        "min_available_gib": 36.362518310546875,
+        "peak_service_gib": 100.0013542175293,
+        "global_swap_max_bytes": 335872,
+        "service_swap_max_bytes": 0,
+        "gpu": {
+          "0": {
+            "max_temp_c": 63.0,
+            "peak_used_mib": 14669.0,
+            "max_power_w": 104.75,
+            "busy_sm_mhz_median": 2827.0,
+            "pcie_gen_seen": [
+              1.0,
+              2.0,
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          },
+          "1": {
+            "max_temp_c": 65.0,
+            "peak_used_mib": 10589.0,
+            "max_power_w": 100.72,
+            "busy_sm_mhz_median": 2032.0,
+            "pcie_gen_seen": [
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          }
+        }
+      },
+      "oc_hashes": [
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b",
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b"
+      ],
+      "effective_limits_unchanged": true,
+      "probe_output_hashes": [
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "8d84e7de496b266be87bfb8e1113d4ffd108f1e79ee9643710e655fb28514ba6",
+        "38b5f08107ddf1dbcec4a3b0d565be84be71c3eaacf4d6931c0ce6494f670744",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "da97374c4ab0081bf4e626dcffe2100816a852c57b7a1c4a11214e61266556ce",
+        "795a5b7248c19f27d9a17975fa5ad021b38cd68a9e76713a5d050df65380144f",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "675380d8615f2f5db6f1b8d357cec2637f347826bdce7333f42dc3b2575b8d3f",
+        "840a0e0c1d6ac73434de85f46fcbc754af09a7316c223dd3e99c949890c7dc0f"
+      ],
+      "original_run_id": "20261014T171147996412Z-DUAL-TUNED-bench",
+      "started_at_epoch_s": 1791997907.95645,
+      "finished_at_epoch_s": 1791998625.0513024
+    },
+    {
+      "block": 2,
+      "arm": "SINGLE-TUNED",
+      "folder": "runs/block2-SINGLE-TUNED",
+      "effective_engine_settings": {
+        "max_context": 65536,
+        "version": "0.1.44.1",
+        "kv": "int8",
+        "pool_workers": 5,
+        "pcie_frac": "0.00",
+        "spec_min_p": "0.70"
+      },
+      "load_wall_s": 64.01934282599996,
+      "suite_wall_s": 538.3749940395355,
+      "all_requests_including_initial_agent_turn": 36,
+      "cgroup_events": {
+        "high": 5145,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "disk_reads_bytes": {
+        "loop0": 0,
+        "loop1": 0,
+        "loop2": 0,
+        "loop3": 0,
+        "loop4": 0,
+        "loop5": 0,
+        "loop6": 0,
+        "loop7": 0,
+        "nvme2n1": 0,
+        "nvme2n1p1": 0,
+        "nvme2n1p2": 0,
+        "nvme0n1": 92275404800,
+        "nvme0n1p1": 0,
+        "nvme0n1p2": 92275404800,
+        "nvme1n1": 0,
+        "nvme1n1p1": 0,
+        "nvme1n1p2": 0,
+        "nvme1n1p3": 0,
+        "nvme1n1p4": 0,
+        "sda": 0,
+        "sda1": 0,
+        "sda2": 0,
+        "sdb": 0,
+        "sdb1": 0,
+        "sdc": 0,
+        "sdc1": 0,
+        "sdd": 0,
+        "sde": 0,
+        "sdf": 0,
+        "sdg": 0,
+        "sdh": 0,
+        "loop10": 0,
+        "loop11": 0,
+        "loop9": 0,
+        "loop13": 0,
+        "loop8": 0,
+        "loop17": 0,
+        "loop16": 0,
+        "loop15": 0,
+        "loop12": 0,
+        "loop14": 0,
+        "loop18": 0,
+        "loop20": 0,
+        "loop21": 0,
+        "loop19": 0,
+        "loop22": 0,
+        "loop25": 0,
+        "loop23": 0,
+        "loop26": 0,
+        "loop24": 0,
+        "loop27": 0
+      },
+      "placement": [
+        "strata generate: 5 pool workers on logical processors 1,2,3,4,5, the host thread on 0 (draining too) (--host-core first)"
+      ],
+      "telemetry_summary": {
+        "chat_decode": 22.4,
+        "chat_ttft": 1.204,
+        "agent_decode": 23.7,
+        "agent_ttft": 11.58,
+        "agent_cache_hit": 68.764,
+        "failed": 0,
+        "skipped": 0,
+        "4K_prefill": 347.9,
+        "4K_ttft": 11.589,
+        "16K_prefill": 680.7,
+        "16K_ttft": 23.618,
+        "32K_prefill": 681.4,
+        "32K_ttft": 47.081,
+        "service_wall_s": 667.9986501889998,
+        "calibration_probe_decode": 21.9,
+        "calibration_probe_count": 9,
+        "min_available_gib": 43.326332092285156,
+        "peak_service_gib": 100.00160217285156,
+        "global_swap_max_bytes": 335872,
+        "service_swap_max_bytes": 0,
+        "gpu": {
+          "0": {
+            "max_temp_c": 66.0,
+            "peak_used_mib": 14647.0,
+            "max_power_w": 98.74,
+            "busy_sm_mhz_median": 2827.0,
+            "pcie_gen_seen": [
+              1.0,
+              2.0,
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          },
+          "1": {
+            "max_temp_c": 64.0,
+            "peak_used_mib": 427.0,
+            "max_power_w": 40.12,
+            "busy_sm_mhz_median": null,
+            "pcie_gen_seen": [
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          }
+        }
+      },
+      "oc_hashes": [
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b",
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b"
+      ],
+      "effective_limits_unchanged": true,
+      "probe_output_hashes": [
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "dd71a1a277340ff023fa72941b4f130e91da052ff10697422c8fb42b7e6119b8",
+        "c49fb99c20d428f67c46a010128f245f9110797e97d2f0bccb7ad9bfee1b5459",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "b081eea017c070156c108555f42fd1d2ef6bc79b3808fb1280b4f21b75191b61",
+        "c5348b2a470e0dab5bb56d985488d0a497314f49e5bdb787389219cd66a6f8e9",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "29fe4d5cf9e1bcf2bf5ad4034839ecd60712e898e363a63315ffeb98b4330fb3",
+        "ca10ba6a69247534fee38ab467b44f760508bd5ed2962772ec75892be5c03951"
+      ],
+      "original_run_id": "20261014T172345561344Z-SINGLE-TUNED-bench",
+      "started_at_epoch_s": 1791998625.5216,
+      "finished_at_epoch_s": 1791999308.4022272
+    },
+    {
+      "block": 2,
+      "arm": "SINGLE-BASE",
+      "folder": "runs/block2-SINGLE-BASE",
+      "effective_engine_settings": {
+        "max_context": 65536,
+        "version": "0.1.44.1",
+        "kv": "int8",
+        "pool_workers": 7,
+        "pcie_frac": "0.18",
+        "spec_min_p": "0.50"
+      },
+      "load_wall_s": 84.02493177299948,
+      "suite_wall_s": 529.0694427490234,
+      "all_requests_including_initial_agent_turn": 36,
+      "cgroup_events": {
+        "high": 10727,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "disk_reads_bytes": {
+        "loop0": 0,
+        "loop1": 0,
+        "loop2": 0,
+        "loop3": 0,
+        "loop4": 0,
+        "loop5": 0,
+        "loop6": 0,
+        "loop7": 0,
+        "nvme2n1": 0,
+        "nvme2n1p1": 0,
+        "nvme2n1p2": 0,
+        "nvme0n1": 100567064576,
+        "nvme0n1p1": 0,
+        "nvme0n1p2": 100567064576,
+        "nvme1n1": 0,
+        "nvme1n1p1": 0,
+        "nvme1n1p2": 0,
+        "nvme1n1p3": 0,
+        "nvme1n1p4": 0,
+        "sda": 0,
+        "sda1": 0,
+        "sda2": 0,
+        "sdb": 0,
+        "sdb1": 0,
+        "sdc": 0,
+        "sdc1": 0,
+        "sdd": 0,
+        "sde": 0,
+        "sdf": 0,
+        "sdg": 0,
+        "sdh": 0,
+        "loop10": 0,
+        "loop11": 0,
+        "loop9": 0,
+        "loop13": 0,
+        "loop8": 0,
+        "loop17": 0,
+        "loop16": 0,
+        "loop15": 0,
+        "loop12": 0,
+        "loop14": 0,
+        "loop18": 0,
+        "loop20": 0,
+        "loop21": 0,
+        "loop19": 0,
+        "loop22": 0,
+        "loop25": 0,
+        "loop23": 144384,
+        "loop26": 0,
+        "loop24": 0,
+        "loop27": 0
+      },
+      "placement": [
+        "strata generate: PCIe probe: 6.7 GB/s host->device (best of 6.7 6.7 6.7 6.7) -> pcie_frac 0.18 (default 0.55)",
+        "strata generate: 7 pool workers on logical processors 1,2,3,4,5,6,7, the host thread on 0 (draining too) (--host-core first)",
+        "strata serve: PCIe share: the CPU pool takes 149 us per missed expert (21.0 GB/s of expert bytes), the link 6.7 GB/s -> pcie_frac 0.15 (was 0.18; --pcie-frac N fixes it, STRATA_PCIE_FRAC_DEFAULT=old keeps the start-up rule)"
+      ],
+      "telemetry_summary": {
+        "chat_decode": 24.7,
+        "chat_ttft": 1.189,
+        "agent_decode": 25.7,
+        "agent_ttft": 11.559,
+        "agent_cache_hit": 68.605,
+        "failed": 0,
+        "skipped": 0,
+        "4K_prefill": 350.5,
+        "4K_ttft": 11.502,
+        "16K_prefill": 679.3,
+        "16K_ttft": 23.67,
+        "32K_prefill": 682.3,
+        "32K_ttft": 47.017,
+        "service_wall_s": 671.1567593229993,
+        "calibration_probe_decode": 25.2,
+        "calibration_probe_count": 9,
+        "min_available_gib": 43.291507720947266,
+        "peak_service_gib": 100.00141143798828,
+        "global_swap_max_bytes": 667648,
+        "service_swap_max_bytes": 0,
+        "gpu": {
+          "0": {
+            "max_temp_c": 65.0,
+            "peak_used_mib": 14647.0,
+            "max_power_w": 98.18,
+            "busy_sm_mhz_median": 2827.0,
+            "pcie_gen_seen": [
+              1.0,
+              2.0,
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          },
+          "1": {
+            "max_temp_c": 64.0,
+            "peak_used_mib": 427.0,
+            "max_power_w": 39.99,
+            "busy_sm_mhz_median": null,
+            "pcie_gen_seen": [
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          }
+        }
+      },
+      "oc_hashes": [
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b",
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b"
+      ],
+      "effective_limits_unchanged": true,
+      "probe_output_hashes": [
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "86d90a7c9f8424931b5bd593a15dde5ae57b521c722de3f3a33c09bc5bd50b7a",
+        "1df01910937b39d6e2f60a91fe3acb2e2144d58086c79a9fa47c6a7680b89e14",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "5af56e81bd148c42758481563bd6a1c4bc03149941d6e3a9422e7c1e3d22c303",
+        "1dd7c1e03cac5459587cd700ebc1a36e503a42a288a52672986d4b4d5e8e7f50",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "dd71a1a277340ff023fa72941b4f130e91da052ff10697422c8fb42b7e6119b8",
+        "72cac54f012b5e2cef3974cde94b96836a0468fa4fe30c1aac9c5e6b616a2994"
+      ],
+      "original_run_id": "20261014T173508933451Z-SINGLE-BASE-bench",
+      "started_at_epoch_s": 1791999308.892778,
+      "finished_at_epoch_s": 1791999994.7301292
+    },
+    {
+      "block": 2,
+      "arm": "DUAL-BASE",
+      "folder": "runs/block2-DUAL-BASE",
+      "effective_engine_settings": {
+        "max_context": 65536,
+        "version": "0.1.44.1",
+        "kv": "int8",
+        "pool_workers": 7,
+        "pcie_frac": "0.17",
+        "spec_min_p": "0.50"
+      },
+      "load_wall_s": 98.02789427500102,
+      "suite_wall_s": 555.3598401546478,
+      "all_requests_including_initial_agent_turn": 36,
+      "cgroup_events": {
+        "high": 12288,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "disk_reads_bytes": {
+        "loop0": 0,
+        "loop1": 0,
+        "loop2": 0,
+        "loop3": 0,
+        "loop4": 0,
+        "loop5": 0,
+        "loop6": 0,
+        "loop7": 0,
+        "nvme2n1": 0,
+        "nvme2n1p1": 0,
+        "nvme2n1p2": 0,
+        "nvme0n1": 98312634368,
+        "nvme0n1p1": 0,
+        "nvme0n1p2": 98312634368,
+        "nvme1n1": 0,
+        "nvme1n1p1": 0,
+        "nvme1n1p2": 0,
+        "nvme1n1p3": 0,
+        "nvme1n1p4": 0,
+        "sda": 0,
+        "sda1": 0,
+        "sda2": 0,
+        "sdb": 0,
+        "sdb1": 0,
+        "sdc": 0,
+        "sdc1": 0,
+        "sdd": 0,
+        "sde": 0,
+        "sdf": 0,
+        "sdg": 0,
+        "sdh": 0,
+        "loop10": 0,
+        "loop11": 0,
+        "loop9": 0,
+        "loop13": 418816,
+        "loop8": 0,
+        "loop17": 0,
+        "loop16": 0,
+        "loop15": 0,
+        "loop12": 0,
+        "loop14": 0,
+        "loop18": 0,
+        "loop20": 0,
+        "loop21": 0,
+        "loop19": 0,
+        "loop22": 0,
+        "loop25": 0,
+        "loop23": 2401280,
+        "loop26": 0,
+        "loop24": 0,
+        "loop27": 0
+      },
+      "placement": [
+        "strata generate: PCIe probe: 6.1 GB/s host->device (best of 6.1 6.1 6.1 6.1) -> pcie_frac 0.17 (default 0.55)",
+        "strata generate: layer split: CUDA1 PCIe probe 6.7 GB/s (best of 6.7 6.7 6.7 6.7) -> pcie_frac 0.18",
+        "strata generate: layer split: CUDA1 holds its weights; 9.99 GiB free (its session follows the split search)",
+        "strata generate: layer split auto: K=2 would give a stage fewer than 3 layers (a tiny expert cache there clamps the prompt chunk of every card, #1616); chose K=3 instead (36.7 ms per decode window, not 36.1)",
+        "strata generate: layer split: CUDA1 holds its weights, session [3, 48) and the head; 8.74 GiB free",
+        "strata generate: 7 pool workers on logical processors 1,2,3,4,5,6,7, the host thread on 0 (draining too) (--host-core first)"
+      ],
+      "telemetry_summary": {
+        "chat_decode": 28.9,
+        "chat_ttft": 1.21,
+        "agent_decode": 29.0,
+        "agent_ttft": 11.435,
+        "agent_cache_hit": 68.771,
+        "failed": 0,
+        "skipped": 0,
+        "4K_prefill": 350.6,
+        "4K_ttft": 11.502,
+        "16K_prefill": 597.8,
+        "16K_ttft": 26.893,
+        "32K_prefill": 645.8,
+        "32K_ttft": 49.68,
+        "service_wall_s": 706.1466879920008,
+        "calibration_probe_decode": 28.6,
+        "calibration_probe_count": 9,
+        "min_available_gib": 36.34934997558594,
+        "peak_service_gib": 100.00132751464844,
+        "global_swap_max_bytes": 328224768,
+        "service_swap_max_bytes": 0,
+        "gpu": {
+          "0": {
+            "max_temp_c": 66.0,
+            "peak_used_mib": 14669.0,
+            "max_power_w": 100.79,
+            "busy_sm_mhz_median": 2827.0,
+            "pcie_gen_seen": [
+              1.0,
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          },
+          "1": {
+            "max_temp_c": 65.0,
+            "peak_used_mib": 10597.0,
+            "max_power_w": 99.96,
+            "busy_sm_mhz_median": 2040.0,
+            "pcie_gen_seen": [
+              3.0
+            ],
+            "pcie_width_seen": [
+              8.0
+            ]
+          }
+        }
+      },
+      "oc_hashes": [
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b",
+        "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b"
+      ],
+      "effective_limits_unchanged": true,
+      "probe_output_hashes": [
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "ec50599035d3bab88f7cdb2621753bee9d88442e5d356b6dfcca6b10e75a2a06",
+        "b1f08ffcb8af4c23c0c2b5c18885f6449eecf4bb0f411b434240355afcc12126",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "6cbafc5dc209de3d35df9c743a8388568e813b06b71ab5a5ff393491933f45f8",
+        "bd1e194b4ec31fc50e4825105a37ac1a91f0eb169253c92455554a06ccb3ebb3",
+        "6dfd2f2f7c3f869bdff3fac12299c3261361278e34689eec5bed06eb835c7710",
+        "a9c5c6829708996319dc39a29e7c606e481ebc86c5430f2cc9d2dfc7bd43787d",
+        "e22500f74580664e0a8cf4821ba340f626964ecf5bf5331f9c4eff3f2abe03ef"
+      ],
+      "original_run_id": "20261014T174635241376Z-DUAL-BASE-bench",
+      "started_at_epoch_s": 1791999995.1998646,
+      "finished_at_epoch_s": 1792000716.9930449
+    }
+  ],
+  "official_requests": 288,
+  "model_mount": {
+    "source": "/dev/nvme0n1p2",
+    "counter_device": "nvme0n1",
+    "identified_at_analysis": true
+  },
+  "calibration_requests": 72,
+  "oc_configuration_constant": true,
+  "all_effective_limits_unchanged": true,
+  "comparisons": {
+    "dual_vs_single_baseline": {
+      "chat": 13.572854291417169,
+      "4K": 0.818260120585701,
+      "16K": -11.769474537548842,
+      "32K": -5.122559812123873,
+      "agent": 15.324165029469562,
+      "calibration": 14.314115308151099
+    },
+    "dual_tuning_vs_baseline": {
+      "chat": -5.096660808435849,
+      "4K": 0.0,
+      "16K": 0.06682258603409874,
+      "32K": 0.10829207920790562,
+      "agent": 3.066439522998299,
+      "calibration": -3.652173913043477
+    },
+    "single_tuning_vs_baseline": {
+      "chat": -12.974051896207584,
+      "4K": -0.20097616996840317,
+      "16K": 0.13265531726727176,
+      "32K": 0.014677821811237557,
+      "agent": -5.500982318271119,
+      "calibration": -13.121272365805158
+    }
+  }
+}
