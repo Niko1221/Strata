@@ -351,16 +351,20 @@ class ModeGating(unittest.TestCase):
     """A0.1 mode gating (donor --modes chat,decision): fail-closed 404s,
     env parsing, default both-on."""
 
-    def test_modes_default_all_on(self):
+    def test_modes_default_chat_only(self):
+        # Justin's ruling 2026-10-15: undefined = chat only (stock Strata
+        # posture); the decision surface must be opted into
         import importlib, os
         old = os.environ.pop("STRATA_JEV_MODES", None)
         try:
             m = importlib.import_module("serve.jev_calib")
             importlib.reload(m)
-            self.assertEqual(m.MODES, frozenset({"chat", "decision"}))
+            self.assertEqual(m.MODES, frozenset({"chat"}))
         finally:
             if old is not None:
                 os.environ["STRATA_JEV_MODES"] = old
+            else:
+                os.environ.pop("STRATA_JEV_MODES", None)
             importlib.reload(importlib.import_module("serve.jev_calib"))
 
     def test_modes_decision_only(self):
