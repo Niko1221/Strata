@@ -10524,7 +10524,8 @@ int main(int argc, char **argv) try {
             }();
             // Only add a snapshot; the existing token and image checks still decide reuse.
             const int64_t message_at = message_checkpoint && !multi_gpu && o.prompt_cache > 0
-                ? strata::program::message_checkpoint_boundary(ids, resume, turn_at, o.turn_token) : -1;
+                ? strata::program::message_checkpoint_boundary(ids, resume, turn_at, o.turn_token,
+                                                               8192, 16384) : -1;
             int64_t at = read_from;
             for (const int64_t to : {reread_to, root_at, message_at, turn_at, n - 1}) {
                 if (to <= at) continue;
