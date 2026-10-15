@@ -1009,6 +1009,10 @@ INT8, Q4_0 and identity-layout K8V4 snapshots are supported; the K8V4 draft ring
 remains INT8, as in upstream. Windows/HIP and multi-GPU runtime coverage must be
 reported separately from Linux/CUDA evidence.
 
+**On a Mac (Metal).** The same two flags work on a Mac. The cache keeps the Metal decode window's own K/V and running
+state for each conversation, checked against the model's sizes. It needs the RAM guard to read the Mac's free memory.
+Session files (`SAVE` / `LOAD`) are not supported on Metal.
+
 The web page's Monitor tab has a **Conversation cache** card (0.1.39, #596): the parked conversations against the
 slots and the RAM budget, how many were parked, restored and evicted, and the last switch (read from the engine's
 log), and for every setup how many prompt tokens the cache gave back - in the last request and since the start.

@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cstring>
 #include <limits>
 
 namespace strata::core {
@@ -71,6 +73,18 @@ bool checkpoint_targets(const SessionState& ss, const ModelGeometry& g, size_t t
     return true;
 }
 
+// the live view's images that start before the checkpoint's end
+bool checkpoint_images(const ConversationView& view, const ConversationCheckpoint& c, std::string& error) {
+    size_t image = 0;
+    for (const auto& key : view.images) {
+        if ((uint64_t) key.start >= c.ids.size()) break;
+        if (image >= c.imgs.size() || !(c.imgs[image++] == key))
+            return fail(error, "checkpoint image identity differs");
+    }
+    if (image != c.imgs.size()) return fail(error, "checkpoint image prefix differs");
+    return true;
+}
+
 bool view_validate(const ConversationView& view, const SessionState& ss,
                    const ModelGeometry& g, std::string& error) {
     ConversationStateSizes z;
@@ -82,14 +96,7 @@ bool view_validate(const ConversationView& view, const SessionState& ss,
         if (!c.stage_parts.empty() || c.ids.empty() || c.ids.size() > view.ids.size() ||
             !std::equal(c.ids.begin(), c.ids.end(), view.ids.begin()))
             return fail(error, "checkpoint is not a live token prefix");
-        if (!conversation_checkpoint_validate(c, ss, g, error)) return false;
-        size_t image = 0;
-        for (const auto& key : view.images) {
-            if ((uint64_t) key.start >= c.ids.size()) break;
-            if (image >= c.imgs.size() || !(c.imgs[image++] == key))
-                return fail(error, "checkpoint image identity differs");
-        }
-        if (image != c.imgs.size()) return fail(error, "checkpoint image prefix differs");
+        if (!conversation_checkpoint_validate(c, ss, g, error) || !checkpoint_images(view, c, error)) return false;
     }
     return true;
 }
@@ -158,6 +165,7 @@ namespace strata::metal_engine {
 // the running state lives in the Metal decode window (metal/src/engine/window.cpp), not in the session's buffers
 bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& error);
 bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& error);
+bool window_cache_layout(strata::core::MetalWindowLayout& layout, std::string& error);
 }  // namespace strata::metal_engine
 namespace strata::core {
 #endif
@@ -215,8 +223,238 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionSta
     return sync(error);
 }
 
+namespace {
+std::atomic<bool> g_metal_conversation_cache{false};
+} // namespace
+
+void set_metal_conversation_cache(bool on) { g_metal_conversation_cache.store(on, std::memory_order_relaxed); }
+bool metal_conversation_cache() {
+#if defined(STRATA_GPU_METAL)
+    return g_metal_conversation_cache.load(std::memory_order_relaxed);
+#else
+    return false;
+#endif
+}
+
+#if defined(STRATA_GPU_METAL)
+// Metal: a cached conversation is the window's own K/V and state, sizes checked against the model.
+namespace {
+// the window's own K/V format; RAM only
+constexpr int kMetalWindowKv = 32 + strata::kernels::kKvInt8;
+constexpr const char* kMetalNoSessionFiles = "session files (SAVE / LOAD) are not supported on the Metal engine";
+
+struct MetalKvSizes {
+    std::array<size_t, 5> part{};   // k, v, k_scale, v_scale, pooled
+    int64_t cells = 0, rows = 0;
+};
+
+bool metal_layout(MetalWindowLayout& l, const ModelGeometry& g, std::string& error) {
+    if (!strata::metal_engine::window_cache_layout(l, error)) return false;
+    const auto shapes = strata::kernels::qsa_real_shapes();
+    const size_t kv = (size_t) (g.n_head_kv * g.head_dim), scales = (size_t) (g.n_head_kv * (g.head_dim / 64) * 2);
+    if (l.unit != std::array<size_t, 5>{kv, kv, scales, scales, (size_t) g.idx_key_dim * sizeof(float)} ||
+        l.block != shapes.idx_block || l.page < 1 || l.qsa_layers != (size_t) g.n_qsa_layers() ||
+        l.kv.size() < l.qsa_layers || l.cells < 1 || l.rows < 1)
+        return fail(error, "the Metal window's K/V layout does not match this model's geometry");
+    return true;
+}
+
+bool metal_kv_sizes(const MetalWindowLayout& l, int64_t upto, MetalKvSizes& s, std::string& error) {
+    if (upto < 1) return fail(error, "invalid K/V extent");
+    s.cells = (upto + l.page - 1) / l.page * l.page;
+    s.rows = upto / l.block + 1;   // completed rows + the moving one
+    if (upto > l.cells || s.cells > l.cells || s.rows > l.rows)
+        return fail(error, "the conversation is longer than the Metal window holds");
+    for (size_t i = 0; i < 4; ++i) s.part[i] = (size_t) s.cells * l.unit[i];
+    s.part[4] = (size_t) s.rows * l.unit[4];
+    return true;
+}
+
+bool metal_state_ok(const ConversationCheckpoint& c, const MetalWindowLayout& l) {
+    return c.gdn.size() == l.state[0] && c.ple.size() == l.state[1] && c.tails.size() == l.state[2] &&
+           c.dead.size() == l.state[3] && c.block_pos.size() == l.state[4] && c.stage_parts.empty() &&
+           image_keys(c.imgs, c.ids.size());
+}
+
+bool metal_view_validate(const ConversationView& view, const MetalWindowLayout& l, std::string& error) {
+    if (view.ids.empty() || (int64_t) view.ids.size() > l.cells || !image_keys(view.images, view.ids.size()) ||
+        std::any_of(view.ids.begin(), view.ids.end(), [](int32_t id) { return id < 0; }))
+        return fail(error, "invalid live token/image metadata");
+    for (const auto& c : view.checkpoints) {
+        if (c.ids.empty() || c.ids.size() > view.ids.size() ||
+            !std::equal(c.ids.begin(), c.ids.end(), view.ids.begin()))
+            return fail(error, "checkpoint is not a live token prefix");
+        if (!metal_state_ok(c, l)) return fail(error, "checkpoint is not this window's running state");
+        if (!checkpoint_images(view, c, error)) return false;
+    }
+    return true;
+}
+
+std::array<ConversationBuffer*, 5> metal_buffers(ConversationKv& kv) {
+    return {&kv.k, &kv.v, &kv.k_scale, &kv.v_scale, &kv.pooled};
+}
+std::array<const ConversationBuffer*, 5> metal_buffers(const ConversationKv& kv) {
+    return {&kv.k, &kv.v, &kv.k_scale, &kv.v_scale, &kv.pooled};
+}
+
+bool metal_kv_validate(const ConversationKv& kv, const MetalWindowLayout& l, const ModelGeometry& g, int64_t upto,
+                       std::string& error) {
+    MetalKvSizes s;
+    if (!metal_kv_sizes(l, upto, s, error)) return false;
+    if (kv.format != kMetalWindowKv || kv.cells != s.cells || kv.heads != g.n_head_kv || kv.head_dim != g.head_dim ||
+        kv.page_size != l.page || kv.pooled_rows != s.rows || kv.idx_dim != g.idx_key_dim)
+        return fail(error, "incompatible K/V geometry");
+    const auto b = metal_buffers(kv);
+    for (size_t i = 0; i < b.size(); ++i)
+        if (b[i]->size() != s.part[i]) return fail(error, "invalid K/V payload size");
+    return true;
+}
+
+bool metal_reuse_ok(const ConversationKvReuse& reuse, const MetalWindowLayout& l, const ModelGeometry& g, int64_t upto,
+                    std::string& error) {
+    if (reuse.kv.size() != l.kv.size() || !reuse.stages.empty() || reuse.unchanged_tokens < 0 ||
+        reuse.unchanged_tokens > reuse.captured_tokens || reuse.unchanged_tokens > upto)
+        return fail(error, "invalid retained K/V prefix");
+    for (const auto& kv : reuse.kv)
+        if (!metal_kv_validate(kv, l, g, reuse.captured_tokens, error)) return false;
+    return true;
+}
+
+// copies with a watchdog beat per 1 MiB
+void copy_beating(uint8_t* dst, const uint8_t* src, size_t n) {
+    constexpr size_t slice = (size_t) 1 << 20;
+    for (size_t at = 0; at < n; at += slice) {
+        std::memcpy(dst + at, src + at, std::min(slice, n - at));
+        progress_beat();
+    }
+}
+
+// `unchanged`: cells below it are still valid (as conversation_kv_save)
+bool metal_kv_save(ConversationKv& kv, const std::array<void*, 5>& src, const MetalWindowLayout& l,
+                   const ModelGeometry& g, int64_t upto, int64_t unchanged, size_t* reused, std::string& error) {
+    MetalKvSizes s;
+    if (!metal_kv_sizes(l, upto, s, error)) return false;
+    if (unchanged < 0 || unchanged > upto || unchanged > kv.cells) return fail(error, "invalid unchanged prefix");
+    const int64_t whole = unchanged / l.page * l.page;
+    kv.format = kMetalWindowKv;
+    kv.cells = s.cells; kv.heads = g.n_head_kv; kv.head_dim = g.head_dim; kv.page_size = l.page;
+    kv.pooled_rows = s.rows; kv.idx_dim = g.idx_key_dim;
+    const auto dst = metal_buffers(kv);
+    for (size_t i = 0; i < dst.size(); ++i) {
+        if (!src[i]) return fail(error, "missing window K/V buffer");
+        // keep whole pages before the first rewrite
+        const size_t keep = (size_t) (i == 4 ? unchanged / l.block : whole) * l.unit[i];
+        if (keep > dst[i]->size()) return fail(error, "missing reusable prefix");
+        dst[i]->resize(s.part[i]);
+        dst[i]->visit(keep, s.part[i] - keep, [&](uint8_t* p, size_t n, size_t at) {
+            copy_beating(p, static_cast<const uint8_t*>(src[i]) + at, n);
+            return true;
+        });
+        if (reused) *reused += keep;
+    }
+    return true;
+}
+
+void metal_kv_restore(const ConversationKv& kv, const std::array<void*, 5>& dst) {
+    const auto src = metal_buffers(kv);
+    for (size_t i = 0; i < src.size(); ++i)
+        src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
+            copy_beating(static_cast<uint8_t*>(dst[i]) + at, p, n);
+            return true;
+        });
+}
+
+bool metal_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
+                                  const ModelGeometry& g, size_t& bytes, std::string& error) {
+    bytes = 0;
+    MetalWindowLayout l;
+    if (!metal_layout(l, g, error) || !metal_view_validate(view, l, error)) return false;
+    const int64_t upto = (int64_t) view.ids.size();
+    MetalKvSizes s;
+    if (!metal_kv_sizes(l, upto, s, error)) return false;
+    const bool reusing = !reuse.kv.empty();
+    if (reusing && !metal_reuse_ok(reuse, l, g, upto, error)) return false;
+    size_t ids = 0, images = 0, checkpoints = 0, layers = 0;
+    if (!product(ids, {view.ids.size(), sizeof(int32_t)}) ||
+        !product(images, {view.images.size(), sizeof(ConversationImageKey)}) ||
+        !product(checkpoints, {view.checkpoints.size(), sizeof(ConversationCheckpoint)}) ||
+        !product(layers, {std::max(l.kv.size(), reusing ? reuse.kv.capacity() : 0), sizeof(ConversationKv)}))
+        return fail(error, "snapshot metadata byte count overflow");
+    for (size_t n : {ids, images, checkpoints, layers, l.state[0], l.state[1], l.state[2], l.state[3], l.state[4]})
+        if (!add(bytes, n)) return fail(error, "snapshot byte count overflow");
+    for (const auto& c : view.checkpoints)
+        if (!metadata_bytes(c, bytes)) return fail(error, "checkpoint byte count overflow");
+    const ConversationKv none;
+    for (size_t j = 0; j < l.kv.size(); ++j) {
+        const auto b = metal_buffers(reusing ? reuse.kv[j] : none);
+        for (size_t i = 0; i < b.size(); ++i) {
+            const size_t n = b[i]->allocation_peak(s.part[i]);
+            if (n == SIZE_MAX || !add(bytes, n)) return fail(error, "K/V allocation overflow");
+        }
+    }
+    return true;
+}
+
+bool metal_snapshot_save(SavedConversation& image, const ConversationView& view, const SessionState& ss,
+                         const ModelGeometry& g, std::string& error, ConversationKvReuse reuse, size_t* reused_bytes) {
+    // nothing in flight: window calls wait, the pending fold runs in window_checkpoint_save
+    size_t estimate = 0;
+    if (!metal_snapshot_capture_bytes(reuse, view, g, estimate, error) || !sync(error)) return false;
+    MetalWindowLayout l;
+    if (!metal_layout(l, g, error)) return false;
+    SavedConversation captured;
+    captured.geometry = geometry_key(g);
+    captured.layer_lo = ss.layer_lo; captured.layer_hi = ss.layer_hi;
+    captured.live.ids = view.ids; captured.live.imgs = view.images;
+    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints);
+    const int64_t upto = (int64_t) view.ids.size();
+    const int64_t unchanged = reuse.kv.empty() ? 0 : reuse.unchanged_tokens;
+    captured.kv = std::move(reuse.kv);
+    captured.kv.resize(l.kv.size());
+    if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
+    for (size_t j = 0; j < l.kv.size(); ++j) {
+        // the draft's last cell may be uncomputed (as the CUDA save)
+        const int64_t keep = j < l.qsa_layers ? unchanged : std::max<int64_t>(0, unchanged - 1);
+        if (!metal_kv_save(captured.kv[j], l.kv[j], l, g, upto, keep, reused_bytes, error)) return false;
+    }
+    image = std::move(captured);
+    return true;
+}
+
+bool metal_snapshot_validate(const SavedConversation& image, const SessionState& ss, const ModelGeometry& g,
+                             std::string& error) {
+    if (!image.live.stage_parts.empty() || !image.stage_images.empty())
+        return fail(error, "a layer split's image restored into the Metal window");
+    if (image.geometry != geometry_key(g)) return fail(error, "incompatible runtime geometry");
+    if (image.layer_lo != ss.layer_lo || image.layer_hi != ss.layer_hi)
+        return fail(error, "snapshot from another session layer range");
+    MetalWindowLayout l;
+    const ConversationView view{image.live.ids, image.live.imgs, image.checkpoints, image.cvec};
+    if (!metal_layout(l, g, error) || !metal_view_validate(view, l, error)) return false;
+    if (!metal_state_ok(image.live, l)) return fail(error, "the live state is not this window's running state");
+    if (image.kv.size() != l.kv.size()) return fail(error, "invalid K/V layer count");
+    for (const auto& kv : image.kv)
+        if (!metal_kv_validate(kv, l, g, (int64_t) image.live.ids.size(), error)) return false;
+    return true;
+}
+
+ConversationRestore metal_snapshot_restore(const SavedConversation& image, SessionState& ss, const ModelGeometry& g,
+                                           std::string& error) {
+    if (!metal_snapshot_validate(image, ss, g, error)) return ConversationRestore::invalid;
+    MetalWindowLayout l;
+    if (!sync(error) || !metal_layout(l, g, error)) return ConversationRestore::transfer_failed;
+    for (size_t j = 0; j < l.kv.size(); ++j) metal_kv_restore(image.kv[j], l.kv[j]);
+    if (!conversation_checkpoint_restore(image.live, ss, g, error)) return ConversationRestore::transfer_failed;
+    return ConversationRestore::restored;
+}
+} // namespace
+#endif
+
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& ss,
                                  const ModelGeometry& g, const QsaState* draft, size_t& bytes, std::string& error) {
+#if defined(STRATA_GPU_METAL)
+    if (metal_conversation_cache()) return metal_snapshot_capture_bytes({}, view, g, bytes, error);
+#endif
     bytes = 0;
     if (!view_validate(view, ss, g, error)) return false;
     ConversationStateSizes z;
@@ -245,6 +483,9 @@ bool conversation_snapshot_bytes(const ConversationView& view, const SessionStat
 bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
                                          const SessionState& ss, const ModelGeometry& g,
                                          const QsaState* draft, size_t& bytes, std::string& error) {
+#if defined(STRATA_GPU_METAL)
+    if (metal_conversation_cache()) return metal_snapshot_capture_bytes(reuse, view, g, bytes, error);
+#endif
     if (!conversation_snapshot_bytes(view, ss, g, draft, bytes, error)) return false;
     if (reuse.kv.empty()) return true;
     const size_t layers = owned_qsa(ss) + (draft ? 1 : 0);
@@ -271,6 +512,10 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
                                 const SessionState& ss, const ModelGeometry& g,
                                 const QsaState* draft, std::string& error,
                                 ConversationKvReuse reuse, size_t* reused_bytes) {
+#if defined(STRATA_GPU_METAL)
+    if (metal_conversation_cache())
+        return metal_snapshot_save(image, view, ss, g, error, std::move(reuse), reused_bytes);
+#endif
     size_t estimate = 0;
     if (!conversation_snapshot_capture_bytes(reuse, view, ss, g, draft, estimate, error) || !sync(error)) return false;
     // Build into a new object so a failure cannot publish a partial snapshot.
@@ -299,6 +544,10 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
                                    const QsaState& draft, std::string& error) {
+    // session files read buffers the Metal window never fills
+#if defined(STRATA_GPU_METAL)
+    return fail(error, kMetalNoSessionFiles);
+#endif
     if (!view_validate(view, ss, g, error) || !sync(error)) return false;
     SavedConversation captured;
     captured.geometry = geometry_key(g);
@@ -320,6 +569,9 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
 bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& ss, const ModelGeometry& g,
                                       const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
                                       std::string& error) {
+#if defined(STRATA_GPU_METAL)
+    return fail(error, kMetalNoSessionFiles);
+#endif
     ConversationStateSizes z;
     if (!conversation_session_sizes(g, ss, z, error)) return false;
     if (ss.max_cells < 0) return fail(error, "invalid session cells");
@@ -350,6 +602,9 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
 
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss,
                                     const ModelGeometry& g, const QsaState* draft, std::string& error) {
+#if defined(STRATA_GPU_METAL)
+    if (metal_conversation_cache()) return metal_snapshot_validate(image, ss, g, error);
+#endif
     if (!image.live.stage_parts.empty())
         return fail(error, "a running checkpoint's stage parts belong in the stage images, not in live.stage_parts");
     if (image.geometry != geometry_key(g)) return fail(error, "incompatible runtime geometry");
@@ -368,6 +623,9 @@ bool conversation_snapshot_validate(const SavedConversation& image, const Sessio
 
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& ss,
                                                    const ModelGeometry& g, const QsaState* draft, std::string& error) {
+#if defined(STRATA_GPU_METAL)
+    if (metal_conversation_cache()) return metal_snapshot_restore(image, ss, g, error);
+#endif
     if (!conversation_snapshot_validate(image, ss, g, draft, error)) return ConversationRestore::invalid;
     if (!sync(error)) return ConversationRestore::transfer_failed;
     const int64_t upto = (int64_t) image.live.ids.size();

@@ -113,4 +113,20 @@ bool conversation_snapshot_validate(const SavedConversation& image, const Sessio
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
                                                    const ModelGeometry& g, const QsaState* draft, std::string& error);
 
+/// Metal, set at start with the conversation cache on: the snapshot calls use the decode window's own K/V and state.
+void set_metal_conversation_cache(bool on);
+bool metal_conversation_cache();
+
+#if defined(STRATA_GPU_METAL)
+/// The Metal window's conversation-cache layout (window_cache_layout).
+struct MetalWindowLayout {
+    std::vector<std::array<void*, 5>> kv;   ///< per layer: k, v, k_scale, v_scale, pooled
+    size_t qsa_layers = 0;                  ///< then the draft layer
+    std::array<size_t, 5> unit{};           ///< bytes per cell / indexer row
+    int64_t page = 0, block = 0;            ///< cells per page / indexer row
+    int64_t cells = 0, rows = 0;            ///< capacity
+    std::array<size_t, 5> state{};          ///< checkpoint_save's parts
+};
+#endif
+
 } // namespace strata::core
