@@ -1671,12 +1671,14 @@ class StrataEngine:
         yields, solo_again, refused = 0, 0, 0
         admit_wait, admit_since, admit_said = False, 0.0, False   # #1603: waiting for a slot, since when, said
         protected_since = None
+        slot_plan = None    # this request's own placement plan (slot_last_plan is shared: another request's pick can follow)
         park_slot = None    # a slot claimed for the engine park= copy of the main session
         solo_leg = None     # (prompt, len(out)) of a solo leg in flight - what the main session will hold
 
         def choose_slot():
-            nonlocal protected_since
+            nonlocal protected_since, slot_plan
             chosen, protected_since = self._admission_slot(prompt, protected_since)
+            slot_plan = getattr(self, "slot_last_plan", None)   # (the caller holds slot_cv)
             return chosen
         try:
             while True:   # a request in a slot that is left alone goes back to the solo path
@@ -1710,11 +1712,12 @@ class StrataEngine:
                             return self.waiting > 0
 
                     def give_way():   # at a PP line, and between two far apart (the engine takes it at its next boundary)
-                        nonlocal reserved
+                        nonlocal reserved, slot_plan
                         if (reserved is None and not out and not embeddings and yields < self.YIELDS_MAX and
                                 self._shorter_waiting(len(prompt))):
                             with self.slot_cv:          # the slot the part read will wait in
                                 reserved = self.pick_slot(prompt, allow_eviction=not self.slot_cache_affinity)
+                                slot_plan = getattr(self, "slot_last_plan", None)
                                 if reserved is not None:
                                     self.slot_busy[reserved] = True
                                     self.slot_claims.add(reserved)
@@ -1831,7 +1834,7 @@ class StrataEngine:
                             "started": time.time(), "first_token": None, "peer_ip": peer_ip, "request_key": request_key}
                     if hasattr(self, "slot_cache_peer"):
                         self.slot_cache_peer[slot] = peer_ip
-                    plan = getattr(self, "slot_last_plan", None)
+                    plan = slot_plan if self.slot_cache_affinity else None
                     if plan is not None:
                         live.update(cache_match_hint=plan.reused_hint, cache_source_hint=plan.source_hint,
                                     placement_reason=plan.reason)
