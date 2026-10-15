@@ -269,6 +269,23 @@ void arena() {
                 }
             check(pre && fs.file_blob_bytes() > 0 && fs.file_ms() >= 0.0,
                   "prefetch on 2 threads, then blob(): the same bytes");
+            // blob_parts (the refill's STRATA_REFILL_PARTS): the pieces in the mapping, each at its offset, are the blob
+            bool tiled = true;
+            for (int64_t l = 0; l < 2; ++l)
+                for (int64_t e = 0; e < NE; ++e) {
+                    strata::core::BlobPart parts[3];
+                    const int np = fs.blob_parts(l, e, parts);
+                    std::vector<uint8_t> got((size_t) L.blob_bytes(l), 0);
+                    uint64_t covered = 0;
+                    for (int i = 0; i < np && tiled; ++i) {
+                        tiled = parts[i].at + parts[i].n <= got.size();
+                        if (tiled) std::memcpy(got.data() + parts[i].at, parts[i].p, (size_t) parts[i].n);
+                        covered += parts[i].n;
+                    }
+                    tiled = tiled && np > 0 && covered == got.size() &&
+                            std::memcmp(got.data(), dst.data() + L.blob_offset(l, e), got.size()) == 0;
+                }
+            check(tiled, "blob_parts(): the pieces at their offsets equal the loaded arena byte for byte");
         }
         fs.close();
         // with experts.bin present, the pack's file is mapped as before, whatever set_gguf says

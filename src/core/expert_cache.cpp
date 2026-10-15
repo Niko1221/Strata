@@ -737,6 +737,30 @@ bool ExpertCache::fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::
     return true;
 }
 
+bool ExpertCache::fill_slot_queued_parts(int32_t slot, const BlobPart* parts, int n, std::string& err) {
+    uint8_t* dst = device_slot(slot);
+    if (dst == nullptr || parts == nullptr || n <= 0) {
+        err = "ExpertCache::fill_slot_queued_parts: slot outside the arena or no pieces";
+        return false;
+    }
+    uint64_t total = 0;
+    for (int i = 0; i < n; ++i) total += parts[i].n;
+    if (total > (uint64_t) blob_) {
+        err = "ExpertCache::fill_slot_queued_parts: the pieces are larger than a slot";
+        return false;
+    }
+    for (int i = 0; i < n; ++i) {
+        const cudaError_t e = cudaMemcpyAsync(dst + parts[i].at, parts[i].p, (size_t) parts[i].n, cudaMemcpyHostToDevice,
+                                              (cudaStream_t) 0);
+        if (e != cudaSuccess) {
+            err = std::string("ExpertCache::fill_slot_queued_parts: ") + cudaGetErrorString(e);
+            return false;
+        }
+    }
+    ++fills_;
+    return true;
+}
+
 bool ExpertCache::sync_queued(std::string& err) {
     const cudaError_t e = cudaStreamSynchronize((cudaStream_t) 0);
     if (e != cudaSuccess) {
