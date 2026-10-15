@@ -123,6 +123,18 @@ says when the engine is older than it needs).
   config, or send `chat_template_kwargs: {"enable_thinking": false}` per request. Without one of
   those a short `max_tokens` is spent entirely inside the think block and the answer looks empty.
 - **`/health` says 503 while loading**; the server polls `/props` instead.
+- **Linux: the card is lost (`UR_RESULT_ERROR_DEVICE_LOST`; `Timedout job` in `dmesg`) while it reads a prompt,
+  with transparent huge pages on `always` and swap on.** On #2157's box (2x Arc Pro B70, xe, kernel 7.2.9-cachyos,
+  32 GB RAM, zram swap, `vm.swappiness=150`) the reporter's trace shows the kernel moving the cards' system-memory
+  buffers to swap while a job used them, and the card faulting them back in past xe's 5 s job timeout. In their tests
+  the conversation cache's parks set it off (lost in 2 of 3 runs with a 12 GiB cache, 0 of 4 with the cache off or a
+  64 MiB budget; small samples). THP on `madvise` gave 0 of 4 there, but the card was lost again with
+  `--pipeline-windows 2` and a smaller VRAM reserve. What stopped it there: `NEOReadDebugKeys=1` and
+  `EnableRecoverablePageFaults=0` in the engine's environment (2 of 3 runs lost without them, 0 of 4 with them;
+  decode 71.8 / 96.3 / 72.0 tokens/s on their bench and the same greedy text on 5 prompts with them). On an engine run
+  directly, the run config's `"env"` sets both; the Docker launcher setup uses (`sycl/serve/strata-sycl.sh`) passes
+  on `NEOReadDebugKeys` but not `EnableRecoverablePageFaults` (and no value of 0), so there the second key does not
+  arrive yet.
 
 ## How much context fits
 
