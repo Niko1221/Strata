@@ -83,7 +83,7 @@ size):
 | 32 GB | `--family coder --model iq1_m` | for code; with a 24 GB card Q2_0 and IQ2_XS also run (Strata picks the low-RAM mode) |
 | 48 GB | `--model iq2_xs` | or `q2_0` (fastest) |
 | 64 GB | `--model iq2_xs` (recommended) | `iq3_xxs` / `iq3_s` are slower and a bit better |
-| 96 GB+ | `--model iq3_s` | `--family unsloth --model ud-iq4_xs` (~4-bit, 94 GB, part of the experts read from the SSD under ~80 GB of RAM); `ud-q4_k_xl` is experimental: NVIDIA only, NVMe SSD, 7-8.5 tokens/s on 64 GB |
+| 96 GB+ | `--model iq3_s` | `--family unsloth --model ud-iq4_xs` (~4-bit, 94 GB, part of the experts read from the SSD under ~80 GB of RAM); `ud-q4_k_xl` (4-bit K-quant experts, 111 GB, every expert in RAM from ~88 GB of RAM, the rest read from an NVMe SSD below that; 7-8.5 tokens/s on a 64 GB PC with a 12 GB RTX 5070) |
 
 `--family swift` (Swift 1.5, a fine-tune that thinks shorter; sizes IQ2_XS, IQ3_XXS, IQ3_S) is the
 alternative to `qwen`. `--family signal` (agentionai's Signal, a fine-tune that thinks more directly) has two
