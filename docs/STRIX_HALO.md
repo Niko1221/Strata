@@ -6,7 +6,7 @@ Everything here was built and measured on one machine, the maintainers' Strix Ha
 Ubuntu 26.04, kernel 7.0, ROCm 7.14.1). Setup (`setup.sh`, `START-HERE.bat`) recognizes it from 0.1.40, by its PCI id (`1002:1586`, one id for the 8060S, 8050S and 8040S) and by
 `gfx1151` exactly: a Strix Point (890M / 880M, gfx1150), Krackan (860M / 840M, gfx1152) or Phoenix / Hawk Point (780M / 760M, gfx1103) Radeon is
 named as what it is and not supported. On Linux setup compiles the engine for gfx1151 itself (the steps below are the same, by hand). On
-Windows the ready-made `strata-windows-x64-hip.zip` carries gfx1151 code from 0.1.40 (untested on a Windows Strix Halo so far); a zip
+Windows the ready-made `strata-windows-x64-hip.zip` carries gfx1151 code from 0.1.40 (one Windows report so far: [below](#windows-one-report)); a zip
 without it is refused with a message, never used. Setup counts the GPU's memory as the BIOS carve-out plus the shared memory
 (the GTT pool; on Windows half the RAM) and recommends UD-IQ4_XS from about 80 GB of memory; it changes no BIOS or kernel setting.
 
@@ -21,6 +21,16 @@ What the engine does differently on this chip:
   at `--prefill 16384` (T 16383 / 16384). Setup's own ROCm for gfx1151 (the 7.14.0a20260608 wheels, hipBLASLt 1.4.0) takes
   `tools/hip/gfx1151-hipblaslt-100400.txt`: the same shapes, calibrated against that library (docs/AMD_HIP.md, Tuning table).
 - **The expert cache and the RAM budget share the RAM.** For a model with a RAM budget (UD-IQ4_XS, UD-Q4_K_XL) setup writes a number for `--expert-cache` (the RAM less 24 GB less the budget), not `auto`: `auto` counts all the memory the OS can give back at start, and with a 55 GiB budget and a desktop open it took the room the OS needed (#1715, a global OOM on a 128 GB box). The number is in the config's `args`; `--expert-cache N` there sets it. An engine run by hand should pass one too.
+
+## Windows (one report)
+
+On a Ryzen AI Max+ 395 with 128 GB and a 64 GB BIOS carve-out (Windows 11 Pro, AMD driver 32.0.31036.15, the 0.1.43
+ready-made zip, IQ3_S, 131K context) the engine never became ready (#2013): page-locking the whole ~47 GiB expert
+arena took about twice its size from the GPU's free memory (101,470 -> 5,540 MiB), and the prompt path then failed on
+its first GPU call (`unspecified launch failure`). `"STRATA_ARENA_PIN_GIB": "16"` in the run config's `"env"` (pins at
+most the first 16 GiB of the arena, in whole layer slices: 15 GiB there; the rest is locked resident) fixed it there:
+ready in 33-37 s, all 24,576 experts in the GPU cache, 44.7 / 45.0 tokens/s on a 256-token answer, 708-733 tokens/s on
+4K-32K prompts (`strata_bench.py --long`). Other values were not tried.
 
 ## 1. The toolchain (no root needed)
 
