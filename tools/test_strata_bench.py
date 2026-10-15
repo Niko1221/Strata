@@ -339,6 +339,17 @@ class ReportTests(unittest.TestCase):
     def test_no_server_is_an_error_not_a_crash(self):
         self.assertEqual(B.main(["--url", "http://127.0.0.1:9", "--quiet"]), 2)
 
+    def test_the_version_is_read_on_a_non_utf8_locale(self):
+        """#2499: CMakeLists.txt starts with a UTF-8 BOM; on a Japanese Windows (code page cp932) a read with the
+        locale's code page stopped the whole run with a UnicodeDecodeError."""
+        read_text = Path.read_text
+
+        def cp932_locale(self, encoding=None, *args, **kw):
+            return read_text(self, encoding or "cp932", *args, **kw)
+
+        with mock.patch.object(Path, "read_text", cp932_locale):
+            self.assertRegex(B.project_version() or "", r"^\d+\.\d+\.\d+")
+
 
 if __name__ == "__main__":
     unittest.main()
