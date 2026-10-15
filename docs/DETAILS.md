@@ -604,7 +604,8 @@ the shrink. Without the flag nothing changes (the same answers as without it).
 
 **Which experts your requests route to (opt-in, `"routing_counts"`):** with `"routing_counts": "routing-counts.json"`
 in `strata-<model>.json`, the engine counts how often each (layer, expert) pair is routed (the same ids
-`--dump-routing` writes, every layer of every window, without writing anything per token) and saves the counts as
+`--dump-routing` writes, every layer of every decode window, drafted tokens included, without writing anything per token; prompt reads do
+not go through the pool and are not counted) and saves the counts as
 JSON every minute between requests (`"routing_counts_every": N` minutes) and on exit, through a temporary file
 renamed over the last one. `GET /metrics` then adds an `experts` section to the JSON: per layer, the experts seen, the
 share of the 32 most routed experts, the routing's entropy in bits (log2 512 = 9 when spread evenly) and the top

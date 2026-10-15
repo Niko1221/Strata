@@ -177,9 +177,6 @@ class Batched(unittest.TestCase):
         self.assertEqual(svc.metrics()["totals"]["requests"], 3)          # the JSON agrees
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class RoutingCounts(unittest.TestCase):
     """--routing-counts: the engine's counts file -> a per-layer summary in the JSON and per-layer gauges."""
@@ -212,3 +209,7 @@ class RoutingCounts(unittest.TestCase):
         args = srv.routing_counts_args({"routing_counts": "/data/routing/counts.json", "routing_counts_every": 2}, ["x"])
         self.assertEqual(args, ["x", "--routing-counts", "/data/routing/counts.json", "--routing-counts-every", "2"])
         self.assertEqual(srv.routing_counts_args({}, ["x"]), ["x"])
+
+
+if __name__ == "__main__":
+    unittest.main()
