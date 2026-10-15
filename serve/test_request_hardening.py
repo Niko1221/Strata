@@ -52,6 +52,27 @@ class Hardening(unittest.TestCase):
             self.assertEqual(code, 400, (path, body, out))
             self.assertIn("error", out)
 
+    def test_an_infinite_number_is_400(self):
+        # json reads Infinity, -Infinity and 1e400 as floats; int() of one raised OverflowError, which no handler took:
+        # the connection closed without an answer
+        chat = '{"messages":[{"role":"user","content":"hi"}],"%s":%s}'
+        for path, field in (("/v1/chat/completions", "max_tokens"), ("/v1/chat/completions", "max_completion_tokens"),
+                            ("/v1/messages", "max_tokens")):
+            for value in ("Infinity", "-Infinity", "1e400"):
+                with self.subTest(path=path, field=field, value=value), mock.patch("builtins.print"):
+                    code, out = self.post(path, (chat % (field, value)).encode())
+                    self.assertEqual(code, 400, out)
+
+    def test_a_too_deeply_nested_body_is_400(self):
+        # a body nested past json's recursion limit, or a tool schema deep enough for the server's own walk of it,
+        # raised RecursionError: the connection closed without an answer
+        tool = ('{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"tools":[{"type":"function","function":'
+                '{"name":"f","parameters":{"type":"object","properties":%s}}}]}')
+        for depth in (600, 100_000):
+            with self.subTest(depth=depth), mock.patch("builtins.print"):
+                code, out = self.post("/v1/chat/completions", (tool % ('{"a":' * depth + "1" + "}" * depth)).encode())
+                self.assertEqual(code, 400, out)
+
     def test_not_json_is_400(self):
         with mock.patch("builtins.print"):
             code, out = self.post("/v1/chat/completions", b"{nope")

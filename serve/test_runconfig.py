@@ -62,6 +62,15 @@ class Apply(unittest.TestCase):
                 runconfig.apply(CFG, changes)
         with self.assertRaises(ValueError):                              # one bad value: nothing is applied
             runconfig.apply(CFG, {"fit_max_tokens": True, "sampling.top_k": 0})
+        # json reads Infinity and 1e400: int() of one was an OverflowError (no answer), and the other number keys
+        # wrote "Infinity" into the run config, which is no JSON other programs read
+        for key in ("reasoning_budget_tokens", "vram_reserve_mib", "idle_unload_s", "engine_silence_s",
+                    "sampling.temperature", "sampling.top_p", "sampling.top_k", "sampling.min_p"):
+            for v in (float("inf"), float("-inf"), float("nan")):
+                with self.subTest(key=key, value=v), self.assertRaises(ValueError):
+                    runconfig.apply(CFG, {key: v})
+        # a huge whole number is still taken, as before (math.isfinite would raise OverflowError for it)
+        self.assertEqual(runconfig.apply(CFG, {"idle_unload_s": 10 ** 400})[1], ["idle_unload_s"])
         with self.assertRaises(ValueError):
             runconfig.apply({**CFG, "vision": {"gpu": True}}, {"lazy_load": True})
 
@@ -125,6 +134,16 @@ class Http(unittest.TestCase):
         self.assertEqual(json.loads((self.path.parent / "strata-q2_0.json.bak").read_text(encoding="utf-8")), CFG)
         status, v = self.call("POST", {"set": {"open_browser": False}})   # no Origin (a script on this PC): allowed
         self.assertEqual((status, v["changed"]), (200, []))
+
+    def test_a_number_too_big_or_not_finite_is_400(self):
+        # float() of a 400-digit whole number raised OverflowError, which _config_post did not take (no answer), and
+        # Infinity was written into the run config as "Infinity", which is no JSON other programs read
+        for body in (json.dumps({"set": {"sampling.temperature": 10 ** 400}}).encode(),
+                     b'{"set": {"idle_unload_s": Infinity}}', b'{"set": {"reasoning_budget_tokens": 1e400}}'):
+            with self.subTest(body=body[:60]), contextlib.redirect_stdout(io.StringIO()):
+                status, v = self.call("POST", body)
+                self.assertEqual(status, 400, v)
+        self.assertEqual(self.saved(), CFG)
 
     def test_only_from_strata_s_own_page(self):
         before = self.path.read_bytes()
