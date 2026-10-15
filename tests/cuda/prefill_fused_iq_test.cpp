@@ -16,6 +16,9 @@
 // --only=NAME, --chunks=A,B.  Exit 77 without a CUDA device of sm_80 or newer.
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/prefill/moe_mmq.hpp"
+#if defined(__HIP_PLATFORM_AMD__)
+#include "strata/kernels/gfx_arch.hpp"
+#endif
 
 #include "ggml.h"
 
@@ -76,6 +79,24 @@ struct Geo {
         return g;
     }
 };
+
+// STRATA_PF_F16=1 on gfx11: the covered formats run on F16 weights (moe_f16_kq.cu, native_f16_kernel), not the int8
+// kernels.  Elsewhere (gfx12, CUDA) the switch takes nothing, and the int8 checks stay as they are.
+bool f16_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PF_F16");
+        if (v == nullptr || v[0] != '1') return false;
+#if defined(__HIP_PLATFORM_AMD__)
+        int dev = 0;
+        cudaDeviceProp prop{};
+        return cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&prop, dev) == cudaSuccess &&
+               strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName);
+#else
+        return false;
+#endif
+    }();
+    return on;
+}
 
 // random blocks with a sane fp16 scale `d` at each block's start (every format here begins with it): scales chosen so
 // that the weights' typical size is that of a 2-3 bit expert (a few hundredths)
@@ -310,7 +331,9 @@ void reference_part(const Pair& p, cudaStream_t s) {
     for (int e = 0; e < E; ++e) {
         host[(size_t) e] = make_blob(p, geo, rng);
         dev.push_back(std::make_unique<Dev>(geo.bytes + 4096 * (size_t) (e % 3) + 64));   // unrelated addresses
-        uint8_t* q = dev.back()->as<uint8_t>() + 256 * (size_t) (e % 3) + 2 * (size_t) (e % 2);   // 2-byte aligned
+        // 2-byte aligned; under f16_on() 256-byte aligned, which meets the K-quant F16 kernels' 16 / 8 bytes (they leave a
+        // batch with a less aligned blob to the int8 kernels), so that it is the F16 kernels this part checks
+        uint8_t* q = dev.back()->as<uint8_t>() + 256 * (size_t) (e % 3) + (f16_on() ? 0 : 2 * (size_t) (e % 2));
         ck(cudaMemcpy(q, host[(size_t) e].data(), geo.bytes, cudaMemcpyHostToDevice), "blob");
         blob[(size_t) e] = q;
     }
@@ -397,7 +420,9 @@ void reference_part(const Pair& p, cudaStream_t s) {
     const Err e2 = compare(y_f, frow, ref2, pair, (size_t) rows);
     std::printf("  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS %.3e  worst %.3e\n",
                 e2.rms, e2.worst);
-    if (e2.rms > 2e-3 || e2.worst > 3e-2)
+    // STRATA_PF_F16=1: H's int8 rounding meets values a few F16 ulps from the int8 model's (f16_on); the FP32 reference
+    // checks below stay as they are
+    if (e2.rms > (f16_on() ? 5e-3 : 2e-3) || e2.worst > 3e-2)
         throw std::runtime_error(std::string(p.name) + ": the fused path differs from its own arithmetic's model");
     if (mq) std::printf("  MMQ   vs FP32 reference: rel RMS %.3e  worst row max rel %.3e\n", em.rms, em.worst);
     std::printf("  fused vs FP32 reference: rel RMS %.3e  worst row max rel %.3e\n", ef.rms, ef.worst);
@@ -627,7 +652,8 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
     cudaEventDestroy(b);
     delete mbp;
     // the two int8 paths at the real shape, every tile of the layer: R9700 rel RMS 1.3-1.9e-4, worst row 2.9e-3-8.3e-3
-    if (mq && !no_mmq && (efm.rms > 1e-3 || efm.worst > 2e-2))
+    // (STRATA_PF_F16=1: F16 products against MMQ's int8, gfx1151 rel RMS 2.5-2.7e-3, worst row 6.4e-3-8.8e-3)
+    if (mq && !no_mmq && (efm.rms > (f16_on() ? 5e-3 : 1e-3) || efm.worst > 2e-2))
         throw std::runtime_error(std::string(p.name) + ": the paths disagree at the real shape");
 }
 }  // namespace

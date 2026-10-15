@@ -124,6 +124,15 @@ replay 3.4 -> 2.1 s per turn). Its output is the fused path's, which reads of 1,
 under `STRATA_PF_SWITCH_MIN_T`, which gates only the hyper-connection and padding switches. A UD-Q4_K_XL or other K-quant
 pack takes the fused experts only with `STRATA_PF_FUSED_KQ=1` as well.
 
+`STRATA_PF_F16=1` (gfx11 only; add it to the list above) runs the covered prompt experts on the F16 matrix cores instead of
+the int8 ones: K-quant gate/up and Q5_1 down (with `STRATA_PF_FUSED_KQ=1`), IQ2 / IQ3 / IQ4_XS gate/up, Q2_0 / IQ4_NL / Q8_0
+down. One layer, 16,384 tokens: Q4_K / Q5_1 86.4 -> 53.7 ms, IQ3_S / IQ4_NL 79.8 -> 58.2 ms; a 4K / 32K prompt +14% / +14%
+(UD-Q4_K_XL) and +13% / +10% (UD-IQ4_XS), with the switches above and `STRATA_PF_SWITCH_MIN_T=2048`. It rounds differently
+from the int8 kernels. First-token KL against a run with no switches, 12 natural-text prompts of 1.5K-24K tokens (Strata's
+own docs and sources), the switches above with `STRATA_PF_SWITCH_MIN_T=0`, top-1 the same in 12 of 12, mean
+(median): UD-Q4_K_XL 0.0114 (0.0048) against 0.0065 (0.0017) for the switches above with `STRATA_PF_FUSED_KQ=1` but without
+it; UD-IQ4_XS 0.0104 (0.0057) against 0.0076 (0.0035).
+
 Two engine flags help on long contexts and are not Strix-specific: `--mtp-window 8192` (the draft layer attends to the last 8,192
 cells: 64K output +3.5%, 32K -0.4%) and `--spec`, `--lookup-chain`, `--mtp-q4` (see [DETAILS.md](DETAILS.md)).
 
