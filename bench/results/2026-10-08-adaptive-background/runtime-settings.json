@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "purpose": "Sanitized settings fixture; asset placeholders must be replaced. Not a runnable production config.",
+  "assets": {
+    "pack": "<IQ3_S_PACK_DIRECTORY>",
+    "native": "<Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf>",
+    "ple_gguf": "<Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf>",
+    "expert_profile": "<EXPERT_PROFILE_BIN>",
+    "mtp": "<MTP_RUNTIME_DIRECTORY>",
+    "control_vector": "<Qwen3.8-Flash-Next-experimental-speed-projection.gguf>",
+    "mmproj": "<mmproj-Qwen3.8-Flash-Next-BF16.gguf>"
+  },
+  "native_args_without_asset_paths": [
+    "--expert-cache", "264", "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5",
+    "--max-context", "65536", "--kv", "int8", "--mmap-experts", "--kv-resident", "16384", "--vision",
+    "--vram-reserve-mib", "448", "--control-vector-layer-range", "4", "44", "--cvec-mode", "project", "--cvec-dir", "per-layer",
+    "--pool-workers", "7", "--resident-budget-gib", "32", "--conversation-cache-mib", "2048",
+    "--conversation-cache-slots", "2", "--conversation-cache-min-free-mib", "3072", "--pcie-frac", "0.37", "--live-memory"
+  ],
+  "control_vector_scale": 1.0,
+  "environment": {"STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_STAGER_THREADS": "8", "STRATA_STAGER_RING": "128"},
+  "vision": {"gpu": false, "max_tokens": 1024, "threads": 8},
+  "preferred_memory_policy": {"enabled": true, "mode": "live", "min_ram_headroom_gib": 4, "pressure_seconds": 4, "recovery_seconds": 30},
+  "coadaptive": {"enabled": true, "mode": "live", "min_free_vram_mib": 320},
+  "fairness_scope_override": "Observe BACKGROUND only; do not call MEMORY-resize policy in either fixed-cache arm. Disable fairness_decision delay in off arms.",
+  "parking_scope_override": "Enable coadaptive.request_parking with a new absolute private journal directory, and use the documented synthetic guard/hold test hook while retaining actual reload-capacity telemetry.",
+  "guards": {"preload_available_ram_gib": 42, "campaign_available_ram_gib": 3, "campaign_min_native_or_budget_free_mib": 250},
+  "effective_info": {"context": 65536, "arena_mib": 32767, "expert_slots": 338, "expert_cache_mib": 672, "kv_resident": 20480, "spec": 6, "mtp_max": 4, "lookup": 3, "pool_workers": 7, "vram_free_mib_at_startup": 474}
+}

@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "native_prompt_wrapper": "<|im_start|>system\nYou are a careful assistant. Reason carefully, then answer accurately.\n{reference}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n",
+  "native_tokenizer_parse_special": true,
+  "fairness_code": {
+    "prompt": "Implement only std::vector<int> unique_sorted(std::vector<int> values). Return all distinct integers sorted ascending. Handle empty input and negative integers. Use the C++20 standard library. After reasoning, give one fenced cpp code block containing only the function; no main. Keep the reasoning brief but check edge cases.",
+    "sampling": {"temperature": 0, "seed": 42, "reasoning_effort": "high"},
+    "max_new": 4096,
+    "reference": "",
+    "token_count": 94,
+    "token_ids_ascii_list_sha256": "a9c4d3648a4ffb5f97e4974ef94c27539da14b635afc0e8dffc73a4102fccda4",
+    "checker": "unique_sorted_checks.cpp",
+    "cases": 104
+  },
+  "parking_code": {
+    "prompt": "Implement only std::vector<int> unique_sorted(std::vector<int> values). Return all distinct integers sorted ascending. Handle empty input and negative integers. Use the C++20 standard library. After reasoning, give one fenced cpp code block containing only the function; no main. Include this exact comment once inside the function: // parking_marker: Grüße 世界 ✓. Keep the reasoning brief but check edge cases.",
+    "sampling": {"temperature": 0, "seed": 42, "reasoning_effort": "high", "reasoning_budget_tokens": 8192},
+    "max_new": 12288,
+    "reference": "",
+    "token_ids_ascii_list_sha256": "b7289b6dccbab20a2d8e290407a7dad5ea983376b9ba0720b809ffbf03959dd1",
+    "required_comment_occurrences": 1,
+    "checker": "unique_sorted_checks.cpp"
+  },
+  "http_sampling": {"temperature": 0, "seed": 42, "reasoning_effort": "high", "reasoning_budget_tokens": 8192, "max_tokens": 12288},
+  "http_vision": {
+    "prompt": "What color and shape is the large object? Answer briefly.",
+    "image_file": "vision-fixture.png",
+    "image_sha256": "15d4018d795740107372a9e53d16ebc9f01faff97633f32e36b5abb0ebc00973",
+    "request_image_format": "data:image/png;base64, followed by the fixture bytes encoded as base64",
+    "expected_words_case_insensitive": ["red", "square"],
+    "parking_for_image_request": false
+  },
+  "http_tool_cycle": {
+    "first_user_message": "Use the add tool to compute 17 plus 25. After its result, answer with just the number.",
+    "tools": [{"type": "function", "function": {"name": "add", "description": "Add two integers.", "parameters": {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}, "required": ["a", "b"], "additionalProperties": false}}}],
+    "expected_tool_arguments": {"a": 17, "b": 25},
+    "continuation": "Execute addition locally. Append the actual assistant tool call and a tool message using its returned call ID and result. Then request the final assistant turn.",
+    "expected_tool_result": 42,
+    "expected_final_content": "42",
+    "expected_followup_tool_calls": 0
+  }
+}

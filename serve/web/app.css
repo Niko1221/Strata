@@ -76,6 +76,17 @@ main { flex: 1; min-height: 0; display: flex; }
 .chip .st-btn--icon { width: 22px; height: 22px; border-radius: 50%; }
 .chip .st-btn--icon .st-icon { width: 14px; height: 14px; }
 
+.resource-control { display: flex; flex-direction: column; gap: var(--st-s-2); font-size: var(--st-fs-xs); overflow-wrap: anywhere; }
+.resource-control__label { display: flex; align-items: center; justify-content: space-between; gap: var(--st-s-3); font-size: var(--st-fs-sm); font-weight: var(--st-fw-bold); }
+.resource-control__select { width: auto; min-width: 118px; height: 36px; padding: 0 var(--st-s-2); font-size: var(--st-fs-sm); }
+.resource-control__effective { color: var(--st-ink); }
+.resource-control__targets, .resource-control__reason, .resource-control__status { color: var(--st-ink-muted); }
+.resource-control[data-state="error"] .resource-control__status { color: var(--st-danger-text); }
+.resource-control[data-state="saving"] .resource-control__status, .resource-control[data-state="pending"] .resource-control__status, .resource-control[data-state="offline"] .resource-control__status { color: var(--st-warn-text); }
+#monitor-resources .resource-control { display: grid; grid-template-columns: minmax(230px, 1fr) minmax(0, 2fr); gap: var(--st-s-2) var(--st-s-5); }
+#monitor-resources .resource-control__label { grid-row: 1 / 4; align-self: start; }
+#monitor-resources .resource-control__status { grid-column: 1 / -1; }
+@media (max-width: 600px) { #monitor-resources .resource-control { display: flex; } }
 /* ---------------------------------------------------------------- monitor */
 .view--monitor, .view--about { overflow-y: auto; }
 .monitor, .about { max-width: 1240px; width: 100%; margin: 0 auto; padding: var(--st-s-6); display: flex; flex-direction: column;

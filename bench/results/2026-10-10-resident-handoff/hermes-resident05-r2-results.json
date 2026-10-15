@@ -1,0 +1,117 @@
+{
+  "scope": "One actual Hermes supervisor and sequential worker on a supplied correct C++ fixture; strict no-extra-command workflow qualification, not model-authored code or a speed comparison.",
+  "status": "failed",
+  "failure_classification": "Agent workflow constraint: the supervisor redundantly read the worker log after complete untruncated successful feedback. No duplicate compilation or resource-handoff failure.",
+  "revisions": {
+    "strata_base_release": "0.1.42",
+    "strata_source_commit": "1cb95593f5dd10954ba4ade6c957589ef820267b",
+    "hermes_source_commit": "c09e4cacedd04733d94f3d3c7af341367bb6ac26",
+    "runtime_sha256": {
+      "server": "e291fd6b7e5179a6bb212628d1173342e85fa454782bc446aa3f60130e13799a",
+      "native": "d39a23a174d668cf3a7f0983457741b080b52c6797323cbd614fd16b774a52f9",
+      "broker": "e7a753d65c436e021bead6a8a92d9c61f09e8fde9dbfa3952423f46e136a576c",
+      "vision": "a4a8488a45a19bdf10f0c550a4fddd980572ac9c355456f0412a06cfd57b4f75",
+      "routing_identity": "329c0c82255bddc8761144c9d96f9a4a5e068fa7b4c42e277b5429079497206a"
+    },
+    "raw_result_sha256": "5b99df73ea60afd422ff3ba447164fd904c1f46ef4c59e672037192d48aed132"
+  },
+  "settings": {
+    "model": "ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S",
+    "context_limit": 65536,
+    "reasoning_effort": "high",
+    "reasoning_budget_tokens": 8192,
+    "vision": "enabled, CPU",
+    "vision_threads": 8,
+    "max_concurrent_children": 1,
+    "pcie_fraction": 0.37,
+    "ple_io": "direct",
+    "route_tail_skip": 0,
+    "configured_spec_rows": 4,
+    "configured_kv_resident_cells": 16384,
+    "effective_verification_window_rows_from_native_log": 6,
+    "effective_kv_resident_cells_from_native_log": 20480,
+    "mtp_max_rows_from_source_normalization": 4,
+    "lease_mode": "auto",
+    "admission_ram_headroom_gib": 6.0,
+    "admission_vram_headroom_mib": 250.0,
+    "execution_ram_floor_gib": 3.0,
+    "execution_vram_floor_mib": 250.0,
+    "resume_ram_working_gib": 2,
+    "resume_vram_working_mib": 0.0,
+    "resume_timeout_seconds": 30,
+    "effective_base_free_vram_mib": 320,
+    "sampled_vram_guard_mib": 250
+  },
+  "observed": {
+    "selected_action": "none",
+    "supervisor_plans": 1,
+    "sequential_workers": 1,
+    "compiler_commands": 1,
+    "extra_supervisor_log_read_commands": 1,
+    "extra_supervisor_unavailable_search_tool_attempts": 1,
+    "renewals": 1,
+    "native_and_vision_process_identities_retained_in_all_samples": true,
+    "last_process_sample_seconds_before_agent_exit": 0.07326364517211914,
+    "explicit_post_agent_process_identity_gate": "not run because strict workflow gate failed",
+    "execution_hold_and_owner_start_verified": true,
+    "compiler_descendants_dead_before_release": true,
+    "credential_absent_from_real_terminal_child": true,
+    "tool_bearing_high_reasoning_requests": 8,
+    "supervisor_received_actual_tool_feedback": true,
+    "normal_completion_below_turn_cap": true,
+    "delegate_reply_truncated": false
+  },
+  "acceptance": {
+    "compiler_jobs": 4,
+    "test_shards": 8,
+    "fixture_cases_passed": 2096,
+    "independent_cases": "not run after the strict workflow gate failed",
+    "lifecycle_checks_passed": 17,
+    "lifecycle_checks_total": 17,
+    "final_feedback_checks_passed": 10,
+    "final_feedback_checks_total": 12,
+    "failed_final_feedback_checks": [
+      "supervisor_did_not_compile",
+      "exactly_one_child_compiler_command"
+    ],
+    "vision_before_agent": {
+      "passed": true,
+      "criterion": "exact normalized red square"
+    },
+    "function_continuation_after_agent": "not run after the strict workflow gate failed",
+    "immutable_fixture_hashes_unchanged_in_read_only_postcheck": true
+  },
+  "timings_seconds": {
+    "agent_cli": 265.89210653305054,
+    "whole_harness_including_startup_checks_cleanup": 318.98023533821106,
+    "compiler_fixture": 2.1793610000167973,
+    "foreground_wrapper": 17.84524178504944,
+    "declared_foreground_hold": 15,
+    "lease_acquire_to_start": 0.7936904430389404,
+    "vision_before_agent": 6.620577096939087
+  },
+  "resources": {
+    "minimum_sampled_available_ram_gib": 9.422687530517578,
+    "minimum_sampled_actual_native_free_vram_mib": 322
+  },
+  "cleanup": {
+    "all_owned_processes_confirmed_dead": true,
+    "errors": [],
+    "production_configuration_unchanged": true
+  },
+  "deviations": [
+    "The supervisor attempted the unavailable search_files tool, received a tool-not-found result, then issued one extra read-only worker-log terminal command despite complete untruncated successful delegate feedback.",
+    "A separate mocked HTTP/sampler test ran for 0.585 seconds (about 1.55 seconds command wall) during the repeat; exact overlap is uncertain. It did not load a model or compile. Timing is not uncontended."
+  ],
+  "limits": [
+    "The overall campaign remains failed; 17/17 lifecycle checks do not erase the 2/12 strict-workflow failures.",
+    "The supplied fixture was already correct. No autonomous implementation or repair success is claimed.",
+    "Vision ran before the agent workflow. Function continuation and independent code checks scheduled afterward did not run.",
+    "The foreground wrapper deliberately held for 15 seconds to exercise renewal; this is not compiler work.",
+    "AUTO selected none. Pressure-forced relieve and unload have separate component evidence.",
+    "Zero extra return VRAM qualifies only the known allocated workspace, with base320MiB and sampled250MiB floors unchanged.",
+    "Configured64K does not mean64K occupied context was tested. Effective native window and KV floor reflect normalization.",
+    "This is the one authorized unchanged-protocol repeat. The first failed run remains preserved; both fail the strict final workflow gate while passing the resident lifecycle gate.",
+    "No matched speedup, uncontended timing, robust all-pass autonomy, arbitrary subprocess cleanup or never-OOM claim is supported."
+  ]
+}
