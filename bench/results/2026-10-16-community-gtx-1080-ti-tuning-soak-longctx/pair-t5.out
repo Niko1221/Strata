@@ -1,0 +1,32 @@
+######## TEST t5-ple-ram: base -> t5-ple-ram (STRATA_DENSE_F32=1 in both; only the one knob differs) ########
+== t5-ple-ram-base start 07:44:07 start-temp 58 C: 58, 1278 MHz, 578 MiB, 67.43 W
+== t5-ple-ram-base ready ~3s 07:44:10
+== t5-ple-ram-base warm 07:45:47: 61, 1733 MHz, 10374 MiB, 103.37 W
+QUALITY: 1158
+t5-ple-ram-base short run 0: prompt 567 tok (567 read) at 250.7 tok/s | 200 generated at 28.8 tok/s | wall 9.2s
+t5-ple-ram-base short run 1: prompt 565 tok (565 read) at 257.5 tok/s | 200 generated at 30.6 tok/s | wall 8.7s
+t5-ple-ram-base short run 2: prompt 563 tok (563 read) at 259.8 tok/s | 200 generated at 31.0 tok/s | wall 8.6s
+t5-ple-ram-base long run 0: prompt 7049 tok (7049 read) at 384.1 tok/s | 60 generated at 29.5 tok/s | wall 20.4s
+t5-ple-ram-base long run 1: prompt 7047 tok (7047 read) at 379.7 tok/s | 60 generated at 27.3 tok/s | wall 20.8s
+t5-ple-ram-base long run 2: prompt 7044 tok (7044 read) at 380.2 tok/s | 60 generated at 27.0 tok/s | wall 20.8s
+== t5-ple-ram-base short: prompt median 258 tok/s | decode median 30.6 tok/s | n=3
+== t5-ple-ram-base long: prompt median 380 tok/s | decode median 27.3 tok/s | n=3
+== t5-ple-ram-base done 07:47:26 end: 69, 1708 MHz, 10592 MiB, 88.77 W
+pcie-frac 0.20 --spec-min-p 0.70 --vram-elastic
+== t5-ple-ram-base clean
+== t5-ple-ram-var start 07:49:20 start-temp 58 C: 58, 1278 MHz, 584 MiB, 68.05 W
+== t5-ple-ram-var ready ~3s 07:49:23
+== t5-ple-ram-var warm 07:50:20: 61, 1733 MHz, 10374 MiB, 96.26 W
+QUALITY: 1158
+t5-ple-ram-var short run 0: prompt 566 tok (566 read) at 252.5 tok/s | 200 generated at 31.5 tok/s | wall 8.6s
+t5-ple-ram-var short run 1: prompt 568 tok (568 read) at 263.9 tok/s | 200 generated at 33.3 tok/s | wall 8.2s
+t5-ple-ram-var short run 2: prompt 567 tok (567 read) at 267.5 tok/s | 200 generated at 36.4 tok/s | wall 7.6s
+t5-ple-ram-var long run 0: prompt 7047 tok (7047 read) at 378.9 tok/s | 60 generated at 30.5 tok/s | wall 20.6s
+t5-ple-ram-var long run 1: prompt 7047 tok (7047 read) at 378.0 tok/s | 60 generated at 28.4 tok/s | wall 20.8s
+t5-ple-ram-var long run 2: prompt 7048 tok (7048 read) at 377.8 tok/s | 60 generated at 31.9 tok/s | wall 20.6s
+== t5-ple-ram-var short: prompt median 264 tok/s | decode median 33.3 tok/s | n=3
+== t5-ple-ram-var long: prompt median 378 tok/s | decode median 30.5 tok/s | n=3
+== t5-ple-ram-var done 07:51:57 end: 69, 1708 MHz, 10592 MiB, 88.14 W
+pcie-frac 0.20 --spec-min-p 0.70 --ple-io ram --vram-elastic
+== t5-ple-ram-var clean
+######## TEST t5-ple-ram done ########

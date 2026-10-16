@@ -1,0 +1,32 @@
+######## TEST t8-batch: base -> t8-batch (STRATA_DENSE_F32=1 in both; only the one knob differs) ########
+== t8-batch-base start 08:13:30 start-temp 58 C: 59, 1278 MHz, 756 MiB, 68.19 W
+== t8-batch-base ready ~3s 08:13:33
+== t8-batch-base warm 08:14:35: 62, 1733 MHz, 10375 MiB, 102.92 W
+QUALITY: 1158
+t8-batch-base short run 0: prompt 568 tok (568 read) at 251.7 tok/s | 200 generated at 29.9 tok/s | wall 9.0s
+t8-batch-base short run 1: prompt 567 tok (567 read) at 256.9 tok/s | 200 generated at 32.8 tok/s | wall 8.3s
+t8-batch-base short run 2: prompt 565 tok (565 read) at 257.9 tok/s | 200 generated at 31.9 tok/s | wall 8.5s
+t8-batch-base long run 0: prompt 7048 tok (7048 read) at 382.9 tok/s | 60 generated at 30.9 tok/s | wall 20.4s
+t8-batch-base long run 1: prompt 7048 tok (7048 read) at 381.0 tok/s | 60 generated at 29.2 tok/s | wall 20.6s
+t8-batch-base long run 2: prompt 7045 tok (7045 read) at 383.0 tok/s | 60 generated at 28.7 tok/s | wall 20.5s
+== t8-batch-base short: prompt median 257 tok/s | decode median 31.9 tok/s | n=3
+== t8-batch-base long: prompt median 383 tok/s | decode median 29.2 tok/s | n=3
+== t8-batch-base done 08:16:12 end: 70, 1721 MHz, 10577 MiB, 89.64 W
+pcie-frac 0.20 --spec-min-p 0.70 --vram-elastic
+== t8-batch-base clean
+== t8-batch-var start 08:18:06 start-temp 58 C: 58, 1278 MHz, 606 MiB, 68.29 W
+== t8-batch-var ready ~3s 08:18:09
+== t8-batch-var warm 08:22:13: 59, 1733 MHz, 10385 MiB, 98.86 W
+QUALITY: 1158
+t8-batch-var short run 0: prompt 563 tok (563 read) at 142.7 tok/s | 200 generated at 23.7 tok/s | wall 12.4s
+t8-batch-var short run 1: prompt 567 tok (567 read) at 141.8 tok/s | 200 generated at 25.7 tok/s | wall 11.8s
+t8-batch-var short run 2: prompt 566 tok (566 read) at 141.1 tok/s | 200 generated at 25.6 tok/s | wall 11.8s
+t8-batch-var long run 0: prompt 7047 tok (7047 read) at 203.5 tok/s | 60 generated at 23.1 tok/s | wall 37.2s
+t8-batch-var long run 1: prompt 7046 tok (7046 read) at 202.2 tok/s | 60 generated at 23.6 tok/s | wall 37.4s
+t8-batch-var long run 2: prompt 7046 tok (7046 read) at 202.7 tok/s | 60 generated at 23.4 tok/s | wall 37.3s
+== t8-batch-var short: prompt median 142 tok/s | decode median 25.6 tok/s | n=3
+== t8-batch-var long: prompt median 203 tok/s | decode median 23.4 tok/s | n=3
+== t8-batch-var done 08:24:51 end: 70, 1721 MHz, 10546 MiB, 89.78 W
+pcie-frac 0.20 --spec-min-p 0.70 --batch 2 --batch-mtp --vram-elastic
+== t8-batch-var clean
+######## TEST t8-batch done ########

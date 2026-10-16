@@ -64,6 +64,12 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-16: GTX 1080 Ti 11 GB (sm_61), 2x Xeon E5-2696 v4, 125.8 GB RAM](../bench/results/2026-10-16-community-gtx-1080-ti-tuning-soak-longctx/README.md):
+  Strata 0.1.44.1 CUDA 12.8 source build, Flash-Next IQ3_S, 262,144-token context, NUMA-bound to the GPU's node (#2684);
+  an eight-knob A/B screen (`--mtp-hnorm stream` decode +28%, `--ple-io ram` +9-12%, auto `--pcie-frac` +12-20%; `--aux-cpus auto`
+  and `--batch 2` rejected), the winners stacked (+10-16% decode over the base), long context 32K/128K/250K (prompt
+  415/372/333 tok/s, decode flat) with needles FOUND at 124,782 and 251,546 tokens, and a 60-minute soak: 237 requests,
+  0 failures, no drift.
 
 ## Run the benchmark
 

@@ -1,0 +1,32 @@
+######## TEST t7-pcie-auto: base -> t7-pcie-auto (STRATA_DENSE_F32=1 in both; only the one knob differs) ########
+== t7-pcie-auto-base start 08:04:34 start-temp 58 C: 58, 1278 MHz, 590 MiB, 67.86 W
+== t7-pcie-auto-base ready ~3s 08:04:37
+== t7-pcie-auto-base warm 08:05:38: 61, 1733 MHz, 10379 MiB, 103.04 W
+QUALITY: 1158
+t7-pcie-auto-base short run 0: prompt 565 tok (565 read) at 250.6 tok/s | 200 generated at 28.8 tok/s | wall 9.2s
+t7-pcie-auto-base short run 1: prompt 566 tok (566 read) at 256.6 tok/s | 200 generated at 31.3 tok/s | wall 8.6s
+t7-pcie-auto-base short run 2: prompt 565 tok (565 read) at 259.3 tok/s | 200 generated at 29.2 tok/s | wall 9.0s
+t7-pcie-auto-base long run 0: prompt 7048 tok (7048 read) at 387.6 tok/s | 60 generated at 28.9 tok/s | wall 20.3s
+t7-pcie-auto-base long run 1: prompt 7047 tok (7047 read) at 382.9 tok/s | 60 generated at 26.9 tok/s | wall 20.7s
+t7-pcie-auto-base long run 2: prompt 7048 tok (7048 read) at 384.3 tok/s | 60 generated at 28.4 tok/s | wall 20.5s
+== t7-pcie-auto-base short: prompt median 257 tok/s | decode median 29.2 tok/s | n=3
+== t7-pcie-auto-base long: prompt median 384 tok/s | decode median 28.4 tok/s | n=3
+== t7-pcie-auto-base done 08:07:16 end: 70, 1721 MHz, 10578 MiB, 89.88 W
+pcie-frac 0.20 --spec-min-p 0.70 --vram-elastic
+== t7-pcie-auto-base clean
+== t7-pcie-auto-var start 08:09:05 start-temp 58 C: 58, 1278 MHz, 596 MiB, 67.97 W
+== t7-pcie-auto-var ready ~3s 08:09:08
+== t7-pcie-auto-var warm 08:10:07: 62, 1733 MHz, 10355 MiB, 101.85 W
+QUALITY: 1158
+t7-pcie-auto-var short run 0: prompt 567 tok (567 read) at 250.4 tok/s | 200 generated at 30.6 tok/s | wall 8.8s
+t7-pcie-auto-var short run 1: prompt 565 tok (565 read) at 256.0 tok/s | 200 generated at 32.7 tok/s | wall 8.3s
+t7-pcie-auto-var short run 2: prompt 567 tok (567 read) at 259.1 tok/s | 200 generated at 32.9 tok/s | wall 8.3s
+t7-pcie-auto-var long run 0: prompt 7048 tok (7048 read) at 390.1 tok/s | 60 generated at 36.5 tok/s | wall 19.7s
+t7-pcie-auto-var long run 1: prompt 7047 tok (7047 read) at 383.7 tok/s | 60 generated at 33.6 tok/s | wall 20.2s
+t7-pcie-auto-var long run 2: prompt 7047 tok (7047 read) at 381.9 tok/s | 60 generated at 34.0 tok/s | wall 20.2s
+== t7-pcie-auto-var short: prompt median 256 tok/s | decode median 32.7 tok/s | n=3
+== t7-pcie-auto-var long: prompt median 384 tok/s | decode median 34.0 tok/s | n=3
+== t7-pcie-auto-var done 08:11:43 end: 69, 1695 MHz, 10575 MiB, 87.43 W
+pcie_frac 0.32 (default 0.55)
+== t7-pcie-auto-var clean
+######## TEST t7-pcie-auto done ########

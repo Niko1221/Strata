@@ -1,0 +1,15 @@
+== t1-mtp-hnorm-var start 07:10:41 start-temp 58 C: 58, 1278 MHz, 708 MiB, 68.23 W
+== t1-mtp-hnorm-var ready ~3s 07:10:44
+== t1-mtp-hnorm-var warm 07:12:05: 62, 1733 MHz, 10356 MiB, 103.81 W
+QUALITY: 1158
+t1-mtp-hnorm-var short run 0: prompt 565 tok (565 read) at 254.1 tok/s | 200 generated at 33.1 tok/s | wall 8.3s
+t1-mtp-hnorm-var short run 1: prompt 567 tok (567 read) at 259.1 tok/s | 200 generated at 37.0 tok/s | wall 7.6s
+t1-mtp-hnorm-var short run 2: prompt 566 tok (566 read) at 262.6 tok/s | 200 generated at 35.4 tok/s | wall 7.8s
+t1-mtp-hnorm-var long run 0: prompt 7045 tok (7045 read) at 382.9 tok/s | 60 generated at 32.6 tok/s | wall 20.3s
+t1-mtp-hnorm-var long run 1: prompt 7048 tok (7048 read) at 377.6 tok/s | 60 generated at 32.0 tok/s | wall 20.6s
+t1-mtp-hnorm-var long run 2: prompt 7047 tok (7047 read) at 377.8 tok/s | 60 generated at 32.3 tok/s | wall 20.5s
+== t1-mtp-hnorm-var short: prompt median 259 tok/s | decode median 35.4 tok/s | n=3
+== t1-mtp-hnorm-var long: prompt median 378 tok/s | decode median 32.3 tok/s | n=3
+== t1-mtp-hnorm-var done 07:13:40 end: 69, 1708 MHz, 10577 MiB, 89.91 W
+pcie-frac 0.20 --spec-min-p 0.70 --mtp-hnorm stream --vram-elastic
+== t1-mtp-hnorm-var clean

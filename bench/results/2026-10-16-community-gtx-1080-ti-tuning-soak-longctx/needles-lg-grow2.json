@@ -1,0 +1,20 @@
+[
+ {
+  "length": "128k",
+  "depth": 50,
+  "prompt_tokens": 124782,
+  "seconds": 341.9,
+  "found": true,
+  "word": "meadow-copper-504",
+  "answer": "meadow-copper-504"
+ },
+ {
+  "length": "250k",
+  "depth": 50,
+  "prompt_tokens": 251546,
+  "seconds": 732.2,
+  "found": true,
+  "word": "falcon-quartz-940",
+  "answer": "falcon-quartz-940"
+ }
+]

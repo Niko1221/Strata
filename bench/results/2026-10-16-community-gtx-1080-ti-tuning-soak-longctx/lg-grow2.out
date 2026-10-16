@@ -1,0 +1,12 @@
+== lg-grow2 start 14:16:23 start-temp 58 C: 58, 1278 MHz, 931 MiB, 69.13 W
+== lg-grow2 ready ~3s 14:16:26
+== lg-grow2 warm 14:18:56: 61, 1733 MHz, 10337 MiB, 101.33 W
+QUALITY: 1158
+lg-grow2 250k run 0: prompt 248245 tok (248245 read) at 318.2 tok/s | 60 generated at 24.2 tok/s | wall 783s
+== lg-grow2 250k: prompt median 318 tok/s | decode median 24.2 tok/s | n=1
+ 128k depth  50%: FOUND  (124,782 prompt tokens, 342 s)
+ 250k depth  50%: FOUND  (251,546 prompt tokens, 732 s)
+2 of 2 found
+== lg-grow2 done 14:49:59 end: 78, 1695 MHz, 10554 MiB, 110.74 W
+pcie_frac 0.32 (default 0.55)
+== lg-grow2 clean

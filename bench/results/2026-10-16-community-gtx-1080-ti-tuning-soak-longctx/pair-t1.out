@@ -1,0 +1,18 @@
+######## TEST t1-mtp-hnorm: base -> t1-mtp-hnorm (STRATA_DENSE_F32=1 in both; only the one knob differs) ########
+== t1-mtp-hnorm-base start 06:55:21 start-temp 57 C: 57, 1278 MHz, 898 MiB, 67.52 W
+== t1-mtp-hnorm-base ready ~3s 06:55:24
+== t1-mtp-hnorm-base warm 06:59:49: 61, 1733 MHz, 10356 MiB, 97.34 W
+QUALITY: 1158
+t1-mtp-hnorm-base short run 0: prompt 568 tok (568 read) at 255.0 tok/s | 200 generated at 26.6 tok/s | wall 9.8s
+t1-mtp-hnorm-base short run 1: prompt 564 tok (564 read) at 266.5 tok/s | 200 generated at 28.8 tok/s | wall 9.1s
+t1-mtp-hnorm-base short run 2: prompt 564 tok (564 read) at 268.6 tok/s | 200 generated at 27.7 tok/s | wall 9.3s
+t1-mtp-hnorm-base long run 0: prompt 7047 tok (7047 read) at 382.3 tok/s | 60 generated at 27.3 tok/s | wall 20.7s
+t1-mtp-hnorm-base long run 1: prompt 7048 tok (7048 read) at 378.0 tok/s | 60 generated at 25.2 tok/s | wall 21.0s
+t1-mtp-hnorm-base long run 2: prompt 7048 tok (7048 read) at 378.8 tok/s | 60 generated at 24.9 tok/s | wall 21.0s
+== t1-mtp-hnorm-base short: prompt median 266 tok/s | decode median 27.7 tok/s | n=3
+== t1-mtp-hnorm-base long: prompt median 379 tok/s | decode median 25.2 tok/s | n=3
+== t1-mtp-hnorm-base done 07:01:31 end: 70, 1721 MHz, 10578 MiB, 90.07 W
+pcie-frac 0.20 --spec-min-p 0.70 --vram-elastic
+== t1-mtp-hnorm-base clean
+!! t1-mtp-hnorm-var: another ENGINE is running - refusing to start (single-instance rule)
+1815 /bin/bash /home/wangyi/github/strata-guard.sh

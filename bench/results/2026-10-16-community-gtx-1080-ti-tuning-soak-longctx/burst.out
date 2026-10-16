@@ -1,0 +1,20 @@
+== burst-base start 08:26:54 start-temp 58 C: 59, 1278 MHz, 613 MiB, 68.29 W
+== burst-base ready ~3s 08:26:57
+== burst-base warm 08:27:49: 62, 1733 MHz, 10375 MiB, 100.64 W
+QUALITY: 1158
+  burst[0] wall 40.4s
+  burst[1] wall 20.2s
+== BURST x2: wall 40.6s | aggregate decode 3.0 tok/s (each request also read 7K prompt)
+== burst-base done 08:28:31 end: 69, 1733 MHz, 10577 MiB, 99.46 W
+pcie-frac 0.20 --spec-min-p 0.70 --vram-elastic
+== burst-base clean
+== burst-t8 start 08:30:09 start-temp 58 C: 58, 1278 MHz, 613 MiB, 67.97 W
+== burst-t8 ready ~3s 08:30:12
+== burst-t8 warm 08:36:52: 60, 1746 MHz, 10364 MiB, 101.53 W
+QUALITY: 1158
+  burst[0] wall 44.2s
+  burst[1] wall 71.3s
+== BURST x2: wall 71.4s | aggregate decode 1.7 tok/s (each request also read 7K prompt)
+== burst-t8 done 08:38:05 end: 69, 1733 MHz, 10578 MiB, 97.31 W
+pcie-frac 0.20 --spec-min-p 0.70 --batch 2 --batch-mtp --vram-elastic
+== burst-t8 clean

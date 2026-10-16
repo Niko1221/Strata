@@ -1,0 +1,15 @@
+== lg-base start 13:15:11 start-temp 56 C: 56, 1278 MHz, 738 MiB, 67.54 W
+== lg-base ready ~3s 13:15:14
+== lg-base warm 13:16:04: 62, 1733 MHz, 10375 MiB, 94.87 W
+QUALITY: 1158
+lg-base 32k run 0: prompt 32442 tok (32442 read) at 410.5 tok/s | 60 generated at 25.4 tok/s | wall 81s
+lg-base 32k run 1: prompt 32448 tok (32448 read) at 419.9 tok/s | 60 generated at 30.8 tok/s | wall 79s
+lg-base 128k run 0: prompt 130347 tok (130347 read) at 372.9 tok/s | 60 generated at 32.7 tok/s | wall 352s
+lg-base 128k run 1: prompt 130346 tok (130346 read) at 370.5 tok/s | 60 generated at 32.1 tok/s | wall 354s
+lg-base 250k run 0: prompt 248245 tok (248245 read) at 332.9 tok/s | 60 generated at 29.5 tok/s | wall 748s
+== lg-base 32k: prompt median 415 tok/s | decode median 28.1 tok/s | n=2
+== lg-base 128k: prompt median 372 tok/s | decode median 32.4 tok/s | n=2
+== lg-base 250k: prompt median 333 tok/s | decode median 29.5 tok/s | n=1
+== lg-base done 13:43:13 end: 76, 1695 MHz, 10743 MiB, 98.64 W
+pcie_frac 0.32 (default 0.55)
+== lg-base clean

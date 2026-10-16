@@ -1,0 +1,32 @@
+######## TEST t6-kv-grow: base -> t6-kv-grow (STRATA_DENSE_F32=1 in both; only the one knob differs) ########
+== t6-kv-grow-base start 07:53:59 start-temp 58 C: 58, 1278 MHz, 586 MiB, 67.78 W
+== t6-kv-grow-base ready ~3s 07:54:02
+== t6-kv-grow-base warm 07:56:21: 60, 1733 MHz, 10373 MiB, 104.52 W
+QUALITY: 1158
+t6-kv-grow-base short run 0: prompt 567 tok (567 read) at 255.1 tok/s | 200 generated at 25.5 tok/s | wall 10.1s
+t6-kv-grow-base short run 1: prompt 566 tok (566 read) at 261.5 tok/s | 200 generated at 26.3 tok/s | wall 9.8s
+t6-kv-grow-base short run 2: prompt 566 tok (566 read) at 264.2 tok/s | 200 generated at 25.8 tok/s | wall 9.9s
+t6-kv-grow-base long run 0: prompt 7049 tok (7049 read) at 384.4 tok/s | 60 generated at 26.1 tok/s | wall 20.6s
+t6-kv-grow-base long run 1: prompt 7045 tok (7045 read) at 380.3 tok/s | 60 generated at 28.5 tok/s | wall 20.6s
+t6-kv-grow-base long run 2: prompt 7047 tok (7047 read) at 380.0 tok/s | 60 generated at 29.4 tok/s | wall 20.6s
+== t6-kv-grow-base short: prompt median 262 tok/s | decode median 25.8 tok/s | n=3
+== t6-kv-grow-base long: prompt median 380 tok/s | decode median 28.5 tok/s | n=3
+== t6-kv-grow-base done 07:58:03 end: 69, 1708 MHz, 10591 MiB, 88.44 W
+pcie-frac 0.20 --spec-min-p 0.70 --vram-elastic
+== t6-kv-grow-base clean
+== t6-kv-grow-var start 07:59:51 start-temp 58 C: 58, 1278 MHz, 592 MiB, 67.62 W
+== t6-kv-grow-var ready ~3s 07:59:55
+== t6-kv-grow-var warm 08:00:59: 61, 1733 MHz, 10356 MiB, 101.64 W
+QUALITY: 1158
+t6-kv-grow-var short run 0: prompt 568 tok (568 read) at 249.9 tok/s | 200 generated at 25.2 tok/s | wall 10.2s
+t6-kv-grow-var short run 1: prompt 564 tok (564 read) at 256.4 tok/s | 200 generated at 25.7 tok/s | wall 10.0s
+t6-kv-grow-var short run 2: prompt 567 tok (567 read) at 257.0 tok/s | 200 generated at 25.6 tok/s | wall 10.0s
+t6-kv-grow-var long run 0: prompt 7046 tok (7046 read) at 386.4 tok/s | 60 generated at 24.3 tok/s | wall 20.7s
+t6-kv-grow-var long run 1: prompt 7047 tok (7047 read) at 379.0 tok/s | 60 generated at 24.2 tok/s | wall 21.1s
+t6-kv-grow-var long run 2: prompt 7049 tok (7049 read) at 381.0 tok/s | 60 generated at 25.3 tok/s | wall 20.9s
+== t6-kv-grow-var short: prompt median 256 tok/s | decode median 25.6 tok/s | n=3
+== t6-kv-grow-var long: prompt median 381 tok/s | decode median 24.3 tok/s | n=3
+== t6-kv-grow-var done 08:02:42 end: 70, 1708 MHz, 10576 MiB, 89.67 W
+pcie-frac 0.20 --spec-min-p 0.70 --kv-grow --expert-profile-save /home/wangyi/Strata-data/profiles/learned.bin --vram-elastic
+== t6-kv-grow-var clean
+######## TEST t6-kv-grow done ########

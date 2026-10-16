@@ -1,0 +1,32 @@
+######## TEST t4-kv-k8v4: base -> t4-kv-k8v4 (STRATA_DENSE_F32=1 in both; only the one knob differs) ########
+== t4-kv-k8v4-base start 07:34:30 start-temp 58 C: 58, 1278 MHz, 569 MiB, 68.26 W
+== t4-kv-k8v4-base ready ~3s 07:34:33
+== t4-kv-k8v4-base warm 07:35:54: 61, 1733 MHz, 10355 MiB, 106.16 W
+QUALITY: 1158
+t4-kv-k8v4-base short run 0: prompt 567 tok (567 read) at 249.3 tok/s | 200 generated at 28.5 tok/s | wall 9.3s
+t4-kv-k8v4-base short run 1: prompt 566 tok (566 read) at 258.8 tok/s | 200 generated at 31.7 tok/s | wall 8.5s
+t4-kv-k8v4-base short run 2: prompt 565 tok (565 read) at 260.7 tok/s | 200 generated at 31.0 tok/s | wall 8.6s
+t4-kv-k8v4-base long run 0: prompt 7047 tok (7047 read) at 385.1 tok/s | 60 generated at 28.3 tok/s | wall 20.4s
+t4-kv-k8v4-base long run 1: prompt 7045 tok (7045 read) at 375.5 tok/s | 60 generated at 29.3 tok/s | wall 20.8s
+t4-kv-k8v4-base long run 2: prompt 7046 tok (7046 read) at 378.0 tok/s | 60 generated at 28.2 tok/s | wall 20.8s
+== t4-kv-k8v4-base short: prompt median 259 tok/s | decode median 31.0 tok/s | n=3
+== t4-kv-k8v4-base long: prompt median 378 tok/s | decode median 28.3 tok/s | n=3
+== t4-kv-k8v4-base done 07:37:33 end: 69, 1708 MHz, 10592 MiB, 88.39 W
+pcie-frac 0.20 --spec-min-p 0.70 --vram-elastic
+== t4-kv-k8v4-base clean
+== t4-kv-k8v4-var start 07:39:21 start-temp 58 C: 59, 1278 MHz, 576 MiB, 67.67 W
+== t4-kv-k8v4-var ready ~3s 07:39:24
+== t4-kv-k8v4-var warm 07:40:43: 61, 1733 MHz, 10374 MiB, 99.56 W
+QUALITY: 1158
+t4-kv-k8v4-var short run 0: prompt 566 tok (566 read) at 254.5 tok/s | 200 generated at 29.7 tok/s | wall 9.0s
+t4-kv-k8v4-var short run 1: prompt 567 tok (567 read) at 259.9 tok/s | 200 generated at 31.3 tok/s | wall 8.6s
+t4-kv-k8v4-var short run 2: prompt 565 tok (565 read) at 261.6 tok/s | 200 generated at 34.8 tok/s | wall 7.9s
+t4-kv-k8v4-var long run 0: prompt 7047 tok (7047 read) at 382.2 tok/s | 60 generated at 31.3 tok/s | wall 20.4s
+t4-kv-k8v4-var long run 1: prompt 7046 tok (7046 read) at 379.6 tok/s | 60 generated at 32.5 tok/s | wall 20.4s
+t4-kv-k8v4-var long run 2: prompt 7048 tok (7048 read) at 378.1 tok/s | 60 generated at 30.0 tok/s | wall 20.7s
+== t4-kv-k8v4-var short: prompt median 260 tok/s | decode median 31.3 tok/s | n=3
+== t4-kv-k8v4-var long: prompt median 380 tok/s | decode median 31.3 tok/s | n=3
+== t4-kv-k8v4-var done 07:42:20 end: 69, 1708 MHz, 10574 MiB, 88.44 W
+pcie-frac 0.20 --spec-min-p 0.70 --vram-elastic
+== t4-kv-k8v4-var clean
+######## TEST t4-kv-k8v4 done ########

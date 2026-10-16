@@ -1,0 +1,8 @@
+== lg-grow start 13:46:11 start-temp 58 C: 58, 1278 MHz, 754 MiB, 68.46 W
+== lg-grow ready ~3s 13:46:14
+== lg-grow warm 13:47:11: 62, 1733 MHz, 10515 MiB, 101.02 W
+QUALITY: 1158
+lg-grow 32k run 0: prompt 32448 tok (32448 read) at 401.0 tok/s | 60 generated at 24.8 tok/s | wall 83s
+lg-grow 32k run 1: prompt 32446 tok (32446 read) at 395.2 tok/s | 60 generated at 29.4 tok/s | wall 84s
+lg-grow 128k run 0: prompt 130348 tok (130348 read) at 363.9 tok/s | 60 generated at 33.0 tok/s | wall 360s
+lg-grow 128k run 1: prompt 130345 tok (130345 read) at 363.1 tok/s | 60 generated at 30.0 tok/s | wall 361s
