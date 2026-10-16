@@ -5652,7 +5652,7 @@ int main(int argc, char** argv) {
         // engine allocates after it (the verify window's staging: "mapped staging allocation failed", exit 1).  Keep a
         // reserve while the arena pins and hand it back after (pin_budget.hpp).
         strata::core::pin_reserve_take();
-        const bool arena_ok = arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
+        const bool arena_ok = arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/[] { const char* v = std::getenv("STRATA_ARENA_THREADS"); return v ? std::max(1, std::atoi(v)) : 14; }() /* QWEN3.8 16/10/2026: was 6 */, err, pin_limit,
                                              o.shared_expert_arena);
         strata::core::pin_note_arena(arena_src.pinned_arena_bytes());
         strata::core::pin_sim_report("after the expert arena");
