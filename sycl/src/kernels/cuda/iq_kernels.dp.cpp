@@ -13,6 +13,7 @@
 #include "strata/kernels/iq_dequant_expert.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
+#include "strata/kernels/q2_0_decode.hpp"
 #include "s26_tsum.dp.hpp"
 
 #define GGML_COMMON_DECL_SYCL
@@ -25,6 +26,7 @@
 #include <type_traits>
 #include <cstdio>
 #include <utility>
+#include <optional>
 #include <cstdlib>
 #include <type_traits>
 
@@ -750,6 +752,26 @@ template<> struct Fmt<29> { static constexpr int qk = 256, ipb = 8, step = 1;
     static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_iq1_m_q8_1(v, y, kbx, iqs); } };
 template<> struct Fmt<42> { static constexpr int qk = 64, ipb = 2, step = 1;
     static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q2_0_q8_1(v, y, kbx, iqs); } };
+// Private implementation tag for Q2_0 down; GGUF format and public dispatch remain type 42.
+template<> struct Fmt<10042> {
+    static constexpr int qk = 64, ipb = 2, step = 1;
+    static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) {
+        const auto* b = (const block_q2_0*)v + kbx;
+        const float d2 = b->d;
+        const auto* qs = (const int16_t*)b->qs + iqs * 4;
+        const auto* a = y + iqs;
+        int sumi = 0;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const auto w = q2_0_decode8((uint32_t)qs[j]);
+            const int u = get_int_b4(a->qs, j * 2), z = get_int_b4(a->qs, j * 2 + 1);
+            sumi = ggml_cuda_dp4a(u, w.x(), sumi);
+            sumi = ggml_cuda_dp4a(z, w.y(), sumi);
+        }
+        const float d8 = a->ds[0];
+        return d2 * d8 * sumi;
+    }
+};
 template<> struct Fmt<12> { static constexpr int qk = 256, ipb = QI4_K / VDR_Q4_K, step = VDR_Q4_K;
     static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q4_K_q8_1(v, y, kbx, iqs); } };
 template<> struct Fmt<13> { static constexpr int qk = 256, ipb = QI5_K / VDR_Q5_K, step = VDR_Q5_K;
@@ -1749,6 +1771,19 @@ template <> struct Multi<42> {   // q2_0 (down)
         ds = chunk->ds[0];
     }
     __dpct_inline__ static float finish(int s0, int s1, const MultiW& m, float ds) { return m.d * ds * (float) (s0 + s1); }
+};
+
+template<> struct Multi<10042> : Multi<42> {
+    __dpct_inline__ static void prep(const void* vbq, int kbx, int iqs, MultiW& m, const void* = nullptr) {
+        const auto* b = (const block_q2_0*)vbq + kbx;
+        const auto* qs = (const int16_t*)b->qs + iqs * 4;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const auto w = q2_0_decode8((uint32_t)qs[j]);
+            m.w[2*j] = w.x(); m.w[2*j+1] = w.y();
+        }
+        m.d = b->d;
+    }
 };
 
 // MODEL-UPDATE (Intel): Unsloth's formats in the lane kernels' multi-entry path.  Each Fmt<TY>::dot of the K-quants,
@@ -3023,6 +3058,21 @@ bool g_old_kernels = env_on("STRATA_OLD_IQ_MMVQ");
 // every format; STRATA_EXPERT_SPLIT=1 takes upstream's multi kernels, launched with their own grid (GU_ROWS rows).
 bool g_split_multi = env_on("STRATA_EXPERT_SPLIT");
 bool g_no_sub16_gu = env_on("STRATA_NO_SUB16_GU");
+
+// Keep the original decoder for diagnosis and for devices outside Battlemage.
+// Cache by the actual SYCL device, not a process-wide first-device decision.
+bool q2_word_expand_enabled(const sycl::device& device) {
+    static const bool enabled = [] {
+        const char* v = std::getenv("STRATA_SYCL_Q2_WORD_EXPAND");
+        return !(v && v[0] == '0');
+    }();
+    if (!enabled) return false;
+    thread_local std::optional<std::pair<sycl::device, bool>> cached;
+    if (!cached || cached->first != device)
+        cached.emplace(device, strata::intel_gpu_gen(device) == strata::IntelGpuGen::Battlemage);
+    return cached->second;
+}
+
 // STRATA_IQ_STAGE_GRID=0 disables staging 64-bit i-quant codebook tables into shared memory
 bool g_stage_grid = [] {
     const char* v = std::getenv("STRATA_IQ_STAGE_GRID");
@@ -4439,6 +4489,13 @@ void launch_down(dpct::dim3 grid, dpct::queue_ptr s,
                  const int32_t *n_groups, const int32_t *ent_dst,
                  const block_q8_1 *hq, const NativeExpertLayout &L,
                  float *out) {
+    if constexpr (TD == 42) {
+        if (!g_old_kernels && !g_split_multi && down_lanes() == 8 &&
+            q2_word_expand_enabled(s->get_device())) {
+            launch_down_port<10042, 8>(grid.y, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+            return;
+        }
+    }
     if constexpr (!kSplit<TD>) {
         launch_down_lanes<TD>(grid, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
     } else if (g_old_kernels || !g_split_multi) {
