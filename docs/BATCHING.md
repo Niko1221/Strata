@@ -451,6 +451,12 @@ tokens. The policy weighs length and age, and every threshold is a parameter:
   expired or blank slot: first one not worth keeping (blank, or its score at freshness 0 below
   `STRATA_SLOT_EXPIRED_KEEP_SCORE`, default 0.01 - about 2.5K tokens), then by group load, a blank slot before a
   history, and the lowest score.
+- **An older version of the same conversation** - an idle history that shares at least
+  `STRATA_SLOT_SIBLING_SHARE` (default 98%; 0: off) of its own length with the prompt but is not its start (the client
+  rewrote its end) - is replaced in place, protected or not, when no slot's history continues the prompt. Claude
+  Code's safety classifier inserts each query's new tool calls before the closing text of its transcript, so no
+  query continues the previous one; kept side by side, the versions took 4-5 of the 6 slots on the machine above and
+  pushed the other conversations out.
 - **No wait**: when every idle history is still protected, the request overwrites the one that loses least at once
   (losses within 10% go by group load). An earlier version waited up to 5 s first, once per request; with more
   requests than slots each wait ran its full 5 s, the slot idle meanwhile, and ended in the same overwrite (7 of 7 in
@@ -461,7 +467,8 @@ tokens. The policy weighs length and age, and every threshold is a parameter:
   changes whether a history can match.
 - **Park** (with `slot_padding_safe=1`): not when the main session's conversation's value at its idle age is below
   `STRATA_SLOT_PARK_MIN_VALUE` (default 0.01, about 2.6K tokens at expiry; no separate length cut-off), or when a slot
-  holds `STRATA_SLOT_PARK_KEPT_SHARE` (default 98%) of it already. Then its own older copy, else an idle expired slot
+  holds `STRATA_SLOT_PARK_KEPT_SHARE` (default 98%) of it already. Then its own older copy, else an older version of
+  it (`STRATA_SLOT_SIBLING_SHARE` above, protected or not; the most shared first), else an idle expired slot
   in the reclaim order above (not worth keeping first, then group load, then the lowest value); a history worth
   keeping is taken only when the main session's conversation is worth at least `STRATA_SLOT_PARK_VALUE_RATIO` (default
   2) times more. Never another conversation's protected slot. The parked copy keeps the main session's last-use time.
