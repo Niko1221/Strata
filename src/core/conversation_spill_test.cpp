@@ -1191,6 +1191,49 @@ int main() {
         check(cold_less.degraded() == 0, "T10: nothing was degraded");
     }
 
+    // T11: the ENTRY CAP is NOT a removal trigger.  A cold level holding exactly kMaxSidecarEntries copies, with
+    // MiB to spare, must NOT delete one when a degradation lands: the byte budget is what a level removes for, and
+    // a count the operator never set must not.  This is the cascade bug of 2026-10-15 made a regression test - at
+    // 256 the cold lost exactly one copy per degradation of the warm (45 for 45) with 460800 MiB configured and
+    // 265848 MiB in use, because enforce_budget() removed on `entries_.size() > kMaxSidecarEntries` too.
+    fs::remove_all(dir);
+    {
+        const fs::path warm_dir = dir / "warm", cold_dir = dir / "cold";
+        ConversationSpillCache cold, warm, probe;
+        check(probe.open(dir / "probe", id, 1ull << 30, error), "T11: open the probe");
+        check(probe.spill(conversation_with_ids(conv_ids(60000, 400)), error), "T11: probe spill");
+        const uint64_t one = probe.bytes();
+        check(one > 0, "T11: one conversation has bytes");
+        const size_t cap = strata::core::ConversationSpillCache::entries_cap();
+        check(cap == 256, "T11: the entry cap is the 256 the bug hid");
+        // The cold: room in MiB for a thousand copies, so ONLY the entry count could ever be the lever that fires.
+        check(cold.open(cold_dir, id, 1024 * one, error), "T11: open the cold with MiB headroom far past the cap");
+        warm.set_next(&cold);
+        check(warm.open(warm_dir, id, one, error), "T11: open the warm with room for one");
+        // Fill the cold to EXACTLY its entry cap, directly (the cold level's own writer).  The byte budget is never
+        // reached, so this alone removes nothing - the level is simply AT its cap.
+        bool filled = true;
+        for (size_t k = 0; k < cap; ++k)
+            filled = cold.spill(conversation_with_ids(conv_ids(61000 + (int32_t) k, 400)), error) && filled;
+        check(filled, "T11: fill the cold to its entry cap");
+        check(cold.size() == cap, "T11: the cold holds exactly its entry cap");
+        check(cold.disk_evictions() == 0, "T11: filling to the cap removed nothing");
+        // The OLDEST cold copy - the exact victim the bug would have deleted on the degradation below.
+        std::vector<int32_t> oldest = conv_ids(61000, 400);
+        oldest.push_back(5);
+        check(bool(cold.best(oldest, {}, false, 0.0, 0)), "T11: the oldest cold copy is present before the degradation");
+        // Now a real degradation: the warm overflows and its oldest copy moves DOWN into the full cold level.
+        check(warm.spill(conversation_with_ids(conv_ids(70000, 400)), error), "T11: warm spill A");
+        check(warm.spill(conversation_with_ids(conv_ids(71000, 400)), error), "T11: warm spill B (A degrades)");
+        check(warm.degraded() == 1, "T11: the warm degraded one copy into the cold");
+        check(cold.size() == cap + 1, "T11: the cold ACCEPTED the copy: the entry cap removed nothing");
+        check(cold.disk_evictions() == 0, "T11: a degradation at the entry cap deleted NOTHING (the fix)");
+        check(bool(cold.best(oldest, {}, false, 0.0, 0)), "T11: the oldest cold copy SURVIVED the degradation");
+        std::vector<int32_t> arrived = conv_ids(70000, 400);
+        arrived.push_back(5);
+        check(bool(cold.best(arrived, {}, false, 0.0, 0)), "T11: the degraded copy is in the cold level");
+    }
+
     fs::remove_all(dir);
     std::printf("conversation_spill_test: %d checks passed\n", checks);
     return 0;

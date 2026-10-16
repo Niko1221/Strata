@@ -11,7 +11,10 @@
 // it MOVES the copy down (degrade_to_next -> the next level's adopt), writing and indexing it below FIRST and only
 // then dropping it here, so a next level that refuses leaves the entry intact. The correction paths (a compaction,
 // a supersede pass, a cancelled request, an unreadable image) still discard. The cold level - the one with no next
-// - is the only one that removes, and the only level where the age lever deletes.
+// - is the only one that removes, and the only level where the age lever deletes. What a level REMOVES for is the
+// byte budget or the age retention, never the entry cap (kMaxSidecarEntries): the cap only REFUSES a new copy in a
+// `reject` level (2026-10-15: it used to remove too, silently, and the cascade deleted one cold copy per warm
+// degradation with 195.000 MiB of headroom; the cap is now named in the startup line and in /metrics).
 #include "strata/core/conversation_spill.hpp"
 
 #include <algorithm>
@@ -448,6 +451,24 @@ size_t ConversationSpillCache::degraded() const {
     return degraded_;
 }
 
+// The entry cap is a property of the format, not of an instance: it bounds the index a `reject` level admits and
+// the checkpoint/stage count a sidecar may declare (read_sidecar, above).  It is NOT a removal trigger.
+size_t ConversationSpillCache::entries_cap() {
+    return kMaxSidecarEntries;
+}
+
+void ConversationSpillCache::set_event_hook(EventHook hook) {
+    std::lock_guard<std::mutex> lock(mu_);
+    event_hook_ = std::move(hook);
+}
+
+void ConversationSpillCache::emit_event(ConversationSpillEvent::Action action, ConversationSpillEvent::Reason reason,
+                                        const std::string& stem, uint64_t file_bytes) {
+    if (!event_hook_) return;   // no hook: the GC's decisions are the same, nothing is reported
+    const ConversationSpillEvent event{action, reason, stem, file_bytes};
+    event_hook_(event);
+}
+
 // The next level's side of a degradation (delta 6).  The copy arrives as FILES - the caller relocates them, a cheap
 // rename inside one volume or a copy-then-remove across two - so this level writes ITS OWN sidecar over the new
 // stem first and then takes the session files over.  It is as all-or-nothing as archive_entry: any failure puts
@@ -519,7 +540,7 @@ bool ConversationSpillCache::adopt(const Entry& source, std::string& error) {
 // The order is the whole risk: the copy must exist in the next level BEFORE this one lets go of it, so that a
 // next level that is full, in `reject`, on another volume or out of space leaves the entry where it was - which
 // is still the copy the flat tier would have DELETED, so a failed degradation is never worse than today.
-bool ConversationSpillCache::degrade_to_next(size_t index) {
+bool ConversationSpillCache::degrade_to_next(size_t index, ConversationSpillEvent::Reason reason) {
     ConversationSpillCache* next = next_;
     if (next == nullptr) return false;
     const Entry entry = entries_[index];   // a copy: adopt() moves the files and the index changes below
@@ -529,6 +550,7 @@ bool ConversationSpillCache::degrade_to_next(size_t index) {
     std::filesystem::remove(entry.meta_path(), ec);   // the session files are already in the next level
     unindex(index);
     ++degraded_;
+    emit_event(ConversationSpillEvent::Action::degraded, reason, entry.stem.string(), entry.file_bytes);
     return true;
 }
 
@@ -893,18 +915,30 @@ void ConversationSpillCache::enforce_budget() {
     // The GC's budget lever: oldest first, with a counter. A conversation larger than the whole budget is left
     // alone - removing it could never bring `bytes_` under `budget_` - and counted as oversized instead. With
     // --conversation-cache-spill-when-full reject this lever removes nothing at all (the spill itself refuses).
+    //
+    // The BYTE BUDGET is the only thing this lever removes for.  It used to also fire on `entries_.size() >
+    // kMaxSidecarEntries`, i.e. on a silent cap of 256 copies whatever the bytes: the operator's
+    // --conversation-cache-disk-mib was contradicted by a limit no line of the log named, so a cold level sitting
+    // at 256 copies lost exactly one per degradation of the warm level (the cascade bug of 2026-10-15: 45
+    // degradations, 45 removals, with 460800 MiB configured and 265848 MiB in use).  A copy the operator's own
+    // budget has room for is not removed for a count he never set.  The entry cap keeps its OTHER role - a
+    // `reject` level refuses new work rather than evicting for it (see spill() and adopt()) - which removes
+    // nothing, and that role is now named in the startup line and in /metrics (entries_cap()).
     if (when_full_ == SpillWhenFull::reject) return;
-    for (size_t i = 0; (bytes_ > budget_ || entries_.size() > kMaxSidecarEntries) && i < entries_.size();) {
+    for (size_t i = 0; bytes_ > budget_ && i < entries_.size();) {
         if (entries_[i].session_path() == pinned_path_ || entries_[i].file_bytes > budget_) { ++i; continue; }
         if (next_ != nullptr) {
             // Delta 6: with a level below, an over-budget conversation is not deleted - it is moved down, and the
             // oldest of THIS level goes first (FIFO by the order it was written here).  A refused degradation
             // leaves the entry in place, so the loop skips it and goes on with the next one.
-            if (!degrade_to_next(i)) { ++i; continue; }
+            if (!degrade_to_next(i, ConversationSpillEvent::Reason::budget)) { ++i; continue; }
             continue;   // the entry left the index: the slot at `i` is a new one
         }
+        const std::string victim = entries_[i].stem.string();   // captured before remove_entry() erases the slot
+        const uint64_t victim_bytes = entries_[i].file_bytes;
         if (!remove_entry(i)) { ++i; continue; }   // a failed removal: skip it
         ++disk_evictions_;                          // a degradation is NOT an eviction: this counter counts removals
+        emit_event(ConversationSpillEvent::Action::removed, ConversationSpillEvent::Reason::budget, victim, victim_bytes);
     }
 }
 
@@ -921,11 +955,14 @@ void ConversationSpillCache::enforce_age() {
             // Delta 6: the age lever is a CAPACITY lever and it degrades the same way the budget one does.  Time is
             // a retention rule of the LAST level: an aged conversation of a level above is moved down (and its
             // stamp re-sealed there), never deleted here.
-            if (!degrade_to_next(i)) { ++i; continue; }
+            if (!degrade_to_next(i, ConversationSpillEvent::Reason::age)) { ++i; continue; }
             continue;
         }
+        const std::string victim = entries_[i].stem.string();   // captured before remove_entry() erases the slot
+        const uint64_t victim_bytes = entries_[i].file_bytes;
         if (!remove_entry(i)) { ++i; continue; }   // a failed removal: skip it
         ++age_evictions_;                           // a degradation is NOT an age eviction
+        emit_event(ConversationSpillEvent::Action::removed, ConversationSpillEvent::Reason::age, victim, victim_bytes);
     }
 }
 

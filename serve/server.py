@@ -668,7 +668,10 @@ class ConvCacheLog:
                            r"when-full=([^,\s]+), max-age=(\d+) d"
                            r"(?:, spill-on=([^,]+))?(?:, divergence=\d+ tok)?(?:, park-throttle=\d+ s)?"
                            r", (\d+) oversized kept, (\d+) stale kept, "
-                           r"(\d+) foreign kept, (\d+) orphans kept, (\d+) disk evictions, (\d+) age evictions\)")
+                           r"(\d+) foreign kept, (\d+) orphans kept, (\d+) disk evictions, "
+                           # The entry cap the engine names at the end (optional: a line from an engine without it
+                           # still parses to the same counters).  It is the lever the cascade bug hid.
+                           r"(\d+) age evictions(?:, max-conversations=(\d+))?\)")
     SPILLED = re.compile(r"conversation cache: spilled \d+ tokens .*?disk=(\d+) MiB disk_evictions=(\d+)")
     # the R3 park mirror: one line per conversation the disk writer accepted in park mode, with the tier's own
     # bytes and disk evictions (the "spilled ..." line is the eviction path's write, this one is the park's).
@@ -682,7 +685,8 @@ class ConvCacheLog:
     # removing.  A run with no warm level emits none of these and every line above is the one it always was.
     WARM_DIR = re.compile(r"conversation cache: warm dir ready \((\d+) conversations?, (\d+) MiB, mib=(\d+), "
                           r"when-full=([^,\s]+), max-age=(\d+) d, (\d+) degraded to cold, "
-                          r"(\d+) oversized kept, (\d+) stale kept, (\d+) foreign kept, (\d+) orphans kept\)")
+                          r"(\d+) oversized kept, (\d+) stale kept, (\d+) foreign kept, "
+                          r"(\d+) orphans kept(?:, max-conversations=(\d+))?\)")
     SPILLED_WARM = re.compile(r"conversation cache: spilled \d+ tokens .*?warm=(\d+) MiB warm_degraded=(\d+)")
     PARK_MIRROR_WARM = re.compile(r"conversation cache: park mirror queued \(\d+ tokens"
                                   r".*?warm=(\d+) MiB warm_degraded=(\d+) conversations=(\d+)")
@@ -727,11 +731,15 @@ class ConvCacheLog:
                       "loading": 0,
                       "disk": {"ready": False, "conversations": 0, "bytes": 0, "spills": 0, "evictions": 0,
                                "age_evictions": 0, "when_full": None, "max_age_days": None, "spill_on": None,
+                               # The entry cap the engine's startup line names (the silent 256 of the cascade bug):
+                               # None until that line is read, never a fabricated figure.
+                               "max_conversations": None,
                                "kept": {"oversized": 0, "stale": 0, "foreign": 0, "orphan": 0}},
                       # delta 6: the cascade's warm level. Same shape as `disk` except for `degraded` (what this
                       # level's GC moved DOWN to the cold one) and `spill_on` (the warm is the mirror's own target).
                       "warm": {"ready": False, "conversations": 0, "bytes": 0, "spills": 0, "degraded": 0,
                                "evictions": 0, "age_evictions": 0, "when_full": None, "max_age_days": None,
+                               "max_conversations": None,
                                "kept": {"oversized": 0, "stale": 0, "foreign": 0, "orphan": 0}},
                       "sysprompt": {},
                       # The pinned K/V the slots' conversations read from (the same report), {"cells", "resident_cells",
@@ -837,6 +845,7 @@ class ConvCacheLog:
                     int(m.group(1)), int(m.group(2)) * 1048576, m.group(3), int(m.group(4)), m.group(5),
                     int(m.group(6)), int(m.group(7)), int(m.group(8)), int(m.group(9)),
                     int(m.group(10)), int(m.group(11)))
+                d["max_conversations"] = int(m.group(12)) if m.group(12) is not None else None
                 d["ready"] = True
                 continue
             m = self.SPILLED.search(line)
@@ -861,6 +870,7 @@ class ConvCacheLog:
                  w["kept"]["oversized"], w["kept"]["stale"], w["kept"]["foreign"], w["kept"]["orphan"]) = (
                     int(m.group(1)), int(m.group(2)) * 1048576, int(m.group(3)), m.group(4), int(m.group(5)),
                     int(m.group(6)), int(m.group(7)), int(m.group(8)), int(m.group(9)), int(m.group(10)))
+                w["max_conversations"] = int(m.group(11)) if m.group(11) is not None else None
                 w["ready"] = True
                 continue
             m = self.SPILLED_WARM.search(line)              # the writer's write, to the warm level
@@ -956,6 +966,9 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict, 
             "restores": parked.get("restores", 0), "evictions": d.get("evictions", 0),
             "age_evictions": d.get("age_evictions", 0), "when_full": d.get("when_full"),
             "max_age_days": d.get("max_age_days"), "spill_on": d.get("spill_on"),
+            # The entry cap the engine names in its startup line: the OTHER ceiling on this level, invisible until
+            # the cascade bug (it caps at 256 copies whatever the byte budget).  None if the line predates it.
+            "max_conversations": d.get("max_conversations"),
             "kept": dict(d.get("kept") or {})}
     # delta 6: the warm level's own figures. `degraded` is what its GC MOVED DOWN to the cold level instead of
     # removing (a degradation is not an eviction, so `evictions` stays the count of real removals - 0 while the
@@ -965,7 +978,8 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict, 
             "bytes": w.get("bytes", 0), "conversations": w.get("conversations", 0), "spills": w.get("spills", 0),
             "degraded": w.get("degraded", 0), "evictions": w.get("evictions", 0),
             "age_evictions": w.get("age_evictions", 0), "when_full": w.get("when_full"),
-            "max_age_days": w.get("max_age_days"), "kept": dict(w.get("kept") or {})}
+            "max_age_days": w.get("max_age_days"), "kept": dict(w.get("kept") or {}),
+            "max_conversations": w.get("max_conversations")}
     raw_sys = parked.get("sysprompt") or {}
     # The engine's own INFO fields (this series): the folder it opened and the byte budget it runs with, AFTER its
     # own defaults - the server cannot guess either from the config.  An engine that predates them leaves both None
@@ -1014,14 +1028,17 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict, 
     if warm["enabled"]:
         destinations.append({"tier": "warm", "label": "SSD 1", "enabled": True, "bytes": warm["bytes"],
                              "conversations": warm["conversations"], "budget_mib": warm["budget_mib"],
+                             "max_conversations": warm["max_conversations"],
                              "degraded": warm["degraded"], "dir": warm["dir"]})
         if disk["enabled"]:
             destinations.append({"tier": "cold", "label": "SSD 2", "enabled": True, "bytes": disk["bytes"],
                                  "conversations": disk["conversations"], "budget_mib": disk["budget_mib"],
+                                 "max_conversations": disk["max_conversations"],
                                  "spill_on": disk["spill_on"], "dir": disk["dir"]})
     elif disk["enabled"]:
         destinations.append({"tier": "disk", "label": "SSD 1", "enabled": True, "bytes": disk["bytes"],
                              "conversations": disk["conversations"], "budget_mib": disk["budget_mib"],
+                             "max_conversations": disk["max_conversations"],
                              "spill_on": disk["spill_on"], "dir": disk["dir"]})
     return {"enabled": isinstance(mib, int) and mib > 0, "budget_mib": mib if isinstance(mib, int) else None,
             "slots": info.get("conversation_cache_slots"), **legacy,

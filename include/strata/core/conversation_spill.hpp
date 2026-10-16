@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -99,6 +100,21 @@ inline bool revert_to_turn_boundary(std::vector<int32_t>& ids, int64_t turn_toke
     return false;
 }
 
+// One capacity decision the GC made about a copy already on disk.  The two levers of a level wired to a next one
+// (the cascade) hand the copy DOWN - a degradation; at the last level (no next) they remove it.  The third lever,
+// the entry cap, is what the cascade bug of 2026-10-15 hid: it REFUSES a new copy in a `reject` level and never
+// removes one (see enforce_budget in conversation_spill.cpp), so `entries` names the cap in this vocabulary but the
+// GC never emits it - that is the fix, not an omission.  A hook receives one of these per decision so the log can
+// name the victim (its stem and its size) and the lever that fired, instead of a counter that moves unexplained.
+struct ConversationSpillEvent {
+    enum class Action { degraded, removed };
+    enum class Reason { budget, entries, age };
+    Action action = Action::removed;
+    Reason reason = Reason::budget;
+    std::string stem;          // the victim's shared file stem: "<dir>/strata-conv-<serial>"
+    uint64_t file_bytes = 0;   // the victim's size, every stage file summed
+};
+
 struct ConversationSpillMatch {
     std::string path;        // the session file to read back
     uint64_t file_bytes = 0;
@@ -137,6 +153,18 @@ public:
     // Conversations this level's GC handed to the next level (a degradation is NOT an eviction: disk_evictions()
     // and age_evictions() count only what this level really removed).
     size_t degraded() const;
+
+    // The entry cap: how many conversations the index admits before a `reject` level refuses a new copy.  It is
+    // NOT a removal trigger - the byte budget is what removes (see enforce_budget in conversation_spill.cpp) - and
+    // it was silent: no startup line and no /metrics row named it, which is exactly what let the cascade bug
+    // delete a conversation per degradation until a synthetic test found it.  Exposed so both can name it now.
+    static size_t entries_cap();
+
+    // The observability hook: called, under this level's lock, for EVERY removal and EVERY degradation the two
+    // capacity levers make, with the victim and the lever that fired.  Reporting only - the GC's decisions are the
+    // same with or without it.  It must not call back into this cache (the lock is held) and must be cheap.
+    using EventHook = std::function<void(const ConversationSpillEvent&)>;
+    void set_event_hook(EventHook hook);
 
     // Locked: the park writer drains the same directory from its own thread.
     bool enabled() const { std::lock_guard<std::mutex> lk(mu_); return enabled_; }
@@ -250,8 +278,12 @@ private:
     void unindex(size_t index);
     // The capacity GC's degrade: hand the entry at `index` to the next level and drop it here only once that level
     // has taken it.  False (the entry STAYS here) when there is no next level or it would not take the copy - the
-    // degradation must never leave this level worse than a removal would have.
-    bool degrade_to_next(size_t index);
+    // degradation must never leave this level worse than a removal would have.  `reason` is the lever that fired
+    // (the byte budget or the age retention) and is carried into the event hook.
+    bool degrade_to_next(size_t index, ConversationSpillEvent::Reason reason);
+    // Hands one decision to the event hook, if any is set.  Called under the lock; a no-op without a hook.
+    void emit_event(ConversationSpillEvent::Action action, ConversationSpillEvent::Reason reason,
+                    const std::string& stem, uint64_t file_bytes);
     // The next level's side of a degradation: index a copy whose files the caller is about to MOVE in, and take
     // them over.  All-or-nothing, exactly as archive_entry: the sidecar is written first, the session files move
     // next, and any failure puts back what moved and drops the sidecar, so this level never keeps a half copy.
@@ -285,6 +317,9 @@ private:
     // degraded). `degraded_` counts what this level handed down instead of removing.
     ConversationSpillCache* next_ = nullptr;
     size_t degraded_ = 0;
+    // The observability hook (see set_event_hook).  Wiring, like next_: open() does NOT clear it, so a level that
+    // reports its startup GC can be wired before open().  Default empty = the GC runs exactly as it always did.
+    EventHook event_hook_;
     // Delta 5a: the archive (its own index, bytes and serial, none shared with the tier). The archive entries are
     // NOT in entries_, so best() can never return one - the archive is evidence, never a reuse candidate.
     bool archive_enabled_ = false;

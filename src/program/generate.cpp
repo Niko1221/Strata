@@ -8690,6 +8690,24 @@ int main(int argc, char** argv) {
                 const strata::core::SpillWhenFull spill_when_full =
                     o.conversation_cache_spill_when_full == "reject" ? strata::core::SpillWhenFull::reject
                                                                      : strata::core::SpillWhenFull::evict_oldest;
+                // The per-copy line: every removal and every degradation the capacity levers make names the victim
+                // (its stem and its bytes) and the lever that fired.  The startup counters and the aggregate
+                // "degraded N ..." line say HOW MANY; this says WHICH copies paid and WHY - what the cascade bug
+                // hid (45 degradations removed 45 cold copies and not one line named a victim).  The returned
+                // lambda captures only the level's name (a string literal), so the hook stays valid for the whole
+                // serve; it runs under the level's own lock and only writes to stderr.
+                auto spill_event_hook = [](const char* level) {
+                    return [level](const strata::core::ConversationSpillEvent& e) {
+                        const char* const reason =
+                            e.reason == strata::core::ConversationSpillEvent::Reason::age ? "age"
+                            : e.reason == strata::core::ConversationSpillEvent::Reason::entries ? "entries" : "budget";
+                        std::fprintf(stderr, "strata serve: conversation cache: %s %s %s (%llu MiB), reason=%s\n", level,
+                                     e.action == strata::core::ConversationSpillEvent::Action::degraded ? "degraded"
+                                                                                                       : "removed",
+                                     e.stem.c_str(), (unsigned long long) (e.file_bytes >> 20), reason);
+                    };
+                };
+                conversation_spill.set_event_hook(spill_event_hook("cold"));
                 std::string spill_error;
                 bool spill_opened = conversation_spill.open(o.conversation_cache_spill_dir, spill_identity,
                         (uint64_t) o.conversation_cache_disk_mib * 1024 * 1024, spill_error, spill_when_full,
@@ -8719,7 +8737,7 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: conversation cache: spill dir ready (%zu conversations, %llu MiB, "
                                  "when-full=%s, max-age=%lld d, spill-on=%s, divergence=%lld tok, park-throttle=%lld s, "
                                  "%zu oversized kept, %zu stale kept, %zu foreign kept, %zu orphans kept, "
-                                 "%zu disk evictions, %zu age evictions)\n",
+                                 "%zu disk evictions, %zu age evictions, max-conversations=%zu)\n",
                                  conversation_spill.size(), (unsigned long long) (conversation_spill.bytes() >> 20),
                                  o.conversation_cache_spill_when_full.c_str(),
                                  (long long) o.conversation_cache_spill_max_age_days,
@@ -8728,7 +8746,8 @@ int main(int argc, char** argv) {
                                  (long long) o.conversation_cache_spill_park_throttle_s,
                                  conversation_spill.oversized_files_kept(), conversation_spill.stale_files_kept(),
                                  conversation_spill.foreign_files_kept(), conversation_spill.orphan_files_kept(),
-                                 conversation_spill.disk_evictions(), conversation_spill.age_evictions());
+                                 conversation_spill.disk_evictions(), conversation_spill.age_evictions(),
+                                 strata::core::ConversationSpillCache::entries_cap());
                     // Delta 6: the cascade's WARM level, between the RAM cache and the cold level above. It is where
                     // the park writer and the RAM cache's evictions write, and what its OWN GC (the same budget and
                     // age levers) would have removed, it MOVES down to the cold level instead - so the cold level is
@@ -8738,6 +8757,7 @@ int main(int argc, char** argv) {
                     // of this block runs and the engine is the flat tier.
                     if (!o.conversation_cache_warm_dir.empty() && o.conversation_cache_warm_mib > 0) {
                         conversation_spill_warm.set_next(&conversation_spill);
+                        conversation_spill_warm.set_event_hook(spill_event_hook("warm"));
                         std::string warm_error;
                         if (!conversation_spill_warm.open(o.conversation_cache_warm_dir, spill_identity,
                                 (uint64_t) o.conversation_cache_warm_mib * 1024 * 1024, warm_error, spill_when_full,
@@ -8747,7 +8767,8 @@ int main(int argc, char** argv) {
                         } else if (conversation_spill_warm.enabled()) {
                             std::fprintf(stderr, "strata serve: conversation cache: warm dir ready (%zu conversations, "
                                          "%llu MiB, mib=%lld, when-full=%s, max-age=%lld d, %zu degraded to cold, "
-                                         "%zu oversized kept, %zu stale kept, %zu foreign kept, %zu orphans kept)\n",
+                                         "%zu oversized kept, %zu stale kept, %zu foreign kept, %zu orphans kept, "
+                                         "max-conversations=%zu)\n",
                                          conversation_spill_warm.size(),
                                          (unsigned long long) (conversation_spill_warm.bytes() >> 20),
                                          (long long) o.conversation_cache_warm_mib,
@@ -8757,7 +8778,8 @@ int main(int argc, char** argv) {
                                          conversation_spill_warm.oversized_files_kept(),
                                          conversation_spill_warm.stale_files_kept(),
                                          conversation_spill_warm.foreign_files_kept(),
-                                         conversation_spill_warm.orphan_files_kept());
+                                         conversation_spill_warm.orphan_files_kept(),
+                                         strata::core::ConversationSpillCache::entries_cap());
                         }
                     }
                     // Delta 5a: the archive. Off unless --conversation-cache-archive-mode is ids or state; with off
