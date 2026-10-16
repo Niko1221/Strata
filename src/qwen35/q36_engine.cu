@@ -55,6 +55,13 @@
 #include <thread>
 #include <tuple>
 #include <vector>
+#if defined(STRATA_HIP_GFX803) && defined(__linux__)
+#include <sys/mman.h>
+#include <unistd.h>
+#include <fcntl.h>
+#endif
+#include "strata/qwen35/pageable_transfer.hpp"
+#include "strata/qwen35/gfx803_batch_limits.hpp"
 
 namespace {
 
@@ -69,6 +76,22 @@ namespace MMQ = strata::prefill::mmq;
             std::exit(1);                                                                                              \
         }                                                                                                              \
     } while (0)
+
+// Keep large pageable model/expert regions out of HIP implicit registration.
+void copy_expert_h2d(uint8_t* dst, const uint8_t* src, size_t bytes, cudaStream_t stream) {
+#if defined(STRATA_HIP_GFX803)
+    constexpr size_t capacity = 1u << 20;
+    static thread_local uint8_t* bounce = nullptr;
+    if (!bounce) CK(cudaHostAlloc((void**) &bounce, capacity, cudaHostAllocDefault));
+    strata::qwen35::copy_pageable_in_chunks(dst, src, bytes, capacity, [&](uint8_t* out, const uint8_t* in, size_t n) {
+        std::memcpy(bounce, in, n);
+        CK(cudaMemcpyAsync(out, bounce, n, cudaMemcpyHostToDevice, stream));
+        CK(cudaStreamSynchronize(stream));
+    });
+#else
+    CK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyHostToDevice, stream));
+#endif
+}
 
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
@@ -849,7 +872,12 @@ float* upload_f32(const strata::TensorInfo& t, const uint8_t* src) {
     }
     float* d = nullptr;
     CK(cudaMalloc(&d, h.size() * 4));
-    CK(cudaMemcpy(d, h.data(), h.size() * 4, cudaMemcpyHostToDevice));
+
+#if defined(STRATA_HIP_GFX803)
+    copy_expert_h2d(reinterpret_cast<uint8_t*>(d), reinterpret_cast<const uint8_t*>(h.data()), h.size() * 4, nullptr);
+#else
+    CK(cudaMemcpy(reinterpret_cast<uint8_t*>(d), reinterpret_cast<const uint8_t*>(h.data()), h.size() * 4, cudaMemcpyHostToDevice));
+#endif
     return d;
 }
 
@@ -902,7 +930,12 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         const uint64_t nb = strata::tensor_payload_bytes(*t);
         uint8_t* d = nullptr;
         CK(cudaMalloc(&d, nb));
+
+#if defined(STRATA_HIP_GFX803)
+        copy_expert_h2d(d, gm.shard(s).tensor_data(*t), nb, nullptr);
+#else
         CK(cudaMemcpy(d, gm.shard(s).tensor_data(*t), nb, cudaMemcpyHostToDevice));
+#endif
         bytes += nb;
         w.d = d;
         // STRATA_Q8_PACKED (on by default here): the lossless qs / d plane copy the Q8_0 decode kernels read instead,
@@ -912,7 +945,12 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
             K::native_q8_0_pack_host(gm.shard(s).tensor_data(*t), packed.data(), w.n_in, w.n_out);
             uint8_t* pd = nullptr;
             CK(cudaMalloc(&pd, nb));
+
+#if defined(STRATA_HIP_GFX803)
+            copy_expert_h2d(pd, packed.data(), nb, nullptr);
+#else
             CK(cudaMemcpy(pd, packed.data(), nb, cudaMemcpyHostToDevice));
+#endif
             K::native_q8_0_packed_register(d, pd, w.n_in, w.n_out);
             m.packed.emplace_back(d, pd, (size_t) nb);
             bytes += nb;
@@ -1001,7 +1039,12 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         const uint64_t nb = strata::tensor_payload_bytes(*t);
         uint8_t* d = nullptr;
         CK(cudaMalloc(&d, nb));
+
+#if defined(STRATA_HIP_GFX803)
+        copy_expert_h2d(d, gm.shard(s).tensor_data(*t), nb, nullptr);
+#else
         CK(cudaMemcpy(d, gm.shard(s).tensor_data(*t), nb, cudaMemcpyHostToDevice));
+#endif
         m.embd = d;
         bytes += nb;
     }
@@ -1586,7 +1629,7 @@ struct Engine {
         // fewer than half the experts resident (a 12 GB card): the one whole-layer copy is faster than many small ones
         // (RTX 3060, UD-Q4_K_XL at 37 of 256: pp2048 1970 whole vs 1540 in runs)
         if (all || 2 * L.n_slots < ne) {
-            CK(cudaMemcpyAsync(stage[b], L.hblobs, L.stride * (size_t) ne, cudaMemcpyHostToDevice, cst));
+            copy_expert_h2d(stage[b], L.hblobs, L.stride * (size_t) ne, cst);
         } else {
             for (int x = 0; x < ne;) {
                 const bool dev = H.slot_of[(size_t) x] >= 0;
@@ -1600,8 +1643,7 @@ struct Engine {
                     CK(cudaMemcpyAsync(stage[b] + (size_t) x * L.stride, L.blobs + (size_t) H.slot_of[(size_t) x] * L.stride,
                                        n, cudaMemcpyDeviceToDevice, cst));
                 else
-                    CK(cudaMemcpyAsync(stage[b] + (size_t) x * L.stride, L.hblobs + (size_t) x * L.stride, n,
-                                       cudaMemcpyHostToDevice, cst));
+                    copy_expert_h2d(stage[b] + (size_t) x * L.stride, L.hblobs + (size_t) x * L.stride, n, cst);
                 x = y;
             }
         }
@@ -1732,8 +1774,7 @@ struct Engine {
                     H.slot_of[(size_t) y] = -1;
                     H.slot_of[(size_t) x] = s;
                     H.exp_in_slot[(size_t) s] = x;
-                    CK(cudaMemcpyAsync(L.blobs + (size_t) s * L.stride, L.hblobs + (size_t) x * L.stride, L.L.bytes,
-                                       cudaMemcpyHostToDevice, st));
+                    copy_expert_h2d(L.blobs + (size_t) s * L.stride, L.hblobs + (size_t) x * L.stride, L.L.bytes, st);
                     --left;
                     ++hy_swaps;
                     changed = true;
@@ -2044,10 +2085,20 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     for (Layer* L : all)
         if (!mtp_only || L == &m.mtp) host += L->stride * (size_t) ne + kMmqTail;
     uint8_t* arena = nullptr;
+#if defined(STRATA_HIP_GFX803)
+    bool pinned = false;
+#else
     bool pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
+#endif
     if (!pinned) {
         (void) cudaGetLastError();
+#if defined(STRATA_HIP_GFX803) && defined(__linux__)
+        void* mapping = mmap(nullptr, host, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        arena = mapping == MAP_FAILED ? nullptr : static_cast<uint8_t*>(mapping);
+        if (arena && madvise(arena, host, MADV_NOHUGEPAGE) != 0) { munmap(arena, host); arena = nullptr; }
+#else
         arena = (uint8_t*) std::malloc(host);
+#endif
         if (!arena) {
             err = "no host memory for the experts (" + std::to_string(host >> 20) + " MiB)";
             return false;
@@ -2063,20 +2114,59 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
             std::vector<uint8_t> blob(L.L.bytes, 0);
             for (int64_t e = 0; e < ne; ++e) {
                 expert_blob(L, e, blob.data());
+
+#if defined(STRATA_HIP_GFX803)
+                copy_expert_h2d(L.blobs + (size_t) e * L.stride, blob.data(), L.L.bytes, nullptr);
+#else
                 CK(cudaMemcpy(L.blobs + (size_t) e * L.stride, blob.data(), L.L.bytes, cudaMemcpyHostToDevice));
+#endif
             }
             L.n_slots = (int) ne;
             continue;
         }
         L.hblobs = arena + off;
         off += L.stride * (size_t) ne + kMmqTail;
+#if !defined(STRATA_HIP_GFX803) || !defined(__linux__)
         std::memset(L.hblobs, 0, L.stride * (size_t) ne + kMmqTail);
+#endif
         for (int64_t e = 0; e < ne; ++e) expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
+#if defined(STRATA_HIP_GFX803) && defined(__linux__)
+        const size_t page = (size_t) sysconf(_SC_PAGESIZE);
+        auto release_source = [&](const uint8_t* ptr, size_t bytes) {
+            const uintptr_t lo = ((uintptr_t) ptr + page - 1) / page * page;
+            const uintptr_t hi = ((uintptr_t) ptr + bytes) / page * page;
+            if (hi > lo && madvise((void*) lo, hi - lo, MADV_DONTNEED) != 0) std::exit(1);
+        };
+        release_source(L.src_g, L.src_gsz * (size_t) ne);
+        release_source(L.src_u, L.src_gsz * (size_t) ne);
+        release_source(L.src_d, L.src_dsz * (size_t) ne);
+        for (const char* role : {"gate", "up", "down"}) {
+            size_t shard = 0;
+            const std::string name = "blk." + std::to_string(li) + ".ffn_" + role + "_exps.weight";
+            const auto* tensor = m.file->find(name, &shard);
+            if (!tensor) std::exit(1);
+            const auto& file = m.file->shard(shard);
+            const uint64_t begin = file.data_start() + tensor->offset;
+            const uint64_t end = begin + strata::tensor_payload_bytes(*tensor);
+            const uint64_t lo = (begin + page - 1) / page * page;
+            const uint64_t hi = end / page * page;
+            const int fd = open(file.path().c_str(), O_RDONLY);
+            if (fd < 0) std::exit(1);
+            const int advice = hi > lo ? posix_fadvise(fd, (off_t) lo, (off_t) (hi - lo), POSIX_FADV_DONTNEED) : 0;
+            const int close_result = close(fd);
+            if (advice || close_result) std::exit(1);
+        }
+#endif
         L.n_slots = S;
         if (S > 0) {
             CK(cudaMalloc(&L.blobs, L.stride * (size_t) S + kMmqTail));
             CK(cudaMemset(L.blobs, 0, L.stride * (size_t) S + kMmqTail));
+
+#if defined(STRATA_HIP_GFX803)
+            copy_expert_h2d(L.blobs, L.hblobs, L.stride * (size_t) S, nullptr);
+#else
             CK(cudaMemcpy(L.blobs, L.hblobs, L.stride * (size_t) S, cudaMemcpyHostToDevice));
+#endif
         }
         Engine::Hy& H = E.hy[li];
         H.slot_of.assign((size_t) ne, -1);
@@ -2440,6 +2530,11 @@ int strata::qwen35::run(int argc, char** argv) {
             std::fprintf(stderr, "strata-q36: chunk rule: free %.2f GiB (with %.2f packed), main experts %.2f GiB\n",
                          fr / 1073741824.0, packed / 1073741824.0, experts / 1073741824.0);
     }
+#if defined(STRATA_HIP_GFX803)
+    // Streamed expert/MMQ batches are not qualified on Polaris. Keep every
+    // prompt batch on the bounded hybrid CPU/GPU path, including explicit chunks.
+    strata::qwen35::clamp_gfx803_batch(chunk, hybrid_rows);
+#endif
     E.init(m, ctx, chunk);
     if (!place_experts(m, E, expert_vram, cpu_threads, hybrid_rows, expert_slots, err)) {
         std::fprintf(stderr, "strata-q36: %s\n", err.c_str());

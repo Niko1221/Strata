@@ -470,6 +470,55 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   `gfx103X-all` wheels on gfx1030, images, answer-quality benchmarks. RDNA1 (gfx1012, RX 5500 XT) builds by hand:
   [OLDER_GPUS.md](OLDER_GPUS.md#amd-building-gfx906-and-gfx1012).
 
+## Experimental gfx803 (RX 580 / Polaris): Qwen3.6 Q36 Linux build
+
+This isolated opt-in experiment is not a supported backend and does not establish RX 580 model support. It reuses the
+logical 32-lane-on-64-lane HIP compatibility path; that lane mapping is not gfx906 ISA compatibility. Compile and run
+for the real `gfx803` target; do not spoof another architecture.
+
+The candidate is limited to Qwen3.6-35B-A3B in the Q36 engine on Linux, ROCm 6.3.4 and a rocBLAS/hipBLAS build for
+gfx803, with an RX 580 8 GiB and 32 GiB system RAM. The memory sizes are a floor, not a fit guarantee; context,
+expert slots, GGUF format, runtime allocations and host load affect capacity. Q8 KV, tiled attention, CPU batching,
+startup cache, and profiling changes are excluded.
+
+Out-of-tree build (adapt toolchain and local llama.cpp source paths):
+
+```sh
+cmake -S . -B build-gfx803 -G Ninja \
+  -DCMAKE_PREFIX_PATH=/opt/rocm-6.3.4 \
+  -DCMAKE_HIP_COMPILER=/opt/rocm-6.3.4/lib/llvm/bin/clang++ \
+  -DCMAKE_HIP_ARCHITECTURES=gfx803 -DSTRATA_HIP_GFX803=ON \
+  -DSTRATA_GGML_DIR=/path/to/llama.cpp -DSTRATA_BUILD_TESTS=ON
+cmake --build build-gfx803 --target strata-q36 -j2
+ctest --test-dir build-gfx803 -R 'q36_(pageable_transfer|fp16_conversion|gfx803_batch_limits)_test' --output-on-failure
+```
+
+The host-only tests check pageable-transfer chunking, IEEE FP16 conversion vectors, and the gfx803 batch-limit rule. They
+do not test device copies, the GDN kernel, the model-head path, or model inference. The gfx803 GDN fallback multiplies
+in FP32 and rounds to binary16, which may differ numerically from the original packed-FP16 instruction. A historical
+model numerical discrepancy remains unresolved; compare against a reference before relying on output quality. CPU-only
+tests do not qualify GPU model/head fallback behavior.
+
+For this candidate, `--hybrid-rows` is clamped to 8..32 and prompt `--chunk` is further clamped to at most that row
+count. This keeps streamed expert/MMQ prompt batches out of the unqualified path; an explicit larger chunk does not
+bypass this limit. It is a conservative experimental cap, not a generally supported gfx803 batch rule.
+
+The in-repository guarded API smoke test runs a tool request/response round trip, streamed-response cancellation,
+post-cancellation recovery, and a fresh-process restart. From the project harness, supply the checkout, environment,
+config and model explicitly:
+
+```sh
+python3 /path/to/strata-lab/tests/guard.py --seconds 300 \
+  --receipt /path/to/strata-lab/receipts/gfx803-api \
+  -- /usr/bin/python3 /path/to/strata-lab/src/Strata-rx580-pr/tests/qwen35/gfx803_hardware_acceptance.py \
+     --cwd /path/to/strata-lab --python /path/to/strata-lab/.venv/bin/python \
+     --config /path/to/gfx803-server.json --model Qwen3.6-35B-A3B-gfx803-experimental
+```
+
+The external guard must retain its existing thresholds: CPU 85 C / GPU 75 C, swap growth 64 MiB, and MemAvailable
+2 GiB. Historical guard stops remain safety events, not passing evidence. No power, clock, fan, driver, kernel, service,
+or network changes.
+
 ## gfx906 (Instinct MI50 / MI60, Radeon VII): wave64, built from source
 
 gfx906 is wave64 and has no WMMA and no packed byte arithmetic, so the wave32 backend above refuses it. A separate opt-in build compiles the CUDA sources as HIP through a small compat layer
@@ -682,3 +731,5 @@ passes. Additional unpublished upstream fixture suites are not covered.
 The published performance table explicitly identifies the measured development
 snapshot; it must not be read as a benchmark of every subsequent rebase. Vision, long-context stress, broad answer-quality
 equivalence, other AMD cards, and mixed-vendor inference are not validated here.
+
+The gfx803 hybrid row limit is clamped to 8..32 to cover the engine verification workspace minimum; smaller requests are raised to eight. Prompt chunks cannot exceed this effective hybrid limit.
