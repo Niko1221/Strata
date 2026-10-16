@@ -1,4 +1,9 @@
-# Single-engine preemption: RTX 3090 / Windows, 2026-10-16
+# Supplementary SC117 validation: RTX 3090 / Windows, 2026-10-16
+
+For the primary upstream contribution evidence, use the
+[non-abliterated Qwen IQ3_S comparison](../2026-10-16-solo-priority-qwen-original/README.md).
+This report retains the SC117 deployment experiments as supplementary coverage;
+the two model variants' measurements are not pooled.
 
 ## Scope
 
