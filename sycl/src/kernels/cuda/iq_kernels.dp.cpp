@@ -763,11 +763,8 @@ template<> struct Fmt<22> { static constexpr int qk = 256, ipb = 8, step = 2;
 template<> struct Fmt<29> { static constexpr int qk = 256, ipb = 8, step = 1;
     static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_iq1_m_q8_1(v, y, kbx, iqs); } };
 template<> struct Fmt<42> { static constexpr int qk = 64, ipb = 2, step = 1;
-    static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q2_0_q8_1(v, y, kbx, iqs); } };
-// Private implementation tag for Q2_0 down; GGUF format and public dispatch remain type 42.
-template<> struct Fmt<10042> {
-    static constexpr int qk = 64, ipb = 2, step = 1;
-    static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) {
+    static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q2_0_q8_1(v, y, kbx, iqs); }
+    static float dot_word_expand(const void* v, const block_q8_1* y, int kbx, int iqs) {
         const auto* b = (const block_q2_0*)v + kbx;
         const float d2 = b->d;
         const auto* qs = (const int16_t*)b->qs + iqs * 4;
@@ -840,13 +837,16 @@ __dpct_inline__ float lanes_sum(float v) {
         v += dpct::experimental::permute_sub_group_by_xor(0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
     return v;
 }
-template <int TY, int LANES>
+template <int TY, int LANES, bool Q2_WORD_EXPAND = false>
 __dpct_inline__ float row_dot_lanes(const uint8_t *row, const block_q8_1 *x, int nb, int sub) {
     using F = Fmt<TY>;
     float s = 0.0f;
     for (int k = sub; k < nb * F::ipb; k += LANES) {
         const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
-        s += F::dot(row, x + kbx * (F::qk / 32), kbx, iqs);
+        if constexpr (TY == 42 && Q2_WORD_EXPAND)
+            s += F::dot_word_expand(row, x + kbx * (F::qk / 32), kbx, iqs);
+        else
+            s += F::dot(row, x + kbx * (F::qk / 32), kbx, iqs);
     }
     return lanes_sum<LANES>(s);
 }
@@ -1783,10 +1783,7 @@ template <> struct Multi<42> {   // q2_0 (down)
         ds = chunk->ds[0];
     }
     __dpct_inline__ static float finish(int s0, int s1, const MultiW& m, float ds) { return m.d * ds * (float) (s0 + s1); }
-};
-
-template<> struct Multi<10042> : Multi<42> {
-    __dpct_inline__ static void prep(const void* vbq, int kbx, int iqs, MultiW& m, const void* = nullptr) {
+    __dpct_inline__ static void prep_word_expand(const void* vbq, int kbx, int iqs, MultiW& m) {
         const auto* b = (const block_q2_0*)vbq + kbx;
         const auto* qs = (const int16_t*)b->qs + iqs * 4;
 #pragma unroll
@@ -1977,7 +1974,7 @@ __dpct_inline__ void row_dot_ksplit(const uint8_t* row, const block_q8_1* const*
 }
 
 // One row against E activations at once, LANES lanes per row: the IQ formats' Multi.
-template <int TY, int LANES, int E>
+template <int TY, int LANES, int E, bool Q2_WORD_EXPAND = false>
 __dpct_inline__ void row_dot_multi_iq(const uint8_t* row, const block_q8_1* const* xs, int nb, int sub, float* out,
                                       const void* grid = nullptr) {
     using F = Fmt<TY>;
@@ -1988,7 +1985,10 @@ __dpct_inline__ void row_dot_multi_iq(const uint8_t* row, const block_q8_1* cons
     for (int k = sub; k < nb * F::ipb; k += LANES) {
         const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
         MultiW m;
-        M::prep(row, kbx, iqs, m, grid);
+        if constexpr (TY == 42 && Q2_WORD_EXPAND)
+            M::prep_word_expand(row, kbx, iqs, m);
+        else
+            M::prep(row, kbx, iqs, m, grid);
 #pragma unroll
         for (int e = 0; e < E; ++e) {
             int u[8];
@@ -2006,11 +2006,11 @@ __dpct_inline__ void row_dot_multi_iq(const uint8_t* row, const block_q8_1* cons
     for (int e = 0; e < E; ++e) out[e] = lanes_sum<LANES>(s[e]);
 }
 
-template <int TY, int LANES, int E>
+template <int TY, int LANES, int E, bool Q2_WORD_EXPAND = false>
 __dpct_inline__ void row_dot_multi(const uint8_t* row, const block_q8_1* const* xs, int nb, int sub, float* out,
                                    const void* grid = nullptr) {
     if constexpr (KqSplit<TY>::has) row_dot_ksplit<TY, LANES, E>(row, xs, nb, sub, out);
-    else row_dot_multi_iq<TY, LANES, E>(row, xs, nb, sub, out, grid);
+    else row_dot_multi_iq<TY, LANES, E, Q2_WORD_EXPAND>(row, xs, nb, sub, out, grid);
 }
 
 // The entries e0..e1 of one row: chunks of 4 through the multi-entry dot, the rest one at a time.
@@ -2214,12 +2214,13 @@ __dpct_inline__ void swiglu_entries_kernel(const float *__restrict__ gate,
     h[i] = (g / (1.0f + sycl::native::exp(-g))) * up[i];
 }
 
-template <int TD, int LN = kExpertLanes, bool KM = true>
+template <int TD, int LN = kExpertLanes, bool KM = true, bool Q2_WORD_EXPAND = false>
 __dpct_inline__ void native_down_kernel(
     const unsigned long long *__restrict__ grp_ptr,
     const int32_t *__restrict__ grp_start, const int32_t *__restrict__ n_groups,
     const int32_t *__restrict__ ent_dst, const block_q8_1 *__restrict__ hq,
     NativeExpertLayout L, float *__restrict__ out) {
+    static_assert(!Q2_WORD_EXPAND || (TD == 42 && LN == 8));
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int ng = *n_groups;   // #363: the group stride, as native_gu_kernel
     const int rib = item_ct1.get_local_id(2) / LN,
@@ -2237,7 +2238,7 @@ __dpct_inline__ void native_down_kernel(
             for (; e + 4 <= e1; e += 4) {
                 const block_q8_1* xs[4] = {hq + (size_t) e * hb, hq + (size_t) (e + 1) * hb, hq + (size_t) (e + 2) * hb, hq + (size_t) (e + 3) * hb};
                 float o[4];
-                row_dot_multi<TD, LN, 4>(wr, xs, nb, sub, o);
+                row_dot_multi<TD, LN, 4, Q2_WORD_EXPAND>(wr, xs, nb, sub, o);
                 if (sub == 0)
 #pragma unroll
                     for (int i = 0; i < 4; ++i) out[(size_t) ent_dst[e + i] * L.n_embd + r] = o[i];
@@ -2245,13 +2246,13 @@ __dpct_inline__ void native_down_kernel(
             if (e + 2 <= e1) {
                 const block_q8_1* xs[2] = {hq + (size_t) e * hb, hq + (size_t) (e + 1) * hb};
                 float o[2];
-                row_dot_multi<TD, LN, 2>(wr, xs, nb, sub, o);
+                row_dot_multi<TD, LN, 2, Q2_WORD_EXPAND>(wr, xs, nb, sub, o);
                 if (sub == 0) { out[(size_t) ent_dst[e] * L.n_embd + r] = o[0]; out[(size_t) ent_dst[e + 1] * L.n_embd + r] = o[1]; }
                 e += 2;
             }
         }
         for (; e < e1; ++e) {
-            const float v = row_dot_lanes<TD, LN>(wr, hq + (size_t) e * hb, nb, sub);
+            const float v = row_dot_lanes<TD, LN, Q2_WORD_EXPAND>(wr, hq + (size_t) e * hb, nb, sub);
             if (sub == 0) out[(size_t) ent_dst[e] * L.n_embd + r] = v;
         }
     }
@@ -4423,6 +4424,20 @@ void launch_down_port(unsigned groups, dpct::queue_ptr s, const unsigned long lo
             native_down_kernel<TD, LN, KM>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
         });
 }
+
+void launch_down_q2_word_expand(unsigned groups, dpct::queue_ptr s, const unsigned long long *grp_ptr,
+                                const int32_t *grp_start, const int32_t *n_groups, const int32_t *ent_dst,
+                                const block_q8_1 *hq, const NativeExpertLayout &L, float *out) {
+    constexpr int LN = 8, ROWS = 256 / LN;
+    const unsigned gx = (unsigned) ((L.n_embd + ROWS - 1) / ROWS);
+    auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+    s->parallel_for<class native_down_q2_word_expand>(
+        sycl::nd_range<3>(sycl::range<3>(1, groups, (size_t) gx * 256), sycl::range<3>(1, 1, 256)), exp_props,
+        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+            native_down_kernel<42, LN, true, true>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+        });
+}
+
 template <int TD, int LN>
 void down_port_km(unsigned groups, dpct::queue_ptr s, const unsigned long long *grp_ptr, const int32_t *grp_start,
                   const int32_t *n_groups, const int32_t *ent_dst, const block_q8_1 *hq, const NativeExpertLayout &L,
@@ -4504,7 +4519,7 @@ void launch_down(dpct::dim3 grid, dpct::queue_ptr s,
     if constexpr (TD == 42) {
         if (!g_old_kernels && !g_split_multi && down_lanes() == 8 &&
             q2_word_expand_enabled(s->get_device())) {
-            launch_down_port<10042, 8>(grid.y, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+            launch_down_q2_word_expand(grid.y, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
             return;
         }
     }
