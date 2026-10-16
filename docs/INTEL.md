@@ -374,6 +374,55 @@ Measured on the last chunk of an 80K prompt (first QSA layer, `STRATA_DUMP_SEL=<
 positions is 3.3x one position's 2,051 cells (16: 5.1x), and only 12% of a selection is shared by all 8. Grouping
 would cut the K/V gather to ~40% but multiply the arithmetic by 3-5x: at best 5-8 s of an 80K prompt. Not built.
 
+**The grouped kernel, built: prompt attention over 8-query selection unions (`STRATA_PROMPT_ATTN_UNION=1`,
+2026-10-16).** `qsa_prompt_attn_union` (`sycl/src/kernels/cuda/qsa_prompt_attn_union.dp.cpp`). For every 8
+neighbouring prompt positions a first kernel builds the sorted union of their selected cells, each cell marked with
+the positions that selected it. The attention kernel then walks that union in 64-cell chunks per KV head: the INT8 K
+and V rows are dequantized once to FP16, S^T = K Q^T and O += P V run on joint_matrix (8x16x16, FP16 inputs, FP32
+sums) for all 96 rows of the group (8 positions x 12 heads, every matrix row a real head), and the online softmax
+gives a cell -inf in the rows of the positions that did not select it, so each position still attends to exactly
+its own cells. The extra arithmetic of the union goes to the matrix units; the K/V gather is done once per group.
+
+- INT8 KV (`--kv int8`) on a Battlemage card. Any other KV format or card, or a failed scratch allocation, keeps
+  the FP32 attention (one stderr line says why). The selection (block scores, top-k) and decode are not touched.
+- Not bitwise: Q, K, V and the probabilities are rounded to FP16 once each, and the sums run in another order.
+  Each position attends to the same cells as with the FP32 kernel, with the same masking of non-resident pages.
+- It pays only when neighbouring selections overlap: the union of 8 is 8 selections' work when they share nothing.
+- Scratch: about 80 MB of device memory per card that reads a prompt, allocated at the first prompt; it comes out
+  of the `--vram-reserve-mib` headroom.
+- Check on a card: `qsa_prompt_attn_union_parity --selftest` (also `ctest -R qsa_prompt_attn_union_parity`; skipped
+  off Battlemage): against FP64 and the FP32 kernel on random INT8 pools at 1.5K-40K contexts, ragged last groups,
+  pages that are not resident, and a bitwise rerun. `qsa_prompt_attn_union_parity <context> <queries> [reps]
+  [--drift F] [--sel <STRATA_DUMP_SEL file>]` times one chunk.
+
+Measured 2026-10-16 on 2x Arc Pro B70 (32 GB, `xe`, kernel 7.1, Compute Runtime 26.22.38646.4, oneAPI 2026.1, AOT
+`bmg-g31`), Qwen3.8-Flash-Next ISTA GSQ-RCO IQ3_XXS, `--layer-split 30 --prefill 8192 --max-context 65536 --kv int8
+--spec 4 --mtp <BF16 draft layer> --mtp-max-t 4 --spec-min-p 0 --stream-experts --expert-cache auto`, one slot,
+greedy, fixed prompts (at `--max-context 200000` not every expert fits on a plain two-card layer split):
+
+| | upstream main | `STRATA_PROMPT_ATTN_UNION=1` |
+| --- | ---: | ---: |
+| prompt, 4K tokens (two fresh prompts) | 993 / 1,189 tok/s | 1,127 / 1,382 tok/s |
+| prompt, 32K tokens (two fresh prompts) | 2,004 / 1,956 tok/s | 2,314 / 2,246 tok/s |
+| first token of a turn with 40,796 tokens of context | 23.28 s | 20.39 s |
+| decode, 512 tokens (3 runs) | 78.7-81.8 tok/s | 79.1-82.9 tok/s |
+| one verify window (3 runs) | 39.4-39.7 ms | 39.3-40.0 ms |
+
+With the switch unset the outputs and draft counts are identical to upstream main's. With it set the outputs differ
+(rounding), so decode tok/s moves with the draft acceptance; the verify window takes the same time.
+
+- One chunk of 8,192 positions at 24K-32K context (`qsa_prompt_attn_union_parity 32768 8192 5 --drift D`): the FP32
+  kernel 137-152 ms, the union kernel 38.7 / 82.3 / 146.6 ms when the union of 8 neighbouring selections is 1.15x /
+  2.67x / 5.22x one position's cells. 8-16K: 137-141 ms against 38.1 / 74.3 / 117.3 ms (1.14x / 2.40x / 4.07x).
+- `--selftest`: error against FP64 2.6e-3 - 5.0e-3 at an output scale of 3.3-3.6 (the FP32 kernel: 1.7e-6 - 2.6e-6);
+  union against FP32 on average 7e-5 of the scale.
+- Teacher-forced NLL (`STRATA_LOGPOS`; 8 chats of an ~8,400-token context read by the prompt path and a 1,617-token
+  follow-up scored through the decode windows, 12,737 tokens): 2.6234 with the switch unset, 2.5506 with it, 2.6321
+  for a control that only changes rounding (`--prefill 4096`, switch unset). Single chats move by up to 0.2
+  nats/token in the control as well (the spread over the 8 chats is 0.12 in both), so 8 chats do not resolve a
+  difference of this size. The most likely next token agrees with the unset run at 93.2% of the positions (control:
+  94.1%).
+
 **Serving the port (2026-09-30).** `serve/server.py --engine strata` runs the SYCL engine unchanged through
 `sycl/serve/strata-sycl.sh`, an `exe` that starts the binary inside the oneAPI runtime image with the serve pipes
 attached (paths in the config's `args` are the container's, the data root mounted at `/work`). A config:
