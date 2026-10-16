@@ -556,7 +556,7 @@
         <div class="h-head"><span>Threads</span></div>
         <div class="h-list" id="h-threads"></div>
       </section>
-      <p class="hud-foot">Saved in this browser. Drag a thread onto the prompt to summarize it.</p>
+      <p class="hud-foot">Saved in this browser. Drag a thread onto the prompt to attach it.</p>
     </div>
   </aside>
   <div class="split">
@@ -2059,17 +2059,19 @@
   function wireDrag(row, type, id) {
     row.draggable = true;
     row.addEventListener("dragstart", function (ev) {
+      if (ev.target.closest(".h-x, .h-caret, .h-menu")) { ev.preventDefault(); return; }
       dragNode = { type: type, id: id };
-      ev.dataTransfer.effectAllowed = "move";
+      ev.dataTransfer.effectAllowed = "copyMove";
       ev.dataTransfer.setData("application/x-strata-" + type, id);
+      ev.dataTransfer.setData("text/plain", id);
       row.classList.add("is-dragging");
       closeHistMenu();
     });
     row.addEventListener("dragend", function () {
-      dragNode = null;
       row.classList.remove("is-dragging");
       document.querySelectorAll(".drop-on").forEach(function (el) { el.classList.remove("drop-on"); });
       document.getElementById("composer").classList.remove("drop-summary");
+      setTimeout(function () { dragNode = null; }, 0);
     });
   }
   function closeHistMenu() {
@@ -2131,13 +2133,18 @@
     const row = document.createElement("div");
     row.className = "h-row is-thread" + (t.id === currentThreadId ? " is-active" : "");
     row.dataset.thread = t.id;
-    row.innerHTML = THREAD_ICON + '<button class="h-name" type="button"></button><span class="h-size"></span>' +
+    row.innerHTML = THREAD_ICON + '<span class="h-name" role="button" tabindex="0"></span><span class="h-size"></span>' +
       '<button class="h-x" type="button" aria-label="Delete thread">×</button>';
     const name = row.querySelector(".h-name");
     name.textContent = t.title;
     name.title = t.title;
     row.querySelector(".h-size").textContent = fileSize(threadBytes(t));
     name.addEventListener("click", function () { openThread(t.id); });
+    name.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      ev.preventDefault();
+      openThread(t.id);
+    });
     row.querySelector(".h-x").addEventListener("click", function (ev) { ev.stopPropagation(); deleteThread(t); });
     wireDrag(row, "thread", t.id);
     return row;
@@ -2214,25 +2221,33 @@
       if (row) staggerIn([row]);
     }
   }
-  async function offerSummary(id) {
+  function threadTranscript(t) {
+    return (t.turns || []).map(function (s) {
+      return (s.role === "user" ? "User" : "Assistant") + ":\n" + (s.content || "");
+    }).join("\n\n").trim();
+  }
+  function attachThread(id) {
     const t = findThread(id);
     if (!t) return;
-    const pick = await askChoice("Summarize this thread?", "\"" + t.title + "\" will be summarized into this chat.", [
-      { id: "plain", label: "Plain summary", cls: "yes" },
-      { id: "md", label: "Markdown", cls: "btn-basic" },
-      { id: null, label: "NO", cls: "no" }
-    ]);
-    if (!pick) return;
-    if (abort) { note("Stop the answer first."); return; }
-    if (!modelName) { note("Load a model first."); return; }
-    const transcript = t.turns.map(function (s) {
-      return (s.role === "user" ? "User" : "Assistant") + ":\n" + s.content;
-    }).join("\n\n");
-    const ask = pick === "md"
-      ? "Summarize the conversation below as Markdown: a short title, then headings and bullet lists for the key points, decisions, and open questions. Write in the language of the conversation."
-      : "Summarize the conversation below in a few short paragraphs of plain text with no Markdown. Write in the language of the conversation.";
-    const shown = "Summarize \"" + t.title + "\" (" + (pick === "md" ? "Markdown" : "plain") + ")";
-    sendChat(ask + "\n\n---\n\n" + transcript, shown, []);
+    const text = threadTranscript(t);
+    if (!text) { note("This thread has no text to attach."); return; }
+    const safe = String(t.title || "thread").replace(/[\\/:*?"<>|]/g, " ").trim() || "thread";
+    const name = safe + ".md";
+    const row = fileRow({ name: name, size: text.length });
+    if (!remember(row, { kind: "file", name: name, size: text.length, text: text })) {
+      const slot = row.closest(".file-slot");
+      if (slot) slot.remove();
+      markFaces();
+      return;
+    }
+    markDone(row);
+    note("");
+  }
+  function droppedThreadId(ev) {
+    let id = "";
+    try { id = ev.dataTransfer.getData("application/x-strata-thread"); } catch (e) { id = ""; }
+    if (!id && dragNode && dragNode.type === "thread") id = dragNode.id;
+    return id;
   }
   document.getElementById("h-add").addEventListener("click", function () {
     const f = { id: newId("f"), name: "New folder", parent: null, created: Date.now(), open: true };
@@ -2258,11 +2273,12 @@
     if (!composerForm.contains(ev.relatedTarget)) composerForm.classList.remove("drop-summary");
   });
   composerForm.addEventListener("drop", function (ev) {
-    if (!dragNode || dragNode.type !== "thread") return;
+    const id = droppedThreadId(ev);
+    if (!id) return;
     ev.preventDefault();
     ev.stopImmediatePropagation();
     composerForm.classList.remove("drop-summary");
-    offerSummary(dragNode.id);
+    attachThread(id);
   });
 
   const modeTabs = document.getElementById("mode-tabs");
