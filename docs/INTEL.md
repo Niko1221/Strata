@@ -844,6 +844,61 @@ gate identical in the 32K and the 128K configuration); every one has an off swit
   miss-first or hit-first group order in the device plan (-3% / -7%), spreading the expert chains over several queues (one compute engine),
   `STRATA_LFUSE`, `STRATA_VERIFY_EAGER`.
 
+## Arc Pro B70: KREG decode kernels for Q4_K, Q5_K, Q6_K, IQ4_XS (opt-in `STRATA_MMVQ_KREG=1`, 2026-10-16)
+
+`STRATA_MMVQ_KREG=1` runs `native_mmvq` for Q4_K, Q5_K, Q6_K and IQ4_XS at 1-8 columns (the dense projections, the
+verify window and the output head) through KREG kernels. One work-group covers a row's whole K: each lane loads its
+32-value slice of every column's activations once, into registers, then the group streams tiles of 2-8 rows (one or
+two 16-byte weight loads per lane and row), a sub-group butterfly and a sum across sub-groups in local memory. IQ4_XS
+looks its codebook up in a 256-entry local-memory table. The wide kernels it replaces re-read every column's
+activations for every row and are bound by instruction issue, not by memory: Q4_K 2560 x 10240 at 6 columns took 82 us
+with the matrix held in L2 and 94 us from DRAM.
+
+Not bitwise equal to the default kernels (another summation order). A T-column call is bitwise equal to T one-column
+calls, as with the default kernels (`native_mmvq_set_multi_exact`). Unset, nothing on the default path changes: the
+flag is the first check of the new branch. Matrices that are not 16-byte (Q4_K, Q5_K) or 8-byte (IQ4_XS) aligned and
+rows over 32,768 values keep the default kernels. `mmvq_kreg_parity --selftest` checks it against a float64 reference,
+the default kernels and itself one column at a time: on the B70 all 160 cases pass, KREG and the default kernels both
+within 5e-8 of sum |w x| of the reference, every multi-column output bitwise equal to the one-column calls.
+`mmvq_kreg_parity --bench` times it.
+
+Kernel time, us per call, default -> KREG (`mmvq_kreg_parity --bench`: B70, random weights, distinct copies per graph
+so L2 never holds a matrix, median of 7-11 graph replays):
+
+| format, shape (n_in x n_out) | 1 column | 2 | 4 | 6 |
+|---|---|---|---|---|
+| Q6_K 2560 x 10240 | 55.7 -> 41.0 | 63.0 -> 41.5 | 73.4 -> 46.0 | 88.9 -> 57.7 |
+| Q6_K 6144 x 2560 | 47.3 -> 28.1 | 50.3 -> 27.8 | 56.1 -> 30.7 | 66.7 -> 37.6 |
+| Q5_K 2560 x 10240 | 49.2 -> 34.7 | 61.3 -> 35.9 | 85.3 -> 40.1 | 113.2 -> 52.0 |
+| Q5_K head 2560 x 248320 | 1063 -> 759 | 1374 -> 775 | 2013 -> 893 | 2691 -> 1175 |
+| Q4_K 2560 x 10240 | 44.5 -> 28.8 | 55.6 -> 29.6 | 78.8 -> 31.9 | 107.9 -> 40.5 |
+| IQ4_XS 2560 x 10240 | 42.9 -> 33.5 | 47.9 -> 37.8 | 55.9 -> 41.2 | 67.6 -> 49.3 |
+
+Over the large shapes (2560 x 6144 / 10240 / 12288, 6144 x 2560, the 248,320-row head) the K-quant kernels stream
+74-97% of the card's 608 GB/s at 1-2 columns and 47-66% at 6 (default kernels 31-72% and 18-41%); IQ4_XS 53-81% and
+40-50% (default 41-54% and 30-34%), ALU-bound in the codebook decode. The small matrices (2560 x 512 / 640) sit near
+the 4-6 us launch floor: K-quants 1.2-2.2x faster, IQ4_XS 0.90-0.98x at 1 column and 1.14-1.34x at 2-6 (KREG takes
+every column count so that a multi-column call stays bitwise equal to one-column calls).
+
+Engine, upstream main 296b59d2 against this change: two B70s, kernel 7.1, Compute Runtime 26.22.38646.4, oneAPI
+2026.1, AOT bmg-g31; Qwen3.8-Flash-Next ISTA GSQ-RCO IQ3_XXS, `--layer-split 30 --prefill 8192 --max-context 65536
+--kv int8 --spec 4 --mtp <BF16 draft layer> --mtp-max-t 4 --spec-min-p 0 --stream-experts --expert-cache auto`, one
+slot, greedy, a fixed prompt with a 512-token coding reply, 3 runs each:
+
+| | decode tok/s | tokens per verify window | ms per window |
+|---|---|---|---|
+| main | 81.8 / 79.5 / 78.7 | 3.22 / 3.14 / 3.12 | 39.4 / 39.5 / 39.7 |
+| `STRATA_MMVQ_KREG` unset | 81.9 / 79.4 | the same as main | - |
+| `STRATA_MMVQ_KREG=1` | 95.0 / 93.1 / 96.3 | 3.35 / 3.20 / 3.33 | 35.2 / 34.4 / 34.5 |
+
+Median decode 79.5 -> 95.0 tok/s (+19.5%). A verify window costs about 12% less (39.5 -> 34.5 ms), the part that does
+not depend on the drafts; the rest is the changed output drafting a little better on this prompt. With the flag unset
+the output and the draft counts are identical to main (both runs, and a turn at a 40,796-token context); with it the
+output differs from main. At a 40,796-token context: 76.0 -> 83.4 tok/s. Prompt reading is unchanged (4K 1,189 ->
+1,191 tok/s, 32K 1,956-2,004 -> 1,961-2,008). Not measured: two streams (main refuses `--batch-mtp` on a layer split),
+`--max-context 200000` (a plain two-card layer split of main does not fit all 24,576 experts there: 710 refused).
+Measured on the B70 only; the A-series cards are not tested.
+
 ## Measured, 2026-10-01, Arc Pro B70, Coder IQ1_M, 32K context, INT8 KV: the SYCL port (engine 0.1.31-sycl)
 
 | | |
