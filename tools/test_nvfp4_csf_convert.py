@@ -1,4 +1,4 @@
-"""CPU converter tests. Core tests need numpy; integration also needs torch,
+"""CPU converter tests. Tests need numpy and torch; integration also needs
 the pinned third_party/llama.cpp Python converter and its dependencies.
 
     python tools/test_nvfp4_csf_convert.py
