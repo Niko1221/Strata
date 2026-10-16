@@ -65,7 +65,7 @@ Not measured: this is a speed suite. The conversation uses the model's own repli
 
 - **Hardware:** MacBook Air (Mac17,3), Apple M5 (10-core CPU), 32 GB unified memory, the model on the internal SSD. The tool reports "CPU only" because it reads GPUs through `nvidia-smi`/`rocm-smi`; the engine ran on the M5's GPU through Metal (`engine 0.1.44.1-metal`).
 - **Install:** `./setup.sh --yes --model Q2_0 --no-start`, built from source on this Mac; Q2_0 with the experts' copy (`.experts`, 31.64 GiB), no MTP draft layer (setup's choice for a streaming Mac).
-- **This run vs. the first run the same day** (`../2026-10-16-community-apple-m5-32gb-q2_0`): after a macOS update (build 26B5101f -> 26B5112a, both macOS 27.2) and a restart, with all apps except Terminal and Finder closed, and after waiting for the load average to stay under 3 with Spotlight idle for 2 minutes. The benchmark started the server itself (fresh start).
+- **This run vs. the first run the same day** (`../2026-10-16-community-macbook-air-m5-32gb-q2_0`): after a macOS update (build 26B5101f -> 26B5112a, both macOS 27.2) and a restart, with all apps except Terminal and Finder closed, and after waiting for the load average to stay under 3 with Spotlight idle for 2 minutes. The benchmark started the server itself (fresh start).
 - **Expert arena:** 8.68 GB (6231 slots), against 5.41 GB in the first run (planned footprint 15.2 GB, cap 26.8 GB). Chat decode rose from 9.6 to 17.7 tok/s.
 - **Prompts were not faster:** 4K 165 vs 198 tok/s, 16K 172 vs 182 tok/s. No swap was used (6.6 MB), and macOS recorded no thermal or performance warnings. The cause is not known; the 4K runs varied (215.8, 158.1, 165.0 tok/s).
 - **Prompt chunks:** 1024 tokens (the engine's default on a streaming Mac under 96 GB).
