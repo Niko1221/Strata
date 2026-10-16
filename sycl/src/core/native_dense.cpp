@@ -7,6 +7,8 @@
 #include "strata/core/weights.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/native_mmvq.hpp"
+#include "strata/kernels/fused_gr_q8.hpp"
+#include "strata/core/geometry.hpp"
 #include "strata/platform/memory.hpp"
 
 #include <algorithm>
@@ -318,38 +320,45 @@ bool NativeDense::load(const std::vector<std::string> &shards,
                 }
                 pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data), std::move(packed)});
             }
+            // STRATA_HC_Q8=1: the hyper-connection down / up projections (the layers' and the final mixer's) as Q8_0 for
+            // fused_gr_read_multi's Q8_0 read: the GGUF's own Q8_0 blocks (type 8, the Unsloth files), or Q8_0 of the
+            // GGUF's BF16 values (type 30, the ISTA files; ggml's reference rounding, on the host).  Uploaded in the
+            // read's split layout (fused_gr_q8_0_split_host).  The inject rows are not copied: the read takes the
+            // pack's BF16 ones, so STRATA_HC_Q8_INJECT has no effect here.  The BF16 copies stay in the arena (the
+            // prompt path's GEMMs read them): the Q8_0 copies are extra VRAM on this port, not a replacement.
             if (hc_q8_requested())
                 for (const auto& tensor : gguf.tensors()) {
-                    // S25: the F32 inject rows hold BF16-exact values: the read takes the pack's BF16 rows unless
-                    // STRATA_HC_Q8_INJECT=1 asks for a Q8_0 copy
-                    static const bool q8_inject = [] { const char* v = std::getenv("STRATA_HC_Q8_INJECT"); return v && v[0] == '1'; }();
-                    const bool f32_inject = q8_inject && tensor.type == 0 && tensor.name.ends_with("_inject.weight");
-                    if ((tensor.type != 8 && !f32_inject) || !hc_q8_name(tensor.name) || tensor.shape.size() != 2) continue;
+                    if ((tensor.type != 8 && tensor.type != 30) || !hc_q8_name(tensor.name) || tensor.shape.size() != 2 ||
+                        tensor.name.ends_with("_inject.weight") || outside(tensor.name) || !in_range(tensor.name)) continue;
                     auto found = table.table_.find(tensor.name);
                     if (found == table.table_.end() || found->second.hc_q8 != nullptr) continue;
                     auto& ref = found->second;
                     if (tensor.shape[0] != (uint64_t) ref.ne0 || tensor.shape[1] != (uint64_t) ref.ne1 || ref.ne0 % 32 != 0) {
                         err = "native dense (STRATA_HC_Q8): incompatible matrix " + tensor.name; return false;
                     }
-                    const uint64_t bytes = (uint64_t) ref.ne0 / 32 * 34 * (uint64_t) ref.ne1;
-                    void* p = nullptr;
+                    // the read is compiled for the model geometry (hc_lr rows of hc * n_embd, or the transpose)
+                    constexpr int64_t hc_dim = strata::core::kCompiledGeometry.hc_dim(), hc_lr = strata::core::kCompiledGeometry.hc_lr;
+                    if (!((ref.ne0 == hc_dim && ref.ne1 == hc_lr) || (ref.ne0 == hc_lr && ref.ne1 == hc_dim))) {
+                        err = "native dense (STRATA_HC_Q8): " + tensor.name + " is not a hyper-connection projection of the compiled geometry";
+                        return false;
+                    }
+                    const uint64_t n = (uint64_t) ref.ne0 * (uint64_t) ref.ne1, bytes = n / 32 * 34;
                     std::vector<uint8_t> q8;
-                    if (f32_inject) q8 = q8_0_of((const float*) gguf.tensor_data(tensor), (uint64_t) ref.ne0 * (uint64_t) ref.ne1);
+                    const uint8_t* blocks = (const uint8_t*) gguf.tensor_data(tensor);
+                    if (tensor.type == 30) {
+                        const uint16_t* src = (const uint16_t*) blocks;
+                        std::vector<float> f((size_t) n);
+                        for (uint64_t i = 0; i < n; ++i) { const uint32_t u = (uint32_t) src[i] << 16; std::memcpy(&f[i], &u, 4); }
+                        q8 = q8_0_of(f.data(), n);
+                        blocks = q8.data();
+                    }
+                    std::vector<uint8_t> split((size_t) bytes);
+                    strata::kernels::fused_gr_q8_0_split_host(blocks, split.data(), ref.ne1, ref.ne0);
+                    void* p = nullptr;
                     if (DPCT_CHECK_ERROR(
                             p = (void *)strata::malloc_device_guarded(
                                 bytes, dpct::get_in_order_queue())) != 0 ||
-                        /*
-                        DPCT1114: cudaMemcpy is migrated to
-                        asynchronization memcpy, assuming in the original code
-                        the source host memory is pageable memory. If the memory
-                        is not pageable, call wait() on event return by memcpy
-                        API to ensure synchronization behavior.
-                        */
-                        DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(
-                            p,
-                            f32_inject ? (const void *)q8.data()
-                                       : gguf.tensor_data(tensor),
-                            bytes).wait()) != 0) {
+                        DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(p, split.data(), bytes).wait()) != 0) {
                         err = "native dense (STRATA_HC_Q8) upload " + tensor.name; return false;
                     }
                     ref.hc_q8 = p;
