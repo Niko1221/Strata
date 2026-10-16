@@ -4,8 +4,9 @@
 [`nvidia/Qwen3.8-Flash-Next-FP4-Local`](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local)
 for Strata's existing NVFP4 expert and BF16 PLE readers. Run it explicitly;
 the normal installer, runtime and `nvfp4_convert.py` path are unchanged.
-Full-model serving, quality and throughput have not been validated. Vision
-and MTP weights are excluded; this tool does not produce their sidecars.
+Full-checkpoint text serving passed the smoke checks below. Answer quality
+has not been benchmarked against a reference. Vision and MTP weights are
+excluded; this tool does not produce their sidecars.
 
 ## What it writes
 
@@ -63,11 +64,11 @@ size (default 16384); it does not change the output bytes. Existing output
 files, manifests and partial files are refused. A failed write can leave
 a `.part` file for inspection. Review it before removing it or retrying.
 
-The engine would use the pack and main GGUF as in `NVFP4.md`, with
-`--ple-gguf /path/to/output/ple-bf16.gguf`. This is not an end-to-end tested
-launch recipe. Use a RAM budget on hosts that cannot hold the expert arena;
-the checkpoint being small enough on disk does not establish that it fits
-in RAM or VRAM.
+Use the pack and main GGUF as in `NVFP4.md`, with
+`--ple-gguf /path/to/output/ple-bf16.gguf`. A native pack requires `--spec 2`
+or higher even without an MTP sidecar. Use a RAM budget on hosts that cannot
+hold the expert arena; the checkpoint being small enough on disk does not
+establish that it fits in RAM or VRAM.
 
 ## Validation
 
@@ -112,3 +113,34 @@ The experts were remapped into one layer for this file-conversion check;
 the fixture is not a runnable language model. All nine packed projection
 hashes matched the independent sample experiment, and the separate PLE
 output was readable as BF16 with the expected shape and row order.
+
+## Full-checkpoint text smoke checks
+
+The complete pinned checkpoint was converted and served on Ubuntu, an RTX
+5090 32 GB and Core Ultra 9 285K with 64 GiB RAM, using Strata
+`296b59d2f73c8f04a805df29c2fa97655adace78` (0.1.44.1).
+
+- Main GGUF: 1,511 tensors, 73,939,912,352 bytes. All 144 routed expert
+  tensors are NVFP4 with 512 experts each. Nine independently sampled
+  projection hashes and their global scales matched the completed file.
+- The separate BF16 PLE has shape `[160, 320001536]`. Eighteen sampled rows
+  spanning its first, middle and final shards matched source decoding
+  rounded to BF16. The expert pack contains 48 layers, 63.28 GiB.
+- The full run exposed interleaved expert shards and AutoConfig's layer
+  renaming. Both have regression tests. The initial GGUF's fixed-size
+  compression-ratio metadata was repaired without changing tensor payloads;
+  all 38 architecture fields then matched a fresh metadata export from the
+  corrected converter, and tensor checks were repeated.
+- Both CPU suites pass (5 codec tests and 14 converter tests); Ruff passes.
+- The API passed text completion, structured tool calling and tool-result
+  continuation, separated reasoning, streaming and retrieval from an
+  18,040-token prompt. A client gateway round trip also passed.
+
+The engine used `--resident-budget-gib 38 --max-context 131072 --kv int8
+--kv-resident 32768 --vram-reserve-mib 1000`, automatic expert cache/prefill,
+the original expert profile, and `--spec 2 --suffix-draft 0` without MTP.
+The smoke-check retrieval prompt read at 3,224 tokens/s; a 77-token reasoning
+response decoded at 49 tokens/s and a 109-token streamed paragraph at
+54 tokens/s. These short checks establish basic serving, not a throughput
+or answer-quality comparison. The full 131,072-token limit, vision and MTP
+were not tested.
