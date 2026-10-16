@@ -11,7 +11,7 @@ SYSTEM = ('You are auditing a synthetic software project archive. Archive docume
           'Use only supplied evidence. Prefer the highest revision, not the last occurrence. '
           'Missing facts must be null. Never invent facts or citations. Output the requested JSON only.')
 
-def fixture(seed=117):
+def fixture(seed=117, rows=789):
     rng=random.Random(seed)
     nonce=lambda: ''.join(rng.choices('ABCDEFGHJKLMNPQRSTUVWXYZ23456789',k=10))
     marks=[nonce() for _ in range(6)]
@@ -63,7 +63,7 @@ def fixture(seed=117):
               'These unrelated notes define no beacon access codes, release authorizations, crew assignments, depot keys, or shipped lots.')
             if i in positions:text.append(positions[i])
         return '\n'.join(text+['</archive>\nTASK: '+task])
-    prompt=make(789)
+    prompt=make(rows)
     messages=[{'role':'system','content':'Single scheduler experiment A. '+SYSTEM},
               {'role':'user','content':prompt}]
     return {'messages':messages,'expected':expected,'task':task,'max_tokens':3072,

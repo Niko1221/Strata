@@ -176,8 +176,8 @@ class SoloScheduler:
 
                 def pause():
                     nonlocal requested
-                    # The native engine cannot park a cancelled prefill. It also consumes
-                    # a restored checkpoint, so stopping its unfinished suffix would lose
+                    # The native engine may not be able to park an interrupted prefill.
+                    # It consumes a restored checkpoint, so stopping its suffix can lose
                     # the whole restored prefix. Let a cache hit (and every continuation)
                     # reach decoding before yielding. A wholly cold first read may yield
                     # once, accepting the documented cost of rereading its partial chunk.

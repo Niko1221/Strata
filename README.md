@@ -168,6 +168,9 @@ Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). To add a
 - **From your phone or another PC:** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>`. Always set a key.
 - **One request at a time:** by default Strata answers one request, and the others wait. To answer several at once,
   set `"parallel": 2` ([BATCHING.md](docs/BATCHING.md)). On a 12 GB card this makes each answer slower.
+- **Let a short request interrupt a long answer:** the experimental, opt-in
+  [single-engine priority scheduler](docs/SOLO_PRIORITY.md) pauses and resumes text requests using the
+  conversation RAM cache. It keeps one native request running at a time; cold reads can still delay a short request.
 - **Long prompts:** Strata reads the first message of a chat in full, about 1 minute per 30,000 tokens. Follow-up
   messages start in seconds.
 
