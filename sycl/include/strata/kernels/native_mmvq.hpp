@@ -32,6 +32,7 @@ std::size_t native_q8_1_bytes(int n_in, int ncols = 1);
 // graph capture; captured graphs keep the kernels they captured.
 void native_mmvq_set_multi_exact(bool exact);
 void native_mmvq_set_q6k_wide(bool on);   // SYCL port: the 16-byte-load Q6_K kernel (default on)
+void native_mmvq_set_kreg(int on);   // SYCL port: the KREG kernels on (1) / off (0) / as STRATA_MMVQ_KREG (-1, default)
 void native_q6_k_mmvq_stride224(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols,
                                 void* stream);   // SYCL port: experiment, Q6_K blocks at a 224-byte stride
 bool native_mmvq_multi_exact();
