@@ -25,6 +25,7 @@
 #include "strata/kernels/native_router.hpp"
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/moe_mmq.hpp"
+#include "strata/prefill/moe_tc_kq.hpp"
 #include "strata/qwen35/engine.hpp"
 #if defined(STRATA_Q36_CPU_POOL)
 #include "strata/kernels/cpu/native_expert.hpp"
@@ -1470,14 +1471,24 @@ struct Engine {
             gu.w = wbase; gu.type = L.L.gu_type; gu.w_rows = 2 * FF; gu.w_cols = N; gu.expert_bytes = L.stride;
             gu.n = ne; gu.xq = mq_x; gu.bounds = rbounds; gu.ids = ident; gu.total_rows = n_ent; gu.max_rows = maxr;
             gu.dst = mq_gu; gu.ld_dst = 2 * FF;
-            mctx->run(gu, st);
+            // sm_70: the K-quant experts on the FP16 tensor cores (moe_tc_kq, register fragments; STRATA_PREFILL_TCKQ=0:
+            // MMQ)
+            static const bool tckq_env = !(getenv("STRATA_PREFILL_TCKQ") && atoi(getenv("STRATA_PREFILL_TCKQ")) == 0);
+            const auto run_pr = [&](const MMQ::Product& q) {
+                namespace tk = strata::prefill::tckq;
+                if (tckq_env && tk::available() && tk::supported(q.type, q.w_cols, q.w_rows))
+                    tk::product(q.type, q.w, q.expert_bytes, q.w_cols, q.w_rows, q.n, q.bounds, (int) q.max_rows, q.xq,
+                                q.total_rows, q.dst, q.ld_dst, st);
+                else mctx->run(q, st);
+            };
+            run_pr(gu);
             MMQ::swiglu(mq_gu, mq_h, n_ent, FF, false, st);
             MMQ::quantize(mq_h, nullptr, mq_hq, L.L.d_type, FF, FF, n_ent, st);
             MMQ::Product dn;
             dn.w = wbase + L.L.down_off; dn.type = L.L.d_type; dn.w_rows = N; dn.w_cols = FF;
             dn.expert_bytes = L.stride; dn.n = ne; dn.xq = mq_hq; dn.bounds = rbounds; dn.ids = ident;
             dn.total_rows = n_ent; dn.max_rows = maxr; dn.dst = eparts; dn.ld_dst = N;
-            mctx->run(dn, st);
+            run_pr(dn);
             if (lhy(li)) stream_done();
             prow = rinv;
         } else {

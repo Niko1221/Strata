@@ -1422,6 +1422,13 @@ if(STRATA_NATIVE_EXPERTS)
     add_library(strata_mmq STATIC src/prefill/moe_mmq.cu src/prefill/moe_fused.cu src/prefill/moe_fused_iq.cu
                 src/prefill/mmq_nvfp4_w4a8.cu
                 src/prefill/ggml_cuda_host.cu ${_strata_mmq}/quantize.cu)
+    # strata-q36's K-quant prompt experts (Q4_K / Q5_K / Q6_K) on Volta's FP16 tensor cores, register fragments
+    # (moe_tc_kq; used on sm_70 at run time, STRATA_PREFILL_TCKQ=0 keeps MMQ) - built only when the architectures
+    # include Volta (~140 KB of code there; elsewhere the header's no-ops)
+    if(CMAKE_CUDA_ARCHITECTURES MATCHES "(^|;)70|native|all")
+      target_sources(strata_mmq PRIVATE src/prefill/moe_tc_kq.cu)
+      target_compile_definitions(strata_mmq PUBLIC STRATA_PREFILL_TCKQ=1)
+    endif()
     # q8_0: the drafter's matrices (E-9); STRATA_ORCA_Q4KS_MMQ adds q5_0 (#296, in _strata_mmq_types), and
     # STRATA_MMQ_KQUANTS q4_k q5_k q5_1 q6_k, the experts of Unsloth's UD-Q4/Q5/Q6_K_XL (docs/QUANTS.md; the dispatch
     # follows eddoursul/Strata 7706c1b).  MODEL-UPDATE Phase 1: on CUDA they are a library of their own, strata_kq
