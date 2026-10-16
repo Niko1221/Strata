@@ -411,11 +411,11 @@ policy:
   whether the engine runs active slots only (`slot_padding_safe=1`). Without that engine capability the server tracks
   from the `BADM` / `BT` / `BDONE` lines which idle slot a later window of its group has padded over, and marks it.
 - With `INFO slot_park=1` the server tracks what the main session holds; when a request is another conversation (the
-  first half differs) and the held one has at least `PARK_MIN_TOKENS`, it asks the policy for a slot and sends
-  `park=B`; `PARKED` updates that slot's state. A claim the engine did not use is released.
+  first half differs), it asks the policy for a slot and sends `park=B`; `PARKED` updates that slot's state. A claim
+  the engine did not use is released.
 
 The policy's interface is `place`, `park_destination`, `cache_state`, `superseded_slots`, `reliable_flags`,
-`configure` / `settings` and the constant `PARK_MIN_TOKENS` (their docstrings say what they
+`configure` / `settings` (their docstrings say what they
 answer). This part ships them as an interface without a policy: with `STRATA_SLOT_CACHE_AFFINITY=1` (or
 `STRATA_CACHE_TRACE=1`) and no policy they raise `NotImplementedError`; with both off nothing changes.
 
