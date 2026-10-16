@@ -2197,6 +2197,17 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
   against the FP16 prompt path (IQ3_XXS, `--prefill auto`): 8K prompt KL 0.042 (0.1.39: 0.054), top-1 agreement
   93.5% (92.2%); 32K prompt KL 0.020 (0.019), top-1 95.3% (95.0%) - the same band as before. `STRATA_RING_BYTES=0`
   restores 0.1.39's ring, loan and chunk choice.
+- **`STRATA_WARM_PROMPT=N` (`--serve`, off by default): one synthetic prompt of N tokens (32 if you ask for less)
+  is read through the whole part chain before the engine says READY**, so a session's first request does not pay
+  what only a session's first prompt pays - the first chunk carries every kernel's first launch, the prompt path's
+  own allocations and the tiers' first reads, and no later prompt pays any of it. It is from the Maya checkout
+  (`project-maya`), local commit `cc58309` (2026-10-14), whose `STRATA_GLM_WARM_PROMPT` is accepted as the same knob;
+  Maya's issue #8 reported 95-133 ms/token on a first prompt against 23-44 warm. On this engine the knob is how you
+  measure it: the first request's time to first token, or its `PP` line, with the variable set and unset is the A/B. It takes the same loan a request takes (the slots the prompt path is laid out in go
+  non-resident and are refilled from the arena afterwards) and every participant's state is zeroed before and
+  after it, so no conversation can see it; a prompt path that cannot run prints why and the first prompt pays it,
+  and the start never fails because of it. The ids are spread over the vocabulary, so the routes are not one
+  expert's.
 
 The full story, with measurements, bottlenecks and what comes next: **[docs/paper/Strata-Paper.pdf](paper/Strata-Paper.pdf)**.
 
