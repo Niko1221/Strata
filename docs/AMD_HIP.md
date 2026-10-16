@@ -731,3 +731,5 @@ passes. Additional unpublished upstream fixture suites are not covered.
 The published performance table explicitly identifies the measured development
 snapshot; it must not be read as a benchmark of every subsequent rebase. Vision, long-context stress, broad answer-quality
 equivalence, other AMD cards, and mixed-vendor inference are not validated here.
+
+The gfx803 hybrid row limit is clamped to 8..32 to cover the engine verification workspace minimum; smaller requests are raised to eight. Prompt chunks cannot exceed this effective hybrid limit.

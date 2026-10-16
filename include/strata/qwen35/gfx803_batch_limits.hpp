@@ -4,10 +4,10 @@
 
 namespace strata::qwen35 {
 
-// Polaris uses only the hybrid expert path; nonpositive row requests keep the
-// engine's established effective minimum of one row.
+// Polaris uses only the hybrid expert path; small row requests are raised to the
+// engine's eight-row verification workspace minimum.
 inline void clamp_gfx803_batch(int& chunk, int& hybrid_rows) {
-    hybrid_rows = std::clamp(hybrid_rows, 1, 32);
+    hybrid_rows = std::clamp(hybrid_rows, 8, 32);
     chunk = std::min(chunk, hybrid_rows);
 }
 
