@@ -68,7 +68,10 @@ interrupt it too. A request that is almost finished
   short request. Cache capture, restore and any eviction also take time. This is not a
   hard real-time latency guarantee. A resumed request must produce a token before it
   can yield again, so repeated arrivals cannot repeatedly discard the same unfinished
-  cold chunk. If a snapshot was evicted, its reread also gets to finish first.
+  cold chunk. A request that has restored any cached prefix also finishes its remaining
+  prefill and produces a token before yielding: STOP during that prefill can discard
+  the restored prefix in the native engine. If a snapshot was evicted, its reread also
+  gets to finish first.
 - Image-bearing `GENI` requests and `strata_checkpoint: false` requests are not preempted.
   Vision encoding, cache control, VRAM resizing and session-file operations wait until
   suspended requests finish. They cannot alter the engine under a parked request.

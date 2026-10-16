@@ -44,6 +44,8 @@ while True:
                       '海岛' * 80 + '\n</parameter>\n<parameter=enabled>\nfalse\n</parameter>\n</function>\n</tool_call>').encode()) + [257]
     else: reply = list(b'short OK') + [257]
     reused = max([0] + [len(x) for x in cache if ids[:len(x)] == x])
+    if len(ids) > 300 and ids[1] == 78:
+        reused = max(128, reused)  # A native cache hit with an unfinished suffix.
     print(f'RESUME {reused}', flush=True)
     read = reused
     while read < len(ids) - 1:
@@ -123,9 +125,9 @@ class Streaming(unittest.TestCase):
         self.addCleanup(self.pool.shutdown, True)
         self.tools = [{'name':'edit','parameters':{'type':'object','properties':{'text':{'type':'string'},'enabled':{'type':'boolean'}}}}]
 
-    def run_request(self, marker=1, cancel=None, length=2, priority=0, on_event=None):
+    def run_request(self, marker=1, cancel=None, length=2, priority=0, on_event=None, fill=77):
         evs = []
-        ids = [marker] + [77] * (length-2) + [999]
+        ids = [marker] + [fill] * (length-2) + [999]
         for ev in self.svc.run(ids, False, self.tools if marker==1 else None,
                                2000 if marker==1 else 20, {'priority':priority}, cancel or threading.Event()):
             evs.append(ev)
@@ -137,6 +139,23 @@ class Streaming(unittest.TestCase):
         while not predicate():
             if time.monotonic()>end: self.fail('timed out')
             time.sleep(.002)
+
+    def test_restored_partial_prefill_reaches_a_token_before_yielding(self):
+        stops = []
+        send = self.eng._send
+        def observe(line):
+            if line == 'STOP':
+                stops.append(self.sched.owner.state.get('generated', 0))
+            return send(line)
+        with mock.patch.object(self.eng, '_send', side_effect=observe):
+            long = self.pool.submit(self.run_request, length=4096, fill=78)
+            self.wait_for(lambda: self.eng.reused == 128 and self.eng.progress is not None)
+            short = self.pool.submit(self.run_request, 2, None, 2, 5)
+            short.result(8)
+            long.result(8)
+        self.assertGreater(self.sched.preemptions, 0)
+        self.assertTrue(stops)
+        self.assertTrue(all(count > 0 for count in stops), stops)
 
     def test_preemption_keeps_utf8_tool_arguments_and_usage(self):
         baseline = self.run_request()
