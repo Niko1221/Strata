@@ -466,8 +466,13 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   `-DCMAKE_HIP_ARCHITECTURES=gfx1152` builds with a warning. It runs the portable kernels (the matrix-core guards name
   gfx1150 and gfx1151 only), no card has reported on it, and setup does not install for it (an integrated Radeon other
   than Strix Halo is named and not supported). A report from a real 860M is welcome.
-- **Not validated:** gfx1032 (the same `dp4a` path, no hardware report), setup's own build path and the
-  `gfx103X-all` wheels on gfx1030, images, answer-quality benchmarks. RDNA1 (gfx1012, RX 5500 XT) builds by hand:
+- **gfx1032** (RX 6600 / 6650 XT, #1375): setup knows it (the `gfx103X-all` wheels, unvalidated), on the same RDNA2
+  `dp4a` path as gfx1030/gfx1031 - `hip_compat/intrinsics.hpp` already gates `__gfx1032__` with them, so only the setup
+  and CMake lists were missing. One RX 6650 XT 8 GB (Fedora, ROCm 7.1.1) built the engine for gfx1032
+  (`strata-device --selftest` passes) and served a model end to end; no llama.cpp parity or KL run has been done, so it
+  stays unvalidated. An RX 6600 8 GB report is in #1378.
+- **Not validated:** setup's own build path and the `gfx103X-all` wheels on gfx1030, images, answer-quality benchmarks.
+  RDNA1 (gfx1012, RX 5500 XT) builds by hand:
   [OLDER_GPUS.md](OLDER_GPUS.md#amd-building-gfx906-and-gfx1012).
 
 ## gfx906 (Instinct MI50 / MI60, Radeon VII): wave64, built from source
