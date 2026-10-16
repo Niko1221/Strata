@@ -1,0 +1,771 @@
+{
+  "upstream": "296b59d2f73c8f04a805df29c2fa97655adace78",
+  "model_repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "variant": "non-abliterated IQ3_S",
+  "hardware": {
+    "os": "Windows 11",
+    "gpu": "RTX 3090 24 GiB",
+    "cpu": "Ryzen 9 5900X",
+    "ram_gib": 128
+  },
+  "config": {
+    "context": 262144,
+    "conversation_cache_mib": 32768,
+    "conversation_cache_slots": 8,
+    "conversation_cache_min_free_mib": 16384
+  },
+  "phases": {
+    "pilot": {
+      "summary": {
+        "requests": 24,
+        "completed": 20,
+        "intentional_cancellations": 4,
+        "unexpected_transport_errors": [],
+        "validation_failures": [],
+        "quick": {
+          "count": 6,
+          "p50_ttft_s": 1.1888243000139482,
+          "p95_ttft_s": 16.860745500016492,
+          "max_ttft_s": 16.860745500016492
+        },
+        "completed_output_tokens": 15634,
+        "requested_seconds": 120,
+        "elapsed_s": 160.3374397000007,
+        "sessions": [
+          {
+            "session": "SESSION-0",
+            "completed_turns": 2
+          },
+          {
+            "session": "SESSION-1",
+            "completed_turns": 1
+          },
+          {
+            "session": "SESSION-2",
+            "completed_turns": 1
+          }
+        ],
+        "history_rollovers": []
+      },
+      "request_file": "pilot-requests.jsonl",
+      "started": {
+        "started": 1792187125.83286,
+        "seconds": 120,
+        "fixtures": 3
+      },
+      "end_scheduler": {
+        "enabled": true,
+        "preemptions": 12,
+        "resume_prompt_read": 12,
+        "resume_prefix_missed": 0,
+        "waiting": 0,
+        "paused": 0
+      },
+      "scheduler_delta": {
+        "preemptions": 12,
+        "resume_prompt_read": 12,
+        "resume_prefix_missed": 0
+      },
+      "machine": {
+        "ram_used_gib": {
+          "n": 16,
+          "median": 71.05,
+          "p95_nearest_rank": 71.6,
+          "max": 71.6
+        },
+        "gpu_used_mib": {
+          "n": 16,
+          "median": 23142.0,
+          "p95_nearest_rank": 23142.0,
+          "max": 23142.0
+        },
+        "gpu_temp_c": {
+          "n": 16,
+          "median": 78.5,
+          "p95_nearest_rank": 80,
+          "max": 80
+        }
+      },
+      "largest_prompt_tokens": 135255,
+      "cancel_return_s": {
+        "n": 4,
+        "median": 2.9836277499853168,
+        "p95_nearest_rank": 3.0034350999922026,
+        "max": 3.0034350999922026
+      },
+      "tool_wall_s": {
+        "n": 4,
+        "median": 77.63736820001213,
+        "p95_nearest_rank": 112.22662100000889,
+        "max": 112.22662100000889
+      },
+      "short_text_ttft_s": {
+        "n": 6,
+        "median": 0.9193845999980113,
+        "p95_nearest_rank": 16.860745500016492,
+        "max": 16.860745500016492
+      },
+      "validated_tool_roundtrips": 4,
+      "audit_requests": 6
+    },
+    "soak": {
+      "summary": {
+        "requests": 409,
+        "completed": 395,
+        "intentional_cancellations": 14,
+        "unexpected_transport_errors": [],
+        "validation_failures": [],
+        "quick": {
+          "count": 179,
+          "p50_ttft_s": 0.6685417999979109,
+          "p95_ttft_s": 7.0543359000002965,
+          "max_ttft_s": 46.50316360002034
+        },
+        "completed_output_tokens": 394919,
+        "requested_seconds": 3600,
+        "elapsed_s": 3641.5184767999745,
+        "sessions": [
+          {
+            "session": "SESSION-0",
+            "completed_turns": 32
+          },
+          {
+            "session": "SESSION-1",
+            "completed_turns": 31
+          },
+          {
+            "session": "SESSION-2",
+            "completed_turns": 31
+          }
+        ],
+        "history_rollovers": [
+          {
+            "session": "SESSION-2",
+            "turn": 12,
+            "tokens_before": 235802
+          },
+          {
+            "session": "SESSION-1",
+            "turn": 16,
+            "tokens_before": 236914
+          },
+          {
+            "session": "SESSION-0",
+            "turn": 19,
+            "tokens_before": 230193
+          },
+          {
+            "session": "SESSION-2",
+            "turn": 25,
+            "tokens_before": 237448
+          }
+        ]
+      },
+      "request_file": "soak-requests.jsonl",
+      "started": {
+        "started": 1792187501.2238677,
+        "seconds": 3600,
+        "fixtures": 3
+      },
+      "end_scheduler": {
+        "enabled": true,
+        "preemptions": 315,
+        "resume_prompt_read": 314,
+        "resume_prefix_missed": 0,
+        "waiting": 0,
+        "paused": 0
+      },
+      "scheduler_delta": {
+        "preemptions": 301,
+        "resume_prompt_read": 301,
+        "resume_prefix_missed": 0
+      },
+      "machine": {
+        "ram_used_gib": {
+          "n": 364,
+          "median": 73.4,
+          "p95_nearest_rank": 75.3,
+          "max": 76.1
+        },
+        "gpu_used_mib": {
+          "n": 364,
+          "median": 23144.0,
+          "p95_nearest_rank": 23144.0,
+          "max": 23144.0
+        },
+        "gpu_temp_c": {
+          "n": 364,
+          "median": 79.0,
+          "p95_nearest_rank": 79,
+          "max": 80
+        }
+      },
+      "largest_prompt_tokens": 237392,
+      "cancel_return_s": {
+        "n": 14,
+        "median": 2.998565999994753,
+        "p95_nearest_rank": 3.0100892999907956,
+        "max": 3.0100892999907956
+      },
+      "tool_wall_s": {
+        "n": 94,
+        "median": 76.26990210000076,
+        "p95_nearest_rank": 127.3877371000126,
+        "max": 154.39792899999884
+      },
+      "short_text_ttft_s": {
+        "n": 179,
+        "median": 0.6685417999979109,
+        "p95_nearest_rank": 7.0543359000002965,
+        "max": 46.50316360002034
+      },
+      "validated_tool_roundtrips": 94,
+      "audit_requests": 28
+    },
+    "faults-before": {
+      "summary": {
+        "success": true,
+        "cancel_cases": [
+          "queued",
+          "active",
+          "paused"
+        ],
+        "responses": true,
+        "engine_death": false,
+        "requests": {
+          "requests": 12,
+          "completed": 9,
+          "intentional_cancellations": 3,
+          "unexpected_transport_errors": [],
+          "validation_failures": [],
+          "quick": {
+            "count": 0,
+            "p50_ttft_s": null,
+            "p95_ttft_s": null,
+            "max_ttft_s": null
+          },
+          "completed_output_tokens": 11038,
+          "expected_injected_engine_failures": []
+        }
+      },
+      "request_file": "faults-before-requests.jsonl"
+    },
+    "faults-after": {
+      "summary": {
+        "success": true,
+        "cancel_cases": [
+          "queued",
+          "active",
+          "paused"
+        ],
+        "responses": true,
+        "engine_death": true,
+        "requests": {
+          "requests": 15,
+          "completed": 10,
+          "intentional_cancellations": 3,
+          "unexpected_transport_errors": [],
+          "validation_failures": [],
+          "quick": {
+            "count": 0,
+            "p50_ttft_s": null,
+            "p95_ttft_s": null,
+            "max_ttft_s": null
+          },
+          "completed_output_tokens": 11060,
+          "expected_injected_engine_failures": [
+            {
+              "label": "engine-death-active-responses",
+              "error": "RuntimeError: {\"id\": \"resp_415ab4d4c4894b1babb116f331e3f618\", \"object\": \"response\", \"created_at\": 1792191234, \"status\": \"failed\", \"background\": false, \"error\": {\"code\": \"server_error\", \"message\": \"the engine stopped unexpectedly (exit code 4294967295); the next request restarts it\"}, \"incomplete_details\": null, \"instructions\": null, \"max_output_tokens\": 6000, \"model\": \"qwen3.8-flash-next-iq3_s\", \"output\": [], \"parallel_tool_calls\": true, \"previous_response_id\": null, \"reasoning\": {\"effort\": \"none\", \"summary\": null}, \"store\": false, \"temperature\": 0, \"text\": {\"format\": {\"type\": \"text\"}}, \"tool_choice\": {\"type\": \"function\", \"name\": \"record_items\"}, \"tools\": [{\"type\": \"function\", \"name\": \"record_items\", \"description\": \"Synthetic manifest, never executed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"session\": {\"type\": \"string\"}, \"items\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"session\", \"items\"]}}], \"top_p\": null, \"truncation\": \"disabled\", \"usage\": null, \"user\": null, \"metadata\": {}}",
+              "status": 200
+            },
+            {
+              "label": "engine-death-paused-chat",
+              "error": "RuntimeError: Stream ended without a terminal success event",
+              "status": 200
+            }
+          ]
+        }
+      },
+      "request_file": "faults-after-requests.jsonl",
+      "known_defect": "Parked Chat error is EOF instead of structured server_error; not accepted for release."
+    }
+  },
+  "strict_oracles": {
+    "checks": 415,
+    "failed": [],
+    "checks_by_phase": {
+      "pilot": 20,
+      "soak": 395
+    }
+  },
+  "sustained_runtime_commit": "b121239dd2247eb5eb346e251950c0bf190b4bfb",
+  "final_runtime_commit": "69a6b86599ccc0ecd02eeeb35e49db400f37ff96",
+  "pre_exception_fix_comparison": {
+    "baseline": {
+      "pairs": [
+        {
+          "wall_s": 27.12966740000411,
+          "aggregate_tok_s": 114.00803240217871,
+          "long_wall_s": 25.99481219999143,
+          "long_ttft_s": 0.8705938000057358,
+          "short_ttft_s": 19.938918300002115,
+          "audit_correct": true,
+          "short_reply": {
+            "check": "COPPER-731",
+            "value": 42,
+            "missing": null
+          },
+          "completion_tokens": [
+            3072,
+            21
+          ]
+        },
+        {
+          "wall_s": 27.757308200001717,
+          "aggregate_tok_s": 111.43011338541137,
+          "long_wall_s": 27.295286199980183,
+          "long_ttft_s": 1.248284600005718,
+          "short_ttft_s": 20.554308199993102,
+          "audit_correct": true,
+          "short_reply": {
+            "check": "COPPER-731",
+            "value": 42,
+            "missing": null
+          },
+          "completion_tokens": [
+            3072,
+            21
+          ]
+        },
+        {
+          "wall_s": 26.24586680001812,
+          "aggregate_tok_s": 117.84712707594267,
+          "long_wall_s": 25.77988070002175,
+          "long_ttft_s": 1.2681315000227187,
+          "short_ttft_s": 19.017171900020912,
+          "audit_correct": true,
+          "short_reply": {
+            "check": "COPPER-731",
+            "value": 42,
+            "missing": null
+          },
+          "completion_tokens": [
+            3072,
+            21
+          ]
+        }
+      ],
+      "short_ttft_s": {
+        "n": 3,
+        "median": 19.938918300002115,
+        "p95_nearest_rank": 20.554308199993102,
+        "max": 20.554308199993102
+      },
+      "aggregate_tok_s": {
+        "n": 3,
+        "median": 114.00803240217871,
+        "p95_nearest_rank": 117.84712707594267,
+        "max": 117.84712707594267
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 27.12966740000411,
+        "p95_nearest_rank": 27.757308200001717,
+        "max": 27.757308200001717
+      }
+    },
+    "priority": {
+      "pairs": [
+        {
+          "wall_s": 28.614798099995824,
+          "aggregate_tok_s": 108.09092516366388,
+          "long_wall_s": 28.614798099995824,
+          "long_ttft_s": 0.8802899000002071,
+          "short_ttft_s": 0.9004729999869596,
+          "audit_correct": true,
+          "short_reply": {
+            "check": "COPPER-731",
+            "value": 42,
+            "missing": null
+          },
+          "completion_tokens": [
+            3072,
+            21
+          ]
+        },
+        {
+          "wall_s": 27.052664300019387,
+          "aggregate_tok_s": 114.33254653582432,
+          "long_wall_s": 27.052664300019387,
+          "long_ttft_s": 1.240275100019062,
+          "short_ttft_s": 0.5586047999968287,
+          "audit_correct": true,
+          "short_reply": {
+            "check": "COPPER-731",
+            "value": 42,
+            "missing": null
+          },
+          "completion_tokens": [
+            3072,
+            21
+          ]
+        },
+        {
+          "wall_s": 27.21705939999083,
+          "aggregate_tok_s": 113.6419608946087,
+          "long_wall_s": 27.21705939999083,
+          "long_ttft_s": 1.2143431000004057,
+          "short_ttft_s": 0.5436667000176385,
+          "audit_correct": true,
+          "short_reply": {
+            "check": "COPPER-731",
+            "value": 42,
+            "missing": null
+          },
+          "completion_tokens": [
+            3072,
+            21
+          ]
+        }
+      ],
+      "short_ttft_s": {
+        "n": 3,
+        "median": 0.5586047999968287,
+        "p95_nearest_rank": 0.9004729999869596,
+        "max": 0.9004729999869596
+      },
+      "aggregate_tok_s": {
+        "n": 3,
+        "median": 113.6419608946087,
+        "p95_nearest_rank": 114.33254653582432,
+        "max": 114.33254653582432
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 27.21705939999083,
+        "p95_nearest_rank": 28.614798099995824,
+        "max": 28.614798099995824
+      }
+    },
+    "median_changes": {
+      "short_ttft_percent": -97.19841973575483,
+      "aggregate_throughput_percent": -0.32109273343008393,
+      "pair_wall_percent": 0.3221270600122006
+    }
+  },
+  "pre_exception_fix_restoration": {
+    "started": 1792186968.5451994,
+    "success": true,
+    "restored": true,
+    "finished": 1792191636.4317083
+  },
+  "pre_exception_fix_recovery": {
+    "failure-delivery": {
+      "elapsed_s": 1.4467651000013575,
+      "errors": [
+        "RuntimeError: Stream ended without a terminal success event",
+        "RuntimeError: {\"id\": \"resp_415ab4d4c4894b1babb116f331e3f618\", \"object\": \"response\", \"created_at\": 1792191234, \"status\": \"failed\", \"background\": false, \"error\": {\"code\": \"server_error\", \"message\": \"the engine stopped unexpectedly (exit code 4294967295); the next request restarts it\"}, \"incomplete_details\": null, \"instructions\": null, \"max_output_tokens\": 6000, \"model\": \"qwen3.8-flash-next-iq3_s\", \"output\": [], \"parallel_tool_calls\": true, \"previous_response_id\": null, \"reasoning\": {\"effort\": \"none\", \"summary\": null}, \"store\": false, \"temperature\": 0, \"text\": {\"format\": {\"type\": \"text\"}}, \"tool_choice\": {\"type\": \"function\", \"name\": \"record_items\"}, \"tools\": [{\"type\": \"function\", \"name\": \"record_items\", \"description\": \"Synthetic manifest, never executed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"session\": {\"type\": \"string\"}, \"items\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"session\", \"items\"]}}], \"top_p\": null, \"truncation\": \"disabled\", \"usage\": null, \"user\": null, \"metadata\": {}}"
+      ]
+    },
+    "engine-recovery": {
+      "wall_s": 23.629287799994927,
+      "success": true
+    },
+    "accepted_for_release": false,
+    "defect": "Script launch imports a second EngineDied class: parked Chat closes without a structured error. Corrected and retested below."
+  },
+  "earlier_python_tests": {
+    "total": 797,
+    "passed": 789,
+    "skipped": 8,
+    "seconds": 296.016
+  },
+  "python_tests": {
+    "python": "3.11.7",
+    "regex": "2026.9.10",
+    "total": 798,
+    "passed": 790,
+    "skipped": 8,
+    "seconds": 296.962
+  },
+  "final_lifecycle": {
+    "summary": {
+      "success": false,
+      "requests": {
+        "requests": 15,
+        "completed": 10,
+        "intentional_cancellations": 3,
+        "unexpected_transport_errors": [],
+        "validation_failures": [],
+        "quick": {
+          "count": 0,
+          "p50_ttft_s": null,
+          "p95_ttft_s": null,
+          "max_ttft_s": null
+        },
+        "completed_output_tokens": 11060,
+        "expected_injected_engine_failures": [
+          {
+            "label": "engine-death-active-responses",
+            "error": "RuntimeError: {\"id\": \"resp_71df1ca4a51e42f0af61a90ef8f449a2\", \"object\": \"response\", \"created_at\": 1792191790, \"status\": \"failed\", \"background\": false, \"error\": {\"code\": \"server_error\", \"message\": \"the engine stopped unexpectedly (exit code 4294967295); the next request restarts it\"}, \"incomplete_details\": null, \"instructions\": null, \"max_output_tokens\": 6000, \"model\": \"qwen3.8-flash-next-iq3_s\", \"output\": [], \"parallel_tool_calls\": true, \"previous_response_id\": null, \"reasoning\": {\"effort\": \"none\", \"summary\": null}, \"store\": false, \"temperature\": 0, \"text\": {\"format\": {\"type\": \"text\"}}, \"tool_choice\": {\"type\": \"function\", \"name\": \"record_items\"}, \"tools\": [{\"type\": \"function\", \"name\": \"record_items\", \"description\": \"Synthetic manifest, never executed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"session\": {\"type\": \"string\"}, \"items\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"session\", \"items\"]}}], \"top_p\": null, \"truncation\": \"disabled\", \"usage\": null, \"user\": null, \"metadata\": {}}",
+            "status": 200
+          },
+          {
+            "label": "engine-death-paused-chat",
+            "error": "RuntimeError: {'type': 'server_error', 'message': 'the engine stopped while this request was paused; the next request restarts it'}",
+            "status": 200
+          }
+        ]
+      },
+      "controller_postprocessing_failure": "Final comparison JSON was saved as UTF-8 but the Windows controller read it as GBK. Revalidated retained original files explicitly as UTF-8; no model requests repeated."
+    },
+    "request_file": "final-lifecycle-requests.jsonl",
+    "failure_delivery": {
+      "elapsed_s": 1.2284260999877006,
+      "errors": [
+        "RuntimeError: {'type': 'server_error', 'message': 'the engine stopped while this request was paused; the next request restarts it'}",
+        "RuntimeError: {\"id\": \"resp_71df1ca4a51e42f0af61a90ef8f449a2\", \"object\": \"response\", \"created_at\": 1792191790, \"status\": \"failed\", \"background\": false, \"error\": {\"code\": \"server_error\", \"message\": \"the engine stopped unexpectedly (exit code 4294967295); the next request restarts it\"}, \"incomplete_details\": null, \"instructions\": null, \"max_output_tokens\": 6000, \"model\": \"qwen3.8-flash-next-iq3_s\", \"output\": [], \"parallel_tool_calls\": true, \"previous_response_id\": null, \"reasoning\": {\"effort\": \"none\", \"summary\": null}, \"store\": false, \"temperature\": 0, \"text\": {\"format\": {\"type\": \"text\"}}, \"tool_choice\": {\"type\": \"function\", \"name\": \"record_items\"}, \"tools\": [{\"type\": \"function\", \"name\": \"record_items\", \"description\": \"Synthetic manifest, never executed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"session\": {\"type\": \"string\"}, \"items\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"session\", \"items\"]}}], \"top_p\": null, \"truncation\": \"disabled\", \"usage\": null, \"user\": null, \"metadata\": {}}"
+      ]
+    },
+    "recovery": {
+      "wall_s": 23.620697599981213,
+      "success": true
+    },
+    "recovery_scheduler": {
+      "enabled": true,
+      "preemptions": 3,
+      "resume_prompt_read": 1,
+      "resume_prefix_missed": 0,
+      "waiting": 0,
+      "paused": 0
+    },
+    "responses": {
+      "one_call": true,
+      "items_correct": 450,
+      "tool_result_recalled": true,
+      "short_ttft_s": 0.508349800016731
+    },
+    "post_cancel_scheduler": {
+      "queued": {
+        "enabled": true,
+        "preemptions": 0,
+        "resume_prompt_read": 0,
+        "resume_prefix_missed": 0,
+        "waiting": 0,
+        "paused": 0
+      },
+      "active": {
+        "enabled": true,
+        "preemptions": 0,
+        "resume_prompt_read": 0,
+        "resume_prefix_missed": 0,
+        "waiting": 0,
+        "paused": 0
+      },
+      "paused": {
+        "enabled": true,
+        "preemptions": 1,
+        "resume_prompt_read": 0,
+        "resume_prefix_missed": 0,
+        "waiting": 0,
+        "paused": 0
+      }
+    }
+  },
+  "comparison": {
+    "baseline": {
+      "pairs": [
+        {
+          "wall_s": 28.50476200002595,
+          "aggregate_tok_s": 108.50818540415052,
+          "long_wall_s": 27.32078590002493,
+          "short_ttft_s": 21.29899579999619,
+          "audit_correct": true,
+          "short_reply": {
+            "check": "COPPER-731",
+            "value": 42,
+            "missing": null
+          },
+          "prompt_tokens": [
+            128201,
+            39
+          ],
+          "completion_tokens": [
+            3072,
+            21
+          ]
+        },
+        {
+          "wall_s": 26.907940100005362,
+          "aggregate_tok_s": 114.94748347531008,
+          "long_wall_s": 26.43278060000739,
+          "short_ttft_s": 19.683781100000488,
+          "audit_correct": true,
+          "short_reply": {
+            "check": "COPPER-731",
+            "value": 42,
+            "missing": null
+          },
+          "prompt_tokens": [
+            128201,
+            39
+          ],
+          "completion_tokens": [
+            3072,
+            21
+          ]
+        },
+        {
+          "wall_s": 27.3618359999964,
+          "aggregate_tok_s": 113.04065999081374,
+          "long_wall_s": 26.89061479998054,
+          "short_ttft_s": 20.12819920000038,
+          "audit_correct": true,
+          "short_reply": {
+            "check": "COPPER-731",
+            "value": 42,
+            "missing": null
+          },
+          "prompt_tokens": [
+            128201,
+            39
+          ],
+          "completion_tokens": [
+            3072,
+            21
+          ]
+        }
+      ],
+      "short_ttft_s": {
+        "n": 3,
+        "median": 20.12819920000038,
+        "p95_nearest_rank": 21.29899579999619,
+        "max": 21.29899579999619
+      },
+      "aggregate_tok_s": {
+        "n": 3,
+        "median": 113.04065999081374,
+        "p95_nearest_rank": 114.94748347531008,
+        "max": 114.94748347531008
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 27.3618359999964,
+        "p95_nearest_rank": 28.50476200002595,
+        "max": 28.50476200002595
+      }
+    },
+    "priority": {
+      "pairs": [
+        {
+          "wall_s": 28.86911989998771,
+          "aggregate_tok_s": 107.13870082341225,
+          "long_wall_s": 28.86911989998771,
+          "short_ttft_s": 0.9678348999877926,
+          "audit_correct": true,
+          "short_reply": {
+            "check": "COPPER-731",
+            "value": 42,
+            "missing": null
+          },
+          "prompt_tokens": [
+            128201,
+            39
+          ],
+          "completion_tokens": [
+            3072,
+            21
+          ]
+        },
+        {
+          "wall_s": 27.876001800002996,
+          "aggregate_tok_s": 110.95565361886537,
+          "long_wall_s": 27.876001800002996,
+          "short_ttft_s": 0.552234699978726,
+          "audit_correct": true,
+          "short_reply": {
+            "check": "COPPER-731",
+            "value": 42,
+            "missing": null
+          },
+          "prompt_tokens": [
+            128201,
+            39
+          ],
+          "completion_tokens": [
+            3072,
+            21
+          ]
+        },
+        {
+          "wall_s": 28.427531099994667,
+          "aggregate_tok_s": 108.80297656241348,
+          "long_wall_s": 28.427531099994667,
+          "short_ttft_s": 0.5614847999822814,
+          "audit_correct": true,
+          "short_reply": {
+            "check": "COPPER-731",
+            "value": 42,
+            "missing": null
+          },
+          "prompt_tokens": [
+            128201,
+            39
+          ],
+          "completion_tokens": [
+            3072,
+            21
+          ]
+        }
+      ],
+      "short_ttft_s": {
+        "n": 3,
+        "median": 0.5614847999822814,
+        "p95_nearest_rank": 0.9678348999877926,
+        "max": 0.9678348999877926
+      },
+      "aggregate_tok_s": {
+        "n": 3,
+        "median": 108.80297656241348,
+        "p95_nearest_rank": 110.95565361886537,
+        "max": 110.95565361886537
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 28.427531099994667,
+        "p95_nearest_rank": 28.86911989998771,
+        "max": 28.86911989998771
+      }
+    },
+    "median_changes": {
+      "short_ttft_percent": -97.2104568600341,
+      "aggregate_throughput_percent": -3.7488134169993637,
+      "pair_wall_percent": 3.894823066691888
+    }
+  },
+  "final_restoration": {
+    "started": 1792191662.526651,
+    "success": false,
+    "error": "Final comparison JSON was saved as UTF-8 but the Windows controller read it as GBK. Revalidated retained original files explicitly as UTF-8; no model requests repeated.",
+    "restored": true,
+    "finished": 1792192195.793014,
+    "model": "qwen3.8-flash-next-sc117-abliterated-iq3_s"
+  },
+  "saved_output_validation": {
+    "success": true,
+    "validated_pairs": 6,
+    "validated_lifecycle_requests": 15,
+    "strict_json_types": true,
+    "all_post_cancel_queues_idle": true,
+    "engine_errors_structured": true,
+    "fresh_request_recovery": true,
+    "controller_postprocessing_failure": "Final comparison JSON was saved as UTF-8 but the Windows controller read it as GBK. Revalidated retained original files explicitly as UTF-8; no model requests repeated."
+  },
+  "default_path_verification": {
+    "upstream": "296b59d",
+    "runtime": "69a6b86",
+    "dispatch_ast_identical": true,
+    "protocol_body_ast_identical": true
+  }
+}
