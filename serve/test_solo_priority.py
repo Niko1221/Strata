@@ -247,6 +247,51 @@ class Streaming(unittest.TestCase):
         self.assertEqual(self.sched.requests, [])
         self.assertEqual(self.sched.waiters, [])
 
+    def test_parked_failure_uses_the_launching_server_exception_class(self):
+        # `python serve/server.py` and `import serve.server` create distinct
+        # EngineDied classes. Loading a second module reproduces that identity
+        # split without starting an HTTP listener or changing this test runner.
+        import importlib.util
+        import subprocess
+        source = Path(__file__).with_name('server.py')
+        spec = importlib.util.spec_from_file_location('solo_server_launch_test', source)
+        launched = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(sys.modules, {spec.name: launched}):
+            spec.loader.exec_module(launched)
+            from serve.server import EngineDied
+            self.assertIsNot(launched.EngineDied, EngineDied)
+            with mock.patch.object(launched, 'popen', side_effect=lambda what, args, **kw:
+                                   subprocess.Popen([sys.executable, '-u', str(Path(self.tmp.name) / 'fake.py')], **kw)):
+                engine = launched.StrataEngine('fake', [])
+            self.addCleanup(engine.close)
+            single = engine._generate_single
+            def finish_exit(ids, *args, **kwargs):
+                try:
+                    yield from single(ids, *args, **kwargs)
+                finally:
+                    if ids[0] == 3:
+                        # Finish the process exit before releasing this turn,
+                        # so the parked request takes the scheduler's error path
+                        # rather than racing into a broken native pipe.
+                        engine.proc.wait(timeout=5)
+            engine._generate_single = finish_exit
+            service = launched.Service(engine, launched.ByteTokenizer(),
+                                       ChatTemplate(Path(__file__).with_name('chat_template.jinja')))
+            enable(service, {'solo_priority': True, 'args': ['--conversation-cache-mib', '32768']})
+            service.solo_scheduler.quantum_s = .01
+            def run(marker, priority):
+                return list(service.run([marker, 999], False, self.tools if marker == 1 else None,
+                                        2000, {'priority': priority}, threading.Event()))
+            parked = self.pool.submit(run, 1, 0)
+            self.wait_for(lambda: service.solo_scheduler.locked())
+            failed = self.pool.submit(run, 3, 5)
+            with self.assertRaises(ValueError):
+                failed.result(8)
+            with self.assertRaises(launched.EngineDied):
+                parked.result(8)
+            self.assertEqual(service.solo_scheduler.requests, [])
+            self.assertEqual(service.solo_scheduler.waiters, [])
+
     def test_close_generator_while_paused_does_not_release_other_owner(self):
         closed = threading.Event()
         def run():
