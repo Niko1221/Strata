@@ -401,6 +401,18 @@ last `<|im_start|>`, where its latest reply begins), it first copies the main se
 checkpoint) into idle slot B - never the slot it restores from or is admitted to - and says
 `PARKED B <tokens>`. Copying 36-37K tokens took 414-451 ms (five runs, the machine above).
 
+### Engine: more than one checkpoint per slot (`STRATA_SLOT_CHECKPOINTS=N`)
+
+A slot that receives the main session's conversation (`park=B`, an admission that continues in its slot) keeps one
+checkpoint of it: the deepest. A client that rewrites the end of its history every time leaves that one behind:
+Claude Code's safety classifier inserts each query's new tool calls before the closing text of its transcript, so
+the next query branches a few dozen tokens before the end, and its whole prompt was read again (42-74K tokens,
+15.6-27.4 s per query on the machine above). With `STRATA_SLOT_CHECKPOINTS=N` (N > 1; unset: 1) the slot keeps the
+main session's N deepest checkpoints of that conversation (one per length), a restore from a slot checkpoint brings
+the slot's shallower ones back with it, and the engine logs `slot 2 keeps 2 checkpoints (at 32768 43372; 227.5 MiB)`
+(each is a whole running state, about 114 MiB on Qwen3.8-Flash-Next). Alone it lets such a query resume at the last
+periodic checkpoint (`--prompt-cache-every`, up to 16K tokens before the branch).
+
 ### Server: placement by what the slots hold (`STRATA_SLOT_CACHE_AFFINITY=1`)
 
 With `"env": {"STRATA_SLOT_CACHE_AFFINITY": "1"}` in the server config and pipelined groups, `pick_slot` asks the
