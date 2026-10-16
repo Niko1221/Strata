@@ -959,6 +959,8 @@ class StrataEngine:
         # the slot that has its start (the engine checks it again); when the slot was last used
         self.slot_held: list[list[int]] = [[] for _ in range(self.batch)]
         self.slot_used = [0.0] * self.batch
+        # engine BCHECKS (STRATA_SLOT_CHECKPOINTS > 1): the lengths of each slot's checkpoints, for the placement hint
+        self.slot_checks: list[tuple[int, ...]] = [() for _ in range(self.batch)]
         # park=: what the engine's main (solo) session holds, as far as this server knows, and slots claimed for a
         # park= copy of it until the engine says PARKED
         self.main_held: list[int] = []
@@ -997,6 +999,10 @@ class StrataEngine:
         slot_q = self.slot_q
         line = None
         for line in proc.stdout:
+            if line.startswith("BCHECKS "):            # information only: never a control or slot line
+                if self.proc is proc:
+                    self._observe_checks(line)
+                continue
             if self.proc is proc and self.slot_cache_affinity and line.startswith(("BT ", "BDONE ", "BADM ")):
                 self._observe_cache_line(line)
             # checked before batch routing: a fatal line is never a slot's own
@@ -1078,6 +1084,26 @@ class StrataEngine:
                 self.slot_cv.notify_all()
         except (IndexError, ValueError):
             return
+
+    def _observe_checks(self, line: str) -> None:
+        """BCHECKS <slot> <tokens held> <checkpoint lengths...>: where the engine's checkpoints of what <slot> now
+        holds are.  Only the placement hint reads them; the engine checks the tokens again when it reuses one."""
+        f = line.split()
+        try:
+            b, held, at = int(f[1]), int(f[2]), sorted(int(x) for x in f[3:])
+        except (IndexError, ValueError):
+            return
+        checks = getattr(self, "slot_checks", None)
+        if checks is not None and 0 <= b < len(checks):
+            with self.slot_cv:
+                checks[b] = tuple(p for p in at if 0 < p < held)
+
+    def _forget_checks(self, b) -> None:
+        """The engine is about to overwrite slot b (an admission, a park, a read giving way into it): its reported
+        checkpoints no longer describe it until its next BCHECKS."""
+        checks = getattr(self, "slot_checks", None)
+        if checks is not None and b is not None and 0 <= b < len(checks):
+            checks[b] = ()
 
     def death_note(self) -> str:
         """Why the engine most likely ended, from the end of its log: its own watchdog (issue #29), else RAM."""
@@ -1726,6 +1752,7 @@ class StrataEngine:
                                 if reserved is not None:
                                     self.slot_busy[reserved] = True
                                     self.slot_claims.add(reserved)
+                                    self._forget_checks(reserved)
                             if reserved is not None:
                                 self._send(f"BYIELD {reserved}")
                     for x in self._control(cancel, pending.append, stop_when=others, on_quiet=give_way):
@@ -1852,6 +1879,7 @@ class StrataEngine:
                     tl.cache_match_hint = getattr(plan, "reused_hint", None)
                     self.slot_live[slot] = live
                     self._last_done = None                  # (#879: this admission's DONE decides below)
+                    self._forget_checks(slot)
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     self.slot_held[slot] = []               # the admission overwrites what the slot held
                     phase = "admit"
@@ -2080,6 +2108,7 @@ class StrataEngine:
                 self.slot_busy[b] = True
                 self.slot_claims.add(b)
                 self._park_claims.add(b)
+                self._forget_checks(b)
                 self._park_main, self._park_peer = list(main), getattr(self, "main_peer", None)
                 self._park_used = main_used
         # outside slot_cv: cache_event takes its own lock
@@ -2117,7 +2146,8 @@ class StrataEngine:
         if gs and self.slot_cache_affinity:
             self.slot_last_plan = slot_policy.place(prompt, self.slot_busy, self.slot_held, self.slot_used,
                 self.slot_order, gs, time.time(), valid=getattr(self, "slot_cache_valid", None),
-                prefill_rate=getattr(self, "prefill_tok_s_mean", None), padding_safe=self.slot_padding_safe)
+                prefill_rate=getattr(self, "prefill_tok_s_mean", None), padding_safe=self.slot_padding_safe,
+                checks=getattr(self, "slot_checks", None))
             return self.slot_last_plan.slot
 
         free = [b for b in self.slot_order if not self.slot_busy[b]]
@@ -2171,6 +2201,8 @@ class StrataEngine:
             r = self.slot_live[b]
             if r is None:
                 row = {"slot": b, "state": "idle", "held_tokens": len(self.slot_held[b])}
+                if getattr(self, "slot_checks", None):
+                    row["checkpoint_tokens"] = list(self.slot_checks[b])
                 if self.slot_cache_affinity and getattr(self, "slot_gs", 0):
                     validity = getattr(self, "slot_cache_valid", [True] * self.batch)[b]
                     c = slot_policy.cache_state(len(self.slot_held[b]), self.slot_used[b], now,

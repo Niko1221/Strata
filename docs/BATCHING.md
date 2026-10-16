@@ -750,6 +750,7 @@ On top of `GEN` / `GENI`:
 | `CACHE_SOURCE <slot> <tokens>` | out | `STRATA_PIPELINE_ACTIVE_ROWS=1`, after a prompt's restore: the idle slot its reused prefix came from (-1: the main session, a checkpoint or the conversation cache) and how long it is |
 | `park=B` (a key of `GEN` / `BGEN`) | in | with `INFO slot_park=1`: before a different conversation replaces the main session's, copy that one into idle slot B |
 | `PARKED <slot> <tokens>` | out | `park=` copied that many tokens into the slot (0: the copy failed, the slot holds nothing usable) |
+| `BCHECKS <slot> <tokens> <lengths>` | out | `STRATA_SLOT_CHECKPOINTS` > 1: after `PARKED`, `BADM 1` and `BYIELD`, what the slot holds and the lengths of the checkpoints it keeps (the server's placement hint, `/metrics` `checkpoint_tokens`) |
 
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.

@@ -10852,6 +10852,16 @@ int main(int argc, char** argv) {
                              sl.checks.size(), sl.checks.size() == 1 ? "" : "s", at.empty() ? "-" : at.c_str(),
                              bytes / 1048576.0);
         };
+        // ... and then says where they are: `BCHECKS <slot> <tokens held> <checkpoint lengths...>` after the slot's
+        // conversation changed (BADM, PARKED, a read that gave way), for the server's placement hint only (what a
+        // slot's checkpoints still cover of a prompt that is no continuation of it); the engine decides the reuse
+        auto say_checks = [&](int b) {
+            if (slot_checkpoints <= 1) return;
+            const BSlot& sl = bs[(size_t) b];
+            std::string at;
+            for (const ConvCheckpoint& c : sl.checks) at += " " + std::to_string(c.ids.size());
+            std::printf("BCHECKS %d %zu%s\n", b, sl.ids.size(), at.c_str());
+        };
         // slot b's sessions -> the main ones (the reverse of copy_to_slot): a request that continues the
         // conversation an idle slot holds reads on from there.  Every stage, the same calls.
         // `at`: one of the slot's checkpoints - only the K/V up to it is copied and its state restored instead
@@ -12163,6 +12173,7 @@ int main(int argc, char** argv) {
                                          "%.1f ms)\n", req_park, live.size(),
                                  std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
                     std::printf("PARKED %d %zu\n", req_park, sl.img ? (size_t) 0 : live.size());
+                    if (!sl.img) say_checks(req_park);
                 } else {
                     std::fprintf(stderr, "strata batch: parking into slot %d failed (%s)\n", req_park, err.c_str());
                     err.clear();
@@ -12969,6 +12980,7 @@ int main(int argc, char** argv) {
                                 sl.checks.push_back(c);
                         yielded_at = q;
                         yielded_slot = ys;
+                        say_checks(ys);
                         std::fprintf(stderr, "strata batch: the prompt read gives way at %lld of %lld tokens; slot %d "
                                              "holds it (copied in %.1f ms)\n", (long long) q, (long long) n, ys,
                                      std::chrono::duration<double, std::milli>(Clock::now() - ty).count());
@@ -14867,6 +14879,7 @@ int main(int argc, char** argv) {
                     }
                 }
                 std::printf("BADM %d %d\n", admit_slot, cont ? 1 : 0);
+                if (cont && !bs[(size_t) admit_slot].img) say_checks(admit_slot);
                 if (trace && piped && cont) {
                     rows_wait = "the admission";
                     rows_wait_t = Clock::now();
