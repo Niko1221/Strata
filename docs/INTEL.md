@@ -844,6 +844,88 @@ gate identical in the 32K and the 128K configuration); every one has an off swit
   miss-first or hit-first group order in the device plan (-3% / -7%), spreading the expert chains over several queues (one compute engine),
   `STRATA_LFUSE`, `STRATA_VERIFY_EAGER`.
 
+## `STRATA_HC_Q8=1` on SYCL: the Q8_0 hyper-connection read (2026-10-16)
+
+`STRATA_HC_Q8=1` (docs/QUANTS.md: the hyper-connection down / up projections read as Q8_0 instead of BF16, an opt-in
+on CUDA, the default on AMD gfx12) did nothing on the SYCL port: the loader kept a Q8_0 copy only when the GGUF
+stored the projections as Q8_0 (the Unsloth files; the ISTA files store them as BF16, so nothing was copied and the
+log said `0.00 GiB`), and the port's `fused_gr_read_multi` never had the Q8_0 read - it ignored `q8_down` / `q8_up`
+and read the BF16 copies either way. The flag cost VRAM on the Unsloth files and changed nothing on any file.
+
+Now, with the flag, the loader quantizes BF16 projections to Q8_0 at load (ggml's rounding, `d = amax / 127` as fp16,
+on the host; a GGUF's own Q8_0 blocks are taken as they are) and the read uses them: two kernels, one row per
+16-lane sub-group lane, the per-stream norm and the partial sums folded into the down kernel (the last work-group of
+a row group to arrive finishes it, so no co-residency is assumed), K split over the sub-groups in the up kernel.
+The inject rows stay BF16 (`STRATA_HC_Q8_INJECT` has no effect here). The default (flag unset) is the same code as
+before: the Q8_0 pointers are null and the hook returns to the BF16 read; outputs and draft counts were identical to
+`main` on the fixed prompts below.
+
+**VRAM.** The BF16 copies stay in the arena (the prompt path's GEMMs read them), so on this port the flag ADDS the
+Q8_0 bytes instead of halving them as on a single CUDA GPU: 0.63 GiB for Flash-Next (48 layers x 4 projections + the
+final mixer, 3.32 MiB each; on the two-card layer split below 0.40 + 0.24 GiB), which comes out of the expert cache.
+On 2x B70 with `--layer-split 30` the model that ran at `--max-context 65536` without the flag refused 310 experts
+with it (132 at 32768 with the default 1,024 MiB reserve); the comparison below ran at `--max-context 32768
+--vram-reserve-mib 512`. Dropping the BF16 copies (CUDA's `add_hc_skip` / `hc_bf16_view`) is not ported.
+
+**What changes in the output.** The Q8_0 read is NOT bitwise the BF16 read - it reads Q8_0-rounded weights and sums in
+another order, as `STRATA_HC_Q8=1` does on CUDA (`fused_gr.cu`, "an output-changing step"). `gr_q8_parity
+--selftest` checks it against an FP64 reference computed from the very Q8_0 bytes it reads (T = 1..8, with and
+without the pending write and the inject rows): lo / rs / inject / mixed within FP32 summation rounding (1e-4 of the
+largest value), R_out bitwise the BF16 read's, a captured graph replayed twice bitwise the direct call, arguments not
+at the callers' fixed strides fall back to the BF16 read bitwise; 33 of 33 cases pass on the B70. On the model, the
+teacher-forced NLL of 4,762 tokens of three texts through the decode windows (same targets, same binary) was 3.1974
+with the flag unset and 3.1699 with it set: no degradation measured on this gate (the gate's own spread between
+rounding-only variants is of the order of 0.01-0.1 nats per token, so this is not a measured improvement either).
+
+**Speed** (2x Arc Pro B70 32 GB, kernel 7.1, Compute Runtime 26.22.38646.4, oneAPI 2026.1, AOT bmg-g31; Flash-Next
+ISTA GSQ-RCO IQ3_XXS, `--layer-split 30 --prefill 8192 --kv int8 --spec 4 --mtp <BF16 draft layer> --mtp-max-t 4
+--spec-min-p 0 --stream-experts --expert-cache auto --max-context 32768 --vram-reserve-mib 512`, one slot, greedy,
+a fixed prompt with a 512-token coding reply, 3 runs, same binary, flag unset vs set): the verify window 39.4 / 39.6 /
+39.8 -> 37.4 / 37.5 / 37.4 ms (-5.3%, independent of draft acceptance); decode 81.8 / 79.4 / 78.5 -> 85.0 / 88.0 /
+86.0 tok/s (median 79.4 -> 86.0, +8.3%, part of it a different acceptance of the changed output: drafts accepted
+353/474, 349/489, 348/492 -> 351/489, 357/471, 353/483); prompt reading unchanged (4K 1,093 / 1,190 -> 1,093 / 1,188
+tok/s, 16K 1,774 / 1,749 -> 1,769 / 1,750). Kernel level (one card, graph replay, random weights not L2-resident, us per
+read, BF16 -> Q8_0): T = 1 38.7 -> 24.7, T = 4 50.8 -> 29.3, T = 6 62.0 -> 34.4. The down kernel's shape (4 rows per
+lane x 32 columns per sub-group) was the fastest of (1..8 rows) x (32..160 columns) tried.
+
+Switches: `STRATA_HC_Q8=1` on (unset or `0`: off, the BF16 read as before).
+
+## `STRATA_GR_FUSED=1` on SYCL: the two-kernel BF16 hyper-connection read (2026-10-16, opt-in)
+
+The port's default hyper-connection read is four launches per layer half (the norm per token and stream, the sliced
+down projection, its reduce, the up projection); at T = 6 rows they take 5.8 + 22.7 + 2.7 + 30.2 us on the B70, and
+the down / up kernels grow ~1.7 / 3 us per extra row - latency and issue, not DRAM (the weights are 13.2 MB a read).
+`STRATA_GR_FUSED=1` runs the BF16 weights through the structure of the Q8_0 read above: one row per 16-lane
+sub-group lane with the activations uniform across the sub-group, the norm and the partial reduction folded into the
+down kernel (the last work-group of a row group to arrive finishes it; nothing waits), K split over the sub-groups in
+the up kernel. Two launches instead of four. The weights are the same BF16 bytes; no extra VRAM. With `STRATA_HC_Q8=1`
+the Q8_0 read runs instead (it has the pointers; this flag then changes nothing). Unset, the default read runs
+unchanged: outputs and draft counts identical to `main` on the fixed prompts below.
+
+**What changes in the output.** NOT bitwise the default read. The per-element arithmetic is the default read's (the
+same fma chains, the same epilogue: R_out, the pending write, IS bitwise), but the down projection and the up
+projection are summed in another order (slabs of 1,280 columns, 16 sub-group partials; K quarters), so lo, rs and
+mixed differ at FP32 rounding level - the same kind of change as upstream's opt-in `STRATA_GR_V3` read.
+`gr_fused_parity --selftest` checks it (T = 1..8, with and without the pending write and the inject rows): both reads
+within 1e-4 of the largest value of an FP64 reference and of each other, R_out bitwise, a captured graph replayed
+twice bitwise the direct call, arguments not at the callers' fixed strides fall back to the default read bitwise; 33
+of 33 cases pass on the B70. Greedy outputs on the model differ from the default read's after a near-tie, as every
+summation-order change does.
+
+**Speed** (2x Arc Pro B70 32 GB, kernel 7.1, Compute Runtime 26.22.38646.4, oneAPI 2026.1, AOT bmg-g31; Flash-Next
+ISTA GSQ-RCO IQ3_XXS, `--layer-split 30 --prefill 8192 --kv int8 --spec 4 --mtp <BF16 draft layer> --mtp-max-t 4
+--spec-min-p 0 --stream-experts --expert-cache auto --max-context 65536`, one slot, greedy, a fixed prompt with a
+512-token coding reply, 3 runs, `main` vs this read): the verify window 39.4 / 39.5 / 39.7 -> 38.8 / 38.1 / 38.7 ms
+(-2.5%, independent of draft acceptance - the effect of the read); decode 81.8 / 79.5 / 78.7 -> 86.8 / 79.0 / 88.3
+tok/s, whose spread is mostly a different draft acceptance of the changed output (drafts accepted 360/462, 342/510,
+362/456); a turn at a 40,796-token context 76.0 -> 79.4 tok/s (output differs); prompt reading unchanged (4K 993 ->
+986 tok/s, first run). Kernel level (one card, graph replay, random weights not L2-resident, us per read, default ->
+two-kernel): T = 1 38.7 -> 34.8 (-10%), T = 4 50.8 -> 41.5 (-18%), T = 6 62.0 -> 47.1 (-24%). Of the down kernel's
+shapes (rows per lane x columns per sub-group) at T = 6, (1, 80) 30.6, (2, 40) 26.9, (1, 40) 30.2, (2, 80) 23.6 us:
+(2, 80) is the one built.
+
+Switches: `STRATA_GR_FUSED=1` on (unset or `0`: off, the default read, byte-identical).
+
 ## Measured, 2026-10-01, Arc Pro B70, Coder IQ1_M, 32K context, INT8 KV: the SYCL port (engine 0.1.31-sycl)
 
 | | |
