@@ -1,0 +1,3 @@
+﻿killed strata pid 32872
+still: strata-vision 41508
+RAM Free=112.3GB Used=15.6GB

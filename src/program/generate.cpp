@@ -7076,7 +7076,7 @@ int main(int argc, char** argv) {
                         : multi_gpu && srcp == &arena_src ? "not with a layer split in the arena mode"
                         : o.pipeline_windows >= 2 && srcp == &arena_src ? "not with --pipeline-windows 2 in the arena mode"
                         : o.batch > 0 && o.batch_groups > 1 ? "not with --batch-groups (the pipelined slot groups)"
-                        : peer.valid() ? "not with --peer-device"
+                        : (peer != nullptr && peer->valid()) ? "not with --peer-device"
                         : remote_opt ? "not with --remote-expert-opt"
                         : o.pipeline_windows >= 2 && !pl_async ? "not with --pipeline-windows 2 (STRATA_PIPELINE_ADAPT_ASYNC=0)"
                         : nullptr;
@@ -8829,7 +8829,7 @@ int main(int argc, char** argv) {
         // The predicates are side-effect free, so they are read in both states: they name why it could not run.
         const bool aov_want = adapt_overlap();
         const char* aov_why = multi_gpu || !stages.empty() ? "not on a layer split"
-                              : peer.valid() ? "not with --peer-device"
+                              : (peer != nullptr && peer->valid()) ? "not with --peer-device"
                               : remote_opt ? "not with --remote-expert-opt"
                               : o.adapt_async ? "not with --adapt-async"
                               : o.pipeline_windows > 0 ? "not with --pipeline-windows"

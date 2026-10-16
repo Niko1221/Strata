@@ -1,0 +1,6 @@
+﻿31016	python	WS=0.20GB	Priv=0.18GB
+41808	python	WS=0.00GB	Priv=0.00GB
+32872	strata	WS=53.11GB	Priv=67.04GB
+41508	strata-vision	WS=1.01GB	Priv=1.94GB
+---
+RAM Total=127.9GB Free=58.6GB Used=69.3GB

@@ -1,0 +1,25 @@
+=== STRATA_POOL_SOLO=0 -> /g/01_Projects/Strata/bench/grid/solo0-0.log
+    speculation              52 rounds of 6, drafts accepted 76 of 102 (0.745), 2.46 tokens per round
+    verify window            wait for rings 16.237  pool 46.176  host 5.227  commit 0.084 ms/round; CPU experts 1.49 distinct / 1.89 routed per layer
+    pool multi               gate/up 5.572  quantize 0.061  down 1.810 ms/round; 20.2 GB/s over the rows phases; CPU pool call 40.928 ms/round
+    dispatch                 plan 1.390  activation quantize 0.607  jobs 0.307  run 38.588 ms/round
+    decode                   128 tokens in 3966.0 ms  ->  32.27 tok/s
+=== STRATA_POOL_SOLO=1 -> /g/01_Projects/Strata/bench/grid/solo1-1.log
+    speculation              51 rounds of 6, drafts accepted 77 of 99 (0.778), 2.51 tokens per round
+    verify window            wait for rings 16.106  pool 39.206  host 0.017  commit 0.086 ms/round; CPU experts 1.44 distinct / 1.85 routed per layer
+    pool multi               gate/up 5.512  quantize 0.059  down 1.810 ms/round; 19.7 GB/s over the rows phases; CPU pool call 39.171 ms/round
+    dispatch                 plan 1.406  activation quantize 0.621  jobs 0.301  run 36.809 ms/round
+    decode                   128 tokens in 3531.8 ms  ->  36.24 tok/s
+=== STRATA_POOL_SOLO=1 -> /g/01_Projects/Strata/bench/grid/solo1-1.log
+    speculation              51 rounds of 6, drafts accepted 77 of 99 (0.778), 2.51 tokens per round
+    verify window            wait for rings 16.253  pool 38.893  host 0.015  commit 0.084 ms/round; CPU experts 1.44 distinct / 1.85 routed per layer
+    pool multi               gate/up 5.523  quantize 0.060  down 1.766 ms/round; 19.8 GB/s over the rows phases; CPU pool call 38.857 ms/round
+    dispatch                 plan 1.384  activation quantize 0.606  jobs 0.305  run 36.531 ms/round
+    decode                   128 tokens in 3523.6 ms  ->  36.33 tok/s
+=== STRATA_POOL_SOLO=0 -> /g/01_Projects/Strata/bench/grid/solo0-0.log
+    speculation              52 rounds of 6, drafts accepted 76 of 104 (0.731), 2.46 tokens per round
+    verify window            wait for rings 16.160  pool 39.724  host 0.014  commit 0.087 ms/round; CPU experts 1.46 distinct / 1.88 routed per layer
+    pool multi               gate/up 5.647  quantize 0.060  down 1.852 ms/round; 19.5 GB/s over the rows phases; CPU pool call 39.689 ms/round
+    dispatch                 plan 1.442  activation quantize 0.635  jobs 0.308  run 37.268 ms/round
+    decode                   128 tokens in 3628.7 ms  ->  35.27 tok/s
+=== A/B done

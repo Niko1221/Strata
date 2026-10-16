@@ -1,0 +1,2 @@
+=== ocl: max-new 4 --peer-ocl 0 -> /g/01_Projects/Strata/bench/run-ocl.log
+exit=0

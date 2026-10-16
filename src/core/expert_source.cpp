@@ -3750,7 +3750,11 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         const int tail_rank = tail_skip_rank();
         bool skip_d[kMaxWindowEntries];
         for (int q = 0; q < nd; ++q) skip_d[q] = false;
-        if (tail_rank > 0 && d.peer == nullptr && d.remote_count == 0) {
+        // STRATA_PEER_TAIL_SKIP=1 also applies the tail skip when a second expert tier is attached: the skipped
+        // experts are then neither computed on the peer nor copied, which is what makes the peer's per-layer
+        // round-trip cheaper than the CPU work it replaces.  Off by default (upstream keeps it peer-less).
+        static const bool peer_tail_ok = [] { const char* v = std::getenv("STRATA_PEER_TAIL_SKIP"); return v != nullptr && std::atoi(v) != 0; }();
+        if (tail_rank > 0 && d.remote_count == 0 && (d.peer == nullptr || peer_tail_ok)) {
             int minr[kMaxWindowEntries];
             for (int q = 0; q < nd; ++q) minr[q] = 99;
             for (int64_t i = 0; i < n; ++i) {

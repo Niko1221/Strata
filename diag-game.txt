@@ -1,0 +1,2 @@
+﻿no game processes found
+--- GPU engines via nvidia-smi n/a on AMD; listing strata only
