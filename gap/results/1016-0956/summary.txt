@@ -1,0 +1,21 @@
+=== K_fake_v2 09:56:46
+strata generate: prefill 2047 tokens in 1 chunks, 13679.8 ms (149.6 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+=== K_fake_mpp 09:57:05
+strata generate: prefill 2047 tokens in 1 chunks, 10556.3 ms (193.9 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+=== K_prof_pp 09:57:18
+strata generate: prefill 2047 tokens in 1 chunks, 11108.5 ms (184.3 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+decode                   2 tokens in 441.8 ms  ->  4.53 tok/s
+prefill                  2047 tokens in 11108.5 ms  ->  184.27 tok/s  (time to first token 12298.2 ms)
+=== K_prof_tg 09:57:33
+strata generate: prefill 356 tokens in 1 chunks, 6211.7 ms (57.3 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+decode                   128 tokens in 7866.8 ms  ->  16.27 tok/s
+prefill                  356 tokens in 6211.7 ms  ->  57.31 tok/s  (time to first token 7389.2 ms)
+=== K_kprof_tg 09:57:51
+strata generate: prefill 356 tokens in 1 chunks, 6160.0 ms (57.8 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+decode                   64 tokens in 4234.3 ms  ->  15.11 tok/s
+prefill                  356 tokens in 6160.0 ms  ->  57.79 tok/s  (time to first token 7352.9 ms)
+=== K_tg_16k 09:58:04
+strata generate: prefill 16383 tokens in 1 chunks, 66564.0 ms (246.1 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+decode                   128 tokens in 9042.5 ms  ->  14.16 tok/s
+prefill                  16383 tokens in 66564.0 ms  ->  246.12 tok/s  (time to first token 67723.6 ms)
+=== K_tg_nospec 09:59:23

@@ -1,0 +1,13 @@
+# baseline window: warm up, then pp2048/tg128/pp16k on both binaries, anchored
+# cols: name|binary|extra-env|tokens|maxnew|ctx|extra
+W_warm|/Users/pc/src/Strata/build-metal/strata||t357.txt|8|262144|
+B_pp2048|/Users/pc/src/Strata/build-metal/strata||t2048.txt|2|262144|
+F_pp2048|/Users/pc/src/Strata-fork/build-metal/strata||t2048.txt|2|262144|
+B_pp2048b|/Users/pc/src/Strata/build-metal/strata||t2048.txt|2|262144|
+W2_warm|/Users/pc/src/Strata-fork/build-metal/strata||t357.txt|8|262144|
+B_tg128|/Users/pc/src/Strata/build-metal/strata||t357.txt|128|262144|
+F_tg128|/Users/pc/src/Strata-fork/build-metal/strata||t357.txt|128|262144|
+B_tg128b|/Users/pc/src/Strata/build-metal/strata||t357.txt|128|262144|
+B_pp16k|/Users/pc/src/Strata/build-metal/strata||t16384.txt|2|262144|
+F_pp16k|/Users/pc/src/Strata-fork/build-metal/strata||t16384.txt|2|262144|
+B_pp16kb|/Users/pc/src/Strata/build-metal/strata||t16384.txt|2|262144|

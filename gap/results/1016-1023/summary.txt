@@ -1,0 +1,16 @@
+=== P_mpp_pp2048 10:23:15
+strata generate: prefill 2047 tokens in 1 chunks, 13274.2 ms (154.2 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+decode                   2 tokens in 364.5 ms  ->  5.49 tok/s
+prefill                  2047 tokens in 13274.2 ms  ->  154.21 tok/s  (time to first token 14517.0 ms)
+=== P_mpp_pp16k 10:23:35
+strata generate: prefill 16383 tokens in 1 chunks, 58608.6 ms (279.5 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+=== P_kp1_tg 10:24:36
+strata generate: prefill 356 tokens in 1 chunks, 6989.3 ms (50.9 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+decode                   64 tokens in 3764.2 ms  ->  17.00 tok/s
+prefill                  356 tokens in 6989.3 ms  ->  50.93 tok/s  (time to first token 7780.4 ms)
+=== P_kp2_tg 10:24:50
+strata generate: prefill 356 tokens in 1 chunks, 7053.2 ms (50.5 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+=== P_overlap_tg 10:25:03
+strata generate: prefill 356 tokens in 1 chunks, 7166.6 ms (49.7 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+decode                   128 tokens in 6391.7 ms  ->  20.03 tok/s
+prefill                  356 tokens in 7166.6 ms  ->  49.67 tok/s  (time to first token 8025.0 ms)

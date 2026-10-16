@@ -1,0 +1,135 @@
+strata generate: PCIe probe failed -> pcie_frac default 0.55
+strata generate: this CPU has no AVX-512: the expert kernels run on ggml-cpu vec_dot (no AVX2: the older-CPU build) (multi-token for the i-quant gate/up rows)
+strata generate: native pack: /Users/pc/src/Strata-data/packs/iq3_xxs experts (largest blob 2.33 MB), token embedding IQ3_S in mapped host memory (260 MiB, 0.3 s)
+strata generate: 1466 MiB of weights loaded from /Users/pc/src/Strata-data/packs/iq3_xxs in 0.6 s (302 canonical tensors skipped: served natively)
+strata generate: 300 native projection matrices, 1781.11 MiB of weights, in 2.4 s
+strata generate: PLE direct read probe: 98069 rows/s (fine)
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile /Users/pc/src/Strata-fork/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: PLE on, table 320001536 rows of /Users/pc/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf
+strata generate: experimental native Q5_K head, 437043200 bytes, in 0.5 s
+strata generate: GPU 0: Apple M1 Max, compute capability 0.0
+strata generate: experts via mmap (--mmap-experts; the GGUF shards in place, no experts.bin)
+strata generate: CPU pool tasks/phase: 30 (automatic), participating threads: 10
+strata generate: 9 pool workers on logical processors 1,2,3,4,5,6,7,8,9, the host thread on 0 (draining too) (--host-core first)
+strata aux cpus: not available on this system
+strata generate: expert cache 84 slots, 0.14 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: the profile fill asks for 256 pairs ahead (STRATA_FILL_AHEAD)
+strata generate: pre-filled 84 of 84 slots from the profile in 0.0 s (5419 MB/s); slot 0 verified
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 9 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.44.1-metal)
+strata generate: sampling greedy
+strata generate: token graph hit path: 84 resident experts, decided on the device
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata generate: prompt chunk auto: 512 tokens
+strata generate: prompt path allocates its own buffers (no cache slots to borrow)
+strata metal stream: experts read from /Users/pc/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf.experts (one request per expert)
+strata metal: HC read in Q8_0 (STRATA_HC_Q8=0: BF16): 290 matrices, 680 MB, made in 231 ms
+strata metal stream: 789 dense tensors read into memory (2.84 GB, 0.3 s; 290 left out)
+strata metal: decode window on Apple M1 Max: /Users/pc/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf streamed from the SSD (experts) (47.0 GB), 41088 cells, PLE on, ready in 655 ms
+strata metal: MTP draft round in one command buffer (embedding type 21 on the GPU: max |GPU - host| 0 over 8 rows)
+strata metal: MTP draft layer from /Users/pc/src/Strata-data/mtp/mtp-q2_0.gguf (0.89 GB, 9 norms folded), draft head over 106299 tokens
+strata metal stream: 3.33 GB of the host code's device weight copies given back (unused by the Metal window)
+strata metal stream: 5.51 GB allocated before the arena (the process holds 10.98 GB, 9.42 GB resident); RAM 68.7 GB (50.4 GB available, 10.3 GB kept for macOS), GPU working set 61.9 GB
+strata metal stream: planned resident footprint 44.7 GB = arena 33.2 + 11.0 held before it + 0.5 reserved for the n-gram table; cap 44.7 GB = the lesser of the GPU working set 61.9 GB and the RAM 68.7 GB less 24.1 GB left to macOS and its file cache
+strata metal stream: expert arena 33.19 GB, 17826 slots in 3 size classes, 17826 experts read from the profile's top (24576 ranked) in 4.7 s (6.60 GB/s); 6 I/O threads, read-ahead top 6; 4 buffers
+strata metal stream: 33.2 GB of the arena wired (mlock) in 1342 ms; macOS cannot compress it while the engine idles (STRATA_METAL_WIRE_ARENA=0 turns it off)
+strata metal stream: 4.49 GB of the arena (2949 slots) hold a prompt's buffers while it runs
+strata metal: prompts on the matrix units in chunks of 4096 (experts v2, QSA v1, matmul2d layout other; 4.49 GB of buffers, in the expert arena while a prompt runs)
+strata metal stream: resident footprint after the fill: the process holds 40.9 GB (42.6 GB resident), planned 44.7 GB, cap 44.7 GB
+strata generate: prefill 356 tokens in 1 chunks, 8952.4 ms (39.8 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+strata metal kprof: window T2, 1189 dispatches, GPU 48.352 ms; classes alone (serialized) sum 48.645 ms:
+strata metal kprof:    3.434 ms   7.1%  gemv_13_16_1_4_1 output.weight x1
+strata metal kprof:    2.944 ms   6.1%  gemv_14_32_1_8_2 ssm_out.weight x19
+strata metal kprof:    2.690 ms   5.5%  gdn_step x72
+strata metal kprof:    2.128 ms   4.4%  moe_gu_21_32_1_4 x13
+strata metal kprof:    2.128 ms   4.4%  gemv_14_16_1_4_1 attn_qkv.weight x14
+strata metal kprof:    2.110 ms   4.3%  moe_gu_22_32_1_4 x10
+strata metal kprof:    1.812 ms   3.7%  gr_down_q8_8_8 hc_ffn_down.weight x48
+strata metal kprof:    1.800 ms   3.7%  gr_down_q8_8_8 hc_attn_down.weight x48
+strata metal kprof:    1.598 ms   3.3%  gr_norm x98
+strata metal kprof:    1.577 ms   3.2%  moe_gu_17_32_1_4 x10
+strata metal kprof:    1.553 ms   3.2%  gemv_14_32_1_8_2 attn_output.weight x10
+strata metal kprof:    1.443 ms   3.0%  moe_gu_16_32_1_4 x9
+strata metal kprof:    1.387 ms   2.9%  gemv_30_32_1_4_1 ffn_gate_inp.weight x95
+strata metal kprof:    1.248 ms   2.6%  gemv_23_16_1_4_1 attn_qkv.weight x11
+strata metal kprof:    1.216 ms   2.5%  gemv_12_16_1_4_1 attn_qkv.weight x8
+strata metal kprof:    1.204 ms   2.5%  gr_up_q8 hc_attn_up.weight x48
+strata metal kprof:    1.201 ms   2.5%  gr_up_q8 hc_ffn_up.weight x48
+strata metal kprof:    1.022 ms   2.1%  moe_gu_18_32_1_4 x6
+strata metal kprof:    0.955 ms   2.0%  qsa_attn x12
+strata metal kprof:    0.894 ms   1.8%  moe_down_20_4_2_4 x18
+strata metal kprof:    0.793 ms   1.6%  gemv_23_16_1_4_1 attn_gate.weight x11
+strata metal kprof:    0.764 ms   1.6%  gemv_21_16_1_4_1 attn_gate.weight x9
+strata metal kprof:    0.764 ms   1.6%  moe_route x48
+strata metal kprof:    0.720 ms   1.5%  gemv_14_16_1_4_1 attn_q.weight x4
+strata metal kprof:    0.678 ms   1.4%  moe_down_142_8_1_4 x30
+strata metal kprof:    0.678 ms   1.4%  gemv_12_16_1_4_1 attn_gate.weight x7
+strata metal kprof:    0.640 ms   1.3%  gemv_23_32_1_8_2 ssm_out.weight x6
+strata metal kprof:    0.575 ms   1.2%  gemv_13_32_1_8_2 ssm_out.weight x4
+strata metal kprof:    0.559 ms   1.1%  gemv_12_32_1_8_2 ssm_out.weight x4
+strata metal kprof:    0.538 ms   1.1%  gemv_12_16_1_4_1 attn_q.weight x3
+strata metal kprof:    0.537 ms   1.1%  gemv_23_16_1_4_1 attn_q.weight x4
+strata metal kprof:    0.524 ms   1.1%  gemv_21_32_1_4_1 ffn_up_shexp.weight x27
+strata metal kprof:    0.482 ms   1.0%  gemv_20_8_1_4_1 ffn_down_shexp.weight x40
+strata metal kprof:    0.473 ms   1.0%  gemv_14_16_1_4_1 attn_gate.weight x5
+strata metal kprof:    0.461 ms   0.9%  gemv_13_16_1_4_1 attn_qkv.weight x3
+strata metal kprof:    0.373 ms   0.8%  gemv_23_32_1_4_1 ffn_gate_shexp.weight x21
+strata metal kprof:    0.332 ms   0.7%  gemv_21_32_1_8_2 ssm_out.weight x3
+strata metal kprof:    0.330 ms   0.7%  moe_combine_sh x48
+strata metal kprof:    0.315 ms   0.6%  gemv_30_32_1_4_1 ffn_gate_inp_shexp.weight x48
+strata metal kprof:    0.293 ms   0.6%  gemv_13_16_1_4_1 attn_gate.weight x3
+strata metal kprof:    0.248 ms   0.5%  gemv_30_32_1_4_1 ple_key.weight x1
+strata metal kprof:    0.246 ms   0.5%  gemv_21_32_1_4_1 ffn_gate_shexp.weight x13
+strata metal kprof:    0.239 ms   0.5%  gemv_30_32_1_4_1 ssm_alpha.weight x36
+strata metal kprof:    0.239 ms   0.5%  gemv_30_32_1_4_1 ssm_beta.weight x36
+strata metal kprof:    0.236 ms   0.5%  gemv_12_32_1_4_1 ffn_gate_shexp.weight x12
+strata metal kprof:    0.188 ms   0.4%  gemv_30_32_1_4_1 indexer.q_proj.weight x12
+strata metal kprof:    0.179 ms   0.4%  gemv_23_32_1_4_1 ffn_up_shexp.weight x10
+strata metal kprof:    0.171 ms   0.4%  swiglu_prep x48
+strata metal kprof:    0.157 ms   0.3%  gemv_21_16_1_4_1 attn_q.weight x1
+strata metal kprof:    0.146 ms   0.3%  gemv_14_32_1_4_1 attn_v.weight x9
+strata metal kprof:    0.141 ms   0.3%  gemv_13_32_1_8_2 attn_output.weight x1
+strata metal kprof:    0.139 ms   0.3%  gemv_12_32_1_8_2 attn_output.weight x1
+strata metal kprof:    0.138 ms   0.3%  gemv_12_32_1_4_1 ffn_up_shexp.weight x7
+strata metal kprof:    0.110 ms   0.2%  qsa_merge x12
+strata metal kprof:    0.099 ms   0.2%  gemv_14_32_1_4_1 attn_k.weight x6
+strata metal kprof:    0.085 ms   0.2%  gemv_30_32_1_4_1 indexer.k_proj.weight x12
+strata metal kprof:    0.084 ms   0.2%  gemv_21_16_1_4_1 output_hc_up.weight x1
+strata metal kprof:    0.077 ms   0.2%  gemv_42_8_1_4_1 ffn_down_shexp.weight x8
+strata metal kprof:    0.076 ms   0.2%  qsa_prep x12
+strata metal kprof:    0.061 ms   0.1%  gemv_30_32_1_4_1 ple_value.weight x1
+strata metal kprof:    0.058 ms   0.1%  gemv_14_32_1_4_1 ffn_up_shexp.weight x3
+strata metal kprof:    0.035 ms   0.1%  gr_down_q8_8_8 output_hc_down.weight x1
+strata metal kprof:    0.032 ms   0.1%  gemv_12_32_1_4_1 attn_k.weight x2
+strata metal kprof:    0.031 ms   0.1%  gemv_23_32_1_4_1 attn_v.weight x2
+strata metal kprof:    0.030 ms   0.1%  gemv_23_32_1_4_1 attn_k.weight x2
+strata metal kprof:    0.029 ms   0.1%  xprep x1
+strata metal kprof:    0.026 ms   0.1%  ple_gnorm x2
+strata metal kprof:    0.025 ms   0.1%  gr_up_q8 output_hc_up.weight x1
+strata metal kprof:    0.020 ms   0.0%  gemv_13_32_1_4_1 ffn_gate_shexp.weight x1
+strata metal kprof:    0.020 ms   0.0%  gemv_13_32_1_4_1 ffn_up_shexp.weight x1
+strata metal kprof:    0.019 ms   0.0%  gemv_14_32_1_4_1 ffn_gate_shexp.weight x1
+strata metal kprof:    0.018 ms   0.0%  gemv_21_32_1_4_1 attn_k.weight x1
+strata metal kprof:    0.018 ms   0.0%  ple_gate_norm x1
+strata metal kprof:    0.016 ms   0.0%  gemv_12_32_1_4_1 attn_v.weight x1
+strata metal kprof:    0.016 ms   0.0%  gemv_13_32_1_4_1 attn_k.weight x1
+strata metal kprof:    0.010 ms   0.0%  argmax_part x1
+strata metal kprof:    0.008 ms   0.0%  ple_conv_add x1
+strata metal kprof:    0.005 ms   0.0%  argmax_final x1
+strata metal: crashed (signal 11 at address 0x297d34f6bb4) - the call stack:
+0   strata                              0x000000010068f9a8 _ZN12_GLOBAL__N_111metal_crashEiP9__siginfoPv + 56
+1   libsystem_platform.dylib            0x00000001842f0144 _sigtramp + 56
+2   strata                              0x00000001008d93d0 _ZL9iq3s_grid + 0
+3   strata                              0x00000001006b79b0 _ZN6strata12metal_engine6Window10mtp_encodeERNSt3__16vectorIN3mtl8DispatchENS2_9allocatorIS5_EEEERKNS4_6BufferEmiPKixbii + 296
+4   strata                              0x00000001006c2570 _ZN6strata12metal_engine6Window9mtp_draftEiPKixiiPiPffS4_RNSt3__112basic_stringIcNS6_11char_traitsIcEENS6_9allocatorIcEEEE + 336
+5   strata                              0x00000001006d5708 _ZN6strata12metal_engine9mtp_draftEiPKixiiPiPffS3_RNSt3__112basic_stringIcNS5_11char_traitsIcEENS5_9allocatorIcEEEE + 152
+6   strata                              0x000000010075de7c _ZN6strata4core10MtpDrafter5draftEiPKixiPiRNSt3__112basic_stringIcNS5_11char_traitsIcEENS5_9allocatorIcEEEEPffS4_ + 184
+7   strata                              0x000000010062bddc main + 102964
+8   dyld                                0x0000000183f0fe80 start + 6688
