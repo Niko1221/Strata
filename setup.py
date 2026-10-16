@@ -5303,10 +5303,11 @@ def layer_args(a) -> list:
             ["y", "n"], "n", a.yes) == "y":
         say()
         say("  The slots' conversations live in RAM first; what leaves it goes to the warm folder on the fast")
-        say("  disk, and the oldest of those move down to the cold folder instead of being deleted.  In MiB.")
-        ram = ask_mib("RAM for the slots' conversations (0 = no limit)", CONVERSATION_RAM_MIB, a.yes)
-        warm = ask_mib("SSD 1, the warm folder (0 = nothing kept there)", CONVERSATION_WARM_MIB, a.yes)
-        cold = ask_mib("SSD 2, the cold folder (0 = nothing kept there)", CONVERSATION_SPILL_MIB, a.yes)
+        say("  disk, and the oldest of those move down to the cold folder instead of being deleted.  This cache")
+        say("  keeps the parked conversations, not the KV cache above; RAM is the level that turns it on.  In MiB.")
+        ram = ask_mib("RAM for the slots' conversations (0 = off)", CONVERSATION_RAM_MIB, a.yes)
+        warm = ask_mib("SSD 1, the warm folder (0 = off)", CONVERSATION_WARM_MIB, a.yes)
+        cold = ask_mib("SSD 2, the cold folder (0 = off)", CONVERSATION_SPILL_MIB, a.yes)
     spill = a.conversation_cache_spill_dir
     tier = ram is not None or bool(spill)      # a level is open: the RAM tier, or the folder named for the cold one
     if ram is not None:
@@ -5996,7 +5997,7 @@ def main() -> int:
                          "them again (it overrides the folder the engine resolves when the flag is absent; the tier "
                          "is on whenever --conversation-cache-mib is). docs/DETAILS.md")
     ap.add_argument("--conversation-cache-disk-mib", type=int, metavar="N",
-                    help="the spill folder's limit in MiB (engine default 8192; 0 = no limit)")
+                    help="the spill folder's limit in MiB (engine default 8192; 0 = off)")
     ap.add_argument("--conversation-cache-spill-when-full", choices=["evict-oldest", "reject"],
                     help="when the spill folder is full: evict-oldest (the default) drops the oldest conversation, "
                          "reject keeps everything and saves nothing new (needs --conversation-cache-spill-dir)")
