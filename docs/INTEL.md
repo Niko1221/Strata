@@ -23,7 +23,7 @@ PCIe 3.0 x8 slot (the card trains at Gen3 x8 there; it can do Gen5 x16).
 | decode, Coder IQ1_M | 44-51 tok/s on an RTX 5070 | **78.2 tok/s** (19-token prompt, 256 greedy tokens), **75.7** after a 2,184-token prompt, 69 after 40K, 66.6 after 128K, 55.9 after 256K; 48-72 through the API | 23-25 tok/s |
 | prompt reading | ~1,870 tok/s | **790 tok/s** at 2,184 tokens, 1,117 at 40K, 888 at 128K, 757 at 256K | ~150 tok/s (424 at 105K) |
 | speculative decoding (MTP) | yes | yes (the base checkpoint's draft layer; 70-85% of drafts accepted on code) | no |
-| images | yes | not yet | not yet |
+| images | yes | yes, the encoder on the CPU (`--vision cpu`; "Images" below) | not yet |
 | context | up to 262K | 256K measured, 56 tok/s decode there (`--kv-resident`: the KV in pinned host memory, the attended window in VRAM) | 131K measured ceiling |
 
 Decode speed with speculative decoding depends on the text: code drafts well, prose less so (see "Speed depends
@@ -58,9 +58,14 @@ setup.py itself is unchanged). The model choice, download, pack, tokenizer, MTP 
 questions are setup's own. What changes:
 
 - **GPU check:** the Arc is found in sysfs (vendor 8086 under `xe` or `i915`) and offered through setup's AMD
-  path. That is the path that builds locally and has no images.
+  path. That is the path that builds locally.
 - **Engine step:** it uses the SYCL build (`build-sycl-aot/strata` or `build-sycl/strata`, run in the `strata-sycl-dev`
   image by `sycl/serve/strata-sycl.sh`) instead of compiling CUDA or HIP.
+- **Images:** off unless asked. `--vision cpu` compiles the image encoder for the CPU (setup's own build, the one
+  the AMD path uses: `tools/vision` against the pinned llama.cpp, no CUDA) into `engine-sycl/`, downloads the
+  encoder's mmproj file and writes the config's `"vision"` section and `--vision`. It needs a C++ compiler on the
+  PC (`sudo apt install build-essential`); cmake and ninja are the ones setup installs. `--vision yes` (the GPU
+  encoder) leaves images off with a note, as on AMD: there is no SYCL encoder build. See "Images" below.
 - **RAM rule:** this does not apply on an `xe` card. The CUDA engine keeps every expert in RAM; the port streams them from
   the GGUF into VRAM (`--stream-experts`), so RAM only decides the KV streaming. `--check` lists what fits by VRAM.
 - **The config:** it uses the container's paths and `"backend": "sycl"`. The VRAM reserve is 1,024 MiB up to
@@ -741,10 +746,42 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
   8192 --prefill-repeat 5` for the time of both kernels. Not taken: the same kernel with its state in SLM (no register
   spills, the same bits, ~4x slower: 13.7 vs 3.1-3.3 ms at T=1000).
 
+## Images: the encoder on the CPU (2026-10-16)
+
+Strata reads a picture in two steps: `strata-vision` (llama.cpp's mtmd and the model's mmproj file) turns it into
+embeddings, and the engine takes them with the prompt (`--vision`: a GENI request, and a per-cell M-RoPE position
+table for the image's rows, `sycl/src/program/generate.cpp`). The SYCL engine has had that second step since
+the port; what was missing was the encoder and the setup wiring, and the encoder needs no SYCL: the CPU build
+that the AMD path uses (#304) runs on the PC, outside the container, and the server hands the engine the
+embeddings.
+
+`./setup.sh --backend sycl --vision cpu` does that: it compiles `tools/vision` for the CPU into `engine-sycl/`
+(once; again when `tools/vision` changes), gets the mmproj file and writes the config's `"vision"` section
+(`exe`, `mmproj`, `model`: shard 1, `threads`: half the cores) and `--vision`. The 700 MiB VRAM reserve setup
+writes with images is for the CUDA engine's encoder; the port keeps its own rule (1,024 MiB up to 32K and so on)
+because the CPU encoder takes no VRAM. A reserve given with `--vram-reserve-mib` is kept. Without `--vision cpu`
+nothing changes: the config has no vision section, the engine starts without `--vision`.
+
+Measured, 2x Intel Arc Pro B70 32 GB, AMD Threadripper 1950X, Qwen3.8-Flash-Next ISTA GSQ-RCO IQ3_XXS,
+`--layer-split 30 --kv int8 --spec 4 --mtp <BF16 draft layer>`, the encoder from `tools/vision` built with
+gcc 13 (`-DSTRATA_PORTABLE=OFF`, native), `mmproj-Qwen3.8-Flash-Next-BF16.gguf`, 8 threads:
+
+- the encoder alone: a 256x256 PNG becomes 64 image tokens (an 8x8 grid, 2,560 values each) in 1,191 ms on 8
+  CPU threads; no VRAM.
+- a 448x448 test image of four coloured quadrants, "name the colour of each quadrant", through
+  `/v1/chat/completions` on a development tree with the same `serve/` and vision path as `main`: the four
+  colours named correctly (280 prompt tokens, 4.8 s to the first token including the encode), also while a
+  code request ran on the other slot; a 512-token text reply decoded at 140.9 and 140.5 tok/s with `--vision` (about the 141 measured without it) on that tree (its decode is faster than `main`'s).
+- on `main` (its own engine build, the same two-card layer split): the four colours right; 246 prompt tokens
+  with the picture read in 1.48 s including the encode; a 512-token text reply at 81.7 / 79.4 tok/s with
+  `--vision` against 81.8 / 79.4 without, with identical text and draft counts.
+
+The encoder's speed is the CPU's: a bigger picture is more tokens (`--vision-tokens`, 300 by default on the CPU)
+and a longer wait before the first token.
+
 ## Not done
 
-- Images, on both Intel engines. Strata's vision path encodes with `strata-vision` into embeddings the CUDA
-  engine reads; neither the SYCL port nor the llama.cpp config wires it yet.
+- Images on the llama.cpp configuration (the SYCL port reads them since 2026-10-16: "Images" above).
 - Speculative decoding on the llama.cpp path (the GGUF carries no draft layer llama.cpp can use). The SYCL
   port has it (MTP draft layer, `--mtp`).
 

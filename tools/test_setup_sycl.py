@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import re
 import sys
 import tempfile
@@ -222,6 +223,114 @@ class ToSycl(unittest.TestCase):
         self.assertTrue(m.small_card(24.0, "i915"))
         self.assertTrue(m.small_card(10.0, "xe"))
         self.assertFalse(m.small_card(32.0, "xe"))
+
+    def test_the_vision_section_is_kept_and_the_cpu_encoder_takes_no_reserve(self):
+        """--vision cpu: setup writes the "vision" section (host paths: the server runs the encoder on this PC) and
+        --vision with its 700 MiB reserve for the CUDA engine's encoder; the port keeps the section and the flag and
+        applies its own reserve rule (the CPU encoder takes no VRAM).  A reserve the user gave is kept."""
+        m = self.mod()
+        vis = {"exe": "/x/engine-sycl/strata-vision", "mmproj": "/m/mmproj-BF16.gguf", "model": "/m/a.gguf",
+               "gpu": False, "max_tokens": 300, "threads": 8}
+        cfg = {**self.cfg(m, ["--vision", "--vram-reserve-mib", str(setup.VISION["cpu"]["reserve_mib"])]), "vision": vis}
+        c = m.to_sycl(cfg, m.ROOT / "build-sycl-aot" / "strata", 64.0, {}, 32.0, "xe")
+        self.assertEqual(c["vision"], vis)
+        self.assertIn("--vision", c["args"])
+        self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "1024")
+        cfg = {**self.cfg(m, ["--vision", "--vram-reserve-mib", "500"]), "vision": vis}
+        c = m.to_sycl(cfg, m.ROOT / "build-sycl-aot" / "strata", 64.0, {}, 32.0, "xe")
+        self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "500")
+        c = m.to_sycl(self.cfg(m), m.ROOT / "build-sycl-aot" / "strata", 64.0, {}, 32.0, "xe")
+        self.assertNotIn("vision", c)                                   # no images: the config as before
+
+
+class Images(unittest.TestCase):
+    """--vision cpu on the SYCL port: the image encoder compiled for the CPU by setup's own build_vision_cpu (the AMD
+    path's, #304) into engine-sycl/, once; `yes` / `gpu` leave images off with a pointer.  No compiler runs here:
+    cmake_build is replaced."""
+
+    def setUp(self):
+        self.m = ToSycl.mod()
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        (root / "tools" / "vision").mkdir(parents=True)
+        (root / "tools" / "vision" / "CMakeLists.txt").write_text("project(strata_vision)\n")
+        self.root = root
+        self.patches = [mock.patch.object(setup, "ROOT", root), mock.patch.object(self.m, "ROOT", root),
+                        mock.patch.object(self.m, "ENGINE_DIR", root / "engine-sycl"),
+                        mock.patch.object(self.m, "sycl_version", lambda: "0.1.44.1"),   # read from CMakeLists.txt
+                        mock.patch.object(setup, "WIN", False)]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        self.tmp.cleanup()
+
+    def fake_cmake(self, src, bdir, target, defs, vcvars, bat_name):
+        self.builds.append((src, bdir, target, defs, vcvars, bat_name))
+        (Path(bdir) / "bin").mkdir(parents=True, exist_ok=True)
+        (Path(bdir) / "bin" / setup.VEXE).write_bytes(b"encoder")
+
+    def test_vision_choice(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(self.m.sycl_vision("cpu"), "cpu")
+            self.assertEqual(self.m.sycl_vision(None), "none")
+            self.assertEqual(self.m.sycl_vision("no"), "none")
+            self.assertEqual(out.getvalue(), "")
+            self.assertEqual(self.m.sycl_vision("yes"), "none")
+            self.assertEqual(self.m.sycl_vision("gpu"), "none")
+        self.assertIn("--vision cpu", out.getvalue())
+
+    def test_without_images_the_engine_step_is_the_stub_as_before(self):
+        with mock.patch.object(setup, "cmake_build") as cm:
+            eng = self.m.build_engine_sycl({"arch": "xe"}, Path("llama"), "none")
+        cm.assert_not_called()
+        meta = json.loads((eng / "BUILD.json").read_text())
+        self.assertEqual(meta, {"version": self.m.sycl_version(), "source": "local", "lib_dirs": []})
+        self.assertNotEqual(eng, self.root / "engine-sycl")
+        self.assertFalse((self.root / "engine-sycl").exists())
+
+    def test_cpu_encoder_is_built_once_with_the_amd_paths_build(self):
+        self.builds = []
+        out = io.StringIO()
+        with mock.patch.object(setup, "cmake_build", self.fake_cmake), \
+                mock.patch.object(self.m.shutil, "which", lambda x: "/usr/bin/g++" if x == "g++" else None), \
+                contextlib.redirect_stdout(out):
+            eng = self.m.build_engine_sycl({"arch": "xe"}, self.root / "llama", "cpu")
+            self.assertEqual(eng, self.root / "engine-sycl")
+            self.assertEqual(len(self.builds), 1)
+            src, bdir, target, defs, vcvars, bat = self.builds[0]
+            self.assertEqual((src, bdir, target), (self.root / "tools" / "vision", self.root / "build-vision", "strata-vision"))
+            self.assertEqual(defs, [f"-DLLAMA_DIR={self.root / 'llama'}", "-DSTRATA_VISION_CUDA=OFF", "-DSTRATA_PORTABLE=OFF"])
+            self.assertIsNone(vcvars)
+            self.assertEqual((eng / setup.VEXE).read_bytes(), b"encoder")
+            meta = json.loads((eng / "BUILD.json").read_text())
+            self.assertEqual(meta["vision"], "cpu")
+            self.assertEqual(meta["vision_src"], setup.source_hash(setup.VISION_SOURCES))
+            self.assertEqual((meta["version"], meta["source"], meta["lib_dirs"]), (self.m.sycl_version(), "local", []))
+            self.m.build_engine_sycl({"arch": "xe"}, self.root / "llama", "cpu")   # a rerun: nothing to compile
+            self.assertEqual(len(self.builds), 1)
+            (self.root / "tools" / "vision" / "strata_vision.cpp").write_text("// changed\n")
+            self.m.build_engine_sycl({"arch": "xe"}, self.root / "llama", "cpu")   # tools/vision changed: again
+            self.assertEqual(len(self.builds), 2)
+        self.assertIn("Compiling the image encoder (for the CPU)", out.getvalue())
+
+    def test_without_a_compiler_setup_stops_with_the_package_to_install(self):
+        out = io.StringIO()
+        with mock.patch.object(setup, "cmake_build") as cm, \
+                mock.patch.object(self.m.shutil, "which", lambda x: None), contextlib.redirect_stdout(out), \
+                self.assertRaises(SystemExit):
+            self.m.build_engine_sycl({"arch": "xe"}, self.root / "llama", "cpu")
+        cm.assert_not_called()
+        self.assertIn("build-essential", out.getvalue())
+
+    def test_install_leaves_images_off_unless_asked(self):
+        src = (ROOT / "sycl" / "setup_intel.py").read_text(encoding="utf-8")
+        self.assertIn('if "--vision" not in argv:\n        sys.argv += ["--vision", "none"]', src)
+        self.assertIn("S.hip_vision = sycl_vision", src)
+        self.assertIn("S.build_engine_hip = build_engine_sycl", src)
 
 
 if __name__ == "__main__":

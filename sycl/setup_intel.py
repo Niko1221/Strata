@@ -7,10 +7,11 @@ it and replaces the few steps that are NVIDIA/AMD-specific, then runs setup's ow
 model choice, the download, the pack, the tokenizer, the MTP draft layer, the context and KV questions - is
 setup.py's, unchanged.  What is replaced:
 
-  - the GPU check: the Intel Arc is offered through setup's AMD path (the one that compiles locally and has no
-    images), named and sized from sysfs;
+  - the GPU check: the Intel Arc is offered through setup's AMD path (the one that compiles locally), named and
+    sized from sysfs;
   - the engine step: the SYCL build (build-sycl-aot/strata, run in the strata-sycl-dev image by
-    sycl/serve/strata-sycl.sh; docs/INTEL.md) instead of a CUDA/HIP build;
+    sycl/serve/strata-sycl.sh; docs/INTEL.md) instead of a CUDA/HIP build; with --vision cpu the image encoder is
+    compiled for the CPU into engine-sycl/ (setup's own build, the AMD path's), and the server runs it on this PC;
   - the RAM rule: the CUDA engine keeps every expert in RAM, the SYCL port streams them from the GGUF into VRAM
     (--stream-experts), so RAM only bounds the KV streaming;
   - the config: the container's paths, the SYCL flags, backend "sycl"; the run script starts
@@ -38,6 +39,8 @@ SYCL_WRAPPER = ROOT / "sycl" / "serve" / "strata-sycl.sh"
 SYCL_IMAGE = "strata-sycl-dev"
 SERVER = ROOT / "sycl" / "serve" / "server_intel.py"
 MOUNT = Path(os.environ.get("STRATA_SYCL_ROOT") or ROOT.parent)   # what strata-sycl.sh mounts at /work
+ENGINE_DIR = ROOT / "engine-sycl"      # setup's BUILD.json and the CPU image encoder (--vision cpu); the engine
+                                       # itself stays in build-sycl-aot/ (sycl_engine())
 
 # Battlemage / Alchemist PCI device ids -> (name, VRAM GB). lspci's database lags new cards (an Arc Pro B70 reads
 # "Intel Corporation Device [8086:e223]"), so the sysfs id is the reliable signal and the name table is ours.
@@ -109,6 +112,48 @@ def sycl_path(path) -> str:
 
 def sycl_version() -> str:
     return S.source_version()
+
+
+def engine_stub() -> Path:
+    """A throw-away folder with the BUILD.json setup reads: the SYCL build has none (sycl/tools/build.sh)."""
+    stub = Path(tempfile.mkdtemp(prefix="strata-sycl-"))
+    atexit.register(shutil.rmtree, stub, True)
+    (stub / "BUILD.json").write_text(json.dumps({"version": sycl_version(), "source": "local", "lib_dirs": []}))
+    return stub
+
+
+def sycl_vision(asked) -> str:
+    """setup's --vision on the SYCL port (the AMD path's hip_vision, #304): `cpu` reads images with the encoder on the
+    CPU; there is no SYCL encoder build, so `yes` / `gpu` leave images off, as before, and say how to get them."""
+    if asked in ("yes", "gpu"):
+        S.warn("the Intel engine has no GPU image encoder yet: images off (--vision cpu reads them on the CPU)")
+    return "cpu" if asked == "cpu" else "none"
+
+
+def build_engine_sycl(gpu, llama, vision="none") -> Path:
+    """setup's engine step (build_engine_hip's place).  The engine is the Docker build, so there is nothing to compile
+    for the card: without images this is the throw-away stub, as before.  With --vision cpu the image encoder is
+    compiled for the CPU into ENGINE_DIR by setup's own build_vision_cpu (tools/vision against the pinned llama.cpp,
+    without CUDA - the AMD path's build, #304), once, and again when tools/vision changes (its BUILD.json keeps the
+    source hash).  The server starts it on this PC, outside the container, so it needs the PC's C++ compiler; cmake
+    and ninja are the ones setup installed."""
+    if vision == "none":
+        return engine_stub()
+    eng = ENGINE_DIR
+    eng.mkdir(exist_ok=True)
+    stamp = eng / "BUILD.json"
+    try:
+        meta = json.loads(stamp.read_text(encoding="utf-8")) if stamp.exists() else {}
+    except ValueError:
+        meta = {}
+    meta.update({"version": sycl_version(), "source": "local", "lib_dirs": []})
+    vsrc = S.source_hash(S.VISION_SOURCES)
+    if not ((eng / S.VEXE).exists() and meta.get("vision_src") == vsrc) and \
+            not (shutil.which("c++") or shutil.which("g++")):
+        S.fail("a C++ compiler is needed to compile the image encoder for the CPU",
+               "Ubuntu/Debian: sudo apt install build-essential   Fedora: sudo dnf install gcc-c++   "
+               "(or run setup again with --vision no)")
+    return S.build_vision_cpu(eng, stamp, meta, llama, vsrc)
 
 
 def flag(args, name):
@@ -184,8 +229,11 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
     kv_ram = ctx * (13 * (576 if kv == "q4_0" else 1056)) / 1e9
     if kv != "k8v4" and ctx >= 65536 and ram >= kv_ram + 6:
         args += ["--kv-resident", "32768"]
-    asked_reserve = flag(args, "--vram-reserve-mib")    # setup writes it only when the user gave it
-    drop(args, "--vram-reserve-mib", True)
+    asked_reserve = flag(args, "--vram-reserve-mib")    # setup writes it only when the user gave it ...
+    if "--vision" in args and asked_reserve == str(S.VISION["cpu"]["reserve_mib"]):
+        asked_reserve = None                            # ... or with images (its 700 MiB default, for the CUDA engine's
+    drop(args, "--vram-reserve-mib", True)              # encoder); the CPU encoder takes no VRAM: the rule below
+                                                        # applies, as setup's own choices_from_config reads that value
     reserve = asked_reserve or (str(SMALL_RESERVE_MIB) if small_card(vram_gb, driver) else
                                 "1024" if ctx <= 32768 else "2048")
     alchemist = driver == "i915" or devid in ALCHEMIST_IDS
@@ -202,7 +250,9 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
         args += ["--prefill", "4096"]                   # over PCIe once per chunk, so fewer, bigger chunks read the prompt
                                                         # faster (Arc Pro B70, IQ3_S, a 4,095-token prompt: 2,048-token
                                                         # chunks 618 tok/s, 4,096: 1,002; docs/INTEL.md); it costs ~700 cache slots
-    out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "vision", "gpus")}
+    # "vision" (--vision cpu) is kept as setup wrote it: the server runs the encoder on this PC, so its exe, mmproj and
+    # model are host paths; the engine in the container only gets --vision and the embeddings (serve/server.py)
+    out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "gpus")}
     out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER), "args": args, "sycl_root": str(MOUNT)})
     env = {}
     if alchemist:
@@ -231,8 +281,8 @@ def install(argv) -> None:
     exe, why = sycl_engine()
     if exe is None:
         S.fail(f"Strata's SYCL engine cannot be used: {why}", "docs/INTEL.md: build it, then run this again")
-    for name in ("gpus", "amd_gpus", "amd_problem", "hip_vision", "build_engine_hip", "hipblaslt_table", "ram_gb",
-                 "write_run_script", "start", "say", "main"):
+    for name in ("gpus", "amd_gpus", "amd_problem", "hip_vision", "build_engine_hip", "build_vision_cpu",
+                 "hipblaslt_table", "ram_gb", "write_run_script", "start", "say", "main"):
         if not callable(getattr(S, name, None)):
             S.fail(f"setup.py has no {name}() any more: sycl/setup_intel.py needs updating for this setup.py")
 
@@ -244,10 +294,6 @@ def install(argv) -> None:
             keep[p.name] = {k: c[k] for k in ("model_switcher", "sampling") if k in c}
         except (OSError, ValueError):
             pass
-    stub = Path(tempfile.mkdtemp(prefix="strata-sycl-"))  # setup reads the engine's BUILD.json; the SYCL build has none
-    atexit.register(shutil.rmtree, stub, True)
-    (stub / "BUILD.json").write_text(json.dumps({"version": sycl_version(), "source": "local", "lib_dirs": []}))
-
     say = S.say
     fake_ram = max(real_ram, 1024.0)
     alch = intel[0]["driver"] == "i915" or intel[0].get("devid") in ALCHEMIST_IDS
@@ -260,6 +306,7 @@ def install(argv) -> None:
         where = ("the experts the card does not hold are computed on the CPU" if alch
                  else "the experts are streamed into VRAM")
         msg = msg.replace(f"RAM: {fake_ram:.0f} GB", f"RAM: {real_ram:.0f} GB ({where})")
+        msg = msg.replace(f"engine: {ENGINE_DIR / S.EXE}, image encoder", "image encoder")   # build_vision_cpu's line
         if re.match(r"\s+\S+\s+needs ~\d+ GB RAM:", msg):   # --check's CUDA verdicts: replaced by the Intel one
             m = msg.split()[0]
             d = S.MODELS.get(m, {})
@@ -274,8 +321,8 @@ def install(argv) -> None:
     S.gpus = lambda *a, **k: []
     S.amd_gpus = lambda *a, **k: intel
     S.amd_problem = lambda g: None
-    S.hip_vision = lambda asked: "none"                 # images are not wired on the SYCL port yet
-    S.build_engine_hip = lambda *a, **k: stub
+    S.hip_vision = sycl_vision                          # images: the CPU encoder (--vision cpu), as on the AMD path
+    S.build_engine_hip = build_engine_sycl
     S.hipblaslt_table = lambda *a, **k: None
     S.ram_gb = lambda: fake_ram                         # the experts are in VRAM: setup's RAM rule does not apply
 
