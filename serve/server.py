@@ -5243,6 +5243,10 @@ def make_handler(svc: Service):
             given = auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-api-key", "")
             if key_matches(given, svc.api_key):
                 return True
+            # issue #1847: log the failure with the client source IP so fail2ban / rate limiters can match it.
+            # The wording mirrors llama.cpp's "unauthorized: Invalid API Key from <ip>" on purpose, so a single
+            # stock filter rule catches brute-force attempts against both servers' logs unchanged.
+            print(f"unauthorized: Invalid API Key from {self.client_address[0]}", file=sys.stderr, flush=True)
             self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
             return False
 
