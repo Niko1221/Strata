@@ -896,6 +896,37 @@ gate identical in the 32K and the 128K configuration); every one has an off swit
   miss-first or hit-first group order in the device plan (-3% / -7%), spreading the expert chains over several queues (one compute engine),
   `STRATA_LFUSE`, `STRATA_VERIFY_EAGER`.
 
+## Arc Pro B70: decode QSA selection and attention in fewer, shorter launches (opt-in, 2026-10-16)
+
+Four switches, off by default, each giving the same bits as the path it replaces. Kernel times: `qsa_verify_batch_parity --bench`
+on one B70 (synthetic layers: 24 q heads, INT8 K/V, page size 4, a 200,000-cell capacity; graph replay, us per call or per attention
+layer), switch off -> on, at 1K / 16K / 64K of context.
+
+- `STRATA_BATCH_QSA_ATTN=1`: a batch window (`--batch`) ran the QSA scores, top-k and attention one row at a time, because each slot has its
+  own K/V. Now the scores run once per slot, the top-k once for the window, and the attention once for the window over every slot's pools
+  (`sycl/include/strata/qsa_decode_attn_multi.hpp`). Selection + attention per layer, 2 slots x 1 row: 102.8 -> 62.3 / 184.0 -> 107.9 /
+  252.6 -> 156.2; 2 slots x 2 rows: 183.6 -> 78.3 / 365.0 -> 138.2 / 498.2 -> 205.0. On a layer split a window holds one row per slot
+  (`--batch-mtp` runs on one GPU only), and more than one slot only with `--batch-groups 1`. A streamed K/V keeps the per-row path.
+- `STRATA_QSA_TOPK_SCAN=1`: the wide top-k kernel (a capacity above ~135K cells, e.g. `--max-context 200000`) searched each radix pass's
+  digit with one thread over 256 bins; now a work-group scan. Integers only, the same ids. One query at 16K / 64K: 36.3 -> 19.5 /
+  57.9 -> 42.1 (at 1K every cell is selected and there is no search).
+- `STRATA_QSA_SCORES_TRANSPOSED=1`: the decode block scores reduce a block's (query, head) sums together instead of one butterfly each
+  (16-31 shuffles per block instead of 20 per query); the same pairs are added in the same order. Four queries: 5.5 -> 4.6 / 18.7 -> 14.1 /
+  63.1 -> 43.2.
+- `STRATA_ATTN_MERGE_ACTIVE=1`: the attention merge of a call of 8 rows or fewer (verify windows, the MTP drafter) folds only the chunks
+  its selection reaches, its loads issued 8 at a time; the chunks past it hold no cells and were skipped anyway. The MTP drafter's call
+  (one row, 32K window = 512 chunks): 86.9 -> 41.0 / 223.7 -> 157.2 / 460.9 -> 335.9.
+
+End to end, main 296b59d2 against this change with all four on, 2x B70 (Compute Runtime 26.22, oneAPI 2026.1, AOT bmg-g31),
+Flash-Next IQ3_XXS, `--layer-split 30 --kv int8 --spec 4 --mtp` (BF16 draft layer), greedy, fixed prompts: one stream at
+`--max-context 65536` 78.7-81.8 -> 79.1-82.2 tok/s (+0.6%), a turn on a 40,796-token context 76.0 -> 77.1 (+1.4%); two streams
+(`"parallel": 2`, `--batch-groups 1`, `--max-context 16384`; no MTP in the slots on a layer split) 57.8 -> 59.0 tok/s together (+2%,
+medians of 3). The outputs (and the draft counts) are identical to main in every arm, and identical to main with the switches unset;
+prompt reading is unchanged. At 65536 cells the wide top-k is not used, so `STRATA_QSA_TOPK_SCAN` did not act in these runs.
+
+Check on a card: `ctest -R qsa_verify_batch_parity` (runs it without the switches, then with the three kernel switches against the first
+run's output hashes), or `qsa_verify_batch_parity --bench --ctx 1024,16384,65536` for the times above.
+
 ## Measured, 2026-10-01, Arc Pro B70, Coder IQ1_M, 32K context, INT8 KV: the SYCL port (engine 0.1.31-sycl)
 
 | | |

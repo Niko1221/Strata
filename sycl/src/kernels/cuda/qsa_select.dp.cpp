@@ -16,6 +16,10 @@
 #include <cstring>
 
 namespace strata::kernels {
+// kernel names of the opt-in decode kernels (STRATA_QSA_SCORES_TRANSPOSED, STRATA_QSA_TOPK_SCAN): at namespace scope,
+// where a templated launcher can name them
+template <int NQ> class qsa_scores_transposed_k;
+class qsa_topk_wide_scan_k;
 namespace {
 
 constexpr int IDX_DIM = 128, IDX_HEADS = 4, R = 4;
@@ -875,12 +879,15 @@ auto &hist =
 // neighbours at a time.  The cells are emitted ascending in the order (warp, row, lane): warp w holds the `per` rows
 // of 32 consecutive blocks from block w * 32 * per.  block_topk_kernel's selection rule (radix threshold, ties to the
 // lowest index): identical ids.
+// SCAN (STRATA_QSA_TOPK_SCAN=1, opt-in): each pass's digit search, which thread 0 ran alone over 256 bins, as one
+// work-group scan and one reduce (see below); the same digit and count, so the same ids.
 /*
 DPCT1110: The total declared local variable size in device function
 block_topk_wide_kernel exceeds 128 bytes and may cause high register pressure.
 Consult with your hardware vendor to find the total register size available and
 adjust the code, or use smaller sub-group size to avoid high register pressure.
 */
+template <bool SCAN = false>
 __dpct_inline__ void block_topk_wide_kernel(const float *__restrict__ scores,
                                             const int32_t *__restrict__ steps,
                                             int64_t max_blocks, int64_t cap,
@@ -954,6 +961,20 @@ auto &hist =
         better performance if there is no access to global memory.
         */
         item_ct1.barrier();
+        if constexpr (SCAN) {
+            // ge(t) = the cells in digits t..255. It does not grow with t, so `above + ge(t) >= width` holds for
+            // t = 1..d exactly, d being the digit the serial loop below stops at (0 when it holds for none), and the
+            // loop's count is above + ge(d + 1). Scan slot i holds digit 255 - i. Integers only.
+            const int i = t;
+            const int v = i < 256 ? hist[0][255 - i] : 0;
+            const int ge = sycl::inclusive_scan_over_group(item_ct1.get_group(), v, sycl::plus<int>());   // ge(255 - i)
+            const int hit = (i < 255 && (int64_t) above + ge >= width) ? 1 : 0;
+            const int d = sycl::reduce_over_group(item_ct1.get_group(), hit, sycl::plus<int>());
+            if (d <= 254 ? i == 254 - d : i == 0) {
+                s_digit = d;
+                s_above = d <= 254 ? above + ge : above;
+            }
+        } else
         if (t == 0) {
             int cum = above, d = 255;
 #pragma unroll
@@ -1207,6 +1228,106 @@ auto &qs = *sycl::ext::oneapi::group_local_memory_for_overwrite<
             }
         }
     }
+}
+
+// STRATA_QSA_SCORES_TRANSPOSED=1 (opt-in): block_scores_multi_kernel's early-exit form with the 4 * NQ (query, head)
+// sums of a block reduced together.  The kernel above runs one five-stage butterfly per sum (20 shuffles per query).
+// Here, at each of the first P stages (offset o = 16, 8, ...) a lane keeps one half of its values and adds the
+// partner's (lane ^ o) copy of that half, one shuffle per value kept; after P stages lane l holds the sum
+// l >> (5 - P), and the stages left are a plain butterfly on it: 16-31 shuffles per block.  Every sum still adds the
+// same two partials at every stage, in the same stage order (only the operand order of an addition changes, which
+// does not change an IEEE sum), and the head sum is 0 + relu(h0) + relu(h1) + relu(h2) + relu(h3) as above: the same
+// scores, bit for bit.  NQ is a template argument so the values stay in registers.
+template <int m, class SG>
+__dpct_inline__ void scores_halve(float* v, int lane, int o, const SG& sg) {
+    const bool up = (lane & o) != 0;   // this lane keeps the upper half
+#pragma unroll
+    for (int j = 0; j < m / 2; ++j) {
+        const float send = up ? v[j] : v[j + m / 2];
+        const float keep = up ? v[j + m / 2] : v[j];
+        v[j] = keep + sycl::permute_group_by_xor(sg, send, o);
+    }
+}
+template <int NQ>
+__dpct_inline__ void block_scores_multi_t_kernel(const float *__restrict__ pooled, const float *__restrict__ dead,
+                                                 const float *__restrict__ q_idx, const int32_t *__restrict__ steps,
+                                                 int64_t max_blocks, float *__restrict__ out) {
+    constexpr int C = NQ * IDX_HEADS;                                    // sums per block
+    constexpr int M = C <= 4 ? 4 : (C <= 8 ? 8 : (C <= 16 ? 16 : 32));   // values per lane, a power of two
+    constexpr int P = M == 4 ? 2 : (M == 8 ? 3 : (M == 16 ? 4 : 5));     // halving stages
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    auto sg = sycl::ext::oneapi::this_work_item::get_sub_group();
+    auto &qs = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[MQ * IDX_HEADS * IDX_DIM]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto &s_nkv = *sycl::ext::oneapi::group_local_memory_for_overwrite<int64_t[MQ]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto &s_nbid = *sycl::ext::oneapi::group_local_memory_for_overwrite<int64_t[MQ]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    if (item_ct1.get_local_id(2) < (size_t) NQ) {
+        s_nkv[item_ct1.get_local_id(2)] = steps[item_ct1.get_local_id(2) * kStepCount + kStepNKv];
+        s_nbid[item_ct1.get_local_id(2)] = steps[item_ct1.get_local_id(2) * kStepCount + kStepNBid];
+    }
+    item_ct1.barrier(sycl::access::fence_space::local_space);
+    int64_t top = 0;
+#pragma unroll
+    for (int q = 0; q < NQ; ++q) top = s_nbid[q] > top ? s_nbid[q] : top;
+    if ((int64_t)item_ct1.get_group(2) * SCORE_WARPS > top) return;   // CTA-uniform, as in the early-exit staging
+    for (int i = item_ct1.get_local_id(2); i < NQ * IDX_HEADS * IDX_DIM; i += item_ct1.get_local_range(2))
+        qs[i] = q_idx[i];
+    item_ct1.barrier(sycl::access::fence_space::local_space);
+    const int lane = item_ct1.get_local_id(2) & 31;
+    const int64_t wstride = (int64_t)item_ct1.get_group_range(2) * SCORE_WARPS;
+    for (int64_t b = (int64_t)item_ct1.get_group(2) * SCORE_WARPS + (item_ct1.get_local_id(2) >> 5);
+         b <= top && b < max_blocks; b += wstride) {
+        const sycl::float4 kp = *reinterpret_cast<const sycl::float4 *>(pooled + b * IDX_DIM + lane * 4);
+        const sycl::float4 kd = *reinterpret_cast<const sycl::float4 *>(dead + lane * 4);
+        float v[M];
+#pragma unroll
+        for (int qi = 0; qi < NQ; ++qi) {   // a query past its n_bid is computed and not written
+            const sycl::float4 k4 = (b == s_nbid[qi]) ? kd : kp;
+            const float* q = qs + qi * IDX_HEADS * IDX_DIM + lane * 4;
+#pragma unroll
+            for (int h = 0; h < IDX_HEADS; ++h) {
+                const sycl::float4 q4 = *reinterpret_cast<const sycl::float4 *>(q + h * IDX_DIM);
+                float d = k4.x() * q4.x() + k4.y() * q4.y() + k4.z() * q4.z() +
+                          k4.w() * q4.w();
+                v[qi * IDX_HEADS + h] = d;
+            }
+        }
+#pragma unroll
+        for (int c = C; c < M; ++c) v[c] = 0.0f;
+        scores_halve<M>(v, lane, 16, sg);
+        if constexpr (P >= 2) scores_halve<M / 2>(v, lane, 8, sg);
+        if constexpr (P >= 3) scores_halve<M / 4>(v, lane, 4, sg);
+        if constexpr (P >= 4) scores_halve<M / 8>(v, lane, 2, sg);
+        if constexpr (P >= 5) scores_halve<M / 16>(v, lane, 1, sg);
+        float r = v[0];
+#pragma unroll
+        for (int o = 16 >> P; o > 0; o >>= 1) r += sycl::permute_group_by_xor(sg, r, o);
+        // lane qi < NQ gathers its query's four head sums (sum 4 qi + h sits on lane (4 qi + h) << (5 - P))
+        const int qi = lane < NQ ? lane : 0;
+        float score = 0.0f;
+#pragma unroll
+        for (int h = 0; h < IDX_HEADS; ++h) {
+            const float d = sycl::select_from_group(sg, r, (unsigned) ((qi * IDX_HEADS + h) << (5 - P)));
+            score += d > 0.0f ? d : 0.0f;
+        }
+        if (lane < NQ && b <= s_nbid[lane]) {
+            if (b == s_nbid[lane] && s_nkv[lane] % R != 0) score += 1e9f;
+            out[lane * max_blocks + b] = score;
+        }
+    }
+}
+template <int NQ>
+void launch_scores_transposed(void* stream, const float* pooled, const float* dead, const float* q_idx,
+                              const int32_t* steps, int64_t max_blocks, float* scores) {
+    auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+    strata::q_of(stream)->parallel_for<qsa_scores_transposed_k<NQ>>(
+        sycl::nd_range<3>(sycl::range(1, 1, 256) * sycl::range(1, 1, SCORE_WARPS * 32),
+                          sycl::range(1, 1, SCORE_WARPS * 32)),
+        exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+            block_scores_multi_t_kernel<NQ>(pooled, dead, q_idx, steps, max_blocks, scores);
+        });
 }
 
 #if !defined(__HIPCC__)
@@ -1564,6 +1685,28 @@ void block_topk_cluster_kernel(const float *__restrict__ scores,
 #endif
 }
 #endif  // !__HIPCC__
+
+// the opt-in decode switches (default off), read once, one log line when on
+bool scores_transposed_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_QSA_SCORES_TRANSPOSED");
+        const bool o = v != nullptr && v[0] == '1';
+        if (o) std::fprintf(stderr, "strata: STRATA_QSA_SCORES_TRANSPOSED=1 (decode QSA block scores: a block's "
+                                    "(query, head) sums reduced together; the same scores)\n");
+        return o;
+    }();
+    return on;
+}
+bool topk_scan_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_QSA_TOPK_SCAN");
+        const bool o = v != nullptr && v[0] == '1';
+        if (o) std::fprintf(stderr, "strata: STRATA_QSA_TOPK_SCAN=1 (wide QSA top-k: the digit search as a "
+                                    "work-group scan; the same ids)\n");
+        return o;
+    }();
+    return on;
+}
 }  // namespace
 
 void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps, int64_t nq,
@@ -1578,6 +1721,19 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
     if (multi && nq <= MQ && active_blocks <= 0) {   // no active count: decode (captured or not) and prefill's pooled16
         // STRATA_QSA_EARLY_EXIT=0 keeps the old staging (every CTA loads the queries first); the scores are the same bits
         static const bool early = [] { const char* v = std::getenv("STRATA_QSA_EARLY_EXIT"); return v == nullptr || std::atoi(v) != 0; }();
+        if (scores_transposed_on() && early) {   // opt-in: block_scores_multi_t_kernel, the same scores
+            switch (nq) {
+                case 1: launch_scores_transposed<1>(stream, pooled, dead, q_idx, steps, max_blocks, scores); break;
+                case 2: launch_scores_transposed<2>(stream, pooled, dead, q_idx, steps, max_blocks, scores); break;
+                case 3: launch_scores_transposed<3>(stream, pooled, dead, q_idx, steps, max_blocks, scores); break;
+                case 4: launch_scores_transposed<4>(stream, pooled, dead, q_idx, steps, max_blocks, scores); break;
+                case 5: launch_scores_transposed<5>(stream, pooled, dead, q_idx, steps, max_blocks, scores); break;
+                case 6: launch_scores_transposed<6>(stream, pooled, dead, q_idx, steps, max_blocks, scores); break;
+                case 7: launch_scores_transposed<7>(stream, pooled, dead, q_idx, steps, max_blocks, scores); break;
+                default: launch_scores_transposed<8>(stream, pooled, dead, q_idx, steps, max_blocks, scores); break;
+            }
+            return;
+        }
         {
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
@@ -2011,6 +2167,16 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
         const char* v = std::getenv("STRATA_TOPK_STREAM");
         return v == nullptr || v[0] != '0';
     }();
+    if (topk_scan_on() && (reach > fit || (turing_wide && counted && reach > 22528))) {   // opt-in: the same ids
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+        strata::q_of(stream)->parallel_for<qsa_topk_wide_scan_k>(
+            sycl::nd_range<3>(sycl::range(1, 1, (unsigned)nq) * sycl::range(1, 1, TK_T), sycl::range(1, 1, TK_T)),
+            exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                block_topk_wide_kernel<true>(scores, steps, max_blocks, cap, ids);
+            });
+        return;
+    }
     if (reach > fit || (turing_wide && counted && reach > 22528))   // past the register kernel's reach, or Turing's band
         /*
         DPCT1049: The work-group size passed to the SYCL kernel may exceed

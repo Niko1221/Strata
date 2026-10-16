@@ -33,6 +33,7 @@
 #include "strata/kernels/ple.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
+#include "strata/qsa_decode_attn_multi.hpp"
 #include "strata/kernels/qsa_select.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/rope.hpp"
@@ -150,6 +151,16 @@ int pipe_helper_cpu() {
 }
 const bool g_no_multi_gr = env_on("STRATA_NO_MULTI_GR");   // #783 PR-g: per-token GR reads/writes and generic-T kernels again
 const bool g_no_batch_kv = env_on("STRATA_NO_BATCH_KV_STEP");   // #783 PR-d: per-token K/V and indexer appends again
+// STRATA_BATCH_QSA_ATTN=1 (opt-in): a batch window's QSA selection and attention per slot instead of per row - the
+// scores once per slot (its rows share its pooled keys), the top-k once for the window, the attention once for the
+// window over every slot's pools (qsa_decode_attn_multi).  Each kernel's work for a row reads only that row's q, step,
+// scores, selection and scratch, so the rows get the per-row calls' bits.
+const bool g_batch_qsa_attn = [] {
+    const bool on = env_on("STRATA_BATCH_QSA_ATTN");
+    if (on) std::fprintf(stderr, "strata verify: STRATA_BATCH_QSA_ATTN=1 (batch windows: QSA selection and attention "
+                                 "per slot; the same bits)\n");
+    return on;
+}();
 
 // The shared expert runs on its own stream, forked off and joined back per layer (`sh_fork` in record_window).  The
 // overlap pays off on CUDA, where it was added (cfd3b72).  On HIP a cross-stream event dependency costs more than the
@@ -1231,6 +1242,32 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                 }
                 }
                 stamp(l, 10, grp);
+                // opt-in (above): per slot, then once for the window.  A streamed K/V (kv_mode 1) keeps the per-row
+                // path, which makes each row's selected blocks resident just before that row attends.
+                const auto streamed = [&] {
+                    for (int t = tb; t < te; ++t)
+                        if (slot_ss(t).qsa_states[qi].kv_mode == 1) return true;
+                    return false;
+                };
+                if (g_batch_qsa_attn && batch_rec_ && !streamed()) {
+                    QsaAttnPools px[kVerifyMaxT];
+                    int rows[kVerifyMaxT], ng = 0;
+                    for (int t = tb; t < te;) {   // a slot's rows are contiguous
+                        const int first = t;
+                        while (t < te && brow_[t] == brow_[first]) ++t;
+                        const QsaState& sx = slot_ss(first).qsa_states[qi];
+                        qsa_block_scores(sx.idx_pooled, sx.idx_dead, qidx_ + first * IQ * ID,
+                                         step_ + first * kStepCount, t - first, max_blocks_, s,
+                                         scores_ + (size_t) first * max_blocks_, cs);
+                        px[ng] = qsa_attn_pools(sx);
+                        rows[ng++] = t - first;
+                    }
+                    qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_,
+                                   cap_, s, sel_ + (size_t) tb * cap_, cs);
+                    qsa_decode_attn_multi(qcur_ + tb * NH * HD, px, rows, ng, sel_ + (size_t) tb * cap_,
+                                          step_ + tb * kStepCount, cap_, s,
+                                          attn_scratch_ + (size_t) tb * attn_scratch_floats_, attn_ + tb * NH * HD, cs);
+                } else
                 if (batch_rec_) {   // each row selects and attends over its own slot's K/V
                     for (int t = tb; t < te; ++t) {
                         const QsaState& sx = slot_ss(t).qsa_states[qi];
