@@ -8829,9 +8829,22 @@ int main(int argc, char** argv) {
         // --pipeline-windows: set while the tier adapts beside windows in flight (see its use in adapt)
         std::function<void()> adapt_fence;
         int64_t adapt_nswaps = 0;   // the blocking tier's swaps chosen, cumulative (the decode timing line's swaps/window)
+        // [locale 10/10/2026] STRATA_CLIENT_MEMORY=N: the next round may swap up to N experts (a client switch, below)
+        int adapt_cap_once = 0;
+        // [locale 10/10/2026] the routing counts of each client (a client = the first 64 prompt tokens: its system prompt),
+        // kept when another client takes over and put back when it returns (at most 16 clients)
+        std::map<uint64_t, std::vector<float>> client_mem;
+        std::map<uint64_t, uint64_t> client_seen;   // when each kept client last left (for dropping the oldest)
+        uint64_t client_cur = 0, client_clock = 0;
+        // the current client's slow counts: every round adds the round's (decayed) counts and keeps 0.97 of the old
+        // ones, so they remember ~30 rounds (~400 tokens) where the round's own counts remember ~3
+        std::vector<float> client_acc;
+        static const bool client_on = [] { const char* e = std::getenv("STRATA_CLIENT_MEMORY"); return e && std::atoi(e) > 0; }();
         // the VRAM tier follows the conversation (the same rule as the speculative loop below)
         auto adapt = [&]() -> bool {
             if (!pending.empty()) return true;   // the previous swaps are still in flight
+            const int adapt_cap = adapt_cap_once > 0 ? adapt_cap_once : o.adapt_swaps;
+            adapt_cap_once = 0;
             if (remote_opt && !remote_opt->adapt(drive.d.usage, host_res, pending, o.adapt_swaps, *srcp)) return false;
             struct Swap { float gain; int32_t layer, in, out; };
             std::vector<Swap> swaps;
@@ -8856,7 +8869,7 @@ int main(int argc, char** argv) {
                 }
             }
             std::sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.gain > b.gain; });
-            if ((int) swaps.size() > o.adapt_swaps) swaps.resize((size_t) o.adapt_swaps);
+            if ((int) swaps.size() > adapt_cap) swaps.resize((size_t) adapt_cap);
             if (aov) {   // 0.1.43: the copies go in layer order and each layer's landing is told to the verify window
                 std::stable_sort(swaps.begin(), swaps.end(), [](const Swap& a, const Swap& b) { return a.layer < b.layer; });
                 agate.landed.store(-1, std::memory_order_release);
@@ -8974,6 +8987,10 @@ int main(int argc, char** argv) {
             // decays: the sum is proportional to the routing itself) - only with --expert-profile-save, else `heat`
             // is empty
             for (size_t i = 0; i < heat.size(); ++i) heat[i] += (double) drive.d.usage[i];
+            if (client_on) {   // [locale 10/10/2026] the client's slow counts (STRATA_CLIENT_MEMORY)
+                if (client_acc.size() != drive.d.usage.size()) client_acc.assign(drive.d.usage.size(), 0.0f);
+                for (size_t i = 0; i < client_acc.size(); ++i) client_acc[i] = client_acc[i] * 0.97f + drive.d.usage[i];
+            }
             if (peer.valid()) {                   // multi-GPU: the peer takes the next most-routed CPU misses
                 std::vector<int32_t> r0 = host_res;
                 for (const auto& [i, slot] : pending) r0[(size_t) i] = slot;   // swapped into the primary already
@@ -9268,6 +9285,10 @@ int main(int argc, char** argv) {
                     a_res = host_res;
                     // #477: the routing counted, as adapt() counts it (--expert-profile-save; else `heat` is empty)
                     for (size_t i = 0; i < heat.size(); ++i) heat[i] += (double) drive.d.usage[i];
+                    if (client_on) {   // [locale 14/10/2026] the client's slow counts, as adapt() keeps them
+                        if (client_acc.size() != drive.d.usage.size()) client_acc.assign(drive.d.usage.size(), 0.0f);
+                        for (size_t i = 0; i < client_acc.size(); ++i) client_acc[i] = client_acc[i] * 0.97f + drive.d.usage[i];
+                    }
                     for (float& v : drive.d.usage) v *= o.adapt_decay;
                     if (a_inline) {   // the arena: choose here (no copy back to wait for), then straight on to step 2
                         const Clock::time_point tp0 = Clock::now();
@@ -11879,6 +11900,59 @@ int main(int argc, char** argv) {
             consumed.reserve((size_t) (n + max_new + S));
             for (int64_t i = 0; i < n - 1; ++i) consumed.push_back((int32_t) ids[(size_t) i]);
             const char* finish = "length";
+            // [locale 10/10/2026] STRATA_CLIENT_MEMORY=N (0/absent: off).  When the client changes (WorkFlow's mail
+            // between two LLM_coder turns), the VRAM cache holds the other client's experts and the first windows of the
+            // turn run with many misses.  Keep the leaving client's routing counts, put back the arriving client's and
+            // swap up to N experts towards them before the first window (the copies land while it runs).
+            static const int client_burst = [] { const char* e = std::getenv("STRATA_CLIENT_MEMORY"); return e ? std::atoi(e) : 0; }();
+            if (client_burst > 0 && !drive.d.usage.empty() && n > 0) {
+                uint64_t key = 1469598103934665603ull;
+                for (int64_t i = 0; i < std::min<int64_t>(n, 64); ++i) { key ^= (uint64_t) ids[(size_t) i]; key *= 1099511628211ull; }
+                if (key != client_cur) {
+                    if (client_cur != 0 && !client_acc.empty()) {
+                        if (client_mem.size() >= 16 && !client_mem.count(client_cur)) {   // the least recently used goes
+                            auto old = std::min_element(client_seen.begin(), client_seen.end(),
+                                                        [](const auto& a, const auto& b) { return a.second < b.second; });
+                            client_mem.erase(old->first);
+                            client_seen.erase(old);
+                        }
+                        client_mem[client_cur] = client_acc;
+                        client_seen[client_cur] = ++client_clock;
+                    }
+                    const auto it = client_mem.find(key);
+                    size_t moved = 0;
+                    if (it != client_mem.end()) {
+                        // the last round's copies have landed: adapt() would skip otherwise; with --adapt-async the
+                        // asynchronous round in flight lands first too (adapt_quiesce), so no slot is written twice
+                        if (ajob) adapt_quiesce(); else apply_pending(true);
+                        client_acc = it->second;
+                        // the round's counts become the client's slow ones, scaled to the same total as the counts now
+                        // (the swap rule's thresholds - 2 uses, 1.5 more than the evicted - are in those units)
+                        double s_now = 0, s_acc = 0;
+                        for (size_t i = 0; i < client_acc.size(); ++i) { s_now += drive.d.usage[i]; s_acc += client_acc[i]; }
+                        const float k = s_acc > 0 ? (float) (std::max(s_now, 1.0) / s_acc) : 0.0f;
+                        for (size_t i = 0; i < client_acc.size(); ++i) drive.d.usage[i] = client_acc[i] * k;
+                        adapt_cap_once = client_burst;
+                        if (!adapt()) {
+                            std::printf("ERR the client switch's swaps failed\n");
+                            return 1;
+                        }
+                        moved = pending.size();
+                        if (ajob) apply_pending(true);   // --adapt-async: the burst lands before the asynchronous tier picks again
+                    } else {
+                        std::fill(client_acc.begin(), client_acc.end(), 0.0f);   // a new client starts its own counts
+                    }
+                    // the first prompt ids too, so that a reader (Model Status) can name the client with the tokenizer
+                    std::string first_ids;
+                    for (int64_t i = 0; i < std::min<int64_t>(n, 96); ++i) first_ids += " " + std::to_string((long long) ids[(size_t) i]);
+                    std::fprintf(stderr, "strata serve: client %016llx %s (%zu swaps) ids:%s\n", (unsigned long long) key,
+                                 it != client_mem.end() ? "back: its experts swapped in" : "new", moved, first_ids.c_str());
+                    client_cur = key;
+                } else {
+                    // one line for every request (Model Status pairs them with the requests of /metrics, in order)
+                    std::fprintf(stderr, "strata serve: client %016llx same\n", (unsigned long long) key);
+                }
+            }
             const Clock::time_point d0 = Clock::now();
             // STRATA_DECODE_TIMING=1: where a request's decode time goes (one line per request)
             static const bool dec_timing = std::getenv("STRATA_DECODE_TIMING") != nullptr;
