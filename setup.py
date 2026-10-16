@@ -2991,8 +2991,9 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     bitcode = next((p for p in (root / "lib" / "llvm" / "amdgcn" / "bitcode", root / "amdgcn" / "bitcode",
                                 root / "core" / "lib" / "llvm" / "amdgcn" / "bitcode") if p.is_dir()),
                    root / "amdgcn" / "bitcode")
-    hip_compiler = next((p for p in (root / "bin" / "amdclang++", root / "llvm" / "bin" / "clang++",
-                                     root / "core" / "lib" / "llvm" / "bin" / "clang++") if p.is_file()),
+    hip_compiler = next((p for p in (root / "llvm" / "bin" / "clang++",
+                                     root / "core" / "lib" / "llvm" / "bin" / "clang++",
+                                     root / "bin" / "amdclang++") if p.is_file()),
                         root / "llvm" / "bin" / "clang++")
     rocm_inc = root / "core" if (root / "core" / "include").is_dir() else root
     os.environ.update({"HIP_PLATFORM": "amd", "HIP_COMPILER": "clang", "HIP_RUNTIME": "rocclr", "ROCM_PATH": str(root),
