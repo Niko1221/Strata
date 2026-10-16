@@ -411,7 +411,38 @@ the next query branches a few dozen tokens before the end, and its whole prompt 
 main session's N deepest checkpoints of that conversation (one per length), a restore from a slot checkpoint brings
 the slot's shallower ones back with it, and the engine logs `slot 2 keeps 2 checkpoints (at 32768 43372; 227.5 MiB)`
 (each is a whole running state, about 114 MiB on Qwen3.8-Flash-Next). Alone it lets such a query resume at the last
-periodic checkpoint (`--prompt-cache-every`, up to 16K tokens before the branch).
+periodic checkpoint (`--prompt-cache-every`, up to 16K tokens before the branch); with
+`STRATA_BRANCH_CHECKPOINT` (below), at the branch.
+
+### Engine: a checkpoint where the prompt branches (`STRATA_BRANCH_CHECKPOINT=<margin>`)
+
+Before reading, the engine measures how far the prompt runs along each conversation it holds - the main session's
+and every idle slot's - before leaving it. When the deepest such point is at least `<margin>` tokens past where the
+read starts and before the turn boundary, the read stops there for one more checkpoint (as at the root and turn
+boundaries; on a layer split too, and without `--batch`), logged as `branch checkpoint at 43340: the prompt leaves
+slot 2's conversation there (read from 32768)`. The next query, which leaves this one later, resumes there. Measured
+on the machine above (`--batch 6`; a 43-45K-token classifier transcript growing by about 250 tokens per query, an
+agent conversation taking the main session between the queries), without and with `STRATA_SLOT_CHECKPOINTS=2
+STRATA_BRANCH_CHECKPOINT=1024`:
+
+| Query | without: reused + read, ms | with: reused + read, ms |
+| --- | ---: | ---: |
+| 1 | 0 + 43,379, 14,146 | 0 + 43,379, 14,255 |
+| 2 | 0 + 43,624, 14,112 | 32,768 + 10,856, 7,577 (checkpoint at 43,340) |
+| 3 | 0 + 43,874, 14,277 | 43,340 + 534, 1,253 |
+| 4 | 0 + 44,134, 14,399 | 43,340 + 794, 1,430 |
+| 5 | 0 + 44,400, 14,535 | 43,340 + 1,060, 1,652 |
+| 6 | 0 + 44,669, 14,596 | 43,340 + 1,329, 1,818 |
+
+The extra part costs 0.8-0.9 s (the same 11,110 tokens from 32,768: 5.9 s straight, 6.8 s with the cut; alone, 6.5 /
+7.3 s). For a transcript growing by g tokens per query, a margin M costs about 0.9 s x g / M per query in cuts and
+M / 2 tokens more per read (0.7 ms each): g = 250-500 puts the best M at 800-1,100. Single user 63.7 / 63.9 tok/s,
+6 concurrent x 2048 tokens 178.7 / 179.3 tok/s without / with both (`tools/serve_load.py`).
+
+The restored state is the one the read had at that point, but the cut changes the chunks of the read after it (as
+`pin=` or a resume from an earlier turn checkpoint does), so a prompt read through a branch checkpoint can round
+differently from one read without it. With the exactness settings below, 160-token greedy answers: 11 of 12 equal;
+the twelfth differed from its first token, and the same way for a read that only stopped there (no restore).
 
 ### Server: placement by what the slots hold (`STRATA_SLOT_CACHE_AFFINITY=1`)
 
