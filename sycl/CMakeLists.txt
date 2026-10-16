@@ -221,6 +221,7 @@ foreach(k IN LISTS _kernel_cu)
 endforeach()
 strata_resolve(_kernels ${_kernel_files} src/kernels/ngram.cpp src/ngram/ple_reader.cpp src/platform/direct_file.cpp)
 list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_xmx.dp.cpp)   # port-only: the XMX prompt attention
+list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_union.dp.cpp)   # port-only: the same over 8-query selection unions
 add_library(strata_kernels STATIC ${_kernels})
 target_include_directories(strata_kernels PRIVATE ${STRATA_ROOT}/third_party/ggml)
 target_link_libraries(strata_kernels PUBLIC strata_core)
@@ -353,6 +354,12 @@ if(STRATA_SYCL_PARITY)
   strata_resolve(_src src/kernels/qsa_prompt_attn_parity.cpp)
   add_executable(qsa_prompt_attn_parity ${_src})
   target_link_libraries(qsa_prompt_attn_parity PRIVATE strata_kernels)
+  # port-only: the union-tile XMX prompt attention (STRATA_PROMPT_ATTN_UNION) against the FP32 kernel and FP64, then
+  # the time of both; skipped (77) on a card other than Battlemage
+  add_executable(qsa_prompt_attn_union_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/qsa_prompt_attn_union_parity.cpp)
+  target_link_libraries(qsa_prompt_attn_union_parity PRIVATE strata_kernels)
+  add_test(NAME qsa_prompt_attn_union_parity COMMAND qsa_prompt_attn_union_parity --selftest)
+  set_tests_properties(qsa_prompt_attn_union_parity PROPERTIES SKIP_RETURN_CODE 77)
   # the hybrid K8V4 KV test (upstream 0.1.27) passes its appends, gathers and attention here and fails only its
   # last step, the same tensor-core prompt kernel. Built, not registered, until that kernel is ported.
   strata_resolve(_src src/kernels/kv_hybrid_parity.cpp)
