@@ -378,6 +378,26 @@ class RetentionPolicy(unittest.TestCase):
         finally:
             slot_policy.configure({})
 
+    def test_reported_checkpoints_give_the_hint_where_no_slot_continues_the_prompt(self):
+        e = self.e()
+        transcript = [1] * 42000
+        e.slot_held[3] = transcript + [8] * 60 + [9] * 40
+        e.slot_held[1] = [1] * 20000 + [6] * 5000                 # another chat sharing 20000 tokens
+        checks = [()] * 6
+        checks[3] = (32768, 42000)                                # periodic + the branch point of the last query
+        checks[1] = (16384, 24990)
+        prompt = transcript + [8] * 60 + [7] * 300 + [9] * 40
+        plan = self.place(e, prompt, padding_safe=True, checks=checks)
+        self.assertEqual((plan.slot, plan.reason, plan.source_hint, plan.reused_hint), (3, "sibling", 3, 42000))
+        plan = self.place(e, [1] * 30000 + [2] * 10, padding_safe=True, checks=checks)
+        self.assertEqual((plan.reason, plan.source_hint, plan.reused_hint), ("reclaim", 1, 16384))   # 24990: not a start
+        checks[3] = (32768, 42000, 99999)                         # a length past what the slot holds is ignored
+        self.assertEqual(self.place(e, prompt, padding_safe=True, checks=checks).reused_hint, 42000)
+        e.slot_busy[3] = True                                     # a busy slot is no source
+        plan = self.place(e, prompt, padding_safe=True, checks=checks)
+        self.assertEqual((plan.source_hint, plan.reused_hint), (1, 16384))
+        self.assertEqual(self.place(e, prompt, padding_safe=True).reused_hint, 0)   # nothing reported: no hint
+
     def test_common_prefix(self):
         for a, b, n in (([], [1], 0), ([1, 2, 3], [1, 2, 3], 3), ([1, 2, 3], [1, 2], 2), ([1, 2, 3], [1, 5, 3], 1),
                         (list(range(100000)), list(range(77777)) + [0], 77777)):
@@ -690,6 +710,26 @@ class ParkMainSession(unittest.TestCase):
             self.assertIsNone(self.dest(e))                           # 0: off
         finally:
             slot_policy.configure({})
+
+    def test_engine_checkpoint_lines_are_kept_per_slot_and_forgotten_before_an_overwrite(self):
+        e = self.e()
+        e.slot_checks = [()] * 6
+        e._observe_checks("BCHECKS 2 42729 32768 42000\n")
+        e._observe_checks("BCHECKS 4 9000 9000 12000 512\n")      # only lengths inside what the slot holds
+        e._observe_checks("BCHECKS x 1 2\n")                        # malformed: ignored
+        e._observe_checks("BCHECKS 9 100 50\n")                     # no such slot
+        self.assertEqual((e.slot_checks[2], e.slot_checks[4]), ((32768, 42000), (512,)))
+        e.slot_held = [[b] * 40000 for b in range(6)]
+        e.slot_held[2] = e.main_held[:49900] + [3] * 80               # an older version: the park takes it
+        self.assertEqual(e._claim_park([1] * 60), " park=2")
+        self.assertEqual(e.slot_checks[2], ())                      # the engine overwrites it now
+        self.assertEqual(e.slot_checks[4], (512,))
+        e.slot_busy[2] = False
+        e._observe_checks("BCHECKS 2 50000 32768 49900\n")
+        e.slot_held[2] = list(e.main_held)
+        e.slot_live = [None] * 6
+        view = {r["slot"]: r for r in e.slots_view()}
+        self.assertEqual(view[2]["checkpoint_tokens"], [32768, 49900])
 
     def test_nowhere_to_park_without_evicting(self):
         e = self.e()
