@@ -10543,6 +10543,141 @@ int main(int argc, char** argv) {
                     }
                 }).detach();
         }
+        // ---- STRATA_WARM_PROMPT=<n> (opt-in, default 0 = off; a value under 32 is raised to 32): ONE synthetic
+        // prompt through the whole part chain before READY, so a session's first request does not pay what only a
+        // session's first prompt pays - the first chunk carries every kernel's first launch, the prompt path's
+        // own first-chunk work and the file tier's cold reads, and no later prompt pays any of it.  The Maya
+        // checkout's local commit cc58309 made this its STRATA_GLM_WARM_PROMPT; its issue #8 reported a first
+        // prompt read at 95-133 ms/token against 23-44 warm - that checkout's number on its rig, and whether the
+        // knob wins HERE is what the first-prompt A/B with it on and off decides.  The ids are spread over the vocabulary so the routes
+        // are not one expert's, and every participant's state is zeroed before and after it, so no conversation
+        // can see it (the session's memory is not zeroed at start, and a request that reuses nothing zeroes before
+        // its own prompt anyway).  It runs through the same loan a request takes - the slots the prompt path is
+        // laid out in go non-resident for the run and are refilled from the arena after it - and it never fails
+        // the start: a prompt path that cannot run prints what it said and the first prompt pays it.  Nothing
+        // outside this block changes when the knob is unset.
+        {
+            const char* wv = std::getenv("STRATA_WARM_PROMPT");
+            if (wv == nullptr || wv[0] == '\0') wv = std::getenv("STRATA_GLM_WARM_PROMPT");   // the fork's own name
+            const int wn = wv != nullptr ? std::atoi(wv) : 0;
+            if (wn > 0 && sp.chunk() > 0) {
+                const int64_t wtn = std::max<int64_t>(32, wn);
+                std::vector<int64_t> wids((size_t) wtn);
+                for (int64_t i = 0; i < wtn; ++i) wids[(size_t) i] = 100 + (i * 131) % 20000;
+                std::fprintf(stderr, "strata serve: warming the prompt path with a %lld-token prompt before READY "
+                                     "(STRATA_WARM_PROMPT)\n", (long long) wtn);
+                // The request callbacks read the request's own tokens (`cur`), print its PP lines and save its
+                // checkpoints: a warm prompt has none of those, so they are moved aside and put back around it.
+                auto w_chunk = std::move(sp.on_chunk);
+                auto w_stage = std::move(sp.on_stage_chunk);
+                sp.on_chunk = nullptr;
+                sp.on_stage_chunk = nullptr;
+                std::vector<std::function<bool(const float*, int64_t, int64_t, std::string&)>> w_st_chunk(stages.size());
+                std::vector<std::function<bool(int64_t, std::string&)>> w_st_stage(stages.size());
+                for (size_t i = 0; i < stages.size(); ++i) {
+                    w_st_chunk[i] = std::move(stages[i]->sp.on_chunk);
+                    w_st_stage[i] = std::move(stages[i]->sp.on_stage_chunk);
+                    stages[i]->sp.on_chunk = nullptr;
+                    stages[i]->sp.on_stage_chunk = nullptr;
+                }
+                // Every participant back to a fresh sequence's state, exactly as the request path does at
+                // resume == 0: once before the run (nothing a conversation can reach may be read by it - the
+                // session's memory is not zeroed at start) and once after it, so nothing a conversation DOES
+                // reach holds what the warm run wrote.
+                auto w_zero = [&]() {
+                    strata::core::session_zero(ss, g, nullptr, main_cs);
+                    cudaStreamSynchronize(main_stream);
+                    for (auto& st : stages) {
+                        const strata::core::OnDevice on(st->dev);
+                        strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
+                        cudaStreamSynchronize(st->stream);
+                    }
+                };
+                std::string werr;
+                bool wok = true;
+                // The elastic K/V first (as the non-serve prompt path does): the prompt writes cells, so the K/V
+                // must already reach them.  A warm prompt is a few hundred cells, so this is normally a no-op.
+                if (kvg.on && !kvg_ensure(wtn + 256, [] { cudaDeviceSynchronize(); })) {
+                    werr = "the K/V cannot grow to a warm-up prompt";
+                    wok = false;
+                }
+                // The loan, as serve's `lend` takes one for a full-chunk request: each participant's OWN rows
+                // (`host_res` is one table and a slot number alone names another stage's cache) in the slots the
+                // prompt path was laid out in go non-resident, and the table goes out to every device.
+                std::vector<std::vector<std::pair<int32_t, int32_t>>> w_lent(pf_parts.size());
+                bool w_any = false;
+                for (size_t i = 0; wok && i < pf_parts.size(); ++i) {
+                    PfPart& p = pf_parts[i];
+                    if (p.first < 0) continue;                     // its own buffers: nothing is lent
+                    const strata::core::OnDevice on(p.dev);
+                    for (int64_t l = p.lb; l < p.le; ++l)
+                        for (int64_t ex = 0; ex < g.n_expert; ++ex) {
+                            const size_t r = (size_t) (l * g.n_expert + ex);
+                            if (host_res[r] >= p.first) {
+                                w_lent[i].emplace_back((int32_t) r, host_res[r]);
+                                host_res[r] = strata::core::kNotResident;
+                            }
+                        }
+                    w_any = w_any || !w_lent[i].empty();
+                }
+                if (w_any) res_upload();
+                const auto wt0 = Clock::now();
+                if (wok) {
+                    w_zero();
+                    strata::core::progress().busy.store(true);     // the watchdog guards it as it guards a request
+                    wok = sp.run(wids.data(), wtn, 0, werr);
+                    strata::core::progress().busy.store(false);
+                }
+                const double wms =
+                    std::chrono::duration<double, std::milli>(Clock::now() - wt0).count();
+                // Give the loan back: each participant's slots are refilled from the arena into the SAME slots,
+                // through its own cache and its own device (a slot refilled into the wrong cache is silent and
+                // produces plausible tokens).  A slot whose refill failed stays non-resident, which is the truth
+                // for it: the prompt buffer is in it, so the expert is a miss until something loads it again.
+                int64_t w_back = 0;
+                for (size_t i = 0; i < pf_parts.size(); ++i) {
+                    if (w_lent[i].empty()) continue;
+                    PfPart& p = pf_parts[i];
+                    const strata::core::OnDevice on(p.dev);
+                    for (const auto& [r, slot] : w_lent[i]) {
+                        const uint8_t* b = srcp->blob_stable(r / g.n_expert, r % g.n_expert);
+                        const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(r / g.n_expert);
+                        if (b == nullptr || !(refill_blocking() ? p.cache->fill_slot_blocking(slot, b, werr, nb)
+                                                               : p.cache->fill_slot_queued(slot, b, werr, nb))) {
+                            std::fprintf(stderr, "strata serve: warm prompt: a lent slot could not be given back "
+                                                 "(the experts above it stay non-resident)%s%s\n",
+                                         werr.empty() ? "" : ": ", werr.c_str());
+                            werr.clear();
+                            break;
+                        }
+                        if (!refill_blocking()) srcp->note_async_read(b, nullptr);   // #1237
+                        host_res[(size_t) r] = slot;
+                        ++w_back;
+                    }
+                    std::string serr;
+                    if (!p.cache->sync_queued(serr))
+                        std::fprintf(stderr, "strata serve: warm prompt: waiting for a lent slot's refill failed: %s\n",
+                                     serr.c_str());
+                }
+                if (w_back > 0) res_upload();
+                w_zero();
+                sp.on_chunk = std::move(w_chunk);
+                sp.on_stage_chunk = std::move(w_stage);
+                for (size_t i = 0; i < stages.size(); ++i) {
+                    stages[i]->sp.on_chunk = std::move(w_st_chunk[i]);
+                    stages[i]->sp.on_stage_chunk = std::move(w_st_stage[i]);
+                }
+                int64_t w_lent_total = 0;
+                for (const auto& v : w_lent) w_lent_total += (int64_t) v.size();
+                if (wok)
+                    std::fprintf(stderr, "strata serve: the prompt path is warm (%lld tokens in %.0f ms, %.1f ms/"
+                                         "token, %lld of %lld lent slots given back)\n", (long long) wtn, wms,
+                                 wms / (double) wtn, (long long) w_back, (long long) w_lent_total);
+                else
+                    std::fprintf(stderr, "strata serve: the prompt warm-up did not run%s%s - the first prompt pays "
+                                         "it\n", werr.empty() ? "" : ": ", werr.c_str());
+            }
+        }
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
         std::string line;
