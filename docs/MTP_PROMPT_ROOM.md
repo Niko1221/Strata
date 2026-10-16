@@ -25,8 +25,10 @@ drafter on a GLM-5.3-Flash model) measured its own version on a 128K-token promp
 what the loan moved there was the ring, not the clock. Expect a gain where the ring is the limit and nothing where it
 is not.
 
-**This port has not been measured on our hardware yet.** The port is offered with the mechanism and the lines to
-measure it by, not with numbers: nobody has run a model with it on. What to run is under [Measuring it](#measuring-it).
+**Measured on our Q8_0 4-way rig on 2026-10-16** (what it was measured on and every number is under
+[Measuring it](#measuring-it)): the room did what this page says - it opened, the 675 MiB went into the ring, the block
+came back before the first window and the decode ran unchanged - and it bought no time at the prompt sizes tried,
+because the ring was not the limit there. It cost 3.4 to 4.0 s per roomed request on top of the read.
 
 ## What it does
 
@@ -75,7 +77,8 @@ other buffer of a chunk is inside the region `bytes_needed` sized for it. A room
 - `--pipeline-windows` is fine: the room closes before the request's first window.
 - `--prefill-head-alias` is fine: when both apply, the head is unloaded and the prompt path is laid out ONCE, with the
   head's bytes and the drafter's together, and both come back before the first window (`room_close`).
-- Not measured on our hardware; see below.
+- Measured on the Q8_0 4-way rig only, at 3,080 and 14,859 tokens; on both the ring was not the limit, so the room
+  cost its own rebuild and bought nothing. See [Measuring it](#measuring-it).
 
 ## Measuring it
 
@@ -101,6 +104,38 @@ What to read:
 A prompt where the ring is not the limit (an agent's tool output of a few thousand tokens on a card whose cache holds
 most experts) should show the costs and no gain; a long prompt on a card that streams nearly every expert is where the
 ring has been worth its bytes before.
+
+### Measured: Q8_0 4-way, 2026-10-16
+
+**What it was measured on.** 2× RTX 3060 (11.6 GB) + 2× RTX 5060 (7.5 GB), layer split `auto` across all four cards,
+Qwen3.8-Flash-Next Q8_0 pack, MTP runtime `rt`, `--spec 4`, `--kv-resident 65536`, `--max-context 262144`. The engine
+was this branch's build (upstream main + the room), `--serve` only. The prompt chunk auto-picked 3,328 tokens with a
+101-slot ring; the room's 135 slots take it to 236 while a roomed prompt runs. Each arm was a fresh engine, the
+variable unset against `=0`, one request per size, `temperature 0`, 96/128 tokens out.
+
+| prompt | arm | read (the engine's `prompt … read in` line) | of which the room | decode |
+|---|---|---|---|---|
+| 3,080 tokens | room | 20,647 ms (149.2 tok/s) | rebuild 2,461.6 ms + back 1,572.5 ms | 25.1 tok/s |
+| 3,080 tokens | room (repeat) | 20,685 ms (148.9 tok/s) | rebuild 2,308.7 ms + back 1,580.9 ms | 25.9 tok/s |
+| 3,080 tokens | standing | 16,171 ms (190.5 tok/s) | — | 26.4 tok/s |
+| 14,859 tokens | room | 39,807 ms (373.3 tok/s) | rebuild 1,852.6 ms + back 1,566.1 ms | 31.2 tok/s |
+| 14,859 tokens | standing | 35,794 ms (415.1 tok/s) | — | 32.7 tok/s |
+
+The engine's `prompt … read in` line covers the room open and close (it is timed from the start of the request to
+`room_close`), so what the read itself took is that minus the two room lines: about 16.6 s against 16.2 s at 3,080
+tokens, and 36.4 s against 35.8 s at 14,859. **The ring bought nothing at either size** - it was not what the prompt
+was waiting on - and the room's own 3.4-4.0 s is what the request paid.
+
+Everything else behaved as designed. The start-up line read `a prompt of 0 tokens or more lends the drafter's 675 MiB
+of experts on CUDA3 to the prompt path's ring (135 slots past its own)`. CUDA3's free VRAM while a roomed prompt ran
+was 66 MiB, the same as standing (66 MiB): the freed 675 MiB was the ring. On the **first** roomed prompt of an engine
+the block came back at another address (`came back at 0x744866000000, not 0x746dbc000000`) and the round/step graphs
+were dropped and captured again - the decode after it ran at 25.9 tok/s all the same; every later prompt returned it
+to the same address and nothing was dropped. No guard refused a `draft`, no request errored, and decode was unchanged
+within noise (the two arms' expert-cache hit rate was within 1.3 points of each other).
+
+This is the shape the reference measured too (90.9 s against 89.5 s on a 128K prompt): the room moves the ring, and on
+a machine where the ring is not the limit, that is all it moves.
 
 ## Where this comes from
 
