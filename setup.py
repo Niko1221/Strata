@@ -1695,6 +1695,16 @@ def download(url, dst: Path, what=None):
             mark(dst)
         ok(f"{what or dst.name} downloaded")
         return
+
+    aria_ctl = part.with_name(part.name + ".aria2")
+    if aria_ctl.exists():
+        warn(
+            f"{what or dst.name}: incomplete aria2 download cannot be resumed "
+            "by the built-in downloader; starting it over"
+        )
+        part.unlink(missing_ok=True)
+        aria_ctl.unlink(missing_ok=True)
+
     have = part.stat().st_size if part.exists() else 0
     for attempt in range(30):
         if total and have >= total:                    # stopped after the last byte, before the rename: nothing to
