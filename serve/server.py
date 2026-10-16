@@ -1863,7 +1863,8 @@ class StrataEngine:
             return
         scheduler = getattr(self, "solo_scheduler", None)
         if scheduler is not None:
-            yield from scheduler.generate(self, ids, max_new, sampling, cancel, embeddings)
+            yield from scheduler.generate(self, ids, max_new, sampling, cancel, embeddings,
+                                          engine_died=EngineDied, request_stats=request_stats)
         else:
             yield from self._generate_single(ids, max_new, sampling, cancel, embeddings)
 

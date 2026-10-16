@@ -155,8 +155,10 @@ class SoloScheduler:
         with self.cv:
             return self.owner.state if self.owner else None
 
-    def generate(self, engine, ids, max_new, sampling, cancel, embeddings):
-        from serve.server import request_stats, EngineDied
+    def generate(self, engine, ids, max_new, sampling, cancel, embeddings, *, engine_died, request_stats):
+        # Use the calling server's types/functions. A direct script launch names
+        # it __main__; importing serve.server here would create another EngineDied
+        # class that the running HTTP handler cannot catch.
         ticket = self.local.ticket
         # GENI resumption and checkpoint opt-outs are deliberately not preempted.
         eligible = (not embeddings and engine.can_stop and
@@ -228,7 +230,7 @@ class SoloScheduler:
                 if cancel.is_set():
                     break
                 if not engine.alive() or engine.gen != born:
-                    raise EngineDied("the engine stopped while this request was paused")
+                    raise engine_died("the engine stopped while this request was paused")
                 if ticket.state is not None:
                     ticket.state["solo_paused"] = False
         finally:
