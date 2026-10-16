@@ -4512,17 +4512,20 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: WARNING: --batch-mtp is off: %s\n", why);
             batch_mtp = false;
         }
-        // proposals per slot per window: ceil(spec / batch), min 1 (the solo budget splits across the slots:
-        // spec 4 with 2 slots drafts 2 per slot, with 4 slots back to 1).  More drafts per slot = more draft
-        // K/V writes and graph memory per round, and fewer slots per window (1 + D rows each).
+        // proposals per slot per window: ceil(mtp budget / batch), min 1 (the solo budget splits across the slots:
+        // budget 3 with 2 slots drafts 2 per slot, with 3+ slots back to 1).  The budget is the MTP's own window
+        // (--mtp-max-t, else --spec as given): the suffix draft's spec+2 bump is the verifier's, not the drafter's.
+        // More drafts per slot = more draft K/V writes and graph memory per round, and fewer slots per window
+        // (1 + D rows each).
         if (batch_mtp) {
-            batch_mtp_drafts = std::max(1, (o.spec + o.batch - 1) / o.batch);
+            const int mtp_budget = o.mtp_max_t > 0 ? o.mtp_max_t : o.spec;
+            batch_mtp_drafts = std::max(1, (mtp_budget + o.batch - 1) / o.batch);
             if (batch_mtp_drafts > 1)
-                std::fprintf(stderr, "strata generate: --batch-mtp: %d proposals per slot per window (--spec %d / "
+                std::fprintf(stderr, "strata generate: --batch-mtp: %d proposals per slot per window (MTP budget %d / "
                                      "--batch %d): each slot's drafter runs %d draft steps per window (more draft "
                                      "K/V writes and graph memory than one proposal per slot); a window now holds "
                                      "at most %d slots (%d rows each)\n",
-                             batch_mtp_drafts, o.spec, o.batch, batch_mtp_drafts,
+                             batch_mtp_drafts, mtp_budget, o.batch, batch_mtp_drafts,
                              strata::kernels::kVerifyMaxT / (1 + batch_mtp_drafts), 1 + batch_mtp_drafts);
         }
     }
