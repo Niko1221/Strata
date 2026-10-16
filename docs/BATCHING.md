@@ -451,10 +451,10 @@ tokens. The policy weighs length and age, and every threshold is a parameter:
   expired or blank slot: first one not worth keeping (blank, or its score at freshness 0 below
   `STRATA_SLOT_EXPIRED_KEEP_SCORE`, default 0.01 - about 2.5K tokens), then by group load, a blank slot before a
   history, and the lowest score.
-- **One bounded wait**: when every idle history is still protected, the request waits up to
-  `STRATA_SLOT_PROTECT_WAIT_S` (default 5 s, once per request), then overwrites the history that loses least (losses
-  within 10% go by group load). It also waits, within the same single wait, when only expired histories worth keeping
-  are left and a cheaper protected one ends its protection within it.
+- **No wait**: when every idle history is still protected, the request overwrites the one that loses least at once
+  (losses within 10% go by group load). An earlier version waited up to 5 s first, once per request; with more
+  requests than slots each wait ran its full 5 s, the slot idle meanwhile, and ended in the same overwrite (7 of 7 in
+  a 15-minute test on the machine above), so it was removed.
 - **Expired value decays**: after its protection an expired history is worth its score at freshness 0 times
   `1 - x^2`, where x runs from 0 at the end of its protection to 1 at a total idle age of
   `STRATA_SLOT_IDLE_VALUE_ZERO_S` (default 1800 s; 0 disables decay). Reclaiming and parking use this value; it never
@@ -480,12 +480,14 @@ Measured on the machine above (0.1.44.1, `--batch 6` in 3 groups, `STRATA_PIPELI
 | Ordering of expired histories | B | C |
 | --- | --- | --- |
 | by group load first (an earlier version) | 0 every turn | 0 every turn |
-| + one still worth keeping goes last | all but the ~20 new | 0 every turn |
-| + wait for a cheaper slot about to leave its protection (this policy) | all but the ~20 new | all but the ~20 new |
+| + one still worth keeping goes last (this policy) | all but the ~20 new | 0 every turn |
+| + wait for a cheaper slot about to leave its protection (removed) | all but the ~20 new | all but the ~20 new |
 
 In the first row a new turn took the other conversation's expired slot for group balance, so B and C overwrote each
 other; in the second, C went to a side request that arrived a second after another one finished, while that one's
-1.5K-token history was about to leave its protection.
+1.5K-token history was about to leave its protection. The third row waited for that protection to end, under the
+same one-per-request wait as above; it went with that wait. The policy accepts this case: a protected history is
+not overwritten while an expired one can be.
 
 ## The VRAM expert tier keeps adapting in batch windows
 
