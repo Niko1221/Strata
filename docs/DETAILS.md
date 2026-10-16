@@ -2108,6 +2108,21 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
   against the FP16 prompt path (IQ3_XXS, `--prefill auto`): 8K prompt KL 0.042 (0.1.39: 0.054), top-1 agreement
   93.5% (92.2%); 32K prompt KL 0.020 (0.019), top-1 95.3% (95.0%) - the same band as before. `STRATA_RING_BYTES=0`
   restores 0.1.39's ring, loan and chunk choice.
+- **`STRATA_PREFILL_KEEP=N` (128 by default): the expert-cache slots a loan must leave resident while a prompt
+  chunk borrows the cache's tail**, so on a small cache it is this number, not the auto lend's 90% cap, that picks
+  the chunk: on the Q8_0 four-way's 691- and 937-slot stages it leaves 563 and 809 slots where the cap would leave
+  621 and 843. It is from the Maya checkout (`project-maya`), local commit `71c1ca7` (2026-10-15), which lowered
+  its pool's floor from 13 to 11 slots a layer on a four-way split and measured the binding part reach an
+  8192-token chunk: a 49,152-token piece 61,762 -> 57,507 ms (-6.9%) and a whole five-piece read
+  161,291 -> 158,938 ms, on the Maya checkout's live split (5060/5060/3060/3060), where it was not a free win
+  either (a 16,384-token piece that went from three chunks to two lost 3%, 28,716 -> 29,651 ms, since the parts
+  run a chunk as a chain and there is less left to overlap). **The clamp is up, not down**, exactly as there: a
+  lend has to leave the elastic K/V a region to grow into (its floor is
+  `STRATA_KV_GROW_FLOOR`, 128 by default), so a smaller `N` is clamped to that floor and the start says so - lower
+  both together to lend more of the cache and let the chunk grow at the K/V's expense. A larger `N` keeps more
+  experts resident for the prompt's own tokens and buys a smaller chunk. `STRATA_GLM_PREFILL_KEEP` is accepted as
+  the same knob, the numbers are the same ones the scan, the per-stage lend regions, the serve loan, the smallest
+  cache a start accepts and the vram-elastic reserve used before, and unset every one of them is 128 as before.
 
 The full story, with measurements, bottlenecks and what comes next: **[docs/paper/Strata-Paper.pdf](paper/Strata-Paper.pdf)**.
 
