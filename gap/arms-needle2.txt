@@ -1,0 +1,7 @@
+# single-needle battery, unique code per run, 130k context, 24-token answers
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+B25|/Users/pc/src/Strata-fork/build-metal/strata||b25.txt|24|262144|
+B75|/Users/pc/src/Strata-fork/build-metal/strata||b75.txt|24|262144|
+B95|/Users/pc/src/Strata-fork/build-metal/strata||b95.txt|24|262144|
+B05|/Users/pc/src/Strata-fork/build-metal/strata||b05.txt|24|262144|
+B50|/Users/pc/src/Strata-fork/build-metal/strata||b50.txt|24|262144|
