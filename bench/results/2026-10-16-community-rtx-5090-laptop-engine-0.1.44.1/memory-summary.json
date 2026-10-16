@@ -1,0 +1,27 @@
+{
+  "samples": 190,
+  "duration_s": 415.5,
+  "host_total_gib": 61.677,
+  "host_used_gib": {
+    "first": 17.216,
+    "peak": 59.074
+  },
+  "swap_used_gib": {
+    "first": 1.024,
+    "peak": 1.024
+  },
+  "gpu_memory_used_mib_peak": 23434,
+  "gpu_memory_total_mib": 24463,
+  "gpu_samples_unreadable": 0,
+  "gpu_power_draw_w": {
+    "median": 162.31,
+    "peak": 219.11
+  },
+  "gpu_temperature_c_peak": 85,
+  "pcie_link_seen": [
+    "Gen1 x8",
+    "Gen2 x8",
+    "Gen3 x8",
+    "Gen4 x8"
+  ]
+}
