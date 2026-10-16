@@ -148,6 +148,9 @@ sizes are faster. Larger sizes are a bit smarter.
 Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). To add another model later, run
 `SETUP.bat` (Linux: `./setup.sh --setup`).
 
+Developers: an [experimental Muse Spark reference CLI](docs/MUSE_SPARK.md) can be built separately. It is
+not an installer/chat-server model, and does not establish full 816B checkpoint performance.
+
 ## Using it
 
 <p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>

@@ -1,8 +1,11 @@
 # Which model? Sizes, versions and what fits
 
-Strata runs one model, [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), in several **sizes**
+The installer offers [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) in several **sizes**
 (the same model, compressed more or less) and several **versions** (the original, a coding version, a fine-tune).
 The installer recommends one for your PC; this page explains the choice. Back to the [README](../README.md).
+
+For developers, the separate [experimental Muse Spark reference CLI](MUSE_SPARK.md) is opt-in, accepts token IDs,
+and is not a supported installer/chat-server choice. Its synthetic checks are not full-checkpoint validation.
 
 > **On this page:** [Pick by RAM](#pick-by-ram) · [Speed](#how-fast-is-each-size) · [The sizes](#the-sizes) ·
 > [Will it fit?](#will-it-fit) · [The versions](#the-versions) · [Adding another model](#adding-or-switching-models)
