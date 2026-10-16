@@ -29,6 +29,11 @@ in [vLLM PR #60646](https://github.com/vllm-project/vllm/pull/60646).
 This conversion expands the scales; it does not keep CSF's runtime memory
 savings or require new GPU kernels.
 
+Explicit checkpoint configuration values override AutoConfig's normalized
+values while retaining its defaults. In particular, Transformers may rename
+`full_attention` to `indexed_attention`; the pinned converter needs the source
+spelling to export the QSA compression ratios correctly.
+
 ## Run
 
 Use setup's pinned `third_party/llama.cpp` source, and a Python environment
@@ -76,6 +81,8 @@ decoding, numerical PLE shard/row order across chunk sizes, metadata-only
 planning and the actual pinned Python converter writing a small GGUF. A
 multi-shard fixture checks that interleaved expert layers flush within one
 layer's buffer budget rather than accumulating the entire expert arena.
+Configuration tests also cover attention-layer names across AutoConfig
+normalization, with source values preserved for the pinned metadata writer.
 The opt-in adapters are restored on context exit.
 
 The initial sample experiment used

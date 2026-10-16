@@ -11,6 +11,7 @@ and MTP are excluded. No runtime, installer, or default conversion is changed.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import re
@@ -191,6 +192,7 @@ def converter_policy(checkpoint):
     from conversion.qwen4exp import Qwen4ExpTextModel as Model
 
     original_parts = ModelBase.get_model_part_names
+    original_hparams = ModelBase.load_hparams
     original_prepare = Model.prepare_tensors
     original_force, original_place = Model.tensor_force_quant, Model._place_ple_shard
     original_u32 = LazyTorchTensor._dtype_str_map.get('U32')
@@ -211,6 +213,18 @@ def converter_policy(checkpoint):
         if Path(directory).resolve() == checkpoint.root and suffix == '.safetensors':
             return sorted(set(checkpoint.weights.values()))
         return original_parts(directory, prefix, suffix)
+    def hparams(directory, is_mistral_format):
+        result = original_hparams(directory, is_mistral_format)
+        if Path(directory).resolve() == checkpoint.root:
+            # AutoConfig can rename full_attention to indexed_attention.
+            # The pinned converter reads the checkpoint's original spelling.
+            # Keep library defaults, with explicit source values authoritative.
+            for key, value in checkpoint.config.items():
+                if key == 'text_config':
+                    result[key] = {**result.get(key, {}), **copy.deepcopy(value)}
+                else:
+                    result[key] = copy.deepcopy(value)
+        return result
     def eager(gen):
         return LazyTorchTensor.to_eager(gen()).cpu().contiguous()
     def raw(gen):
@@ -269,12 +283,14 @@ def converter_policy(checkpoint):
     try:
         legacy.install_policy()
         ModelBase.get_model_part_names = staticmethod(parts)
+        ModelBase.load_hparams = staticmethod(hparams)
         LazyTorchTensor._dtype_str_map['U32'] = torch.uint32
         LazyTorchTensor._dtype_byteswap_map[torch.uint32] = np.uint32
         Model.prepare_tensors = prepare
         yield
     finally:
         ModelBase.get_model_part_names = staticmethod(original_parts)
+        ModelBase.load_hparams = staticmethod(original_hparams)
         Model.prepare_tensors = original_prepare
         Model.tensor_force_quant, Model._place_ple_shard = original_force, original_place
         if original_u32 is None:

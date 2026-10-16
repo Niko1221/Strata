@@ -178,6 +178,28 @@ class Conversion(unittest.TestCase):
 
 
 class PinnedConverter(unittest.TestCase):
+    def test_source_attention_metadata_survives_autoconfig_normalization(self):
+        llama = Path(__file__).resolve().parents[1]/'third_party/llama.cpp'
+        sys.path[:0] = [str(llama/'gguf-py'), str(llama)]
+        from conversion.base import ModelBase
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture(root/'model')
+            path = root/'model/config.json'
+            config = json.loads(path.read_text())
+            layer_types = ['linear_attention']*3+['full_attention']
+            config['text_config'].update(num_hidden_layers=4, layer_types=layer_types,
+                                         partial_rotary_factor=.25, indexer_compress_ratio=4,
+                                         indexer_n_heads=4, indexer_kv_heads=1,
+                                         indexer_head_dim=128, indexer_budget=2048)
+            path.write_text(json.dumps(config))
+            with converter_policy(Checkpoint(root/'model')):
+                hp = ModelBase.load_hparams(root/'model', False)['text_config']
+            self.assertEqual(hp['layer_types'], layer_types)
+            self.assertEqual(hp['partial_rotary_factor'], .25)
+            self.assertEqual([hp['indexer_compress_ratio'] if t == 'full_attention' else 0
+                              for t in hp['layer_types']], [0,0,0,4])
+
     def test_interleaved_experts_flush_within_one_layer_budget(self):
         llama = Path(__file__).resolve().parents[1]/'third_party/llama.cpp'
         sys.path[:0] = [str(llama/'gguf-py'), str(llama)]
@@ -231,7 +253,7 @@ class PinnedConverter(unittest.TestCase):
         sys.path[:0] = [str(llama/'gguf-py'), str(llama)]
         from conversion.base import LazyTorchTensor, ModelBase
         from conversion.qwen4exp import Qwen4ExpTextModel as Model
-        original = (ModelBase.get_model_part_names, Model.prepare_tensors, Model.tensor_force_quant,
+        original = (ModelBase.get_model_part_names, ModelBase.load_hparams, Model.prepare_tensors, Model.tensor_force_quant,
                     Model._place_ple_shard, LazyTorchTensor._dtype_str_map.get('U32'),
                     LazyTorchTensor._dtype_byteswap_map.get(torch.uint32))
         with tempfile.TemporaryDirectory() as directory:
@@ -240,7 +262,7 @@ class PinnedConverter(unittest.TestCase):
             checkpoint = Checkpoint(root/'model')
             with self.assertRaisesRegex(RuntimeError, 'test conversion failure'), converter_policy(checkpoint):
                 raise RuntimeError('test conversion failure')
-        restored = (ModelBase.get_model_part_names, Model.prepare_tensors, Model.tensor_force_quant,
+        restored = (ModelBase.get_model_part_names, ModelBase.load_hparams, Model.prepare_tensors, Model.tensor_force_quant,
                     Model._place_ple_shard, LazyTorchTensor._dtype_str_map.get('U32'),
                     LazyTorchTensor._dtype_byteswap_map.get(torch.uint32))
         self.assertEqual(original, restored)
@@ -252,7 +274,7 @@ class PinnedConverter(unittest.TestCase):
         import gguf
         from conversion.base import LazyTorchTensor, ModelBase
         from conversion.qwen4exp import Qwen4ExpTextModel as Model
-        original = (ModelBase.get_model_part_names, Model.prepare_tensors, Model.tensor_force_quant,
+        original = (ModelBase.get_model_part_names, ModelBase.load_hparams, Model.prepare_tensors, Model.tensor_force_quant,
                     Model._place_ple_shard, LazyTorchTensor._dtype_str_map.get('U32'),
                     LazyTorchTensor._dtype_byteswap_map.get(torch.uint32))
         with tempfile.TemporaryDirectory() as directory:
@@ -266,7 +288,7 @@ class PinnedConverter(unittest.TestCase):
                 model.gguf_writer.write_kv_data_to_file()
                 model.gguf_writer.write_tensors_to_file()
                 model.gguf_writer.close()
-            restored = (ModelBase.get_model_part_names, Model.prepare_tensors, Model.tensor_force_quant,
+            restored = (ModelBase.get_model_part_names, ModelBase.load_hparams, Model.prepare_tensors, Model.tensor_force_quant,
                         Model._place_ple_shard, LazyTorchTensor._dtype_str_map.get('U32'),
                         LazyTorchTensor._dtype_byteswap_map.get(torch.uint32))
             self.assertEqual(original, restored)
