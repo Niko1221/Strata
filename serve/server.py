@@ -4552,8 +4552,10 @@ class Service:
                 "reasoning_recoveries": recovery_count}
         if stops is not None and stops.hit is not None:
             done["stop_sequence"] = stops.hit
-        if stop_cause is not None and finish == "length":
-            done["stop_cause"] = stop_cause             # "length" that a larger max_tokens would not have changed
+        # "length" that a larger max_tokens would not have changed; named only with the opt-in repeat_stop_period, so a
+        # default config's replies stay as they were (the one-token guard and reasoning_loop_recovery set it too)
+        if stop_cause is not None and finish == "length" and period_max > 1:
+            done["stop_cause"] = stop_cause
         yield "done", done
 
 
