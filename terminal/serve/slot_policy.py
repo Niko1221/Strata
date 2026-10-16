@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-PARK_MIN_TOKENS = 8192       # a shorter main-session conversation is not parked
 
 
 def configure(env) -> dict:
@@ -17,7 +16,7 @@ def configure(env) -> dict:
 
 def settings() -> dict:
     """The tunables in force (/metrics live.slot_policy)."""
-    return {"park_min_tokens": PARK_MIN_TOKENS}
+    return {}
 
 
 def cache_state(tokens: int, last_used: float, now: float, valid: bool = True) -> dict:
