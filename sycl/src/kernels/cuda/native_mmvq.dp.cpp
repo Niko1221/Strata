@@ -1794,10 +1794,13 @@ struct WideQ4K {
         r.dl = dm.x() * s0; r.ml = dm.y() * m0; r.dh = dm.x() * s1; r.mh = dm.y() * m1;
         return r;
     }
-    static float apply(const W& r, const Q81Block* xb) {   // xb = this column's Q8_1 blocks of the 256-block
+    // one4 = 0x01010101 from the kernel as a value the compiler cannot fold: with the literal, IGC turned each
+    // dp4a4(ones, u) (the activation sum of the min term) into 16 byte movs + 8 add3 per SIMD16 half, ~60% of the
+    // 4-column kernel's integer instructions. The same integers either way, so the same bits.
+    static float apply(const W& r, const Q81Block* xb, int one4 = 0x01010101) {   // xb = this column's Q8_1 blocks of the 256-block
         const Q81Block* a = xb + r.sb; const Q81Block* c = xb + r.sb + 1;
         const sycl::int4 ua = ld_q8_16(a, r.half), uc = ld_q8_16(c, r.half);
-        const sycl::int4 ones(0x01010101, 0x01010101, 0x01010101, 0x01010101);
+        const sycl::int4 ones(one4, one4, one4, one4);
         const float da = (float) a->ds[0], dc = (float) c->ds[0];
         return da * (r.dl * (float) dp4a4(r.lo, ua, 0) - r.ml * (float) dp4a4(ones, ua, 0)) +
                dc * (r.dh * (float) dp4a4(r.hi, uc, 0) - r.mh * (float) dp4a4(ones, uc, 0));
@@ -1810,8 +1813,8 @@ struct WideQ4K {
         A v; v.ua = ld_q8_16(a, half); v.uc = ld_q8_16(c, half); v.da = (float) a->ds[0]; v.dc = (float) c->ds[0];
         return v;
     }
-    static float dot(const W& r, const A& v) {   // apply's expression, the same operations in the same order
-        const sycl::int4 ones(0x01010101, 0x01010101, 0x01010101, 0x01010101);
+    static float dot(const W& r, const A& v, int one4 = 0x01010101) {   // apply's expression, the same operations in the same order
+        const sycl::int4 ones(one4, one4, one4, one4);
         return v.da * (r.dl * (float) dp4a4(r.lo, v.ua, 0) - r.ml * (float) dp4a4(ones, v.ua, 0)) +
                v.dc * (r.dh * (float) dp4a4(r.hi, v.uc, 0) - r.mh * (float) dp4a4(ones, v.uc, 0));
     }
@@ -1834,10 +1837,10 @@ struct WideQ5K {
         r.dl = dm.x() * s0; r.ml = dm.y() * m0; r.dh = dm.x() * s1; r.mh = dm.y() * m1;
         return r;
     }
-    static float apply(const W& r, const Q81Block* xb) { return WideQ4K::apply(r, xb); }
+    static float apply(const W& r, const Q81Block* xb, int one4 = 0x01010101) { return WideQ4K::apply(r, xb, one4); }
     using A = WideQ4K::A;
     static A act(const Q81Block* xb, int g) { return WideQ4K::act(xb, g); }
-    static float dot(const W& r, const A& v) { return WideQ4K::dot(r, v); }
+    static float dot(const W& r, const A& v, int one4 = 0x01010101) { return WideQ4K::dot(r, v, one4); }
 };
 __dpct_inline__ uint32_t iq4_lut4(uint32_t q4) {   // four nibbles -> four codebook bytes, codebook in registers
     constexpr uint32_t t0 = 0xBFAD9881u, t1 = 0xF6EADDCFu, t2 = 0x26190D01u, t3 = 0x71594535u;
@@ -1866,7 +1869,7 @@ struct WideIQ4XS {
         r.d = (float) b->d * (float) (ls - 32);
         return r;
     }
-    static float apply(const W& r, const Q81Block* xb) {
+    static float apply(const W& r, const Q81Block* xb, int = 0) {
         const Q81Block* a = xb + r.sb;
         return r.d * (float) a->ds[0] * (float) dp4a4(r.hi, ld_q8_16(a, 1), dp4a4(r.lo, ld_q8_16(a, 0), 0));
     }
@@ -1876,7 +1879,7 @@ struct WideIQ4XS {
         A v; v.u0 = ld_q8_16(a, 0); v.u1 = ld_q8_16(a, 1); v.ds = (float) a->ds[0];
         return v;
     }
-    static float dot(const W& r, const A& v) { return r.d * v.ds * (float) dp4a4(r.hi, v.u1, dp4a4(r.lo, v.u0, 0)); }
+    static float dot(const W& r, const A& v, int = 0) { return r.d * v.ds * (float) dp4a4(r.hi, v.u1, dp4a4(r.lo, v.u0, 0)); }
 };
 // SYCL port: native_mmvq_wide_kernel with RPW rows per sub-group (STRATA_MMVQ_WIDE_K_RPW): each column's activations
 // are loaded once (act) and used by the RPW rows (dot); a row's lanes, its k order and its butterfly are the
@@ -1895,6 +1898,9 @@ void native_mmvq_wide_rpw_kernel(const typename F::Block* __restrict__ w, const 
 #pragma unroll
     for (int r = 0; r < RPW; ++r) wr[r] = w + std::size_t(row0 + (row0 + r < n_out ? r : 0)) * blocks_per_row;
     float acc[RPW][NCOLS] = {};
+    // n_in >= 0: 0x01010101, unknown to the compiler (see WideQ4K::apply) - for 2+ columns only: one column with the
+    // literal is 4-14% faster (A770, upstream main's 1-column path), the same bits either way
+    const int one4 = NCOLS > 1 ? 0x01010101 + (n_in >> 31) : 0x01010101;
     for (int kbx = sub; kbx < blocks_per_row; kbx += 4) {
         typename F::W wv[RPW];
 #pragma unroll
@@ -1903,7 +1909,7 @@ void native_mmvq_wide_rpw_kernel(const typename F::Block* __restrict__ w, const 
         for (int j = 0; j < NCOLS; ++j) {
             const typename F::A a = F::act(x + std::size_t(j) * x_stride + kbx * (QK / Q8K), g);
 #pragma unroll
-            for (int r = 0; r < RPW; ++r) acc[r][j] += F::dot(wv[r], a);
+            for (int r = 0; r < RPW; ++r) acc[r][j] += F::dot(wv[r], a, one4);
         }
     }
     auto sg = item.get_sub_group();
@@ -1932,10 +1938,13 @@ void native_mmvq_wide_kernel(const typename F::Block* __restrict__ w, const Q81B
     const int g = lane & 7, sub = lane >> 3;
     const typename F::Block* wr = w + std::size_t(row) * blocks_per_row;
     float acc[NCOLS] = {};
+    // n_in >= 0: 0x01010101, unknown to the compiler (see WideQ4K::apply) - for 2+ columns only: one column with the
+    // literal is 4-14% faster (A770, upstream main's 1-column path), the same bits either way
+    const int one4 = NCOLS > 1 ? 0x01010101 + (n_in >> 31) : 0x01010101;
     for (int kbx = sub; kbx < blocks_per_row; kbx += 4) {
         const typename F::W wv = F::load(wr + kbx, g);
 #pragma unroll
-        for (int j = 0; j < NCOLS; ++j) acc[j] += F::apply(wv, x + std::size_t(j) * x_stride + kbx * (QK / Q8K));
+        for (int j = 0; j < NCOLS; ++j) acc[j] += F::apply(wv, x + std::size_t(j) * x_stride + kbx * (QK / Q8K), one4);
     }
     auto sg = item.get_sub_group();
 #pragma unroll
