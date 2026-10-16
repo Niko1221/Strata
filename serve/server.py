@@ -2293,8 +2293,15 @@ class StrataEngine:
                 (self.info or {}).get("slot_park") in (1, "1")):
             return ""
         main = getattr(self, "main_held", None) or []
-        if prompt[:len(main) // 2] == main[:len(main) // 2]:
-            return ""          # nothing held, or this prompt continues it (at least half of it): nothing to keep
+        # the same conversation shares the main session's history up to its last turn (the last <|im_start|>, where its
+        # latest reply begins): a next turn without that reply's thinking, or the reply regenerated (as the engine checks)
+        try:
+            turn_token = int((self.info or {}).get("turn_token", -1))
+        except (TypeError, ValueError):
+            turn_token = -1
+        turn = next((i for i in range(len(main) - 1, 0, -1) if main[i] == turn_token), len(main))
+        if prompt[:turn] == main[:turn]:
+            return ""          # nothing held, or the same conversation: nothing to keep
         with self.slot_cv:
             b = slot_policy.park_destination(main, self.slot_busy, self.slot_held, self.slot_used, self.slot_order,
                                              self.slot_gs, time.time(), getattr(self, "slot_cache_valid", None),

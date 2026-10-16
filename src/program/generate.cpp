@@ -10961,7 +10961,9 @@ int main(int argc, char** argv) {
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
                                        " batch_groups=" + std::to_string(o.batch_groups) +
-                                       (pipeline_active_rows ? " slot_padding_safe=1 slot_park=1" : "")).c_str() : "");
+                                       (pipeline_active_rows ? " slot_padding_safe=1 slot_park=1 turn_token=" +
+                                                                   std::to_string(o.turn_token) : std::string())).c_str()
+                                    : "");
         }
         // issue #29: a request whose heartbeat (tokens, prompt chunks, verify windows) stops for this long is stuck on
         // a flag nobody will raise - end the engine with where it was, so the server starts it again instead of the
@@ -12603,11 +12605,19 @@ int main(int argc, char** argv) {
                 resume == req_pin && live_ok)
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() == resume && c.pinned) pin_sibling = true;
-            // park=B (see req_park).  Only when this prompt is another conversation (it continues less than
-            // half of what the main session holds), never into the slot this request restores from or runs in.
+            // park=B (see req_park).  Only when this prompt is another conversation: it does not share what the main
+            // session holds up to its last turn (the last <|im_start|>, where its latest reply begins - a next turn
+            // without that reply's thinking, or the reply regenerated, still shares it).  Never into the slot this
+            // request restores from or runs in.
+            int64_t park_turn = (int64_t) live.size();
+            if (o.turn_token >= 0)
+                for (int64_t i = (int64_t) live.size() - 1; i > 0; --i)
+                    if (live[(size_t) i] == o.turn_token) { park_turn = i; break; }
+            const bool other_conversation = (int64_t) ids.size() < park_turn ||
+                !std::equal(live.begin(), live.begin() + park_turn, ids.begin());
             if (pipeline_active_rows && req_park >= 0 && req_park < (int) bs.size() && !bs[(size_t) req_park].active &&
                 req_park != admit_slot && req_park != slot_source && live_ok && !live.empty() &&
-                resume * 2 < (int64_t) live.size() && (!from_live || incoming || slot_source >= 0) && !pin_sibling) {
+                other_conversation && (!from_live || incoming || slot_source >= 0) && !pin_sibling) {
                 const auto t0 = Clock::now();
                 BSlot& sl = bs[(size_t) req_park];
                 if (copy_to_slot(req_park, live, err)) {
@@ -12635,9 +12645,10 @@ int main(int argc, char** argv) {
                 }
                 std::fflush(stdout);
             } else if (req_park >= 0) {
-                std::fprintf(stderr, "strata batch: park=%d not used (rows=%d live_ok=%d live=%zu resume=%lld "
-                                     "from_live=%d source=%d admit=%d active=%d)\n", req_park,
-                             pipeline_active_rows ? 1 : 0, live_ok ? 1 : 0, live.size(), (long long) resume,
+                std::fprintf(stderr, "strata batch: park=%d not used (rows=%d live_ok=%d live=%zu turn=%lld other=%d "
+                                     "resume=%lld from_live=%d source=%d admit=%d active=%d)\n", req_park,
+                             pipeline_active_rows ? 1 : 0, live_ok ? 1 : 0, live.size(), (long long) park_turn,
+                             other_conversation ? 1 : 0, (long long) resume,
                              from_live ? 1 : 0, slot_source, admit_slot,
                              req_park < (int) bs.size() && bs[(size_t) req_park].active ? 1 : 0);
             }

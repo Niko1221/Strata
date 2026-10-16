@@ -396,8 +396,9 @@ other builds measured 173.9-178.2 tok/s, so this is close to the spread between 
 A request alone runs on the solo path, whose state is the engine's main session, not a slot. When the next request is
 another conversation - an agent's short side request between two turns of a long one - the main session is
 overwritten. With `STRATA_PIPELINE_ACTIVE_ROWS=1` the engine takes `park=B` on `GEN` / `BGEN` (`INFO slot_park=1`):
-when the prompt continues less than half of what the main session holds, it first copies the main session's
-conversation (and its last checkpoint) into idle slot B - never the slot it restores from or is admitted to - and says
+when the prompt is another conversation (it does not share what the main session holds up to its last turn - the
+last `<|im_start|>`, where its latest reply begins), it first copies the main session's conversation (and its last
+checkpoint) into idle slot B - never the slot it restores from or is admitted to - and says
 `PARKED B <tokens>`. Copying 36-37K tokens took 414-451 ms (five runs, the machine above).
 
 ### Server: placement by what the slots hold (`STRATA_SLOT_CACHE_AFFINITY=1`)
@@ -410,8 +411,8 @@ policy:
   end, `BDONE`), whether its state is intact, the spreading order, the group size, the observed prompt rate and
   whether the engine runs active slots only (`slot_padding_safe=1`). Without that engine capability the server tracks
   from the `BADM` / `BT` / `BDONE` lines which idle slot a later window of its group has padded over, and marks it.
-- With `INFO slot_park=1` the server tracks what the main session holds; when a request is another conversation (the
-  first half differs), it asks the policy for a slot and sends `park=B`; `PARKED` updates that slot's state. A claim
+- With `INFO slot_park=1` the server tracks what the main session holds; when a request is another conversation (as
+  the engine decides it, with `INFO turn_token`), it asks the policy for a slot and sends `park=B`; `PARKED` updates that slot's state. A claim
   the engine did not use is released.
 
 The policy's interface is `place`, `park_destination`, `cache_state`, `superseded_slots`, `reliable_flags`,
@@ -635,7 +636,7 @@ On top of `GEN` / `GENI`:
 | `BYIELD <slot>` | in | the prompt being read gives way at its next chunk boundary; its part read waits in `<slot>` (the admission's own, or a free slot for a solo request) |
 | `YIELDED <slot> <tokens>` | out | before the `DONE cancel` of a read that gave way: the request is sent again later and goes on from there |
 | `INFO ... batch_slots=N` | out | the slots the engine runs (only with `--batch`) |
-| `INFO ... slot_padding_safe=1` | out | `STRATA_PIPELINE_ACTIVE_ROWS=1`: a pipelined group's window runs its active slots only; an idle slot keeps its conversation |
+| `INFO ... slot_padding_safe=1` | out | `STRATA_PIPELINE_ACTIVE_ROWS=1`: a pipelined group's window runs its active slots only; an idle slot keeps its conversation; with it `slot_park=1` and `turn_token=<id>` (the token a turn begins with) |
 | `CACHE_SOURCE <slot> <tokens>` | out | `STRATA_PIPELINE_ACTIVE_ROWS=1`, after a prompt's restore: the idle slot its reused prefix came from (-1: the main session, a checkpoint or the conversation cache) and how long it is |
 | `park=B` (a key of `GEN` / `BGEN`) | in | with `INFO slot_park=1`: before a different conversation replaces the main session's, copy that one into idle slot B |
 | `PARKED <slot> <tokens>` | out | `park=` copied that many tokens into the slot (0: the copy failed, the slot holds nothing usable) |
