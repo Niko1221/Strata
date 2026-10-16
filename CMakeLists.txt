@@ -1775,6 +1775,12 @@ if(STRATA_BUILD_TESTS)
   endif()
 endif()
 
+# Muse Spark's bounded reference runtime is separate from the default Qwen engine.
+option(STRATA_ENABLE_MUSE "Build the experimental Muse Spark GGUF reference runtime" OFF)
+if(STRATA_ENABLE_MUSE)
+  add_subdirectory(src/muse)
+endif()
+
 # ---- HIP gfx906: every CUDA source of the tree (and the ggml-cuda MMQ sources) is compiled as HIP ----
 if(STRATA_HIP_GFX906)
   file(GLOB_RECURSE _strata_cu CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cu ${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/*.cu
