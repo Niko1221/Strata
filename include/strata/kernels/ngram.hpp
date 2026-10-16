@@ -49,6 +49,7 @@ inline constexpr int PLE_ROW_BYTES_FP8 = PLE_HEAD_DIM;                   // 160:
 inline constexpr int PLE_ROW_BYTES_Q5_1 = (PLE_HEAD_DIM / 32) * 24;     // 120: a Q5_1 row (a Q5_K_M finetune)
 inline constexpr int PLE_ROW_BYTES_Q8_0 = (PLE_HEAD_DIM / 32) * 34;     // 170: a Q8_0 row (UD-Q6_K_XL, Swift-1.5 Q4_K_L)
 inline constexpr int PLE_ROW_BYTES_BF16 = PLE_HEAD_DIM * 2;             // 320: a BF16 row, two bytes a value
+inline constexpr int PLE_ROW_BYTES_EXL3_MAX = 2 * (1 + PLE_HEAD_DIM * 8 / 16);   // 162: an ng8 EXL3 ring
 inline constexpr int PLE_ROW_BYTES_MAX = PLE_ROW_BYTES_BF16;             // the widest row any format in `ple_formats()` has
 
 /// THE FORMATS OF THE TABLE, ONE ROW EACH. A table type is one entry here (its GGUF type name, the bytes of one
@@ -174,6 +175,12 @@ public:
 
     /// Open with an explicit I/O mode. The two-argument `open` below is the default (Direct).
     bool open(const std::string& gguf_path, std::string& err, const PleIoOptions& io);
+
+    /// Open the EXL3 n-gram table (`ngram_embedding.safetensors`, the `exl3_ngram_trellis` rings) instead of
+    /// a GGUF's `per_layer_token_embd.weight`.  The ring shards are contiguous, so it is one flat table read
+    /// through the same PleReader (Direct SSD / Mmap); each row decodes as `mul1_codebook[state]*scale +
+    /// head_bias[head]` (docs/EXL3.md).  `PleIoOptions` applies as for the GGUF open.
+    bool open_exl3(const std::string& safetensors_path, std::string& err, const PleIoOptions& io);
 
     /// The split the plan asks for: `issue` as soon as the token id is known, `collect` just before layer 1
     /// needs the rows. `gather` is `issue` followed by `collect`. In Mmap mode `issue` only prefetches.
