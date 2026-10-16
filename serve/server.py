@@ -2571,9 +2571,17 @@ def layer_split_of(cfg: dict) -> bool:
     return len(gpu_list(cfg)) > 1 and "--peer-device" not in cfg["args"]
 
 
-# Strata's own API paths: "forward" cannot take them over
+# The POST paths Strata answers itself: "forward" cannot take them over (it runs before their handlers).
+# Test Forward.test_every_own_route_is_refused reads the routes from _post and checks each is here.
 OWN_API_PATHS = {"/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/messages/count_tokens",
-                 "/v1/responses", "/v1/models", "/v1/load", "/v1/unload", "/v1/vram"}
+                 "/v1/responses", "/v1/models", "/v1/load", "/v1/unload", "/v1/vram", "/v1/images/generations",
+                 "/settings", "/config", "/load", "/unload"}
+OWN_API_PREFIXES = ("/slots/", "/v1/responses/")
+
+
+def own_api_path(p: str) -> bool:
+    """Is `p` a POST path Strata answers itself (OWN_API_PATHS, or under one of OWN_API_PREFIXES)."""
+    return p in OWN_API_PATHS or any(p == x.rstrip("/") or p.startswith(x) for x in OWN_API_PREFIXES)
 
 
 def forward_of(cfg: dict) -> dict:
@@ -2589,7 +2597,7 @@ def forward_of(cfg: dict) -> dict:
     out = {}
     for path, url in fwd.items():
         p = str(path).split("?")[0].rstrip("/")
-        if not p.startswith("/") or p in OWN_API_PATHS or p.startswith("/v1/responses"):
+        if not p.startswith("/") or own_api_path(p):
             raise ValueError(f'"forward": {path!r} is not a path this server can hand on (Strata answers it itself)')
         if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
             raise ValueError(f'"forward": the URL for {path!r} must start with http:// or https://')

@@ -4573,6 +4573,28 @@ class Forward(unittest.TestCase):
             with self.assertRaises(ValueError):
                 forward_of({"forward": bad})
 
+    def test_every_own_route_is_refused(self):
+        """Every path _post answers itself, read from its source (path == "...", path in (...),
+        path.startswith("...")), is refused, so a new route cannot be taken over by a config entry."""
+        import ast
+        tree = ast.parse((ROOT / "serve/server.py").read_text(encoding="utf-8"))
+        post = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_post")
+        exact, prefixes = set(), set()
+        for n in ast.walk(post):
+            if isinstance(n, ast.Compare) and isinstance(n.left, ast.Name) and n.left.id == "path":
+                for c in ast.walk(n.comparators[0]):
+                    if isinstance(c, ast.Constant) and isinstance(c.value, str):
+                        exact.add(c.value)
+            elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "startswith"                     and isinstance(n.func.value, ast.Name) and n.func.value.id == "path":
+                prefixes.add(n.args[0].value)
+        prefixes.discard("/v1/")                         # the foreign-page check, not a route
+        self.assertGreaterEqual(len(exact), 12)          # the walk found the routes
+        for p in sorted(exact) + [x + "0" for x in sorted(prefixes)] + sorted(prefixes):
+            with self.subTest(path=p), self.assertRaises(ValueError):
+                forward_of({"forward": {p: "http://127.0.0.1:9000"}})
+        for p in ("/v1/embeddings", "/v1/rerank", "/v1/audio/speech"):
+            self.assertEqual(forward_of({"forward": {p: "http://x"}}), {p: "http://x"})
+
 
 class SilentEngine(unittest.TestCase):
     """#481: an engine that prints nothing for engine_silence_s during a request (or never acknowledges a STOP) has
