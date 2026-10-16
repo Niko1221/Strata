@@ -7,7 +7,6 @@ from dataclasses import dataclass
 MAX_CACHE_TOKENS = 262144
 # Tunables (environment, read by configure() when the engine starts; the menu sets them per profile under
 # config_overrides.env).  Defaults are the values the policy was specified with.
-PROTECTION_WAIT_S = 5.0      # STRATA_SLOT_PROTECT_WAIT_S: wait when every idle history is still protected
 PARK_MIN_TOKENS = 8192       # STRATA_SLOT_PARK_MIN_TOKENS: a shorter main-session conversation is not parked
 EXPIRED_KEEP_SCORE = 0.01    # STRATA_SLOT_EXPIRED_KEEP_SCORE: an expired history scoring at least this (retention at
                              # expiry, then decayed; 0.01 is about 2.5K tokens at expiry) goes last
@@ -24,7 +23,7 @@ TTL_POINTS = _TTL_SHAPE
 
 def configure(env) -> dict:
     """Read the tunables from `env` (the engine's environment); bad or missing values keep the defaults."""
-    global PROTECTION_WAIT_S, PARK_MIN_TOKENS, TTL_MAX_S, TTL_POINTS, EXPIRED_KEEP_SCORE, IDLE_VALUE_ZERO_S, \
+    global PARK_MIN_TOKENS, TTL_MAX_S, TTL_POINTS, EXPIRED_KEEP_SCORE, IDLE_VALUE_ZERO_S, \
         PARK_VALUE_RATIO, PARK_MIN_VALUE
 
     def value(name, default):
@@ -37,7 +36,6 @@ def configure(env) -> dict:
     EXPIRED_KEEP_SCORE = value("STRATA_SLOT_EXPIRED_KEEP_SCORE", 0.01)
     IDLE_VALUE_ZERO_S = value("STRATA_SLOT_IDLE_VALUE_ZERO_S", 1800.0)
     TTL_POINTS = tuple((n, s * TTL_MAX_S / 120.0) for n, s in _TTL_SHAPE)
-    PROTECTION_WAIT_S = value("STRATA_SLOT_PROTECT_WAIT_S", 5.0)
     PARK_MIN_TOKENS = int(value("STRATA_SLOT_PARK_MIN_TOKENS", 8192))
     PARK_VALUE_RATIO = value("STRATA_SLOT_PARK_VALUE_RATIO", 2.0)
     PARK_MIN_VALUE = value("STRATA_SLOT_PARK_MIN_VALUE", 0.01)
@@ -45,8 +43,8 @@ def configure(env) -> dict:
 
 
 def settings() -> dict:
-    return {"ttl_max_s": TTL_MAX_S, "protect_wait_s": PROTECTION_WAIT_S,
-            "park_min_tokens": PARK_MIN_TOKENS, "expired_keep_score": EXPIRED_KEEP_SCORE,
+    return {"ttl_max_s": TTL_MAX_S, "park_min_tokens": PARK_MIN_TOKENS,
+            "expired_keep_score": EXPIRED_KEEP_SCORE,
             "idle_value_zero_s": IDLE_VALUE_ZERO_S, "park_value_ratio": PARK_VALUE_RATIO,
             "park_min_value": PARK_MIN_VALUE}
 
@@ -181,8 +179,7 @@ def park_destination(main: list[int], busy: list[bool], held: list[list[int]], u
 
 def place(prompt: list[int], busy: list[bool], held: list[list[int]], used: list[float],
           order: list[int], group_size: int, now: float, valid: list[bool] | None = None,
-          prefill_rate: float | None = None, allow_eviction: bool = True,
-          padding_safe: bool = False) -> Placement:
+          prefill_rate: float | None = None, padding_safe: bool = False) -> Placement:
     free = [b for b in order if not busy[b]]
     if not free:
         return Placement(None)
@@ -233,27 +230,14 @@ def place(prompt: list[int], busy: list[bool], held: list[list[int]], used: list
 
     values = _slot_values(held, states, blank)
 
-    def stale(b):
-        return values[b]
-
-    def worthy(b):
-        return _worth_keeping(values[b])
-
     if safe:
         # Expired = empty for protection, but an expired history can still match until it is overwritten: one that
         # still scores EXPIRED_KEEP_SCORE goes only when no blank or worthless slot is free (else a new chat in the
         # idle group overwrote the other chat every turn - GPU run 2026-10-15).  Then group load; then the lowest score.
         slot = reclaim_slot(safe, values, blank, lambda b: pipeline(b)[:2], positions)
-        # Only worthy histories are left, but a protected slot worth less ends its protection within the wait window
-        # (a side request that has just finished): wait for it under the same one-per-request 5 s protection wait
-        # rather than destroy a conversation that can still match.  After the wait the overwrite goes ahead.
-        if worthy(slot) and not allow_eviction and any(
-                not states[b]["expired"] and collateral(b) == 0 and stale(b) < stale(slot) and
-                states[b]["ttl_s"] - states[b]["age_s"] <= PROTECTION_WAIT_S for b in free):
-            return Placement(None, reason="protected")
         return Placement(slot, reason="reclaim")
-    if not allow_eviction:
-        return Placement(None, reason="protected")
+    # Every idle history is protected: no wait (it cost a free slot 5 s per request when requests were queued, and
+    # ended in the same overwrite) - the history that loses least goes now.
     cheapest = min(loss(b) for b in free)
     # Loss scores within 10% are close enough to let group load/padding break the tie.
     candidates = [b for b in free if loss(b) <= cheapest * 1.10 + 1e-12]
