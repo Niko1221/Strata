@@ -896,6 +896,50 @@ gate identical in the 32K and the 128K configuration); every one has an off swit
   miss-first or hit-first group order in the device plan (-3% / -7%), spreading the expert chains over several queues (one compute engine),
   `STRATA_LFUSE`, `STRATA_VERIFY_EAGER`.
 
+## Arc Pro B70: cheaper IQ decodes in the grouped expert kernels (`STRATA_IQ_DECODE_FAST=1`, opt-in, 2026-10-16)
+
+The decode kernels that read the routed experts (`native_gu_kernel` / `native_down_kernel` in `sycl/src/kernels/cuda/iq_kernels.dp.cpp`,
+8 lanes a row) are ALU-bound on this card, not bandwidth-bound: an ISA dump (IGC, AOT `bmg-g31`) of the IQ2_XXS, IQ2_XS, IQ3_XXS, IQ3_S,
+IQ2_S gate/up loops and the Q2_0 / IQ4_NL down loops shows 280-480 instructions per 32-weight part for the part's 8 dp4a, with the kernels
+reading experts at 19-44% of DRAM bandwidth. Most of it is the dpct per-byte emulation of `byte_level_permute` in the Q2_0 dot (476 of the
+instructions, 157 of them `mov`), the compare/select chain of the IQ4_NL codebook lookup, the popcount/multiply ksigns unpacking and the
+64-bit `kbx * sizeof(block)` address products each iteration.
+
+`STRATA_IQ_DECODE_FAST=1` switches the seven formats to kernels that produce the same bits with less of that: the ksigns masks from a
+2 KB table (IQ2_XXS, IQ2_XS), the signed grid byte as `(g ^ m) + (m & 0x01010101)` (exact because every byte of the IQ grids is 1..62),
+the Q2_0 fields spread by shifts and masks and biased to {-1, 0, 1, 2} in one add and xor, the IQ4_NL codebook through four 256-entry
+position tables, a loop that walks block pointers, two rows per lane in 16-lane sub-groups (the one-row SIMD32 form spilled registers and
+measured slower), and a multi-entry form for IQ2_XXS (the current kernel decodes it once per entry). Every part yields the same integers to
+the same `finish` in the same float order as the current `Multi<TY>` / `vec_dot_*` dots and keeps each entry's lane-strided k order, so the
+outputs are bit for bit the current kernels': `native_grouped_parity --iq` (ctest `native_grouped_parity_iq_decode`) compares the two on
+random blobs, every IQ gate/up format with both IQ down formats, groups of 1..6 entries, at 512 x 256 and at Flash-Next's 2560 x 640.
+`STRATA_IQ_DECODE_FAST_FMTS=16,42` (ggml type ids) restricts it to some formats for an A/B. Off by default; nothing changes without the flag.
+
+Measured 2026-10-16 on a B70 (card 1 of two, xe, oneAPI 2026.1 AOT) with a grouped-call microbenchmark (48 layers per graph, each its
+own experts streaming from VRAM, us per call, median of 5 x 3 replays; the shapes are the per-card expert calls of a 2-card layer-split
+serve at 1, 2 and 4 concurrent streams, 10 to 32 groups of 1 to 4 entries), new kernels against the current ones, bitwise equal in every row:
+
+| gate/up / down | 1 stream, card 0 / card 1 | 2 streams | 4 streams |
+|---|---|---|---|
+| IQ2_XXS / Q2_0 | 114.8 -> 59.8 / 135.1 -> 83.8 | 158.7 -> 85.8 / 192.3 -> 121.5 | 213.1 -> 112.3 / 248.7 -> 147.3 |
+| IQ3_S / Q2_0 | 105.1 -> 70.3 / 147.9 -> 100.1 | 147.4 -> 99.3 / 215.2 -> 147.2 | 194.8 -> 130.8 / 256.9 -> 175.1 |
+| IQ2_S / Q2_0 | 97.0 -> 67.2 / 135.5 -> 91.5 | 136.4 -> 94.5 / 195.5 -> 133.1 | 181.1 -> 123.1 / 237.3 -> 161.9 |
+| IQ2_XS / IQ4_NL | (not run) / 135.6 -> 119.6 | 138.1 -> 117.7 / 196.7 -> 169.9 | (not run) / 242.6 -> 205.4 |
+| IQ3_XXS / IQ4_NL | (not run) / 146.6 -> 127.9 | 142.7 -> 126.0 / 208.2 -> 183.9 | (not run) / 253.4 -> 221.3 |
+
+The Q2_0 down product alone went 63.7 -> 26.4 us (card 0) and 92.3 -> 35.2 (card 1) at 2 streams, IQ4_NL down 64.9 -> 55.8 and
+95.9 -> 80.3. Those numbers were taken on a development tree with other decode changes stacked on it.
+
+End to end on this tree, 2026-10-16: two Arc Pro B70 (32 GB, kernel 7.1, Compute Runtime 26.22.38646.4, oneAPI 2026.1, AOT `bmg-g31`),
+Qwen3.8-Flash-Next GSQ-RCO IQ3_XXS, `--layer-split 30 --prefill 8192 --max-context 65536 --kv int8 --spec 4 --mtp <BF16 draft layer>
+--mtp-max-t 4 --spec-min-p 0 --stream-experts --expert-cache auto`, one slot, greedy, a fixed prompt with a 512-token coding reply
+(`--max-context 200000` does not fit all 24,576 experts on a plain two-card layer split, so 65536). Decode: main 81.8 / 79.5 / 78.7 tok/s
+(3 runs, median 79.5); this branch with the flag unset 81.7 / 79.3; with `STRATA_IQ_DECODE_FAST=1` 88.1 / 85.6 / 84.7 (median 85.6,
++7.7%). Output tokens and draft acceptance counts identical in every run, flag on or off, so the gain is kernel time alone. A turn at a
+40,796-token context: 76.0 -> 81.4 tok/s (+7.1%), identical output. Prompt reading unchanged (4K 1189 -> 1192 tok/s, 32K 1956-2004 ->
+1964-2009). `native_grouped_parity --iq`: 0 failures (15 cases bitwise equal), plain `native_grouped_parity`: 0 failures; per-card health
+after every stop passed. Two streams were not tested (main does not take `--batch-mtp` on a layer split).
+
 ## Measured, 2026-10-01, Arc Pro B70, Coder IQ1_M, 32K context, INT8 KV: the SYCL port (engine 0.1.31-sycl)
 
 | | |
