@@ -1,0 +1,9 @@
+# round 11: token-parity of the proposed new defaults (overlap, CTAB, mpp, scan_v)
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+Q_ov0|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp STRATA_METAL_GDN_SCAN=scan_v|t2048.txt|32|40960|
+Q_f0|/Users/pc/src/Strata-fork/build-metal/strata||t2048.txt|32|40960|
+Q_mpp|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROMPT_MOE=mpp|t2048.txt|32|40960|
+Q_sv|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_GDN_SCAN=scan_v|t2048.txt|32|40960|
+Q_f0b|/Users/pc/src/Strata-fork/build-metal/strata||t2048.txt|32|40960|
+Q_ALL|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_ADAPT_OVERLAP=1 STRATA_METAL_CTAB=1 STRATA_METAL_PROMPT_MOE=mpp STRATA_METAL_GDN_SCAN=scan_v|t2048.txt|32|40960|
+PAR|/tmp/par.sh||t357.txt|1|40960|

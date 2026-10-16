@@ -69,6 +69,32 @@ accepted, so a different answer to the same prompt moves it by several percent. 
 [`bench/results/2026-09-24-final`](../bench/results/2026-09-24-final/matrix.md); these:
 [`bench/results/2026-09-28-speed-0114`](../bench/results/2026-09-28-speed-0114/README.md).
 
+### Apple silicon: M1 Max (this fork)
+
+Apple M1 Max, 64 GB unified (DRAM read ceiling measured 367 GB/s, SLC peak 686 GB/s at 32 MiB), Qwen3.8-Flash-Next
+IQ3_XXS 47 GB pack, 48 layers, engine 0.1.43 fork (`metal/src`), `--prefill auto --spec 2 --expert-cache 64
+--mmap-experts`, MTP q2_0 draft, no other GPU work running. Medians of 2-4 paired runs per arm, baseline anchors
+before and after each arm; `gap/results/1016-*`, harness `gap/gap.sh`, profile `gap/m1-env.sh`.
+
+| Run | default path | with `gap/m1-env.sh` |
+| --- | ---: | ---: |
+| pp2048 at 262K ctx (t2048, 1 chunk) | 184 warm (164 cold first arm) | 197 (mpp + scan_v; cold 164 -> 194, +18%) |
+| pp130K (one needle prompt, 4096-token chunks) | 281-285 | - |
+| tg128 at 40K ctx (t357 prompt) | 19.8-20.9 (15.4 before the copy-overlap, +27%) | - |
+| tg128 at 262K ctx | 15.8 | - |
+| decode at 130K ctx | 10.2-10.8 | - |
+
+Copy-overlap (`STRATA_ADAPT_OVERLAP`, #2010) is on by default on Metal in this fork: +24-28% decode on the M1 Max,
+same tokens. The M1 Max's other measured levers change the greedy continuation after a few tokens, so they stay
+opt-in: the fp16-slab expert path (`STRATA_METAL_PROMPT_MOE=mpp`, +5-8% warm pp2048, +18% when the pack is cold, and
+it holds its speed instead of the default path's 170-186 swing) and the packed-row prompt scan
+(`STRATA_METAL_GDN_SCAN=scan_v`, +1-2%). Every decode tile retune measured flat-to-worse (gemv L/S/K classes, MoE
+tile shapes, `GEMV_NR=2`, spec depths 4/6/8): the M5-tuned picks hold on the M1, because M1 decode is
+quant-decode/latency-bound (kernels run 100-130 GB/s against the 367 GB/s streaming ceiling) rather than bandwidth-
+bound. `STRATA_METAL_PROMPT_EXPERTS=v3` must not be used on the M1: it hits the GPU watchdog (the M1's coop
+right-input layout is not k-runs-of-4). Needle recall at 130K with a repeated filler: correct at depths 5%, 75% and
+95% (exact code tokens), missed at 25% and 50% within 24 tokens.
+
 IQ3_XXS and IQ3_S at 262K are not measured: with their 43 / 50 GB of experts, a 260K-token context brings a 64 GB PC
 to its memory limit by setup's estimate (the experts + the context's KV cache + 24 GB), so setup recommends up to 128K
 with them on 64 GB. A longer context you choose (`--context 262144`, or a pick in its list) is kept, with a note: users
