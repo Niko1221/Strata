@@ -215,6 +215,13 @@ class Structured(unittest.TestCase):
         code, reply = self.chat(json.dumps(STORY), max_tokens=5)
         self.assertIn("increase the output budget", reply["error"]["message"])
 
+    def test_without_the_opt_in_the_error_is_as_before(self):
+        # the default config (repeat_stop_period 1): the one-token guard ends the reply with the old message, unchanged
+        code, reply = self.chat('{"title":"' + "!" * 1000, max_tokens=5000)
+        self.assertEqual(code, 502)
+        self.assertRegex(reply["error"]["message"],
+                         r"^structured output was incomplete \(finish_reason=length\); increase the output budget$")
+
     def test_plain_replies_name_the_cause_beside_length(self):
         self.svc.repeat_stop_period = 16                         # "\\n" is two tokens here: a phrase
         self.engine = self.svc.engine = MockEngine(self.tok, "ok " + "\\n" * 400, max_context=16384)

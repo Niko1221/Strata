@@ -2281,6 +2281,9 @@ class RepeatStop(unittest.TestCase):
         self.assertEqual(done["finish"], "length")
         self.assertEqual(done["completion_tokens"], 3 + 256)
         self.assertIn("repeated one token ('!') 256 times", log)
+        self.assertNotIn("stop_cause", done)                # the default config: the reply as before
+        done, _ = self.run_reply("ok " + "!" * 1000 + " never", period=16)
+        self.assertEqual((done["finish"], done["stop_cause"]), ("length", "repetition"))   # named with the opt-in
 
     def test_short_runs_and_off(self):
         done, _ = self.run_reply("=" * 255 + " fine")
@@ -2314,6 +2317,12 @@ class RepeatStop(unittest.TestCase):
             done = [x for kind, x in svc.run(tok.encode("hi"), False, None, 3000, {}, threading.Event())
                     if kind == "done"][0]
         self.assertEqual(done["finish"], "stop")
+        self.assertNotIn("stop_cause", done)
+        svc.engine = MockEngine(tok, "ok " + "!" * 1000, max_context=CTX)   # the one-token guard fires: still unnamed
+        with contextlib.redirect_stdout(io.StringIO()):
+            done = [x for kind, x in svc.run(tok.encode("hi"), False, None, 3000, {}, threading.Event())
+                    if kind == "done"][0]
+        self.assertEqual(done["finish"], "length")
         self.assertNotIn("stop_cause", done)
 
     def test_a_long_reply_that_does_not_repeat_runs_to_the_end(self):

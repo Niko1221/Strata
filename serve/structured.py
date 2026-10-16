@@ -192,9 +192,8 @@ def _extract_json(text: str) -> str:
 INCOMPLETE = {
     # the generator's "stop_cause" for a reply it ended before its end (see Service.run): a bigger budget cannot help
     "repetition": ("structured output was incomplete: the reply repeated the same text over and over and Strata stopped "
-                   "it (repeat_stop_tokens), so a larger output budget will not help. Long free text inside a JSON "
-                   "string can make the model loop; a schema with one string field is answered as plain text instead "
-                   "(structured_plain_string)"),
+                   "it (repeat_stop_tokens / repeat_stop_period), so a larger output budget will not help. Long free "
+                   "text inside a JSON string can make the model loop"),
     "reasoning_loop": ("structured output was incomplete: the thinking repeated the same passages and Strata stopped "
                        "it (reasoning_loop_recovery), so a larger output budget will not help"),
 }

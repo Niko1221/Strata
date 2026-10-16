@@ -861,8 +861,9 @@ print(r.choices[0].message.content)
   64; 16 is a good choice), a run of `repeat_stop_tokens` tokens that repeats with a period of 2 to N tokens ends the
   reply (seen on a scanned page: `[unclear] ` written until `max_tokens` ran out, 12,000 tokens and 229 s). The
   default, 1, keeps only the one-token rule. A reply either rule ends keeps `finish_reason` `"length"` (what OpenAI
-  clients expect), and its choice says why with Strata's own field `"stop_cause": "repetition"` (`"reasoning_loop"`
-  for the thinking guard below): a larger `max_tokens` would not have helped.
+  clients expect). With `repeat_stop_period` set, its choice also says why with Strata's own field
+  `"stop_cause": "repetition"` (`"reasoning_loop"` for the thinking guard below): a larger `max_tokens` would not have
+  helped. With the default the field is left out, so replies stay as they were.
 - **Non-finite logits end the request and drop the cached state (#879, on by default).** Rarely, a window's logits
   become NaN and the reply degenerates into token 0 (`!`) repeated (#606); the poison sits in the conversation's K/V
   and recurrent state, so with the prompt cache every later turn of that conversation stays poisoned. The q8_1 clamps
@@ -2179,8 +2180,9 @@ tools/MCP are refused explicitly. Without `response_format`, ordinary text and t
 
 Structured SSE buffers the answer while sending keep-alive comments. It emits content only after validation,
 then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without invalid content deltas.
-An answer the server ended because it repeated itself (`stop_cause` `"repetition"`, above) fails with a message that
-says so, instead of "increase the output budget", which only fits an answer that ran out of `max_tokens`.
+With `repeat_stop_period` set, an answer the server ended because it repeated itself (`stop_cause` `"repetition"`,
+above) fails with a message that says so, instead of "increase the output budget", which only fits an answer that ran
+out of `max_tokens`.
 `/v1/status.structured_output` advertises the formats, validation method and buffered streaming behavior.
 
 ### API request monitor
