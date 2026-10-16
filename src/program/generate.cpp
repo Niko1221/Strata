@@ -4986,7 +4986,7 @@ int main(int argc, char** argv) {
                 arena_src.set_pin_priority(pin_cand, pin_nonres);
             }
         }
-        if (!arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
+        if (!arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/[] { const char* v = std::getenv("STRATA_ARENA_THREADS"); return v ? std::max(1, std::atoi(v)) : 14; }() /* QWEN3.8 16/10/2026: was 6 */, err, pin_limit,
                             o.shared_expert_arena)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
