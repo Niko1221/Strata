@@ -248,6 +248,28 @@ class PickSlot(unittest.TestCase):
         e.slot_busy = [False] * 3
         self.assertEqual(e.pick_slot([1, 2, 3]), 1)                 # a held prompt is never the WHOLE prompt
 
+    def test_a_slot_that_matches_up_to_a_turn_boundary(self):
+        # #1906: a client's next turn sends the history back without the reply's thinking, so the slot's tokens match
+        # it only up to the turn boundary (the engine continues from the checkpoint it took there)
+        e = self.engine(3)
+        held = list(range(100, 200))                                # history, then this reply with its thinking
+        e.slot_held = [held, [], list(range(500, 600))]
+        self.assertEqual(e.pick_slot(held[:60] + [7, 8, 9]), 0)    # its own slot, not the empty one
+        # a short shared start (a system prompt) is not this conversation: the empty slot, slot 0 keeps its own
+        self.assertEqual(e.pick_slot(held[:10] + list(range(700, 790))), 1)
+        e.slot_held[0] = [1, 2, 3]
+        self.assertEqual(e.pick_slot([1, 2, 3]), 1)                 # the whole prompt held is still no start of it
+        self.assertEqual(e.pick_slot([1, 2]), 1)                    # nor a slot holding more than the prompt
+
+    def test_groups_of_one_slot_choose_by_what_they_hold(self):
+        # #1604, #1906: pipelined groups of ONE slot write no pad rows, so an idle slot keeps its conversation and the
+        # held-prefix choice applies (groups of several slots keep the hole-filling order below)
+        e = self.engine(2)
+        e.slot_gs, e.slot_groups, e.slot_group = 1, 2, [0, 1]
+        e.slot_held = [list(range(1, 701)), list(range(1000, 1700))]
+        self.assertEqual(e.pick_slot(list(range(1000, 1710))), 1)
+        self.assertEqual(e.pick_slot(list(range(1, 710))), 0)
+
     def test_batch_groups_spread_requests_over_the_groups(self):
         # #1249: with --batch-groups 2 over 4 slots (groups {0,1} and {2,3}) a second request goes to the other group,
         # and a short held prefix does not pull it back into the busy one

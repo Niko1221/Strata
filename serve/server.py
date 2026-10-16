@@ -1834,12 +1834,16 @@ class StrataEngine:
             # match only up to that turn's boundary - and the engine continues from the checkpoint it took there.
             # Such a slot holds this conversation: counted by the common start, when that is most of what it holds
             # (a long system prompt shared with another conversation's slot is not)
-            n = min(len(h), len(prompt) - 1)
+            n = min(len(h), len(prompt))
             i, step = 0, 4096
             while i + step <= n and h[i:i + step] == prompt[i:i + step]:
                 i += step
             while i < n and h[i] == prompt[i]:
                 i += 1
+            # only where the two part ways before either ends: a slot that holds this whole prompt or more is no
+            # start of it (the rule above gives it 0, as before)
+            if i >= n:
+                return 0
             return i if i * 2 >= len(h) else 0
         best = max(free, key=held_prefix)
         # without --batch-groups a held prefix of any length is taken, as before
