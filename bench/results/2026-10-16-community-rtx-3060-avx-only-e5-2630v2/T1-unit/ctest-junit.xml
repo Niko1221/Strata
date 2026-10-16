@@ -1,0 +1,1372 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="(empty)"
+	tests="119"
+	failures="2"
+	disabled="0"
+	skipped="1"
+	hostname=""
+	time="375"
+	timestamp="2026-10-16T14:33:36"
+	>
+	<testcase name="logit_bias_test" classname="logit_bias_test" time="0.0250534" status="run">
+		<properties/>
+		<system-out>logit_bias_test: passed, including 103215 bans
+</system-out>
+	</testcase>
+	<testcase name="gguf_reader_test" classname="gguf_reader_test" time="0.0050423" status="run">
+		<properties/>
+		<system-out>gguf_reader_test
+  distinct names: the file opens and find() sees both tensors        ok
+  the same name twice: refused at open                               ok
+    the error names the tensor                                       ok
+    the error names the file                                         ok
+  (GGUF: duplicate tensor name 'blk.0.attn_q.weight' in /tmp/strata_gguf_reader_test.gguf)
+  no tensors, ends before the aligned data start: the file opens     ok
+    data_start() is the file size (nothing to read past it)          ok
+  one tensor, ends before the aligned data start: refused at open    ok
+gguf_reader_test: all passed
+</system-out>
+	</testcase>
+	<testcase name="gguf_split_test" classname="gguf_split_test" time="0.00746235" status="run">
+		<properties/>
+		<system-out>gguf_split_test
+  gguf_split_paths from shard 3: the 4 shards in order                           ok
+  gguf_split_paths from shard 1: the same 4 shards                               ok
+  a name without -NNNNN-of-MMMMM is a model of one file                          ok
+  shard 1: the metadata, no tensor                                               ok
+  output.weight found in shard 2, in bounds                                      ok
+  layer 11 per role: gate/up in shard 3, down in shard 2                         ok
+  an absent tensor is nullptr                                                    ok
+  the architecture guard reads the metadata shard (and wants its keys)           ok
+  the 4-shard model opens                                                        ok
+  a missing shard is an error that names it                                      ok
+  a tensor in two shards is refused, naming both                                 ok
+  a shard whose split.no disagrees with its place is refused                     ok
+...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="model_family_test" classname="model_family_test" time="0.118385" status="run">
+		<properties/>
+		<system-out>model_family_test
+  model_family: qwen35moe, qwen4exp, unknown                                                 ok
+  the architecture guard accepts qwen35moe                                                   ok
+  the architecture guard accepts qwen4exp                                                    ok
+  and refuses llama, naming it                                                               ok
+  the engine guard refuses Qwen3.6: recognised, not supported yet                            ok
+  the engine guard runs qwen4exp                                                             ok
+  a qwen35moe file without ssm.time_step_rank is refused, naming the key                     ok
+  Qwen3.6 geometry reads                                                                     ok
+  Qwen3.6: 40 trunk layers + 1 MTP block, hidden 2048                                        ok
+  Qwen3.6: 10 attention / 30 GDN layers, layer 40 is the MTP block                           ok
+  Qwen3.6 GDN: 16 K groups, 32 V heads, conv 8...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="batch_read_test" classname="batch_read_test" time="0.00332804" status="run">
+		<properties/>
+		<system-out>batch_read_test: ok
+</system-out>
+	</testcase>
+	<testcase name="gguf_geometry_test" classname="gguf_geometry_test" time="0.0469531" status="run">
+		<properties/>
+		<system-out>gguf_geometry_test
+  the full key set reads                                                                     ok
+    and gives the compiled shape (vocabulary from tokenizer.ggml.tokens)                     ok
+    conv channels derived: 2 x 128 x 16 + 6144 = 10240                                       ok
+    which the kernels run, and the guard passes                                              ok
+  only the six required keys: the rest keeps the compiled values                             ok
+  a file without block_count is refused, naming it                                           ok
+  a file without embedding_length is refused, naming it                                      ok
+  a file without expert_count is refused, naming it                                          ok
+  a file without expert_used_count is refused, naming it                                     ok
+  a file without attention.head_count is refused, naming it                                  ok
+  a file without attention.head_count_kv is r...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="tuning_header_arch_family_test" classname="tuning_header_arch_family_test" time="0.00585193" status="run">
+		<properties/>
+		<system-out>ok   gfx1201/100500 vs gfx1201/100500 rows=2  exact match
+ok   gfx1200/100500 vs gfx1200/100500 rows=2  exact match
+ok   gfx1201/100500 vs gfx1200/100500 rows=2  RDNA4 sibling: gfx1201 table on a card reporting gfx1200
+ok   gfx1200/100500 vs gfx1201/100500 rows=2  RDNA4 sibling, symmetric direction
+ok   gfx1201/100202 vs gfx1201/100500 rows=0  the version gate rejects on its own
+      err: hipBLASLt version mismatch: file=100202 runtime=100500
+ok   gfx1200/100202 vs gfx1201/100500 rows=0  cross-family and wrong version
+      err: hipBLASLt version mismatch: file=100202 runtime=100500
+ok   gfx1100/100202 vs gfx1201/100202 rows=0  RDNA3 table on RDNA4
+      err: tuning architecture mismatch: file=gfx1100 runtime=gfx1201
+ok   gfx1201/100202 vs gfx1100/100202 rows=0  RDNA4 table on RDNA3
+      err: tuning architecture mismatch: file=gfx1201 runtime=gfx1100
+ok   gfx1100/100202 vs gfx1101/100202 rows=2  RDNA3 siblings share the family rule
+ok   gfx1102/100202 vs gfx1101/100202 rows=2  RDNA3 siblings, the third memb...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="split_rules_test" classname="split_rules_test" time="0.00268612" status="run">
+		<properties/>
+		<system-out>split_rules_test: #1440 plain K=24 (spare 664 MiB), headroom K=25 (spare 1728 MiB)
+split_rules_test: ok
+</system-out>
+	</testcase>
+	<testcase name="share_rules_test" classname="share_rules_test" time="0.00255013" status="run">
+		<properties/>
+		<system-out>share_rules_test: ok
+</system-out>
+	</testcase>
+	<testcase name="host_limits_test" classname="host_limits_test" time="0.00319169" status="run">
+		<properties/>
+		<system-out>host_limits_test: ok
+</system-out>
+	</testcase>
+	<testcase name="qsa_topk_active_parity" classname="qsa_topk_active_parity" time="3.13698" status="run">
+		<properties/>
+		<system-out>PASS: 20 top-k active-bound cases, selected IDs bitwise identical
+</system-out>
+	</testcase>
+	<testcase name="qsa_select_bench" classname="qsa_select_bench" time="1.12645" status="run">
+		<properties/>
+		<system-out>top-k 0.839 -&gt; 0.318 ms (2.6x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 269): warp kernel max err 3.16e-05, fast scorer max err 0.000412 (1.5e-06 of scale)
+ctx 32768, 256 queries x 8193 blocks: scores 3.247 -&gt; 0.621 ms (5.2x), top-k 0.839 ms; score rel diff mean 1.1e-06 max 0.27; selections identical 256/256, cells differing 0.0000%
+</system-out>
+	</testcase>
+	<testcase name="qsa_select_bench_fp32_tiled" classname="qsa_select_bench_fp32_tiled" time="0.991998" status="run">
+		<properties/>
+		<system-out>top-k 5.315 -&gt; 1.015 ms (5.2x), register top-k identical to the reference 256/256
+PASS accuracy vs FP64 (score scale 268): warp kernel max err 1.86e-05, fast scorer max err 5.64e-05 (2.1e-07 of scale)
+ctx 131072, 256 queries x 32769 blocks: scores 14.132 -&gt; 1.319 ms (10.7x), top-k 5.315 ms; score rel diff mean 1.7e-07 max 0.26; selections identical 256/256, cells differing 0.0000%
+</system-out>
+	</testcase>
+	<testcase name="host_graph_launch_test" classname="host_graph_launch_test" time="0.388509" status="run">
+		<properties/>
+		<system-out>PASS: graph launch, CPU doorbell service and cleanup
+</system-out>
+	</testcase>
+	<testcase name="exchange_storage_test" classname="exchange_storage_test" time="1.17191" status="run">
+		<properties/>
+		<system-out>exchange_storage_test: PASS (byte/alias/ownership checks, 12304 exchanges)
+</system-out>
+	</testcase>
+	<testcase name="memory_guard_test" classname="memory_guard_test" time="0.0399907" status="run">
+		<properties/>
+		<system-out>[strata] memory guard: the cgroup memory files could not be read or parsed, using MemAvailable; set --memory-limit-mib to the container's limit
+memory_guard_test: 134 checks passed
+</system-out>
+	</testcase>
+	<testcase name="file_expert_source_test" classname="file_expert_source_test" time="0.56535" status="run">
+		<properties/>
+		<system-out>io prefetch: 0 read ahead, 0 used, 300 skipped, pread 0 B: bytes PASS
+file_expert_source_test: PASS
+</system-out>
+	</testcase>
+	<testcase name="vmm_test" classname="vmm_test" time="0.513727" status="run">
+		<properties/>
+		<system-out>vmm_test: ok
+</system-out>
+	</testcase>
+	<testcase name="split_lend_complement_test" classname="split_lend_complement_test" time="0.172008" status="run">
+		<properties/>
+		<system-out>FileExpertSource: allocating 0.01 GiB pageable resident cache complement
+FileExpertSource: copied cache complement through layer 2/2 (0.01 GiB, 0 s)
+FileExpertSource: pageable resident cache complement ready: resident 0.01 GiB, pinned 0.00 GiB in 0 s
+FileExpertSource: the split stages lend 4 slots to the prompt path: 4 keep their experts in RAM too (0.01 GiB)
+FileExpertSource: 4 verified additional-GPU experts remain on the mmap fallback
+FileExpertSource: RAM budget 0.00 GiB: 0 of the 0.00 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 0.00 GiB pageable resident cache complement
+FileExpertSource: copied cache complement through layer 2/2 (0.00 GiB, 0 s)
+FileExpertSource: pageable resident cache complement ready: resident 0.00 GiB, pinned 0.00 GiB in 0 s
+FileExpertSource: the split stages lend 4 slots to the prompt path: 2 keep their experts in RAM too (0.00 GiB) (the rest are read from the file when lent: not enough RAM for them)
+File...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="expert_profile_save_test" classname="expert_profile_save_test" time="0.00672896" status="run">
+		<properties/>
+		<system-out>expert_profile_save_test: OK
+</system-out>
+	</testcase>
+	<testcase name="expert_profile_version_test" classname="expert_profile_version_test" time="0.00637197" status="run">
+		<properties/>
+		<system-out>expert_profile_version_test: OK
+</system-out>
+	</testcase>
+	<testcase name="expert_layout_test" classname="expert_layout_test" time="0.767119" status="run">
+		<properties/>
+		<system-out>expert_layout_test
+  q2_0: loads                                                                          ok
+  q2_0: every field as the pre-v4 reader, totals as the header (v2, n_expert 512)      ok
+  iq2_xs: loads                                                                        ok
+  iq2_xs: every field as the pre-v4 reader, totals as the header (v2, n_expert 512)    ok
+  iq3_xxs: loads                                                                       ok
+  iq3_xxs: every field as the pre-v4 reader, totals as the header (v2, n_expert 512)   ok
+  iq3_s: loads                                                                         ok
+  iq3_s: every field as the pre-v4 reader, totals as the header (v3, n_expert 512)     ok
+  coder-iq1_m: loads                                                                   ok
+  coder-iq1_m: every field as the pre-v4 reader, totals as the header (v3, n_expert 256) ok
+  swift-iq2_xs: loads                                                                  ok
+  swift-iq2_x...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="native_dense_ple_key_test" classname="native_dense_ple_key_test" time="0.368555" status="run">
+		<properties/>
+		<system-out>1. BF16 key row (--compat-bf16), IQ3_XXS GGUF key
+  index_code_bits: key row is 0                                                        ok
+  index_code_bits: qkv row is 8                                                        ok
+  the pack loads (was: incompatible matrix)                                            ok
+  the key is not skipped, qkv is                                                       ok
+  the key is resident and BF16                                                         ok
+  no native key attached                                                               ok
+  the arena holds the pack's BF16 bytes                                                ok
+  qkv still served natively (Q8_0)                                                     ok
+  one native matrix                                                                    ok
+2. quantized key row (Q2_0 / UD-Q4_K_XL packs), Q8_0 GGUF key: unchanged
+  the pack loads                                                                       ok
+ ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="expert_cache_per_layer_test" classname="expert_cache_per_layer_test" time="0.428516" status="run">
+		<properties/>
+		<system-out>expert cache per-layer admission: uniform and sized caches passed
+</system-out>
+	</testcase>
+	<testcase name="expert_cache_segmented_test" classname="expert_cache_segmented_test" time="1.22765" status="run">
+		<properties/>
+		<system-out>expert cache segments: shrink gives VRAM back and keeps the slots, grow maps them again
+</system-out>
+	</testcase>
+	<testcase name="dequant_s2_parity" classname="dequant_s2_parity" time="0.671713" status="run">
+		<properties/>
+		<system-out>  non-vacuity: 4 of 4 codes present, 8 distinct values in the first elements
+dequant_s2: 200000 blocks, 12800000 elements, 0 mismatched
+  bit-exact against the scalar dequantizer that dequant_xcheck proved equal to ggml
+dequant_s2_parity OK
+</system-out>
+	</testcase>
+	<testcase name="s2_gemv_parity" classname="s2_gemv_parity" time="0.327317" status="run">
+		<properties/>
+		<system-out>s2_gemv: n_in 2560, n_out 640, 0 rows over tolerance, worst rel 0.000e+00 (tol 1.0e-05)
+  reference spread [-1155, 5062]
+  agrees with the scalar decode that dequant_xcheck proved equal to ggml
+s2_gemv_parity OK
+</system-out>
+	</testcase>
+	<testcase name="mmvq_multi_parity" classname="mmvq_multi_parity" time="1.32388" status="run">
+		<properties/>
+		<system-out>
+=== multi_exact ON (the default) ===
+type           T    outputs  bits diff    finite diff  nonfinite
+Q4_0           1        512          0              0          0  ok
+Q4_0           2       1024          0              0          0  ok
+Q4_0           3       1536          0              0          0  ok
+Q4_0           4       2048          0              0          0  ok
+Q4_0           5       2560          0              0          0  ok
+Q4_0           6       3072          0              0          0  ok
+Q4_0           8       4096          0              0          0  ok
+Q8_0           1        512          0              0          0  ok
+Q8_0           2       1024          0              0          0  ok
+Q8_0           3       1536          0              0          0  ok
+Q8_0           4       2048          0              0          0  ok
+Q8_0           5       2560          0              0          0  ok
+Q8_0           6       3072          0              0          0  ok
+Q8_0           8       4...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="mmvq_il_parity" classname="mmvq_il_parity" time="6.04504" status="run">
+		<properties/>
+		<system-out>mmvq_il_parity: OK (every case, T 1-4, rows 1/2/4 and the table, bitwise)
+</system-out>
+	</testcase>
+	<testcase name="dequant_wide_parity" classname="dequant_wide_parity" time="31.0196" status="run">
+		<properties/>
+		<system-out>dequant_wide_parity: 360 cases, OK (bitwise)
+</system-out>
+	</testcase>
+	<testcase name="pdl_parity" classname="pdl_parity" time="1.62842" status="run">
+		<properties/>
+		<system-out>pdl_parity: NVIDIA GeForce RTX 3060 (sm_86), pdl_supported() = 0
+copy_rows_strided vs cudaMemcpy2DAsync (96 rows of 256 of 512): bitwise equal
+graph edges: ordinary capture 0 programmatic; PDL capture 0 programmatic, 0 not kernel to kernel, 0 nodes with a programmatic and a non-kernel in-edge, 0 into a node with other in-edges
+PDL graph vs ordinary graph over 200 replays: 0 differ
+pdl_parity: PASS
+</system-out>
+	</testcase>
+	<testcase name="iq_multi_parity" classname="iq_multi_parity" time="3.70286" status="run">
+		<properties/>
+		<system-out>IQ2_XXS  type 16     67 x  2560  iq_mmvq ncols 1..8, 11: bitwise equal to the old kernel (ref rel &lt;= 3.13e-05)
+IQ2_XXS  type 16      5 x  1024  iq_mmvq ncols 1..8, 11: bitwise equal to the old kernel (ref rel &lt;= 3.53e-05)
+IQ2_XS   type 17     67 x  2560  iq_mmvq ncols 1..8, 11: bitwise equal to the old kernel (ref rel &lt;= 3.66e-05)
+IQ2_XS   type 17      5 x  1024  iq_mmvq ncols 1..8, 11: bitwise equal to the old kernel (ref rel &lt;= 3.56e-05)
+IQ3_XXS  type 18     67 x  2560  iq_mmvq ncols 1..8, 11: bitwise equal to the old kernel (ref rel &lt;= 9.59e-06)
+IQ3_XXS  type 18      5 x  1024  iq_mmvq ncols 1..8, 11: bitwise equal to the old kernel (ref rel &lt;= 9.44e-06)
+IQ4_NL   type 20     67 x  2560  iq_mmvq ncols 1..8, 11: bitwise equal to the old kernel (ref rel &lt;= 7.89e-08)
+IQ4_NL   type 20      5 x  1024  iq_mmvq ncols 1..8, 11: bitwise equal to the old kernel (ref rel &lt;= 7.65e-08)
+IQ3_S    type 21     67 x  2560  iq_mmvq ncols 1..8, 11: bitwise equal to the old kernel (ref rel &lt;= 6.84e-08)
+IQ3_S    type 21      5 x...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="dma_batch_parity" classname="dma_batch_parity" time="30.4958" status="run">
+		<properties/>
+		<system-out>headers=13030 runtime=13030 driver=13030 registered=0
+case mode=0 n=0 bytes=37
+case mode=1 n=0 bytes=37
+case mode=2 n=0 bytes=37
+case mode=0 n=1 bytes=37
+case mode=1 n=1 bytes=37
+case mode=2 n=1 bytes=37
+case mode=0 n=4 bytes=37
+case mode=1 n=4 bytes=37
+case mode=2 n=4 bytes=37
+case mode=0 n=17 bytes=37
+case mode=1 n=17 bytes=37
+case mode=2 n=17 bytes=37
+case mode=0 n=64 bytes=37
+case mode=1 n=64 bytes=37
+case mode=2 n=64 bytes=37
+case mode=0 n=128 bytes=37
+case mode=1 n=128 bytes=37
+case mode=2 n=128 bytes=37
+case mode=0 n=129 bytes=37
+case mode=1 n=129 bytes=37
+case mode=2 n=129 bytes=37
+case mode=0 n=0 bytes=4096
+case mode=1 n=0 bytes=4096
+case mode=2 n=0 bytes=4096
+case mode=0 n=1 bytes=4096
+case mode=1 n=1 bytes=4096
+case mode=2 n=1 bytes=4096
+case mode=0 n=4 bytes=4096
+case mode=1 n=4 bytes=4096
+case mode=2 n=4 bytes=4096
+case mode=0 n=17 bytes=4096
+case mode=1 n=17 bytes=4096
+case mode=2 n=17 bytes=4096
+case mode=0 n=64 bytes=4096
+case mode=1 n=64 bytes=4096
+case mode=2 n=64 bytes=4096
+case mode=0 n=12...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="gdn_rec_parity" classname="gdn_rec_parity" time="0.599455" status="run">
+		<properties/>
+		<system-out>gdn_rec_parity on NVIDIA GeForce RTX 3060 (sm_86)
+T=1      the same bits (output, state, FP16 output)
+T=2      the same bits (output, state, FP16 output)
+T=3      the same bits (output, state, FP16 output)
+T=4      the same bits (output, state, FP16 output)
+T=5      the same bits (output, state, FP16 output)
+T=7      the same bits (output, state, FP16 output)
+T=8      the same bits (output, state, FP16 output)
+T=9      the same bits (output, state, FP16 output)
+T=15     the same bits (output, state, FP16 output)
+T=16     the same bits (output, state, FP16 output)
+T=17     the same bits (output, state, FP16 output)
+T=31     the same bits (output, state, FP16 output)
+T=33     the same bits (output, state, FP16 output)
+T=257    the same bits (output, state, FP16 output)
+T=1000   the same bits (output, state, FP16 output)
+T=4099   the same bits (output, state, FP16 output)
+     T=1      chunked: not on this card (sm_80+, 128 SMs, 93.7 KB a block)
+     T=2      chunked: not on this card (sm_80+, 128 SMs, 93.7 KB a...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="gemm_bf16_parity" classname="gemm_bf16_parity" time="6.38574" status="run">
+		<properties/>
+		<system-out>gemm_bf16_parity: compute capability 8.6
+  hc down (activations sliced)     T  4096 N   320 K 10240 ldy   320: worst |diff| 0.000e+00 of max |ref| 3.080e+01 (rel 0.00e+00) pass
+  hc up                            T  4096 N 10240 K   320 ldy 10240: worst |diff| 0.000e+00 of max |ref| 6.241e+00 (rel 0.00e+00) pass
+  PLE value                        T   777 N  2560 K  2560 ldy  2560: worst |diff| 0.000e+00 of max |ref| 1.486e+01 (rel 0.00e+00) pass
+  router / indexer q               T   512 N   512 K  2560 ldy   512: worst |diff| 0.000e+00 of max |ref| 1.376e+01 (rel 0.00e+00) pass
+  hc inject                        T   300 N     4 K 10240 ldy     4: worst |diff| 0.000e+00 of max |ref| 1.899e+01 (rel 0.00e+00) pass
+  single row                       T  2048 N     1 K  2560 ldy     1: worst |diff| 0.000e+00 of max |ref| 1.076e+01 (rel 0.00e+00) pass
+  row stride wider than N          T   333 N   128 K  2560 ldy   136: worst |diff| 0.000e+00 of max |ref| 1.236e+01 (rel 0.00e+00) pass
+gemm_bf16_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="native_grouped_parity" classname="native_grouped_parity" time="3.14532" status="run">
+		<properties/>
+		<system-out>IQ2_XXS /IQ4_NL    512 x  256  84 calls: bitwise equal to v1 (76800 output floats written in all)
+IQ2_XXS /IQ4_XS    512 x  256  84 calls: bitwise equal to v1 (83968 output floats written in all)
+IQ2_XXS /Q2_0      512 x  256  84 calls: bitwise equal to v1 (80384 output floats written in all)
+IQ2_XXS /Q5_1      512 x  256  84 calls: bitwise equal to v1 (80384 output floats written in all)
+IQ2_XXS /Q8_0      512 x  256  84 calls: bitwise equal to v1 (80896 output floats written in all)
+IQ2_XS  /IQ4_NL    512 x  256  84 calls: bitwise equal to v1 (80896 output floats written in all)
+IQ2_XS  /IQ4_XS    512 x  256  84 calls: bitwise equal to v1 (83968 output floats written in all)
+IQ2_XS  /Q2_0      512 x  256  84 calls: bitwise equal to v1 (80896 output floats written in all)
+IQ2_XS  /Q5_1      512 x  256  84 calls: bitwise equal to v1 (75776 output floats written in all)
+IQ2_XS  /Q8_0      512 x  256  84 calls: bitwise equal to v1 (80384 output floats written in all)
+IQ3_XXS /IQ4_NL    512 x  256  84 calls: bit...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="shared_expert_parity" classname="shared_expert_parity" time="0.3427" status="run">
+		<properties/>
+		<system-out>  silu-on-gate vs silu-on-up is observable yes (100.00% apart)
+  structure vs reference                   worst rel 3.461e-04 over 256 outputs (mean |ref| 4716.8804)
+  the fixture's SwiGLU stays in fp16 range yes (max |h| 677.2, fp16 max 65504)
+  native shared scalar gate: pass (ref rel 0.000e+00, BF16 separation 1.048e-03, missing input refused)
+  native shared captured selection: byte-identical
+  restored shared default: byte-identical
+  routed sum left UNWEIGHTED is observable   yes  (92.39% apart)
+  shared output router-WEIGHTED is observable yes  (84.60% apart)
+  moe_combine vs reference                   rel 0.000e+00
+  a null `shared` is observable              yes (98.62% apart - null shared really omits it)
+
+shared_expert: 0 failures
+shared_expert_parity OK
+</system-out>
+	</testcase>
+	<testcase name="verify_parity" classname="verify_parity" time="0.585952" status="run">
+		<properties/>
+		<system-out>argmax_rows, row_top_prob_split: bitwise equal to the one-block kernels (ties, NaN, -inf, 1-8 rows on one scratch)
+verify_parity: PASS
+</system-out>
+	</testcase>
+	<testcase name="gr_parity" classname="gr_parity" time="0.688839" status="run">
+		<properties/>
+		<system-out>  per-stream RMSNorm vs whole-stack        yes  (89.6091% apart, floor 5.000%)
+  /hc inside the silu vs outside           yes  (8.1439% apart, floor 5.000%)
+  SiLU on lo / sigmoid on gate, swapped    yes  (91.4869% apart, floor 5.000%)
+  mean over streams vs sum                 yes  (300.0000% apart, floor 50.000%)
+  BF16 vs FP32 activation contracts        yes  (0.1028% apart, floor 0.010%)
+
+  mixed vs reference                       worst 3.594e-08 (mean |ref| 0.2105)
+  inject vs reference                      rel 2.845e-08
+  FP32 activations vs reference: pass (mixed 7.823e-08, inject 1.138e-07)
+  restoring default activation contract: byte-identical
+  weight orientation is observable         yes (56.9% apart)
+  null w_inject writes nothing             yes
+  zero injection -&gt; plain residual add     yes (worst rel 5.948e-08)
+  1*sigmoid vs 2*sigmoid is observable     yes (readings 50% apart, kernel within 4.36e-07)
+  every stream adds the same block output  yes (worst rel 1.033e-07)
+
+  real dims 2560/4/320 ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="gdn_parity" classname="gdn_parity" time="2.17331" status="run">
+		<properties/>
+		<system-out>  modulo vs interleave head pairing          yes  (142.03% apart)
+  decay before vs after the update           yes  (76.95% apart)
+
+  o vs reference                             rel 2.009e-07
+  state (read via (S,h_v,S)) vs reference    rel 3.995e-08
+  gate=beta=0 from a zero state is a no-op   yes
+
+  conv weight layout is observable           yes  (182.5% apart)
+  conv out vs reference                      rel 2.477e-08
+  conv state slide (mapped) vs reference     rel 0.000e+00
+
+  eps on sum vs on mean is observable        yes  (1031.4% apart)
+  l2_norm vs reference                       rel 0.000e+00
+
+  out norm (rms * ssm_norm * sigmoid z)      rel 1.100e-08
+  sigmoid vs SiLU on the gate is observable  yes  (86.78% apart)
+
+  gdn_ab_multi T=1..8 == fused_gdn_ab        bitwise (8 cases)
+  gdn_step_norm_multi T=1..8 == single-token bitwise (47 cases)
+  gdn_commit_layers == per-layer commit      bitwise (8 cases, 5 layers)
+
+gdn: 0 failures
+gdn_parity OK
+</system-out>
+	</testcase>
+	<testcase name="s2_gemv_q8_parity" classname="s2_gemv_q8_parity" time="0.319691" status="run">
+		<properties/>
+		<system-out>  q8-activation GEMV vs host reference   matches (0 of 64 over 1e-4, worst rel 3.731e-05, mean |ref| 0.290)
+  fp16-activation vs q8-activation       0.8022% of the reference magnitude
+
+s2_gemv_q8: 0 failures
+s2_gemv_q8_parity OK
+</system-out>
+	</testcase>
+	<testcase name="sampler_parity" classname="sampler_parity" time="2.64302" status="run">
+		<properties/>
+		<system-out>  sampled path: split top_k (default)
+  greedy argmax                      matches (0 of 4 differ)
+  order is observable on this fixture yes (survivors: spec 16, temp-first 12)
+  greedy over this fixture           matches (0 of 4 differ)
+  greedy ignores the seed            matches (seed-independent: 0 differ; vs reference: 0 wrong)
+  multiply-or-divide is observable   yes (multiply-rule 1, divide-always 0)
+  penalties: repeat on negatives     matches (0 of 2 differ)
+  presence penalty is a boolean      want token 1 (with present=1.5, token 0 goes 5.0/2 - 1.5 = 1.0 vs token 1 at 3.4)
+  penalties: presence is boolean     matches (0 of 2 differ)
+  T=0 greedy=false is the argmax     matches (0 of 4 differ)
+  T=0 greedy=true  is the argmax     matches (0 of 4 differ)
+  T=1 greedy=true  is the argmax     matches (0 of 4 differ)
+  sampled penalties are observable   yes (penalised picks 3/2, clean 0/0)
+  sampled chain: penalties + top_k/p matches (0 of 2 differ)
+  min_p cut is observable            yes (survivors: m...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="spec_verify_parity" classname="spec_verify_parity" time="7.27075" status="run">
+		<properties/>
+		<system-out>spec_verify_parity: 1296 rows (365 drafts kept, 643 rejected, 288 plain last rows, 479 with a q list): 0 mismatches
+</system-out>
+	</testcase>
+	<testcase name="sampler_parity_one_block" classname="sampler_parity_one_block" time="3.35708" status="run">
+		<properties/>
+		<system-out>  sampled path: one block (STRATA_SAMPLER_ONE_BLOCK)
+  greedy argmax                      matches (0 of 4 differ)
+  order is observable on this fixture yes (survivors: spec 16, temp-first 12)
+  greedy over this fixture           matches (0 of 4 differ)
+  greedy ignores the seed            matches (seed-independent: 0 differ; vs reference: 0 wrong)
+  multiply-or-divide is observable   yes (multiply-rule 1, divide-always 0)
+  penalties: repeat on negatives     matches (0 of 2 differ)
+  presence penalty is a boolean      want token 1 (with present=1.5, token 0 goes 5.0/2 - 1.5 = 1.0 vs token 1 at 3.4)
+  penalties: presence is boolean     matches (0 of 2 differ)
+  T=0 greedy=false is the argmax     matches (0 of 4 differ)
+  T=0 greedy=true  is the argmax     matches (0 of 4 differ)
+  T=1 greedy=true  is the argmax     matches (0 of 4 differ)
+  sampled penalties are observable   yes (penalised picks 3/2, clean 0/0)
+  sampled chain: penalties + top_k/p matches (0 of 2 differ)
+  min_p cut is observable            ye...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="sampler_parity_old" classname="sampler_parity_old" time="6.28868" status="run">
+		<properties/>
+		<system-out>  sampled path: sampler_kernel (STRATA_OLD_SAMPLER)
+  greedy argmax                      matches (0 of 4 differ)
+  order is observable on this fixture yes (survivors: spec 16, temp-first 12)
+  greedy over this fixture           matches (0 of 4 differ)
+  greedy ignores the seed            matches (seed-independent: 0 differ; vs reference: 0 wrong)
+  multiply-or-divide is observable   yes (multiply-rule 1, divide-always 0)
+  penalties: repeat on negatives     matches (0 of 2 differ)
+  presence penalty is a boolean      want token 1 (with present=1.5, token 0 goes 5.0/2 - 1.5 = 1.0 vs token 1 at 3.4)
+  penalties: presence is boolean     matches (0 of 2 differ)
+  T=0 greedy=false is the argmax     matches (0 of 4 differ)
+  T=0 greedy=true  is the argmax     matches (0 of 4 differ)
+  T=1 greedy=true  is the argmax     matches (0 of 4 differ)
+  sampled penalties are observable   yes (penalised picks 3/2, clean 0/0)
+  sampled chain: penalties + top_k/p matches (0 of 2 differ)
+  min_p cut is observable            yes...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="decode_cluster_parity" classname="decode_cluster_parity" time="0.316305" status="run">
+		<properties/>
+		<system-out>SKIP: no thread-block clusters on this card / build (compute capability 8)
+</system-out>
+	</testcase>
+	<testcase name="rope_parity" classname="rope_parity" time="0.343052" status="run">
+		<properties/>
+		<system-out>  rope table vs float64 reference   bit-exact (0 of 2048 entries differ, worst 0.0e+00)
+  rope rotation vs host reference   agrees (0 of 49152 over 1e-6, worst rel 1.089e-07)
+  pairing: dim 0 set -&gt; NEOX moves dim 32 (o[half]=0.656987), adjacent would move dim 1 (o[1]=0.000000)   NEOX confirmed
+  scaled table, None vs unscaled builder  bit-identical
+  scaled table, linear factor 4          bit-exact (0 of 2048 entries differ)
+  linear(4) @ p == none @ p/4            bit-identical (0 of 32 rows differ)
+  scaled table, yarn factor 4            bit-exact (0 of 2048 entries differ)
+  yarn structure: cos_tab[0]==mscale 1.1386, first pair extrapolates, last interpolates   confirmed
+  observability: none vs linear(2) at position 100   visible (|0.8623 - 0.9650|)
+  rope rotation over the yarn table      agrees (0 of 49152 over 1e-6, worst rel 1.031e-07)
+  native path vs table path, yarn factor 2   agrees (0 of 98304 over 3e-3, worst rel 2.775e-04)
+  native path vs table path, none            agrees (0 of 98304 over 3...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="quantize_act_parity" classname="quantize_act_parity" time="0.455455" status="run">
+		<properties/>
+		<system-out>  random normal              blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+  small magnitude (1e-6)     blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+  all zero                   blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+  exact .5 boundaries        blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+  one extreme per block      blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+
+quantize_q8_0: 0 failures over 5 distributions x 131072 elements
+  f32-&gt;f16 overflow saturates, not NaN         yes (0 of 11 wrong)
+  f16-&gt;f32 keeps subnormals                    yes (0x0001 -&gt; 5.96046448e-08, want 2^-24)
+
+Q8_K  (ggml block_q8_K: 292 bytes / 256 elements, {f32 d; i8 qs[256]; i16 bsums[16]})
+  random normal              blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+  small magnitude (1e-7)     blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+  all zero                   blocks byte-exact (0...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="route_window_parity" classname="route_window_parity" time="0.49132" status="run">
+		<properties/>
+		<system-out>  mmvf cols  n_out 256  T 2  bit-identical
+  top10 n    T 2            bit-identical
+  mmvf cols  n_out 256  T 3  bit-identical
+  top10 n    T 3            bit-identical
+  mmvf cols  n_out 256  T 4  bit-identical
+  top10 n    T 4            bit-identical
+  mmvf cols  n_out 256  T 6  bit-identical
+  top10 n    T 6            bit-identical
+  mmvf cols  n_out   1  T 2  bit-identical
+  mmvf cols  n_out   1  T 3  bit-identical
+  mmvf cols  n_out   1  T 4  bit-identical
+  mmvf cols  n_out   1  T 6  bit-identical
+route_window_parity OK
+</system-out>
+	</testcase>
+	<testcase name="route_resident_parity" classname="route_resident_parity" time="0.4473" status="run">
+		<properties/>
+		<system-out>route_resident_parity: 240 cases, 205 with swaps (2004 swaps), 0 mismatches, weights within 8 ulp
+route_resident_parity OK
+</system-out>
+	</testcase>
+	<testcase name="router_top10_parity" classname="router_top10_parity" time="0.454041" status="run">
+		<properties/>
+		<system-out>  random normal              ids exact (0 bad)   weights worst rel 1.378e-07 (0 over tol)   |sum-1| 2.2e-08
+  all equal (ties)           ids exact (0 bad)   weights worst rel 0.000e+00 (0 over tol)   |sum-1| 1.5e-08
+  12-way exact tie           ids exact (0 bad)   weights worst rel 1.347e-07 (0 over tol)   |sum-1| 2.2e-08
+  dominant expert            ids exact (0 bad)   weights worst rel 5.960e-08 (0 over tol)   |sum-1| 1.9e-08
+  clamp reachability         top-10 sum &gt;= k/n = 0.01953, clamp is 6.104e-05 -&gt; margin 320x  (CLAMP IS UNREACHABLE, asserted)
+
+router_top10: 0 failures over 4 distributions x 64 tokens x 512 experts, top-10
+router_top10_parity OK
+</system-out>
+	</testcase>
+	<testcase name="native_multi_parity" classname="native_multi_parity" time="0.569667" status="run">
+		<properties/>
+		<system-out>  router multi == single, random logits                bitwise (19 cases)
+  router multi == single, exact ties                   bitwise (19 cases)
+  router multi == single, NaN logits                   bitwise (19 cases)
+  router_top10 on 256 experts (non-512 fallback)       matches the host reference
+  combine k=10 + shared (float4 kernel)                bitwise (9 cases)
+  combine k=10 + shared, output misaligned             bitwise (9 cases)
+  combine k=10 without shared                          bitwise (9 cases)
+  combine k=9 + shared                                 bitwise (9 cases)
+
+native_multi: 0 failures
+native_multi_parity OK
+</system-out>
+	</testcase>
+	<testcase name="kv_steps_parity" classname="kv_steps_parity" time="0.488695" status="run">
+		<properties/>
+		<system-out>kv_steps: 120 checks, 0 failures
+kv_steps_parity OK
+</system-out>
+	</testcase>
+	<testcase name="resident_plan_parity" classname="resident_plan_parity" time="0.364568" status="run">
+		<properties/>
+		<system-out>resident_plan: 641 cases, 0 failures
+resident_plan_parity OK
+</system-out>
+	</testcase>
+	<testcase name="gr_multi_parity" classname="gr_multi_parity" time="0.721283" status="run">
+		<properties/>
+		<system-out>gr_multi: 32 cases, 0 failures
+gr_multi_parity OK
+</system-out>
+	</testcase>
+	<testcase name="s_gemv_parity" classname="s_gemv_parity" time="0.370912" status="run">
+		<properties/>
+		<system-out>  S2/Q2_0    128 rows, 0 over tol, worst rel 0.000e+00   ref spread [494.9, 9440]
+  S4/Q4_0    128 rows, 0 over tol, worst rel 6.634e-07   ref spread [-1.524e+04, 1.491e+04]
+  S4/IQ4_NL  128 rows, 0 over tol, worst rel 9.278e-06   ref spread [-2.514e+05, 1.171e+05]
+  S8/Q8_0    128 rows, 0 over tol, worst rel 9.649e-06   ref spread [-1.885e+05, 1.493e+05]
+s_gemv: 4 type cases, 0 rows over tolerance (tol 1.0e-04)
+  S4/Q4_K    128 rows, 0 over tol, worst rel-to-terms 2.814e-07 (rel-to-result 1.350e-06)
+             ref spread [-6.365e+06, 1.949e+07], condition (sum|term|) up to 2.775e+07
+             CPU planes vs CPU raw block: max |diff| = 0.000e+00 -&gt; the test is SELF-CONSISTENT
+s_gemv total: 0 rows over tolerance
+s_gemv_parity OK
+</system-out>
+	</testcase>
+	<testcase name="elementwise_parity" classname="elementwise_parity" time="0.454752" status="run">
+		<properties/>
+		<system-out>  the fixture crosses the branch               yes (16 above 20, 5 above 88)
+  the fixture's ssm_a is negative              yes (0 of 48 non-negative)
+  gdn_gate vs the reference                    rel 2.466e-08
+  the softplus large-x branch is observable    yes (inf% apart, 4 non-finite, 4 heads differ, first at x = 94.5)
+  exp(gate) &lt; 1 for every head                 yes (0 of 48 not &lt; 1)
+
+  silu (double) vs the reference               rel 0.000e+00
+  scale_inplace is exact                       0 of 1024 differ
+  f32_to_f16_bulk uses the shared conversion   0 of 1024 differ
+  sum-vs-mean is observable                    89.36% apart
+  with-w-vs-without-w is observable            70.20% apart
+  rms_norm_weighted vs f64 oracle              rel 4.226e-08  worst 2.261e-07  nonfinite 0
+  a null weight is legal                       0 of 6144 differ
+  embedding gather: 108 row cases, 0 bit mismatches, 0 guard failures, 8141 FMA differences
+  f32 -&gt; bf16 (NaN kept): bulk 0 of 4096 differ from ggml, dequant_bf16 0...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="bf16_gemv_parity" classname="bf16_gemv_parity" time="0.656649" status="run">
+		<properties/>
+		<system-out>  ssm_alpha.weight  [2560, 48]       naive 3.85e-07  warp 9.07e-08  split256 5.99e-08
+      bf16 vs fp16 activation        yes (0.1447% apart)
+  indexer.k_proj   [2560, 128]       naive 8.22e-08  warp 8.22e-08  split256 6.62e-08
+      bf16 vs fp16 activation        yes (0.1561% apart)
+  indexer.q_proj   [2560, 512]       naive 7.73e-08  warp 7.73e-08  split256 7.08e-08
+      bf16 vs fp16 activation        yes (0.1456% apart)
+  ple_value        [2560, 2560]      naive 8.00e-08  warp 8.00e-08  split256 6.80e-08
+      bf16 vs fp16 activation        yes (0.1411% apart)
+
+bf16_gemv: 0 failures
+bf16_gemv_parity OK
+</system-out>
+	</testcase>
+	<testcase name="s_gemv_q8k_parity" classname="s_gemv_q8k_parity" time="0.457015" status="run">
+		<properties/>
+		<system-out>  IQ4_XS  S4 g32 no-offset     naive 3.135e-07   warp 8.166e-08
+  IQ4_XS  S4 g32 no-offset     Q8_0 act 7.310e-08
+      Q8_K vs fp16 activation  yes (0.6855% apart, tolerance 0.1%)
+  Q4_K    S4 g32 offset        naive 3.073e-07   warp 1.120e-07
+  Q4_K    S4 g32 offset        Q8_0 act 1.136e-07
+      Q8_K vs fp16 activation  yes (1.0580% apart, tolerance 0.1%)
+  Q5_K    S8 g32 offset        naive 3.644e-07   warp 9.330e-08
+  Q5_K    S8 g32 offset        Q8_0 act 1.073e-07
+      Q8_K vs fp16 activation  yes (1.4897% apart, tolerance 0.1%)
+
+  IQ4_XS  S4 g32 no-offset     Q8_K n_out   1: rel 0.000e+00, guard words written 0  ok
+  IQ4_XS  S4 g32 no-offset     Q8_0 n_out   1: rel 1.437e-08, guard words written 0  ok
+  IQ4_XS  S4 g32 no-offset     Q8_K n_out   7: rel 5.110e-09, guard words written 0  ok
+  IQ4_XS  S4 g32 no-offset     Q8_0 n_out   7: rel 3.474e-09, guard words written 0  ok
+  IQ4_XS  S4 g32 no-offset     Q8_K n_out   9: rel 5.952e-09, guard words written 0  ok
+  IQ4_XS  S4 g32 no-offset     Q8_0 n_ou...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="qsa_parity" classname="qsa_parity" time="1.49656" status="run">
+		<properties/>
+		<system-out>qsa_parity: n_head 24  n_head_kv 2  head_dim 256  indexer 4x128 r=4 top_k 2048  page (from the shapes) 4   [sparse]
+
+  the fixture's r is the artifact's IDX_BLOCK      ok     r = 4
+  f32-&gt;f16 matches numpy's float16 on every vector ok     395 vectors, 125 subnormal
+  f16-&gt;f32 is exact on all 65,536 bit patterns     ok     0 wrong
+  kv_append at page_size 1: the pool is BIT-EXACT  ok     0 of 563200 bits wrong
+    the page table is observable at page_size 1    yes    99.99% apart (linear vs declared)
+    kv_gather is BIT-EXACT at page_size 1          ok     0 wrong bits
+  kv_append at page_size 4: the pool is BIT-EXACT  ok     0 of 563200 bits wrong
+    the page table is observable at page_size 4    yes    100.00% apart (linear vs declared)
+    head-major-in-page is observable at page_size 4 yes    74.99% apart (cell-major vs head-major)
+    kv_gather is BIT-EXACT at page_size 4          ok     0 wrong bits
+  kv_append at page_size 512: the pool is BIT-EXACT ok     0 of 563200 bits wrong
+    the page table is ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="qsa_topk_parity" classname="qsa_topk_parity" time="2.7534" status="run">
+		<properties/>
+		<system-out>PASS context 9000 under a capacity of 9000 (2252 blocks), 8 queries without a block count: reference 0.039 ms, dispatched 0.039 ms (1.0x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8
+PASS context 9000 under a capacity of 9000 (2252 blocks), 64 queries with their block count: reference 0.044 ms, dispatched 0.091 ms (0.5x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64
+PASS context 135160 under a capacity of 135160 (33792 blocks), 8 queries without a block count: reference 0.153 ms, dispatched 0.087 ms (1.8x); identical ids: continuous 8/8, 64 levels 8/8, equal scores 8/8
+PASS context 135160 under a capacity of 135160 (33792 blocks), 64 queries with their block count: reference 0.527 ms, dispatched 0.389 ms (1.4x); identical ids: continuous 64/64, 64 levels 64/64, equal scores 64/64
+PASS context 135176 under a capacity of 135176 (33796 blocks), 8 queries without a block count: reference 0.186 ms, dispatched 0.092 ms (2.0x); identical ids: continuous 8/8, 64 levels 8/8, ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ple_parity" classname="ple_parity" time="0.0106942" status="fail">
+		<failure message="Failed"/>
+		<properties/>
+		<system-out>ple_parity: required PLE table is missing or incompatible: ../../Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf (cannot open ../../Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf)
+</system-out>
+	</testcase>
+	<testcase name="kv_q8_parity" classname="kv_q8_parity" time="0.430084" status="run">
+		<properties/>
+		<system-out>kv_q8_parity: OK (worst INT8-vs-FP16 error 0.590 quantization steps)
+</system-out>
+	</testcase>
+	<testcase name="kv_stream_parity" classname="kv_stream_parity" time="16.6762" status="run">
+		<properties/>
+		<system-out>kv_stream_parity: streamed vs resident KV, bitwise
+  int8: 306 batches, 703691 block lookups, 71267 misses (89.9% hit), overflow 0, 0 failures
+  int8 ring restore: identical
+  fp16: 306 batches, 672800 block lookups, 69612 misses (89.7% hit), overflow 0, 0 failures
+  fp16 ring restore: identical
+  q4_0: 306 batches, 680672 block lookups, 69170 misses (89.8% hit), overflow 0, 0 failures
+  q4_0 ring restore: identical
+  k8v4: 306 batches, 702021 block lookups, 70479 misses (90.0% hit), overflow 0, 0 failures
+  k8v4 ring restore: identical
+PASS
+</system-out>
+	</testcase>
+	<testcase name="kv_hybrid_parity" classname="kv_hybrid_parity" time="0.677921" status="run">
+		<properties/>
+		<system-out>=== Running kv_hybrid_parity test ===
+[1/3] composed appends: PASS (0 bad values of 786432 K / 24576 V)
+[2/3] composed gathers: PASS (0 bad of 786432)
+       (per-query max: q0 7.82e-08, q1 7.08e-08)
+[4/4] mode-3 BATCHED attention (verify's form): PASS (vs dequant ref 7.82e-08)
+[5/5] qsa_prompt_attn mode 3 (tensor cores): PASS (vs dequant ref 7.60e-06)
+[3/3] mode-3 attention + output fwht: PASS (vs dequant ref 1.08e-07, vs true fp32 4.40e-03)
+=== kv_hybrid_parity: ALL PASS ===
+</system-out>
+	</testcase>
+	<testcase name="kv_q4_parity" classname="kv_q4_parity" time="0.489362" status="run">
+		<properties/>
+		<system-out>=== Running kv_q4_parity test ===
+[1/4] Verifying FWHT-256 CUDA kernel vs exact mathematical reference...
+  -&gt; FWHT-256 bitwise match with host reference (max diff = 0.000000e+00, OK)
+  -&gt; FWHT-256 self-inverse property verified H*H*x == x (max diff = 4.768372e-07, OK)
+[2/4] Verifying Attention Score Invariance: &lt;H*q, H*k&gt; == &lt;q, k&gt;...
+  -&gt; Dot product invariant under rotation: |&lt;Hq,Hk&gt; - &lt;q,k&gt;| = 5.827417e-06 (OK)
+[3/4] Verifying Q4_0 KV append and gather against host reference...
+  -&gt; All Q4_0 pool blocks bitwise equal to host quantizer (OK)
+[4/4] Verifying Q4_0 gather unpacking and dequantization...
+  -&gt; Max reconstruction error after 4-bit quant + dequant: 0.7921 (OK)
+=== kv_q4_parity: ALL TESTS PASSED SUCCESSFULLY! ===
+</system-out>
+	</testcase>
+	<testcase name="verify_batch_parity" classname="verify_batch_parity" time="0.387698" status="run">
+		<properties/>
+		<system-out>verify_batch_parity: NVIDIA GeForce RTX 3060 (sm_86)
+native_gr_post_multi, 2 tokens (in place)                        bitwise equal
+native_gr_post_multi, 4 tokens (in place)                        bitwise equal
+native_gr_post_multi, 8 tokens (in place)                        bitwise equal
+native_ple_postops_batch_snap, 2 tokens: results                 bitwise equal
+native_ple_postops_batch_snap, 2 tokens: history                 bitwise equal
+native_ple_postops_batch_snap, 2 tokens: snapshots               bitwise equal
+native_ple_postops_batch_snap, 3 tokens: results                 bitwise equal
+native_ple_postops_batch_snap, 3 tokens: history                 bitwise equal
+native_ple_postops_batch_snap, 3 tokens: snapshots               bitwise equal
+native_ple_postops_batch_snap, 4 tokens: results                 bitwise equal
+native_ple_postops_batch_snap, 4 tokens: history                 bitwise equal
+native_ple_postops_batch_snap, 4 tokens: snapshots               bitwise equal
+native_ple_postops_batc...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="cvec_parity" classname="cvec_parity" time="0.698037" status="run">
+		<properties/>
+		<system-out>  covers(): steered layers only                                      ok
+project
+    max |err| 4.86e-07, max |h'.v + h.v| 1.64e-06
+  project matches h - s (h.v) v (s = 2)                              ok
+  the component along v is reflected (s = 2)                         ok
+    max |h'.v| 7.65e-07
+  s = 1 projects the direction out                                   ok
+  a layer without a direction is untouched                           ok
+switched off
+  cvec_enabled() follows the switch                                  ok
+  off, no pending write: R unchanged                                 ok
+  off, pending write: bitwise the fused read's folded write          ok
+    write + project: max |err| 4.75e-07
+  on, pending write: the write, then the projection                  ok
+add
+  add is h + d in every stream (bitwise)                             ok
+cvec_parity: all passed
+</system-out>
+	</testcase>
+	<testcase name="s2_expert_grouped_parity" classname="s2_expert_grouped_parity" time="0.775289" status="run">
+		<properties/>
+		<system-out>s2_expert_grouped_parity: new expert kernels vs the previous ones, bitwise
+  moe_hit_grouped_s2 (fp32 scales)             bitwise identical
+  moe_hit_grouped_s2 (fp32 scales)             host reference: 2601 rows, 0 outside tolerance, worst 8.90e-08 of sum|term|
+  moe_hit_grouped_s2 (fp16 d)                  bitwise identical
+  moe_hit_grouped_s2 (fp16 d)                  host reference: 2601 rows, 0 outside tolerance, worst 9.22e-08 of sum|term|
+  moe_hit_grouped_s2_dev (count 7 of 10)       bitwise identical
+  moe_hit_grouped_s2_dev (count 7 of 10)       host reference: 2023 rows, 0 outside tolerance, worst 8.90e-08 of sum|term|
+  moe_hit_grouped_s2_dev (count 7 of 10)       rows past the count written: 0
+  moe_hit_grouped_s2_multi (4 tokens, 29 hits) bitwise identical
+  moe_hit_grouped_s2_multi (4 tokens, 29 hits) host reference: 8381 rows, 0 outside tolerance, worst 8.90e-08 of sum|term|
+  moe_grouped_s2 (20 groups, fp32 scales)      bitwise identical
+  moe_grouped_s2 (20 groups, fp32 scales)      host re...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="platform_memory_test" classname="platform_memory_test" time="0.360663" status="fail">
+		<failure message="Failed"/>
+		<properties/>
+		<system-out>file_cache_keeps 96 GB, 0.1.38's inputs (budget 72, all shards)             -&gt; unbuffered
+file_cache_keeps 96 GB, budget 72, before the copy (arena = all experts)    -&gt; buffered
+file_cache_keeps 96 GB, budget 72, copy built (48.94 resident)              -&gt; buffered
+file_cache_keeps 96 GB, budget 40, before the copy                          -&gt; buffered
+file_cache_keeps 96 GB, budget 40, copy built                               -&gt; buffered
+file_cache_keeps 64 GB, budget 40, before the copy                          -&gt; unbuffered
+file_cache_keeps 64 GB, budget 40, copy built                               -&gt; unbuffered
+file_cache_keeps 32 GB, budget 16, before the copy                          -&gt; unbuffered
+file_cache_keeps 32 GB, budget 16, copy built                               -&gt; unbuffered
+file_cache_keeps 32 GB, Q2_0 pack (34 GiB experts), budget 8                -&gt; unbuffered
+file_cache_keeps nothing available                                          -&gt; unbuffered
+file_cache_keeps arena larger than the RAM                                  -&gt; buffered
+file_cache_keeps (Linux file tier) #1194: 31 GB + 12 GB GPU, budget 18 built (6.4 avail, 13.6 read) -&gt; buffered
+file_cache_keeps (Linux file tier) #1194: before the copy (avail 25, arena 18, read 13.6) -&gt; buffered
+file_cache_keeps (Linux file tier) 32 GB cgroup, budget 18, copy built (12.1 avail, 22 read) -&gt; buffered
+file_cache_keeps (Linux file tier) 32 GB cgroup, budget 24, copy built (3.8 avail, 16 read) -&gt; buffered
+file_cache_keeps (Linux file tier) 20 GB cgroup, budget 12, copy built (4.7 avail, 28 read) -&gt; buffered
+file_cache_keeps (Linux file tier) 12 GB cgroup, budget 6, copy built (3.5 avail, 34 read) -&gt; buffered
+file_cache_keeps (Linux file tier) no room beside the margin (1 avail, 47 read)         -&gt; unbuffered
+file_cache_keeps (Linux file tier) room under the 1.5 GiB floor (2.4 avail, 47 read)    -&gt; unbuffered
+file_cache_keeps (Linux file tier) room a twentieth of the reads (3.4 avail, 47 read)   -&gt; buffered
+file_cache_keeps (Linux file tier) room just under that (3.3 avail, 47 read)            -&gt; unbuffered
+file_cache_keeps (Linux file tier) a big read set needs its twentieth (4 avail, 200 read) -&gt; unbuffered
+file_cache_keeps (Linux file tier) a big read set with that room (12 avail, 200 read)   -&gt; buffered
+file_cache_keeps (Linux file tier) read less than the floor (2.5 avail, 1 read)         -&gt; buffered
+file_cache_keeps (Linux file tier) nothing available                                    -&gt; unbuffered
+file_cache_keeps (Linux file tier) arena larger than the RAM                            -&gt; unbuffered
+lock_resident: ok=0 locked=0 MiB (mlock failed (raise ulimit -l))
+platform_memory_test: FAILED
+</system-out>
+	</testcase>
+	<testcase name="pinned_shared_test" classname="pinned_shared_test" time="0.335918" status="run">
+		<properties/>
+		<system-out>pinned_shared_test: OK
+</system-out>
+	</testcase>
+	<testcase name="ple_reader_selftest" classname="ple_reader_selftest" time="7.84742" status="run">
+		<properties/>
+		<system-out>ple formats, both readers vs their dequantizers: IQ4_NL Q5_0 F8_E4M3 Q5_1 Q8_0 Q4_0 BF16: OK
+ple_reader selftest (row_bytes=90): OK
+ple_reader selftest (row_bytes=110): OK
+</system-out>
+	</testcase>
+	<testcase name="cuda_device_selftest" classname="cuda_device_selftest" time="0.462092" status="run">
+		<properties/>
+		<system-out>device 0: NVIDIA GeForce RTX 3060
+  compute capability  8.6   (sm_86)
+  multiprocessors     28
+  VRAM total / free   11.630 GiB (12487622656 B) / 11.148 GiB (11970084864 B)
+  driver / runtime    13030 / 13030
+
+memory plan  --max-context 20480
+  KV + indexer keys   0.267387 GB
+  recurrent state     0.000000 GB  (GDN recurrence + conv history, NOT evictable)
+  expert cache        5.675613 GB  (4105 slots of 1,382,400 B)
+  VRAM pool           5.943000 GB
+  expert arena (DRAM) 0.000000 GB
+  card free           11.148 GiB (11970084864 B)
+  plan + KV vs free   FITS
+
+selftest: arena 0.062 GiB (67108864 B), used 0.002 GiB (2097152 B) after two 1 MiB allocations
+selftest: over-allocation refused as required
+strata-device selftest OK
+</system-out>
+	</testcase>
+	<testcase name="arch_defaults_test" classname="arch_defaults_test" time="0.00408043" status="run">
+		<properties/>
+		<system-out>strata: gfx1151 (Strix Halo): 17 exact speed switches on by default (STRATA_GFX1151_DEFAULTS=0 turns them off; a switch you set is kept): GDN_HEAD GDN_PP GDN_CONVL2 GDN_NOY CVEC_FUSE HCD_EXACT PF_PAD Q8_PACKED Q6_PACKED MMVF_ROWS ATTN_LANECELL EXPERT_V2 LFUSE GDN_SPLIT QFUSE PLE_BATCH SH_STREAM
+arch_defaults_test: OK
+</system-out>
+	</testcase>
+	<testcase name="suffix_drafter_test" classname="suffix_drafter_test" time="0.145839" status="run">
+		<properties/>
+		<system-out>suffix_drafter unit tests: OK
+</system-out>
+	</testcase>
+	<testcase name="controller_test" classname="controller_test" time="0.00814481" status="run">
+		<properties/>
+		<system-out>prior: mtp k=3 expected 3.24 tokens, 72.8 tok/s (plain 48.8)
+after rejections: none, p0 0.42
+long lookup match, measured costs: lookup k=3 expected 3.55, 86.8 tok/s
+long lookup match, cheap wide verify: lookup k=8 expected 6.60, 328.3 tok/s
+after full acceptance: mtp k=8 (was 3), p0 1.000
+
+MTP acceptance -&gt; choice (default cost model):
+  p=0.50: none k=0, 48.8 tok/s
+  p=0.60: mtp k=1, 56.1 tok/s
+  p=0.70: mtp k=1, 58.7 tok/s
+  p=0.80: mtp k=1, 63.9 tok/s
+  p=0.86: mtp k=3, 70.8 tok/s
+  p=0.90: mtp k=3, 76.3 tok/s
+  p=0.95: mtp k=5, 84.6 tok/s
+controller tests: OK
+</system-out>
+	</testcase>
+	<testcase name="draft_policy_test" classname="draft_policy_test" time="0.0047387" status="run">
+		<properties/>
+		<system-out>draft_policy_test
+  no proposal: the MTP window                                        ok
+  rejected short-match drafts: their rate falls below 0.15           ok
+  rejected short-match drafts: no longer taken                       ok
+  accepted long-match drafts: their rate rises above 0.9             ok
+  accepted long matches: the full lookup window is taken             ok
+  buckets are separate: short matches still not taken                ok
+  never beyond the window cap                                        ok
+  a mediocre lookup does not replace a strong MTP window             ok
+  an unmeasured size is probed for a confident lookup                ok
+  after the probes, the measured cost decides                        ok
+  a stale wide size is tried again within a few hundred rounds       ok
+  chain: cheap rows, always accepted -&gt; all 3 chained                ok
+  chain: dear rows, never accepted -&gt; none                           ok
+  chain: nothing proposed / no room -&gt; none                          o...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="message_boundary_test" classname="message_boundary_test" time="0.00441444" status="run">
+		<properties/>
+		<system-out>message_boundary_test OK (21 checks)
+</system-out>
+	</testcase>
+	<testcase name="split_ring_test" classname="split_ring_test" time="0.0035432" status="run">
+		<properties/>
+		<system-out>split_ring_test OK (23 checks)
+</system-out>
+	</testcase>
+	<testcase name="conv_cache_test" classname="conv_cache_test" time="0.00392515" status="run">
+		<properties/>
+		<system-out>conv_cache_test
+  over budget with fresh stamps: the oldest leaf leaves (the FIFO it was) ok
+  the root's stale stamp never makes it the victim                   ok
+  the root - the shared prefix - is never the victim                 ok
+  after a mount, the rotation takes the next least recently used leaf ok
+  a two-slot budget keeps root + newest and drops the leaf in between ok
+  a one-slot budget has no pin: the oldest leaves, the newest point stays ok
+  ties among equally stale leaves: the earlier index, deterministically ok
+  a stale tail checkpoint leaves before the oldest leaf              ok
+  the newest item, even a tail, is not the victim                    ok
+  the root is never the victim, tail flag or not                     ok
+  no tail flags: the plain policy                                    ok
+  the oldest checkpoint is pinned: the next least recently used leaves ok
+  no pin flags: the plain policy                                     ok
+  two pins: the third oldest leaves                    ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="draft_kv_plan_test" classname="draft_kv_plan_test" time="0.00332194" status="run">
+		<properties/>
+		<system-out>draft_kv_plan_test
+  unset is off                                                             ok
+  empty is off                                                             ok
+  0 is off                                                                 ok
+  text that is not a number is off                                         ok
+  1 is on                                                                  ok
+  any other whole number is on                                             ok
+  one GPU: the batched pass is tried, nothing is reported                  ok
+  one GPU: the batched pass is tried, nothing is reported                  ok
+  one GPU: the batched pass is tried, nothing is reported                  ok
+  one GPU: the batched pass is tried, nothing is reported                  ok
+  split, variable off: the drafter's own pass, silently                    ok
+  split, variable off, no token table: still silent                        ok
+  split, variable on: the batched pass is tried on the last stage    ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="coupled_draft_test" classname="coupled_draft_test" time="0.00563731" status="run">
+		<properties/>
+		<system-out>coupled_draft_test
+  907257 checks, 0 failed
+PASS
+</system-out>
+	</testcase>
+	<testcase name="spec_prob_test" classname="spec_prob_test" time="8.33554" status="run">
+		<properties/>
+		<system-out>spec_prob_test: 2000000 trials per case, 16-token vocabulary
+chain top_k 64 top_p 1.00 min_p 0.00 temp 1.0
+  ok   q = p (accept 1.000)                                       chi2      11.0  df 15  bound   37.8
+  ok   perturbed q (accept 0.778)                                 chi2      10.7  df 15  bound   37.8
+  ok   q = point mass (argmax draft, no list) (accept 0.195)      chi2      15.3  df 15  bound   37.8
+  ok   q disjoint from p (inverted logits) (accept 0.060)         chi2       9.1  df 15  bound   37.8
+  ok   q support wider than p's (accept 0.778)                    chi2      12.0  df 15  bound   37.8
+  ok   p(argmax draft) = 0, point mass (accept 0.000)             chi2      10.2  df 14  bound   36.3
+chain top_k 1 top_p 1.00 min_p 0.00 temp 1.0
+  ok   q = p (accept 1.000)                                       chi2       0.0  df  1  bound   11.2
+  ok   perturbed q (accept 1.000)                                 chi2       0.0  df  1  bound   11.2
+  ok   q = point mass (argmax draft, no list) (accept 1....
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="bf16_bits_test" classname="bf16_bits_test" time="3.36979" status="run">
+		<properties/>
+		<system-out>  f32 -&gt; bf16 over 2^32 inputs: 0 differ from ggml, 0 non-NaN differ from the previous rule
+  NaN inputs: 16777214, not a quiet same-sign NaN now: 0 (the previous rule masked 131072 of them)
+  bf16 -&gt; f32 -&gt; bf16 over 65536 patterns: 0 wrong
+
+bf16_bits_test OK
+</system-out>
+	</testcase>
+	<testcase name="batch_rows_test" classname="batch_rows_test" time="0.00484098" status="run">
+		<properties/>
+		<system-out>batch_rows_test: ok
+</system-out>
+	</testcase>
+	<testcase name="batch_groups_test" classname="batch_groups_test" time="0.00314444" status="run">
+		<properties/>
+		<system-out>batch_groups_test
+  auto: no layer split, one group                                                ok
+  auto: two GPUs, 2 groups when the slots divide by 2                            ok
+  auto: at most one group per GPU, and a divisor of the slots                    ok
+  layer split, --batch 2, nothing given: 2 groups                                ok
+  --batch 1: no default                                                          ok
+  no layer split: one group                                                      ok
+  --batch-mtp, nothing given: the pipeline wins, --batch-mtp is dropped          ok
+  STRATA_BATCH_MTP_SERIAL: one group, because of --batch-mtp                     ok
+  the reason names the feature                                                   ok
+  --adapt-async 1, nothing given: one group                                      ok
+  both: --adapt-async 1 still gives one group                                    ok
+  both with STRATA_BATCH_MTP_SERIAL: --batch-mtp is named                        o...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="dequant_q5_1_test" classname="dequant_q5_1_test" time="0.00826643" status="run">
+		<properties/>
+		<system-out>Q5_1 dequant: 4096 blocks, max_abs 0.000e+00 PASS
+</system-out>
+	</testcase>
+	<testcase name="pool_tasks_test" classname="pool_tasks_test" time="10.2855" status="run">
+		<properties/>
+		<system-out>pool tasks: 168 bitwise comparisons passed
+</system-out>
+	</testcase>
+	<testcase name="router_dot_parity" classname="router_dot_parity" time="0.0938079" status="run">
+		<properties/>
+		<system-out>router_dot_parity: Intel(R) Xeon(R) CPU E5-2630 v2 @ 2.60GHz (avx2 0, avx 1)
+  avx   nt=1 rel 3.25e-07 vs the double reference
+  avx   nt=8 rel 3.24e-07 vs the double reference
+  avx   one layer's router, 4 tokens: 0.765 ms
+router_dot_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="router_dot_parity_avx" classname="router_dot_parity_avx" time="0.116383" status="run">
+		<properties/>
+		<system-out>router_dot_parity: Intel(R) Xeon(R) CPU E5-2630 v2 @ 2.60GHz (avx2 0, avx 1)
+  avx   nt=1 rel 3.25e-07 vs the double reference
+  avx   nt=8 rel 3.24e-07 vs the double reference
+  avx   one layer's router, 4 tokens: 0.767 ms
+router_dot_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="iq_avx2_parity" classname="iq_avx2_parity" time="0.00942443" status="run">
+		<properties/>
+		<system-out>iq_avx2_parity: Intel(R) Xeon(R) CPU E5-2630 v2 @ 2.60GHz (avx2 0, avx512 0), CPU -1, core type 00h
+  STRATA_IQ256_GATHER -, STRATA_NO_AVXVNNI -, STRATA_IQ_MT_MIN -, STRATA_IQ_PREFETCH -
+iq_avx2_parity: no AVX2 here, nothing to check (the engine takes ggml-cpu's dot)
+</system-out>
+	</testcase>
+	<testcase name="iq_avx2_parity_iq3s_mt1" classname="iq_avx2_parity_iq3s_mt1" time="0.0143714" status="run">
+		<properties/>
+		<system-out>iq_avx2_parity: Intel(R) Xeon(R) CPU E5-2630 v2 @ 2.60GHz (avx2 0, avx512 0), CPU -1, core type 00h
+  STRATA_IQ256_GATHER -, STRATA_NO_AVXVNNI -, STRATA_IQ_MT_MIN -, STRATA_IQ_PREFETCH -
+iq_avx2_parity: no AVX2 here, nothing to check (the engine takes ggml-cpu's dot)
+</system-out>
+	</testcase>
+	<testcase name="iq_avx1_parity" classname="iq_avx1_parity" time="0.348612" status="run">
+		<properties/>
+		<system-out>iq_avx1_parity: AVX1 kernels checked (128-bit lanes)
+  iq3_xxs/iq4_nl   checked (gu 18, down 20)
+  iq3_s/iq4_nl     checked (gu 21, down 20)
+  iq2_s/iq4_nl     checked (gu 22, down 20)
+  iq4_xs/iq4_nl    checked (gu 23, down 20)
+  iq3_xxs/q2_0     checked (gu 18, down 42)
+  iq3_s/q2_0       checked (gu 21, down 42)
+  iq2_s/q2_0       checked (gu 22, down 42)
+  iq4_xs/q2_0      checked (gu 23, down 42)
+iq_avx1_parity: all rows match
+</system-out>
+	</testcase>
+	<testcase name="q8k_quant_parity" classname="q8k_quant_parity" time="0.0190515" status="run">
+		<properties/>
+		<system-out>q8k_quant_parity: 16 rows x 4 sizes, AVX-2 copy skipped (no AVX2, or STRATA_FORCE_ISA), AVX1 copy checked: identical
+</system-out>
+	</testcase>
+	<testcase name="q8k_quant_parity_avx" classname="q8k_quant_parity_avx" time="0.0236609" status="run">
+		<properties/>
+		<system-out>q8k_quant_parity: 16 rows x 4 sizes, AVX-2 copy skipped (no AVX2, or STRATA_FORCE_ISA), AVX1 copy checked: identical
+</system-out>
+	</testcase>
+	<testcase name="prefill_fused_moe_test" classname="prefill_fused_moe_test" time="5.94356" status="run">
+		<properties/>
+		<system-out>reference part: 256 tokens, 64 experts, rows per expert: max 233, experts without rows 4
+  MMQ   vs FP32 reference: rel RMS 1.070e-02  worst row max rel 3.761e-02
+  fused vs FP32 reference: rel RMS 1.070e-02  worst row max rel 3.761e-02
+  fused vs MMQ           : rel RMS 2.146e-05  worst row max rel 1.614e-03
+timing part: 2048 tokens x top 10 over 512 experts (40.0 rows per expert), one layer:
+  MMQ path (gathers, q8_1, products, SwiGLU, 32 groups): 23.574 ms
+  fused path (quantize, group, 4 launches of 128):       8.326 ms  (2.83x)
+  fused path, launches of 16 experts:                    9.191 ms
+  fused vs MMQ: rel RMS 6.605e-05  worst row max rel 3.855e-03
+prefill fused MoE parity passed
+</system-out>
+	</testcase>
+	<testcase name="prefill_fused_iq_test" classname="prefill_fused_iq_test" time="160.244" status="run">
+		<properties/>
+		<system-out>IQ2_S / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 236, experts without rows 4
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 5.431e-05  worst 1.327e-03
+  MMQ   vs FP32 reference: rel RMS 1.493e-02  worst row max rel 2.797e-02
+  fused vs FP32 reference: rel RMS 1.493e-02  worst row max rel 2.797e-02
+  fused vs MMQ           : rel RMS 2.988e-04  worst row max rel 3.662e-03
+IQ2_XXS / Q2_0 - reference part: 256 tokens, 64 experts, rows per expert: max 234, experts without rows 4
+  fused vs the int8-rounded model (same activation / H rounding, double sums): rel RMS 1.661e-04  worst 2.736e-03
+  MMQ   vs FP32 reference: rel RMS 1.452e-02  worst row max rel 2.782e-02
+  fused vs FP32 reference: rel RMS 1.452e-02  worst row max rel 2.782e-02
+  fused vs MMQ           : rel RMS 4.445e-05  worst row max rel 1.219e-03
+IQ2_XS / IQ4_NL - reference part: 256 tokens, 64 experts, rows per expert: max 235, experts without rows 4
+  fused vs the int8-rounded model (...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="prefill_mmq_kquant_test" classname="prefill_mmq_kquant_test" time="14.3186" status="run">
+		<properties/>
+		<system-out>strata: K-quant prompt kernels from <WORKDIR>/experiments/06_test/build-tests/libstrata_kq.so (STRATA_MMQ_KQ=1)
+Q4_K gate/up-0         rows  7 experts 3  ref_rms 1.553  rel_l2 0.00300  max/rms 0.0101  zero row 0
+Q5_K gate/up-0         rows  7 experts 3  ref_rms 1.565  rel_l2 0.00269  max/rms 0.0097  zero row 0
+Q6_K gate/up-0         rows  7 experts 3  ref_rms 1.628  rel_l2 0.00112  max/rms 0.0038  zero row 0
+Q5_1 down-0            rows  7 experts 3  ref_rms 1.774  rel_l2 0.00080  max/rms 0.0028  zero row 0
+Q8_0 down-0            rows  7 experts 3  ref_rms 1.835  rel_l2 0.00053  max/rms 0.0018  zero row 0
+Q4_K gate/up-1         rows  7 experts 3  ref_rms 1.556  rel_l2 0.00272  max/rms 0.0093  zero row 0
+Q5_K gate/up-1         rows  7 experts 3  ref_rms 1.568  rel_l2 0.00317  max/rms 0.0111  zero row 0
+Q6_K gate/up-1         rows  7 experts 3  ref_rms 1.635  rel_l2 0.00127  max/rms 0.0043  zero row 0
+Q5_1 down-1            rows  7 experts 3  ref_rms 1.792  rel_l2 0.00149  max/rms 0.0034  zero row ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="nvfp4_cpu_parity" classname="nvfp4_cpu_parity" time="0.459197" status="run">
+		<properties/>
+		<system-out>
+tokens    ggml ms  avx512 ms  speedup    avx2 ms  speedup   (one expert's gate+up, 1280 rows; best of 20)
+1           0.667      0.000    0.00x      0.000    0.00x
+2           1.140      0.000    0.00x      0.000    0.00x
+3           1.684      0.000    0.00x      0.000    0.00x
+4           2.313      0.000    0.00x      0.000    0.00x
+5           2.825      0.000    0.00x      0.000    0.00x
+6           3.469      0.000    0.00x      0.000    0.00x
+7           4.065      0.000    0.00x      0.000    0.00x
+8           4.645      0.000    0.00x      0.000    0.00x
+
+RESULT: parity OK
+</system-out>
+	</testcase>
+	<testcase name="native_expert_parity_q4_K_q5_1" classname="native_expert_parity_q4_K_q5_1" time="1.20507" status="run">
+		<properties/>
+		<system-out>          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic q4_K    /q5_1    blob  3072000  cpu rel 1.33e-02  gpu rel 1.24e-02  cpu-gpu 1.54e-02  ok
+native_expert_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="native_expert_parity_q4_K_q8_0" classname="native_expert_parity_q4_K_q8_0" time="1.24433" status="run">
+		<properties/>
+		<system-out>          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic q4_K    /q8_0    blob  3584000  cpu rel 1.32e-02  gpu rel 1.25e-02  cpu-gpu 1.53e-02  ok
+native_expert_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="native_expert_parity_q5_K_q8_0" classname="native_expert_parity_q5_K_q8_0" time="1.07552" status="run">
+		<properties/>
+		<system-out>          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic q5_K    /q8_0    blob  3993600  cpu rel 1.32e-02  gpu rel 1.20e-02  cpu-gpu 1.42e-02  ok
+native_expert_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="native_expert_parity_q8_0_q8_0" classname="native_expert_parity_q8_0_q8_0" time="0.812735" status="run">
+		<properties/>
+		<system-out>          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic q8_0    /q8_0    blob  5222400  cpu rel 1.27e-02  gpu rel 1.27e-02  cpu-gpu 1.00e-07  ok
+native_expert_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="native_expert_parity_q4_K_q5_0" classname="native_expert_parity_q4_K_q5_0" time="1.18037" status="run">
+		<properties/>
+		<system-out>          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic q4_K    /q5_0    blob  2969600  cpu rel 1.32e-02  gpu rel 2.73e-02  cpu-gpu 2.91e-02  ok
+native_expert_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="native_expert_parity_q5_0_q8_0" classname="native_expert_parity_q5_0_q8_0" time="0.654236" status="run">
+		<properties/>
+		<system-out>          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic q5_0    /q8_0    blob  3993600  cpu rel 1.25e-02  gpu rel 2.13e-02  cpu-gpu 2.14e-02  ok
+native_expert_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="native_expert_parity_q4_0_q4_0" classname="native_expert_parity_q4_0_q4_0" time="0.814147" status="run">
+		<properties/>
+		<system-out>          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic q4_0    /q4_0    blob  2764800  cpu rel 1.29e-02  gpu rel 1.29e-02  cpu-gpu 9.56e-08  ok
+native_expert_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="native_expert_parity_q4_0_q4_1" classname="native_expert_parity_q4_0_q4_1" time="0.654038" status="run">
+		<properties/>
+		<system-out>          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic q4_0    /q4_1    blob  2867200  cpu rel 1.29e-02  gpu rel 1.29e-02  cpu-gpu 3.20e-04  ok
+native_expert_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="native_expert_parity_q6_K_q8_0" classname="native_expert_parity_q6_K_q8_0" time="0.855956" status="run">
+		<properties/>
+		<system-out>          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic q6_K    /q8_0    blob  4428800  cpu rel 1.38e-02  gpu rel 1.27e-02  cpu-gpu 1.56e-02  ok
+native_expert_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="native_expert_parity_q5_1_min" classname="native_expert_parity_q5_1_min" time="0.336872" status="run">
+		<properties/>
+		<system-out>q5_1 min   row 0: GPU -0.771733, ggml-cpu (quantized sum) -0.771744, (stored sum) -0.759814
+q5_1 min   GPU vs ggml-cpu with s = d*sum(q): rel 7.48e-05; vs s = sum(x) (llama.cpp CUDA's): rel 1.94e-02 (largest per-block sum shift 0.0138)  ok
+native_expert_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="native_expert_parity_bf16_embd" classname="native_expert_parity_bf16_embd" time="0.347955" status="run">
+		<properties/>
+		<system-out>bf16 embedding: 97 gathered rows, 0 differ; dequant of 156160 values, 0 differ in any bit
+native_expert_parity: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="pool_affinity_test" classname="pool_affinity_test" time="0.00863795" status="run">
+		<properties/>
+		<system-out>strata cpu pool: host affinity for CPU 2147483647 failed: 22; previous affinity kept
+SKIP high-CPU affinity path: no allowed CPU ID is &gt;= 64 (use --require-high-cpu to require it)
+Linux affinity test: full, sparse/nested, worker helper, invalid-target, failed-pin, and cleanup checks passed (24 allowed CPUs)
+</system-out>
+	</testcase>
+	<testcase name="expert_multi_test" classname="expert_multi_test" time="0.00543765" status="notrun">
+		<skipped message="SKIP_RETURN_CODE=77"/>
+		<properties/>
+		<system-out>expert_multi_test: CPU lacks missing AVX512F AVX512BW AVX512VL AVX512-VNNI AVX512-VBMI: SKIPPED
+</system-out>
+	</testcase>
+	<testcase name="q2_bitplane_parity" classname="q2_bitplane_parity" time="0.00794087" status="run">
+		<properties/>
+		<system-out>PASS
+</system-out>
+	</testcase>
+	<testcase name="expert_parity" classname="expert_parity" time="0.00545385" status="run">
+		<properties/>
+		<system-out>  AVX512 F/BW/VL/VNNI/VBMI                     missing AVX512F AVX512BW AVX512VL AVX512-VNNI AVX512-VBMI
+      the VNNI path cannot run here; only the scalar oracle can be exercised.
+      P2.S3's kernel check is SKIPPED, not passed.
+
+expert_parity: 0 failures, 1 SKIPPED
+</system-out>
+	</testcase>
+	<testcase name="pool_test" classname="pool_test" time="0.005463" status="run">
+		<properties/>
+		<system-out>  CPU lacks missing AVX512F AVX512BW AVX512VL AVX512-VNNI AVX512-VBMI - the VNNI path cannot run here; pool test SKIPPED, not passed.
+
+pool: 0 failures, 1 SKIPPED
+</system-out>
+	</testcase>
+	<testcase name="pool_stress" classname="pool_stress" time="0.0054109" status="run">
+		<properties/>
+		<system-out>CPU lacks missing AVX512F AVX512BW AVX512VL AVX512-VNNI AVX512-VBMI: pool_stress SKIPPED
+</system-out>
+	</testcase>
+	<testcase name="isa_guard_check" classname="isa_guard_check" time="2.22687" status="run">
+		<properties/>
+		<system-out>check_isa_guard: <WORKDIR>/experiments/06_test/build-tests/libstrata_kernels_cpu.a: 404 functions, 69 hold wide-ISA instructions, 0 not allowed
+</system-out>
+	</testcase>
+	<testcase name="direct_file_async_test" classname="direct_file_async_test" time="0.0069284" status="run">
+		<properties/>
+		<system-out>direct_file_async: passed queued reads, short EOF, wake, close drain, reopen
+</system-out>
+	</testcase>
+	<testcase name="aux_cpus_test" classname="aux_cpus_test" time="0.017404" status="run">
+		<properties/>
+		<system-out>strata aux cpus: threads that are neither pool workers nor the host go to CPUs 2,3 (on; 0 threads placed so far)
+aux_cpus_test: ok
+</system-out>
+	</testcase>
+</testsuite>

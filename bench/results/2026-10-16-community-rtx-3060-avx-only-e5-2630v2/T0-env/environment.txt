@@ -1,0 +1,230 @@
+## date
+2026-10-16T13:12:54+09:00
+## uname
+Linux fedora 7.2.5-200.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Sep 11 15:11:05 UTC 2026 x86_64 GNU/Linux
+## os-release
+NAME="Fedora Linux"
+VERSION="44 (Workstation Edition)"
+RELEASE_TYPE=stable
+ID=fedora
+VERSION_ID=44
+VERSION_CODENAME=""
+PRETTY_NAME="Fedora Linux 44 (Workstation Edition)"
+ANSI_COLOR="0;38;2;60;110;180"
+LOGO=fedora-logo-icon
+CPE_NAME="cpe:/o:fedoraproject:fedora:44"
+DEFAULT_HOSTNAME="fedora"
+HOME_URL="https://fedoraproject.org/"
+DOCUMENTATION_URL="https://docs.fedoraproject.org/en-US/fedora/f44/"
+SUPPORT_URL="https://ask.fedoraproject.org/"
+BUG_REPORT_URL="https://bugzilla.redhat.com/"
+REDHAT_BUGZILLA_PRODUCT="Fedora"
+REDHAT_BUGZILLA_PRODUCT_VERSION=44
+REDHAT_SUPPORT_PRODUCT="Fedora"
+REDHAT_SUPPORT_PRODUCT_VERSION=44
+SUPPORT_END=2027-05-19
+VARIANT="Workstation Edition"
+VARIANT_ID=workstation
+## lscpu
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           46 bits physical, 48 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  24
+On-line CPU(s) list:                     0-23
+Vendor ID:                               GenuineIntel
+Model name:                              Intel(R) Xeon(R) CPU E5-2630 v2 @ 2.60GHz
+CPU family:                              6
+Model:                                   62
+Thread(s) per core:                      2
+Core(s) per socket:                      6
+Socket(s):                               2
+Stepping:                                4
+CPU(s) scaling MHz:                      66%
+CPU max MHz:                             2600.0000
+CPU min MHz:                             1200.0000
+BogoMIPS:                                5199.82
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 cx16 xtpr pdcm pcid dca sse4_1 sse4_2 x2apic popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm cpuid_fault epb pti ssbd ibrs ibpb stibp tpr_shadow flexpriority ept vpid fsgsbase smep erms xsaveopt dtherm arat pln pts vnmi md_clear flush_l1d
+Virtualization:                          VT-x
+L1d cache:                               384 KiB (12 instances)
+L1i cache:                               384 KiB (12 instances)
+L2 cache:                                3 MiB (12 instances)
+L3 cache:                                30 MiB (2 instances)
+NUMA node(s):                            2
+NUMA node0 CPU(s):                       0-5,12-17
+NUMA node1 CPU(s):                       6-11,18-23
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             KVM: Mitigation: Split huge pages
+Vulnerability L1tf:                      Mitigation; PTE Inversion; VMX conditional cache flushes, SMT vulnerable
+Vulnerability Mds:                       Mitigation; Clear CPU buffers; SMT vulnerable
+Vulnerability Meltdown:                  Mitigation; PTI
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Not affected
+Vulnerability Spec rstack overflow:      Not affected
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; Retpolines; IBPB conditional; IBRS_FW; STIBP conditional; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Mitigation; IBPB before exit to userspace
+## cpu flags (avx*, fma, f16c)
+avx f16c 
+## numa nodes
+node0: cpus 0-5,12-17
+Node 0 MemTotal:       131962880 kB
+Node 0 MemFree:        127943400 kB
+node1: cpus 6-11,18-23
+Node 1 MemTotal:       132112848 kB
+Node 1 MemFree:        127983940 kB
+## free -b
+               total        used        free      shared  buff/cache   available
+Mem:     270413545472  5036101632 262070050816    53526528  5095350272 265377443840
+Swap:     8589930496           0  8589930496
+## loadavg
+0.88 0.83 0.40 3/1275 12371
+## top processes by CPU
+    PID %CPU %MEM   RSS COMMAND
+  12364  300  0.0  1824 sh
+   7912 20.9  0.0 201360 gjs
+   4799 14.0  0.1 379588 gnome-shell
+   4195 11.1  0.0     0 kworker/u97:11+events_unbound
+   5207  8.7  0.0 35756 localsearch-3
+   5210  7.7  0.1 283232 gnome-software
+    388  6.5  0.0     0 kworker/u98:2-btrfs-endio
+    781  5.3  0.0     0 kworker/u98:11-btrfs-endio
+    778  5.1  0.0     0 kworker/u98:10-btrfs-endio
+    164  4.6  0.0     0 kworker/u98:1-btrfs-endio
+    171  3.7  0.0     0 kworker/u97:1-btrfs-endio-meta
+    172  3.3  0.0     0 kworker/u97:2-btrfs-endio-write
+   9870  3.2  0.0 206700 gnome-text-edit
+  11503  2.4  0.0 173872 ptyxis
+## nvidia-smi
+Fri Oct 16 13:12:54 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 610.57.04              KMD Version: 610.57.04     CUDA UMD Version: 13.3     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 3060        Off |   00000000:81:00.0 Off |                  N/A |
+|  0%   35C    P8             11W /  170W |     504MiB /  12288MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A            4761    C+G   ...c/gnome-remote-desktop-daemon        106MiB |
+|    0   N/A  N/A            4799      G   /usr/bin/gnome-shell                    203MiB |
+|    0   N/A  N/A            5203      G   /usr/bin/Xwayland                         2MiB |
+|    0   N/A  N/A            7912      G   /usr/bin/gjs                             37MiB |
+|    0   N/A  N/A            9870    C+G   /usr/bin/gnome-text-editor               23MiB |
+|    0   N/A  N/A           11503    C+G   /usr/bin/ptyxis                          20MiB |
++-----------------------------------------------------------------------------------------+
+## nvidia-smi query
+name, uuid, memory.total [MiB], memory.used [MiB], driver_version, vbios_version, pcie.link.gen.max, pcie.link.gen.current, pcie.link.width.max, pcie.link.width.current, power.limit [W], power.default_limit [W], power.max_limit [W], temperature.gpu, clocks.max.graphics [MHz], clocks.max.memory [MHz]
+NVIDIA GeForce RTX 3060, GPU-<redacted>, 12288 MiB, 504 MiB, 610.57.04, 94.06.25.00.7E, 2, 1, 16, 4, 170.00 W, 170.00 W, 170.00 W, 36, 2100 MHz, 7501 MHz
+## gpu compute apps
+pid, process_name, used_gpu_memory [MiB]
+4761, /usr/libexec/gnome-remote-desktop-daemon, 106 MiB
+9870, /usr/bin/gnome-text-editor, 23 MiB
+11503, /usr/bin/ptyxis, 20 MiB
+## PCIe (sysfs) GPU and its root port
+0000:81:00.0: max 16.0 GT/s PCIe x16, current 2.5 GT/s PCIe x4, numa_node 1
+0000:80:00.0: max 5.0 GT/s PCIe x4, current 2.5 GT/s PCIe x4, numa_node 1
+## PCIe errors this boot (should be 0)
+PCIe Bus Error lines: 0
+## NVMe link (SSDs)
+nvme0 KBG40ZNV256G TOSHIBA MEMORY 0000:06:00.0: current 8.0 GT/s PCIe x4
+nvme1 SOLIDIGM SSDPFKNU512GZ 0000:07:00.0: current 8.0 GT/s PCIe x4
+## network (should be cut)
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+eno1             UP             
+eno2             DOWN           
+docker0          DOWN           172.17.0.1/16 
+br-8d9ad9e26b18  UP             172.18.0.1/16 fe80::<redacted>/64 
+vethb1a9cc2@if2  UP             fe80::<redacted>/64 
+172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1 linkdown 
+172.18.0.0/16 dev br-8d9ad9e26b18 proto kernel scope link src 172.18.0.1 
+## disk
+ファイルシス   サイズ  使用  残り 使用% マウント位置
+/dev/nvme1n1     469G  421G   25G   95% /mnt/ssd
+## compilers
+gcc-14 (GCC) 14.4.1 20260724 (Red Hat 14.4.1-2)
+g++-14 (GCC) 14.4.1 20260724 (Red Hat 14.4.1-2)
+## nvcc
+Cuda compilation tools, release 13.3, V13.3.73
+Build cuda_13.3.r13.3/compiler.38244171_0
+## python
+Python 3.14.7
+Python 3.12.14
+## strata source
+296b59d2f73c8f04a805df29c2fa97655adace78 2026-10-14 01:51:12 +0200
+## engine BUILD.json
+{
+ "source": "local",
+ "version": "0.1.44.1",
+ "archs": [
+  86
+ ],
+ "vision": "none",
+ "cuda_dirs": [
+  "<WORKDIR>/toolchain/.venv/lib/python3.12/site-packages/nvidia/cu13/bin",
+  "<WORKDIR>/toolchain/.venv/lib/python3.12/site-packages/nvidia/cu13/lib64"
+ ],
+ "src": "7dfd34378bd2d32a",
+ "vision_src": null,
+ "isa_floor": "avx"
+}
+## engine sha256
+dac80a59094d9433bedaa220823f39aa3fdae7d375d12661c915b80b2e761e7c  <WORKDIR>/experiments/03_run/Strata/engine/strata
+87152b596a76bca4bb4576c36d76031db90663db6a6e0f8cc7ae19142ac78f71  <WORKDIR>/experiments/03_run/Strata/engine/libstrata_kq.so
+## test-suite build
+-rwxr-xr-x. 1 user user 66236760 10月 16 08:19 <WORKDIR>/experiments/06_test/build-tests/strata
+## base config (<WORKDIR>/experiments/04_bench/cfg-ctx40k-auto.json)
+{
+ "exe": "<WORKDIR>/experiments/03_run/Strata/engine/strata",
+ "args": [
+  "--pack",
+  "<WORKDIR>/experiments/03_run/Strata-data/packs/iq2_xs",
+  "--native",
+  "<WORKDIR>/models/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+  "--ple-gguf",
+  "<WORKDIR>/models/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+  "--expert-profile",
+  "<WORKDIR>/experiments/03_run/Strata/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "<WORKDIR>/experiments/03_run/Strata-data/mtp/rt",
+  "--max-context",
+  "40960",
+  "--kv",
+  "int8"
+ ],
+ "cwd": "<WORKDIR>/experiments/03_run/Strata",
+ "tokenizer": "<WORKDIR>/experiments/03_run/Strata-data/packs/iq2_xs/tokenizer",
+ "model_name": "qwen3.8-flash-next-iq2_xs",
+ "log": "<WORKDIR>/experiments/03_run/Strata/strata-ctx40k-auto.log",
+ "lib_dirs": [
+  "<WORKDIR>/toolchain/.venv/lib/python3.12/site-packages/nvidia/cu13/bin",
+  "<WORKDIR>/toolchain/.venv/lib/python3.12/site-packages/nvidia/cu13/lib64"
+ ],
+ "port": 8080,
+ "gpu": 0,
+ "gpus_asked": true
+}
