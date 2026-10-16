@@ -4,6 +4,7 @@
 //
 //     build/native_grouped_parity           the checks (a ctest; needs the GPU)
 //     build/native_grouped_parity --bench   the checks, then v1/new timings of 48 calls in a graph (a window's layers)
+//     build/native_grouped_parity --iq      SYCL port: the STRATA_IQ_DECODE_FAST expert kernels against the current ones, bitwise
 //
 // Every gate/up format with every down format; calls of 0..cap groups of 1..T entries each (an empty call is what the
 // verify window's PCIe call usually is), entries from 0 and from past 0 (the PCIe call's follow the VRAM call's),
@@ -31,6 +32,8 @@ namespace strata::kernels {
 // SYCL port only (iq_kernels.dp.cpp): the K-quant / Q5_1 / Q8_0 lane kernels with (true, the default) or without the
 // multi-entry split; STRATA_KQ_SPLIT=0 at startup is false
 void native_expert_set_kq_split(bool on);
+// SYCL port only: the STRATA_IQ_DECODE_FAST expert kernels on (1) or off (0) whatever the environment says, -1 the environment's
+void native_expert_set_iq_decode_fast(int on);
 }
 namespace k = strata::kernels;
 
@@ -470,6 +473,38 @@ void check_kq(int gu, int dt, int64_t H, int64_t FF, dpct::queue_ptr s, std::mt1
     g_fail += bad;
 }
 
+// ------------------------------------------------------------------------------------------------ --iq
+// SYCL port: the STRATA_IQ_DECODE_FAST expert kernels (native_expert_set_iq_decode_fast) against the current ones,
+// bitwise: every IQ gate/up format with both IQ down formats, groups of 1..6 entries (the chunks of 4 and 2 and the
+// single tail), entries from 0 and from past 0, scattered destinations, stale scratch; the rows the call must not
+// write included (both start from the same NaN pattern).  The fast kernels take 8 lanes a row (the default split).
+void check_iq(int gu, int dt, int64_t H, int64_t FF, dpct::queue_ptr s, std::mt19937& rng) {
+    Setup S(gu, dt, H, FF, 6, 4, 9, rng, s);   // 6 tokens x 4 experts: cap 24 entries
+    int calls = 0, bad = 0;
+    size_t written = 0;
+    for (const int base : {0, 7})
+        for (const int groups : {1, 2, 3, 5, 8, 24}) {
+            const int ng = S.plan(groups, base, rng);
+            k::native_expert_set_iq_decode_fast(0);
+            const auto a = S.result(false, 0, 0x00, s);
+            k::native_expert_set_iq_decode_fast(1);
+            const auto b = S.result(false, 0, 0x7F, s);
+            k::native_expert_set_iq_decode_fast(-1);
+            ++calls;
+            size_t diff = 0;
+            for (size_t i = 0; i < a.size(); ++i) { diff += a[i] != b[i]; written += a[i] != 0xFFFFFFFFu; }
+            if (diff) {
+                std::printf("  %-8s/%-7s base %d, %d groups: fast vs current: %zu of %zu floats differ  FAIL\n", name_of(gu),
+                            name_of(dt), base, ng, diff, a.size());
+                ++bad;
+            }
+        }
+    std::printf("%-8s/%-7s %5lld x %4lld  %d calls: %s (%zu output floats written in all)\n", name_of(gu), name_of(dt),
+                (long long) H, (long long) FF, calls, bad ? "FAIL" : "fast decode bitwise equal to the current kernels", written);
+    if (written == 0) { std::printf("  nothing was written: the check checked nothing  FAIL\n"); ++bad; }
+    g_fail += bad;
+}
+
 // ------------------------------------------------------------------------------------------------ --bench
 // A window's 48 calls, one per layer, each with ITS OWN experts as the layers have: copies of the Setup's blobs in one
 // arena, so the weights stream from DRAM as in the engine.  (48 calls re-reading the same 28 experts - 73 MB, about an
@@ -687,6 +722,19 @@ int main(int argc, char** argv) {
         kq_bench(s, rng, argc > 2 ? std::atoi(argv[2]) : 16, argc > 3 && std::string(argv[3]) == "host");
         dpct::get_current_device().destroy_queue(s);
         return 0;
+    }
+    if (argc > 1 && std::string(argv[1]) == "--iq") {   // the STRATA_IQ_DECODE_FAST kernels against the current ones
+        if (std::getenv("STRATA_GU_LANES") || std::getenv("STRATA_DOWN_LANES")) {
+            std::fprintf(stderr, "--iq: unset STRATA_GU_LANES / STRATA_DOWN_LANES (the fast decodes take 8 lanes a row)\n");
+            return 2;
+        }
+        for (int gu : {16, 17, 18, 21, 22})
+            for (int dt : {20, 42}) check_iq(gu, dt, 512, 256, s, rng);
+        const int pairs[][2] = {{16, 42}, {17, 20}, {18, 20}, {21, 42}, {22, 42}};   // Flash-Next's expert pairs
+        for (const auto& pr : pairs) check_iq(pr[0], pr[1], 2560, 640, s, rng);     // at the model's shapes
+        std::printf("native_grouped_parity --iq: %d failures\n", g_fail);
+        dpct::get_current_device().destroy_queue(s);
+        return g_fail ? 1 : 0;
     }
     if (argc > 1 && std::string(argv[1]) == "--kq") {   // the K-quant split and the CPU reference only
         const int pairs[][2] = {{12, 7}, {12, 8}, {13, 8}, {14, 8}, {8, 8}, {13, 7}};
