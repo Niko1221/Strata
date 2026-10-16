@@ -1,4 +1,4 @@
-# Community benchmark on 4x AMD Radeon (gfx1201, Device 0x7551)
+# Community benchmark on 4x AMD Radeon 9700 AI Pro (gfx1201, Device 0x7551)
 
 Measured on 2026-10-16 with `tools/strata_bench.py` (suite 1, 3 runs per test, medians with ranges). Speeds are the engine's own timings; first-token times are measured by the client over HTTP. Speed only: no correctness check was run.
 
