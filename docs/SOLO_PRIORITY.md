@@ -101,8 +101,13 @@ see the results and remaining validation limits below.
 
 ## Deployment and upgrades
 
-The measured Windows comparison and reproducible synthetic workload are in
-[the RTX 3090 report](../bench/results/2026-10-16-solo-priority-rtx3090/README.md).
+The primary Windows comparison uses Strata's default, non-abliterated Qwen model
+family in ISTA-DASLab IQ3_S quantization; see the
+[original-model report](../bench/results/2026-10-16-solo-priority-qwen-original/README.md).
+[SC117 deployment results](../bench/results/2026-10-16-solo-priority-rtx3090/README.md)
+are supplementary and are not pooled with those measurements. Model provenance,
+quantization, runtime revision and matched settings must accompany contribution
+benchmarks. Repeat the original-model comparison after relevant runtime changes.
 Start with a controlled opt-in deployment: watch failed streams, short TTFT,
 `resume_prefix_missed`, memory and throughput under the actual client workload.
 A successful short benchmark is not an overnight reliability test.
