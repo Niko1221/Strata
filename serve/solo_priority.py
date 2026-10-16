@@ -176,10 +176,13 @@ class SoloScheduler:
 
                 def pause():
                     nonlocal requested
-                    # A resumed read must reach decoding before another pause. A cancelled
-                    # cold chunk (or an evicted snapshot) can require rereading; repeatedly
-                    # stopping that same chunk would give it time slices but no progress.
-                    if (eligible and (not segments or leg_generated) and
+                    # The native engine cannot park a cancelled prefill. It also consumes
+                    # a restored checkpoint, so stopping its unfinished suffix would lose
+                    # the whole restored prefix. Let a cache hit (and every continuation)
+                    # reach decoding before yielding. A wholly cold first read may yield
+                    # once, accepting the documented cost of rereading its partial chunk.
+                    can_yield = leg_generated or (not segments and not engine.reused)
+                    if (eligible and can_yield and
                             max_new - len(output) > 32 and self.should_pause()):
                         requested = True
                     return requested
