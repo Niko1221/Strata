@@ -57,15 +57,14 @@ std::vector<std::string> split(const std::string& s) {
 void make_blob(const cpu::NativeFmt& f, uint8_t* blob, std::mt19937& rng) {
     std::normal_distribution<float> nd(0.f, 0.02f);
     std::vector<float> row((size_t) std::max(kH, kFF));
-    const auto* tg = ggml_get_type_traits_cpu((ggml_type) f.gu_type);
-    const auto* td = ggml_get_type_traits_cpu((ggml_type) f.d_type);
+    // ggml_quantize_chunk, not the CPU traits' from_float: that is null for the i-quants (IQ2_S, IQ3_XXS, ...)
     for (int64_t r = 0; r < 2 * kFF; ++r) {
         for (int64_t i = 0; i < kH; ++i) row[(size_t) i] = nd(rng);
-        tg->from_float(row.data(), blob + (size_t) r * f.gu_row, kH);
+        ggml_quantize_chunk((ggml_type) f.gu_type, row.data(), blob + (size_t) r * f.gu_row, 0, 1, kH, nullptr);
     }
     for (int64_t r = 0; r < kH; ++r) {
         for (int64_t i = 0; i < kFF; ++i) row[(size_t) i] = nd(rng);
-        td->from_float(row.data(), blob + f.down_off + (size_t) r * f.d_row, kFF);
+        ggml_quantize_chunk((ggml_type) f.d_type, row.data(), blob + f.down_off + (size_t) r * f.d_row, 0, 1, kFF, nullptr);
     }
 }
 
@@ -133,6 +132,11 @@ int main(int argc, char** argv) {
             hq[t] = ha[t].data();
         }
         std::printf("\n%s: %zu experts of %.3f MB (%.0f MB)\n", pair.c_str(), E, f.bytes / 1e6, E * (double) f.bytes / 1e6);
+        // KQ_PHASE=gu / down: only that half of each expert, GB/s over its own bytes (gate+up rows / down rows)
+        const char* ph = std::getenv("KQ_PHASE");
+        const int phase = ph == nullptr ? 0 : std::strcmp(ph, "gu") == 0 ? 1 : std::strcmp(ph, "down") == 0 ? 2 : 0;
+        const double pbytes = phase == 1 ? (double) f.down_off : phase == 2 ? (double) (f.bytes - f.down_off) : (double) f.bytes;
+        if (phase) std::printf("  KQ_PHASE=%s: %.3f MB of each expert\n", ph, pbytes / 1e6);
         for (int nt : nts) {
             for (int T : threads) {
                 if (T < 1) continue;
@@ -149,8 +153,8 @@ int main(int argc, char** argv) {
                             const size_t e = next.fetch_add(1);
                             if (e >= E) break;
                             const uint8_t* blob = blobs + e * f.bytes;
-                            cpu::native_gu_rows(f, blob, act, nt, ff, 0, (int) kFF);
-                            cpu::native_down_rows(f, blob, hq, nt, out, 0, (int) kH);
+                            if (phase != 2) cpu::native_gu_rows(f, blob, act, nt, ff, 0, (int) kFF);
+                            if (phase != 1) cpu::native_down_rows(f, blob, hq, nt, out, 0, (int) kH);
                         }
                         volatile float sink = outb[0] + ffb[0];
                         (void) sink;
@@ -160,12 +164,12 @@ int main(int argc, char** argv) {
                     for (int k = 0; k < T; ++k) th.emplace_back(work);
                     for (auto& x : th) x.join();
                     const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-                    gbs.push_back(E * (double) f.bytes / s / 1e9);
+                    gbs.push_back(E * pbytes / s / 1e9);
                 }
                 std::sort(gbs.begin(), gbs.end());
                 const double med = gbs[gbs.size() / 2];
                 std::printf("  nt %d threads %2d: %6.1f GB/s of weights (%.3f ms per expert per thread)%s\n", nt, T, med,
-                            f.bytes / (med * 1e9 / T) * 1e3,
+                            pbytes / (med * 1e9 / T) * 1e3,
                             ram > 0 ? (" = " + std::to_string((int) std::lround(100 * med / ram)) + "% of RAM").c_str() : "");
             }
         }
