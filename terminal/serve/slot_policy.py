@@ -154,6 +154,21 @@ def siblings(tokens: list[int], held: list[list[int]], slots) -> dict[int, int]:
     return out
 
 
+def checkpoint_hint(prompt: list[int], held: list[list[int]], slots, checks) -> tuple[int | None, int]:
+    """The deepest checkpoint a slot reported (engine BCHECKS, `checks[b]`: lengths) that is still a start of `prompt`:
+    (slot, tokens), (None, 0) for none.  A hint: the engine checks the tokens again, and it may also continue from
+    the main session's own checkpoints, which are not reported."""
+    src, best = None, 0
+    for b in slots if checks else ():
+        at = [p for p in (checks[b] if b < len(checks) else ()) if best < p < len(prompt) and p <= len(held[b])]
+        if at:
+            c = common_prefix(prompt, held[b])
+            p = max((p for p in at if p <= c), default=0)
+            if p > best:
+                src, best = b, p
+    return src, best
+
+
 def _blank(held, busy, used, now, reliable):
     superseded = superseded_slots(held, busy, reliable)
     states = [cache_state(len(h), used[b], now, reliable[b] and b not in superseded) for b, h in enumerate(held)]
@@ -218,7 +233,7 @@ def park_destination(main: list[int], busy: list[bool], held: list[list[int]], u
 
 def place(prompt: list[int], busy: list[bool], held: list[list[int]], used: list[float],
           order: list[int], group_size: int, now: float, valid: list[bool] | None = None,
-          prefill_rate: float | None = None, padding_safe: bool = False) -> Placement:
+          prefill_rate: float | None = None, padding_safe: bool = False, checks=None) -> Placement:
     free = [b for b in order if not busy[b]]
     if not free:
         return Placement(None)
@@ -269,9 +284,11 @@ def place(prompt: list[int], busy: list[bool], held: list[list[int]], used: list
     # or not: kept beside it, each version of a classifier query took a slot of its own and pushed other conversations
     # out (2026-10-16: 4-5 of 6 slots).  The longest shared part first, then group load.
     older = siblings(prompt, held, [b for b in free if reliable[b] and collateral(b) == 0])
+    # no slot continues the prompt: what the engine can still resume from is a slot's checkpoint (hint only)
+    ck_source, ck_tokens = checkpoint_hint(prompt, held, [b for b in free if reliable[b]], checks)
     if older:
         slot = min(older, key=lambda b: (-older[b], *pipeline(b)[:2], positions[b]))
-        return Placement(slot, reason="sibling")
+        return Placement(slot, ck_source, ck_tokens, reason="sibling")
 
     safe = [b for b in free if states[b]["expired"] and collateral(b) == 0]
 
@@ -282,10 +299,11 @@ def place(prompt: list[int], busy: list[bool], held: list[list[int]], used: list
         # still scores EXPIRED_KEEP_SCORE goes only when no blank or worthless slot is free (else a new chat in the
         # idle group overwrote the other chat every turn - GPU run 2026-10-15).  Then group load; then the lowest score.
         slot = reclaim_slot(safe, values, blank, lambda b: pipeline(b)[:2], positions)
-        return Placement(slot, reason="reclaim")
+        return Placement(slot, ck_source, ck_tokens, reason="reclaim")
     # Every idle history is protected: no wait (it cost a free slot 5 s per request when requests were queued, and
     # ended in the same overwrite) - the history that loses least goes now.
     cheapest = min(loss(b) for b in free)
     # Loss scores within 10% are close enough to let group load/padding break the tie.
     candidates = [b for b in free if loss(b) <= cheapest * 1.10 + 1e-12]
-    return Placement(min(candidates, key=lambda b: (*pipeline(b), loss(b), used[b])), reason="evict")
+    return Placement(min(candidates, key=lambda b: (*pipeline(b), loss(b), used[b])), ck_source, ck_tokens,
+                     reason="evict")
