@@ -20,6 +20,7 @@
 #include <vector>
 
 using strata::program::conv_cache::eviction_victim;
+using strata::program::conv_cache::restore_has_headroom;
 
 namespace {
 int g_fail = 0;
@@ -86,6 +87,14 @@ int main() {
         const std::vector<uint64_t> s4 = {1, 9, 3, 5};
         check(eviction_victim(s4.data(), s4.size(), 4, nullptr, all) == 2, "everything pinned: the oldest pin leaves, never the root");
         check(eviction_victim(s4.data(), s4.size(), 1, nullptr, all) == 0, "a one-slot budget keeps no pin: the oldest leaves");
+    }
+    {   // A layer-split restore must leave headroom on every device, not only CUDA0.
+        const uint64_t free_bytes[] = {900, 1200};
+        check(restore_has_headroom(true, free_bytes, 2, 700), "both GPUs above the restore floor: admit the cache hit");
+        const uint64_t low_later_stage[] = {1200, 699};
+        check(!restore_has_headroom(true, low_later_stage, 2, 700), "a low later-stage GPU: reread instead of restoring");
+        check(restore_has_headroom(true, nullptr, 0, 700), "no sampled devices: do not reject on a missing sample");
+        check(restore_has_headroom(false, low_later_stage, 2, 700), "single-GPU restore keeps its existing path");
     }
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;

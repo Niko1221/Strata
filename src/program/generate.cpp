@@ -11009,6 +11009,45 @@ int main(int argc, char** argv) {
                 incoming.reset();
                 err.clear();
             }
+            // A parked snapshot is authoritative host state, but restoring it also
+            // repopulates each device's streaming/ring residency.  On a layer split
+            // the primary and later stages can have very different free VRAM.  Do
+            // not turn a cache hit into a process-fatal CUDA OOM on the first stage
+            // switch: return the snapshot to the cache and reread this prompt.
+            auto conversation_restore_has_headroom = [&]() -> bool {
+                if (!incoming || o.vram_reserve_mib <= 0) return true;
+                const uint64_t floor = (uint64_t) o.vram_reserve_mib << 20;
+                std::vector<uint64_t> free_bytes;
+                free_bytes.reserve(stages.size() + 1);
+                auto sample = [&](int dev) -> bool {
+                    const strata::core::OnDevice on(dev);
+                    size_t free_b = 0, total_b = 0;
+                    if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess) {
+                        (void) cudaGetLastError();
+                        return false;
+                    }
+                    free_bytes.push_back((uint64_t) free_b);
+                    return true;
+                };
+                if (!sample(-1)) return true;
+                for (const auto& st : stages)
+                    if (!sample(st->dev)) return true;
+                if (strata::program::conv_cache::restore_has_headroom(true, free_bytes.data(), free_bytes.size(), floor))
+                    return true;
+                uint64_t least = free_bytes.front();
+                for (const uint64_t bytes : free_bytes) least = std::min(least, bytes);
+                std::fprintf(stderr, "strata serve: conversation cache: skip restore (%lld MiB free on the most constrained "
+                                     "GPU, %lld MiB reserve); rereading the prompt\n",
+                             (long long) (least >> 20), (long long) o.vram_reserve_mib);
+                return false;
+            };
+            if (!stages.empty() && incoming && !conversation_restore_has_headroom()) {
+                auto retry = std::move(*incoming);
+                incoming.reset();
+                if (!conversations.put(std::move(retry)))
+                    std::fprintf(stderr, "strata serve: conversation cache: could not return skipped snapshot\n");
+                err.clear();
+            }
             // Preserve the outgoing branch before any checkpoint rewind, reset,
             // or incoming restore overwrites the positional state it requires.
             // pin=N: this request resumes exactly at the pinned shared prefix of the conversation the session holds
