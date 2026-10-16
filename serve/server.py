@@ -702,6 +702,15 @@ class ConvCacheLog:
     SYS_MISS = re.compile(r"system prompt cache: prefix changed \(miss, (\d+) variants? live\)")
     SYS_PERSIST = re.compile(r"system prompt cache: persisted the \d+-token root \((\d+) variants?, (\d+) MiB\)")
     SYS_SHUTDOWN = re.compile(r"system prompt cache: shutdown: (\d+) variants?, (\d+) MiB,")
+    # The RAM the slots' K/V lives in while the engine streams it (the Monitor report of 2026-10-15).  `strata generate` writes it once per
+    # start, on stderr (not on the INFO line): "KV streaming: N of M cells per QSA layer in VRAM, the K/V in X.XX
+    # GiB of pinned RAM".  It is the engine's OWN measurement of what a whole context of K/V costs in host RAM -
+    # N of the M cells it pins are the VRAM window, the rest is the pinned copy - so the Monitor's RAM row can
+    # scale it by the tokens the slots hold instead of guessing a size per token.  The periodic "KV streaming:
+    # X% of N block reads hit VRAM" line does not match (it names blocks, not cells), and an engine run without
+    # --kv-resident writes neither: the whole K/V is in VRAM then and nothing is invented for it.
+    KV_HOST = re.compile(r"KV streaming: (\d+) of (\d+) cells per QSA layer in VRAM, "
+                         r"the K/V in ([\d.]+) GiB of pinned RAM")
     KV = re.compile(r"([a-z][a-z0-9_]*)=(-?\d+)")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
@@ -724,7 +733,11 @@ class ConvCacheLog:
                       "warm": {"ready": False, "conversations": 0, "bytes": 0, "spills": 0, "degraded": 0,
                                "evictions": 0, "age_evictions": 0, "when_full": None, "max_age_days": None,
                                "kept": {"oversized": 0, "stale": 0, "foreign": 0, "orphan": 0}},
-                      "sysprompt": {}}
+                      "sysprompt": {},
+                      # The pinned K/V the slots' conversations read from (the same report), {"cells", "resident_cells",
+                      # "gib", "bytes"} - None while the engine has not said (no --kv-resident, or an engine from
+                      # before the line), never a fabricated figure.
+                      "kv_host": None}
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it."""
@@ -776,6 +789,13 @@ class ConvCacheLog:
                     s.update({k: int(v) for k, v in self.KV.findall(line)})
                     continue
                 s.update({k: int(v) for k, v in self.KV.findall(line)})   # any other key=value line
+                continue
+            if "KV streaming:" in line:                     # the pinned K/V (see KV_HOST)
+                m = self.KV_HOST.search(line)
+                if m:
+                    self.state["kv_host"] = {"resident_cells": int(m.group(1)), "cells": int(m.group(2)),
+                                             "gib": float(m.group(3)),
+                                             "bytes": int(float(m.group(3)) * 1073741824)}
                 continue
             if "conversation cache:" not in line:
                 continue
@@ -888,14 +908,33 @@ def sysprompt_counts(raw: dict) -> dict:
     return out
 
 
-def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
+def slot_held_tokens(slot: dict) -> int:
+    """One batch slot's own tokens (live.slots, the engine's own count): the request it runs - its prompt read plus
+    what it wrote - or, while idle, the tokens it holds for a next turn.  The same rule the Monitor's Context fill
+    clocks use, so the two cards read one datum."""
+    if slot.get("state") == "idle":
+        return int(slot.get("held_tokens") or 0)
+    return int(slot.get("prompt_tokens") or 0) + int(slot.get("generated") or 0)
+
+
+def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict, slots=None) -> dict:
     """#596: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
     --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back.
     Additive since the on-disk layer: a "disk" object (the spill tier's own figures) and a "system_prompt_cache"
     object (F5's hits, misses, live variants, bytes, evictions and hash changes, from the log; plus the folder and
     the byte budget the engine reports in its INFO line), both read from the engine.
     And a "destinations" list: the parking split by destination (RAM, and each on-disk tier that is configured),
-    so the Monitor shows one row per destination instead of hardcoding them."""
+    so the Monitor shows one row per destination instead of hardcoding them.
+
+    FALLA 2: the RAM row carries the SLOTS' side too, `slots` being live.slots.  --conversation-cache-mib is the
+    RAM the slots' conversations live in, and two things live there: the conversations parked in it (the row's own
+    `bytes`, what the engine's log reports) AND the K/V the slots hold, which is why the row read 0 / 0,0 GB while
+    four slots were working - the cascade writes the parking to the warm level, so nothing is parked in RAM.  What
+    the slots hold is measured (their own token counts); their BYTES are an estimate, unless the engine says the
+    whole K/V is in VRAM (INFO kv_resident=0, then nothing of it is in RAM and that 0 is the engine's own word).
+    The estimate scales the engine's pinned K/V (its "KV streaming: ... the K/V in X.XX GiB of pinned RAM" line,
+    X GB over the context it pins) by those held tokens, and the row says so: `kv_estimated` marks it and
+    `kv_source` names it, so a derived figure is never shown as a reading."""
     mib = info.get("conversation_cache_mib")
     dmib = info.get("conversation_cache_disk_mib")
     last = hist[-1] if hist else None
@@ -948,10 +987,30 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
     # is a single disk tier and its row is byte-for-byte the one it always was ("SSD 1"): a level that is not
     # configured gets no row at all, and no row is invented.
     destinations = []
+    # The RAM row also says what the SLOTS hold there (see this function's docstring).  Measured: the
+    # tokens each slot keeps and how many slots hold a conversation at all (an idle slot that kept its tokens for
+    # a next turn holds one too - the RAM holds it all the same).  Estimated, and marked as such: their bytes,
+    # scaled from the engine's own pinned K/V - and 0, measured, when the engine says the whole K/V is in VRAM
+    # (kv_resident=0), because then none of it is in this RAM and the row must not invent any.
+    slots = [s for s in (slots or []) if s]
+    held_tokens = sum(slot_held_tokens(s) for s in slots)
+    kv_host, resident, ctx = parked.get("kv_host") or {}, info.get("kv_resident"), info.get("context")
+    kv_bytes, kv_source, kv_estimated = None, None, False
+    if isinstance(resident, int) and resident <= 0:
+        kv_bytes, kv_source = 0, "the whole K/V is in VRAM (kv_resident=0): none of it is in this RAM"
+    elif isinstance(ctx, int) and ctx > 0 and isinstance(kv_host.get("bytes"), int):
+        per_token = kv_host["bytes"] / ctx
+        kv_bytes, kv_estimated = int(round(per_token * held_tokens)), True
+        kv_source = (f"estimated: the {held_tokens} tokens the slots hold x {per_token:.0f} B/token, the engine's "
+                     f"pinned K/V ({kv_host['gib']:g} GB over {ctx} cells)")
     if isinstance(mib, int) and mib > 0:
         destinations.append({"tier": "ram", "label": "RAM", "enabled": True, "bytes": parked.get("bytes", 0),
                              "conversations": parked.get("parked", 0), "budget_mib": mib,
-                             "slots": info.get("conversation_cache_slots")})
+                             "slots": info.get("conversation_cache_slots"),
+                             "held_tokens": held_tokens,
+                             "slots_in_use": sum(1 for s in slots if slot_held_tokens(s) > 0),
+                             "batch_slots": len(slots) or None,
+                             "kv_bytes": kv_bytes, "kv_estimated": kv_estimated, "kv_source": kv_source})
     if warm["enabled"]:
         destinations.append({"tier": "warm", "label": "SSD 1", "enabled": True, "bytes": warm["bytes"],
                              "conversations": warm["conversations"], "budget_mib": warm["budget_mib"],
@@ -3966,6 +4025,14 @@ class Service:
                         admitting=int(getattr(self.engine, "admitting", 0) or 0))
             if running and state == "idle":
                 live["state"] = "generating"
+            # The slot texts read live.slots[].tok_s - the engine's PER-SLOT rates - while live.tok_s (the
+            # aggregate, and the state card's own "N tokens at X tok/s") is the sum of the requests in flight:
+            # the two come from different places, so they can disagree.  A request that is ALONE decodes on the
+            # engine's solo path, which uses no slot's sessions (generate_batched: `alone` -> GEN), and then every
+            # slot is idle and reads 0 t/s under an aggregate that moves.  Nothing is in a slot, so this is the
+            # rate the aggregate is made of: named, and sent only then - with a slot decoding, the slots carry it.
+            if not in_slots and live.get("tok_s") is not None:
+                live["solo_tok_s"] = live["tok_s"]
         if hasattr(self.engine, "replica_view"):        # opt-in replicas: each one's state and requests routed to it
             live["replicas"] = self.engine.replica_view()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
@@ -3974,7 +4041,7 @@ class Service:
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         live["admission"] = admission_field(state, parked)
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
-                "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
+                "conversation_cache": conversation_cache_view(engine, hist, totals, parked, live.get("slots")),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}

@@ -745,5 +745,187 @@ class TheTachometerLayout(unittest.TestCase):
         self.assertNotIn("wrap.hidden", js)                                 # the old single-container name is gone
 
 
+class TheSlotMeterAndTheAggregate(unittest.TestCase):
+    """The slot texts against the aggregate (the Monitor report of 2026-10-15): they read live.slots[].tok_s - the
+    engine's PER-SLOT rates - while the aggregate (the state card's own "N tokens at X tok/s", and `live.tok_s`) is
+    the sum of the requests in flight, so the two can disagree.  A request that is ALONE decodes on the engine's
+    solo path (generate_batched: `alone` -> GEN), which uses no slot's sessions, and then every configured slot is
+    idle and reads 0 t/s under an aggregate that moves.  Reproduced here as the /metrics the two sources produce in
+    that case (the same state the fake batch engine of test_parallel reaches with --batch 4 and one request: state
+    generating, running 1, in_slots 0, outside_slots 1, every slot idle) - and NOT flaky: the slots list and the
+    live rate are handed in, not raced for.
+
+    live.solo_tok_s names that rate, and only then: with a slot decoding the slots carry it, and an engine with no
+    batch slots (or an older shim) sends no field at all - the page adds nothing rather than "undefined"."""
+
+    def _service(self, slots, live_requests=()):
+        tok = ByteTokenizer()
+        engine = MockEngine(tok, "ok", max_context=4096)
+        engine.batch, engine.info = 4, {"batch_slots": 4}
+        engine.waiting = engine.admitting = 0
+        engine.slots_view = lambda: list(slots)
+        svc = Service(engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        now = time.time()
+        for st, rate in live_requests:
+            with svc.status_lock:
+                svc.live_reqs[id(st)] = (st, rate)              # what Service.run registers while a request runs
+        return svc, engine
+
+    @staticmethod
+    def _decoding(generated=40):
+        """One request in flight and decoding: what the shim's own rate is computed from (its first token arrived)."""
+        import collections
+        now = time.time()
+        st = {"busy": True, "first_token": now - 1.0, "started": now - 1.2, "generated": generated,
+              "prompt_tokens": 62, "max_tokens": 256, "phase": None, "queued": 0}
+        return st, collections.deque([(now - 1.0, generated - 30), (now, generated)])   # Service.run's rate samples
+
+    def _metrics(self, svc):
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            with urllib.request.urlopen(base + "/metrics", timeout=10) as r:
+                return json.loads(r.read())["live"]
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_a_lone_request_moves_the_aggregate_with_every_slot_idle(self):
+        idle = [{"slot": b, "state": "idle", "held_tokens": 0} for b in range(4)]
+        svc, _ = self._service(idle, [self._decoding()])
+        live = self._metrics(svc)
+        self.assertEqual([s["state"] for s in live["slots"]], ["idle"] * 4)   # the capture the owner sent
+        self.assertGreater(live["tok_s"], 0)                                 # ...under a moving aggregate
+        self.assertEqual(live["outside_slots"], 1)
+        self.assertEqual(live["solo_tok_s"], live["tok_s"])                   # named: this IS what the aggregate is
+        self.assertEqual(live["state"], "generating")
+
+    def test_a_slot_that_is_decoding_carries_the_rate_and_nothing_is_named_solo(self):
+        slots = [{"slot": 0, "state": "decoding", "prompt_tokens": 512, "generated": 128, "tok_s": 15.2},
+                 {"slot": 1, "state": "idle", "held_tokens": 0},
+                 {"slot": 2, "state": "reading", "prompt_tokens": 1024, "generated": 0},
+                 {"slot": 3, "state": "idle", "held_tokens": 4096}]
+        svc, _ = self._service(slots, [self._decoding()])
+        live = self._metrics(svc)
+        self.assertEqual(live["slots"][0]["tok_s"], 15.2)                     # the slot's own rate: the page shows it
+        self.assertNotIn("solo_tok_s", live)                                  # in a slot: no separate entry to add
+        # a slot that HOLDS the request is enough, whatever it is doing with it (here it is being read into it):
+        # the request is that slot's, so the aggregate and the slots agree and nothing is named solo
+        svc2, _ = self._service([{"slot": 0, "state": "reading", "prompt_tokens": 1024, "generated": 0},
+                                 {"slot": 1, "state": "idle", "held_tokens": 0}], [self._decoding()])
+        live2 = self._metrics(svc2)
+        self.assertEqual(live2["outside_slots"], 0)                           # the request in flight IS that slot's
+        self.assertNotIn("solo_tok_s", live2)
+
+    def test_an_engine_without_batch_slots_sends_no_slot_field(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "ok", max_context=4096), tok,
+                      ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        live = self._metrics(svc)
+        self.assertNotIn("slots", live)
+        self.assertNotIn("solo_tok_s", live)              # no slots, nothing to contradict: no field either
+
+    def test_the_page_names_the_solo_rate_and_hides_it_when_the_field_is_missing(self):
+        js = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
+        # read only when it IS a number, the rule live.admission follows: an older shim sends none
+        self.assertIn('typeof live.solo_tok_s === "number"', js)
+        self.assertIn("parts.push(`solo ${fmt(live.solo_tok_s, 1)} t/s`)", js)
+        # one element per entry as before, and the idle slots keep their own "0 t/s" text
+        self.assertIn('if (s.state === "idle") return `${slot} 0 t/s`', js)
+        self.assertIn("slotsLine.replaceChildren(...parts.map", js)
+
+
+class TheRamTheSlotsHold(unittest.TestCase):
+    """The Conversation cache card's RAM row (the same report): it counted ONE of the two things that live in that
+    RAM.  The budget (--conversation-cache-mib) is the RAM the slots' conversations live in; the row's own figure is
+    what is PARKED in it, which the cascade writes to the warm level instead - so with the parking on disk it read
+    0 / 0,0 GB while the slots held their K/V.  The row now carries the slots' side: their held tokens (measured,
+    live.slots) and their bytes as an ESTIMATE, marked as one (kv_estimated) with its source (kv_source), scaled
+    from the engine's own pinned K/V ("KV streaming: ... the K/V in X.XX GiB of pinned RAM", over the context it
+    pins).  An engine that says the whole K/V is in VRAM (kv_resident=0) gets a measured 0 instead; one that said
+    nothing leaves both unknown and the row is byte for byte the one it always was."""
+
+    # what `strata generate` writes once per start, on stderr
+    KV = ("strata generate: KV streaming: 81920 of 262144 cells per QSA layer in VRAM, the K/V in 3.20 GiB of "
+          "pinned RAM\n")
+    PARK = ("strata serve: conversation cache: parked on disk 5000 tokens in 12.0 ms; parked=0 bytes=0 evictions=0 "
+            "snapshot_bytes=104857600 reused_kv_bytes=0\n")
+
+    def _parked(self, text=KV + PARK):
+        from serve.server import ConvCacheLog
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(text, encoding="utf-8")
+            return ConvCacheLog().poll(str(log), 0)
+
+    def _ram(self, info, slots, parked=None):
+        from serve.server import conversation_cache_view
+        view = conversation_cache_view(info, [], {}, parked if parked is not None else self._parked(), slots)
+        return next(x for x in view["destinations"] if x["tier"] == "ram")
+
+    def test_the_engine_pinned_kv_is_read_from_its_own_line(self):
+        from serve.server import ConvCacheLog
+        kv = self._parked()["kv_host"]
+        self.assertEqual((kv["resident_cells"], kv["cells"], kv["gib"]), (81920, 262144, 3.20))
+        self.assertEqual(kv["bytes"], int(3.20 * 1073741824))
+        # the periodic block-read line is a different line and must not be read as this one
+        other = "strata serve: KV streaming: 91.24% of 4000000 block reads hit VRAM, 12.5 MiB read from RAM\n"
+        self.assertIsNone(self._parked(other)["kv_host"])
+        # an engine run without --kv-resident prints neither: unknown, never invented
+        self.assertIsNone(self._parked(self.PARK)["kv_host"])
+
+    def test_the_ram_row_carries_the_slots_side_of_the_same_ram(self):
+        info = {"conversation_cache_mib": 8192, "conversation_cache_slots": 4, "kv_resident": 81920,
+                "context": 262144, "conversation_cache_disk_mib": 8192}
+        slots = [{"slot": 0, "state": "idle", "held_tokens": 40000},
+                 {"slot": 1, "state": "idle", "held_tokens": 20000},
+                 {"slot": 2, "state": "decoding", "prompt_tokens": 5000, "generated": 5000},
+                 {"slot": 3, "state": "idle", "held_tokens": 0}]
+        ram = self._ram(info, slots)
+        # measured: the tokens the slots hold (an idle slot keeps its conversation, a busy one runs one) and how
+        # many slots hold one at all
+        self.assertEqual(ram["held_tokens"], 70000)
+        self.assertEqual((ram["slots_in_use"], ram["batch_slots"]), (3, 4))
+        # and the parked side is untouched: the engine's log says nothing is parked in RAM (the cascade sent it on)
+        self.assertEqual((ram["conversations"], ram["bytes"]), (0, 0))
+        # the bytes: an estimate, and marked as one, with the source named - 70000 x (3.20 GiB / 262144)
+        self.assertLess(abs(ram["kv_bytes"] - int(round(70000 * 3.20 * 1073741824 / 262144))), 2)
+        self.assertTrue(ram["kv_estimated"])
+        self.assertIn("70000 tokens", ram["kv_source"])
+        self.assertIn("pinned K/V", ram["kv_source"])
+        # the view still carries the engine's own figure, so /metrics shows what the estimate was scaled from
+        from serve.server import conversation_cache_view
+        view = conversation_cache_view(info, [], {}, self._parked(), slots)
+        self.assertEqual(view["kv_host"]["bytes"], int(3.20 * 1073741824))
+
+    def test_an_engine_that_keeps_the_whole_kv_in_vram_gets_a_zero_that_was_measured(self):
+        info = {"conversation_cache_mib": 8192, "conversation_cache_slots": 4, "kv_resident": 0,
+                "context": 262144}
+        slots = [{"slot": 0, "state": "idle", "held_tokens": 40000}]
+        ram = self._ram(info, slots, parked={})
+        self.assertEqual(ram["kv_bytes"], 0)               # kv_resident=0 is the engine's own "all in VRAM"
+        self.assertFalse(ram["kv_estimated"])              # a statement, not an estimate: the row adds no "est."
+        self.assertIn("VRAM", ram["kv_source"])
+        self.assertEqual(ram["held_tokens"], 40000)        # the measured part is still there
+
+    def test_a_engine_that_said_nothing_leaves_them_unknown(self):
+        ram = self._ram({"conversation_cache_mib": 8192, "conversation_cache_slots": 4}, [{"slot": 0, "state": "idle",
+                                                                                          "held_tokens": 40000}],
+                        parked={})
+        self.assertIsNone(ram["kv_bytes"])                 # unknown, never a fabricated 0
+        self.assertIsNone(ram["kv_source"])
+        self.assertFalse(ram["kv_estimated"])
+
+    def test_the_page_shows_the_slots_side_and_says_it_is_an_estimate(self):
+        js = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('typeof d.kv_bytes === "number" && d.kv_estimated === true', js)
+        self.assertIn("${gb(d.bytes)} parked + ${gb(d.kv_bytes)} est. / ${gb(budget)} GB", js)
+        self.assertIn('const title = d.kv_source ? ` title="${esc(d.kv_source)}"` : "";', js)
+        self.assertIn("pct(d.bytes + (est ? d.kv_bytes : 0), budget)", js)
+        # without the estimate the row is byte for byte the one it always was (the degrade, as for admission)
+        self.assertIn('budget ? `${gb(d.bytes)} / ${gb(budget)} GB` : `${gb(d.bytes)} GB`', js)
+
+
 if __name__ == "__main__":
     unittest.main()

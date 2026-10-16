@@ -216,9 +216,18 @@ function renderConvCache(c) {
   $("cc-dest").innerHTML = dest.map((d) => {
     const budget = (d.budget_mib || 0) * 1048576;
     const count = d.slots != null ? `${fmt(d.conversations)} / ${fmt(d.slots)}` : fmt(d.conversations);
-    const mem = budget ? `${gb(d.bytes)} / ${gb(budget)} GB` : `${gb(d.bytes)} GB`;
-    const width = budget ? pct(d.bytes, budget) : d.slots ? pct(d.conversations, d.slots) : "0%";
-    return `<div><div class="bar-row"><span>${esc(d.label)}</span><span class="muted">${count} · ${mem}</span></div>` +
+    // The RAM row says TWO things, because two live in this RAM (the Monitor report of 2026-10-15: it read 0
+    // while four slots held their K/V).  --conversation-cache-mib is the RAM the slots' conversations live in;
+    // `bytes` is what is PARKED in it (the engine's log), which the cascade sends to the warm level instead.  The
+    // slots' side is added: the tokens they hold (measured) and their bytes as an ESTIMATE (kv_estimated), with the
+    // source named in the row's title (kv_source) - never a derived count shown as a reading.  An engine that did
+    // not report them (an older shim, or no --kv-resident) leaves the row exactly the one it always was.
+    const est = typeof d.kv_bytes === "number" && d.kv_estimated === true;
+    const mem = est && budget ? `${gb(d.bytes)} parked + ${gb(d.kv_bytes)} est. / ${gb(budget)} GB`
+              : budget ? `${gb(d.bytes)} / ${gb(budget)} GB` : `${gb(d.bytes)} GB`;
+    const title = d.kv_source ? ` title="${esc(d.kv_source)}"` : "";
+    const width = budget ? pct(d.bytes + (est ? d.kv_bytes : 0), budget) : d.slots ? pct(d.conversations, d.slots) : "0%";
+    return `<div><div class="bar-row"><span>${esc(d.label)}</span><span class="muted"${title}>${count} · ${mem}</span></div>` +
            `<div class="st-progress"><div class="st-progress__bar" style="width:${width}"></div></div></div>`;
   }).join("");
   $("cc-dest").hidden = !dest.length;
@@ -349,6 +358,12 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     return `${slot} ${s.tok_s != null ? `${fmt(s.tok_s, 1)} t/s` : "0 t/s"}`;
   });
   if (waiting > 0) parts.push(`${fmt(waiting)} queued`);
+  // The rate the aggregate is made of when NO slot is decoding (the Monitor report of 2026-10-15: the four slots
+  // read 0 t/s under a moving aggregate).  A request that is alone decodes on the engine's solo path, which uses no
+  // slot's sessions: live.slots carries every configured slot idle, so nothing there can carry its rate.  The shim
+  // sends live.solo_tok_s only then, and the line names what the figure above it is made of.  Read only when it IS a
+  // number - an older shim, or an engine without batch slots, sends none.
+  if (typeof live.solo_tok_s === "number") parts.push(`solo ${fmt(live.solo_tok_s, 1)} t/s`);
   // one element per entry, on the card's top right: the flex gap separates them, evenly for every width, so the
   // four read at a glance. Joined as one string they would collapse to single spaces and read as a single run.
   const slotsLine = $("state-slots");
