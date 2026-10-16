@@ -1,0 +1,15 @@
+{
+  "os": "Linux-7.0.0-38-generic-x86_64-with-glibc2.39",
+  "kernel": "7.0.0-38-generic",
+  "harness_python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "ram_total_bytes": 64933089280,
+  "cpu_physical_cores": 8,
+  "cpu_logical_threads": 16,
+  "gpu_pcie": "index, name, pci.bus_id, pcie.link.gen.max, pcie.link.gen.current, pcie.link.width.max, pcie.link.width.current\n0, NVIDIA GeForce RTX 3090, 00000000:01:00.0, 4, 4, 16, 16\n1, NVIDIA GeForce RTX 3060, 00000000:02:00.0, 4, 4, 16, 1\n2, Tesla PG500-216, 00000000:05:00.0, 3, 3, 16, 4\n3, Tesla PG500-216, 00000000:0B:00.0, 3, 3, 16, 4\n",
+  "cpu_model": "AMD Ryzen 7 9700X",
+  "nvidia_driver": "580.178.04",
+  "cuda_toolkit": "12.8",
+  "os_distribution": "Ubuntu 24.04.5 LTS",
+  "power_limits": "not controlled",
+  "clocks": "not controlled"
+}

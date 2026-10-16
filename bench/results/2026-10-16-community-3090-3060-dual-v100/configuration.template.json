@@ -1,0 +1,71 @@
+{
+  "exe": "${STRATA_DIR}/engine-cuda12/strata",
+  "args": [
+    "--pack",
+    "${DATA_DIR}/packs/orca-q4_k_m",
+    "--native",
+    "${MODEL_DIR}/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00001-of-00003.gguf",
+    "--expert-profile",
+    "${STRATA_DIR}/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "6144",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "${DATA_DIR}/mtp/rt",
+    "--max-context",
+    "262144",
+    "--kv",
+    "fp16",
+    "--resident-budget-gib",
+    "16",
+    "--ple-io",
+    "ram",
+    "--ple-gguf",
+    "${MODEL_DIR}/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00001-of-00003.gguf",
+    "--trim-stage-weights",
+    "--vision",
+    "--vram-reserve-mib",
+    "256"
+  ],
+  "cwd": "${STRATA_DIR}",
+  "tokenizer": "${DATA_DIR}/packs/orca-q4_k_m/tokenizer",
+  "model_name": "orcarouter-qwen3.8-flash-next-uncensored-q4_k_m",
+  "sampling": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0
+  },
+  "log": "${RUNTIME_DIR}/strata.log",
+  "lib_dirs": [
+    "${CUDA_ROOT}/bin",
+    "${CUDA_ROOT}/lib64"
+  ],
+  "port": 8080,
+  "cuda": 12,
+  "gpu": [
+    2,
+    0,
+    1,
+    3
+  ],
+  "gpus_asked": true,
+  "layer_split": "16,29,33",
+  "host": "${BIND_HOST}",
+  "draft_vocab": "cjk",
+  "open_browser": false,
+  "gpu_order": "as_given",
+  "vision": {
+    "exe": "${STRATA_DIR}/engine-cuda12/strata-vision",
+    "mmproj": "${MODEL_DIR}/mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf",
+    "model": "${MODEL_DIR}/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00001-of-00003.gguf",
+    "gpu": true,
+    "cuda_device": 2,
+    "max_tokens": 1024
+  }
+}

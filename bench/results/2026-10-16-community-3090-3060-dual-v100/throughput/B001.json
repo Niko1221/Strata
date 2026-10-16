@@ -1,0 +1,79 @@
+{
+  "label": "B001",
+  "config_prefill": 1024,
+  "wall_s": 56.118,
+  "response_usage": {
+    "prompt_tokens": 61679,
+    "completion_tokens": 512,
+    "total_tokens": 62191,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  },
+  "response_finish": "length",
+  "metrics": {
+    "projection": null,
+    "time": 1791969447.588751,
+    "duration_s": 56.1,
+    "finish": "length",
+    "prompt_tokens": 61679,
+    "reused": 0,
+    "output_tokens": 512,
+    "prompt_total": 61679,
+    "prompt_read": 61679,
+    "reasoning_recoveries": 0,
+    "reasoning_repeat_coverage": 0.0,
+    "engine_generated": 512,
+    "prompt_ms": 49061.4,
+    "decode_ms": 7008.1,
+    "decode_tok_s": 73.1,
+    "hit_rate": null,
+    "pcie_share": null,
+    "ram_blobs": 0,
+    "file_blobs": 0,
+    "file_mb": 0,
+    "drafts_offered": 357,
+    "drafts_accepted": 256
+  },
+  "engine": {
+    "max_context": 262144,
+    "kv": "fp16",
+    "expert_slots": 24576,
+    "expert_cache_mib": 76800,
+    "vram_free_mib": 1037
+  },
+  "gpu": [
+    {
+      "index": 2,
+      "util": 32,
+      "mem_used": 33380499456,
+      "mem_total": 34359738368,
+      "temp": 44,
+      "power": 67.933
+    },
+    {
+      "index": 0,
+      "util": 17,
+      "mem_used": 25035997184,
+      "mem_total": 25769803776,
+      "temp": 61,
+      "power": 148.673
+    },
+    {
+      "index": 1,
+      "util": 11,
+      "mem_used": 9525395456,
+      "mem_total": 12884901888,
+      "temp": 55,
+      "power": 51.676
+    },
+    {
+      "index": 3,
+      "util": 45,
+      "mem_used": 33231601664,
+      "mem_total": 34359738368,
+      "temp": 50,
+      "power": 78.824
+    }
+  ]
+}
