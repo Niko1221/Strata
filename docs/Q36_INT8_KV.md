@@ -174,8 +174,9 @@ Implemented behind `--kv int8` (default `--kv fp32`, byte-identical). Measured o
 2. **Parity test — pass.** `q36_kv_q8_parity` passes in `ctest`.
 3. **Memory — relaxed.** The 131,072 target is not reachable, because at int8 the K/V is no
    longer the binding constraint. The ceiling is set by the dense weights (4.40 GiB) plus the
-   hybrid expert-streaming staging buffer (1.10 GiB) plus the context-scaled attention-score
-   buffer (see the last risk below), not by K/V. Measured: fp32 starts at 16,384 and no
+   hybrid expert-streaming staging buffer (1.10 GiB double-buffered, or 0.55 GiB with
+   `STRATA_Q36_SINGLE_STAGE=1`) plus the context-scaled attention-score buffer (see the last
+   risk below), not by K/V. Measured: fp32 starts at 16,384 and no
    larger; int8 starts and decodes at **32,768** (40,960 allocates but the prefill GEMM's
    score buffer no longer fits, 49,152 fails `cudaMalloc`). Resident K/V is 44 KiB/token (fp32)
    vs ~11 KiB/token (int8): at 4,096 context the engine reports 1.70 GiB free (fp32) vs
@@ -191,6 +192,28 @@ Implemented behind `--kv int8` (default `--kv fp32`, byte-identical). Measured o
    prints the same tokens on the smoke prompt (`gen: 760 11679 22186 995`).
 6. **Backends — CUDA verified.** The HIP build of the touched file has not been run yet; it is
    the remaining sign-off for this change (the engine is shared CUDA/HIP source).
+
+A staging-buffer fix came out of measuring item 3. At 32,768 the engine reported "0.63 GiB of
+VRAM free" after `init()`, and the prompt staging (one layer's experts, 0.55 GiB) plus the
+streamed path's `ecpu` buffer (0.13 GiB at chunk 2048) did not fit in it, so MMQ aborted with
+`cudaMalloc(&E.stage[b], ...) failed: out of memory`. Shortening the context did not help:
+int8 K/V is ~11.7 KiB per token, so 32,768 -> 22,768 frees only ~0.16 GiB (0.63 -> 0.79 GiB
+free) against a 0.55 GiB buffer. `place_experts()` now makes the same trade there that the
+MTP-only path already made one branch above — the attention-score buffer at 64 MB instead of
+256, which frees 0.28 GiB (0.63 -> 0.91 GiB free), after which staging fits. **Do not reach for
+`STRATA_Q36_NO_MMQ=1` instead:** with MMQ off the prompt has no streamed path, `hybrid_t`
+becomes `tmax`, and *every* prompt row goes to the CPU pool. Same machine, same run
+(`--bench-pp 512 --bench-tg 8`, 32K, `--kv int8`):
+
+| `STRATA_Q36_NO_MMQ` | prefill pp512 | decode tg8 | batch entries on the GPU |
+|---|---|---|---|
+| `0` (MMQ on) | **310.1 / 310.4 / 310.3 tok/s** | 8.6 - 11.1 tok/s | 0 of 7,680 (0.0%) |
+| `1` (MMQ off) | 16.6 / 15.7 / 11.5 tok/s | 8.0 - 13.4 tok/s | 0 of 499,200 (0.0%) |
+
+~20x on prefill, and the decode column is a wash: this model's 18.75 GiB of experts fit in the
+card's 8 GiB neither way (0 slots either way), so decode is the CPU pool in both. Nothing sets
+this switch for you: `docker/run.sh` forwards `STRATA_*` variables unchanged and `setup.py` does
+not set MMQ, so the engine's own default (MMQ on) applies unless you set it yourself.
 
 ## Risks and open questions
 

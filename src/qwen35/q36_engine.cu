@@ -1194,7 +1194,8 @@ struct Engine {
 
     // ---- the hybrid mode (Model::hybrid): per state index (the layers, then the MTP block) the slot tables; a
     // batch of up to hybrid_t rows runs its VRAM-resident experts on the GPU and the others on the CPU pool, side by
-    // side; a bigger prompt chunk streams each layer's experts into a staging buffer for MMQ (two, double-buffered)
+    // side; a bigger prompt chunk streams each layer's experts into a staging buffer for MMQ (double-buffered by
+    // default: one layer streams while the other computes; STRATA_Q36_SINGLE_STAGE=1 halves it to one buffer)
     struct Hy {
         std::vector<int> slot_of, exp_in_slot;
         std::vector<double> score;   // routing counts, halved at each rebalance
@@ -1222,6 +1223,7 @@ struct Engine {
     uint8_t* acts = nullptr;   // per token: its quantized activation (kNativeActBytes)
     cudaEvent_t ev_route = nullptr;
     uint8_t* stage[2] = {};
+    int n_stage = 2;   // staging buffers: 2 double-buffered, or 1 (STRATA_Q36_SINGLE_STAGE=1) to halve the VRAM
     cudaStream_t cst = nullptr;
     cudaEvent_t ev_copy[2] = {}, ev_used[2] = {};
     std::vector<int> stream_seq;   // the state indices a streamed forward visits, in order
@@ -1281,7 +1283,10 @@ struct Engine {
         k16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
         v16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
         q16 = dalloc_t<__half>(T * g.n_head * g.head_dim);
-        use_mmq = MMQ::built() && std::getenv("STRATA_Q36_NO_MMQ") == nullptr;
+        const char* nommq = std::getenv("STRATA_Q36_NO_MMQ");
+        use_mmq = MMQ::built() && (nommq == nullptr || std::atoi(nommq) == 0);   // MMQ is on by default; STRATA_Q36_NO_MMQ=1 turns it off
+        const char* singlestage = std::getenv("STRATA_Q36_SINGLE_STAGE");
+        n_stage = (singlestage && std::atoi(singlestage) > 0) ? 1 : 2;   // one staging buffer instead of two: halves the prompt staging VRAM
         auto mmq_ok = [&](const Layer& L) {
             return MMQ::supported(L.L.gu_type) && MMQ::supported(L.L.d_type) && MMQ::fits(L.L.gu_type, 2 * g.n_ff) &&
                    MMQ::fits(L.L.d_type, g.n_embd);
@@ -1727,14 +1732,14 @@ struct Engine {
     // ---- the hybrid mode
     const Layer& layer_at(int li) const { return li < (int) m->layers.size() ? m->layers[(size_t) li] : m->mtp; }
 
-    /// A streamed forward over the state indices `seq`: the first two layers' experts start copying now.
+    /// A streamed forward over the state indices `seq`: the first n_stage layers' experts start copying now.
     void stream_begin(const std::vector<int>& seq) {
         stream_seq = seq;
         stream_pos = 0;
-        for (int i = 0; i < 2 && i < (int) seq.size(); ++i) stream_kick(i);
+        for (int i = 0; i < n_stage && i < (int) seq.size(); ++i) stream_kick(i);
     }
-    void stream_kick(int i) {   // the i-th layer of the sequence into staging buffer i % 2, after its last reader
-        const int b = i % 2;
+    void stream_kick(int i) {   // the i-th layer of the sequence into staging buffer i % n_stage, after its last reader
+        const int b = i % n_stage;
         const Layer& L = layer_at(stream_seq[(size_t) i]);
         CK(cudaStreamWaitEvent(cst, ev_used[b], 0));
         // the experts with a VRAM slot come from it (device to device, at VRAM speed), only the others over PCIe; runs
@@ -1772,14 +1777,14 @@ struct Engine {
             std::fprintf(stderr, "strata-q36: the expert stream is out of step (layer %d)\n", li);
             std::exit(1);
         }
-        const int b = stream_pos % 2;
+        const int b = stream_pos % n_stage;
         CK(cudaStreamWaitEvent(st, ev_copy[b], 0));
         return stage[b];
     }
     void stream_done() {
-        const int b = stream_pos % 2;
+        const int b = stream_pos % n_stage;
         CK(cudaEventRecord(ev_used[b], st));
-        if (stream_pos + 2 < (int) stream_seq.size()) stream_kick(stream_pos + 2);
+        if (stream_pos + n_stage < (int) stream_seq.size()) stream_kick(stream_pos + n_stage);
         ++stream_pos;
     }
 
@@ -2090,7 +2095,8 @@ struct Engine {
 // ------------------------------------------------------------------------------------------------ expert placement
 /// The routed experts after the engine's buffers: all in VRAM when they fit in `vram_gib` (< 0: the free VRAM less a
 /// reserve), else the hybrid mode - every expert in host memory, the same number of VRAM slots per layer, a decode
-/// batch's other experts on the CPU pool and a prompt chunk's streamed through two staging buffers.
+/// batch's other experts on the CPU pool and a prompt chunk's streamed through staging buffers (double-buffered, or
+/// one with STRATA_Q36_SINGLE_STAGE=1).
 bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid_t, int slots, std::string& err) {
     const auto t0 = Clock::now();
     const auto& g = m.g;
@@ -2190,7 +2196,21 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     E.mtp_graph = false;                      // the MTP block's layer is hybrid either way
     E.hybrid_t = std::max(1, std::min(hybrid_t, E.use_mmq ? E.tmax : E.tmax));
     if (!E.use_mmq) E.hybrid_t = E.tmax;   // no streamed prompt path: every batch on slots + the pool
-    const size_t staging = E.use_mmq && E.main_hybrid ? 2 * (max_layer + kMmqTail) : 0;
+    const size_t staging = E.use_mmq && E.main_hybrid ? (size_t) E.n_stage * (max_layer + kMmqTail) : 0;
+    // the streamed prompt path needs the staging buffer(s) plus E.ecpu (allocated below) to fit; where they only just
+    // do not, shrink the attention scores buffer (256 -> 64 MB, the prompt attention then runs in more, smaller
+    // slices) so the staging fits - the same trade the MTP-only path above makes.
+    if (staging > 0 && E.kAttScoreFloats > ((size_t) 16 << 20)) {
+        const size_t need = staging + (size_t) E.tmax * (size_t) m.top_k * g.n_embd * 4 + ((size_t) 64 << 20);
+        if (need > fr) {
+            E.shrink_att((size_t) 16 << 20);
+            CK(cudaMemGetInfo(&fr, &tot));
+            budget2 = vram_gib >= 0 ? budget : (fr > reserve ? fr - reserve : 0);
+            std::fprintf(stderr, "strata-q36: the prompt staging (%.2f GiB) did not fit: the attention scores buffer at "
+                         "64 MB instead of 256 (more, smaller slices in a long prompt), %.2f GiB free now\n",
+                         (double) staging / (1 << 30), (double) fr / (1 << 30));
+        }
+    }
     size_t slot_bytes = budget2 > staging ? budget2 - staging : 0;
     if (slot_bytes + staging + ((size_t) 256 << 20) > fr) slot_bytes = fr > staging + ((size_t) 512 << 20) ? fr - staging - ((size_t) 512 << 20) : 0;
     // --expert-slots: that many per layer (tests: the same split with and without the MTP block)
@@ -2264,9 +2284,16 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     CK(cudaMalloc(&E.d_miss, T * Kp * 4));
     E.acts = (uint8_t*) std::malloc(T * C::kNativeActBytes + 64);
     CK(cudaEventCreateWithFlags(&E.ev_route, cudaEventDisableTiming));
+    if (std::getenv("STRATA_Q36_PLACE_DEBUG")) {
+        size_t f2 = 0, t2 = 0;
+        CK(cudaMemGetInfo(&f2, &t2));
+        std::fprintf(stderr, "strata-q36: staging alloc: n_stage=%d, max_layer=%.2f GiB (+%zu B), want=%.2f GiB, free=%.2f GiB\n",
+                     E.n_stage, (double) max_layer / (1 << 30), kMmqTail, (double) staging / (1 << 30),
+                     (double) f2 / (1 << 30));
+    }
     if (staging) {
         CK(cudaStreamCreateWithFlags(&E.cst, cudaStreamNonBlocking));
-        for (int b = 0; b < 2; ++b) {
+        for (int b = 0; b < E.n_stage; ++b) {
             CK(cudaMalloc(&E.stage[b], max_layer + kMmqTail));
             CK(cudaMemset(E.stage[b], 0, max_layer + kMmqTail));
             CK(cudaEventCreateWithFlags(&E.ev_copy[b], cudaEventDisableTiming));
