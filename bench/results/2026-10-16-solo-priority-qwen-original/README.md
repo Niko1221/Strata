@@ -1,5 +1,9 @@
 # Primary Qwen validation: single-engine priority, 2026-10-16
 
+Historical short-run evidence at `202f9fe`. The
+[follow-up soak and corrected-runtime comparison](../2026-10-16-solo-priority-qwen-soak/README.md)
+records the later prefill/failure-path fixes, one-hour workload and cancellation/recovery tests.
+
 This is the primary model comparison for a prospective upstream contribution.
 It uses Strata's default Qwen family, **non-abliterated Qwen3.8 Flash Next in
 ISTA-DASLab GSQ-RCO IQ3_S quantization**. The separate
