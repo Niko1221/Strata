@@ -646,6 +646,8 @@ struct Options {
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
     int64_t prompt_cache_every = 16384;
     bool prompt_cache_tail = false;   // optional extra checkpoint at an existing near-tail chunk boundary
+    /// --serve: the first checkpoint in every prompt_cache_every tokens of the conversation is kept (conv_cache.hpp)
+    bool prompt_cache_spread = false;
     /// --serve: a prompt read from token 0 is also checkpointed at its first turn boundary - the end of the system
     /// prompt, which every chat of the same client shares - when that is at least N tokens (0 = never)
     int64_t prompt_cache_root = 2048;
@@ -812,6 +814,10 @@ void usage() {
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
                  "  --prompt-cache-tail  --serve, single GPU: one extra checkpoint near the prompt's end, at an existing\n"
                  "                       chunk boundary (default off; requires --prompt-cache and --prompt-cache-every > 0)\n"
+                 "  --prompt-cache-spread  --serve: keep the first checkpoint in every --prompt-cache-every tokens of the\n"
+                 "                       conversation instead of only its last turns, so a request that departs far back\n"
+                 "                       (an agent's summarization call) reads at most that much again; give it room\n"
+                 "                       with --prompt-cache (a 131K conversation: 14; default off)\n"
                  "  --turn-token ID      --serve: the token that opens a chat turn (default 248045, <|im_start|>)\n"
                  "  --tail-role-token ID --serve: a turn of this role right before the last turn is left out of\n"
                  "                       the conversation checkpoint (a trailing effort turn; default -1 = off)\n"
@@ -2124,6 +2130,7 @@ int main(int argc, char** argv) {
             else o.conversation_cache_slots = (int) number;
         }
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
+        else if (a == "--prompt-cache-spread") o.prompt_cache_spread = true;
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
@@ -2343,6 +2350,15 @@ int main(int argc, char** argv) {
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
         std::fprintf(stderr, "strata serve: warning: conversation caching is disabled by %s\n",
                      o.prompt_cache == 0 ? "--prompt-cache 0" : "--conversation-cache-slots 0");
+    if (o.serve && o.prompt_cache_spread) {
+        if (o.prompt_cache < 4 || o.prompt_cache_every <= 0)
+            std::fprintf(stderr, "strata serve: --prompt-cache-spread needs --prompt-cache 4 or more and --prompt-cache-every "
+                                 "above 0: the checkpoints rotate by least recent use as without it\n");
+        else
+            std::fprintf(stderr, "strata serve: --prompt-cache-spread: of the %d checkpoints, the first in every %lld tokens of "
+                                 "the conversation stays; the rest rotate by least recent use\n",
+                         o.prompt_cache, (long long) o.prompt_cache_every);
+    }
     // parking with --layer-split saves every stage (SavedConversation::stage_images)
     // Layer split (multi-GPU): the later stages run layers [K_i, K_i+1) on their own GPUs (--split-device, default
     // the next visible ones); "auto" places the K from each GPU's free VRAM once the weights are in (below).  KV
@@ -8495,8 +8511,17 @@ int main(int argc, char** argv) {
                         for (size_t i = 0; i < checks.size(); ++i) pin_flags[i] = checks[i].pinned;
                         break;
                     }
-                const size_t victim = strata::program::conv_cache::eviction_victim(
-                    stamps.data(), stamps.size(), o.prompt_cache, tail_flags.get(), pin_flags.get());
+                size_t victim;
+                if (o.prompt_cache_spread) {   // the conversation's milestones stay (--prompt-cache-spread)
+                    std::vector<int64_t> lengths;
+                    lengths.reserve(checks.size());
+                    for (const ConvCheckpoint& k : checks) lengths.push_back((int64_t) k.ids.size());
+                    victim = strata::program::conv_cache::eviction_victim_spread(
+                        stamps.data(), lengths.data(), stamps.size(), o.prompt_cache, o.prompt_cache_every,
+                        tail_flags.get(), pin_flags.get());
+                } else
+                    victim = strata::program::conv_cache::eviction_victim(
+                        stamps.data(), stamps.size(), o.prompt_cache, tail_flags.get(), pin_flags.get());
                 checks.erase(checks.begin() + (std::ptrdiff_t) victim);
             }
             return true;
