@@ -25,6 +25,12 @@ bool conversation_kv_validate(const ConversationKv& image, const QsaState& state
                               int64_t upto, bool include_index, std::string& error);
 bool conversation_kv_restore(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
                              int64_t upto, bool include_index, std::string& error);
+// conversation_kv_save from `from` then conversation_kv_restore into `to`, without the host image: the same bytes go
+// straight from one state's authoritative K/V to the other's (both resident on the current device or host-mapped),
+// then `to`'s resident pages are invalidated or refilled as a restore does.  Both states must have the same layout
+// at `upto`; nothing is written otherwise.  Caller synchronizes the device first.
+bool conversation_kv_copy(const QsaState& from, const QsaState& to, const ModelGeometry& g, int64_t upto,
+                          bool include_index, std::string& error);
 // Diagnostic read-back after a synchronized restore. Uses 64 KiB of stack
 // workspace, compares authoritative bytes and resident draft-ring pages, and
 // fingerprints the authoritative payload only. Never changes model state.
@@ -60,6 +66,11 @@ bool conversation_checkpoint_save(ConversationCheckpoint& checkpoint, const Sess
                                   const ModelGeometry& g, std::string& error);
 bool conversation_checkpoint_restore(const ConversationCheckpoint& checkpoint, SessionState& session,
                                      const ModelGeometry& g, std::string& error);
+// conversation_checkpoint_save of `from` at `ids` then conversation_checkpoint_restore into `to`, without the host
+// copy: the running state goes device to device.  Both sessions must own the same layers; nothing is written
+// otherwise.
+bool conversation_checkpoint_copy(const SessionState& from, SessionState& to, const ModelGeometry& g,
+                                  const std::vector<int32_t>& ids, std::string& error);
 
 struct ConversationView {
     const std::vector<int32_t>& ids;

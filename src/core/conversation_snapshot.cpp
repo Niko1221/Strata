@@ -201,15 +201,9 @@ bool conversation_kv_validate(const ConversationKv& image, const QsaState& st, c
     return true;
 }
 
-bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
-                             int64_t upto, bool index, std::string& error) {
-    if (!conversation_kv_validate(image, st, g, upto, index, error)) return false;
-    const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
-    const auto dst = pools(st);
-    for (size_t i = 0; i < src.size(); ++i)
-        if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
-                return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
-            })) return false;
+namespace {
+// after a restore or a copy has written `st`'s authoritative K/V: its resident pages follow
+bool restore_residency(const QsaState& st, const ModelGeometry& g, int64_t upto, std::string& error) {
     // VRAM slots still contain the outgoing conversation. Resolve must refill
     // them from the restored authoritative pools before any attention reads.
     if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, nullptr);
@@ -224,6 +218,39 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
     if (status == cudaSuccess) return true;
     error = std::string("conversation snapshot residency restore: ") + cudaGetErrorString(status);
     return false;
+}
+}  // namespace
+
+bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
+                             int64_t upto, bool index, std::string& error) {
+    if (!conversation_kv_validate(image, st, g, upto, index, error)) return false;
+    const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    const auto dst = pools(st);
+    for (size_t i = 0; i < src.size(); ++i)
+        if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
+                return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
+            })) return false;
+    return restore_residency(st, g, upto, error);
+}
+
+bool conversation_kv_copy(const QsaState& from, const QsaState& to, const ModelGeometry& g, int64_t upto,
+                          bool index, std::string& error) {
+    Layout a{}, b{};
+    if (!layout(from, g, upto, index, a, error) || !valid(from, a, upto, error) ||
+        !layout(to, g, upto, index, b, error) || !valid(to, b, upto, error)) return false;
+    if (a.format != b.format || a.cells != b.cells || a.pooled_rows != b.pooled_rows || a.page_size != b.page_size ||
+        a.data != b.data || a.value_data != b.value_data || a.scales != b.scales ||
+        a.value_scales != b.value_scales || a.pooled != b.pooled) {
+        error = "conversation copy: the two K/V states differ";
+        return false;
+    }
+    const std::array<size_t,5> sizes = {a.data, a.value_data, a.scales, a.value_scales, a.pooled};
+    const auto src = pools(from), dst = pools(to);
+    for (size_t i = 0; i < sizes.size(); ++i)
+        if (sizes[i] && (!src[i] || !dst[i])) { error = "conversation copy: missing state buffer"; return false; }
+    for (size_t i = 0; i < sizes.size(); ++i)
+        if (!transfer(dst[i], src[i], sizes[i], error)) return false;
+    return restore_residency(to, g, upto, error);
 }
 
 bool conversation_kv_part_sizes(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index,

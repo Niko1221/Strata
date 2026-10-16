@@ -184,6 +184,39 @@ bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState&
     return true;
 }
 
+bool conversation_checkpoint_copy(const SessionState& from, SessionState& to, const ModelGeometry& g,
+                                  const std::vector<int32_t>& ids, std::string& error) {
+#if defined(STRATA_GPU_METAL)
+    ConversationCheckpoint c;   // the Metal window holds the running state: through its own save and restore
+    c.ids = ids;
+    return conversation_checkpoint_save(c, from, g, error) && conversation_checkpoint_restore(c, to, g, error);
+#endif
+    ConversationStateSizes z, zt;
+    if (!checkpoint_targets(from, g, ids.size(), z, error) || !checkpoint_targets(to, g, ids.size(), zt, error))
+        return false;
+    const size_t layers = owned_qsa(from);
+    if (z.gdn != zt.gdn || z.ple != zt.ple || z.tail != zt.tail || z.dead != zt.dead ||
+        z.block_pos != zt.block_pos || layers != owned_qsa(to) || !from.ple_hist != !to.ple_hist)
+        return fail(error, "the two sessions' running states differ");
+    if (!sync(error)) return false;
+    if (!copy(to.gdn_state, from.gdn_state, z.gdn, error) ||
+        !copy(to.ple_hist, from.ple_hist, from.ple_hist ? z.ple : 0, error)) return false;
+    for (size_t j = 0; j < layers; ++j) {
+        const auto& a = owned(from, j);
+        const auto& b = owned(to, j);
+        if (!copy(b.idx_tail, a.idx_tail, z.tail, error) || !copy(b.idx_dead, a.idx_dead, z.dead, error) ||
+            !copy(b.idx_block_pos, a.idx_block_pos, z.block_pos, error)) return false;
+        if (!ids.empty()) {   // as a restore: the spare pooled row from the opening state
+            const size_t row = ids.size() / strata::kernels::qsa_real_shapes().idx_block;
+            if (!copy(b.idx_pooled + row * g.idx_key_dim, a.idx_dead, z.dead, error)) return false;
+        }
+    }
+    const size_t tokens = ids.size();
+    to.ple_prev[0] = tokens >= 2 ? ids[tokens - 2] : -1;
+    to.ple_prev[1] = tokens >= 1 ? ids[tokens - 1] : -1;
+    return sync(error);
+}
+
 bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionState& ss,
                                      const ModelGeometry& g, std::string& error) {
 #if defined(STRATA_GPU_METAL)

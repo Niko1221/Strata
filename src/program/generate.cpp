@@ -9861,6 +9861,15 @@ int main(int argc, char** argv) {
             in_lines.pop_front();
             return true;
         };
+        // STRATA_SLOT_COPY_DIRECT=1 (opt-in): the copies below go from one session's state straight to the other's
+        // (conversation_checkpoint_copy, conversation_kv_copy) - the same bytes, without the host image the save +
+        // restore pair builds in pageable memory and reads back, nor a device sync per layer.  Unset: as before.
+        const bool slot_copy_direct = [] {
+            const char* v = std::getenv("STRATA_SLOT_COPY_DIRECT");
+            return v != nullptr && std::strcmp(v, "1") == 0;
+        }();
+        if (slot_copy_direct && o.batch > 0)
+            std::fprintf(stderr, "strata batch: STRATA_SLOT_COPY_DIRECT=1: slot copies go session to session\n");
         // the session a request just left behind (its prompt) -> slot b's sessions, on every stage
         auto copy_to_slot = [&](int b, const std::vector<int32_t>& ids, std::string& e) -> bool {
             const int64_t upto = (int64_t) ids.size();
@@ -9869,18 +9878,26 @@ int main(int argc, char** argv) {
                 strata::core::SessionState& to = *bslot_ss[k][(size_t) b];
                 const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
-                strata::core::ConversationCheckpoint ck;
-                ck.ids = ids;
-                if (!strata::core::conversation_checkpoint_save(ck, from, g, e) ||
-                    !strata::core::conversation_checkpoint_restore(ck, to, g, e))
-                    return false;
-                for (int64_t j = 0; j < from.qsa_alloc; ++j) {
-                    strata::core::ConversationKv img;
-                    if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
+                if (slot_copy_direct) {
+                    if (!strata::core::conversation_checkpoint_copy(from, to, g, ids, e)) return false;
+                    for (int64_t j = 0; j < from.qsa_alloc; ++j)
+                        if (!strata::core::conversation_kv_copy(from.qsa_states[from.qsa_ord0 + j],
+                                                                to.qsa_states[to.qsa_ord0 + j], g, upto, true, e))
+                            return false;
+                } else {
+                    strata::core::ConversationCheckpoint ck;
+                    ck.ids = ids;
+                    if (!strata::core::conversation_checkpoint_save(ck, from, g, e) ||
+                        !strata::core::conversation_checkpoint_restore(ck, to, g, e))
                         return false;
-                    if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
-                    if (!strata::core::conversation_kv_restore(img, to.qsa_states[to.qsa_ord0 + j], g, upto, true, e))
-                        return false;
+                    for (int64_t j = 0; j < from.qsa_alloc; ++j) {
+                        strata::core::ConversationKv img;
+                        if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
+                            return false;
+                        if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
+                        if (!strata::core::conversation_kv_restore(img, to.qsa_states[to.qsa_ord0 + j], g, upto, true, e))
+                            return false;
+                    }
                 }
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
             }
@@ -9891,9 +9908,12 @@ int main(int argc, char** argv) {
                 const strata::core::OnDevice on_mtp(mtp.device());
                 strata::core::ConversationKv image;
                 if (!mtp.idle(e) || !slot_mtp[(size_t) b]->idle(e) ||
-                    !strata::core::conversation_kv_save(image, mtp.kv_state(), draft_geometry, upto, false, e) ||
-                    !strata::core::conversation_kv_restore(image, slot_mtp[(size_t) b]->kv_state(),
-                                                           draft_geometry, upto, false, e) ||
+                    !(slot_copy_direct
+                          ? strata::core::conversation_kv_copy(mtp.kv_state(), slot_mtp[(size_t) b]->kv_state(),
+                                                               draft_geometry, upto, false, e)
+                          : strata::core::conversation_kv_save(image, mtp.kv_state(), draft_geometry, upto, false, e) &&
+                            strata::core::conversation_kv_restore(image, slot_mtp[(size_t) b]->kv_state(),
+                                                                  draft_geometry, upto, false, e)) ||
                     cudaDeviceSynchronize() != cudaSuccess)
                     return false;
                 slot_mtp[(size_t) b]->set_prompt_len(upto);
@@ -9914,6 +9934,8 @@ int main(int argc, char** argv) {
                 if (at != nullptr) {
                     if (!strata::core::conversation_checkpoint_restore(k == 0 ? *at : at->stage_parts[k - 1], to, g, e))
                         return false;
+                } else if (slot_copy_direct) {
+                    if (!strata::core::conversation_checkpoint_copy(from, to, g, bs[(size_t) b].ids, e)) return false;
                 } else {
                     strata::core::ConversationCheckpoint ck;
                     ck.ids = bs[(size_t) b].ids;
@@ -9922,6 +9944,12 @@ int main(int argc, char** argv) {
                         return false;
                 }
                 for (int64_t j = 0; j < from.qsa_alloc; ++j) {
+                    if (slot_copy_direct) {
+                        if (!strata::core::conversation_kv_copy(from.qsa_states[from.qsa_ord0 + j],
+                                                                to.qsa_states[to.qsa_ord0 + j], g, upto, true, e))
+                            return false;
+                        continue;
+                    }
                     strata::core::ConversationKv img;
                     if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
                         return false;
@@ -9936,9 +9964,12 @@ int main(int argc, char** argv) {
                 const strata::core::OnDevice on_mtp(mtp.device());
                 strata::core::ConversationKv image;
                 if (!slot_mtp[(size_t) b]->idle(e) || !mtp.idle(e) ||
-                    !strata::core::conversation_kv_save(image, slot_mtp[(size_t) b]->kv_state(),
-                                                        draft_geometry, upto, false, e) ||
-                    !strata::core::conversation_kv_restore(image, mtp.kv_state(), draft_geometry, upto, false, e) ||
+                    !(slot_copy_direct
+                          ? strata::core::conversation_kv_copy(slot_mtp[(size_t) b]->kv_state(), mtp.kv_state(),
+                                                               draft_geometry, upto, false, e)
+                          : strata::core::conversation_kv_save(image, slot_mtp[(size_t) b]->kv_state(),
+                                                               draft_geometry, upto, false, e) &&
+                            strata::core::conversation_kv_restore(image, mtp.kv_state(), draft_geometry, upto, false, e)) ||
                     cudaDeviceSynchronize() != cudaSuccess)
                     return false;
                 mtp.set_prompt_len(upto);

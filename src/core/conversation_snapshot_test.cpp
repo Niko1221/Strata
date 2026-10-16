@@ -262,6 +262,46 @@ void full_session(int fmt, int mode, int experts) {
         ConversationKvReuse wrong{a.kv,65,65,{}};
         check(!conversation_snapshot_capture_bytes(wrong,view,ss,g,nullptr,peak,err),"a draft image's K/V is not a stage's reuse");
     }
+    {
+        // STRATA_SLOT_COPY_DIRECT: another session gets the running state save + restore gives it, device to device
+        auto session=[&](Fixture& f, SessionState& s) {
+            f.g=g;
+            s.max_cells=96; s.qsa_states=&f.state;
+            s.layer_hi=g.n_layers; s.gdn_alloc=g.n_gdn_layers(); s.qsa_alloc=g.n_qsa_layers();
+            f.alloc(s.gdn_state,sizes.gdn); f.alloc(s.ple_hist,sizes.ple);
+            f.alloc(f.state.idx_tail,sizes.tail); f.alloc(f.state.idx_dead,sizes.dead);
+            f.alloc(f.state.idx_block_pos,sizes.block_pos);
+            for (const auto& [p,n] : std::vector<std::pair<void*,size_t>>{
+                     {s.gdn_state,sizes.gdn},{s.ple_hist,sizes.ple},{f.state.idx_tail,sizes.tail},
+                     {f.state.idx_dead,sizes.dead},{f.state.idx_block_pos,sizes.block_pos},{f.state.idx_pooled,f.sizes[4]}})
+                cuda_check(cudaMemset(p,55,n));
+        };
+        Fixture other(fmt,mode), ref(fmt,mode), third(fmt,mode);
+        SessionState s2,sref,s3;
+        session(other,s2); session(ref,sref); session(third,s3);
+        fill(13);
+        ConversationCheckpoint c;
+        c.ids=ids;
+        check(conversation_checkpoint_save(c,ss,g,err) && conversation_checkpoint_restore(c,sref,g,err),
+              "reference running-state save + restore");
+        check(conversation_checkpoint_copy(ss,s2,g,ids,err),"direct running-state copy");
+        ConversationCheckpoint x,y;
+        x.ids=y.ids=ids;
+        check(conversation_checkpoint_save(x,s2,g,err) && conversation_checkpoint_save(y,sref,g,err),"read back both");
+        check(x.gdn==y.gdn && x.ple==y.ple && x.tails==y.tails && x.dead==y.dead && x.block_pos==y.block_pos &&
+              x.gdn==c.gdn && x.dead==c.dead,"a direct running-state copy holds what save + restore gives");
+        std::vector<uint8_t> p1(other.sizes[4]),p2(ref.sizes[4]);
+        cuda_check(cudaMemcpy(p1.data(),other.state.idx_pooled,p1.size(),cudaMemcpyDeviceToHost));
+        cuda_check(cudaMemcpy(p2.data(),ref.state.idx_pooled,p2.size(),cudaMemcpyDeviceToHost));
+        check(p1==p2,"a direct running-state copy rebuilds the spare pooled row as a restore does");
+        check(s2.ple_prev[0]==sref.ple_prev[0] && s2.ple_prev[1]==sref.ple_prev[1],"and its PLE token window");
+        s3.ple_hist=nullptr;   // a session that does not hold the same running state
+        std::vector<uint8_t> before(sizes.gdn),after(sizes.gdn);
+        cuda_check(cudaMemcpy(before.data(),s3.gdn_state,before.size(),cudaMemcpyDeviceToHost));
+        check(!conversation_checkpoint_copy(ss,s3,g,ids,err),"a direct running-state copy refuses another layout");
+        cuda_check(cudaMemcpy(after.data(),s3.gdn_state,after.size(),cudaMemcpyDeviceToHost));
+        check(before==after,"the refused running-state copy wrote nothing");
+    }
     check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"restore A after stage images");
     check(conversation_checkpoint_restore(a.checkpoints[0],ss,g,err),"restore early running checkpoint");
     std::vector<uint8_t> spare(sizes.dead);
@@ -313,6 +353,37 @@ int main() {
             check(equal(a,restored),"A/B/A byte-exact K/V and indexer state");
             uint64_t fingerprint = 0;
             check(conversation_kv_verify(a,f.state,f.g,upto,index,fingerprint,err),"verify restored authoritative and resident bytes without rewriting them");
+            {
+                // STRATA_SLOT_COPY_DIRECT: state to state gives what save + restore gives, with no host image
+                Fixture to(fmt,mode), ref(fmt,mode);
+                f.fill(13); to.fill(77); ref.fill(77);
+                cuda_check(cudaDeviceSynchronize());
+                ConversationKv image,got,want;
+                check(conversation_kv_save(image,f.state,f.g,upto,index,err) &&
+                      conversation_kv_restore(image,ref.state,ref.g,upto,index,err),"reference save + restore");
+                check(conversation_kv_copy(f.state,to.state,f.g,upto,index,err),"direct K/V copy");
+                cuda_check(cudaDeviceSynchronize());
+                check(conversation_kv_save(got,to.state,to.g,upto,index,err) &&
+                      conversation_kv_save(want,ref.state,ref.g,upto,index,err) && equal(got,want) && equal(got,image),
+                      "a direct K/V copy holds the bytes save + restore gives");
+                uint64_t copied=0;
+                check(conversation_kv_verify(image,to.state,to.g,upto,index,copied,err),
+                      "a direct K/V copy's resident pages as a restore leaves them");
+                if (mode==1) {
+                    std::vector<int32_t> table((size_t)to.state.n_pages);
+                    cuda_check(cudaMemcpy(table.data(),to.state.page_table,table.size()*4,cudaMemcpyDeviceToHost));
+                    check(std::all_of(table.begin(),table.end(),[](int32_t x){return x==-1;}),
+                          "a direct K/V copy invalidates the target's stale VRAM pages");
+                }
+                // another layout is refused before anything is written
+                Fixture other(fmt==kKvF16 ? kKvInt8 : kKvF16,mode);
+                other.fill(55);
+                ConversationKv before,after;
+                check(conversation_kv_save(before,other.state,other.g,upto,index,err),"other layout before");
+                check(!conversation_kv_copy(f.state,other.state,f.g,upto,index,err),"a direct K/V copy refuses another layout");
+                check(conversation_kv_save(after,other.state,other.g,upto,index,err) && equal(before,after),
+                      "the refused copy wrote nothing");
+            }
             {
                 // disk save streams the same bytes as a captured image, without the host copy
                 SessionKvSource src;

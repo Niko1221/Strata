@@ -138,6 +138,13 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
   engine copies its state back (50-60 ms for a short conversation) instead of reading the history again - also for
   a client that drops the reply's thinking from the history (the checkpoint matches up to the new turn). A new
   conversation takes an empty slot, else the one used longest ago.
+- **The copies between the main session and a slot** (every admission reads its prompt on the main session and is
+  copied into its slot; a slot that holds the start of a prompt is copied back first) save a host image of each
+  layer's K/V and of the running state and restore it, with a device sync per layer. With
+  `STRATA_SLOT_COPY_DIRECT=1` (opt-in, CUDA) they go from one session's state straight to the other's instead
+  (`conversation_kv_copy`, `conversation_checkpoint_copy`): the same bytes, no pageable image to allocate and read
+  back, and the target's resident K/V pages invalidated or refilled as a restore does. Unset, the copies are as
+  before.
 - Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 
