@@ -106,14 +106,19 @@ see the results and remaining validation limits below.
 
 The primary Windows comparison uses Strata's default, non-abliterated Qwen model
 family in ISTA-DASLab IQ3_S quantization; see the
-[original-model report](../bench/results/2026-10-16-solo-priority-qwen-original/README.md).
+[one-hour multi-conversation soak, lifecycle checks and final comparison](../bench/results/2026-10-16-solo-priority-qwen-soak/README.md)
+and the [earlier original-model comparison](../bench/results/2026-10-16-solo-priority-qwen-original/README.md).
 [SC117 deployment results](../bench/results/2026-10-16-solo-priority-rtx3090/README.md)
 are supplementary and are not pooled with those measurements. Model provenance,
 quantization, runtime revision and matched settings must accompany contribution
 benchmarks. Repeat the original-model comparison after relevant runtime changes.
 Start with a controlled opt-in deployment: watch failed streams, short TTFT,
 `resume_prefix_missed`, memory and throughput under the actual client workload.
-A successful short benchmark is not an overnight reliability test.
+The hour completed 94 tool round trips and 28 exact fact audits, with 301 pauses
+and no processed-prefix losses. It also exposed failure paths that were fixed
+and retested. Short text TTFT was 0.669 s median and 7.054 s p95, but reached
+46.503 s during a partial-cache-hit prefill. One hour is not overnight reliability
+or a guarantee that every small request will start immediately.
 
 Keep the change as a Git commit on a branch based on a known upstream release.
 Before upgrading, save the current commit and a private copy of the server config;
