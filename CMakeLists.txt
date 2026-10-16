@@ -378,6 +378,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/native_qsa_score.cu
                           src/kernels/cuda/ple.cu
                           src/kernels/cuda/kv_q8.cu
+                          src/kernels/cuda/q36_kv_q8.cu
                           src/kernels/cuda/kv_stream.cu
                           src/kernels/cuda/kv_q4.cu
                           src/kernels/cuda/fused_gr.cu
@@ -1045,6 +1046,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(kv_q8_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(kv_q8_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME kv_q8_parity COMMAND kv_q8_parity)
+
+  # docs/Q36_INT8_KV.md Phase 1: the Qwen3.6 engine's q8_0 primitive (32 int8 + one fp16 scale per block),
+  # round-tripped against a host reference (GPU, synthetic, no model).
+  add_executable(q36_kv_q8_parity src/kernels/q36_kv_q8_parity.cpp)
+  target_include_directories(q36_kv_q8_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(q36_kv_q8_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME q36_kv_q8_parity COMMAND q36_kv_q8_parity)
 
   # KV streaming (docs/kv-streaming-design.md): streamed vs resident attention, bitwise (GPU, synthetic, no model).
   add_executable(kv_stream_parity src/kernels/kv_stream_parity.cpp)

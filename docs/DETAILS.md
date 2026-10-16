@@ -5,6 +5,7 @@ New here? Start with the [README](../README.md); installing step by step is in [
 [MODELS.md](MODELS.md), common problems in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 > **On this page:** [Speed](#speed-measured) · [Other GPUs](#other-gpus-estimated) · [Which model?](#which-model) ·
+> [Qwen3.6-35B-A3B](#qwen36-35b-a3b-its-own-engine-strata-q36) ·
 > [Requirements](#before-you-start) · [Windows](#windows) · [Linux](#linux) · [API](#using-it) ·
 > [MCP tools](#tools-from-mcp-servers) · [MCP server](#manage-strata-from-your-ai-assistant-mcp-server) ·
 > [Images](#images-vision) ·
@@ -420,6 +421,53 @@ does and the manual workflow are in **[docs/UNSLOTH_Q4.md](UNSLOTH_Q4.md)**. On 
 tokens/s, most experts read from the SSD; it picks the same tokens as llama.cpp on the same file at 97.5-99% of
 the positions of short greedy answers, 90-91% after a 16K prompt, differing mostly at near-ties
 ([measured](UNSLOTH_Q4.md#quality-against-llamacpp-on-the-same-file)).
+
+## Qwen3.6-35B-A3B (its own engine, `strata-q36`)
+
+A 35B mixture of experts with 3B active (256 experts, top-8), a smaller cousin of Qwen3.8-Flash-Next with the same
+tokenizer. It runs on an engine path of its own (`src/qwen35`, the `strata-q36` path; `strata` switches to it from the
+file's `qwen35moe` architecture), not through the pack/arena path the models above use. Setup offers it as
+`--family qwen36` (models `UD-Q4_K_XL`, `UD-Q6_K_XL`, `Q8_0`). NVIDIA (CUDA) and AMD (HIP) only; the Intel Arc (SYCL)
+engine refuses it. It reads the GGUF as it is (no pack, no expert profile, no separate MTP draft layer), keeps every
+expert it can in VRAM and computes the rest on the CPU pool (the hybrid mode), and drafts with the file's own MTP
+block.
+
+**Engine arguments** (the server config's `args`, or `ENGINE_ARGS_EXTRA` in the container):
+
+- `--kv int8|fp32` (default `fp32`, byte-identical): the K/V cache as q8_0 (int8 codes + fp16 scale) instead of fp32,
+  ~11 KiB/token instead of 44. Measured on an RTX 4060 Max-Q Laptop (8 GB), int8 starts and decodes at **32,768** tokens
+  where fp32 stops at 16,384 — 2x the context window. The full design note and numbers:
+  [Q36_INT8_KV.md](Q36_INT8_KV.md).
+- `--mtp N` (0..7): how many drafts the file's own MTP block offers per step; setup writes 2.
+- `--max-context N` (or `--ctx N`), `--chunk N` (or `--prefill auto|N`): the context length and the prompt chunk.
+  `auto` is 512 when every expert fits in VRAM, 2048 in the hybrid mode.
+- `--expert-vram N`: a GiB budget for the routed experts, instead of the free VRAM less a reserve.
+- `--expert-slots N`, `--hybrid-rows N`, `--pool-workers N` (or `--cpu-threads N`): the hybrid mode's per-layer VRAM
+  slots, its batch rows and its CPU pool threads (used by the tests and for tuning).
+- `--bench-pp N --bench-tg N`: llama-bench's shapes — a prompt of N tokens, then N generated one at a time.
+
+**Switches** (`STRATA_Q36_*` in the environment; `docker/run.sh` and the server forward them unchanged):
+
+- `STRATA_Q36_NO_MMQ=1` turns the MMQ prompt path off (on by default). The prompt then has no streamed path and every
+  batch row runs on the CPU pool: measured ~20x slower prefill (310.1 vs 16.6 tok/s at pp512, 32K, `--kv int8`, the 8 GB
+  card), and decode is a wash (this model's 18.75 GiB of experts fit in 8 GiB neither way). **Do not reach for it to work
+  around a staging `out of memory`** — that is what `STRATA_Q36_SINGLE_STAGE=1` is for.
+- `STRATA_Q36_SINGLE_STAGE=1`: one expert-streaming staging buffer instead of two, halving the prompt staging VRAM
+  (1.10 GiB -> 0.55 GiB). Together with `--kv int8` it is what lets 32K start on the 8 GB card.
+- `STRATA_Q36_PLACE_DEBUG=1`: the engine prints its expert-placement arithmetic (the chunk rule, the staging
+  allocation, the free VRAM at each step) — to see why a context starts or does not, not to time.
+- `STRATA_Q36_NO_MTP_CPU=1`: the plain hybrid mode for every layer. By default the main layers' experts can all sit in
+  VRAM while the MTP block's go to slots + the CPU pool (its drafts only).
+- `STRATA_Q36_KEEP_PACKED=1`: keep the packed Q8_0 decode copies even when giving them back would let every routed
+  expert fit in VRAM. The default drops them — the decode then reads the GGUF layout, bitwise the same outputs, a
+  little slower — instead of running the hybrid mode.
+- `STRATA_Q36_STREAM_ALL=1`: stream a whole layer's experts from host memory in one copy (the first version,
+  PCIe-bound); the default copies runs of consecutive experts from the same source.
+- `STRATA_Q36_BLAS_F32`: use the cuBLAS / hipBLAS SGEMM for the FP32 matmuls (the router, the GDN alpha/beta) instead
+  of the split-K kernel.
+- `STRATA_Q36_FIXED_SLOTS`: keep the expert slots as placed, never rebalance them (tests).
+
+The default path — `--kv fp32`, MMQ on, two staging buffers — stays byte-identical to the last release.
 
 ## Before you start
 
