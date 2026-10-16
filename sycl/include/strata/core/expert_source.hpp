@@ -676,6 +676,9 @@ private:
     /// the RAM-resident copy as pinned chunks of kComplementChunk bytes (no blob crosses one) when one pinned allocation
     /// of the whole copy is refused (DG2 refuses one of 4 GiB or more); empty = one allocation (complement_host_)
     std::vector<uint8_t*> complement_chunks_;
+    /// STRATA_RESIDENT_TOUCH=1: re-touches the pinned chunks after each burst of system reclaim (expert_source.cpp)
+    std::thread keeper_;
+    std::atomic<bool> keeper_stop_{false};
     static constexpr uint64_t kComplementChunk = 1ull << 31;
     uint8_t* complement_at(uint64_t off) const {
         return complement_chunks_.empty() ? (uint8_t*) complement_host_ + off

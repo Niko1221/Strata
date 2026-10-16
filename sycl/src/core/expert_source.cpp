@@ -590,6 +590,8 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
 }
 
 void FileExpertSource::close() {
+    keeper_stop_.store(true);   // STRATA_RESIDENT_TOUCH: it reads the chunks freed below
+    if (keeper_.joinable()) keeper_.join();
     inputs_.clear();
     for (uint8_t* c : complement_chunks_) (void) DPCT_CHECK_ERROR(sycl::free(c, dpct::get_in_order_queue()));
     complement_chunks_.clear();
@@ -2190,6 +2192,59 @@ bool FileExpertSource::pin_cache_complement(
                  (double) resident_bytes() / 1073741824.0, (double) pinned_bytes() / 1073741824.0,
                  std::chrono::duration<double>(std::chrono::steady_clock::now() - pin_t0).count(),
                  note.empty() ? "" : "; ", note.c_str());
+    // STRATA_RESIDENT_TOUCH=1, the pinned chunks (A770 under xe, swap on): reclaim runs the xe shrinker, which backs the
+    // driver's idle host buffers up to shmem (xe_bo_shrink -> ttm_backup, only while swap exists); the CPU pool then
+    // restores them one major fault at a time in decode: 17-62K major faults / 2 s on /dev/dri/renderD128, the pool
+    // at 20-22 GB/s instead of 30 (perf -e major-faults, host-faults.txt). The 28 GB load itself is what drives
+    // reclaim, through to the prompt. So a keeper thread watches /proc/vmstat and, once reclaim has been quiet for 2 s
+    // after a burst, reads one byte of every 4 KiB page on 4 threads: the restore is paid there (the prompt, an idle
+    // server) instead of in the pool. A touch while nothing was taken back costs ~0.3 s of one thread per 18 GiB.
+    static const bool touch_on = [] { const char* v = std::getenv("STRATA_RESIDENT_TOUCH"); return v != nullptr && std::atoi(v) != 0; }();
+    if (touch_on && !complement_chunks_.empty()) {
+        keeper_stop_.store(false);
+        keeper_ = std::thread([this] {
+            auto reclaimed = [] {
+                std::FILE* f = std::fopen("/proc/vmstat", "r");
+                if (f == nullptr) return (uint64_t) 0;
+                char k[64]; unsigned long long v; uint64_t s = 0;
+                while (std::fscanf(f, "%63s %llu", k, &v) == 2)
+                    if (!std::strcmp(k, "pgscan_kswapd") || !std::strcmp(k, "pgscan_direct")) s += v;
+                std::fclose(f);
+                return s;
+            };
+            uint64_t last = reclaimed();
+            bool dirty = true;   // the load just reclaimed: touch once it is quiet
+            int quiet = 0;
+            while (!keeper_stop_.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                const uint64_t now = reclaimed();
+                if (now != last) { dirty = true; quiet = 0; last = now; continue; }
+                if (!dirty || ++quiet < 4) continue;
+                dirty = false;
+                const auto t0 = std::chrono::steady_clock::now();
+                std::vector<std::pair<const uint8_t*, uint64_t>> items;   // 64 MiB work items
+                for (size_t i = 0; i < complement_chunks_.size(); ++i) {
+                    const uint64_t n = std::min<uint64_t>(kComplementChunk, complement_bytes_ - (uint64_t) i * kComplementChunk);
+                    for (uint64_t o = 0; o < n; o += 64ull << 20)
+                        items.push_back({complement_chunks_[i] + o, std::min<uint64_t>(64ull << 20, n - o)});
+                }
+                std::atomic<size_t> next{0};
+                std::atomic<uint64_t> sink{0};
+                std::vector<std::thread> th;
+                for (int t = 0; t < 4; ++t)
+                    th.emplace_back([&] {
+                        uint64_t s = 0;
+                        for (size_t i; !keeper_stop_.load(std::memory_order_relaxed) && (i = next.fetch_add(1)) < items.size();)
+                            for (uint64_t o = 0; o < items[i].second; o += 4096) s += ((const volatile uint8_t*) items[i].first)[o];
+                        sink.fetch_add(s, std::memory_order_relaxed);
+                    });
+                for (auto& x : th) x.join();
+                std::fprintf(stderr, "FileExpertSource: STRATA_RESIDENT_TOUCH: %.2f GiB touched after reclaim in %.2f s\n",
+                             (double) complement_bytes_ / 1073741824.0,
+                             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() + (sink.load() == 1 ? 1e-9 : 0));
+            }
+        });
+    }
     if (lend)
         std::fprintf(stderr, "FileExpertSource: %lld of the prompt path's %lld lendable slots keep their experts in RAM "
                              "too%s\n", (long long) complement_lent_slots_, (long long) (n_slots - lend_from_slot),
