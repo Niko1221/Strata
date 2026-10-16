@@ -4530,6 +4530,18 @@ class UserArgs(unittest.TestCase):
         new, _ = runconfig.apply(cfg, {"vram_reserve_mib": 1200})
         self.assertEqual((new["args"], new["user_args"]), (["--vram-reserve-mib", "700"], ["--vram-reserve-mib", "1200"]))
 
+    def test_the_split_and_gpu_order_checks_see_user_args(self):
+        """The layer-split and GPU-order checks read args with user_args over them: a user's own --peer-device is not
+        given a --layer-split beside it (the engine refuses the pair, #665), and their own split keeps the card order."""
+        from serve.server import ordered_gpus
+        cfg = {"gpu": [0, 1], "args": ["--pack", "p"], "user_args": ["--peer-device", "1"]}
+        self.assertEqual(engine_args(cfg), ["--pack", "p", "--peer-device", "1"])
+        self.assertEqual(engine_args({**cfg, "user_args": []}), ["--pack", "p", "--layer-split", "auto"])  # as before
+        fast_first = {0: 8448.0 * 2610, 1: 4608.0 * 2575}
+        self.assertEqual(ordered_gpus({**cfg, "user_args": []}, fast_first), [1, 0])
+        self.assertEqual(ordered_gpus(cfg, fast_first), [0, 1])
+        self.assertEqual(ordered_gpus({**cfg, "user_args": ["--layer-split", "24"]}, fast_first), [0, 1])
+
 
 class SilentEngine(unittest.TestCase):
     """#481: an engine that prints nothing for engine_silence_s during a request (or never acknowledges a STOP) has

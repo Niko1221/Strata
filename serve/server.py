@@ -2566,8 +2566,9 @@ def layer_split_value(cfg: dict) -> str:
 
 def layer_split_of(cfg: dict) -> bool:
     """Several GPUs in the config are a layer split, unless the args put the later card(s) to another use: with
-    --peer-device the second card is an expert-cache tier, and the engine refuses that beside --layer-split (#665)."""
-    return len(gpu_list(cfg)) > 1 and "--peer-device" not in cfg["args"]
+    --peer-device the second card is an expert-cache tier, and the engine refuses that beside --layer-split (#665).
+    The args are the ones the engine gets: setup's with "user_args" over them (config_args)."""
+    return len(gpu_list(cfg)) > 1 and "--peer-device" not in config_args(cfg)
 
 
 def user_args_of(cfg: dict) -> list[str]:
@@ -2599,11 +2600,17 @@ def merge_user_args(args: list[str], user: list[str]) -> list[str]:
     return out + user
 
 
+def config_args(cfg: dict) -> list[str]:
+    """The config's engine options as the engine gets them: "args" with "user_args" over them.  Every check that looks
+    at the options (the layer split, the GPU order) reads this, so a user's own --peer-device or --layer-split counts."""
+    return merge_user_args(list(cfg.get("args") or []), user_args_of(cfg))
+
+
 def engine_args(cfg: dict) -> list[str]:
     """The engine's arguments: the config's, with "user_args" over them (user_args_of), and with several GPUs the
     layer split across them ("layer_split" in the config: "auto" by default, or the first layer of each later GPU's
     share, e.g. "18" or "16,32"; see layer_split_value)."""
-    args = merge_user_args(list(cfg["args"]), user_args_of(cfg))
+    args = config_args(cfg)
     # #1322: a config with a "vision" section but without --vision in its args (written by an older setup run, or edited by
     # hand) advertised images and then refused every picture ("this engine was started without --vision").  The section
     # says images are wanted: start the engine with them, and keep the encoder's VRAM free as setup does for a GPU encoder
@@ -2792,7 +2799,7 @@ def ordered_gpus(cfg: dict, scores=None, vrams=None) -> list[int]:
     gl = gpu_list(cfg)
     if len(gl) < 2 or cfg.get("gpu_order") == "as_given":
         return gl
-    args = cfg.get("args") or []
+    args = config_args(cfg)
     if "--peer-device" in args or "--layer-split" in args or layer_split_value(cfg) != "auto":
         return gl
     hip = cfg.get("backend") == "hip"
