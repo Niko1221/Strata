@@ -555,8 +555,10 @@ class ParkMainSession(unittest.TestCase):
         self.assertTrue(e._claim_park([1] * 60).startswith(" park="))
         e = self.e()
         e.main_held = [7] * 50000
-        e.slot_held[3] = [7] * 48000                                     # a slot holds 96% of it already
+        e.slot_held[3] = [7] * 49000                                     # a slot holds 98% of it already
         self.assertEqual(e._claim_park([1] * 60), "")
+        e.slot_held[3] = [7] * 48000                                     # 96%: the copy is cheaper than the 2K tail
+        self.assertEqual(e._claim_park([1] * 60), " park=3")             # into its own older copy
 
     def test_parking_inherits_the_main_history_last_use_and_does_not_renew_its_value(self):
         e = self.e()
@@ -624,7 +626,7 @@ class ParkMainSession(unittest.TestCase):
 
     def test_an_invalid_copy_does_not_count_as_already_kept(self):
         e = self.e()
-        e.slot_held[3] = [7] * 48000                      # 96% of the main conversation, but no longer usable
+        e.slot_held[3] = [7] * 49000                      # 98% of the main conversation, but no longer usable
         e.slot_cache_valid[3] = False
         self.assertIsNotNone(self.dest(e))
         e.slot_cache_valid[3] = True
@@ -726,7 +728,7 @@ class PolicyTunables(unittest.TestCase):
         got = slot_policy.configure({"STRATA_SLOT_TTL_MAX_S": "240", "STRATA_SLOT_PARK_MIN_VALUE": "x"})
         self.assertEqual(got, {"ttl_max_s": 240.0,
                                "expired_keep_score": 0.01, "idle_value_zero_s": 1800.0, "park_value_ratio": 2.0,
-                               "park_min_value": 0.01})
+                               "park_min_value": 0.01, "park_kept_share": 0.98})
         self.assertAlmostEqual(slot_policy.cache_ttl(100000), 180.0)     # the whole curve doubles
         self.assertAlmostEqual(slot_policy.cache_ttl(10 ** 6), 240.0)
         self.assertEqual(slot_policy.configure({})["ttl_max_s"], 120.0)

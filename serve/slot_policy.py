@@ -12,8 +12,11 @@ EXPIRED_KEEP_SCORE = 0.01    # STRATA_SLOT_EXPIRED_KEEP_SCORE: an expired histor
 PARK_VALUE_RATIO = 2.0       # STRATA_SLOT_PARK_VALUE_RATIO: a park takes an expired history worth keeping only when the
                              # main session's conversation is worth at least this many times more; 0: never
 IDLE_VALUE_ZERO_S = 1800.0  # STRATA_SLOT_IDLE_VALUE_ZERO_S: idle age when expired value reaches zero; 0 disables decay
-PARK_MIN_VALUE = 0.01        # STRATA_SLOT_PARK_MIN_VALUE: the main session's conversation is parked only while its value
-                             # (stale_retention at its idle age) is at least this; 0.01 is EXPIRED_KEEP_SCORE's default
+PARK_KEPT_SHARE = 0.98       # STRATA_SLOT_PARK_KEPT_SHARE: a slot holding at least this share of the main session's
+                             # conversation already keeps it (no park); the rest is read again when it comes back
+PARK_MIN_VALUE = 0.01        # STRATA_SLOT_PARK_MIN_VALUE: the main session's conversation is parked only while its
+                             # value (stale_retention at its idle age) is at least this; 0.01 is EXPIRED_KEEP_SCORE's
+                             # default
 TTL_MAX_S = 120.0            # STRATA_SLOT_TTL_MAX_S: protection at 262144 tokens; the whole curve scales with it
 _TTL_SHAPE = ((0, 0.0), (500, 0.1), (2000, 2.0), (8000, 10.0),
               (32000, 45.0), (50000, 65.0), (100000, 90.0), (MAX_CACHE_TOKENS, 120.0))
@@ -23,7 +26,7 @@ TTL_POINTS = _TTL_SHAPE
 def configure(env) -> dict:
     """Read the tunables from `env` (the engine's environment); bad or missing values keep the defaults."""
     global TTL_MAX_S, TTL_POINTS, EXPIRED_KEEP_SCORE, IDLE_VALUE_ZERO_S, \
-        PARK_VALUE_RATIO, PARK_MIN_VALUE
+        PARK_VALUE_RATIO, PARK_MIN_VALUE, PARK_KEPT_SHARE
 
     def value(name, default):
         try:
@@ -37,13 +40,14 @@ def configure(env) -> dict:
     TTL_POINTS = tuple((n, s * TTL_MAX_S / 120.0) for n, s in _TTL_SHAPE)
     PARK_VALUE_RATIO = value("STRATA_SLOT_PARK_VALUE_RATIO", 2.0)
     PARK_MIN_VALUE = value("STRATA_SLOT_PARK_MIN_VALUE", 0.01)
+    PARK_KEPT_SHARE = value("STRATA_SLOT_PARK_KEPT_SHARE", 0.98)
     return settings()
 
 
 def settings() -> dict:
     return {"ttl_max_s": TTL_MAX_S, "expired_keep_score": EXPIRED_KEEP_SCORE,
             "idle_value_zero_s": IDLE_VALUE_ZERO_S, "park_value_ratio": PARK_VALUE_RATIO,
-            "park_min_value": PARK_MIN_VALUE}
+            "park_min_value": PARK_MIN_VALUE, "park_kept_share": PARK_KEPT_SHARE}
 
 
 def cache_ttl(tokens: int) -> float:
@@ -158,7 +162,8 @@ def park_destination(main: list[int], busy: list[bool], held: list[list[int]], u
     gs = max(1, group_size)
     reliable = reliable_flags(busy, valid, gs, padding_safe)
     for b, h in enumerate(held):   # already kept (all but a short tail) - in an idle slot or one decoding it
-        if h and reliable[b] and len(h) * 10 >= len(main) * 9 and (main[:len(h)] == h or h[:len(main)] == main):
+        if (h and reliable[b] and len(h) >= PARK_KEPT_SHARE * len(main) and
+                (main[:len(h)] == h or h[:len(main)] == main)):
             return None
     states, blank = _blank(held, busy, used, now, reliable)
     positions = {b: i for i, b in enumerate(order)}
