@@ -64,6 +64,17 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-16: 2x RTX 3090 24 GB (sm_86), i7-11700K, 62.6 GiB RAM](../bench/results/2026-10-16-community-2x-rtx-3090/README.md):
+  Strata v0.1.44.1 source build, Flash-Next IQ3_XXS, 262,144-token context, `--kv int8`, vision on, an automatic
+  layer split holding ~99.4% of the routed expert mass in VRAM, and **`"parallel": 2`** (two batch slots).
+  Suite 1 with `--clients 2 --long`: short-chat decode 98.3 tok/s; prefill 440.7 / 917.2 / 1,104.9 tok/s at
+  4K / 16K / 32K; agent-session decode 111.9 tok/s with a 68.7% conversation-cache hit and only 73 tokens
+  re-read per session; a two-client burst at 71.4 tok/s total with request latency p50 3.574 s and **errors 0**.
+  Also reports prefill unchanged between 0.1.39 and 0.1.44.1 for the same harness and prose text
+  (1,221-1,247 tok/s at 57K-133K). **Documents two limits rather than hiding them:** the suite caps generation
+  at 24 tokens for its prompt tests, so its short decode rows understate; and at `parallel: 2` + 256K the engine
+  logs its own low-VRAM warning (356-446 MiB free, below its 512 MiB threshold, #2065) together with the fix it
+  suggests — no degradation was observed in the run.
 
 ## Run the benchmark
 
