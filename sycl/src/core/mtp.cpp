@@ -992,12 +992,18 @@ bool MtpDrafter::record_rest(int step_row, dpct::queue_ptr cs,
         }();
         // the shared expert only reads mixed_ / xq_ and writes shared_: a branch beside the router and the routed
         // experts, joined before the combine (CUDA; HIP keeps one stream: STRATA_MTP_SHARED_BRANCH=0 does too)
-        static const bool branch_on = [] {
+        // Arc A-series (Alchemist): off by default. Its kernels all run on one compute engine in submission order, so the
+        // branch runs nothing in parallel, but the fork / join makes each draft graph non-linear: the SYCL graph then
+        // replays as a command buffer with an event per node and resets them after every run - ~50 zeEventReset per
+        // graph, ~0.45 ms between draft graphs on the A770 (unitrace, ~2.7 graphs a round); linear, it replays as an
+        // in-order command buffer with none. The same kernels on one stream: the same bits.
+        static const bool branch_on = [cs] {
 #if defined(STRATA_USE_HIP)
             return false;
 #else
             const char* v = std::getenv("STRATA_MTP_SHARED_BRANCH");
-            return v == nullptr || std::atoi(v) != 0;
+            if (v != nullptr) return std::atoi(v) != 0;
+            return strata::intel_gpu_gen(cs->get_device()) != strata::IntelGpuGen::Alchemist;
 #endif
         }();
         dpct::queue_ptr sh_cs = cs;
