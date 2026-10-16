@@ -268,6 +268,31 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("state-detail").textContent = detail;
   $("state-bar").style.width = `${pct}%`;
 
+  // #465: parallel batch — one row per slot, so every concurrent request is visible, not just the newest
+  const grid = $("slot-grid");
+  const slots = live.slots || [];
+  const extra = (live.running || 0) - slots.filter((s) => s.state !== "idle").length;
+  if (slots.length) {
+    grid.hidden = false;
+    let html = slots.map((s) => {
+      const st = s.state === "decoding" ? "generating" : s.state;
+      const bar = s.state === "reading"
+        ? (s.prompt_total ? pct(s.prompt_read || 0, s.prompt_total) : 100)
+        : s.state === "decoding" && s.max_tokens ? Math.min(100, (100 * s.generated) / s.max_tokens) : 0;
+      const info = s.state === "reading" ? `reading ${fmt(s.prompt_tokens)} tok`
+        : s.state === "decoding" ? `${fmt(s.generated)} tok · ${s.tok_s != null ? fmt(s.tok_s, 1) : "–"} t/s · ${s.elapsed_s}s`
+        : s.held_tokens ? `idle · holds ${fmt(s.held_tokens)}` : "idle";
+      return `<div class="slot-row" data-s="${st}"><span class="slot-name">slot ${s.slot}</span>` +
+             `<div class="slot-bar"><div style="width:${bar}%"></div></div><span class="slot-state">${info}</span></div>`;
+    }).join("");
+    const extras = [];
+    if (extra > 0) extras.push(`${fmt(extra)} on the solo path`);
+    if (live.waiting) extras.push(`${fmt(live.waiting)} waiting for a slot`);
+    if (live.queued) extras.push(`${fmt(live.queued)} queued`);
+    if (extras.length) html += `<div class="slot-extra">${extras.join(" · ")}</div>`;
+    grid.innerHTML = html;
+  } else grid.hidden = true;
+
   // the eight cards
   const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
   setMetric("speed", speed == null ? null : fmt(speed, 1), "t/s",
