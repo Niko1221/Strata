@@ -13,6 +13,12 @@
 #define cublasDestroy hipblasDestroy
 #define cublasSetStream hipblasSetStream
 #define cublasGemmEx hipblasGemmEx
+#define cublasSgemm hipblasSgemm
+#if HIPBLAS_VERSION_MAJOR < 3
+#define cublasGemmStridedBatchedEx hipblasGemmStridedBatchedEx_v2
+#else
+#define cublasGemmStridedBatchedEx hipblasGemmStridedBatchedEx
+#endif
 #define CUBLAS_OP_N HIPBLAS_OP_N
 #define CUBLAS_OP_T HIPBLAS_OP_T
 #define CUBLAS_GEMM_DEFAULT HIPBLAS_GEMM_DEFAULT
