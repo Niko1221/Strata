@@ -1,4 +1,4 @@
-# Community benchmark on Apple M5 (Metal), 32 GB
+# Community benchmark on Apple M5 MacBook Air (Metal), 32 GB
 
 Measured on 2026-10-16 with `tools/strata_bench.py` (suite 1, 3 runs per test, medians with ranges). Speeds are the engine's own timings; first-token times are measured by the client over HTTP. Speed only: no correctness check was run.
 
@@ -57,9 +57,9 @@ Not measured: this is a speed suite. The conversation uses the model's own repli
 
 ## Notes added by hand
 
-- **Hardware:** Apple M5 (10-core CPU), 32 GB unified memory, macOS 27.2, the model on the internal SSD. The tool reports "CPU only" because it reads GPUs through `nvidia-smi`/`rocm-smi`; the engine ran on the M5's GPU through Metal (`engine 0.1.44.1-metal`).
+- **Hardware:** MacBook Air (Mac17,3), Apple M5 (10-core CPU), 32 GB unified memory, macOS 27.2, the model on the internal SSD. The tool reports "CPU only" because it reads GPUs through `nvidia-smi`/`rocm-smi`; the engine ran on the M5's GPU through Metal (`engine 0.1.44.1-metal`).
 - **Install:** `./setup.sh --yes --model Q2_0 --no-start`, built from source on this Mac; Q2_0 with the experts' copy (`.experts`, 31.64 GiB), no MTP draft layer (setup's choice for a streaming Mac).
 - **Expert arena:** 5.41 GB (3883 slots). When the engine started, macOS reported 12.9 GB available (7.0 GB kept for macOS), so the arena was much smaller than the 11.5-14.7 GB on the 32 GB M4 in [MAC.md](../../../docs/MAC.md). MAC.md reports about 8.3 tok/s decode with a 5.7 GB arena on the M4, close to the 9.6 tok/s here. A run with more memory free would likely decode faster.
 - **Prompt chunks:** 1024 tokens (the engine's default on a streaming Mac under 96 GB).
 - Background load during the run was not controlled (normal desktop session).
-- **Power and cooling:** on the charger (AC power), ambient temperature 23 °C, no forced cooling.
+- **Power and cooling:** on the charger (AC power), ambient temperature 23 °C, no forced cooling. The MacBook Air is fanless (passive cooling only); an M5 in an actively cooled Mac (e.g. a Mac mini) may sustain higher clocks over a long run.
