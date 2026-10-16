@@ -248,12 +248,18 @@ constexpr int kKVG = 64;
 /// Batch rows (several sessions decoded in one window, one token each): row t reads and writes the cache of session
 /// slot[t] at cell[t]; its rotary position is cell[t] + delta[t].  Every field null: one session, the rows are its
 /// consecutive cells *pos0 + t (the prompt, a verify window, a decode step).
+/// The K / V base tables follow --kv: with an int8 store the FP32 table entries are null and the kc8 / ks8
+/// (likewise vc8 / vs8) tables carry the codes and the scales, so a batch window reads the right session's store.
 struct RowSel {
     const int32_t* cell = nullptr;   // device [T]
     const int32_t* slot = nullptr;   // device [T]
     const int32_t* delta = nullptr;  // device [T]
     float* const* kc = nullptr;      // device [n_sessions]: this layer's K / V base of each session
     float* const* vc = nullptr;
+    int8_t* const* kc8 = nullptr;    // device [n_sessions]: the int8 K / V codes and their FP16 scales (--kv int8)
+    int8_t* const* vc8 = nullptr;
+    __half* const* ks8 = nullptr;
+    __half* const* vs8 = nullptr;
 };
 
 /// The attention layer's per-token preparation for T rows at positions *pos0 + t: q (from the [q | gate] pairs) and k
@@ -275,9 +281,19 @@ __global__ void k_attn_prep(const float* qg, const float* kx, const float* vx, c
     const int head = blockIdx.x, t = blockIdx.y;
     const int pos = rs.cell ? rs.cell[t] : *pos0 + t;
     const int dl = rs.delta ? rs.delta[t] : (rdelta ? *rdelta : 0);
+    // The row's own session's cache (--kv).  The two stores are independent (--kv k8v32 = an int8 K beside a
+    // FP32 V), so each is taken from the table that carries it - only the int8 one has a codes+scales table.
     if (rs.kc) {
         kc = rs.kc[rs.slot[t]];
         vc = rs.vc[rs.slot[t]];
+    }
+    if (KI8 && rs.kc8) {
+        kc = rs.kc8[rs.slot[t]];
+        ks = rs.ks8[rs.slot[t]];
+    }
+    if (VI8 && rs.vc8) {
+        vc = rs.vc8[rs.slot[t]];
+        vs = rs.vs8[rs.slot[t]];
     }
     const bool isq = head < H;
     const float* src = isq ? qg + ((size_t) t * H + head) * 2 * HD : kx + ((size_t) t * HKV + head - H) * HD;
@@ -360,6 +376,14 @@ __global__ void k_attn_part(const float* q, const void* kc, const void* vc, cons
     if (rs.kc) {
         kc = rs.kc[rs.slot[t]];
         vc = rs.vc[rs.slot[t]];
+    }
+    if (KI8 && rs.kc8) {
+        kc = rs.kc8[rs.slot[t]];
+        ks = rs.ks8[rs.slot[t]];
+    }
+    if (VI8 && rs.vc8) {
+        vc = rs.vc8[rs.slot[t]];
+        vs = rs.vs8[rs.slot[t]];
     }
     const int p0 = c * kChunkCells;
     if (p0 >= npos) return;
@@ -1274,7 +1298,8 @@ struct Engine {
     std::vector<float*> conv, S, kc, vc;   // per layer; the MTP block's K / V at index n_layers: the CURRENT session's (select)
     // --kv int8 / STRATA_Q36_KV=int8: the K / V caches as int8 codes with one FP16 scale per kKVG values (kc8 / vc8
     // the codes, ks8 / vs8 the scales; the FP32 store's kc / vc stay empty then).  kv_k8 / kv_v8 are independent
-    // (--kv k8v32 stores a FP32 V next to the int8 K); decode and prompt attention dequantize on the fly.
+    // (--kv k8v32 stores a FP32 V next to the int8 K); decode and prompt attention dequantize on the fly.  The stores
+    // apply to every state index, the MTP block's own K / V (state index n_layers) included.
     std::vector<int8_t*> kc8, vc8;
     std::vector<__half*> ks8, vs8;
     bool kv_k8 = false, kv_v8 = false;
@@ -1314,6 +1339,10 @@ struct Engine {
     // members conv / S / kc / vc / pos / hlast above are the CURRENT session's (select() swaps them).
     struct Sess {
         std::vector<float*> conv, S, kc, vc;
+        // --kv int8: this session's int8 K / V codes and their FP16 scales, per state index.  A store that is
+        // FP32 leaves its kc / vc pointing at the values and these null; an int8 store is the reverse.
+        std::vector<int8_t*> kc8, vc8;
+        std::vector<__half*> ks8, vs8;
         float* hlast = nullptr;
         int64_t pos = 0;
         int32_t rdelta = 0;                 // rotary offset of the text after the last picture (see k_attn_prep)
@@ -1327,6 +1356,10 @@ struct Engine {
     uint64_t use_clock = 0;
     // device tables for batch rows: per state index (layer, then the MTP block) the session pointers
     float **d_conv_tab = nullptr, **d_S_tab = nullptr, **d_kc_tab = nullptr, **d_vc_tab = nullptr;
+    // the same tables for the int8 K / V stores (--kv int8 / k8v8 / k8v32 / k32v8): per state index the session's
+    // codes and its FP16 scales, so a batch window reads the right session's store
+    int8_t **d_kc8_tab = nullptr, **d_vc8_tab = nullptr;
+    __half **d_ks8_tab = nullptr, **d_vs8_tab = nullptr;
     int32_t *d_rcell = nullptr, *d_rslot = nullptr, *d_rdelta = nullptr;   // [kVerify] the rows' cell / session / rotary offset
     // the GDN layers run a slot's rows in sequence: per group (a slot) its session, its first row and its row count
     int32_t *d_gslot = nullptr, *d_grow0 = nullptr, *d_gcnt = nullptr;
@@ -1385,16 +1418,14 @@ struct Engine {
     }
 
     /// the four K / V store combinations (--kv): f(kv_ic<K8>{}, kv_ic<V8>{}) runs with the kernel's template arguments.
-    /// `use_int8` is false for the MTP block, whose K / V stay FP32 this round regardless of --kv.
+    /// Every state index takes the same stores, the MTP block at index n_layers included.
     template <bool B> struct kv_ic { static constexpr bool value = B; };
-    template <class F> void kv4(F&& f, bool use_int8) const {
-        if (use_int8 && kv_k8 && kv_v8) f(kv_ic<true>{}, kv_ic<true>{});
-        else if (use_int8 && kv_k8) f(kv_ic<true>{}, kv_ic<false>{});
-        else if (use_int8 && kv_v8) f(kv_ic<false>{}, kv_ic<true>{});
+    template <class F> void kv4(F&& f) const {
+        if (kv_k8 && kv_v8) f(kv_ic<true>{}, kv_ic<true>{});
+        else if (kv_k8) f(kv_ic<true>{}, kv_ic<false>{});
+        else if (kv_v8) f(kv_ic<false>{}, kv_ic<true>{});
         else f(kv_ic<false>{}, kv_ic<false>{});
     }
-    /// whether state index li may store its K / V as int8 (the MTP block at index n_layers never does)
-    bool kv_int8(size_t li) const { return li < (size_t) m->g.n_layers; }
 #if defined(STRATA_Q36_CPU_POOL)
     std::unique_ptr<strata::kernels::cpu::ExpertPool> pool;
     std::vector<strata::kernels::cpu::ExpertJobMulti> jobs;
@@ -1436,27 +1467,47 @@ struct Engine {
         }
     }
 
+    /// One session's buffers: its recurrent state per GDN layer and its K / V cache per attention layer (the MTP
+    /// block's at the end).  The K / V stores follow --kv (kv_k8 / kv_v8, independent): a store that is int8 holds
+    /// codes plus one FP16 scale per kKVG values and the FP32 pointer for it stays null, and the reverse for a
+    /// FP32 store.  Every state index, the MTP block's own K / V at n_layers included, takes the same stores.
     void alloc_session(Sess& ss) const {
         const auto& g = m->g;
         const size_t C = (size_t) g.ssm_conv_channels;
+        const size_t ncells = (size_t) g.n_head_kv * ctx * g.head_dim;
+        const size_t nscales = (size_t) g.n_head_kv * ctx * ((size_t) g.head_dim / kKVG);
+        auto push_kv = [&](bool attn) {
+            if (!attn) {
+                ss.kc.push_back(nullptr);
+                ss.vc.push_back(nullptr);
+                ss.kc8.push_back(nullptr);
+                ss.vc8.push_back(nullptr);
+                ss.ks8.push_back(nullptr);
+                ss.vs8.push_back(nullptr);
+                return;
+            }
+            ss.kc.push_back(kv_k8 ? nullptr : dalloc(ncells));
+            ss.vc.push_back(kv_v8 ? nullptr : dalloc(ncells));
+            ss.kc8.push_back(kv_k8 ? dalloc_t<int8_t>(ncells) : nullptr);
+            ss.vc8.push_back(kv_v8 ? dalloc_t<int8_t>(ncells) : nullptr);
+            ss.ks8.push_back(kv_k8 ? dalloc_t<__half>(nscales) : nullptr);
+            ss.vs8.push_back(kv_v8 ? dalloc_t<__half>(nscales) : nullptr);
+        };
         for (const Layer& L : m->layers) {
             if (L.attn) {
                 ss.conv.push_back(nullptr);
                 ss.S.push_back(nullptr);
-                ss.kc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
-                ss.vc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
+                push_kv(true);
             } else {
                 ss.conv.push_back(dalloc(C * (g.ssm_d_conv - 1)));
                 ss.S.push_back(dalloc((size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size));
-                ss.kc.push_back(nullptr);
-                ss.vc.push_back(nullptr);
+                push_kv(false);
             }
         }
         if (m->has_mtp) {   // the MTP block's own K / V (an attention layer at index n_layers)
             ss.conv.push_back(nullptr);
             ss.S.push_back(nullptr);
-            ss.kc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
-            ss.vc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
+            push_kv(true);
         }
         ss.hlast = dalloc((size_t) g.n_embd);
     }
@@ -1471,6 +1522,7 @@ struct Engine {
     void load_cur() {
         Sess& ss = sess[(size_t) cur];
         conv = ss.conv; S = ss.S; kc = ss.kc; vc = ss.vc;
+        kc8 = ss.kc8; vc8 = ss.vc8; ks8 = ss.ks8; vs8 = ss.vs8;
         hlast = ss.hlast;
         pos = ss.pos;
         ss.used = ++use_clock;
@@ -1584,59 +1636,18 @@ struct Engine {
         pacc = dalloc((size_t) att_rows * n_chunk * g.head_dim);
         pm = dalloc((size_t) att_rows * n_chunk);
         pl = dalloc((size_t) att_rows * n_chunk);
-        // every state index's K / V cache: FP32 or int8 codes + FP16 scales, the two stores independent (--kv).
-        // With several sessions in one window each session has its own K / V base (rows_mode), so the tables
-        // here are that session's current caches; a row picks its session through RowSel.
-        const size_t kv_ng = (size_t) g.head_dim / kKVG;
-        auto push_kv = [&](bool attn) {
-            if (!attn) {
-                kc.push_back(nullptr);
-                vc.push_back(nullptr);
-                kc8.push_back(nullptr);
-                vc8.push_back(nullptr);
-                ks8.push_back(nullptr);
-                vs8.push_back(nullptr);
-                return;
-            }
-            const size_t ncells = (size_t) g.n_head_kv * ctx * g.head_dim;
-            const size_t nscales = (size_t) g.n_head_kv * ctx * kv_ng;
-            kc.push_back(kv_k8 ? nullptr : dalloc(ncells));
-            vc.push_back(kv_v8 ? nullptr : dalloc(ncells));
-            kc8.push_back(kv_k8 ? dalloc_t<int8_t>(ncells) : nullptr);
-            vc8.push_back(kv_v8 ? dalloc_t<int8_t>(ncells) : nullptr);
-            ks8.push_back(kv_k8 ? dalloc_t<__half>(nscales) : nullptr);
-            vs8.push_back(kv_v8 ? dalloc_t<__half>(nscales) : nullptr);
-        };
-        for (const Layer& L : m->layers) {   // the verify windows' GDN inputs (one set, whichever session runs)
+        // The K / V caches belong to the sessions (alloc_session): conv / S / kc / vc / kc8 / vc8 / ks8 / vs8 are
+        // the CURRENT session's, load_cur() swaps them.  Only the verify windows' GDN inputs are one set here,
+        // whichever session runs.
+        for (const Layer& L : m->layers) {
             if (L.attn) {
-                conv.push_back(nullptr);
-                S.push_back(nullptr);
-                push_kv(true);
                 for (auto* v : {&v_qkv, &v_hc, &v_alpha, &v_beta}) v->push_back(nullptr);
             } else {
-                conv.push_back(dalloc(C * (g.ssm_d_conv - 1)));
-                S.push_back(dalloc((size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size));
-                push_kv(false);
                 v_qkv.push_back(dalloc((size_t) kVerify * C));
                 v_hc.push_back(dalloc((size_t) kVerify * C));
                 v_alpha.push_back(dalloc((size_t) kVerify * g.ssm_v_heads));
                 v_beta.push_back(dalloc((size_t) kVerify * g.ssm_v_heads));
             }
-        }
-        if (m->has_mtp) {   // the MTP block's own K / V (an attention layer at index n_layers)
-            // MTP K / V stay FP32 this round (the --kv int8 stores apply to main layers only)
-            conv.push_back(nullptr);
-            S.push_back(nullptr);
-            const size_t m_cells = (size_t) g.n_head_kv * ctx * g.head_dim;
-            kc.push_back(dalloc(m_cells));
-            vc.push_back(dalloc(m_cells));
-            kc8.push_back(nullptr);   vc8.push_back(nullptr);   ks8.push_back(nullptr);   vs8.push_back(nullptr);
-            mtp_cat = dalloc(T * 2 * N);
-            hmtp = dalloc(T * N);
-            logits_m = dalloc((size_t) g.n_vocab);
-            tok_m = dalloc_t<int32_t>(T);
-            pos0_m = dalloc_t<int32_t>(1);
-            pick_m = dalloc_t<int32_t>(1);
         }
         sess.resize((size_t) n_sess);
         gsets.resize((size_t) n_sess);
@@ -1660,21 +1671,38 @@ struct Engine {
             }
         }
         for (Sess& ss : sess) alloc_session(ss);
+        if (m->has_mtp) {   // the MTP block's own buffers (its K / V went with the sessions, in alloc_session)
+            mtp_cat = dalloc(T * 2 * N);
+            hmtp = dalloc(T * N);
+            logits_m = dalloc((size_t) g.n_vocab);
+            tok_m = dalloc_t<int32_t>(T);
+            pos0_m = dalloc_t<int32_t>(1);
+            pick_m = dalloc_t<int32_t>(1);
+        }
         if (n_sess > 1) {   // the batch rows' tables: per state index the session pointers, on the device
             const size_t ns = sess[0].conv.size();
             std::vector<float*> hc(ns * (size_t) n_sess), hs(hc), hk(hc), hv(hc);
+            std::vector<int8_t*> h8k(hc.size()), h8v(hc.size());
+            std::vector<__half*> h8ks(hc.size()), h8vs(hc.size());
             for (size_t li = 0; li < ns; ++li)
                 for (int s_ = 0; s_ < n_sess; ++s_) {
                     hc[li * n_sess + s_] = sess[(size_t) s_].conv[li];
                     hs[li * n_sess + s_] = sess[(size_t) s_].S[li];
                     hk[li * n_sess + s_] = sess[(size_t) s_].kc[li];
                     hv[li * n_sess + s_] = sess[(size_t) s_].vc[li];
+                    h8k[li * n_sess + s_] = sess[(size_t) s_].kc8[li];
+                    h8v[li * n_sess + s_] = sess[(size_t) s_].vc8[li];
+                    h8ks[li * n_sess + s_] = sess[(size_t) s_].ks8[li];
+                    h8vs[li * n_sess + s_] = sess[(size_t) s_].vs8[li];
                 }
-            const std::pair<float***, std::vector<float*>*> tabs[4] = {{&d_conv_tab, &hc}, {&d_S_tab, &hs},
-                                                                          {&d_kc_tab, &hk}, {&d_vc_tab, &hv}};
+            const std::pair<void***, std::vector<void*>*> tabs[8] = {
+                {(void***) &d_conv_tab, (std::vector<void*>*) &hc}, {(void***) &d_S_tab, (std::vector<void*>*) &hs},
+                {(void***) &d_kc_tab, (std::vector<void*>*) &hk},   {(void***) &d_vc_tab, (std::vector<void*>*) &hv},
+                {(void***) &d_kc8_tab, (std::vector<void*>*) &h8k}, {(void***) &d_vc8_tab, (std::vector<void*>*) &h8v},
+                {(void***) &d_ks8_tab, (std::vector<void*>*) &h8ks},{(void***) &d_vs8_tab, (std::vector<void*>*) &h8vs}};
             for (const auto& tb : tabs) {
-                CK(cudaMalloc((void**) tb.first, tb.second->size() * sizeof(float*)));
-                CK(cudaMemcpy((void*) *tb.first, tb.second->data(), tb.second->size() * sizeof(float*),
+                CK(cudaMalloc((void**) tb.first, tb.second->size() * sizeof(void*)));
+                CK(cudaMemcpy((void*) *tb.first, tb.second->data(), tb.second->size() * sizeof(void*),
                               cudaMemcpyHostToDevice));
             }
             d_rcell = dalloc_t<int32_t>(kVerify);
@@ -2129,6 +2157,10 @@ struct Engine {
                 rs.delta = d_rdelta;
                 rs.kc = d_kc_tab + li * n_sess;
                 rs.vc = d_vc_tab + li * n_sess;
+                rs.kc8 = d_kc8_tab + li * n_sess;
+                rs.vc8 = d_vc8_tab + li * n_sess;
+                rs.ks8 = d_ks8_tab + li * n_sess;
+                rs.vs8 = d_vs8_tab + li * n_sess;
             }
             kv4([&](auto k8c, auto v8c) {
                 constexpr bool K8 = decltype(k8c)::value, V8 = decltype(v8c)::value;
@@ -2138,7 +2170,7 @@ struct Engine {
                     V8 ? (rows_mode ? nullptr : (void*) vc8[li]) : (rows_mode ? nullptr : (void*) vc[li]),
                     K8 ? ks8[li] : nullptr, V8 ? vs8[li] : nullptr, H, HKV, HD, m->n_rot, dpos, ctx, m->rope_base,
                     m->eps, d_delta, mtab_now, rs);
-            }, kv_int8(li));
+            });
             if (T > kGemmT) {
                 // a prompt chunk: scores = Q K^T and out = P V as FP16 GEMMs (FP32 accumulation, FP32 scores) per KV
                 // head (its query heads one strided batch over the shared K / V), the causal softmax in between writing
@@ -2154,7 +2186,7 @@ struct Engine {
                         K8 ? (const void*) kc8[li] : (const void*) kc[li],
                         V8 ? (const void*) vc8[li] : (const void*) vc[li], K8 ? ks8[li] : nullptr,
                         V8 ? vs8[li] : nullptr, k16, v16, ctx, P, HD, HKV);
-                }, kv_int8(li));
+                });
                 k_to_f16<<<grid1((int64_t) T * H * HD), kThreads, 0, st>>>(q, q16, (int64_t) T * H * HD);
                 for (int t0 = 0; t0 < T; t0 += tq) {
                     const int nt = std::min(tq, T - t0);
@@ -2203,7 +2235,7 @@ struct Engine {
                                   : (rows_mode ? nullptr : (const void*) vc[li]),
                             K8 ? ks8[li] : nullptr, V8 ? vs8[li] : nullptr, dpos, t0, H, HKV, ctx,
                             1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl, rs);
-                    }, kv_int8(li));
+                    });
                     k_attn_merge<<<nt * H, HD, 0, st>>>(pacc, pm, pl, gate, dpos, t0, H, n_chunk, att, rs);
                 }
             }
