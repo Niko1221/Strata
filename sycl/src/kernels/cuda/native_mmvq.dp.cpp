@@ -98,6 +98,12 @@ struct Q6KBlock {
     int8_t scales[16];
     sycl::half d;
 };
+// Q6_K: each byte of v is a 6-bit value 0..63; minus 32 as int8 in every byte. The values never leave int8 range, so
+// the saturating per-byte subtract (dpct::vectorized_binary sub_sat, unpacked byte by byte) is not needed: bit 7 set
+// in every byte keeps the per-byte subtract from borrowing, and flipping it back gives the same bytes in 3 ops.
+__dpct_inline__ int q6_sub32(int v) {
+    return (int) ((((uint32_t) v | 0x80808080u) - 0x20202020u) ^ 0x80808080u);
+}
 struct Q40Block {
     sycl::half d;
     uint8_t qs[16];
@@ -1153,7 +1159,7 @@ struct Q6KTraits {
         for (int i = 0; i < 2; ++i) {
             const int vil = (vl >> (4 * i)) & 0x0f0f0f0f;
             const int vih = ((vh >> (4 * i)) << 4) & 0x30303030;
-            r.vi[i] = dpct::vectorized_binary<sycl::char4>(vil | vih, 0x20202020, dpct::sub_sat());
+            r.vi[i] = q6_sub32(vil | vih);
             r.dsc[i] = d * (float) w->scales[scale_offset + 4 * i];
         }
         return r;
@@ -1593,8 +1599,8 @@ void native_mmvq_q6k_wide_kernel(const Q6KBlock* __restrict__ w, const Q81Block*
             int vi0[4], vi1[4];
 #pragma unroll
             for (int p = 0; p < 4; ++p) {
-                vi0[p] = dpct::vectorized_binary<sycl::char4>((vl[p] & 0x0f0f0f0f) | ((vh[p] << 4) & 0x30303030), 0x20202020, dpct::sub_sat());
-                vi1[p] = dpct::vectorized_binary<sycl::char4>(((vl[p] >> 4) & 0x0f0f0f0f) | (((vh[p] >> 4) << 4) & 0x30303030), 0x20202020, dpct::sub_sat());
+                vi0[p] = q6_sub32((vl[p] & 0x0f0f0f0f) | ((vh[p] << 4) & 0x30303030));
+                vi1[p] = q6_sub32(((vl[p] >> 4) & 0x0f0f0f0f) | (((vh[p] >> 4) << 4) & 0x30303030));
             }
 #pragma unroll
             for (int j = 0; j < NCOLS; ++j) {
@@ -1661,8 +1667,8 @@ void native_mmvq_q6k_pf_kernel(const Q6KBlock* __restrict__ w, const Q81Block* _
             int vi0[4], vi1[4];
 #pragma unroll
             for (int p = 0; p < 4; ++p) {
-                vi0[p] = dpct::vectorized_binary<sycl::char4>((vl[p] & 0x0f0f0f0f) | ((vh[p] << 4) & 0x30303030), 0x20202020, dpct::sub_sat());
-                vi1[p] = dpct::vectorized_binary<sycl::char4>(((vl[p] >> 4) & 0x0f0f0f0f) | (((vh[p] >> 4) << 4) & 0x30303030), 0x20202020, dpct::sub_sat());
+                vi0[p] = q6_sub32((vl[p] & 0x0f0f0f0f) | ((vh[p] << 4) & 0x30303030));
+                vi1[p] = q6_sub32(((vl[p] >> 4) & 0x0f0f0f0f) | (((vh[p] >> 4) << 4) & 0x30303030));
             }
 #pragma unroll
             for (int j = 0; j < NCOLS; ++j) {
