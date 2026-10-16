@@ -14,6 +14,10 @@ PARK_VALUE_RATIO = 2.0       # STRATA_SLOT_PARK_VALUE_RATIO: a park takes an exp
 IDLE_VALUE_ZERO_S = 1800.0  # STRATA_SLOT_IDLE_VALUE_ZERO_S: idle age when expired value reaches zero; 0 disables decay
 PARK_KEPT_SHARE = 0.98       # STRATA_SLOT_PARK_KEPT_SHARE: a slot holding at least this share of the main session's
                              # conversation already keeps it (no park); the rest is read again when it comes back
+SIBLING_SHARE = 0.98         # STRATA_SLOT_SIBLING_SHARE: an idle history that shares at least this share of its own
+                             # length with the conversation being placed or parked is an older version of it (the
+                             # client rewrote its end: a classifier query inserts before its closing text); it is
+                             # replaced in place, even while protected; 0: off
 PARK_MIN_VALUE = 0.01        # STRATA_SLOT_PARK_MIN_VALUE: the main session's conversation is parked only while its
                              # value (stale_retention at its idle age) is at least this; 0.01 is EXPIRED_KEEP_SCORE's
                              # default
@@ -26,7 +30,7 @@ TTL_POINTS = _TTL_SHAPE
 def configure(env) -> dict:
     """Read the tunables from `env` (the engine's environment); bad or missing values keep the defaults."""
     global TTL_MAX_S, TTL_POINTS, EXPIRED_KEEP_SCORE, IDLE_VALUE_ZERO_S, \
-        PARK_VALUE_RATIO, PARK_MIN_VALUE, PARK_KEPT_SHARE
+        PARK_VALUE_RATIO, PARK_MIN_VALUE, PARK_KEPT_SHARE, SIBLING_SHARE
 
     def value(name, default):
         try:
@@ -41,13 +45,14 @@ def configure(env) -> dict:
     PARK_VALUE_RATIO = value("STRATA_SLOT_PARK_VALUE_RATIO", 2.0)
     PARK_MIN_VALUE = value("STRATA_SLOT_PARK_MIN_VALUE", 0.01)
     PARK_KEPT_SHARE = value("STRATA_SLOT_PARK_KEPT_SHARE", 0.98)
+    SIBLING_SHARE = value("STRATA_SLOT_SIBLING_SHARE", 0.98)
     return settings()
 
 
 def settings() -> dict:
     return {"ttl_max_s": TTL_MAX_S, "expired_keep_score": EXPIRED_KEEP_SCORE,
             "idle_value_zero_s": IDLE_VALUE_ZERO_S, "park_value_ratio": PARK_VALUE_RATIO,
-            "park_min_value": PARK_MIN_VALUE, "park_kept_share": PARK_KEPT_SHARE}
+            "park_min_value": PARK_MIN_VALUE, "park_kept_share": PARK_KEPT_SHARE, "sibling_share": SIBLING_SHARE}
 
 
 def cache_ttl(tokens: int) -> float:
@@ -121,6 +126,34 @@ def superseded_slots(held: list[list[int]], busy: list[bool], reliable: list[boo
     return out
 
 
+def common_prefix(a: list[int], b: list[int]) -> int:
+    """How many leading tokens `a` and `b` share (each step compares only the part not yet known to match)."""
+    lo, hi = 0, min(len(a), len(b))
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if a[lo:mid] == b[lo:mid]:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+def siblings(tokens: list[int], held: list[list[int]], slots) -> dict[int, int]:
+    """The slots among `slots` whose history is an older version of `tokens`: it shares at least SIBLING_SHARE of
+    its own length with them but is not their start (a start is a cache source, or the conversation's own older
+    copy).  Slot -> shared tokens."""
+    if SIBLING_SHARE <= 0:
+        return {}
+    out = {}
+    for b in slots:
+        h = held[b]
+        if h and not (len(h) < len(tokens) and tokens[:len(h)] == h):
+            c = common_prefix(tokens, h)
+            if c < len(h) and c >= SIBLING_SHARE * len(h):
+                out[b] = c
+    return out
+
+
 def _blank(held, busy, used, now, reliable):
     superseded = superseded_slots(held, busy, reliable)
     states = [cache_state(len(h), used[b], now, reliable[b] and b not in superseded) for b, h in enumerate(held)]
@@ -154,9 +187,10 @@ def park_destination(main: list[int], busy: list[bool], held: list[list[int]], u
                      order: list[int], group_size: int, now: float, valid: list[bool] | None = None,
                      padding_safe: bool = False, exclude=(), main_value: float = 0.0) -> int | None:
     """An idle slot to keep the main session's conversation in before another request replaces it (engine park=):
-    its own older copy, else an expired slot in place()'s reclaim order (reclaim_slot), where a history worth keeping
-    counts only when `main_value` (the main session's current value) is at least PARK_VALUE_RATIO times its own.
-    Never a protected slot.  None: nowhere to keep it (or it is already kept)."""
+    its own older copy, else an older version of it (siblings(): the same conversation with another end, protected
+    or not), else an expired slot in place()'s reclaim order (reclaim_slot), where a history worth keeping counts
+    only when `main_value` (the main session's current value) is at least PARK_VALUE_RATIO times its own.  Never
+    another conversation's protected slot.  None: nowhere to keep it (or it is already kept)."""
     if not padding_safe or not main:
         return None
     gs = max(1, group_size)
@@ -172,6 +206,9 @@ def park_destination(main: list[int], busy: list[bool], held: list[list[int]], u
            len(held[b]) < len(main) and main[:len(held[b])] == held[b]]
     if own:
         return max(own, key=lambda b: (len(held[b]), -positions[b]))
+    older = siblings(main, held, [b for b in order if not busy[b] and b not in exclude and reliable[b]])
+    if older:
+        return max(older, key=lambda b: (older[b], -positions[b]))
     values = _slot_values(held, states, blank)
     candidates = [b for b in order if not busy[b] and b not in exclude and states[b]["expired"] and
                   (not _worth_keeping(values[b]) or
@@ -227,6 +264,14 @@ def place(prompt: list[int], busy: list[bool], held: list[list[int]], used: list
         slot = min(candidates, key=lambda b: (loss(b), *pipeline(b)[:2], b not in sources, positions[b]))
         source = max(sources, key=lambda b: (matches[b], -positions[b]))
         return Placement(slot, source, best, near, "reuse")
+
+    # An older version of this conversation (siblings(): its client rewrote the end) is replaced in place, protected
+    # or not: kept beside it, each version of a classifier query took a slot of its own and pushed other conversations
+    # out (2026-10-16: 4-5 of 6 slots).  The longest shared part first, then group load.
+    older = siblings(prompt, held, [b for b in free if reliable[b] and collateral(b) == 0])
+    if older:
+        slot = min(older, key=lambda b: (-older[b], *pipeline(b)[:2], positions[b]))
+        return Placement(slot, reason="sibling")
 
     safe = [b for b in free if states[b]["expired"] and collateral(b) == 0]
 
