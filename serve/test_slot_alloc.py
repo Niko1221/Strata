@@ -545,11 +545,15 @@ class ParkMainSession(unittest.TestCase):
         e._on_parked(e._park_claims and next(iter(e._park_claims)) or 0, 50002)
         self.assertIn(50000, [len(h) for h in e.slot_held])
 
-    def test_continuing_short_or_already_kept_conversations_are_not_parked(self):
+    def test_continuing_low_value_or_already_kept_conversations_are_not_parked(self):
         e = self.e()
         self.assertEqual(e._claim_park(e.main_held + [1, 2, 3]), "")    # the same conversation continues
-        e.main_held = [7] * 5000
-        self.assertEqual(e._claim_park([1] * 60), "")                    # short: cheap to read again
+        e.main_held = [7] * 2000
+        self.assertEqual(e._claim_park([1] * 60), "")                    # worth less than PARK_MIN_VALUE (no length cut)
+        self.assertEqual(e.cache_events_view()[0]["reason"], "main_low_value")
+        e.main_held = [7] * 5000                                         # short, but worth more: parked
+        self.assertTrue(e._claim_park([1] * 60).startswith(" park="))
+        e = self.e()
         e.main_held = [7] * 50000
         e.slot_held[3] = [7] * 48000                                     # a slot holds 96% of it already
         self.assertEqual(e._claim_park([1] * 60), "")
@@ -719,8 +723,8 @@ class PolicyTunables(unittest.TestCase):
         slot_policy.configure({})
 
     def test_environment_overrides_and_bad_values_keep_defaults(self):
-        got = slot_policy.configure({"STRATA_SLOT_TTL_MAX_S": "240", "STRATA_SLOT_PARK_MIN_TOKENS": "x"})
-        self.assertEqual(got, {"ttl_max_s": 240.0, "park_min_tokens": 8192,
+        got = slot_policy.configure({"STRATA_SLOT_TTL_MAX_S": "240", "STRATA_SLOT_PARK_MIN_VALUE": "x"})
+        self.assertEqual(got, {"ttl_max_s": 240.0,
                                "expired_keep_score": 0.01, "idle_value_zero_s": 1800.0, "park_value_ratio": 2.0,
                                "park_min_value": 0.01})
         self.assertAlmostEqual(slot_policy.cache_ttl(100000), 180.0)     # the whole curve doubles
@@ -729,8 +733,8 @@ class PolicyTunables(unittest.TestCase):
         self.assertAlmostEqual(slot_policy.cache_ttl(100000), 90.0)
 
     def test_engine_reads_them_from_its_environment(self):
-        e = StrataEngine("missing", [], env={"STRATA_SLOT_PARK_MIN_TOKENS": "20000"}, lazy=True)
-        self.assertEqual(e.slot_policy_settings["park_min_tokens"], 20000)
+        e = StrataEngine("missing", [], env={"STRATA_SLOT_PARK_MIN_VALUE": "0.2"}, lazy=True)
+        self.assertEqual(e.slot_policy_settings["park_min_value"], 0.2)
 
     def test_idle_limit_override_disable_and_invalid_values(self):
         ttl = slot_policy.cache_ttl(50000)

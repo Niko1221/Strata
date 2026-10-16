@@ -7,7 +7,6 @@ from dataclasses import dataclass
 MAX_CACHE_TOKENS = 262144
 # Tunables (environment, read by configure() when the engine starts; the menu sets them per profile under
 # config_overrides.env).  Defaults are the values the policy was specified with.
-PARK_MIN_TOKENS = 8192       # STRATA_SLOT_PARK_MIN_TOKENS: a shorter main-session conversation is not parked
 EXPIRED_KEEP_SCORE = 0.01    # STRATA_SLOT_EXPIRED_KEEP_SCORE: an expired history scoring at least this (retention at
                              # expiry, then decayed; 0.01 is about 2.5K tokens at expiry) goes last
 PARK_VALUE_RATIO = 2.0       # STRATA_SLOT_PARK_VALUE_RATIO: a park takes an expired history worth keeping only when the
@@ -23,7 +22,7 @@ TTL_POINTS = _TTL_SHAPE
 
 def configure(env) -> dict:
     """Read the tunables from `env` (the engine's environment); bad or missing values keep the defaults."""
-    global PARK_MIN_TOKENS, TTL_MAX_S, TTL_POINTS, EXPIRED_KEEP_SCORE, IDLE_VALUE_ZERO_S, \
+    global TTL_MAX_S, TTL_POINTS, EXPIRED_KEEP_SCORE, IDLE_VALUE_ZERO_S, \
         PARK_VALUE_RATIO, PARK_MIN_VALUE
 
     def value(name, default):
@@ -36,15 +35,13 @@ def configure(env) -> dict:
     EXPIRED_KEEP_SCORE = value("STRATA_SLOT_EXPIRED_KEEP_SCORE", 0.01)
     IDLE_VALUE_ZERO_S = value("STRATA_SLOT_IDLE_VALUE_ZERO_S", 1800.0)
     TTL_POINTS = tuple((n, s * TTL_MAX_S / 120.0) for n, s in _TTL_SHAPE)
-    PARK_MIN_TOKENS = int(value("STRATA_SLOT_PARK_MIN_TOKENS", 8192))
     PARK_VALUE_RATIO = value("STRATA_SLOT_PARK_VALUE_RATIO", 2.0)
     PARK_MIN_VALUE = value("STRATA_SLOT_PARK_MIN_VALUE", 0.01)
     return settings()
 
 
 def settings() -> dict:
-    return {"ttl_max_s": TTL_MAX_S, "park_min_tokens": PARK_MIN_TOKENS,
-            "expired_keep_score": EXPIRED_KEEP_SCORE,
+    return {"ttl_max_s": TTL_MAX_S, "expired_keep_score": EXPIRED_KEEP_SCORE,
             "idle_value_zero_s": IDLE_VALUE_ZERO_S, "park_value_ratio": PARK_VALUE_RATIO,
             "park_min_value": PARK_MIN_VALUE}
 
