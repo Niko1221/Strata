@@ -73,6 +73,15 @@ IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
 
 
+def nemotron_vision(tok):
+    """(<img>, <image>, </img>) ids when the tokenizer is Nemotron-H's (those three are its control tokens and it has
+    no <|vision_start|>), else None."""
+    sp = getattr(tok, "special_tokens", None) or {}
+    if "<|vision_start|>" in sp or not all(k in sp for k in ("<img>", "<image>", "</img>")):
+        return None
+    return sp["<img>"], sp["<image>"], sp["</img>"]
+
+
 def popen(what: str, args: list, **kw):
     """#735: subprocess.Popen, but Windows' refusal to start a program (WinError 4551, or 1260 when a policy blocks it:
     Smart App Control on a clean Windows 11 blocks an exe that is not signed) is said in words instead of a bare
@@ -3102,8 +3111,13 @@ class Service:
         self.tool_call_recovery = False                   # opt-in: tool calls in forms next to the template's
         self.images = None                                # serve/images.py's ImageGen when the config has "images"
         self.restore_after_load = None                    # a session file an image job saved before it unloaded
-        self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
-                            tokenizer.encode("<|endoftext|>", parse_special=True))
+        # each only where it is ONE token: a vocabulary without <|endoftext|> (Nemotron-H's) would otherwise give its
+        # pieces ("<", "|", ...) and every reply would stop at its first "<"
+        self.stop_ids = set()
+        for t in (IM_END, "<|endoftext|>"):
+            got = tokenizer.encode(t, parse_special=True)
+            if len(got) == 1:
+                self.stop_ids.update(got)
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
@@ -3862,8 +3876,15 @@ class Service:
             if self.vision is None:
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
                                  "'vision'), so it cannot read images")
-            pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
-            start = self.tok.encode(VISION_START, parse_special=True)[0]
+            # Nemotron-H (its vocabulary has <img> / <image> and no <|vision_start|>): the template writes one <image> per
+            # picture, which becomes <img> <image> x n </img> (mtmd's img_beg / img_end for the RADIO projector); the
+            # engine places the rows at the <image> ids
+            nem = nemotron_vision(self.tok)
+            if nem:
+                img_beg, pad, img_end = nem
+            else:
+                pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
+                start = self.tok.encode(VISION_START, parse_special=True)[0]
             # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
             # for as long as urlopen waited.
             def fetch(src):
@@ -3889,7 +3910,15 @@ class Service:
             literal = self.tok.encode(IMAGE_PAD, parse_special=False)
             out, k = [], 0
             for j, t in enumerate(ids):
-                if t == pad and j > 0 and ids[j - 1] == start:
+                if nem and t == pad:
+                    # every special <image> id is the template's (a literal one in a message is marked and encoded as text)
+                    if k == len(encoded):
+                        raise ValueError("the prompt and its images do not match")
+                    out += [img_beg] + [pad] * encoded[k][1] + [img_end]
+                    k += 1
+                elif nem:
+                    out.append(t)
+                elif t == pad and j > 0 and ids[j - 1] == start:
                     # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
                     if k == len(encoded):
                         raise ValueError("the prompt and its images do not match")
@@ -6612,7 +6641,8 @@ def check_request_sampling(req) -> None:
 
 
 # the API's model name per model family (the GGUF architecture, "arch" in the config) when the config names none
-FAMILY_MODEL_NAMES = {"qwen4exp": "qwen3.8-flash-next", "qwen35moe": "qwen3.6-35b-a3b"}
+FAMILY_MODEL_NAMES = {"qwen4exp": "qwen3.8-flash-next", "qwen35moe": "qwen3.6-35b-a3b",
+                      "nemotron_h_moe": "nemotron-3.5-super-vl-120b-a12b"}
 
 
 def default_model_name(cfg: dict) -> str:
@@ -6692,7 +6722,11 @@ def main() -> int:
             tokens[i] = t
         merges = (tpath / "merges.txt").read_text(encoding="utf-8").split("\n")
         types = json.loads((tpath / "token_type.json").read_text())
-        tok = ST.Tokenizer(tokens, merges, types)
+        # the pre-tokenizer the extract recorded (tools/strata_tokenizer.py: "qwen35", or "tekken" for Nemotron-H)
+        pre = "qwen35"
+        if (tpath / "tokenizer.json").exists():
+            pre = json.loads((tpath / "tokenizer.json").read_text(encoding="utf-8")).get("pre") or "qwen35"
+        tok = ST.Tokenizer(tokens, merges, types, pre)
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
     if a.engine == "strata":
         if not cfg:

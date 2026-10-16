@@ -643,6 +643,27 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(strata-q36 PRIVATE strata_qwen35 ${_strata_gpu_runtime_target})
   target_link_libraries(strata PRIVATE strata_qwen35)
   target_compile_definitions(strata PRIVATE STRATA_HAVE_QWEN35=1)
+  # Nemotron-H MoE (nemotron_h_moe, Nemotron 3.5 Super VL 120B-A12B): its own engine path, src/nemotron_h, which
+  # `strata` switches to from the file's architecture and strata-nh wraps on its own.  Its routed experts are always
+  # in the hybrid mode (78 GB), so it needs the CPU expert pool's ggml-cpu (STRATA_NATIVE_EXPERTS); CUDA only for now.
+  if(STRATA_NATIVE_EXPERTS AND NOT STRATA_ENABLE_HIP)
+    # the CPU experts on their own (ggml-cpu only), so nh_cpu_test checks them without a GPU
+    add_library(strata_nemotron_h_cpu STATIC src/nemotron_h/nh_cpu.cpp)
+    target_include_directories(strata_nemotron_h_cpu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(strata_nemotron_h_cpu PUBLIC strata_kernels_cpu)
+    add_executable(nh_cpu_test src/nemotron_h/nh_cpu_test.cpp)
+    target_link_libraries(nh_cpu_test PRIVATE strata_nemotron_h_cpu)
+    add_executable(nh_cpu_bench src/nemotron_h/nh_cpu_bench.cpp)
+    target_link_libraries(nh_cpu_bench PRIVATE strata_nemotron_h_cpu)
+    add_library(strata_nemotron_h STATIC src/nemotron_h/nh_engine.cu)
+    target_include_directories(strata_nemotron_h PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(strata_nemotron_h PRIVATE strata_prefill strata_kernels strata_nemotron_h_cpu strata_warnings
+                          ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target})
+    add_executable(strata-nh src/nemotron_h/nh_main.cpp)
+    target_link_libraries(strata-nh PRIVATE strata_nemotron_h ${_strata_gpu_runtime_target})
+    target_link_libraries(strata PRIVATE strata_nemotron_h)
+    target_compile_definitions(strata PRIVATE STRATA_HAVE_NEMOTRON_H=1)
+  endif()
 
   if(STRATA_ENABLE_HIP)
     enable_testing()

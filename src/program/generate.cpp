@@ -90,6 +90,9 @@
 #include "strata/core/family_layout.hpp"
 #if defined(STRATA_HAVE_QWEN35)
 #include "strata/qwen35/engine.hpp"
+#if defined(STRATA_HAVE_NEMOTRON_H)
+#include "strata/nemotron_h/engine.hpp"
+#endif
 #endif
 #if defined(_WIN32)
 #include <windows.h>
@@ -1809,7 +1812,9 @@ int main(int argc, char** argv) {
         }
         // `strata --families`: the GGUF architectures this build runs (setup asks before it installs one)
         if (std::strcmp(argv[i], "--families") == 0) {
-#if defined(STRATA_HAVE_QWEN35)
+#if defined(STRATA_HAVE_QWEN35) && defined(STRATA_HAVE_NEMOTRON_H)
+            std::printf("qwen4exp qwen35moe nemotron_h_moe\n");
+#elif defined(STRATA_HAVE_QWEN35)
             std::printf("qwen4exp qwen35moe\n");
 #else
             std::printf("qwen4exp\n");
@@ -1869,14 +1874,21 @@ int main(int argc, char** argv) {
     // goes on below exactly as before.  Only the architecture string is read (the header of --native's shard).
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::strcmp(argv[i], "--native") != 0 && std::strcmp(argv[i], "--model") != 0) continue;
-        bool qwen35 = false;
+        bool qwen35 = false, nemotron_h = false;
         try {
             const strata::GgufFile meta(strata::gguf_split_paths(argv[i + 1]).front());
             qwen35 = strata::model_family(meta) == strata::ModelFamily::Qwen35Moe;
+            nemotron_h = strata::model_family(meta) == strata::ModelFamily::NemotronHMoe;
         } catch (const std::exception&) {
             // not readable here: the normal path below reports it
         }
         if (qwen35) return strata::qwen35::run(argc, argv);
+#if defined(STRATA_HAVE_NEMOTRON_H)
+        // Nemotron-H MoE (nemotron_h_moe) the same way: its own engine path (src/nemotron_h)
+        if (nemotron_h) return strata::nemotron_h::run(argc, argv);
+#else
+        (void) nemotron_h;
+#endif
         break;
     }
 #endif

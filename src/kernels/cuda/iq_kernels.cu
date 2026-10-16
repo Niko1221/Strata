@@ -3821,4 +3821,108 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     check("native_expert_grouped/down");
 }
 
+
+// ---------------------------------------------------------------- ungated (relu^2) native experts
+// Nemotron-H's routed experts (src/nemotron_h): down(relu(up . x)^2), no gate.  The blob is [up rows | down rows]
+// (NativeExpertLayout with up_off = 0, gu_row the up rows' bytes); every call below is new and opt-in: the gated
+// path above is untouched.  The up rows use the same row_dot<TG> as native_gu_kernel, the down product is that
+// path's own launch_down<TD>.
+namespace {
+template<int TG>
+__global__ void __launch_bounds__(256) native_up_kernel(const unsigned long long* __restrict__ grp_ptr,
+                                                        const int32_t* __restrict__ grp_start,
+                                                        const int32_t* __restrict__ n_groups,
+                                                        const int32_t* __restrict__ ent_tok,
+                                                        const block_q8_1* __restrict__ xq, NativeExpertLayout L,
+                                                        float* __restrict__ up) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int r = blockIdx.x * GU_ROWS + warp;               // 0 .. n_ff
+    if (r >= L.n_ff) return;
+    const size_t off = L.up_off + (size_t) r * L.gu_row;
+    const int nb = (int) (L.n_embd / Fmt<TG>::qk), xb = (int) (L.n_embd / 32);
+    const int ng = *n_groups;
+    for (int g = blockIdx.y; g < ng; g += gridDim.y) {
+        const uint8_t* wr = (const uint8_t*) grp_ptr[g] + off;
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        for (int e = e0; e < e1; ++e) {
+            const float s = row_dot<TG>(wr, xq + (size_t) ent_tok[e] * xb, nb, lane);
+            if (lane == 0) up[(size_t) e * L.n_ff + r] = s;
+        }
+    }
+}
+/// h = relu(up)^2 as q8_1 blocks, over the call's entries [grp_start[0], grp_start[*n_groups]) - the pattern of
+/// swiglu_q8_1_entries_kernel (n_ff % 32 == 0: a warp is one q8_1 block, the bounds warp-uniform).
+__global__ void __launch_bounds__(256) relu2_q8_1_entries_kernel(const float* __restrict__ up,
+                                                                 const int32_t* __restrict__ grp_start,
+                                                                 const int32_t* __restrict__ n_groups, int n_ff,
+                                                                 block_q8_1* __restrict__ hq) {
+#if defined(__HIPCC__)
+#pragma clang fp contract(off)
+#endif
+    const long long lo = (long long) grp_start[0] * n_ff, hi = (long long) grp_start[*n_groups] * n_ff;
+    for (long long i = lo + (long long) blockIdx.x * blockDim.x + threadIdx.x; i < hi;
+         i += (long long) gridDim.x * blockDim.x) {
+        const float u = fmaxf(up[i], 0.0f);
+#if defined(__HIPCC__)
+        const float h = u * u;
+#else
+        const float h = __fmul_rn(u, u);
+#endif
+        q8_1_store(h, hq, i);
+    }
+}
+}  // namespace
+
+NativeExpertLayout native_expert_layout_ungated(int up_type, int d_type, int64_t n_embd, int64_t n_ff) {
+    NativeExpertLayout L;
+    L.gu_type = up_type;
+    L.d_type = d_type;
+    L.n_embd = n_embd;
+    L.n_ff = n_ff;
+    L.gu_row = iq_row_bytes(up_type, n_embd);
+    L.d_row = iq_row_bytes(d_type, n_ff);
+    L.up_off = 0;
+    L.down_off = (size_t) n_ff * L.gu_row;
+    L.bytes = L.down_off + (size_t) n_embd * L.d_row;
+    return L;
+}
+
+bool native_expert_ungated_supported(int up_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept {
+    const int qg = gu_qk(up_type), qd = d_qk(d_type);
+    return up_type != 40 && d_type != 40 && qg > 0 && qd > 0 && is_iq(up_type) && is_iq(d_type) &&
+           n_embd % qg == 0 && n_ff % qd == 0 && n_embd % 32 == 0 && n_ff % 32 == 0;
+}
+
+void native_expert_grouped_relu2(const NativeExpertLayout& L, const unsigned long long* grp_ptr,
+                                 const int32_t* grp_start, const int32_t* n_groups, const int32_t* ent_dst,
+                                 const int32_t* ent_tok, int64_t cap_groups, int64_t cap_entries, const void* x_q8_1,
+                                 void* scratch, float* out, void* stream) {
+    if (cap_groups <= 0 || cap_entries <= 0) return;
+    if (L.n_ff % 32 != 0) { std::fprintf(stderr, "native_expert_grouped_relu2: n_ff %lld\n", (long long) L.n_ff); std::exit(1); }
+    cudaStream_t s = (cudaStream_t) stream;
+    const size_t f = (size_t) cap_entries * (size_t) L.n_ff * sizeof(float), fa = (f + 255) & ~(size_t) 255;
+    float* up = (float*) scratch;
+    block_q8_1* hq = (block_q8_1*) ((uint8_t*) scratch + 3 * fa);   // native_expert_scratch_bytes' layout
+    const auto* X = (const block_q8_1*) x_q8_1;
+    const dim3 gu((unsigned) ((L.n_ff + GU_ROWS - 1) / GU_ROWS), (unsigned) cap_groups);
+    switch (L.gu_type) {
+#define STRATA_UP(T) case T: native_up_kernel<T><<<gu, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, up); break;
+        STRATA_GU_FMTS(STRATA_UP)
+#undef STRATA_UP
+        default: std::fprintf(stderr, "native_expert_grouped_relu2: up type %d\n", L.gu_type); std::exit(1);
+    }
+    check("native_expert_grouped_relu2/up");
+    const long long nh = (long long) cap_entries * L.n_ff;
+    relu2_q8_1_entries_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(up, grp_start, n_groups, (int) L.n_ff, hq);
+    check("native_expert_grouped_relu2/relu2");
+    const dim3 gd((unsigned) ((L.n_embd + 7) / 8), (unsigned) cap_groups);
+    switch (L.d_type) {
+#define STRATA_DOWN(T) case T: launch_down<T>(gd, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+        STRATA_D_FMTS(STRATA_DOWN)
+#undef STRATA_DOWN
+        default: std::fprintf(stderr, "native_expert_grouped_relu2: down type %d\n", L.d_type); std::exit(1);
+    }
+    check("native_expert_grouped_relu2/down");
+}
+
 }  // namespace strata::kernels

@@ -63,6 +63,22 @@ QWEN35_PATTERN = (
     r"|\s+"
 )
 
+# The `tekken` pre-tokenizer (Mistral's Tekken BPE, Nemotron-H's 131,072-token vocabulary): the tokenizer.json
+# original that llama.cpp quotes above its LLAMA_VOCAB_PRE_TYPE_TEKKEN case (llama.cpp rewrites \p{Lu}... as
+# "not a-z" lookaheads for its own regex engine; `regex` takes the categories as they are, as HF tokenizers does).
+# Tekken also sets ignore_merges: a piece that is itself a vocabulary entry is that one token, before any merge.
+TEKKEN_PATTERN = (
+    r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+"
+    r"|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*"
+    r"|\p{N}"
+    r"| ?[^\s\p{L}\p{N}]+[\r\n/]*"
+    r"|\s*[\r\n]+"
+    r"|\s+(?!\S)"
+    r"|\s+"
+)
+PRE_PATTERNS = {"qwen35": QWEN35_PATTERN, "tekken": TEKKEN_PATTERN}
+IGNORE_MERGES = {"tekken"}
+
 
 class Tokenizer:
     def __init__(self, tokens: list[str], merges: list[str], token_types: list[int] | None = None,
@@ -86,7 +102,9 @@ class Tokenizer:
             if parts[0] not in self.ids or parts[1] not in self.ids:
                 raise ValueError("merge %d names a token outside the vocabulary: %r" % (i, m))
             self.ranks[(parts[0], parts[1])] = i
-        self._re = regex.compile(QWEN35_PATTERN)
+        # the pre-tokenizer of the declared `pre` (the Qwen pattern for any other: the files Strata ran before)
+        self._re = regex.compile(PRE_PATTERNS.get(pre, QWEN35_PATTERN))
+        self.ignore_merges = pre in IGNORE_MERGES
 
         # The literals matched directly instead of being run through BPE.  GGUF token types: 3 = CONTROL,
         # 4 = USER_DEFINED.  The two classes behave DIFFERENTLY and llama.cpp's own tokenizer settled which:
@@ -224,7 +242,8 @@ class Tokenizer:
             if got is None:
                 mapped = "".join(BYTE_TO_UNICODE[b] for b in piece.encode("utf-8"))
                 got = []
-                for tok in self._bpe(mapped):
+                whole = self.ids.get(mapped) if self.ignore_merges else None
+                for tok in ([mapped] if whole is not None else self._bpe(mapped)):
                     i = self.ids.get(tok)
                     if i is None:
                         raise KeyError("BPE produced a token outside the vocabulary: %r" % tok)
@@ -318,8 +337,10 @@ def extract(gguf_path, out_dir) -> dict:
         "add_bos_token": False,
         # The pattern is SHIPPED, not recomputed by the reader: it is transcribed from llama.cpp for the
         # declared `pre` type, and a C++ port that re-derived it would be free to get `\p{M}` wrong again.
-        "pre_pattern": QWEN35_PATTERN,
-        "pre_pattern_source": ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)",
+        "pre_pattern": PRE_PATTERNS.get(tk.pre, QWEN35_PATTERN),
+        "pre_pattern_source": ("tokenizer.json (llama.cpp src/llama-vocab.cpp LLAMA_VOCAB_PRE_TYPE_TEKKEN)" if tk.pre == "tekken"
+                               else ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)"),
+        "ignore_merges": tk.ignore_merges,
     }
     (out / "vocab.json").write_text(json.dumps(tk.ids, ensure_ascii=False), encoding="utf-8")
     (out / "merges.txt").write_text("\n".join("%s %s" % k for k, _ in
