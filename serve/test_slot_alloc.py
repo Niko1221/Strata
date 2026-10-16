@@ -197,6 +197,25 @@ class ParkMainSession(unittest.TestCase):
         return slot_policy.park_destination(e.main_held, e.slot_busy, e.slot_held, e.slot_used, e.slot_order,
                                             e.slot_gs, self.NOW, e.slot_cache_valid, True, exclude)
 
+    def test_another_conversation_is_told_by_the_main_history_up_to_its_last_turn(self):
+        # main: system (turn 1 at 0), user turn at 20000, reply turn at 29000; a prompt that shares all of it up to
+        # the reply's turn is the same conversation, one that diverges earlier is another (here: only the 20K system
+        # prompt and tools in common, which is more than half of the 30K held)
+        T = 248045
+        e = self.e()
+        e.info = {"slot_park": "1", "turn_token": str(T)}
+        main = [T] + [5] * 19999 + [T] + [6] * 8999 + [T] + [8] * 999
+        e.main_held = list(main)
+        same = main[:29000] + [T] + [9] * 50 + [T] + [1] * 10      # its reply without the thinking, and a next turn
+        self.assertEqual(e._claim_park(same), "")
+        self.assertEqual(e._claim_park(main[:29001]), "")           # the reply regenerated
+        other = main[:20000] + [T] + [3] * 500                      # another chat of the same client
+        with self.assertRaises(NotImplementedError):                # another conversation: the policy is asked
+            e._claim_park(other)
+        e.info = {"slot_park": "1"}                                 # an engine that does not say: any difference counts
+        with self.assertRaises(NotImplementedError):
+            e._claim_park(same)
+
     def test_off_without_engine_capability_or_padding_safety(self):
         e = self.e()
         e.info = {}
