@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from nvfp4_csf import decode_scale_bytes, dequant_mxfp8, dequant_nvfp4
@@ -177,6 +178,53 @@ class Conversion(unittest.TestCase):
 
 
 class PinnedConverter(unittest.TestCase):
+    def test_interleaved_experts_flush_within_one_layer_budget(self):
+        llama = Path(__file__).resolve().parents[1]/'third_party/llama.cpp'
+        sys.path[:0] = [str(llama/'gguf-py'), str(llama)]
+        import gguf
+        from conversion.base import ModelBase
+        from conversion.qwen4exp import Qwen4ExpTextModel as Model
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tensors = fixture(root/'model', full=True)
+            expert_names = [n for n in tensors if '.layers.0.mlp.experts.' in n]
+            tensors.update({n.replace('.layers.0.', '.layers.1.'):tensors[n] for n in expert_names})
+            # As in the real checkpoint, an early shard has a few experts of
+            # every layer; a later shard finishes those same layers.
+            shard_paths = ['tensors/first.safetensors', 'tensors/second.safetensors']
+            groups = [{}, {}]
+            for name, value in tensors.items():
+                second = '.mlp.experts.1.' in name
+                groups[int(second)][name] = value
+            for name, group in zip(shard_paths, groups):
+                safetensors(root/'model'/name, group)
+            (root/'model/tensors/model-00001-of-00001.safetensors').unlink()
+            (root/'model/model.safetensors.index.json').write_text(json.dumps({'weight_map':{
+                name:shard for shard, group in zip(shard_paths, groups) for name in group}}))
+            config_path = root/'model/config.json'
+            config = json.loads(config_path.read_text())
+            config['text_config']['num_hidden_layers'] = 2
+            recipes = config['quantization_config']['quantized_layers']
+            recipes['model.language_model.layers.1.mlp.experts'] = recipes['model.language_model.layers.0.mlp.experts'].copy()
+            config_path.write_text(json.dumps(config))
+            buffered = []
+            flush = ModelBase._flush_nvfp4_experts
+            def observe(self, key, blocks, *args):
+                buffered.append(sum(len(v) for v in blocks.values()))
+                return flush(self, key, blocks, *args)
+            checkpoint = Checkpoint(root/'model')
+            with patch.object(ModelBase, '_flush_nvfp4_experts', observe), converter_policy(checkpoint):
+                model = Model(checkpoint.root, gguf.LlamaFileType.MOSTLY_Q8_0, root/'result.gguf', use_temp_file=True)
+                model.prepare_tensors()
+                model.gguf_writer.write_header_to_file(root/'result.gguf')
+                model.gguf_writer.write_kv_data_to_file()
+                model.gguf_writer.write_tensors_to_file()
+                model.gguf_writer.close()
+            self.assertEqual(len(buffered), 6)
+            self.assertLessEqual(max(buffered), 2*3)  # one layer's two experts x three projections
+            experts = [t for t in gguf.GGUFReader(root/'result.gguf').tensors if t.name.endswith('_exps.weight')]
+            self.assertEqual(len(experts), 6)
+
     def test_adapters_are_restored_after_an_exception(self):
         import torch
         llama = Path(__file__).resolve().parents[1]/'third_party/llama.cpp'

@@ -33,7 +33,8 @@ savings or require new GPU kernels.
 
 Use setup's pinned `third_party/llama.cpp` source, and a Python environment
 with numpy, torch, transformers, safetensors, sentencepiece and protobuf.
-The main GGUF uses llama.cpp's temporary-file writer; place temporary files
+The main GGUF groups experts by layer before repacking and uses llama.cpp's
+temporary-file writer; place temporary files
 on a drive with enough room for the expert data. The final GGUF, temporary
 GGUF storage, PLE table and subsequent expert pack each need disk space.
 
@@ -72,7 +73,9 @@ python tools/test_nvfp4_csf_convert.py
 
 CPU tests cover the byte codec, stream validation, BF16 rounding, MXFP8
 decoding, numerical PLE shard/row order across chunk sizes, metadata-only
-planning and the actual pinned Python converter writing a small GGUF.
+planning and the actual pinned Python converter writing a small GGUF. A
+multi-shard fixture checks that interleaved expert layers flush within one
+layer's buffer budget rather than accumulating the entire expert arena.
 The opt-in adapters are restored on context exit.
 
 The initial sample experiment used

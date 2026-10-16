@@ -261,6 +261,10 @@ def converter_policy(checkpoint):
                     return torch.from_numpy(dequant_nvfp4(raw(wg), raw(sg), eager(gg).item()))
             tensors[name] = load
             tensors.pop(stem+'.input_scale', None)
+        # The checkpoint distributes each layer's experts over many shards.
+        # Group names by layer before the pinned converter buffers/re-packs
+        # experts, so it can flush a layer instead of retaining the whole model.
+        self.model_tensors = dict(sorted(tensors.items()))
         return original_prepare(self)
     try:
         legacy.install_policy()
