@@ -1,0 +1,4 @@
+=== S_smoke 09:45:11
+strata generate: prefill 356 tokens in 1 chunks, 20264.8 ms (17.6 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+decode                   32 tokens in 2462.3 ms  ->  13.00 tok/s
+prefill                  356 tokens in 20264.8 ms  ->  17.57 tok/s  (time to first token 29639.3 ms)
