@@ -499,7 +499,7 @@ in FP32 and rounds to binary16, which may differ numerically from the original p
 model numerical discrepancy remains unresolved; compare against a reference before relying on output quality. CPU-only
 tests do not qualify GPU model/head fallback behavior.
 
-For this candidate, `--hybrid-rows` is clamped to 1..32 and prompt `--chunk` is further clamped to at most that row
+For this candidate, `--hybrid-rows` is clamped to 8..32 and prompt `--chunk` is further clamped to at most that row
 count. This keeps streamed expert/MMQ prompt batches out of the unqualified path; an explicit larger chunk does not
 bypass this limit. It is a conservative experimental cap, not a generally supported gfx803 batch rule.
 
