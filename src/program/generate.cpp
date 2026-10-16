@@ -9172,9 +9172,11 @@ int main(int argc, char** argv) {
         auto a_in_one = [&](const ASwap& w, const uint8_t* b) {   // step 2: one copy in (H2D), on its home's stream
             AHome& h = ahomes[(size_t) w.home];
             const strata::core::OnDevice on(h.dev);
-            if (const cudaError_t e = cudaMemcpyAsync(h.cache->device_slot(w.slot), b,
-                                                      (size_t) strata::kernels::cpu::expert_layout().blob_bytes(w.layer),
-                                                      cudaMemcpyHostToDevice, h.stream); e != cudaSuccess) {
+            // through adapt_copy_h2d, as the blocking tier is: this tier is a later commit than the #884
+            // workaround and used to reach SDMA directly, which left STRATA_HIP_ADAPT_KERNEL_COPY inert here
+            if (const cudaError_t e = adapt_copy_h2d(h.cache->device_slot(w.slot), b,
+                                                     (size_t) strata::kernels::cpu::expert_layout().blob_bytes(w.layer),
+                                                     h.stream); e != cudaSuccess) {
                 std::fprintf(stderr, "strata serve: adaptive tier: copy of layer %d into slot %d (CUDA%d) failed: %s\n",
                              (int) w.layer, (int) w.slot, h.dev, cudaGetErrorString(e));
                 a_err = true;
