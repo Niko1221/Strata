@@ -81,6 +81,17 @@ main { flex: 1; min-height: 0; display: flex; }
 .monitor, .about { max-width: 1240px; width: 100%; margin: 0 auto; padding: var(--st-s-6); display: flex; flex-direction: column;
                    gap: var(--st-s-5); }
 .state-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
+/* parallel batch slots: one row per slot so every concurrent request is visible (#465) */
+.slot-grid { display: flex; flex-direction: column; gap: var(--st-s-2); margin-top: var(--st-s-2); }
+.slot-row { display: grid; grid-template-columns: 52px minmax(0,1fr) auto; align-items: center; gap: var(--st-s-3); font-size: var(--st-fs-sm); }
+.slot-row .slot-name { color: var(--st-ink-muted); font: 12px var(--st-font-mono); }
+.slot-row .slot-bar { height: 6px; border-radius: var(--st-r-pill); background: var(--st-surface-2); border: 1px solid var(--st-line-soft); overflow: hidden; }
+.slot-row .slot-bar div { height: 100%; border-radius: inherit; background: var(--st-accent); transition: width var(--st-dur) var(--st-ease); }
+.slot-row[data-s="reading"] .slot-bar div { background: var(--st-info); }
+.slot-row[data-s="decoding"] .slot-bar div, .slot-row[data-s="generating"] .slot-bar div { background: var(--st-accent); }
+.slot-row .slot-state { font: 12px var(--st-font-mono); color: var(--st-ink-muted); white-space: nowrap; }
+.slot-row[data-s="reading"] .slot-state, .slot-row[data-s="decoding"] .slot-state, .slot-row[data-s="generating"] .slot-state { color: var(--st-ink); }
+.slot-extra { font-size: var(--st-fs-sm); color: var(--st-ink-muted); margin-top: var(--st-s-1); }
 .state-card__head { display: flex; align-items: center; gap: var(--st-s-4); flex-wrap: wrap; }
 .badges { display: flex; gap: var(--st-s-2); flex-wrap: wrap; }
 .badges .st-badge { opacity: .38; transition: opacity var(--st-dur); }
