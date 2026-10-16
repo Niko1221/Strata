@@ -209,8 +209,30 @@ function renderConvCache(c) {
   $("cc-card").hidden = !c;
   if (!c) return;                                  // an older server
   const pct = (a, b) => (b ? `${Math.min(100, (100 * a) / b)}%` : "0%");
-  $("cc-bars").hidden = !c.enabled;
-  if (c.enabled) {
+  // the parking, split by destination (RAM, and each on-disk tier the engine reports): one row each. The list
+  // comes from the server, so a destination that is off or unconfigured is simply not in it; an older server
+  // reports none and the two aggregate rows (cc-bars) stand in.
+  const dest = (c.destinations || []).filter((d) => d && d.enabled && d.label);
+  $("cc-dest").innerHTML = dest.map((d) => {
+    const budget = (d.budget_mib || 0) * 1048576;
+    const count = d.slots != null ? `${fmt(d.conversations)} / ${fmt(d.slots)}` : fmt(d.conversations);
+    // The RAM row says TWO things, because two live in this RAM (the Monitor report of 2026-10-15: it read 0
+    // while four slots held their K/V).  --conversation-cache-mib is the RAM the slots' conversations live in;
+    // `bytes` is what is PARKED in it (the engine's log), which the cascade sends to the warm level instead.  The
+    // slots' side is added: the tokens they hold (measured) and their bytes as an ESTIMATE (kv_estimated), with the
+    // source named in the row's title (kv_source) - never a derived count shown as a reading.  An engine that did
+    // not report them (an older shim, or no --kv-resident) leaves the row exactly the one it always was.
+    const est = typeof d.kv_bytes === "number" && d.kv_estimated === true;
+    const mem = est && budget ? `${gb(d.bytes)} parked + ${gb(d.kv_bytes)} est. / ${gb(budget)} GB`
+              : budget ? `${gb(d.bytes)} / ${gb(budget)} GB` : `${gb(d.bytes)} GB`;
+    const title = d.kv_source ? ` title="${esc(d.kv_source)}"` : "";
+    const width = budget ? pct(d.bytes + (est ? d.kv_bytes : 0), budget) : d.slots ? pct(d.conversations, d.slots) : "0%";
+    return `<div><div class="bar-row"><span>${esc(d.label)}</span><span class="muted"${title}>${count} · ${mem}</span></div>` +
+           `<div class="st-progress"><div class="st-progress__bar" style="width:${width}"></div></div></div>`;
+  }).join("");
+  $("cc-dest").hidden = !dest.length;
+  $("cc-bars").hidden = !!dest.length || !c.enabled;   // the per-destination rows replace the aggregate ones
+  if (!dest.length && c.enabled) {
     $("cc-slots-text").textContent = `${fmt(c.parked)} / ${fmt(c.slots)}`;
     $("cc-slots-bar").style.width = pct(c.parked, c.slots);
     const budget = c.budget_mib * 1048576;
@@ -240,6 +262,49 @@ function renderTotals(t) {
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
+// Context fill: one small clock per batch slot, in the column that flanks the aggregate one - the left column when
+// the count is odd takes the extra. A slot's used tokens are its own - the request it runs (prompt read + tokens
+// written) or, while idle, the tokens it holds for a next turn.
+function slotContextTokens(s) {
+  return s.state === "idle" ? (s.held_tokens || 0) : ((s.prompt_tokens || 0) + (s.generated || 0));
+}
+function renderCtxSlots(slots, ctx) {
+  const left = $("ctx-slots"), right = $("ctx-slots-right");
+  const list = slots || [];
+  left.hidden = !list.length;                      // no batch slots (an engine without them): no clocks at all
+  right.hidden = !list.length;
+  if (!list.length) { left.textContent = ""; right.textContent = ""; return; }
+  // The tachometer: the big clock keeps the middle and the small ones go to its sides, one column a side and centred
+  // on it. The left column takes the odd one - 2 of 3, 1 of 2, the lone one of 1 - so a pair reads evenly around the
+  // centre; a right column with nothing to draw stays hidden, leaving no gap for a clock that is not there.
+  const mid = Math.ceil(list.length / 2);
+  fillCtxColumn(left, list.slice(0, mid), ctx);
+  fillCtxColumn(right, list.slice(mid), ctx);
+}
+// One column of clocks: each rebuilt only when its slots change, so the rings keep their transition.
+function fillCtxColumn(el, items, ctx) {
+  const key = items.map((s) => s.slot).join(",");
+  if (el.dataset.slots !== key) {
+    el.dataset.slots = key;
+    el.innerHTML = items.map((s) => `
+      <div class="ctx-mini">
+        <svg class="st-gauge ctx-mini__gauge" viewBox="0 0 120 120" aria-hidden="true">
+          <circle class="st-gauge__track" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round"
+                  stroke-dasharray="235.6 314.2" transform="rotate(135 60 60)"/>
+          <circle class="st-gauge__fill" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round"
+                  stroke-dasharray="0 314.2" transform="rotate(135 60 60)"/></svg>
+        <div class="ctx-mini__label"><span class="ctx-mini__slot">s#${esc(s.slot + 1)}</span><span class="ctx-mini__pct"></span></div>
+      </div>`).join("");
+  }
+  items.forEach((s, i) => {
+    const mini = el.children[i];
+    const frac = ctx ? Math.min(1, slotContextTokens(s) / ctx) : 0;
+    const arc = mini.querySelector(".st-gauge__fill");
+    arc.setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
+    arc.style.opacity = 235.6 * frac >= 3 ? "1" : "0";    // a near-zero arc would draw just its round cap
+    mini.querySelector(".ctx-mini__pct").textContent = `${Math.round(frac * 100)}%`;
+  });
+}
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // model state
   const on = live.queued > 0 ? "queued" : live.state;
@@ -267,6 +332,43 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("state-label").textContent = label;
   $("state-detail").textContent = detail;
   $("state-bar").style.width = `${pct}%`;
+  // The engine runs ONE thing at a time: while it admits a request there is NO decode, and live.state is that single
+  // thing. The slots' states are the REQUESTS' states, not parallel execution: while an admission runs, a slot the
+  // engine still calls "decoding" is paused, and its tok_s (a mean that only decays meanwhile) is not a live speed.
+  // live.admission says how the admission brings the state in: "loading" reads a parked conversation back from disk,
+  // "reading" is a new prompt; null (or the field missing on an older shim) says nothing, and the slot keeps its
+  // own word. live.waiting (the requests waiting their turn) rides the same line.
+  // One entry per slot the CONFIGURATION declares: live.slots carries one per batch slot (so --batch 4 is always
+  // s#1..s#4), idle ones included and reading "0 t/s". live.slots is read only when it IS an array - null, or the
+  // field missing on an older shim (an engine without batching), means no slots: the line stays empty under the
+  // figure above, and nothing prints "undefined" or throws.
+  const slots = Array.isArray(live.slots) ? live.slots.filter((s) => s) : [];
+  const admitting = slots.some((s) => s.state === "reading");
+  const decoding = live.state === "generating" && !admitting;   // speeds and an admission never share the line
+  const admission = typeof live.admission === "string" ? live.admission : null;
+  const waiting = Number(live.waiting) || 0;
+  const parts = slots.map((s) => {
+    const slot = `s#${fmt(s.slot + 1)}`;
+    if (s.state === "idle") return `${slot} 0 t/s`;    // a slot the configuration declares, quiet right now
+    if (s.state === "reading") {                       // the request being admitted: loading it back, or its prompt
+      const word = admission === "loading" ? "loading" : "reading";
+      return `${slot} ${word}${word === "loading" && s.prompt_tokens != null ? ` ${fmt(s.prompt_tokens)}` : ""}`;
+    }
+    if (!decoding) return `${slot} paused`;            // an admission is running: no decode anywhere
+    return `${slot} ${s.tok_s != null ? `${fmt(s.tok_s, 1)} t/s` : "0 t/s"}`;
+  });
+  if (waiting > 0) parts.push(`${fmt(waiting)} queued`);
+  // The rate the aggregate is made of when NO slot is decoding (the Monitor report of 2026-10-15: the four slots
+  // read 0 t/s under a moving aggregate).  A request that is alone decodes on the engine's solo path, which uses no
+  // slot's sessions: live.slots carries every configured slot idle, so nothing there can carry its rate.  The shim
+  // sends live.solo_tok_s only then, and the line names what the figure above it is made of.  Read only when it IS a
+  // number - an older shim, or an engine without batch slots, sends none.
+  if (typeof live.solo_tok_s === "number") parts.push(`solo ${fmt(live.solo_tok_s, 1)} t/s`);
+  // one element per entry, on the card's top right: the flex gap separates them, evenly for every width, so the
+  // four read at a glance. Joined as one string they would collapse to single spaces and read as a single run.
+  const slotsLine = $("state-slots");
+  slotsLine.hidden = !parts.length;
+  slotsLine.replaceChildren(...parts.map((part) => { const item = document.createElement("span"); item.textContent = part; return item; }));
 
   // the eight cards
   const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
@@ -309,16 +411,27 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   }
   spark("sp-disk", h.disk_read_mb);
 
-  // context fill: the running request, else the last one
+  // Context fill: the big clock is the SUM of the small ones, and it says so in its own numbers - what the slots
+  // hold together over the capacity the same list declares (one context per slot). The four small clocks at 43, 0,
+  // 0 and 0 % are 43% of ONE slot's context out of four: 11%, and the figure under the percentage reads the tokens
+  // added up (85k) of the whole (768K). So the big one can never contradict the small ones: it is their sum, and
+  // both sides come from the same live.slots entries (each slot's own prompt+written, or held tokens while idle).
+  // An engine without slots draws no small clocks and keeps the single request's own fill - that same sum with
+  // nothing to add: the running request, else the last one.
   const ctx = eng.max_context || 0;
-  let used = 0;
-  if (live.state !== "idle") used = (live.prompt_tokens || 0) + (live.generated || 0);
+  let used = 0, capacity = ctx;
+  if (slots.length) {
+    used = slots.reduce((sum, s) => sum + slotContextTokens(s), 0);
+    capacity = ctx * slots.length;                   // the slots the small clocks are drawn for, x one context each
+  } else if (live.state !== "idle") used = (live.prompt_tokens || 0) + (live.generated || 0);
   else if (last) used = (last.prompt_tokens || 0) + (last.output_tokens || 0);
-  const frac = ctx ? Math.min(1, used / ctx) : 0;
+  const frac = capacity ? Math.min(1, used / capacity) : 0;
   $("ctx-fill").setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
   $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";         // a near-zero arc would draw just its round cap
   $("ctx-pct").textContent = `${Math.round(frac * 100)}%`;
-  $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
+  $("ctx-sub").textContent = capacity ? `${kfmt(used)} / ${ctxfmt(capacity)}` : "–";
+  // ...and one small clock per batch slot under it. Same degrade as the state line: no live.slots, no clocks.
+  renderCtxSlots(slots, ctx);
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
   $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";

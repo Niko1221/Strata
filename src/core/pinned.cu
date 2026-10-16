@@ -84,12 +84,129 @@ uint64_t free_huge_bytes() {
 }
 #endif
 
+#ifdef _WIN32
+// --- Chunked large pages (STRATA_ARENA_LP_CHUNKS=1, opt-in; nothing changes without the variable) -----------
+//
+// MEASURED on 2026-10-14 on this machine (Windows 10.0.26200; the probes and their raw output live in
+// studioz-ai-platform/_tmp/2026-10-14-sonda-arena-paginas-grandes*.ps1|.log).  Every claim below was checked
+// with QueryWorkingSetEx, reading the LargePage bit of the working-set entry - VirtualAlloc's return value
+// alone proves nothing:
+//
+//   * The OBVIOUS recipe - one MEM_RESERVE for the whole range, then MEM_COMMIT|MEM_LARGE_PAGES per chunk -
+//     DOES NOT WORK.  VirtualAlloc returns SUCCESS, but the range comes out backed by 4 KB pages: the kernel
+//     SILENTLY IGNORES MEM_LARGE_PAGES when the call is a commit over a range reserved earlier.  Nothing in
+//     the return code says so, so a ladder built that way would report large pages it never got.  A ladder
+//     built that way must NOT be written - this comment is here so nobody re-invents it.
+//   * MEM_RESERVE|MEM_LARGE_PAGES without MEM_COMMIT is refused with 87: large pages cannot be reserved first.
+//   * What DOES work, also measured: each chunk as its OWN VirtualAlloc(base, chunk, MEM_RESERVE|MEM_COMMIT|
+//     MEM_LARGE_PAGES) at an explicit 2 MiB-aligned base, contiguous with the previous chunk.  The kernel
+//     returns EXACTLY the requested base (verified for 256 MiB and 512 MiB chunks) and the backing is really
+//     2 MiB.  A 4 KB chunk can sit between two 2 MiB chunks in the same contiguous block (measured), so
+//     degrading chunk by chunk works.  The arena stays ONE contiguous virtual block - `base` plus offsets -
+//     and no consumer changes; only release() and the working-set lock need the per-chunk list.
+//   * A base that is not 2 MiB-aligned is not refused either: the kernel ROUNDS IT DOWN to the large-page
+//     boundary and returns a different address (measured).  That is why every base used here is 2 MiB-aligned
+//     and why the returned pointer is required to equal the requested address before a piece is accepted.
+//
+// NOT measured, and not claimed: a real ERROR_NO_SYSTEM_RESOURCES (1450) refusal at arena size.  The probe is
+// capped at ~4 GiB while :5011 holds 63.7 GiB locked, so the halving below is code-reviewed, not run.  Whether
+// the engine's 71.73 GiB failure is pool contiguity or the commit limit is likewise unproven by this probe.
+uint64_t arena_lp_chunk_mib() {
+    const char* e = std::getenv("STRATA_ARENA_LP_CHUNK_MIB");
+    if (e == nullptr || *e == '\0') return 8192;   // suggested default: 8 GiB per chunk
+    const long v = std::atol(e);
+    return v > 0 ? (uint64_t) v : 8192;
+}
+
+void release_pieces(uintptr_t base, ArenaPieces& pieces) {
+    for (const ArenaPieces::Piece& pc : pieces.v) VirtualFree((void*) (base + pc.off), 0, MEM_RELEASE);
+    pieces.clear();
+}
+
+// Places `lbytes` (a multiple of `large`) as chunks of `chunk_bytes` at explicit 2 MiB-aligned addresses from
+// `base`.  A chunk that cannot get large pages is HALVED (staying a multiple of the large page and inside its
+// slot) and retried at the same base; whatever still does not fit gets 4 KB pages IN THE SAME SLOT, so the
+// block stays contiguous and the caller keeps a single `base`.  On an unrecoverable failure the pieces already
+// placed are released and nullptr is returned (the caller then does exactly what it did before: one 4 KB block).
+void* reserve_chunked(uintptr_t base, uint64_t lbytes, SIZE_T large, uint64_t chunk_bytes,
+                      PageBacking& got, std::string& note, ArenaPieces& pieces) {
+    uint64_t chunk = chunk_bytes / (uint64_t) large * (uint64_t) large;
+    if (chunk < (uint64_t) large) chunk = (uint64_t) large;
+    uint64_t off = 0;
+    while (off < lbytes) {
+        const uint64_t want = std::min<uint64_t>(chunk, lbytes - off);
+        void* addr = (void*) (base + off);
+        uint64_t n = want;
+        bool placed = false;
+        while (n >= (uint64_t) large) {
+            void* p = VirtualAlloc(addr, (SIZE_T) n, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
+            if (p == addr) {
+                pieces.v.push_back({off, n, true});
+                pieces.large_bytes += n;
+                ++pieces.large_pieces;
+                off += n;
+                placed = true;
+                break;
+            }
+            const DWORD e = GetLastError();
+            // A non-null pointer at another address means the kernel rounded the base down: never accept it, it
+            // could overlap the piece before it.  Free it and treat the attempt as refused.
+            if (p != nullptr) VirtualFree(p, 0, MEM_RELEASE);
+            if (e != ERROR_NO_SYSTEM_RESOURCES) break;   // not a contiguity refusal: halving would not help
+            const uint64_t half = (n / 2) / (uint64_t) large * (uint64_t) large;
+            if (half < (uint64_t) large) break;
+            n = half;
+        }
+        if (placed) continue;
+        void* q = VirtualAlloc(addr, (SIZE_T) want, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (q != addr) {
+            if (q != nullptr) VirtualFree(q, 0, MEM_RELEASE);
+            release_pieces(base, pieces);
+            return nullptr;
+        }
+        pieces.v.push_back({off, want, false});
+        ++pieces.normal_pieces;
+        off += want;
+    }
+    // The log has to be auditable: how many chunk slots got 2 MiB pages out of how many there are.
+    pieces.bytes = lbytes;
+    pieces.chunks_total = (int) ((lbytes + chunk - 1) / chunk);
+    pieces.chunks_with_large = 0;
+    for (int i = 0; i < pieces.chunks_total; ++i) {
+        const uint64_t a = (uint64_t) i * chunk, b = std::min<uint64_t>(a + chunk, lbytes);
+        for (const ArenaPieces::Piece& pc : pieces.v)
+            if (pc.large && pc.off < b && pc.off + pc.len > a) { ++pieces.chunks_with_large; break; }
+    }
+    if (pieces.chunks_with_large == 0) {   // no chunk took large pages: nothing gained, keep the old 4 KB block
+        release_pieces(base, pieces);
+        return nullptr;
+    }
+    got = pieces.chunks_with_large == pieces.chunks_total ? PageBacking::LargePages
+                                                          : PageBacking::PartialLargePages;
+    char buf[256];
+    if (got == PageBacking::LargePages) {
+        std::snprintf(buf, sizeof buf, "large pages for %llu B: all %d chunks of %llu MiB are 2 MiB",
+                      (unsigned long long) lbytes, pieces.chunks_total,
+                      (unsigned long long) (chunk >> 20));
+    } else {
+        std::snprintf(buf, sizeof buf,
+                      "large pages partial for %llu B: %d/%d chunks (%.2f GiB of %.2f GiB), rest 4 KB",
+                      (unsigned long long) lbytes, pieces.chunks_with_large, pieces.chunks_total,
+                      (double) pieces.large_bytes / (double) (1ull << 30),
+                      (double) lbytes / (double) (1ull << 30));
+    }
+    note = buf;
+    return (void*) base;
+}
+#endif
+
 // A 2 MB-aligned reservation.  Large pages first, then the largest alignment the OS will give us for free.
 // A non-empty shared_file instead maps one file whose first 4 KiB identify the pack and whose remaining bytes
 // are the resident arena.  This shared-file layout is intended for tmpfs (/dev/shm); hugetlbfs would need
 // hugepage-aligned file size and arena offset rather than the 4 KiB header layout used here.
 void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::string& shared_file,
-              uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes) {
+              uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes,
+              ArenaPieces* pieces = nullptr) {
     mapping_base = nullptr;
     mapping_bytes = 0;
 
@@ -124,6 +241,8 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
         // anything else is ERROR_INVALID_PARAMETER (87), which reads like a privilege problem but is not.
         // Round up: the slack is under 2 MB and the tail stays unused.
         const SIZE_T lbytes = (SIZE_T) (((SIZE_T) bytes + large - 1) / large * large);
+        // ATTEMPT 1 - IDENTICAL to the behaviour before this change: ONE piece, reserve and commit together.
+        // If it enters, everything downstream is bit for bit what it was (got == LargePages, same note).
         void* p = VirtualAlloc(nullptr, lbytes, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
                                PAGE_READWRITE);
         if (p) {
@@ -133,9 +252,35 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
         }
         // 1450 (ERROR_NO_SYSTEM_RESOURCES) is the large-page pool saying no, 87 is a size that is not a
         // multiple of the minimum, 1314 is the privilege: without the byte count the three read as one bug.
+        const DWORD first_error = GetLastError();
         note = "large pages refused for " + std::to_string((unsigned long long) lbytes) + " B (GetLargePageMinimum=" +
                std::to_string((unsigned long long) large) + ", VirtualAlloc error " +
-               std::to_string((unsigned long long) GetLastError()) + "); using 4 KB pages";
+               std::to_string((unsigned long long) first_error) + "); using 4 KB pages";
+        // ATTEMPT 2 - opt-in (STRATA_ARENA_LP_CHUNKS set and not "0"), and only after the one-piece attempt was
+        // refused for CONTIGUITY (1450).  Nothing happens without the variable: this whole block is skipped.
+        const char* chunks_env = std::getenv("STRATA_ARENA_LP_CHUNKS");
+        if (pieces != nullptr && chunks_env != nullptr && std::string(chunks_env) != "0" &&
+            first_error == ERROR_NO_SYSTEM_RESOURCES && lbytes <= (SIZE_T) -1 - large) {
+            // A 2 MiB-aligned base, without a reservation kept in between (a range reserved first CANNOT be
+            // committed as large pages - see the comment on reserve_chunked): reserve the range once to learn
+            // the aligned base, give it straight back, then place the chunks at explicit addresses.  Virtual
+            // address space is per-process and startup is single-threaded, so the range is still free.
+            void* probe = VirtualAlloc(nullptr, lbytes + large, MEM_RESERVE, PAGE_READWRITE);
+            if (probe != nullptr) {
+                const uintptr_t base = ((uintptr_t) probe + large - 1) & ~(uintptr_t) (large - 1);
+                VirtualFree(probe, 0, MEM_RELEASE);
+                ArenaPieces tmp;
+                PageBacking g2 = got;
+                std::string n2 = note;
+                void* q = reserve_chunked(base, (uint64_t) lbytes, large, arena_lp_chunk_mib() << 20, g2, n2, tmp);
+                if (q != nullptr) {
+                    got = g2;
+                    note = n2;
+                    *pieces = tmp;
+                    return q;
+                }
+            }
+        }
     } else if (std::getenv("STRATA_NO_LARGEPAGES") != nullptr) {
         note = "large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages";
     } else {
@@ -327,6 +472,40 @@ void release(void* p, uint64_t bytes) {
 #endif
 }
 
+// Frees an arena.  A chunked (Windows) arena is SEVERAL allocations tiled from one base, so each piece is freed
+// on its own; every other backing is the single allocation it has always been and goes through release() as is.
+void release_arena(void* mapping_base, uint64_t mapping_bytes, void* base, uint64_t capacity, ArenaPieces& pieces) {
+#ifdef _WIN32
+    if (!pieces.empty() && base != nullptr) {
+        for (const ArenaPieces::Piece& pc : pieces.v) VirtualFree((uint8_t*) base + pc.off, 0, MEM_RELEASE);
+        pieces.clear();
+        return;
+    }
+#endif
+    (void) pieces;
+    release(mapping_base != nullptr ? mapping_base : base, mapping_bytes != 0 ? mapping_bytes : capacity);
+}
+
+// Chunked arena: lock ONLY the 4 KB pieces inside [from, to).  The 2 MiB pieces cannot be paged out, so locking
+// them buys nothing (#779) - and the probe measured that VirtualLock on a 2 MiB piece fails with 1453
+// (ERROR_WORKING_SET_QUOTA) until the process's minimum working set is raised above it, i.e. it is a no-op with
+// a cost.  `locked` receives the (offset, length) of what was asked to be locked so the destructor can undo it.
+std::string lock_chunked_pieces(void* base, uint64_t from, uint64_t to, const ArenaPieces& pieces,
+                                uint64_t& locked_bytes, std::vector<std::pair<uint64_t, uint64_t>>& locked) {
+    std::vector<std::pair<void*, uint64_t>> regions;
+    for (const ArenaPieces::Piece& pc : pieces.v) {
+        if (pc.large) continue;
+        const uint64_t a = (std::max)(pc.off, from), b = (std::min)(pc.off + pc.len, to);
+        if (b > a) regions.emplace_back((uint8_t*) base + a, b - a);
+    }
+    if (regions.empty()) return "large pages are resident without a lock";   // every piece in range is 2 MiB
+    const strata::platform::LockResult lr = strata::platform::lock_resident_ranges(regions);
+    locked_bytes = lr.locked_bytes;
+    for (const auto& rg : regions)
+        locked.emplace_back((uint64_t) ((uint8_t*) rg.first - (uint8_t*) base), rg.second);
+    return lr.note;
+}
+
 }  // namespace
 
 uint64_t fnv1a64(const uint8_t* p, uint64_t n, uint64_t seed) {
@@ -348,6 +527,27 @@ int arena_pin_cap_gib() {
     if (std::string(e) == "auto") return -2;   // #243: the Windows shared-memory budget sets the sliced pin's cap
     const int v = std::atoi(e);
     return v < 0 ? -1 : v;
+}
+
+// Plan v0.3 arena-first: reserve NOW what a PinnedArena constructor would reserve later.  `reserve` is the whole
+// point - the 2 MiB VirtualAlloc(MEM_LARGE_PAGES) attempt fires here, before the PLE and the model's GGUF are
+// mapped and leave the large-page pool short.  No CUDA call is made: the backing type is a property of the OS
+// call, so PinnedArena's cudaHostRegister/lock still run in its own constructor, in the same order as before.
+ArenaPreReservation reserve_arena_first(uint64_t bytes) {
+    ArenaPreReservation r;
+    r.bytes = bytes;
+    if (bytes == 0) return r;
+    r.base = reserve(bytes, r.backing, r.note, std::string{}, 0, r.mapping_base, r.mapping_bytes, &r.pieces);
+    if (r.base == nullptr) { r.note.clear(); r.pieces.clear(); }   // nothing reserved: open() reserves as before
+    return r;
+}
+
+void release_arena_pre_reservation(ArenaPreReservation& r) {
+    if (r.base == nullptr && r.mapping_base == nullptr) return;
+    release_arena(r.mapping_base, r.mapping_bytes, r.base, r.bytes, r.pieces);
+    r.base = nullptr;
+    r.mapping_base = nullptr;
+    r.mapping_bytes = 0;
 }
 
 namespace {
@@ -391,6 +591,21 @@ std::vector<uint64_t> uniform_bounds(uint64_t bytes, uint64_t slice) {
     if (!b.empty()) b.push_back(b.back() + slice);
     return b;
 }
+
+// Plan v0.3 arena-first: take an early reservation when it is THIS constructor's - the same byte count and no
+// shared-file backing (the shared-file layout has its own reserve).  `pre->base` is cleared so the caller
+// (ArenaExpertSource::open) knows it was consumed and does not release it.  nullptr: reserve as before.
+void* take_pre(ArenaPreReservation* pre, PageBacking& backing, std::string& note, uint64_t bytes,
+               ArenaPieces& pieces) {
+    if (pre == nullptr || pre->base == nullptr || pre->bytes != bytes) return nullptr;
+    backing = pre->backing;
+    note = pre->note;
+    pieces = pre->pieces;          // the chunked backing is this constructor's now; the pre must not free it
+    pre->pieces.clear();
+    void* p = pre->base;
+    pre->base = nullptr;
+    return p;
+}
 }  // namespace
 
 PinnedArena::PinnedArena(uint64_t bytes, uint64_t slice) : PinnedArena(bytes, uniform_bounds(bytes, slice)) {
@@ -399,9 +614,14 @@ PinnedArena::PinnedArena(uint64_t bytes, uint64_t slice) : PinnedArena(bytes, un
 
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
                          uint64_t max_pinned_bytes, const std::string& shared_file,
-                         uint64_t shared_pack_hash) : capacity(bytes) {
+                         uint64_t shared_pack_hash, ArenaPreReservation* pre) : capacity(bytes) {
     if (bytes == 0) return;
-    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    // arena-first: `pre` is the reservation made before the PLE and the model's GGUF were mapped; it is consumed
+    // when it is this construction's (same bytes, no shared-file backing).  Registration and locking below are
+    // untouched and still happen HERE, at their usual point in the startup.
+    base = shared_file.empty() ? take_pre(pre, backing, note, bytes, pieces) : nullptr;
+    if (base == nullptr)
+        base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes, &pieces);
     if (base != nullptr && mapping_base == nullptr) {
         mapping_base = base;
         mapping_bytes = bytes;
@@ -458,7 +678,12 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
                    " GiB); " + note;
             if (registered_bytes < bytes) {
                 const char* env = std::getenv("STRATA_ARENA_LOCK");
-                if (backing == PageBacking::LargePages) {   // #779: large pages cannot be paged out: nothing to lock
+                if (!pieces.empty()) {   // chunked: only the 4 KB pieces are lockable (the 2 MiB ones cannot be paged out)
+                    note = (env != nullptr && std::string(env) == "0")
+                               ? "arena lock disabled (STRATA_ARENA_LOCK=0); " + note
+                               : lock_chunked_pieces(base, registered_bytes, bytes, pieces, locked_bytes,
+                                                     locked_ranges) + "; " + note;
+                } else if (backing == PageBacking::LargePages) {   // #779: large pages cannot be paged out: nothing to lock
                     note = "large pages are resident without a lock; " + note;
                 } else if (env == nullptr || std::string(env) != "0") {
                     const strata::platform::LockResult lr =
@@ -486,7 +711,11 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             // and the CPU pool's rate then depends on the OS; locking it through the working set needs no
             // special privilege. STRATA_ARENA_LOCK=0 is the A/B arm.
             const char* env = std::getenv("STRATA_ARENA_LOCK");
-            if (backing == PageBacking::LargePages) {       // #779: large pages cannot be paged out: nothing to lock
+            if (!pieces.empty()) {   // chunked: only the 4 KB pieces are lockable (the 2 MiB ones cannot be paged out)
+                note = (env != nullptr && std::string(env) == "0")
+                           ? "arena lock disabled (STRATA_ARENA_LOCK=0); " + note
+                           : lock_chunked_pieces(base, 0, bytes, pieces, locked_bytes, locked_ranges) + "; " + note;
+            } else if (backing == PageBacking::LargePages) {       // #779: large pages cannot be paged out: nothing to lock
                 note = "large pages are resident without a lock; " + note;
             } else if (env == nullptr || std::string(env) != "0") {
                 const strata::platform::LockResult lr = strata::platform::lock_resident(base, bytes);
@@ -501,10 +730,12 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
 
 PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
                          uint64_t max_pinned_bytes, const std::string& shared_file,
-                         uint64_t shared_pack_hash) : capacity(bytes) {
+                         uint64_t shared_pack_hash, ArenaPreReservation* pre) : capacity(bytes) {
     by_need = true;
     if (bytes == 0) return;
-    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    base = shared_file.empty() ? take_pre(pre, backing, note, bytes, pieces) : nullptr;
+    if (base == nullptr)
+        base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes, &pieces);
     if (base != nullptr && mapping_base == nullptr) {
         mapping_base = base;
         mapping_bytes = bytes;
@@ -577,19 +808,39 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
         note = "arena lock disabled (STRATA_ARENA_LOCK=0); " + note;
         locked_ranges.clear();
     } else {
-        for (const auto& r : locked_ranges) holes.emplace_back((uint8_t*) base + r.first, r.second);
-        const strata::platform::LockResult lr = strata::platform::lock_resident_ranges(holes);
-        locked_bytes = lr.locked_bytes;
-        note = lr.note + " (" + std::to_string(hole_bytes >> 20) + " MiB of holes); " + note;
+        if (!pieces.empty()) {   // chunked: keep only the holes a 4 KB piece really backs (the 2 MiB ones are resident)
+            std::vector<std::pair<uint64_t, uint64_t>> four_k;
+            for (const auto& r : locked_ranges) {
+                const uint64_t a = r.first, b = r.first + r.second;
+                for (const ArenaPieces::Piece& pc : pieces.v) {
+                    if (pc.large) continue;
+                    const uint64_t s = (std::max)(a, pc.off), e = (std::min)(b, pc.off + pc.len);
+                    if (e > s) four_k.emplace_back(s, e - s);
+                }
+            }
+            locked_ranges.swap(four_k);
+            hole_bytes = 0;
+            for (const auto& r : locked_ranges) hole_bytes += r.second;
+        }
+        if (locked_ranges.empty()) {
+            note = "large pages are resident without a lock; " + note;
+        } else {
+            for (const auto& r : locked_ranges) holes.emplace_back((uint8_t*) base + r.first, r.second);
+            const strata::platform::LockResult lr = strata::platform::lock_resident_ranges(holes);
+            locked_bytes = lr.locked_bytes;
+            note = lr.note + " (" + std::to_string(hole_bytes >> 20) + " MiB of holes); " + note;
+        }
         // a partial lock is unlocked region by region in the destructor; what it did not reach was never locked
         // (VirtualUnlock/munlock of an unlocked page is harmless), so the list is kept whole
     }
 }
 
-PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred)
+PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred, ArenaPreReservation* pre)
     : capacity(bytes), bounds_(bounds) {
     if (bytes == 0 || bounds.size() < 2) return;
-    base = reserve(bytes, backing, note, std::string{}, 0, mapping_base, mapping_bytes);
+    base = take_pre(pre, backing, note, bytes, pieces);   // no shared-file backing on this path
+    if (base == nullptr)
+        base = reserve(bytes, backing, note, std::string{}, 0, mapping_base, mapping_bytes, &pieces);
     if (base != nullptr && mapping_base == nullptr) {
         mapping_base = base;
         mapping_bytes = bytes;
@@ -616,7 +867,12 @@ void PinnedArena::register_slices(std::atomic<int>& ready) {
            std::to_string(n) + " slices pinned; " + note;
     if (i < n && base != nullptr) {   // the rest stays resident through the working-set lock, as the sliced fallback does
         const char* env = std::getenv("STRATA_ARENA_LOCK");
-        if (backing == PageBacking::LargePages) {           // #779: large pages cannot be paged out: nothing to lock
+        if (!pieces.empty()) {   // chunked: only the 4 KB pieces are lockable (the 2 MiB ones cannot be paged out)
+            note = (env != nullptr && std::string(env) == "0")
+                       ? "arena lock disabled (STRATA_ARENA_LOCK=0); " + note
+                       : lock_chunked_pieces(base, registered_bytes, capacity, pieces, locked_bytes,
+                                             locked_ranges) + "; " + note;
+        } else if (backing == PageBacking::LargePages) {           // #779: large pages cannot be paged out: nothing to lock
             note = "large pages are resident without a lock; " + note;
         } else if (env == nullptr || std::string(env) != "0") {
             const strata::platform::LockResult lr =
@@ -632,20 +888,24 @@ PinnedArena::~PinnedArena() {
     if (base && by_need) {
         for (const auto& r : locked_ranges) strata::platform::unlock_resident((uint8_t*) base + r.first, r.second);
         for (const auto& r : pin_ranges) cudaHostUnregister((uint8_t*) base + r.first);
-        release(mapping_base ? mapping_base : base, mapping_bytes ? mapping_bytes : capacity);
+        release_arena(mapping_base, mapping_bytes, base, capacity, pieces);
         base = nullptr;
         mapping_base = nullptr;
         mapping_bytes = 0;
         return;
     }
     if (base) {
-        if (locked_bytes) strata::platform::unlock_resident((uint8_t*) base + (slice_bytes ? registered_bytes : 0), locked_bytes);
+        if (!locked_ranges.empty()) {   // chunked arena: the 4 KB pieces were locked one by one
+            for (const auto& r : locked_ranges) strata::platform::unlock_resident((uint8_t*) base + r.first, r.second);
+        } else if (locked_bytes) {
+            strata::platform::unlock_resident((uint8_t*) base + (slice_bytes ? registered_bytes : 0), locked_bytes);
+        }
         if (slice_bytes) {
             for (uint64_t off : slice_starts) cudaHostUnregister((uint8_t*) base + off);
         } else {
             cudaHostUnregister(base);
         }
-        release(mapping_base ? mapping_base : base, mapping_bytes ? mapping_bytes : capacity);
+        release_arena(mapping_base, mapping_bytes, base, capacity, pieces);
         base = nullptr;
         mapping_base = nullptr;
         mapping_bytes = 0;

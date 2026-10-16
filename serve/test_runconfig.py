@@ -77,6 +77,72 @@ class Apply(unittest.TestCase):
         self.assertNotIn("mcp_servers", got)
 
 
+class OnDiskLayer(unittest.TestCase):
+    """The on-disk layer's keys: the spill folder (a string), its numbers and enum, and the bare system prompt flag."""
+
+    def test_the_layer_keys_round_trip_and_are_additive(self):
+        cfg = {**CFG, "args": list(CFG["args"])}
+        new, changed = runconfig.apply(cfg, {
+            "conversation_cache_spill_dir": r"D:\spill", "conversation_cache_disk_mib": 16384,
+            "conversation_cache_spill_when_full": "reject", "system_prompt_cache": True,
+            "system_prompt_cache_dir": "sys", "system_prompt_cache_slots": 0, "system_prompt_cache_key": "k"})
+        self.assertEqual(changed, ["conversation_cache_spill_dir", "conversation_cache_disk_mib",
+                                   "conversation_cache_spill_when_full", "system_prompt_cache",
+                                   "system_prompt_cache_dir", "system_prompt_cache_slots",
+                                   "system_prompt_cache_key"])
+        for flag in ("--conversation-cache-spill-dir", "--system-prompt-cache", "--system-prompt-cache-dir"):
+            self.assertIn(flag, new["args"])
+        self.assertEqual(runconfig.value_of(new, "conversation_cache_spill_dir"), r"D:\spill")
+        self.assertIs(runconfig.value_of(new, "system_prompt_cache"), True)
+        self.assertNotIn("--conversation-cache-spill-dir", cfg["args"])        # the input is left alone
+        kinds = {k["key"]: k for k in runconfig.view(new, "x.json")["keys"]}
+        self.assertEqual(kinds["conversation_cache_spill_dir"]["kind"], "string")
+        self.assertEqual(kinds["conversation_cache_spill_when_full"]["choices"], ["evict-oldest", "reject"])
+        self.assertEqual(kinds["conversation_cache_spill_when_full"]["kind"], "enum")
+        self.assertEqual(kinds["system_prompt_cache"]["kind"], "bool")
+        self.assertEqual(kinds["system_prompt_cache_mib"]["kind"], "number")
+
+    def test_the_layer_keys_are_removed_and_refused(self):
+        cfg, _ = runconfig.apply(CFG, {"conversation_cache_spill_dir": "s", "system_prompt_cache": True})
+        new, changed = runconfig.apply(cfg, {"conversation_cache_spill_dir": None, "system_prompt_cache": False})
+        self.assertEqual(changed, ["conversation_cache_spill_dir", "system_prompt_cache"])
+        self.assertNotIn("--conversation-cache-spill-dir", new["args"])
+        self.assertNotIn("--system-prompt-cache", new["args"])
+        for bad in ({"conversation_cache_spill_when_full": "nope"}, {"conversation_cache_disk_mib": -1},
+                    {"system_prompt_cache": "yes"}, {"system_prompt_cache_key": ""}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                runconfig.apply(CFG, bad)
+
+    def test_the_cascade_keys_round_trip(self):
+        """Delta 6: the warm level's two keys (new) and the cold level's canonical pair (aliases of the spill pair)."""
+        cfg = {**CFG, "args": list(CFG["args"])}
+        new, changed = runconfig.apply(cfg, {
+            "conversation_cache_warm_dir": r"C:\AI\servers\strata\warm", "conversation_cache_warm_mib": 10240,
+            "conversation_cache_cold_dir": r"D:\AI\servers\strata\slots\xl", "conversation_cache_cold_mib": 460800})
+        self.assertEqual(changed, ["conversation_cache_warm_dir", "conversation_cache_warm_mib",
+                                   "conversation_cache_cold_dir", "conversation_cache_cold_mib"])
+        for flag in ("--conversation-cache-warm-dir", "--conversation-cache-warm-mib",
+                     "--conversation-cache-cold-dir", "--conversation-cache-cold-mib"):
+            self.assertIn(flag, new["args"])
+        self.assertEqual(runconfig.value_of(new, "conversation_cache_warm_dir"), r"C:\AI\servers\strata\warm")
+        self.assertEqual(runconfig.value_of(new, "conversation_cache_warm_mib"), 10240)
+        self.assertEqual(runconfig.value_of(new, "conversation_cache_cold_mib"), 460800)
+        self.assertNotIn("--conversation-cache-warm-dir", cfg["args"])          # the input is left alone
+        kinds = {k["key"]: k for k in runconfig.view(new, "x.json")["keys"]}
+        self.assertEqual(kinds["conversation_cache_warm_dir"]["kind"], "string")
+        self.assertEqual(kinds["conversation_cache_warm_mib"]["kind"], "number")
+        self.assertEqual(kinds["conversation_cache_cold_dir"]["kind"], "string")
+        # taken back out again, and the two that are wrong shapes are refused
+        back, removed = runconfig.apply(new, {"conversation_cache_warm_dir": None, "conversation_cache_cold_mib": None})
+        self.assertEqual(removed, ["conversation_cache_warm_dir", "conversation_cache_cold_mib"])
+        self.assertNotIn("--conversation-cache-warm-dir", back["args"])
+        self.assertNotIn("--conversation-cache-cold-mib", back["args"])
+        for bad in ({"conversation_cache_warm_mib": -1}, {"conversation_cache_warm_dir": "  "},
+                    {"conversation_cache_cold_dir": 7}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                runconfig.apply(CFG, bad)
+
+
 class Http(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()

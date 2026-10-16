@@ -1,4 +1,5 @@
 #include "strata/core/conversation_cache.hpp"
+#include "strata/core/conversation_memory.hpp"   // --conversation-cache-park: the parking placement policy
 
 #include <cstdio>
 #include <cstdlib>
@@ -383,6 +384,67 @@ int main() {
         p2.checkpoints.back().gdn.resize(64, 1);
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
+    }
+    {   // --conversation-cache-park: the rejection spills, it does not discard (the hole of the 2026-10-14 window).
+        // When the physical-RAM gate ran with nothing parked to evict, the conversation was dropped unmirrored even
+        // though the disk tier was right there - the whole prompt read paid for and thrown away.  The fallback is
+        // the placement rule in conversation_memory.hpp; this is its red/green.
+        const uint64_t mib = 1ull << 20;
+        const uint64_t big = 2560 * mib;    // --conversation-cache-min-free-mib: the floor a RAM park must leave
+        const uint64_t small = 512 * mib;   // --conversation-cache-park-min-free-mib: the transient disk floor
+        const uint64_t need = 2100 * mib;   // one snapshot
+        ConversationCache cache(8ull << 30, 4);   // budget to spare: the shortfall is the HOST's, not the cache's
+        check(cache.size() == 0, "nothing parked: the gate's eviction loop has no work to do");
+
+        // 4 GiB free: need + big (4660 MiB) does not fit, need + small (2612 MiB) does.  Before the change this was
+        // a discard; now it spills to disk.
+        check(conversation_park_placement(4096 * mib, need, big, small, false, true) ==
+                  ConversationParkPlacement::disk,
+              "big floor short + empty RAM cache: the capture spills to disk, it is not discarded");
+        // without the disk tier there is nothing to spill to: the refusal is exactly the one that shipped
+        check(conversation_park_placement(4096 * mib, need, big, small, false, false) ==
+                  ConversationParkPlacement::discard,
+              "no disk tier: the same shortfall is still the refusal it was, never a silent spill");
+        // the big floor holds: parking stays in RAM, as before the flag
+        check(conversation_park_placement(6144 * mib, need, big, small, false, true) ==
+                  ConversationParkPlacement::ram,
+              "the parking floor holds: the capture stays in RAM, as it always did");
+        // --conversation-cache-park disk: the transient floor decides, even when the big one would hold
+        check(conversation_park_placement(6144 * mib, need, big, small, true, true) ==
+                  ConversationParkPlacement::disk,
+              "target disk: the transient floor decides, the RAM copy is never taken");
+        check(conversation_park_placement(1024 * mib, need, big, small, true, true) ==
+                  ConversationParkPlacement::discard,
+              "target disk and even the transient floor short: discard, as the last resort");
+        // unknown telemetry still fails closed, whatever the target
+        check(conversation_park_placement({}, need, big, small, false, true) == ConversationParkPlacement::discard,
+              "unknown telemetry: no spill, no RAM park - fail closed");
+        // --conversation-cache-park auto: RAM while one snapshot per slot fits beside the floor, disk below that
+        check(conversation_park_fits_ram(12800 * mib, 4, big, big),
+              "auto: 12.5 GiB free holds four 2.5 GiB snapshots beside the floor: RAM");
+        check(!conversation_park_fits_ram(4096 * mib, 4, big, big),
+              "auto: 4 GiB free does not: it resolves to disk");
+        check(!conversation_park_fits_ram({}, 4, big, big), "auto: unknown telemetry resolves to disk, not RAM");
+        check(conversation_park_fits_ram(4096 * mib, 0, big, big), "auto: no slots to reserve: RAM stays");
+    }
+    {   // H1: the same fallback for the sibling disk tiers' hits - a segment chain and a system-prompt variant are
+        // read in a stream and never kept in RAM, so under the parking floor they are still read (transient floor),
+        // not skipped.  conversation_disk_placement is conversation_park_placement with the destination fixed to disk.
+        const uint64_t mib = 1ull << 20;
+        const uint64_t big = 2560 * mib, small = 512 * mib;
+        const uint64_t seg = 1800 * mib;   // a segment chain's estimate
+        const uint64_t sp = 2300 * mib;    // a system-prompt variant's estimate
+        // 4 GiB free: seg + big (4360 MiB) and sp + big (4860 MiB) do not fit; each + small (2312 / 2812) does
+        check(conversation_disk_placement(4096 * mib, seg, big, small) == ConversationParkPlacement::disk,
+              "segment-tier hit with the parking floor short: the chain is read under the transient floor, not skipped");
+        check(conversation_disk_placement(4096 * mib, sp, big, small) == ConversationParkPlacement::disk,
+              "system-prompt-cache hit with the parking floor short: the variant is read under the transient floor");
+        check(conversation_disk_placement(1024 * mib, seg, big, small) == ConversationParkPlacement::discard,
+              "a segment hit that even the transient floor cannot hold is still refused");
+        check(conversation_disk_placement({}, sp, big, small) == ConversationParkPlacement::discard,
+              "unknown telemetry: a system-prompt hit fails closed, no read");
+        check(conversation_disk_placement(6144 * mib, sp, big, small) == ConversationParkPlacement::disk,
+              "a read is admitted under the transient floor, whatever the parking floor would say");
     }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }

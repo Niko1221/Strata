@@ -4466,7 +4466,29 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
     return st;
 }
 
-ArenaExpertSource::~ArenaExpertSource() { close(); }
+ArenaExpertSource::~ArenaExpertSource() { close(); release_pre_(); }
+
+void ArenaExpertSource::release_pre_() {
+    if (pre_.valid()) release_arena_pre_reservation(pre_);   // an early reservation no open() consumed
+}
+
+bool ArenaExpertSource::reserve_first(std::string& err) {
+    if (pre_.valid()) return true;   // already reserved: a second call is a no-op
+    const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
+    if (lay.n_layers <= 0 || lay.total == 0 || lay.max_blob == 0) {
+        err = "the expert layout is not loaded yet";
+        return false;
+    }
+    // The EXACT bytes the plain open() path reserves: the packed arena plus one blob (a whole-slot copy may start
+    // at any expert).  The padded (pin-by-need) layout is a different, slightly larger size and open() falls back
+    // to reserving it at the usual point - so this early block is simply released there.
+    pre_ = reserve_arena_first(lay.total + lay.max_blob);
+    if (!pre_.valid()) {
+        err = "no block for the arena right now";
+        return false;
+    }
+    return true;
+}
 
 bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int threads,
                              std::string& err, uint64_t max_pinned_bytes,
@@ -4543,6 +4565,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             gib_per_s_ = 0.0;
             load_seconds_ = load_read_s_ = load_copy_s_ = 0.0;
             record_inputs(path, gguf_, lay, from_gguf);   // session files: the mapped experts.bin is a model input
+            release_pre_();   // this path maps the file: an early reservation (STRATA_ARENA_MMAP=1) is not used
             return true;
         }
     }
@@ -4656,10 +4679,12 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     const bool deferred = false;
 #endif
     PinnedArena* a = by_need ? new PinnedArena(arena_bytes + (uint64_t) blob, PinnedArena::ByNeed{}, need_ranges,
-                                               max_pinned_bytes, shared_arena_file, pack_hash)
-                   : deferred ? new PinnedArena(want + (uint64_t) blob, bounds, PinnedArena::Deferred{})
+                                               max_pinned_bytes, shared_arena_file, pack_hash, pre_.valid() ? &pre_ : nullptr)
+                   : deferred ? new PinnedArena(want + (uint64_t) blob, bounds, PinnedArena::Deferred{},
+                                                pre_.valid() ? &pre_ : nullptr)
                               : new PinnedArena(want + (uint64_t) blob, bounds, max_pinned_bytes,
-                                                shared_arena_file, pack_hash);
+                                                shared_arena_file, pack_hash, pre_.valid() ? &pre_ : nullptr);
+    release_pre_();   // an early reservation this path did not consume (another size, or a shared arena) goes back now
     if (!a->valid()) {
         const std::string why = a->note;
         delete a;

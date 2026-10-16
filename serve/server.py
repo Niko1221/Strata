@@ -651,10 +651,71 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
 class ConvCacheLog:
     """#596: the engine's conversation cache as its log tells it (the engine writes "strata serve: conversation
     cache: parked N tokens ...; parked=P bytes=B evictions=E" and "restored N tokens ...; parked=P bytes=B" to stderr,
-    which is the log): read on from where it was last read, from the start of the engine's current run."""
-    EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
-                       r"(?: evictions=(\d+))?")
+    which is the log): read on from where it was last read, from the start of the engine's current run.  The disk
+    tier's "spill dir ready ..." and "spilled ..." lines and the system prompt cache's "system prompt cache: ..."
+    lines (key=value counters) are read the same way, for the Monitor's card."""
+    # a park or a restore: "parked N tokens ... parked=P bytes=B" (the RAM cache's own count and bytes), and in disk
+    # mode "parked on disk N tokens ... parked=P bytes=B" where P/B are again the RAM cache's (0 when a disk-only
+    # park keeps nothing in RAM).  The verb decides whether it is a park, a restore or neither.
+    EVENT = re.compile(r"conversation cache: (parked on disk|parked|skipped|restored|dropped) (\d+) tokens"
+                       r".*?parked=(\d+) bytes=(\d+)(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
+    # the disk tier (#1271 / delta1): its startup line and one line per conversation written to it.  The middle
+    # fields (spill-on, divergence, park-throttle) are the park-mode additions: optional, so the line of an engine
+    # with --conversation-cache-park and one from before it parse to the same counters.  spill-on is captured (the
+    # Monitor's per-destination row reads it); divergence and park-throttle are matched but not captured.
+    SPILL_DIR = re.compile(r"conversation cache: spill dir ready \((\d+) conversations?, (\d+) MiB, "
+                           r"when-full=([^,\s]+), max-age=(\d+) d"
+                           r"(?:, spill-on=([^,]+))?(?:, divergence=\d+ tok)?(?:, park-throttle=\d+ s)?"
+                           r", (\d+) oversized kept, (\d+) stale kept, "
+                           r"(\d+) foreign kept, (\d+) orphans kept, (\d+) disk evictions, "
+                           # The entry cap the engine names at the end (optional: a line from an engine without it
+                           # still parses to the same counters).  It is the lever the cascade bug hid.
+                           r"(\d+) age evictions(?:, max-conversations=(\d+))?\)")
+    SPILLED = re.compile(r"conversation cache: spilled \d+ tokens .*?disk=(\d+) MiB disk_evictions=(\d+)")
+    # the R3 park mirror: one line per conversation the disk writer accepted in park mode, with the tier's own
+    # bytes and disk evictions (the "spilled ..." line is the eviction path's write, this one is the park's).
+    PARK_MIRROR = re.compile(r"conversation cache: park mirror queued \(\d+ tokens"
+                             r".*?disk=(\d+) MiB disk_evictions=(\d+) conversations=(\d+)")
+    # the START of a disk load: the admission in progress is bringing a parking back from the disk tier, not
+    # reading a new prompt.  Its END is the "restored ..." line below (or a "discard ..." when the image is refused).
+    LOAD = re.compile(r"conversation cache: loading (\d+) tokens from (\w+)")
+    # delta 6, the cascade (RAM -> warm -> cold): the warm level's own startup line, its own write lines (which
+    # name themselves instead of the single disk tier) and the line that reports what its GC moved DOWN instead of
+    # removing.  A run with no warm level emits none of these and every line above is the one it always was.
+    WARM_DIR = re.compile(r"conversation cache: warm dir ready \((\d+) conversations?, (\d+) MiB, mib=(\d+), "
+                          r"when-full=([^,\s]+), max-age=(\d+) d, (\d+) degraded to cold, "
+                          r"(\d+) oversized kept, (\d+) stale kept, (\d+) foreign kept, "
+                          r"(\d+) orphans kept(?:, max-conversations=(\d+))?\)")
+    SPILLED_WARM = re.compile(r"conversation cache: spilled \d+ tokens .*?warm=(\d+) MiB warm_degraded=(\d+)")
+    PARK_MIRROR_WARM = re.compile(r"conversation cache: park mirror queued \(\d+ tokens"
+                                  r".*?warm=(\d+) MiB warm_degraded=(\d+) conversations=(\d+)")
+    # the degradation: capacity, not correction - the warm level's GC moved its oldest copy down, and the line
+    # carries BOTH levels (the cold one's row has no other writer once the writer targets the warm).
+    DEGRADED = re.compile(r"conversation cache: degraded (\d+) conversations? to the cold level; "
+                          r"warm=(\d+) conversations / (\d+) MiB; "
+                          r"cold=(\d+) conversations / (\d+) MiB, cold_evictions=(\d+)")
+    # the disk image was refused after the load: the load is over too (the "discard ..." family and the
+    # budget-exceeded line).  The rejection path logs one of these before it decides what to do next.
+    DISCARD = re.compile(r"conversation cache: (?:discard |disk conversation exceeds the RAM cache budget after loading)")
+    # the system prompt cache (F5): its ready/hit/miss/persisted lines (prose counts) and the shutdown line's
+    # key=value counters (hits=, misses=, tokens_saved=, hash_changes=, evicted_by_space=, evicted_by_age=)
+    SYS_READY = re.compile(r"system prompt cache: ready \((\d+) variants?, (\d+) MiB, slots=(\d+), max-age=(\d+) d, "
+                           r"(\d+) foreign kept, (\d+) stale kept, (\d+) orphans kept, (\d+) oversized kept\)")
+    SYS_HIT = re.compile(r"system prompt cache: hit \d+ tokens \((\d+) variants?\)")
+    SYS_MISS = re.compile(r"system prompt cache: prefix changed \(miss, (\d+) variants? live\)")
+    SYS_PERSIST = re.compile(r"system prompt cache: persisted the \d+-token root \((\d+) variants?, (\d+) MiB\)")
+    SYS_SHUTDOWN = re.compile(r"system prompt cache: shutdown: (\d+) variants?, (\d+) MiB,")
+    # The RAM the slots' K/V lives in while the engine streams it (the Monitor report of 2026-10-15).  `strata generate` writes it once per
+    # start, on stderr (not on the INFO line): "KV streaming: N of M cells per QSA layer in VRAM, the K/V in X.XX
+    # GiB of pinned RAM".  It is the engine's OWN measurement of what a whole context of K/V costs in host RAM -
+    # N of the M cells it pins are the VRAM window, the rest is the pinned copy - so the Monitor's RAM row can
+    # scale it by the tokens the slots hold instead of guessing a size per token.  The periodic "KV streaming:
+    # X% of N block reads hit VRAM" line does not match (it names blocks, not cells), and an engine run without
+    # --kv-resident writes neither: the whole K/V is in VRAM then and nothing is invented for it.
+    KV_HOST = re.compile(r"KV streaming: (\d+) of (\d+) cells per QSA layer in VRAM, "
+                         r"the K/V in ([\d.]+) GiB of pinned RAM")
+    KV = re.compile(r"([a-z][a-z0-9_]*)=(-?\d+)")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
     def __init__(self):
@@ -663,7 +724,28 @@ class ConvCacheLog:
 
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
-                      "last_tokens": None, "last_at": None}
+                      "last_tokens": None, "last_at": None,
+                      # the disk load in progress: its token count while a parking streams back from disk, 0 when
+                      # none.  Set by the engine's "loading N tokens from disk", cleared by the "restored ..." (the
+                      # load's end) or a "discard ..." (the image refused) - see metrics()'s live.admission.
+                      "loading": 0,
+                      "disk": {"ready": False, "conversations": 0, "bytes": 0, "spills": 0, "evictions": 0,
+                               "age_evictions": 0, "when_full": None, "max_age_days": None, "spill_on": None,
+                               # The entry cap the engine's startup line names (the silent 256 of the cascade bug):
+                               # None until that line is read, never a fabricated figure.
+                               "max_conversations": None,
+                               "kept": {"oversized": 0, "stale": 0, "foreign": 0, "orphan": 0}},
+                      # delta 6: the cascade's warm level. Same shape as `disk` except for `degraded` (what this
+                      # level's GC moved DOWN to the cold one) and `spill_on` (the warm is the mirror's own target).
+                      "warm": {"ready": False, "conversations": 0, "bytes": 0, "spills": 0, "degraded": 0,
+                               "evictions": 0, "age_evictions": 0, "when_full": None, "max_age_days": None,
+                               "max_conversations": None,
+                               "kept": {"oversized": 0, "stale": 0, "foreign": 0, "orphan": 0}},
+                      "sysprompt": {},
+                      # The pinned K/V the slots' conversations read from (the same report), {"cells", "resident_cells",
+                      # "gib", "bytes"} - None while the engine has not said (no --kv-resident, or an engine from
+                      # before the line), never a fabricated figure.
+                      "kv_host": None}
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it."""
@@ -687,6 +769,42 @@ class ConvCacheLog:
         self.pos += end
         now = time.time()
         for line in data[:end].decode("utf-8", "replace").splitlines():
+            if "system prompt cache:" in line:
+                s = self.state["sysprompt"]
+                m = self.SYS_READY.search(line)
+                if m:
+                    s.update({"variants": int(m.group(1)), "bytes": int(m.group(2)) * 1048576,
+                              "slots": int(m.group(3)), "max_age_days": int(m.group(4)),
+                              "kept_foreign": int(m.group(5)), "kept_stale": int(m.group(6)),
+                              "kept_orphan": int(m.group(7)), "kept_oversized": int(m.group(8))})
+                    continue
+                m = self.SYS_HIT.search(line)
+                if m:
+                    s["hits"], s["variants"] = s.get("hits", 0) + 1, int(m.group(1))
+                    continue
+                m = self.SYS_MISS.search(line)               # the prefix changed: a miss that rewrites the variant
+                if m:
+                    s["misses"], s["hash_changes"] = s.get("misses", 0) + 1, s.get("hash_changes", 0) + 1
+                    s["variants"] = int(m.group(1))
+                    continue
+                m = self.SYS_PERSIST.search(line)
+                if m:
+                    s["variants"], s["bytes"] = int(m.group(1)), int(m.group(2)) * 1048576
+                    continue
+                m = self.SYS_SHUTDOWN.search(line)           # the authoritative counters, at the engine's exit
+                if m:
+                    s["variants"], s["bytes"] = int(m.group(1)), int(m.group(2)) * 1048576
+                    s.update({k: int(v) for k, v in self.KV.findall(line)})
+                    continue
+                s.update({k: int(v) for k, v in self.KV.findall(line)})   # any other key=value line
+                continue
+            if "KV streaming:" in line:                     # the pinned K/V (see KV_HOST)
+                m = self.KV_HOST.search(line)
+                if m:
+                    self.state["kv_host"] = {"resident_cells": int(m.group(1)), "cells": int(m.group(2)),
+                                             "gib": float(m.group(3)),
+                                             "bytes": int(float(m.group(3)) * 1073741824)}
+                continue
             if "conversation cache:" not in line:
                 continue
             m = self.EVENT.search(line)
@@ -695,27 +813,268 @@ class ConvCacheLog:
                 st["parked"], st["bytes"] = int(m.group(3)), int(m.group(4))
                 if m.group(5) is not None:
                     st["evictions"] = int(m.group(5))
-                if m.group(1) != "skipped":
-                    st["parks" if m.group(1) == "parked" else "restores"] += 1
-                    st["last_event"], st["last_tokens"], st["last_at"] = m.group(1), int(m.group(2)), now
+                verb = m.group(1)
+                if verb in ("parked", "parked on disk"):    # a park, to RAM or to disk: park target disk counts too
+                    st["parks"] += 1
+                    st["last_event"], st["last_tokens"], st["last_at"] = "parked", int(m.group(2)), now
+                elif verb == "restored":
+                    st["restores"] += 1
+                    st["loading"] = 0                       # the disk load (if any) ended here: the state is seated
+                    st["last_event"], st["last_tokens"], st["last_at"] = "restored", int(m.group(2)), now
+                continue
+            m = self.LOAD.search(line)                      # a disk load STARTED: the admission is "loading"
+            if m:
+                # delta 6: "disk" is the primary disk level (the warm one when the cascade is on) and "cold" is the
+                # level below it - both are a parking streaming back, so both are an admission in progress.
+                self.state["loading"] = int(m.group(1)) if m.group(2) in ("disk", "cold") else 0
+                continue
+            m = self.DISCARD.search(line)                   # the image was refused: no load is in progress
+            if m:
+                self.state["loading"] = 0
                 continue
             m = self.DROPPED.search(line)
             if m:
                 self.state["parked"] = int(m.group(1))
+                continue
+            m = self.SPILL_DIR.search(line)
+            if m:
+                d = self.state["disk"]
+                (d["conversations"], d["bytes"], d["when_full"], d["max_age_days"], d["spill_on"],
+                 d["kept"]["oversized"], d["kept"]["stale"], d["kept"]["foreign"], d["kept"]["orphan"],
+                 d["evictions"], d["age_evictions"]) = (
+                    int(m.group(1)), int(m.group(2)) * 1048576, m.group(3), int(m.group(4)), m.group(5),
+                    int(m.group(6)), int(m.group(7)), int(m.group(8)), int(m.group(9)),
+                    int(m.group(10)), int(m.group(11)))
+                d["max_conversations"] = int(m.group(12)) if m.group(12) is not None else None
+                d["ready"] = True
+                continue
+            m = self.SPILLED.search(line)
+            if m:
+                d = self.state["disk"]
+                d["bytes"], d["evictions"], d["spills"], d["ready"] = int(m.group(1)) * 1048576, int(m.group(2)), \
+                    d["spills"] + 1, True
+                continue
+            m = self.PARK_MIRROR.search(line)               # park mode's own write: the tier's bytes and evictions
+            if m:
+                d = self.state["disk"]
+                d["bytes"], d["evictions"], d["conversations"], d["spills"], d["ready"] = \
+                    int(m.group(1)) * 1048576, int(m.group(2)), int(m.group(3)), d.get("spills", 0) + 1, True
+                continue
+            # delta 6: the cascade. The warm level names itself in its own lines, so a run with no warm level
+            # parses exactly as it did before (these four never match) and no row is ever invented for a level
+            # that is not configured.
+            m = self.WARM_DIR.search(line)
+            if m:
+                w = self.state["warm"]
+                (w["conversations"], w["bytes"], w["budget_mib"], w["when_full"], w["max_age_days"], w["degraded"],
+                 w["kept"]["oversized"], w["kept"]["stale"], w["kept"]["foreign"], w["kept"]["orphan"]) = (
+                    int(m.group(1)), int(m.group(2)) * 1048576, int(m.group(3)), m.group(4), int(m.group(5)),
+                    int(m.group(6)), int(m.group(7)), int(m.group(8)), int(m.group(9)), int(m.group(10)))
+                w["max_conversations"] = int(m.group(11)) if m.group(11) is not None else None
+                w["ready"] = True
+                continue
+            m = self.SPILLED_WARM.search(line)              # the writer's write, to the warm level
+            if m:
+                w = self.state["warm"]
+                w["bytes"], w["degraded"], w["spills"], w["ready"] = \
+                    int(m.group(1)) * 1048576, int(m.group(2)), w.get("spills", 0) + 1, True
+                continue
+            m = self.PARK_MIRROR_WARM.search(line)          # park mode's own write, to the warm level
+            if m:
+                w = self.state["warm"]
+                w["bytes"], w["degraded"], w["conversations"], w["spills"], w["ready"] = \
+                    int(m.group(1)) * 1048576, int(m.group(2)), int(m.group(3)), w.get("spills", 0) + 1, True
+                continue
+            m = self.DEGRADED.search(line)                  # a CAPACITY eviction moved a copy DOWN
+            if m:
+                w, d = self.state["warm"], self.state["disk"]
+                w["degraded"], w["conversations"], w["bytes"], w["ready"] = (
+                    w.get("degraded", 0) + int(m.group(1)), int(m.group(2)), int(m.group(3)) * 1048576, True)
+                d["conversations"], d["bytes"], d["evictions"], d["ready"] = (
+                    int(m.group(4)), int(m.group(5)) * 1048576, int(m.group(6)), True)
+                continue
         return dict(self.state)
 
 
-def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
+_SYSPROMPT_KEYS = {
+    "hits": ("hits", "hit"),
+    "misses": ("misses", "miss"),
+    "variants": ("variants", "live_variants", "variants_alive"),
+    "bytes": ("bytes", "disk_bytes", "cache_bytes"),
+    "evicted_by_age": ("evicted_by_age", "age_evictions", "expired_age"),
+    "evicted_by_space": ("evicted_by_space", "space_evictions", "disk_evictions", "budget_evictions"),
+    "hash_changes": ("hash_changes", "hash_change", "prefix_changes", "reprocessed"),
+    "tokens_saved": ("tokens_saved", "saved_tokens", "reused_tokens", "tokens_reused"),
+}
+
+
+def sysprompt_counts(raw: dict) -> dict:
+    """The system prompt cache's counters as the card wants them, from the engine's own key=value names.  A counter
+    the engine did NOT report is None, never a 0: the authoritative line ("... shutdown: ..." with hits=/misses=/
+    tokens_saved=) is written only when the engine exits cleanly, and the engine usually does not, so "not reported"
+    is the common case and a silent 0 would read as a measurement of nothing."""
+    out = {name: next((raw[a] for a in aliases if a in raw), None) for name, aliases in _SYSPROMPT_KEYS.items()}
+    out["raw"] = dict(raw)                              # whatever else the engine logged, verbatim
+    return out
+
+
+def slot_held_tokens(slot: dict) -> int:
+    """One batch slot's own tokens (live.slots, the engine's own count): the request it runs - its prompt read plus
+    what it wrote - or, while idle, the tokens it holds for a next turn.  The same rule the Monitor's Context fill
+    clocks use, so the two cards read one datum."""
+    if slot.get("state") == "idle":
+        return int(slot.get("held_tokens") or 0)
+    return int(slot.get("prompt_tokens") or 0) + int(slot.get("generated") or 0)
+
+
+def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict, slots=None) -> dict:
     """#596: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
-    --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back."""
+    --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back.
+    Additive since the on-disk layer: a "disk" object (the spill tier's own figures) and a "system_prompt_cache"
+    object (F5's hits, misses, live variants, bytes, evictions and hash changes, from the log; plus the folder and
+    the byte budget the engine reports in its INFO line), both read from the engine.
+    And a "destinations" list: the parking split by destination (RAM, and each on-disk tier that is configured),
+    so the Monitor shows one row per destination instead of hardcoding them.
+
+    FALLA 2: the RAM row carries the SLOTS' side too, `slots` being live.slots.  --conversation-cache-mib is the
+    RAM the slots' conversations live in, and two things live there: the conversations parked in it (the row's own
+    `bytes`, what the engine's log reports) AND the K/V the slots hold, which is why the row read 0 / 0,0 GB while
+    four slots were working - the cascade writes the parking to the warm level, so nothing is parked in RAM.  What
+    the slots hold is measured (their own token counts); their BYTES are an estimate, unless the engine says the
+    whole K/V is in VRAM (INFO kv_resident=0, then nothing of it is in RAM and that 0 is the engine's own word).
+    The estimate scales the engine's pinned K/V (its "KV streaming: ... the K/V in X.XX GiB of pinned RAM" line,
+    X GB over the context it pins) by those held tokens, and the row says so: `kv_estimated` marks it and
+    `kv_source` names it, so a derived figure is never shown as a reading."""
     mib = info.get("conversation_cache_mib")
+    dmib = info.get("conversation_cache_disk_mib")
     last = hist[-1] if hist else None
+    d = parked.get("disk") or {}
+    spill_dir = info.get("conversation_cache_spill_dir")
+    # delta 6: the cascade's warm level.  It exists only when the operator NAMED it and gave it a budget: with no
+    # warm level there is a single disk tier, its row keeps the label it always had, and no row is invented.
+    wmib = info.get("conversation_cache_warm_mib")
+    warm_dir = info.get("conversation_cache_warm_dir")
+    w = parked.get("warm") or {}
+    warm_configured = bool(warm_dir and isinstance(wmib, int) and wmib > 0)
+    # The disk tier is ON when the operator turned the conversation cache on (--conversation-cache-mib) AND gave the
+    # tier a budget (--conversation-cache-disk-mib); the engine's own flag and the tier's log prove it too.  It must
+    # NOT hinge on one field the engine happens not to emit.
+    disk_on = bool((isinstance(mib, int) and mib > 0) and (isinstance(dmib, int) and dmib > 0))
+    disk = {"enabled": bool(disk_on or info.get("conversation_cache_disk") == 1 or d.get("ready") or spill_dir),
+            "dir": spill_dir, "budget_mib": dmib, "bytes": d.get("bytes", 0),
+            "conversations": d.get("conversations", 0), "spills": d.get("spills", 0),
+            "restores": parked.get("restores", 0), "evictions": d.get("evictions", 0),
+            "age_evictions": d.get("age_evictions", 0), "when_full": d.get("when_full"),
+            "max_age_days": d.get("max_age_days"), "spill_on": d.get("spill_on"),
+            # The entry cap the engine names in its startup line: the OTHER ceiling on this level, invisible until
+            # the cascade bug (it caps at 256 copies whatever the byte budget).  None if the line predates it.
+            "max_conversations": d.get("max_conversations"),
+            "kept": dict(d.get("kept") or {})}
+    # delta 6: the warm level's own figures. `degraded` is what its GC MOVED DOWN to the cold level instead of
+    # removing (a degradation is not an eviction, so `evictions` stays the count of real removals - 0 while the
+    # cascade is on, because the warm level is never the last one).
+    warm = {"enabled": bool(warm_configured or w.get("ready")), "dir": warm_dir,
+            "budget_mib": wmib if wmib is not None else w.get("budget_mib"),
+            "bytes": w.get("bytes", 0), "conversations": w.get("conversations", 0), "spills": w.get("spills", 0),
+            "degraded": w.get("degraded", 0), "evictions": w.get("evictions", 0),
+            "age_evictions": w.get("age_evictions", 0), "when_full": w.get("when_full"),
+            "max_age_days": w.get("max_age_days"), "kept": dict(w.get("kept") or {}),
+            "max_conversations": w.get("max_conversations")}
+    raw_sys = parked.get("sysprompt") or {}
+    # The engine's own INFO fields (this series): the folder it opened and the byte budget it runs with, AFTER its
+    # own defaults - the server cannot guess either from the config.  An engine that predates them leaves both None
+    # (unknown, never a fabricated 0), and "enabled" then rests on the log and the folder, not on a single field the
+    # engine happens not to emit (the same rule the disk tier above follows).
+    sys_dir, sys_mib = info.get("system_prompt_cache_dir"), info.get("system_prompt_cache_mib")
+    sysprompt = {"enabled": bool(raw_sys or sys_dir),
+                 "dir": sys_dir, "budget_mib": sys_mib,
+                 "slots": raw_sys.get("slots") if raw_sys.get("slots") is not None
+                          else info.get("system_prompt_cache_slots"),
+                 "max_age_days": raw_sys.get("max_age_days"),
+                 "kept": {k[len("kept_"):]: v for k, v in raw_sys.items() if k.startswith("kept_")},
+                 **{k: v for k, v in sysprompt_counts(raw_sys).items() if k != "raw"},
+                 "raw": dict(raw_sys)}
+    legacy = {k: v for k, v in parked.items() if k not in ("disk", "sysprompt")}
+    # the parking, split by destination (the Monitor's rows): RAM while the cache is on, and one row per on-disk
+    # level that is actually configured.  With the cascade on there are two of them - the warm level the writes
+    # land in ("SSD 1") and the cold level below it, the only one that removes ("SSD 2").  With no warm level there
+    # is a single disk tier and its row is byte-for-byte the one it always was ("SSD 1"): a level that is not
+    # configured gets no row at all, and no row is invented.
+    destinations = []
+    # The RAM row also says what the SLOTS hold there (see this function's docstring).  Measured: the
+    # tokens each slot keeps and how many slots hold a conversation at all (an idle slot that kept its tokens for
+    # a next turn holds one too - the RAM holds it all the same).  Estimated, and marked as such: their bytes,
+    # scaled from the engine's own pinned K/V - and 0, measured, when the engine says the whole K/V is in VRAM
+    # (kv_resident=0), because then none of it is in this RAM and the row must not invent any.
+    slots = [s for s in (slots or []) if s]
+    held_tokens = sum(slot_held_tokens(s) for s in slots)
+    kv_host, resident, ctx = parked.get("kv_host") or {}, info.get("kv_resident"), info.get("context")
+    kv_bytes, kv_source, kv_estimated = None, None, False
+    if isinstance(resident, int) and resident <= 0:
+        kv_bytes, kv_source = 0, "the whole K/V is in VRAM (kv_resident=0): none of it is in this RAM"
+    elif isinstance(ctx, int) and ctx > 0 and isinstance(kv_host.get("bytes"), int):
+        per_token = kv_host["bytes"] / ctx
+        kv_bytes, kv_estimated = int(round(per_token * held_tokens)), True
+        kv_source = (f"estimated: the {held_tokens} tokens the slots hold x {per_token:.0f} B/token, the engine's "
+                     f"pinned K/V ({kv_host['gib']:g} GB over {ctx} cells)")
+    if isinstance(mib, int) and mib > 0:
+        destinations.append({"tier": "ram", "label": "RAM", "enabled": True, "bytes": parked.get("bytes", 0),
+                             "conversations": parked.get("parked", 0), "budget_mib": mib,
+                             "slots": info.get("conversation_cache_slots"),
+                             "held_tokens": held_tokens,
+                             "slots_in_use": sum(1 for s in slots if slot_held_tokens(s) > 0),
+                             "batch_slots": len(slots) or None,
+                             "kv_bytes": kv_bytes, "kv_estimated": kv_estimated, "kv_source": kv_source})
+    if warm["enabled"]:
+        destinations.append({"tier": "warm", "label": "SSD 1", "enabled": True, "bytes": warm["bytes"],
+                             "conversations": warm["conversations"], "budget_mib": warm["budget_mib"],
+                             "max_conversations": warm["max_conversations"],
+                             "degraded": warm["degraded"], "dir": warm["dir"]})
+        if disk["enabled"]:
+            destinations.append({"tier": "cold", "label": "SSD 2", "enabled": True, "bytes": disk["bytes"],
+                                 "conversations": disk["conversations"], "budget_mib": disk["budget_mib"],
+                                 "max_conversations": disk["max_conversations"],
+                                 "spill_on": disk["spill_on"], "dir": disk["dir"]})
+    elif disk["enabled"]:
+        destinations.append({"tier": "disk", "label": "SSD 1", "enabled": True, "bytes": disk["bytes"],
+                             "conversations": disk["conversations"], "budget_mib": disk["budget_mib"],
+                             "max_conversations": disk["max_conversations"],
+                             "spill_on": disk["spill_on"], "dir": disk["dir"]})
     return {"enabled": isinstance(mib, int) and mib > 0, "budget_mib": mib if isinstance(mib, int) else None,
-            "slots": info.get("conversation_cache_slots"), **parked,
+            "slots": info.get("conversation_cache_slots"), **legacy,
             "requests": len(hist), "requests_reused": sum(1 for r in hist if (r.get("reused") or 0) > 0),
             "reused_tokens": totals.get("reused", 0), "prompt_tokens": totals.get("prompt_tokens", 0),
             "last_reused": last.get("reused") if last else None,
-            "last_prompt": last.get("prompt_tokens") if last else None}
+            "last_prompt": last.get("prompt_tokens") if last else None,
+            "disk": disk, "warm": warm, "system_prompt_cache": sysprompt, "destinations": destinations}
+
+
+def admission_field(state: str, parked: dict):
+    """`live.admission`: where an admission in progress is taking its state from, or None outside one.  "loading"
+    while a parking streams back from the DISK tier - either level of the cascade: the engine's "loading N tokens
+    from disk" (the primary disk level) or "... from cold" (the level below it), both tracked in ConvCacheLog's
+    `loading` - and "reading" for a new prompt.  Only meaningful while the engine is admitting
+    (`state == "reading"`, before the first token): once the admission ends the field is None, so it can never stay
+    stuck at "loading"."""
+    if state != "reading":
+        return None
+    return "loading" if parked.get("loading") else "reading"
+
+
+_QUOTED_INFO = re.compile(r' ([a-z][a-z0-9_]*)="([^"]*)"')   # a folder, quoted because it can hold spaces
+
+
+def parse_info_line(info: dict, line: str) -> None:
+    """The engine's "INFO k=v k=v ..." line into `info` (int when numeric, else the bare string).  A QUOTED value is
+    a folder, which can hold spaces, so it is lifted out before the whitespace split: the disk tier's
+    conversation_cache_spill_dir, the cascade's conversation_cache_warm_dir (delta 6: the warm level's folder can
+    hold spaces too - "C:\\Strata Cache\\warm") and the system-prompt cache's folder all go out that way; every other
+    value is a bare token.  The single `_QUOTED_INFO` lift covers all of them, so no folder needs its own pattern."""
+    for key, value in _QUOTED_INFO.findall(line):
+        info[key] = value
+    for kv in _QUOTED_INFO.sub(" ", line).split()[1:]:
+        k, _, v = kv.partition("=")
+        info[k] = int(v) if v.lstrip("-").isdigit() else v
 
 
 _BTRACE = bool(os.environ.get("STRATA_BATCH_TRACE"))
@@ -837,9 +1196,7 @@ class StrataEngine:
             if line is None:
                 break
             if line.startswith("INFO "):
-                for kv in line.split()[1:]:
-                    k, _, v = kv.partition("=")
-                    self.info[k] = int(v) if v.lstrip("-").isdigit() else v
+                parse_info_line(self.info, line)
             if line.startswith("READY"):
                 f = line.split()
                 self.max_context = int(f[1])
@@ -3685,14 +4042,23 @@ class Service:
                         admitting=int(getattr(self.engine, "admitting", 0) or 0))
             if running and state == "idle":
                 live["state"] = "generating"
+            # The slot texts read live.slots[].tok_s - the engine's PER-SLOT rates - while live.tok_s (the
+            # aggregate, and the state card's own "N tokens at X tok/s") is the sum of the requests in flight:
+            # the two come from different places, so they can disagree.  A request that is ALONE decodes on the
+            # engine's solo path, which uses no slot's sessions (generate_batched: `alone` -> GEN), and then every
+            # slot is idle and reads 0 t/s under an aggregate that moves.  Nothing is in a slot, so this is the
+            # rate the aggregate is made of: named, and sent only then - with a slot decoding, the slots carry it.
+            if not in_slots and live.get("tok_s") is not None:
+                live["solo_tok_s"] = live["tok_s"]
         if hasattr(self.engine, "replica_view"):        # opt-in replicas: each one's state and requests routed to it
             live["replicas"] = self.engine.replica_view()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
+        live["admission"] = admission_field(state, parked)
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
-                "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
+                "conversation_cache": conversation_cache_view(engine, hist, totals, parked, live.get("slots")),
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}

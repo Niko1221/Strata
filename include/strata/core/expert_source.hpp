@@ -930,6 +930,17 @@ public:
     /// rate, because those are the two numbers that say whether the arena is the one that was asked for.
     bool open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int threads, std::string& err,
               uint64_t max_pinned_bytes = 0, const std::string& shared_arena_file = {});
+    /// Plan v0.3 arena-first (default on; STRATA_ARENA_FIRST=0 is the A/B arm): reserve the host arena NOW, before
+    /// the PLE shard and the model's GGUF are mapped - those mappings are what leaves the large-page pool (the
+    /// contiguous budget) short, so the 2 MiB VirtualAlloc(MEM_LARGE_PAGES) attempt belongs here rather than 2000
+    /// lines later at open().  It reserves `layout.total + one blob`, exactly what open() reserves on this path, and
+    /// holds it: open() consumes it and runs cudaHostRegister/lock in its own place, so the registration order is
+    /// unchanged.  True when something was reserved (see `pre_note`); false leaves the engine exactly as before
+    /// (open reserves where it always did).  Only the plain path reserves here; open falls back for
+    /// --mmap-experts, a shared arena, or a padded (pin-by-need) layout.
+    bool reserve_first(std::string& err);
+    /// What `reserve_first` got and why, for the startup print (empty when it did not run or reserved nothing).
+    const std::string& pre_note() const { return pre_.note; }
     /// Plan v0.3 P6: a native pack without experts.bin takes its experts from the model's GGUF: `native` is the
     /// --native shard, and native_experts.txt names the other shards beside it (per layer, or per role in v4).
     void set_gguf(const std::string& native) { gguf_ = native; }
@@ -977,6 +988,9 @@ public:
     double load_copy_seconds() const { return load_copy_s_; }
 
 private:
+    /// arena-first: the early reservation (reserve_first), consumed by the next open() or released as a whole
+    ArenaPreReservation pre_;
+    void release_pre_();
     void* arena_ = nullptr;          ///< the PinnedArena, owned
     void* map_ = nullptr;            ///< STRATA_ARENA_MMAP: the arena file, mapped read-only (not the PinnedArena)
     uint64_t map_bytes_ = 0;

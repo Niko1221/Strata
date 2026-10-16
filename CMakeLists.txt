@@ -123,6 +123,39 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(session_save_reclaim_test src/core/session_save_reclaim_test.cpp src/core/conversation_file.cpp)
   target_include_directories(session_save_reclaim_test PRIVATE include)
   add_test(NAME session_save_reclaim_test COMMAND session_save_reclaim_test)
+  add_executable(conversation_spill_test src/core/conversation_spill_test.cpp src/core/conversation_spill.cpp src/core/conversation_file.cpp)
+  target_include_directories(conversation_spill_test PRIVATE include)
+  add_test(NAME conversation_spill_test COMMAND conversation_spill_test)
+  # the per-segment tier: independent, content-addressed segment files, the manifest as the ordered list of refs,
+  # the dedup and the refcount GC.  Host-only, no CUDA and no model (it links the .sess tier only for the compat case).
+  add_executable(conversation_segment_test src/core/conversation_segment_test.cpp src/core/conversation_segments.cpp src/core/conversation_spill.cpp src/core/conversation_file.cpp)
+  target_include_directories(conversation_segment_test PRIVATE include)
+  add_test(NAME conversation_segment_test COMMAND conversation_segment_test)
+  add_executable(conversation_prompt_cache_test src/core/conversation_prompt_cache_test.cpp src/core/conversation_prompt_cache.cpp src/core/conversation_file.cpp)
+  target_include_directories(conversation_prompt_cache_test PRIVATE include)
+  add_test(NAME conversation_prompt_cache_test COMMAND conversation_prompt_cache_test)
+  # layer/ladder-t3: the restore ladder's pure half (the rung ordering and the prefix/image filtering).  Header-only,
+  # no CUDA and no model: it runs wherever the other host-only conversation tests do.
+  add_executable(conversation_restore_ladder_test src/core/conversation_restore_ladder_test.cpp)
+  target_include_directories(conversation_restore_ladder_test PRIVATE include)
+  add_test(NAME conversation_restore_ladder_test COMMAND conversation_restore_ladder_test)
+  # delta 4 (layer): node D4-7 phase 1 - the continuous agenda (the admission state machine, the decode-first
+  # token budget, the fine STOP and aging).  Header-only, no CUDA and no model: it runs anywhere the host-only
+  # build does.
+  add_executable(agenda_test tests/core/agenda_test.cpp)
+  target_include_directories(agenda_test PRIVATE include)
+  add_test(NAME agenda_test COMMAND agenda_test)
+  # the --conversation-cache-spill-dir default's resolution rule (strata-dir vs. user profile vs. explicit
+  # flag).  Header-only, no CUDA and no model: it runs wherever the other host-only conversation tests do.
+  add_executable(conversation_spill_dir_test src/core/conversation_spill_dir_test.cpp)
+  target_include_directories(conversation_spill_dir_test PRIVATE include)
+  add_test(NAME conversation_spill_dir_test COMMAND conversation_spill_dir_test)
+  # the --system-prompt-cache-dir default's resolution rule (the SAME rule as the spill directory, its own leaf
+  # folder).  Header-only, no CUDA and no model: it runs wherever the other host-only conversation tests do.
+  add_executable(system_prompt_cache_dir_test src/core/system_prompt_cache_dir_test.cpp)
+  target_include_directories(system_prompt_cache_dir_test PRIVATE include)
+  add_test(NAME system_prompt_cache_dir_test COMMAND system_prompt_cache_dir_test)
+
 endif()
 
 if(STRATA_HIP_GFX906)
@@ -487,7 +520,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/core/remote_expert_opt.cu
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
-    src/core/arch_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
+    src/core/arch_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp src/core/conversation_spill.cpp
+    src/core/conversation_prompt_cache.cpp src/core/conversation_segments.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
   if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
@@ -598,6 +632,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME conversation_transfer_test COMMAND conversation_transfer_test)
       set_tests_properties(conversation_transfer_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
     endif()
+    # layer/ladder-t3: the SAME binary, run a second time with the host transfer seam ON (STRATA_TEST_HOST_TRANSFERS=1
+    # makes the engine's snapshot copies memcpy instead of CUDA).  That runs the restore's SUCCESS path - and the
+    # ladder's leaf - with no device and no GNU `--wrap` linker seam, which is why it works on MSVC.
+    add_test(NAME conversation_restore_ladder_host_test COMMAND conversation_validation_test)
+    set_tests_properties(conversation_restore_ladder_host_test PROPERTIES
+      ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1;STRATA_TEST_HOST_TRANSFERS=1" TIMEOUT 120)
   endif()
 
   # `strata generate` (P2.S6).  The FIRST user-facing program: everything under it is a component, and this is

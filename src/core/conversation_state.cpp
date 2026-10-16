@@ -24,6 +24,12 @@ bool fail(std::string& error, const char* message) {
 }
 
 bool sync(std::string& error) {
+    if (conversation_detail::host_transfers_enabled()) {
+        // Tests only: the host transfer backend (conversation_copy.hpp) runs the restore's control flow with no
+        // device, so there is nothing to synchronize.  Nothing in the engine sets the switch.
+        (void) error;
+        return true;
+    }
     const auto status = cudaDeviceSynchronize();
     if (status == cudaSuccess) return true;
     error = std::string("conversation snapshot synchronize: ") + cudaGetErrorString(status);
@@ -298,7 +304,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
 
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
-                                   const QsaState& draft, std::string& error) {
+                                   const QsaState* draft, std::string& error) {
     if (!view_validate(view, ss, g, error) || !sync(error)) return false;
     SavedConversation captured;
     captured.geometry = geometry_key(g);
@@ -308,13 +314,19 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
     const int64_t upto = (int64_t) view.ids.size();
     const size_t layers = owned_qsa(ss);
-    std::vector<SessionKvSource> out(layers + 1);
+    std::vector<SessionKvSource> out(layers + (draft ? 1 : 0));
     for (size_t j = 0; j < layers; ++j)
         if (!conversation_kv_source(out[j], owned(ss, j), g, upto, true, error)) return false;
-    if (!conversation_kv_source(out.back(), draft, g, upto, false, error)) return false;
+    if (draft && !conversation_kv_source(out.back(), *draft, g, upto, false, error)) return false;
     meta = std::move(captured);
     sources = std::move(out);
     return true;
+}
+
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
+                                   const QsaState& draft, std::string& error) {
+    return conversation_snapshot_sources(meta, sources, view, ss, g, &draft, error);
 }
 
 bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& ss, const ModelGeometry& g,
@@ -348,35 +360,103 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
     return true;
 }
 
-bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss,
-                                    const ModelGeometry& g, const QsaState* draft, std::string& error) {
+namespace {
+// The ONE validation both restore entry points (and both validators) use.  `running` is the checkpoint whose
+// running state will be restored: image.live for the whole-image path, a shorter checkpoint OF THE SAME IMAGE for
+// the ladder's leaf.  The two entry points differ ONLY in `running`, so they cannot drift.  `payload` picks the
+// strict K/V check (buffer sizes) or the header-only one; note the strict check is a superset of the meta one, so
+// conversation_snapshot_validate_meta and conversation_snapshot_validate stay equivalent to what they were.
+// Pure: no CUDA call, no device write.
+bool snapshot_validate(const SavedConversation& image, const SessionState& ss, const ModelGeometry& g,
+                       const QsaState* draft, const ConversationCheckpoint& running, bool payload, std::string& error) {
     if (!image.live.stage_parts.empty())
         return fail(error, "a running checkpoint's stage parts belong in the stage images, not in live.stage_parts");
     if (image.geometry != geometry_key(g)) return fail(error, "incompatible runtime geometry");
     // an image holds exactly one carve's running state and K/V: same layer range or nothing
     if (image.layer_lo != ss.layer_lo || image.layer_hi != ss.layer_hi)
         return fail(error, "snapshot from another session layer range");
+    // `running` stands in for image.live: it must be a prefix of the image's OWN live tokens, ids and pictures, so
+    // a caller resuming at its length re-reads only the tail and never a token the image does not hold.  For the
+    // whole-image path running IS image.live, so this is trivially true and the function is byte-for-byte the one
+    // that shipped.  (This is the relation the ladder relies on; it is checked here, not assumed.)
+    if (running.ids.size() > image.live.ids.size() ||
+        !std::equal(running.ids.begin(), running.ids.end(), image.live.ids.begin()))
+        return fail(error, "the restored checkpoint is not a prefix of the image's live tokens");
+    size_t seen_images = 0;
+    for (const auto& key : image.live.imgs) {
+        if ((uint64_t) key.start >= running.ids.size()) break;
+        if (seen_images >= running.imgs.size() || !(running.imgs[seen_images++] == key))
+            return fail(error, "the restored checkpoint's pictures are not the image's live prefix");
+    }
+    if (seen_images != running.imgs.size())
+        return fail(error, "the restored checkpoint's pictures are not the image's live prefix");
+    // view_validate over the image's own view: every checkpoint the image keeps is a valid prefix of image.live
+    // with aligned pictures and this session's running state.  `running` itself, when it is one of them, is covered
+    // here too; conversation_checkpoint_validate(running, ...) below is what covers image.live on the ordinary path.
     const ConversationView view{image.live.ids, image.live.imgs, image.checkpoints, image.cvec};
-    if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(image.live, ss, g, error)) return false;
+    if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(running, ss, g, error)) return false;
     const size_t layers = owned_qsa(ss);
     if (image.kv.size() != layers + (draft ? 1 : 0)) return fail(error, "invalid K/V layer count");
     const int64_t upto = (int64_t) image.live.ids.size();
-    for (size_t j = 0; j < layers; ++j)
-        if (!conversation_kv_validate(image.kv[j], owned(ss, j), g, upto, true, error)) return false;
-    return !draft || conversation_kv_validate(image.kv.back(), *draft, g, upto, false, error);
+    for (size_t j = 0; j < layers; ++j) {
+        if (payload ? !conversation_kv_validate(image.kv[j], owned(ss, j), g, upto, true, error)
+                    : !conversation_kv_validate_meta(image.kv[j], owned(ss, j), g, upto, true, error))
+            return false;
+    }
+    if (draft) {
+        if (payload ? !conversation_kv_validate(image.kv.back(), *draft, g, upto, false, error)
+                    : !conversation_kv_validate_meta(image.kv.back(), *draft, g, upto, false, error))
+            return false;
+    }
+    return true;
 }
 
-ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& ss,
-                                                   const ModelGeometry& g, const QsaState* draft, std::string& error) {
-    if (!conversation_snapshot_validate(image, ss, g, draft, error)) return ConversationRestore::invalid;
+// The transfer half both entry points share: the K/V at the image's own extent, then `running`'s state.  The caller
+// has validated with snapshot_validate first; a transfer failure here is fatal for it, never a partial session.
+ConversationRestore snapshot_apply(const SavedConversation& image, SessionState& ss, const ModelGeometry& g,
+                                   const QsaState* draft, const ConversationCheckpoint& running, std::string& error) {
     if (!sync(error)) return ConversationRestore::transfer_failed;
     const int64_t upto = (int64_t) image.live.ids.size();
     for (size_t j = 0; j < owned_qsa(ss); ++j)
         if (!conversation_kv_restore(image.kv[j], owned(ss, j), g, upto, true, error))
             return ConversationRestore::transfer_failed;
     if ((draft && !conversation_kv_restore(image.kv.back(), *draft, g, upto, false, error)) ||
-        !conversation_checkpoint_restore(image.live, ss, g, error)) return ConversationRestore::transfer_failed;
+        !conversation_checkpoint_restore(running, ss, g, error)) return ConversationRestore::transfer_failed;
     return ConversationRestore::restored;
+}
+} // namespace
+
+bool conversation_snapshot_validate_meta(const SavedConversation& image, const SessionState& ss,
+                                         const ModelGeometry& g, const QsaState* draft, std::string& error) {
+    return snapshot_validate(image, ss, g, draft, image.live, /*payload=*/false, error);
+}
+
+bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss,
+                                    const ModelGeometry& g, const QsaState* draft, std::string& error) {
+    return snapshot_validate(image, ss, g, draft, image.live, /*payload=*/true, error);
+}
+
+bool conversation_snapshot_validate_at(const SavedConversation& image, const SessionState& ss,
+                                       const ModelGeometry& g, const QsaState* draft,
+                                       const ConversationCheckpoint& checkpoint, std::string& error) {
+    return snapshot_validate(image, ss, g, draft, checkpoint, /*payload=*/true, error);
+}
+
+ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& ss,
+                                                   const ModelGeometry& g, const QsaState* draft, std::string& error) {
+    if (!snapshot_validate(image, ss, g, draft, image.live, /*payload=*/true, error))
+        return ConversationRestore::invalid;
+    return snapshot_apply(image, ss, g, draft, image.live, error);
+}
+
+// The restore ladder's leaf: the same validation and the same transfer, with `checkpoint` in place of image.live.
+// See the header for exactly what it validates and what it does NOT (image.live's own running state).
+ConversationRestore conversation_snapshot_restore_at(const SavedConversation& image, SessionState& ss,
+                                                     const ModelGeometry& g, const QsaState* draft,
+                                                     const ConversationCheckpoint& checkpoint, std::string& error) {
+    if (!snapshot_validate(image, ss, g, draft, checkpoint, /*payload=*/true, error))
+        return ConversationRestore::invalid;
+    return snapshot_apply(image, ss, g, draft, checkpoint, error);
 }
 
 // the draft layer's K/V included (the stage that owns the draft head, or no layer split)
@@ -399,6 +479,11 @@ bool conversation_snapshot_validate(const SavedConversation& image, const Sessio
     // the whole-session form: a layer split's image (stage images) is restored stage by stage, never through here
     if (!image.stage_images.empty()) return fail(error, "a layer split's image restored as a single session");
     return conversation_snapshot_validate(image, ss, g, &draft, error);
+}
+bool conversation_snapshot_validate_meta(const SavedConversation& image, const SessionState& ss,
+                                         const ModelGeometry& g, const QsaState& draft, std::string& error) {
+    if (!image.stage_images.empty()) return fail(error, "a layer split's image restored as a single session");
+    return conversation_snapshot_validate_meta(image, ss, g, &draft, error);
 }
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& ss,
                                                    const ModelGeometry& g, const QsaState& draft, std::string& error) {
