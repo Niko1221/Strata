@@ -1,0 +1,36 @@
+round 0 both: ready in 28 s
+  chat0  decode 25.5 tok/s  prompt 22.5 tok/s (34)  n 256
+  chat1  decode 26.5 tok/s  prompt 23.9 tok/s (27)  n 219
+  chat2  decode 26.5 tok/s  prompt 22.7 tok/s (29)  n 204
+  long   decode 26.3 tok/s  prompt 258.1 tok/s (6345)  n 174
+round 0 node1: ready in 29 s
+  chat0  decode 16.9 tok/s  prompt 15.6 tok/s (34)  n 256
+  chat1  decode 17.6 tok/s  prompt 16.5 tok/s (27)  n 235
+  chat2  decode 19.0 tok/s  prompt 15.2 tok/s (29)  n 206
+  long   decode 18.1 tok/s  prompt 258.5 tok/s (6345)  n 141
+round 1 node1: ready in 29 s
+  chat0  decode 17.3 tok/s  prompt 16.4 tok/s (34)  n 256
+  chat1  decode 18.3 tok/s  prompt 17.1 tok/s (27)  n 235
+  chat2  decode 19.0 tok/s  prompt 15.0 tok/s (29)  n 206
+  long   decode 18.1 tok/s  prompt 258.4 tok/s (6345)  n 141
+round 1 both: ready in 28 s
+  chat0  decode 26.1 tok/s  prompt 23.8 tok/s (34)  n 256
+  chat1  decode 24.2 tok/s  prompt 24.0 tok/s (27)  n 243
+  chat2  decode 25.7 tok/s  prompt 22.0 tok/s (29)  n 211
+  long   decode 25.0 tok/s  prompt 257.5 tok/s (6345)  n 139
+round 2 both: ready in 28 s
+  chat0  decode 26.4 tok/s  prompt 24.1 tok/s (34)  n 256
+  chat1  decode 24.2 tok/s  prompt 23.3 tok/s (27)  n 243
+  chat2  decode 25.7 tok/s  prompt 22.4 tok/s (29)  n 211
+  long   decode 25.0 tok/s  prompt 257.4 tok/s (6345)  n 139
+round 2 node1: ready in 29 s
+  chat0  decode 17.5 tok/s  prompt 15.8 tok/s (34)  n 256
+  chat1  decode 19.2 tok/s  prompt 15.8 tok/s (27)  n 195
+  chat2  decode 20.0 tok/s  prompt 15.9 tok/s (29)  n 205
+  long   decode 18.0 tok/s  prompt 258.2 tok/s (6345)  n 141
+
+medians over rounds:
+  chat0  | both: decode   26.1  prompt    23.8 | node1: decode   17.3  prompt    15.8
+  chat1  | both: decode   24.2  prompt    23.9 | node1: decode   18.3  prompt    16.5
+  chat2  | both: decode   25.7  prompt    22.4 | node1: decode   19.0  prompt    15.2
+  long   | both: decode   25.0  prompt   257.5 | node1: decode   18.1  prompt   258.4
