@@ -2054,8 +2054,8 @@ class StrataEngine:
                 (self.info or {}).get("slot_park") in (1, "1")):
             return ""
         main = getattr(self, "main_held", None) or []
-        if len(main) < slot_policy.PARK_MIN_TOKENS or prompt[:len(main) // 2] == main[:len(main) // 2]:
-            return ""          # short, or this prompt continues it (at least half of it): nothing to keep
+        if prompt[:len(main) // 2] == main[:len(main) // 2]:
+            return ""          # nothing held, or this prompt continues it (at least half of it): nothing to keep
         with self.slot_cv:
             b = slot_policy.park_destination(main, self.slot_busy, self.slot_held, self.slot_used, self.slot_order,
                                              self.slot_gs, time.time(), getattr(self, "slot_cache_valid", None),
