@@ -228,7 +228,7 @@ class RetentionPolicy(unittest.TestCase):
         h = list(range(500))
         e.slot_held[2] = h
         e.slot_used[2] -= 10
-        plan = self.place(e, h + [9999], allow_eviction=False)
+        plan = self.place(e, h + [9999])
         self.assertEqual(plan.source_hint, 2)
         self.assertEqual(plan.reused_hint, 500)
         self.assertEqual(e.slot_held[2], h)  # no token deletion on expiry
@@ -278,10 +278,10 @@ class RetentionPolicy(unittest.TestCase):
         e.slot_busy[1] = True
         e.slot_held[0], e.slot_used[0] = [0] * 150000, self.NOW - 1800
         e.slot_held[4], e.slot_used[4] = [4] * 8000, self.NOW - 15
-        self.assertEqual(self.place(e, [9999], padding_safe=True, allow_eviction=False).slot, 0)
+        self.assertEqual(self.place(e, [9999], padding_safe=True).slot, 0)
         # A use refreshes the age: the long history is protected again and the expired shorter one yields.
         e.slot_used[0] = self.NOW
-        self.assertEqual(self.place(e, [9999], padding_safe=True, allow_eviction=False).slot, 4)
+        self.assertEqual(self.place(e, [9999], padding_safe=True).slot, 4)
 
     def test_long_unused_history_still_matches_after_its_value_falls_below_keep_score(self):
         e = self.e()
@@ -289,30 +289,29 @@ class RetentionPolicy(unittest.TestCase):
         e.slot_held[2] = list(range(100000))
         e.slot_used[2] = self.NOW - 3600
         self.assertEqual(slot_policy.stale_retention(100000, self.NOW - e.slot_used[2]), 0)
-        plan = self.place(e, list(range(100001)), padding_safe=True, allow_eviction=False)
+        plan = self.place(e, list(range(100001)), padding_safe=True)
         self.assertEqual((plan.slot, plan.source_hint, plan.reused_hint), (2, 2, 100000))
         self.assertEqual(len(e.slot_held[2]), 100000)
 
-    def test_decayed_history_does_not_wait_for_a_cheaper_protected_side_request(self):
+    def test_decayed_history_is_reclaimed_while_a_side_request_is_protected(self):
         e = self.e()
         e.slot_held = [[b] * 50000 for b in range(6)]
         e.slot_used[0] = self.NOW - 1800
         e.slot_held[2], e.slot_used[2] = [2] * 1500, self.NOW - 0.5
-        plan = self.place(e, [9999], padding_safe=True, allow_eviction=False)
+        plan = self.place(e, [9999], padding_safe=True)
         self.assertEqual((plan.slot, plan.reason), (0, 'reclaim'))
 
     def test_unexpired_fifty_k_is_selected_before_similarly_fresh_150k(self):
         e = self.e()
         e.slot_held = [[b] * (50000 if b == 2 else 150000) for b in range(6)]
         self.assertEqual(self.place(e, [9999]).slot, 2)
-        self.assertEqual(self.place(e, [9999], allow_eviction=False).reason, 'protected')
 
     def test_expired_short_helper_is_reclaimed_without_touching_long_histories(self):
         e = self.e()
         e.slot_held = [[b] * 100000 for b in range(6)]
         e.slot_held[4] = [4] * 500
         e.slot_used[4] -= 0.11
-        self.assertEqual(self.place(e, [9999], allow_eviction=False).slot, 4)
+        self.assertEqual(self.place(e, [9999]).slot, 4)
 
     def test_cache_source_can_be_restored_into_another_pipeline_group(self):
         e = self.e()
@@ -367,13 +366,13 @@ class RetentionPolicy(unittest.TestCase):
         plan = self.place(e, list(range(10001)), padding_safe=True)
         self.assertEqual(plan.slot, 1)            # no blank slot elsewhere: stay in the busy group
 
-    def test_superseded_copy_is_blank_and_needs_no_wait(self):
+    def test_superseded_copy_is_blank_and_reclaimed_before_protected_histories(self):
         e = self.e()
-        e.slot_held = [[b] * 50000 for b in range(6)]   # all fresh: a new chat would have to wait
+        e.slot_held = [[b] * 50000 for b in range(6)]   # all fresh: every other one is protected
         e.slot_held[0] = list(range(9000))              # where the conversation was before it moved
         e.slot_held[4] = list(range(10000))             # where it is now
         self.assertEqual(slot_policy.superseded_slots(e.slot_held, e.slot_busy, [True] * 6), {0})
-        plan = self.place(e, [9999], allow_eviction=False)
+        plan = self.place(e, [9999])
         self.assertEqual((plan.slot, plan.reason), (0, "reclaim"))
 
     def test_reclaim_overwrites_expired_history_only_after_blank_slots(self):
@@ -414,19 +413,19 @@ class RetentionPolicy(unittest.TestCase):
         finally:
             slot_policy.configure({})
 
-    def test_waits_for_a_side_request_slot_about_to_expire_instead_of_a_conversation(self):
+    def test_no_wait_for_a_side_request_slot_about_to_expire(self):
         # GPU run 2026-10-15: a filler arriving 1 s after another filler finished overwrote expired 7.8K chat C,
-        # while the finished filler's 1.5K history left its 1.4 s protection a moment later.
+        # while the finished filler's 1.5K history left its 1.4 s protection a moment later.  A wait for it was
+        # removed (2026-10-16): the protection rules decide, so C goes while the filler slot is protected.
         e = self.e()
         e.slot_busy[1] = e.slot_busy[5] = True
         e.slot_held[0], e.slot_used[0] = [0] * 37365, self.NOW - 300   # expired, worthy
         e.slot_held[3], e.slot_used[3] = [3] * 7848, self.NOW - 15      # C: expired, worthy
         e.slot_held[2], e.slot_used[2] = [2] * 1526, self.NOW - 0.5     # filler: protected for under 1 s more
         e.slot_held[4], e.slot_used[4] = [4] * 1526, self.NOW - 0.2
-        self.assertEqual(self.place(e, [9999], padding_safe=True, allow_eviction=False).reason, "protected")
-        self.assertEqual(self.place(e, [9999], padding_safe=True, allow_eviction=True).slot, 3)   # after the wait
-        e.slot_used[2] = self.NOW - 2                                     # the filler slot expired: no wait
-        self.assertEqual(self.place(e, [9999], padding_safe=True, allow_eviction=False).slot, 2)
+        self.assertEqual(self.place(e, [9999], padding_safe=True).slot, 3)
+        e.slot_used[2] = self.NOW - 2                                     # the filler slot expired
+        self.assertEqual(self.place(e, [9999], padding_safe=True).slot, 2)
 
     def test_near_match_budget_respects_one_second_and_4096_cap(self):
         e = self.e()
@@ -435,41 +434,18 @@ class RetentionPolicy(unittest.TestCase):
         self.assertEqual(self.place(e, p, prefill_rate=500).near_tokens, 500)
         self.assertEqual(self.place(e, p, prefill_rate=10000).near_tokens, 4096)
 
-    def test_busy_slots_never_match_or_get_overwritten_after_wait(self):
+    def test_busy_slots_never_match_or_get_overwritten(self):
         e = self.e()
         e.slot_busy = [True] * 6
         e.slot_held[2] = list(range(500))
-        self.assertIsNone(self.place(e, list(range(501)), allow_eviction=True).slot)
-        with mock.patch('serve.server.time.monotonic', return_value=20):
-            self.assertEqual(e._admission_slot(list(range(501)), None), (None, None))
+        self.assertIsNone(self.place(e, list(range(501))).slot)
 
-    def test_padding_loss_protects_another_chat_in_a_lower_row(self):
+    def test_padding_loss_counts_a_protected_history_in_a_lower_row(self):
         e = self.e()
         e.slot_held[0] = [77] * 100000
         e.slot_busy[2:] = [True] * 4
-        # Slot 1 is empty, but using it would pad over the protected history at 0.
-        self.assertEqual(self.place(e, [9999], allow_eviction=False).reason, 'protected')
-        self.assertEqual(self.place(e, [9999], allow_eviction=True).slot, 0)
-
-    def test_protection_window_once_then_eviction_and_early_reclaim(self):
-        e = self.e()
-        e.slot_held = [[b] * 50000 for b in range(6)]
-        with mock.patch('serve.server.time.time', return_value=self.NOW), \
-             mock.patch('serve.server.time.monotonic', return_value=10):
-            slot, since = e._admission_slot([9999], None)
-            self.assertIsNone(slot)
-            self.assertEqual(since, 10)
-        with mock.patch('serve.server.time.time', return_value=self.NOW), \
-             mock.patch('serve.server.time.monotonic', return_value=14.9):
-            self.assertEqual(e._admission_slot([9999], since), (None, 10))
-        with mock.patch('serve.server.time.time', return_value=self.NOW), \
-             mock.patch('serve.server.time.monotonic', return_value=15):
-            self.assertIsNotNone(e._admission_slot([9999], since)[0])
-        e.slot_held[4] = [4] * 500
-        e.slot_used[4] = self.NOW - 0.2
-        with mock.patch('serve.server.time.time', return_value=self.NOW), \
-             mock.patch('serve.server.time.monotonic', return_value=10.2):
-            self.assertEqual(e._admission_slot([9999], since)[0], 4)
+        # Slot 1 is empty, but using it would pad over the protected history at 0: the same loss as taking slot 0.
+        self.assertEqual(self.place(e, [9999]).slot, 0)
 
     def test_padding_invalidity_survives_completion_of_higher_row(self):
         e = self.e()
@@ -743,9 +719,8 @@ class PolicyTunables(unittest.TestCase):
         slot_policy.configure({})
 
     def test_environment_overrides_and_bad_values_keep_defaults(self):
-        got = slot_policy.configure({"STRATA_SLOT_TTL_MAX_S": "240", "STRATA_SLOT_PROTECT_WAIT_S": "2",
-                                     "STRATA_SLOT_PARK_MIN_TOKENS": "x"})
-        self.assertEqual(got, {"ttl_max_s": 240.0, "protect_wait_s": 2.0, "park_min_tokens": 8192,
+        got = slot_policy.configure({"STRATA_SLOT_TTL_MAX_S": "240", "STRATA_SLOT_PARK_MIN_TOKENS": "x"})
+        self.assertEqual(got, {"ttl_max_s": 240.0, "park_min_tokens": 8192,
                                "expired_keep_score": 0.01, "idle_value_zero_s": 1800.0, "park_value_ratio": 2.0,
                                "park_min_value": 0.01})
         self.assertAlmostEqual(slot_policy.cache_ttl(100000), 180.0)     # the whole curve doubles
