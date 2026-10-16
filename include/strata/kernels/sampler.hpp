@@ -44,6 +44,11 @@ struct SamplerParams {
 void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
                    const SamplerParams& p, int* out, void* stream);
 
+// STRATA_LOOP_BREAK (opt-in): every later `sample_tokens` / `sample_tokens_spec` over a `vocab`-wide row set first adds
+// `*d_bias` (mapped host memory; 0 = off) to the logit of the id at `*d_id` (mapped; -1 = none) in the FIRST row only.
+// The engine sets both before each window; a capturable launch, since the kernel reads them on the device.
+void set_loop_ban(const int32_t* d_id, int vocab, const float* d_bias);
+
 // The greedy pick (no penalties) on a thread-block cluster of 8 CTAs per row (sm_90+, CUDA; S19): the same token as
 // sample_tokens' one-block argmax, which takes it unless STRATA_ARGMAX_MULTI=0.  False (nothing launched) where it
 // cannot run: HIP, a card or a build below sm_90.  Device pointers; capturable.

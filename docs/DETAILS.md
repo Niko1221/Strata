@@ -857,6 +857,18 @@ print(r.choices[0].message.content)
   server ends it there with `finish_reason` `"length"` and says so in its window: a model in a loop, or a broken
   state that answers one token forever (#606 saw 36,689 tokens of `!`). `"repeat_stop_tokens": N` in
   `strata-<model>.json` sets the run length; `0` turns it off (for a request that really wants one token many times).
+- **A reply that repeats a long span is pushed out of it (opt-in, `STRATA_LOOP_BREAK=1`).** The one-token stop above
+  never sees a model that writes the same sentence or paragraph again and again. With `STRATA_LOOP_BREAK=1`, once a
+  `--serve` reply has repeated one span exactly three times (a period of 1-512 tokens, over at least
+  `STRATA_LOOP_BREAK_MIN` tokens, default 256), the next `STRATA_LOOP_BREAK_SPAN` tokens (default 1024, or up to a
+  `<think>`, `</think>`, `<tool_call>`, `</tool_call>` or ``` token) are in break mode: before each window, the token
+  that would continue an earlier copy (the one that followed the last earlier occurrence of the reply's last 8 tokens)
+  gets `STRATA_LOOP_BREAK_BIAS` (default -100) in the window's first row, and the model takes its own next choice.
+  A reply that never repeats a span three times never enters break mode: no kernel is launched with the variable
+  unset, and with it set the ban's bias stays 0 outside break mode. The engine prints one `loop break:` line per
+  request that needed it. Not on the `--pipeline-windows` decode path (its next window is built before this one's
+  tokens are known). Replayed offline over 4.06M tokens of one user's opencode sessions, the trigger fired 96 times,
+  each on a real loop (no false alarm in the replay).
 - **Non-finite logits end the request and drop the cached state (#879, on by default).** Rarely, a window's logits
   become NaN and the reply degenerates into token 0 (`!`) repeated (#606); the poison sits in the conversation's K/V
   and recurrent state, so with the prompt cache every later turn of that conversation stays poisoned. The q8_1 clamps
