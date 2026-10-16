@@ -1,0 +1,34 @@
+{
+ "gguf": "D:/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+ "llama_server": "C:/Users/dnb23/.unsloth/llama.cpp/build/bin/Release/llama-server.exe",
+ "strata_cfg": "D:/Strata-main/strata-iq3_s.json",
+ "strata_exe": "D:/Strata-main/engine/strata.exe",
+ "serve": "D:/Strata-main/worktree/serve",
+ "cwd": "D:/Strata-main",
+ "configs": [
+  {
+   "name": "strata-setup",
+   "kind": "strata",
+   "args": [],
+   "override": {
+    "--max-context": "36864"
+   }
+  },
+  {
+   "name": "llama-fit-nomtp",
+   "kind": "llama",
+   "args": [
+    "--fit",
+    "on",
+    "-c",
+    "36864",
+    "-ctk",
+    "q8_0",
+    "-ctv",
+    "q8_0",
+    "-fa",
+    "on"
+   ]
+  }
+ ]
+}

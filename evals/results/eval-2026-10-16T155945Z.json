@@ -1,0 +1,139 @@
+{
+ "generated": "2026-10-16T15:59:45+00:00",
+ "base": "http://127.0.0.1:59359",
+ "queries": 12,
+ "repeats": 1,
+ "thresholds": {
+  "min_relevance": 1.0,
+  "timeout_s": 120.0
+ },
+ "summary": {
+  "passed": 12,
+  "failed": 0,
+  "median_wall_s": 0.0023,
+  "max_wall_s": 0.0191,
+  "min_relevance": 1.0
+ },
+ "rows": [
+  {
+   "id": "greeting",
+   "wall_s": 0.0191,
+   "tok_s": 3506.9,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "Hello! I can help you with questions, writing, and code.",
+   "pass": true
+  },
+  {
+   "id": "arithmetic",
+   "wall_s": 0.0021,
+   "tok_s": 11078.5,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "12 * 7 = 84.",
+   "pass": true
+  },
+  {
+   "id": "capital-of-france",
+   "wall_s": 0.0022,
+   "tok_s": 19013.1,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "The capital of France is Paris.",
+   "pass": true
+  },
+  {
+   "id": "one-word-answer",
+   "wall_s": 0.0017,
+   "tok_s": 8064.1,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "yes",
+   "pass": true
+  },
+  {
+   "id": "fib-function",
+   "wall_s": 0.0148,
+   "tok_s": 6633.0,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a",
+   "pass": true
+  },
+  {
+   "id": "three-planets",
+   "wall_s": 0.002,
+   "tok_s": 15826.7,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "Mercury, Venus, Earth",
+   "pass": true
+  },
+  {
+   "id": "train-speed",
+   "wall_s": 0.0023,
+   "tok_s": 26410.8,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "45 minutes is 0.75 hours, so 60 / 0.75 = 80 km/h.",
+   "pass": true
+  },
+  {
+   "id": "define-recursion",
+   "wall_s": 0.0023,
+   "tok_s": 22778.1,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "Recursion is when a function calls itself.",
+   "pass": true
+  },
+  {
+   "id": "fix-off-by-one",
+   "wall_s": 0.0023,
+   "tok_s": 18419.4,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "def add(a, b):\n    return a + b",
+   "pass": true
+  },
+  {
+   "id": "json-object",
+   "wall_s": 0.0018,
+   "tok_s": 20139.3,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "{\"name\": \"Ada\", \"age\": 36}",
+   "pass": true
+  },
+  {
+   "id": "unicode-reply",
+   "wall_s": 0.0019,
+   "tok_s": 12387.6,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "Gr\u00fc\u00dfe \ud83d\ude42",
+   "pass": true
+  },
+  {
+   "id": "long-list",
+   "wall_s": 0.0029,
+   "tok_s": 12464.9,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "2\n3\n5\n7\n11\n13\n17\n19\n23\n29",
+   "pass": true
+  }
+ ]
+}

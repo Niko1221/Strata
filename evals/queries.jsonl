@@ -1,0 +1,12 @@
+{"id": "greeting", "prompt": "Say hello and offer to help.", "expect_any": ["hello", "hi"], "mock_answer": "Hello! I can help you with questions, writing, and code."}
+{"id": "arithmetic", "prompt": "What is 12 * 7? Answer with the number.", "expect_all": ["84"], "mock_answer": "12 * 7 = 84."}
+{"id": "capital-of-france", "prompt": "What is the capital of France?", "expect_all": ["Paris"], "mock_answer": "The capital of France is Paris."}
+{"id": "one-word-answer", "prompt": "Reply with exactly one word: yes", "expect_all": ["yes"], "max_tokens": 64, "mock_answer": "yes"}
+{"id": "fib-function", "prompt": "Write a Python function fib(n) that returns the n-th Fibonacci number.", "expect_all": ["def fib", "return"], "expect_any": ["fib("], "mock_answer": "def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a"}
+{"id": "three-planets", "prompt": "List three planets in our solar system as a comma-separated list.", "expect_all": ["Earth"], "expect_any": ["Mars", "Venus"], "mock_answer": "Mercury, Venus, Earth"}
+{"id": "train-speed", "prompt": "A train travels 60 km in 45 minutes. What is its speed in km/h?", "expect_all": ["80"], "mock_answer": "45 minutes is 0.75 hours, so 60 / 0.75 = 80 km/h."}
+{"id": "define-recursion", "prompt": "Give me a one-line definition of recursion.", "expect_all": ["itself"], "expect_any": ["recursion"], "mock_answer": "Recursion is when a function calls itself."}
+{"id": "fix-off-by-one", "prompt": "This Python is wrong: def add(a, b): return a - b. Fix it and reply with the corrected line.", "expect_all": ["return a + b"], "mock_answer": "def add(a, b):\n    return a + b"}
+{"id": "json-object", "prompt": "Reply with only a JSON object describing a person named Ada with age 36.", "expect_all": ["{", "\"name\"", "\"age\"", "36"], "mock_answer": "{\"name\": \"Ada\", \"age\": 36}"}
+{"id": "unicode-reply", "prompt": "Reply with the German word for greeting and the smiley emoji.", "expect_all": ["Grüße", "🙂"], "mock_answer": "Grüße 🙂"}
+{"id": "long-list", "prompt": "List the first ten prime numbers, one per line.", "expect_all": ["2", "3", "5", "7", "11", "13", "17", "19", "23", "29"], "max_tokens": 512, "mock_answer": "2\n3\n5\n7\n11\n13\n17\n19\n23\n29"}

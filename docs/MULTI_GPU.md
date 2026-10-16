@@ -42,6 +42,7 @@ now on; the answer is kept.
 ```
 
 **Not supported** (setup says so and names the cards that can be used instead):
+
 - a card older than the RTX 20 series (compute capability below 7.5: GTX 10 and older), unless you name it: Pascal
   and Volta cards (Tesla P100 / P40, GTX 10, V100) are admitted when you choose them with `--gpus` (or `--gpu`,
   `--cuda 12`) and then run the experimental CUDA 12 engine, see [OLDER_GPUS.md](OLDER_GPUS.md). Two Tesla P40s
@@ -65,7 +66,7 @@ number per card after the first, not a count of layers per card. With 4 cards an
 (or `[24, 36, 42]`) puts layers 0-23 on the first card, 24-35 on the second, 36-41 on the third and 42-47 on the last.
 The server checks it before the start and says what is wrong (0.1.39, #644).
 
-**Card order with `"auto"`** (NVIDIA, #1352): the faster card (multiprocessors x max clock) goes **last** - the last stage runs the head, the draft layer and the verify, and a prompt chunk waits on it (a 4070 Ti SUPER + 5060 Ti read a 6K prompt in 50 s one way round and 15 s the other). Cards whose scores are within 5% of each other (two of the same model) keep your order; a manual split keeps it too. `"gpu_order": "as_given"` keeps the order you wrote under `"auto"` as well. The engine log line `layer split: card order ...` says when it changed.
+**Card order with `"auto"`** (NVIDIA and AMD on Linux, #1352): the faster card goes **last** - the last stage runs the head, the draft layer and the verify, and a prompt chunk waits on it (a 4070 Ti SUPER + 5060 Ti read a 6K prompt in 50 s one way round and 15 s the other). Faster is multiprocessors x max clock on NVIDIA and SIMDs x max engine clock read from the kernel's KFD topology on AMD Linux (the GPU nodes in node order, the order setup and the engine use for `"gpu"` there); cards whose scores are within 5% of each other (two of the same model) keep your order, as do AMD cards on Windows or without a ROCm driver (nothing to read there); a manual split keeps it too. `"gpu_order": "as_given"` keeps the order you wrote under `"auto"` as well. The engine log line `layer split: card order ...` says when it changed.
 
 **Skip the split when the first card holds everything** (opt-in, 0.1.31): `"split_skip_if_fits": true` in the config
 (engine flag `--split-skip-if-fits`, with `--layer-split auto`) runs on the first card alone when it holds every
@@ -141,7 +142,7 @@ Unsloth UD-Q4_K_XL and UD-IQ4_XS configs), is kept on a split as well ([UNSLOTH_
 i9-14900KF, 32 GB of RAM, Windows 11, four greedy prompts at a time, decode tok/s:
 
 | | first four prompts | after three more rounds |
-|---|---|---|
+| --- | --- | --- |
 | 5080 alone, `--resident-experts` | 25 | 29 |
 | split, `--mmap-experts` (what `--resident-experts` became on a split) | 32 | 64 |
 | split, `--resident-experts` (22 GiB of experts locked in RAM) | 71 | 69 |
@@ -181,7 +182,7 @@ The card that drives the monitors needs more headroom than one that drives none;
 keeps the one whose caches would hold the most of the expert profile, hottest pairs weighted most; ties go to the
 placement that leaves the fullest card the most room. The startup log prints the choice:
 
-```
+```text
 strata generate: layer split auto: K=19 - the caches hold 11767 of 12288 profiled pairs (fullest device 100%)
 strata serve: layer split: layers 0-18 (CUDA0), 19-47 (CUDA1), one hand-off per window
 ```
@@ -229,7 +230,7 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
 `bench/results/2026-09-29-layer-split/`:
 
 | | Prompt 16K / 28K tok/s | Decode story / code tok/s |
-|---|---|---|
+| --- | --- | --- |
 | 5080 alone | 1,726-2,017 / 1,970 | 83-87 / 88-105 |
 | 5080 + 3090, best split (K=26) | 2,039 / 2,357 | 84 / 110 |
 | 5080 + 3090, auto (K=22) | 2,037 / 2,073 | 80 / 109 |
@@ -240,6 +241,7 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
 - **Correctness:** one GPU is byte-identical to 0.1.20, and the hand-off itself is bit-exact.
 
 **Which cards and in what order:**
+
 - Put the fastest card first; auto gives it as many layers as its cache allows.
 - Leave out a much slower card when two already hold the model. An RTX 2080 Ti as a third card made the 5080 +
   3090 pair slower (68 / 90 tok/s decode): every extra card costs its own round per window.
@@ -329,7 +331,7 @@ runs 2-6 of 1,500-token coding replies at temperature 0.6, prefill one cold 19.9
 noted (reported by adambenhassen, #1447; not repeated on our boxes):
 
 | Arm | Decode tok/s | Prefill tok/s |
-|---|---:|---:|
+| --- | ---: | ---: |
 | setup defaults (two runs) | 137.0 / 136.9 | 1798 |
 | `--adapt-async 1` (two runs) | 145.2 / 143.7 | 1800 / 1797 |
 | `--adapt-async 1`, no `--remote-expert-opt` | 145.0 | 1807 |

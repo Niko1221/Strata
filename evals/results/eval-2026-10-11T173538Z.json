@@ -1,0 +1,99 @@
+{
+ "generated": "2026-10-11T17:35:38+00:00",
+ "base": "http://127.0.0.1:53244",
+ "queries": 8,
+ "repeats": 1,
+ "thresholds": {
+  "min_relevance": 1.0,
+  "timeout_s": 120.0
+ },
+ "summary": {
+  "passed": 8,
+  "failed": 0,
+  "median_wall_s": 0.0022,
+  "max_wall_s": 0.0198,
+  "min_relevance": 1.0
+ },
+ "rows": [
+  {
+   "id": "greeting",
+   "wall_s": 0.0198,
+   "tok_s": 3379.7,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "Hello! I can help you with questions, writing, and code.",
+   "pass": true
+  },
+  {
+   "id": "arithmetic",
+   "wall_s": 0.0023,
+   "tok_s": 9933.5,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "12 * 7 = 84.",
+   "pass": true
+  },
+  {
+   "id": "capital-of-france",
+   "wall_s": 0.0021,
+   "tok_s": 20319.3,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "The capital of France is Paris.",
+   "pass": true
+  },
+  {
+   "id": "one-word-answer",
+   "wall_s": 0.0019,
+   "tok_s": 7258.0,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "yes",
+   "pass": true
+  },
+  {
+   "id": "fib-function",
+   "wall_s": 0.0027,
+   "tok_s": 36857.3,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a",
+   "pass": true
+  },
+  {
+   "id": "three-planets",
+   "wall_s": 0.0019,
+   "tok_s": 16835.9,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "Mercury, Venus, Earth",
+   "pass": true
+  },
+  {
+   "id": "train-speed",
+   "wall_s": 0.002,
+   "tok_s": 30234.3,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "45 minutes is 0.75 hours, so 60 / 0.75 = 80 km/h.",
+   "pass": true
+  },
+  {
+   "id": "define-recursion",
+   "wall_s": 0.0022,
+   "tok_s": 24166.7,
+   "relevance": 1.0,
+   "format_ok": true,
+   "problems": [],
+   "content": "Recursion is when a function calls itself.",
+   "pass": true
+  }
+ ]
+}
