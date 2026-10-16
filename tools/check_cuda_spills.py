@@ -205,12 +205,28 @@ def resource_usage(cuobjdump, path):
 
 
 def demangle(demangler, names):
-    if demangler is None or not names:
-        return {n: n for n in names}
+    """{mangled: demangled} for every name, or None when there is no demangler, it fails, prints the wrong number of
+    lines, or hands a mangled name back as it was.  A mangled name has no "::" to read, so an undemangled kernel would
+    be classified as vendored and skipped: without the demangler's answer there is no verdict, never a pass."""
+    if demangler is None:
+        print("check_cuda_spills: no demangler (cu++filt beside cuobjdump, or cu++filt / c++filt on PATH)")
+        return None
+    if not names:
+        return {}
     run = subprocess.run([demangler], input="\n".join(names) + "\n", capture_output=True, text=True)
     out = run.stdout.splitlines()
-    if run.returncode != 0 or len(out) != len(names):
-        return {n: n for n in names}
+    if run.returncode != 0:
+        print("check_cuda_spills: %s exited %d:\n%s" % (demangler, run.returncode,
+                                                        (run.stderr or run.stdout).strip()[:2000]))
+        return None
+    if len(out) != len(names):
+        print("check_cuda_spills: %s printed %d lines for %d names" % (demangler, len(out), len(names)))
+        return None
+    stuck = [n for n, d in zip(names, out) if n.startswith("_Z") and d.strip() == n]
+    if stuck:
+        print("check_cuda_spills: %s left %d of %d names mangled, e.g. %s" % (demangler, len(stuck), len(names),
+                                                                             stuck[0][:160]))
+        return None
     return dict(zip(names, out))
 
 
@@ -249,6 +265,11 @@ def main():
     if cuobjdump is None:
         print("check_cuda_spills: cuobjdump not found (put the CUDA toolkit's bin/ on PATH, or pass --cuobjdump)")
         return 77
+    if demangler is None:
+        # without a demangler every Strata kernel would read as a no-namespace (vendored) one and be skipped: the
+        # check cannot run, and a pass with nothing counted is not a pass
+        print("check_cuda_spills: no demangler found (cu++filt beside %s, or cu++filt / c++filt on PATH)" % cuobjdump)
+        return 77
     for lib in a.library:
         if not os.path.exists(lib):
             print("check_cuda_spills: %s does not exist" % lib)
@@ -268,6 +289,8 @@ def main():
                   "changed)" % lib)
             return 77
         names = demangle(demangler, sorted({f for _, _, f, _ in rows}))
+        if names is None:
+            return 77
         if out:
             for obj, sm, func, cols in rows:
                 out.writerow([os.path.basename(lib), obj, sm, cols.get("REG", 0), cols.get("STACK", 0),
