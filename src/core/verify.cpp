@@ -1880,6 +1880,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             mb.logits = logits_ + t * NE; mb.ids = ids_ + t * K; mb.weights = w_ + t * K;
             if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr)) return false;
         }
+        stamp(l, 33, grp);   // the routing (projection + top-k) done; what follows in 17 is the plan / doorbell
         // STRATA_ROUTE_PRIOR=lambda (opt-in, changes the output): the top-10 picked again with a logit bonus for the
         // resident experts; the weights stay the router's (route_prior.cu)
         static const float route_prior = [] { const char* v = std::getenv("STRATA_ROUTE_PRIOR"); return v ? (float) std::atof(v) : 0.0f; }();
@@ -2246,9 +2247,10 @@ std::string Verifier::profile_report() {
     if (!prof_on_ || prof_windows_ == 0) return std::string();
     static const char* names[kProfPer] = {"-", "hc-read0", "q8+qkv/q-idx gemv", "conv", "ab", "z", "rec", "q8+kv-idx",
                                           "k/v+norm-rope", "kv+idx append", "q+q-idx", "scores+topk", "kv-resolve",
-                                          "attention", "gate", "", "out-proj", "router+plan+bell", "shared+quant",
+                                          "attention", "gate", "", "out-proj", "plan+bell", "shared+quant",
                                           "waitA", "VRAM hits", "waitB", "PCIe grp", "waitCPU", "copy+combine",
-                                          "(gap)", "head", "  hc0 norm", "  hc0 down", "  hc0 up", "  hc1 norm", "  hc1 down", "  hc1 up"};
+                                          "(gap)", "head", "  hc0 norm", "  hc0 down", "  hc0 up", "  hc1 norm", "  hc1 down", "  hc1 up",
+                                          "router (proj+topk)"};
     std::string out;
     char b[80];
     double total = 0;
@@ -2614,6 +2616,8 @@ void Verifier::accumulate_profile(const unsigned long long* stamps) {
                 prof_sum_[kind][32] += u1;
                 prof_sum_[kind][17] -= gap(at(l, 32), at(l, 16));
             }
+            const double rt = gap(at(l, 33), at(l, 32));   // of what is left of 17: the projection + top-k
+            if (u1 > 0 && rt > 0) { prof_sum_[kind][33] += rt; prof_sum_[kind][17] -= rt; }
         }
         if (l + 1 < le_) prof_sum_[kind][25] += gap(at(l + 1, 0), at(l, 24));
         const double dn = gap(at(l, 27), at(l, 0)), dd = gap(at(l, 28), at(l, 27)), du = gap(at(l, 1), at(l, 28));
