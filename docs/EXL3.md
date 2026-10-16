@@ -450,6 +450,52 @@ The prompts answer correctly, with and without PLE:
 
 `--stop-eos` stops at `<|im_end|>`; without it the sampler keeps going past the end of the turn.
 
+## The same model on other machines
+
+The numbers in this section are not this engine's.  They are validated runs from
+[`sybil-solutions/local-ai-registry`](https://github.com/sybil-solutions/local-ai-registry), which downloads each
+recipe at a pinned revision, checks it, runs it and publishes the result (its `proof` blocks carry the launch and
+log hashes; its speed gate estimates tokens as characters/4 where an engine has no tokenize endpoint, so those
+numbers are approximate).  They are here because the same EXL3 weights and the same GGUF packs run there, and the
+comparison says what this model needs and where this path sits in it.
+
+| engine and weights | machine | RAM | measured | how the experts are held |
+| --- | --- | --- | --- | --- |
+| SGLang + trellis-serve, EXL3 3.05bpw (this model) | RTX 3090 24 GB, NVMe | 75 GB | decode 62.7 tok/s (one stream), prefill 2,627-2,846 tok/s | 45.8 GB page-locked in RAM behind a GPU cache, an 8 GB n-gram row cache, the 32.6 GB table on the NVMe |
+| SGLang + trellis-serve (XPU), EXL3 3.05bpw | Arc Pro B70 32 GB | 128 GB | 64K context, no NVMe tier | every routed expert and the whole n-gram table in host RAM |
+| TabbyAPI, EXL3 2.05bpw (ng4) | RTX PRO 4500 Blackwell 32 GB | - | 256K context | `ngram_ram: true`, `cpu_moe_split_experts: 128` (the split chosen from measured free memory), `draft_model: mtp` |
+| Strata (GGUF IQ3_S) | RTX 3090 24 GB, NVMe | 57 GB | decode 75.0 tok/s, prefill 2,174 tok/s | `--low-ram off`: the experts the GPU cache does not hold are copied into a host arena at start |
+| Strata (GGUF Q2_0) | RTX 3090 24 GB, NVMe | 41 GB | decode 99.7 tok/s, prefill 2,664 tok/s | same |
+| Strata (GGUF Coder IQ1_M, resident) | RTX 5070 12 GB | 18.6 GB | decode 30.1 tok/s, prefill 807 tok/s | the resident set is sized from MemAvailable minus 4 GiB and page-locked |
+
+**Every fast configuration holds the experts in RAM.**  The SGLang rows keep them page-locked in host RAM behind a
+GPU cache; the Strata rows are this engine's GGUF path on other cards, and all three run its low-RAM mode, where
+serving reads no expert from the SSD.  This path is the slow row of that comparison: the same 3.05bpw experts read
+from a SATA SSD whenever the routing asks for one the VRAM cache does not hold, which is what the sections above
+measure at 20-62 ms per token.  The registry's floors say it in one number each: 75 GB of RAM for the 3090 with the
+n-gram table on the NVMe, 128 GB for the B70 with the table in RAM too, 57 and 41 GB for the GGUF packs whose
+tables stay on the SSD.
+
+**This machine is one size below the floor.**  The 3.05bpw experts are 45 GB against 24.5 GiB of free VRAM and
+about 20 GB of usable RAM, so the whole set cannot be resident here.  The 2.05bpw repack is the size that fits:
+its directory is 62.82 GB including a 26.24 GB n-gram table (ng4, against this machine's ng5 at 32.6 GB), so its
+model shards are ~36.6 GB and its routed experts are roughly two thirds of this one's 45 GB.  The same registry's
+TabbyAPI recipe runs exactly that repack on a 24 GB board with the n-gram table in RAM and a CPU split of the
+experts.
+
+**MTP is in this checkpoint.**  The EXL3 directory carries the whole MTP layer, quantized in EXL3 as well:
+`mtp.fc_hidden`, `mtp.fc_embedding`, the `mtp.layers.0.self_attn.*` block with its indexer, the 512-expert
+`mtp.layers.0.mlp.*` with its shared expert, and the hyper-connections, plus the F16
+`mtp_hyper_connection_mixer_patch.safetensors`.  TabbyAPI's validated recipe for this model runs it
+(`draft_model: mtp`).  Strata's drafter loads from a native runtime directory and needs the native head, so
+pointing it at the EXL3 tensors is future work; on the GGUF path the same drafter took Unsloth's UD-IQ1_S from
+20.7 to 37-38 tok/s on this card (the UD-IQ1_S notes in docs/DETAILS.md).
+
+On a machine whose RAM does cover the expert set, `--expert-ram-cache N` is this path's equivalent of those
+host arenas: it keeps read experts in host RAM, so a miss that is not a first read copies over PCIe instead of
+going back to the SSD.  It is off by default because this card measured 0% hits at 19.5 GiB: its misses were
+compulsory first-time experts, and no cache serves a first read.
+
 ## Tokenizer
 
 The EXL3 model ships HuggingFace tokenizer files, but the tokenizer is the **same byte-level BPE as the
