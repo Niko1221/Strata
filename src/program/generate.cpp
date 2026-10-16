@@ -12574,6 +12574,29 @@ int main(int argc, char** argv) {
                                  k + 1, (long long) (k < now.size() ? now[k].start : -1));
                 }
             }
+            // STRATA_BRANCH_CHECKPOINT (the read cuts below): how far this prompt runs along a conversation the engine
+            // holds - the main session's or a slot's - before it leaves it.  Measured here, before the park and the
+            // restore change what they hold.
+            static const int64_t branch_margin = [] {
+                const char* v = std::getenv("STRATA_BRANCH_CHECKPOINT");
+                return v != nullptr ? std::max<int64_t>(0, std::atoll(v)) : (int64_t) 0;
+            }();
+            int64_t branch_shared = 0;
+            int branch_from = -2;   // the slot it leaves, -1: the main session's conversation
+            if (branch_margin > 0 && o.prompt_cache > 0 && req_imgs.empty()) {
+                auto leaves = [&](const std::vector<int32_t>& held, int from) {
+                    const int64_t c = strata::program::shared_prefix(ids, held);
+                    if (c < (int64_t) held.size() && c > branch_shared) {
+                        branch_shared = c;
+                        branch_from = from;
+                    }
+                };
+                if (live_ok && live_imgs.empty() && cvec_cached == want_cvec) leaves(live, -1);
+                for (int b = 0; b < (int) bs.size(); ++b) {
+                    const BSlot& sl = bs[(size_t) b];
+                    if ((sl.cached || sl.active) && !sl.img && sl.cvec == want_cvec) leaves(sl.ids, b);
+                }
+            }
             const auto parked = conversations.best(ids, req_imgs, want_cvec);
             std::optional<strata::core::SavedConversation> incoming;
             // A checkpoint inside ANOTHER parked conversation (a sibling subagent's system prompt and tools, say) is
@@ -13985,11 +14008,28 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: pin=%lld: the cache has no checkpoint there to pin (it resumed from "
                                  "%lld)\n", (long long) req_pin, (long long) read_from);
             }
-            std::vector<int64_t> cuts = {reread_to, root_at, message_at, turn_at, n - 1};
-            if (pin_at >= 0) {
-                cuts.push_back(pin_at);
-                std::sort(cuts.begin(), cuts.end());   // the skipped -1s first, n - 1 still last
+            // STRATA_BRANCH_CHECKPOINT=<margin> (opt-in): one more place the prompt is read to and checkpointed -
+            // where it leaves a conversation the engine holds (branch_shared above), when that is at least <margin>
+            // tokens past where the read starts and before the turn boundary.  A client that rewrites the end of its
+            // history every time (Claude Code's safety classifier inserts each query's tool calls before the closing
+            // text of its transcript) leaves the last query a few dozen tokens before its end: its turn checkpoint is
+            // past that point, so each query read its whole transcript (2026-10-16: 42-74K tokens, 15-27 s).  With a
+            // checkpoint at the point it left, the next query - which leaves this one later - reads only the rest.
+            const int64_t branch_at = req_ckpt ? strata::program::branch_checkpoint_boundary(branch_shared, read_from,
+                                                                                            turn_at, n, branch_margin)
+                                               : -1;
+            if (branch_at >= 0) {
+                char from_txt[32];
+                std::snprintf(from_txt, sizeof(from_txt), branch_from >= 0 ? "slot %d's" : "the main session's",
+                              branch_from);
+                std::fprintf(stderr, "strata serve: branch checkpoint at %lld: the prompt leaves %s conversation there "
+                                     "(read from %lld)\n", (long long) branch_at, from_txt, (long long) read_from);
             }
+            std::vector<int64_t> cuts = {reread_to, root_at, message_at, turn_at, n - 1};
+            if (pin_at >= 0) cuts.push_back(pin_at);
+            if (branch_at >= 0) cuts.push_back(branch_at);
+            if (pin_at >= 0 || branch_at >= 0)
+                std::sort(cuts.begin(), cuts.end());   // the skipped -1s first, n - 1 still last
             int64_t at = read_from;
             // STRATA_ADMIT_MERGE_FIRST: the last part, when it goes through the windows, leaves its last tokens (up to
             // max_t with the last prompt token) to the first window, which starts at merge_at (-1: the first window
@@ -14072,8 +14112,9 @@ int main(int argc, char** argv) {
                     break;
                 }
                 at = to;
-                if ((to == turn_at || to == root_at || to == message_at || to == pin_at) &&
-                    !checkpoint_at(to, nullptr, to == message_at && to != turn_at && to != root_at && to != pin_at)) {   // the tail kind leaves first
+                if ((to == turn_at || to == root_at || to == message_at || to == pin_at || to == branch_at) &&
+                    !checkpoint_at(to, nullptr, to == message_at && to != turn_at && to != root_at && to != pin_at &&
+                                                to != branch_at)) {   // the tail kind leaves first
                     std::printf("ERR saving a conversation checkpoint failed%s\n", ckpt_why.c_str());
                     return 1;
                 }
