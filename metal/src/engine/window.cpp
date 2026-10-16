@@ -662,6 +662,15 @@ void Window::gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const A
         else if (ty == ref::Q5_K && n_in == 6144) { L = 2; Rr = 1; S = 4; K = 1; }
         else if (ty == ref::Q8_0 && n_in == 640) { L = 4; Rr = 2; S = 4; K = 1; }
     }
+    if (const char* e = std::getenv("STRATA_METAL_GEMV_TILE"))   // A/B tiles on M1: "nmin,nmax,L,Rr,S,K;..." (-1 = open)
+        for (const char* p = e; *p;) {
+            int a0, a1, b0, b1, b2, b3;
+            if (std::sscanf(p, "%d,%d,%d,%d,%d,%d", &a0, &a1, &b0, &b1, &b2, &b3) != 6) break;
+            if ((a0 < 0 || n_in >= a0) && (a1 < 0 || n_in <= a1)) { L = b0; Rr = b1; S = b2; K = b3; }
+            const char* s = std::strchr(p, ';');
+            if (!s) break;
+            p = s + 1;
+        }
     {
         // windows of several tokens: NR rows a lane share each x load (the window's cost is its x traffic).  The sums
         // run in the same order for any NR, so the answers do not change.  STRATA_METAL_GEMV_NR (1, 2): the tile.
@@ -927,7 +936,9 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         // the trellis gate/up: 16 lanes a row, 2 rows a lane (expert_parity --bench --sweep, M4, TQK6, 10 experts: 166.6 us a layer
         // against 174.5 for 32,2,4 and 196.8 for 32,1,4; also the fastest at 2 and 3 tokens)
         const bool tq_ = tg_.type >= 144;
-        const int gl = tq_ ? 16 : 32, gr = tq_ ? 2 : 1, gs = 4, ds_ = 4;
+        int gl = tq_ ? 16 : 32, gr = tq_ ? 2 : 1, gs = 4, ds_ = 4;
+        if (const char* e = std::getenv("STRATA_METAL_MOE_TILE"))   // A/B tiles on M1 (gl,gr,gs,ds); default = M5's pick
+            std::sscanf(e, "%d,%d,%d,%d", &gl, &gr, &gs, &ds_);
         // the down tile: Q2_0 8,1; else 4,2 - but on the M4 (no M5 layout) Q5_1 4,1 and Q8_0 8,1 (4,2 spills there:
         // 24-36 GB/s, mac-kern 513fc615)
         const bool m4 = !m5_layout();
@@ -2404,9 +2415,14 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
                mtl::Arg::B(p.al), mtl::Arg::B(p.be), mtl::Arg::B(W_, TN(b + "ssm_dt.bias").offset), mtl::Arg::B(W_, TN(b + "ssm_a").offset),
                mtl::Arg::B(p.gqn), mtl::Arg::B(p.gkn), mtl::Arg::B(p.gvc), mtl::Arg::B(p.ggb), mtl::Arg::B(p.gkq),
                mtl::Arg::B(ghist_[1 - hp_][(size_t) gi]), mtl::Arg::V(ga)}, 16 + 24, T, 256);
-            D(PP(p.lgdn, "gdn_scanr_4", mtl::Constants().i(6, 0), "gdn_scanr_4"),
+            // STRATA_METAL_GDN_SCAN: A/B the prompt-scan variant on M1 (engine default scanr_4; scan_v = <8,16> rows)
+            static const std::string gs = std::getenv("STRATA_METAL_GDN_SCAN") ? std::getenv("STRATA_METAL_GDN_SCAN") : "scanr_4";
+            int g_ib = 4, g_gx = 48 * 4;
+            if (gs == "scanr_2") g_ib = 2; else if (gs == "scanr_8") g_ib = 8; else if (gs == "scan_v") g_ib = 8;
+            else if (gs == "scan_2") { g_ib = 2; g_gx = 48 * 2; } else if (gs == "scan_4") { g_ib = 1; g_gx = 48; }
+            D(PP(p.lgdn, "gdn_" + gs, mtl::Constants().i(6, 0), "gdn_" + gs),
               {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(p.gqn), mtl::Arg::B(p.gkn), mtl::Arg::B(p.gvc), mtl::Arg::B(p.ggb),
-               mtl::Arg::B(p.gkq), mtl::Arg::B(p.go), mtl::Arg::V(ga)}, 48 * 4, 1, 32 * 4);
+               mtl::Arg::B(p.gkq), mtl::Arg::B(p.go), mtl::Arg::V(ga)}, g_gx, 1, 32 * g_ib);
             D(PP(p.lgdn, "gdn_post"), {mtl::Arg::B(p.go), mtl::Arg::B(p.z), mtl::Arg::B(W_, TN(b + "ssm_norm.weight").offset),
                                        mtl::Arg::B(p.ygh), mtl::Arg::B(p.yg), mtl::Arg::V(ga)}, 48, T, 128);
             gemm(p.ygh, p.Wout, p.bo, T, N, 6144);

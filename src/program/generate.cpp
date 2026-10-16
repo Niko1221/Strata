@@ -1533,7 +1533,14 @@ bool adapt_overlap() {
         // decode on an A4000, +4.4% on a P100) until an RTX 5090 Laptop (WSL2, Core Ultra 9 275HX, native IQ3_XXS pack,
         // --expert-cache-per-layer) decoded 21% slower with it: 84.6 vs 106.6 tok/s medians of 5 generations of 256
         // tokens from one build, the slowest of the fast run above the fastest of the slow one.
-        return e && e[0] == '1';
+        // This fork: on by default on Metal.  An M1 Max decoded 24..28% faster with it (tg128, IQ3_XXS pack, t357
+        // prompt, medians of paired runs; same tokens - only when the copies land changes).  CUDA stays opt-in (#2010).
+#if defined(STRATA_GPU_METAL)
+        const bool dflt = true;
+#else
+        const bool dflt = false;
+#endif
+        return e ? e[0] == '1' : dflt;
     }();
     return v;
 }
