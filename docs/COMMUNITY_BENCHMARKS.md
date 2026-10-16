@@ -45,6 +45,11 @@ and their limits. Report what you actually measured and label estimates separate
   (medians). Prompt is power-limited (70 W package limit); needle 15/15, agentic 5/5.
 - [2026-10-09: RTX 3060 12 GB, Core i7-12700, 64 GB RAM](../bench/results/2026-10-09-community-rtx-3060-0141/README.md):
   Strata v0.1.41 official Windows release, original Flash-Next Q2_0, IQ2_XS, IQ3_XXS and IQ3_S; prompt sweep from 128 to 128K tokens (260K for three of the four), plus recall, HumanEval 0-39, cache, MTP and concurrency checks.
+- [2026-10-16: 4x AMD Radeon (gfx1201, Device 0x7551), EPYC 7452, 220 GB RAM](../bench/results/2026-10-16-community-4x-unknown-qwen3-8-flash-next-unsloth-ud-q5-k-xl/README.md):
+  Strata 0.1.44.1 Linux HIP, UD-Q5_K_XL, 262,144-token context, layer split across 4 GPUs, every expert in RAM.
+  Official `tools/strata_bench.py --long` against the running server: short-chat decode 45.1 tok/s, fresh prompts
+  1,228 / 2,048 / 2,687 tok/s at 4K / 16K / 32K (TTFT 3.31 / 7.89 / 12.0 s), agent session 68.6 % cache hit,
+  44.9 tok/s decode, 74 re-read tokens per session. 3 runs each, medians; speed only, no correctness run.
 - [2026-10-10: AMD Radeon RX 9070 16 GB (gfx1201), Ryzen 7 5800X3D, 64 GB RAM](../bench/results/2026-10-10-community-rx-9070/README.md):
   Strata 0.1.41 prebuilt Windows HIP engine, Flash-Next IQ3_XXS, 131,072-token context; three runs each at 4,195,
   33,467 and about 130,000 prompt tokens with a 256-token cap, plus six recall checks. Decode 58.7/57.9/57.9 tok/s,
