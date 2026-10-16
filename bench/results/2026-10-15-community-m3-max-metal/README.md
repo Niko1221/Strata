@@ -84,6 +84,26 @@ warns that the prompt path allocates its own buffers. Raising the cache also doe
 design: Metal reads experts in place from the mapped file, so there is no bus to save. In an earlier session
 `--expert-cache 16384` made 40.62 GiB of cache, RSS 90.4 GB and 5.7 GB of swap, with decode unchanged.
 
+`--batch 2`, `--batch 3` and `--batch 4` (also spelled `--slots`) start without a complaint: the engine builds the slot
+sessions (1.73 GiB each, 6.91 GiB for four) and prints `strata verify: batch windows of up to 4 sequences`. The first
+request that runs two sequences together stops the process:
+
+```text
+strata batch: slot 0 takes 67 tokens (copied in 12.7 ms)
+strata metal: strata::kernels::pdl_supported has no Metal implementation yet
+```
+
+The exit code is 86, which `metal/src/engine/missing.cpp` documents as its default. The server restarts the engine,
+which costs one to three minutes, and the requests behind it fail the same way. Through `tools/serve_load.py`,
+`--clients 4 --rounds 3 --max-tokens 256`: four requests return 2 tokens each in about 5 s (0.4 tok/s total) where one
+client in the same run gets 44.2 tok/s. `STRATA_METAL_STUBS=log` shows the distance to a working path: the batch route
+reaches 17 entry points with no Metal implementation, `pdl_supported` and `pdl_scope` first, then the multi-row family
+a batched window would need (`fused_gr_read_multi`, `gdn_conv_l2_multi`, `gdn_ab_multi`, `gdn_step_norm_multi`,
+`shared_expert_multi`, `broadcast_streams`) and the pool side (`doorbell_publish_res`, `copy_from_mapped`,
+`copy_i32_from_mapped`). That mode leaves outputs unwritten on purpose, so the answers are meaningless.
+docs/MAC.md says `--parallel` is not ported; on 0.1.44.1 the flag is `--batch`, and the engine accepts it and dies
+mid-request instead of stopping at boot the way `--kv int8` does.
+
 `COOP_K4=1` forces the M5 cooperative tensor layout and the output goes wrong. Paired runs at temperature 0, taken in
 the throttled session, since correctness does not depend on power: recall of a code word hidden at mid depth in 9,106
 tokens returned correctly at defaults and produced no answer in 1,200 tokens with the flag set, and an arithmetic
@@ -276,3 +296,7 @@ install, so a clean first install on 0.1.44.1 on this hardware is unverified.
 - docs/MAC.md: `rt_bench bw` is already in the repo and it is what let me read my own numbers. A decode tok/s on its
   own does not say how close a Mac is to its read ceiling, and every table here is with a drafter on; a no-drafter row
   and the machine's `rt_bench bw` figure belong next to them.
+- docs/MAC.md, and the engine: `--batch` on Metal. The doc line names `--parallel`, which no longer exists; the flag
+  today is `--batch`, the engine accepts it, builds 1.73 GiB of slots per sequence and then exits with code 86 on the
+  first request that runs two together. Refusing it at boot, the way `--kv int8` stops there, is kinder than a restart
+  between requests.
