@@ -132,6 +132,67 @@ defaults. What the M3 seems to be missing, in my reading, is a tuning pass for f
 families 7 and 8: pure decode here already runs at 70% of the read bandwidth this GPU reaches in `rt_bench`, so the
 remaining 30% looks like per step scaling rather than a flag that is switched off.
 
+## The resident prompt chain: which switches reach it, and what its GEMMs cost
+
+A resident pack does not run the prompt code that `STRATA_METAL_PROMPT_GEMM` is written into. That variable, and the
+dense GEMM tile beside it, are read in `Window::prompt_chunk` (`metal/src/engine/window.cpp:2108`, the tile at
+`window.cpp:2162`), which the engine enters only when the experts stream from the SSD (`window.cpp:2566`). A resident
+model runs `Window::prompt` (`metal/src/engine/prompt_chain.inc:394`), which keeps its own copy of the tile choice
+(`prompt_chain.inc:151`) and its own chunk size (`prompt_chain.inc:397`). My first sweep of this went into the wrong
+function: `STRATA_METAL_PROMPT_GEMM=0` gave 475.3 and 473.7 tok/s against 478.3 and 479.7 in the same session, which is
+one unchanged path timed twice. The switch that does reach the resident chain is `STRATA_METAL_PROMPT=window`, which
+sends prompts back through the 8 row decode window.
+
+The next table is `--tokens-file` one-shots of 16,383 tokens with `--max-new 8`, two runs per row unless noted, one boot
+per run, high power, the `296b59d` binary with a local knob whose default is the shipped tile. They run 2 to 5% under
+the 504 tok/s quoted at the top of this report, which came from a different day; every row of one table was measured in
+one session, and the default row appears twice, at a 470.5 mean in one table and 477.4 in the next, which is about the
+1.5% session drift I can see between sessions.
+
+| the prompt path and its tile | prompt tok/s, two runs |
+| --- | --- |
+| as shipped: dense `gemm_f16_64_64_4`, experts 16_64_16_2 | 475.0 and 466.1 |
+| `STRATA_METAL_PROMPT=window`, eight rows at a time | 79.5, one run |
+| dense `gemm_f16_128_64_4` | 443.9 and 448.0 |
+| dense `gemm_f16_64_128_4` | 445.7 and 456.4 |
+| dense `gemm_f16_64_32_4` | 467.9 and 471.7 |
+| experts `mm_gu2` and `mm_down2` at 16_64_32_2 | 445.7 and 454.0 |
+| experts at 16_64_64_2 | 385.2 and 403.1 |
+
+The matrix units are worth 5.9x on this prompt. The tiles around them are already chosen well: the shipped dense tile
+ties with `64_32` (0.2%), beats `64_128` by 3% and `128_64` by 5%; the shipped expert tile beats 16_64_32_2 by 3% and
+16_64_64_2 by 15%. The two expert rows were paired in a second session, whose default row read 463.0 and 466.1, so
+those two rows are the ones to compare with each other. This pack's expert matrices are IQ3_XXS, IQ2_S, IQ3_S and two
+IQ4_XS gate and up tensors, and IQ4_NL and Q2_0 down tensors; `gu2_tile` and `dn2_tile` give 16_64_16_2 to all but the
+41 of them that already ask for TK 32, so the 16_64_32_2 row moves the other 103. Asking for a TK that `moe_mm.metal`
+does not instantiate stops the run at the pipeline lookup (`mtl: no function mm_gu2_18_16_64_99_2`), which is a useful
+thing to know before anyone suggests a tile environment variable. All four variants I could run produced the same 200
+greedy ids as the default on a 37 token prompt, tile and chunk both.
+
+Chunk size does apply on a resident model, and it moves the wrong way. Two runs per row averaged, `STRATA_METAL_PROFILE=1`
+on every run so the chain's own split is on the table, and the boot line confirms the setting (`prompt kernels ... for
+chunks of 4096 rows`):
+
+| `STRATA_METAL_PROMPT_CHUNK` | prompt tok/s | wall ms | GPU ms | host rows ms | drafter rows ms |
+| --- | --- | --- | --- | --- | --- |
+| 2,048, as shipped | 477.4 | 34,129 | 27,861 | 4,083 | 2,097 |
+| 4,096 | 425.6 | 38,143 | 27,038 | 7,028 | 2,097 |
+| 8,192 | 378.8 | 42,575 | 26,548 | 12,736 | 2,080 |
+
+docs/MAC.md measures 2 to 4% from 4,096 instead of 2,048 on a resident Q2_0 model; on this IQ3_S pack it costs 11% and
+8,192 costs 21%. The chain says why: the longer chunk saves at most 5% of the GPU time (27.9 s to 26.5 s) and triples
+the host rows work (4.1 s to 12.7 s).
+
+What the GPU is carrying, from the element join above: a chunk of 2,048 rows is 20.27 TFLOP of dense matmul plus 9.66
+TFLOP of routed expert matmul, 29.93 TFLOP, and a 16,383 token prompt is eight chunks, 239.4 TFLOP. At the default chunk
+the chain reports 27.9 s of GPU time for that, which is 8.6 TFLOP/s. Priced at `mm_bench`'s own rates, 162.2 TFLOP of
+dense at 12.4 to 13.1 TFLOP/s is about 12.7 s and 77.3 TFLOP of experts at the 7.0 TFLOP/s it measures at 48 rows for
+one expert is 11.0 s, so 23.7 s of the 27.9 s window, and about 4 s is the QSA pass over the chunk, the GDN scan, the
+hyper connection reads and the weight staging (the chain reserves 2,400 dispatches per chunk,
+`prompt_chain.inc:147`). Read that way the prefill headroom on this machine is tens of percent, not the 1.8x the raw
+matrix peak comparison suggests, and I cannot say where the 4 s goes: `STRATA_METAL_KPROF` profiles the decode window
+only, and nothing in the repo splits a prompt chunk by kernel.
+
 ## The drafter is on in every decode number here
 
 Setup writes `--spec 2` with the MTP draft layer and the suffix drafter on, so 58 tok/s counts accepted tokens rather
@@ -184,13 +245,20 @@ So the shape of a fix, in the order I would try it:
 
 `metal/tests/mm_bench.cpp` on this machine, no changes: fp16 `matmul2d` reaches 12.0 to 13.3 TFLOP/s on a square
 4096 cubed and 12.4 to 13.1 TFLOP/s on the model's own dense shape (2048 tokens by 10240 by 2560). On the expert
-shapes it is 9.5 to 11.1 TFLOP/s with 128 tokens in a batch, and only 2.0 to 3.1 TFLOP/s with 16 tokens.
+shapes it is 9.5 to 11.1 TFLOP/s with 128 tokens in a batch and 2.0 to 3.1 TFLOP/s with 16. At 48 tokens, which is about
+the number of rows one expert of one layer gets inside a chunk of 2,048 prompt rows, it is 7.0 TFLOP/s for a single
+expert and 11.2 to 11.4 TFLOP/s when several experts' 48 row groups are multiplied as one shape. The tile moves that
+48 row single expert shape between 1.98 and 7.05 TFLOP/s.
 
-Weight elements per token, from the same inventory as the byte count: 6.67 G, so 13.34 GFLOP per token of matmul.
-That puts prefill at 504 tok/s at 6.7 TFLOP/s, about 51% of the measured matrix peak, and pure decode at 48.5 tok/s
-at 0.65 TFLOP/s, about 5%. The decode figure is not waste: with one token per step there is nothing to multiply, and
-`mm_bench` shows the units already fall to a fifth of peak at a batch of 16. Batching is what would let this GPU do
-the arithmetic rather than only the reading, which is the same conclusion the byte count gave.
+Weight elements per token, joined from the GGUF tensor table this time: 7.31 G, of which 4.95 G is dense weights and
+2.36 G the routed experts (10 of 512 in each of 48 layers, 4.915 M elements in one expert's gate, up and down), so
+14.61 GFLOP of matmul per generated token. The 6.67 G that was in this paragraph came from dividing the pack's byte
+counts by an element size, which loses the bf16 and f32 tensors: the hyper connections are 1,224 MiB of bf16 and f32 in
+the GGUF against the 648 MB Q8_0 copy the engine reads. The byte table above stands, the element count did not. Prefill
+at 504 tok/s is then 7.4 TFLOP/s, about 56% of what the same units give on the model's own dense shape, and pure decode
+at 48.5 tok/s is 0.71 TFLOP/s, about 5%. The decode figure is not waste: with one token per step there is nothing to
+multiply, and `mm_bench` shows the units already fall to a fifth of peak at a batch of 16. Batching is what would let
+this GPU do the arithmetic rather than only the reading, which is the same conclusion the byte count gave.
 
 The Apple Neural Engine is not in the picture at all for this backend: `ANE`, `CoreML`, `MPSGraph`, `Espresso` and
 `H16` do not appear anywhere in `metal/src`, `serve` or `docs/MAC.md`, and Strata is a Metal compute engine. I could
@@ -300,3 +368,11 @@ install, so a clean first install on 0.1.44.1 on this hardware is unverified.
   today is `--batch`, the engine accepts it, builds 1.73 GiB of slots per sequence and then exits with code 86 on the
   first request that runs two together. Refusing it at boot, the way `--kv int8` stops there, is kinder than a restart
   between requests.
+- docs/MAC.md, or the names: which prompt variables belong to the streaming path. On a resident pack
+  `STRATA_METAL_PROMPT_GEMM` and `STRATA_METAL_PROMPT_GEMM_MIN` are read in code the engine never runs, while
+  `STRATA_METAL_PROMPT_CHUNK` and `STRATA_METAL_PROMPT_EXPERTS` do apply. A reader with a resident model can spend an
+  afternoon on a switch that is not wired to the path they are on, and the names do not say so.
+- `STRATA_METAL_PROFILE=1` prints a prompt's wall, GPU, host rows and drafter rows split
+  (`metal/src/engine/prompt_chain.inc:417`); it is how I found that a longer chunk saves GPU time and pays in host
+  work. It belongs in the same paragraph as `STRATA_METAL_KPROF`. A prompt side version of KPROF, one that splits a
+  chunk by kernel class, is what is missing to say where the few seconds of a chunk that the GEMMs do not explain go.
