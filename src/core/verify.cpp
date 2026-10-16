@@ -173,6 +173,20 @@ inline bool g_qfuse_hc() {
     return false;
 #endif
 }
+// The verify window's non-native router in one launch pair per layer (moe_route_window) instead of a pair per
+// token.  On by default on HIP (gfx906 before; every HIP card now - bitwise on gfx1201 by route_window_parity and
+// the decode's output); STRATA_ROUTE_WIN=0 turns it off.  CUDA: opt-in (STRATA_ROUTE_WIN=1), not measured there yet.
+inline bool route_window_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_ROUTE_WIN");
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+        return v == nullptr || v[0] != '0';
+#else
+        return v != nullptr && v[0] == '1';
+#endif
+    }();
+    return on;
+}
 inline bool g_qfuse() { static const bool on = [] { const char* v = std::getenv("STRATA_QFUSE"); return v != nullptr && std::atoi(v) != 0; }(); return on; }
 #define VDBG(...) do { if (g_dbg) { std::fprintf(stderr, "verify dbg: " __VA_ARGS__); std::fflush(stderr); } } while (0)
 
@@ -1481,21 +1495,22 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                           NE, n, cs);
                 native_router_top10_multi(logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, n, cs);
             } catch (const std::exception& e) { err = "verify router: " + std::string(e.what()); return false; }
-#if defined(STRATA_HIP_GFX906)
-        } else if (dec_batch) {
-            // gfx906: the Coder's 256-expert router (the native router is 512 x 10 only) for the whole window in one
-            // multi-column BF16 projection and one top-k, bitwise the per-token calls (route_window_parity); ~3 ms
-            // of a ~55 ms verify window on 2x MI50.  STRATA_ROUTE_PER_TOKEN=1: the per-token calls.
+        } else if (dec_batch && route_window_on()) {
+            // a router the native one does not take (it is 512 x 10 only: the Coder's 256 experts) for the whole
+            // window in one multi-column BF16 projection and one top-k, bitwise the per-token calls
+            // (route_window_parity).  gfx906: ~3 ms of a ~55 ms verify window on 2x MI50; gfx1201 (R9700, Coder
+            // IQ1_M, --spec 4): the routing 3.34 -> 1.39 ms a window, decode +9%.  STRATA_ROUTE_PER_TOKEN=1 or
+            // STRATA_ROUTE_WIN=0: the per-token calls.
             if (!moe_route_window(wt, g, l, K, ss.moe, mixed_ + tb * N, logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, n,
                                   cs, err))
                 return false;
-#endif
         } else
         for (int t = tb; t < te; ++t) {
             MoEBuffers mb = ss.moe;
             mb.logits = logits_ + t * NE; mb.ids = ids_ + t * K; mb.weights = w_ + t * K;
             if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr)) return false;
         }
+        stamp(l, 33, grp);   // the routing (projection + top-k) done; what follows in 17 is the plan / doorbell
         // STRATA_ROUTE_PRIOR=lambda (opt-in, changes the output): the top-10 picked again with a logit bonus for the
         // resident experts; the weights stay the router's (route_prior.cu)
         static const float route_prior = [] { const char* v = std::getenv("STRATA_ROUTE_PRIOR"); return v ? (float) std::atof(v) : 0.0f; }();
@@ -1837,9 +1852,10 @@ std::string Verifier::profile_report() {
     if (!prof_on_ || prof_windows_ == 0) return std::string();
     static const char* names[kProfPer] = {"-", "hc-read0", "q8+qkv/q-idx gemv", "conv", "ab", "z", "rec", "q8+kv-idx",
                                           "k/v+norm-rope", "kv+idx append", "q+q-idx", "scores+topk", "kv-resolve",
-                                          "attention", "gate", "", "out-proj", "router+plan+bell", "shared+quant",
+                                          "attention", "gate", "", "out-proj", "plan+bell", "shared+quant",
                                           "waitA", "VRAM hits", "waitB", "PCIe grp", "waitCPU", "copy+combine",
-                                          "(gap)", "head", "  hc0 norm", "  hc0 down", "  hc0 up", "  hc1 norm", "  hc1 down", "  hc1 up"};
+                                          "(gap)", "head", "  hc0 norm", "  hc0 down", "  hc0 up", "  hc1 norm", "  hc1 down", "  hc1 up",
+                                          "router (proj+topk)"};
     std::string out;
     char b[80];
     double total = 0;
@@ -2200,6 +2216,8 @@ void Verifier::accumulate_profile(const unsigned long long* stamps) {
                 prof_sum_[kind][32] += u1;
                 prof_sum_[kind][17] -= gap(at(l, 32), at(l, 16));
             }
+            const double rt = gap(at(l, 33), at(l, 32));   // of what is left of 17: the projection + top-k
+            if (u1 > 0 && rt > 0) { prof_sum_[kind][33] += rt; prof_sum_[kind][17] -= rt; }
         }
         if (l + 1 < le_) prof_sum_[kind][25] += gap(at(l + 1, 0), at(l, 24));
         const double dn = gap(at(l, 27), at(l, 0)), dd = gap(at(l, 28), at(l, 27)), du = gap(at(l, 1), at(l, 28));
