@@ -1675,14 +1675,13 @@ class StrataEngine:
         stop_sent = False
         yields, solo_again, refused = 0, 0, 0
         admit_wait, admit_since, admit_said = False, 0.0, False   # #1603: waiting for a slot, since when, said
-        protected_since = None
         slot_plan = None    # this request's own placement plan (slot_last_plan is shared: another request's pick can follow)
         park_slot = None    # a slot claimed for the engine park= copy of the main session
         solo_leg = None     # (prompt, len(out)) of a solo leg in flight - what the main session will hold
 
         def choose_slot():
-            nonlocal protected_since, slot_plan
-            chosen, protected_since = self._admission_slot(prompt, protected_since)
+            nonlocal slot_plan
+            chosen = self.pick_slot(prompt)
             slot_plan = getattr(self, "slot_last_plan", None)   # (the caller holds slot_cv)
             return chosen
         try:
@@ -1721,7 +1720,7 @@ class StrataEngine:
                         if (reserved is None and not out and not embeddings and yields < self.YIELDS_MAX and
                                 self._shorter_waiting(len(prompt))):
                             with self.slot_cv:          # the slot the part read will wait in
-                                reserved = self.pick_slot(prompt, allow_eviction=not self.slot_cache_affinity)
+                                reserved = self.pick_slot(prompt)
                                 slot_plan = getattr(self, "slot_last_plan", None)
                                 if reserved is not None:
                                     self.slot_busy[reserved] = True
@@ -1804,7 +1803,7 @@ class StrataEngine:
                                                   f"ending: {sorted(self.slot_releasing)}) (issue #1603)", flush=True)
                                     self._reap_orphan_slots()
                                 if choose_slot() is None:
-                                    self.slot_cv.wait(timeout=0.1 if self.slot_cache_affinity else 1.0)
+                                    self.slot_cv.wait(timeout=1.0)
                             if cancel.is_set():
                                 return
                             if not holding:
@@ -2093,22 +2092,7 @@ class StrataEngine:
         self.cache_event("parked", slot=b, held_tokens=n)
         self._release_park(b)
 
-    def _admission_slot(self, prompt, protected_since):
-        """Called under slot_cv. One bounded protection window per request; ctl is released while waiting."""
-        if not self.slot_cache_affinity:
-            return self.pick_slot(prompt), protected_since
-        now = time.monotonic()
-        allow = protected_since is not None and now - protected_since >= slot_policy.PROTECTION_WAIT_S
-        slot = self.pick_slot(prompt, allow_eviction=allow)
-        if slot is None and getattr(self, "slot_last_plan", None) and self.slot_last_plan.reason == "protected":
-            if protected_since is None:
-                protected_since = now
-                self.cache_event("protection_wait", wait_s=slot_policy.PROTECTION_WAIT_S)
-        if slot is not None and protected_since is not None:
-            self.cache_event("protection_end", slot=slot, waited_s=round(now - protected_since, 3))
-        return slot, protected_since
-
-    def pick_slot(self, prompt: list[int], allow_eviction: bool = True) -> int | None:
+    def pick_slot(self, prompt: list[int]) -> int | None:
         """A free slot for `prompt` (the caller holds slot_cv): the one whose held tokens are the longest start of the
         prompt (the engine then reads only the rest), else an empty one, else the one used longest ago - so the
         conversations other slots hold stay for their next turns.  None: every slot is busy."""
@@ -2116,8 +2100,7 @@ class StrataEngine:
         if gs and self.slot_cache_affinity:
             self.slot_last_plan = slot_policy.place(prompt, self.slot_busy, self.slot_held, self.slot_used,
                 self.slot_order, gs, time.time(), valid=getattr(self, "slot_cache_valid", None),
-                prefill_rate=getattr(self, "prefill_tok_s_mean", None), allow_eviction=allow_eviction,
-                padding_safe=self.slot_padding_safe)
+                prefill_rate=getattr(self, "prefill_tok_s_mean", None), padding_safe=self.slot_padding_safe)
             return self.slot_last_plan.slot
 
         free = [b for b in self.slot_order if not self.slot_busy[b]]

@@ -410,20 +410,17 @@ policy:
   end, `BDONE`), whether its state is intact, the spreading order, the group size, the observed prompt rate and
   whether the engine runs active slots only (`slot_padding_safe=1`). Without that engine capability the server tracks
   from the `BADM` / `BT` / `BDONE` lines which idle slot a later window of its group has padded over, and marks it.
-- An answer "protected" makes the admission wait - the control lines given back, the slots re-checked every 0.1 s -
-  at most `PROTECTION_WAIT_S` once per request, and then ask again allowing an eviction. A cancelled request leaves
-  every slot as it was.
 - With `INFO slot_park=1` the server tracks what the main session holds; when a request is another conversation (the
   first half differs) and the held one has at least `PARK_MIN_TOKENS`, it asks the policy for a slot and sends
   `park=B`; `PARKED` updates that slot's state. A claim the engine did not use is released.
 
 The policy's interface is `place`, `park_destination`, `cache_state`, `superseded_slots`, `reliable_flags`,
-`configure` / `settings` and the constants `PROTECTION_WAIT_S`, `PARK_MIN_TOKENS` (their docstrings say what they
+`configure` / `settings` and the constant `PARK_MIN_TOKENS` (their docstrings say what they
 answer). This part ships them as an interface without a policy: with `STRATA_SLOT_CACHE_AFFINITY=1` (or
 `STRATA_CACHE_TRACE=1`) and no policy they raise `NotImplementedError`; with both off nothing changes.
 
 `/metrics` shows what happened: `live.cache_events` (the last 96: allocation, admission with the tokens reused and
-read, resume and cache source, park claims and `parked`, protection waits, expiries), each request's key, client
+read, resume and cache source, park claims and `parked`, expiries), each request's key, client
 address, slot and cache source in `requests[]`, `live.peer_ip` and `live.solo_*` (the request on the solo path and
 where its cache came from), and for slots the client of the conversation each one holds; with
 `STRATA_SLOT_CACHE_AFFINITY=1` also each idle slot's protection and scores and `live.slot_policy`; with
