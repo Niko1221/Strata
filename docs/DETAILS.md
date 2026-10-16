@@ -1610,6 +1610,14 @@ experts it reads from RAM as they are: the arena, the page-locked copy of the re
 `experts.bin`'s pages in the file cache (`--mmap-experts`), not only page-locked ones. Serve without `--batch`; on a
 layer split every stage has the pool and one stage at a time takes it for a chunk.
 
+**Beside a peer GPU (`--peer-device`, opt-in `STRATA_PF_PEER_CPU=1`).** Peer mode leaves the share off. With the variable
+the CPU takes only experts that neither card computes (not held by the peer, not in its streamed share), its rows go
+between the primary's and the peer's, and the staged chunks go up to 3,072 tokens. RTX 5060 Ti (PCIe 3.0 x8) + RTX 3060
+(x16), Xeon E5-2683 v4, IQ3_XXS, a 161-173K-token agent conversation, tool results read one after another
+(`STRATA_PREFILL_TIMING`): 117-132 tokens 1.80-1.92 -> 1.16 s, 325-335 2.12-2.89 -> 1.36-1.63 s, 524 3.33 -> 1.99 s, 1,067
+3.74 -> 2.64 s, 2,012 4.33 -> 4.22 s, 3.2-3.5K unchanged; the chain of 12 reads 36.0 -> 29.7 s (the base twice: 36.1,
+36.0). Only that rig measured.
+
 **0.1.42: not armed by default when memory is short.** A 0.1.41 report (RTX 5090, RAM already tight) had chats failing and the engine restarting until `STRATA_PREFILL_CPU_SHARE=0` was set. The default is now skipped, with one line in the log saying why, when the RAM this process can get (the cgroup limit counts on Linux) is below the share's own buffers plus 3 GiB, when on Windows the commit limit (RAM + page file) has less than 4 GiB left beyond them, or when the experts it would read are file pages (the mapped `experts.bin` outside the GPU cache and the RAM copy) that the free RAM plus 3 GiB cannot keep. An explicit `STRATA_PREFILL_CPU_SHARE=auto` (or a number) is kept and only warns. The share's two page-locked buffers (about 50 MB) are now taken once, at their largest, and a failed allocation ends the share for that run instead of failing the request.
 
 When on, the CPU's rows are computed in the CPU's own activation format, so the output changes in the last bits (first
