@@ -1712,6 +1712,42 @@ void gdn_conv_commit(float* history, const float* qkv, int channels, const int32
     check("gdn_conv_commit");
 }
 
+template <class Name, class R, class F> void gdn_launch(sycl::queue* q, R range, F f);   // defined below
+// The commit of all GDN layers of a window in two launches instead of two per layer (A770: 36 layers x 2 kernels of ~31 us
+// and ~6 us, each a few hundred work-groups; together they fill the GPU). Layer i = work-group dimension 0; each layer runs
+// gdn_conv_commit_kernel / gdn_state_replay_kernel unchanged on its own buffers: the per-layer commit's bits.
+bool gdn_commit_replay_layers(float* state0, int64_t state_stride, int64_t conv_off, const float* qkv0, const float* h0,
+                              int64_t qkv_stride, const float* gate0, const float* beta0, int64_t gb_stride, int conv_channels,
+                              int h_k, int h_v, int n_tok, int n_layers, const int32_t* n_keep, void* stream) {
+    if (n_layers <= 0) return true;
+    // the per-layer commit (gdn_step_norm_multi, t_out_begin >= n_tok) takes gdn_state_replay_kernel only on the split path
+    static const bool split = [] {
+        const char* v = std::getenv("STRATA_GDN_SPLIT");
+        if (v != nullptr) return v[0] == '1';
+        return strata::intel_gpu_gen(dpct::get_in_order_queue().get_device()) == strata::IntelGpuGen::Alchemist;
+    }();
+    if (!split || n_tok < 1 || n_tok > kVerifyMaxT || h_k <= 0 || h_v % h_k) return false;
+    sycl::queue* q = strata::q_of(stream);
+    const int C = conv_channels;
+    const unsigned cb = (unsigned) ((C + 255) / 256);
+    q->parallel_for<dpct_kernel_name<class gdn_conv_commit_layers>>(
+        sycl::nd_range<3>(sycl::range(n_layers, 1, cb) * sycl::range(1, 1, 256), sycl::range(1, 1, 256)),
+        sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync},
+        [=](sycl::nd_item<3> it) {
+            const size_t L = it.get_group(0);
+            gdn_conv_commit_kernel(state0 + L * state_stride + conv_off, qkv0 + L * qkv_stride, C, n_keep);
+        });
+    gdn_launch<dpct_kernel_name<class gdn_state_replay_layers, dpct_kernel_scalar<kVerifyMaxT>>>(q,
+        sycl::nd_range<3>(sycl::range(n_layers, S / GS_COLS, h_v) * sycl::range(1, RG, GS_COLS), sycl::range(1, RG, GS_COLS)),
+        [=](sycl::nd_item<3> it) {
+            const size_t L = it.get_group(0);
+            gdn_state_replay_kernel<kVerifyMaxT>(state0 + L * state_stride, h0 + L * qkv_stride, C, gate0 + L * gb_stride,
+                                                 beta0 + L * gb_stride, h_k, h_v, n_tok, n_keep);
+        });
+    check("gdn_commit_replay_layers");
+    return true;
+}
+
 void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_beta, const float* dt, const float* ssm_a,
                   float* gate, float* beta, int n_embd, int h_v, int n_tok, void* stream) {
     if (n_embd % 8 != 0 || n_tok < 1 || n_tok > kVerifyMaxT) {

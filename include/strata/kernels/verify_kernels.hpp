@@ -47,6 +47,14 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 /// gdn_step_norm_multi's commit (n_keep set, no outputs).  Every layer's arithmetic is the per-layer call's, so the result
 /// is bitwise the loop of per-layer calls.  Returns false (nothing launched) when the per-layer commit would not take the
 /// state-only kernel (STRATA_GDN_SPLIT=1, STRATA_GDN_COMMIT_SPLIT=0, STRATA_DBG_GDN=1): the caller then keeps the loop.
+/// STRATA_GDN_COMMIT_BATCH (SYCL): the commit's conv history and state replay for `n_layers` consecutive GDN layers in two
+/// launches - each layer's buffers at `state0 + i * state_stride` (conv history at + conv_off), qkv / h rows at
+/// `qkv0 / h0 + i * qkv_stride`, gate / beta at `+ i * gb_stride` - running the per-layer kernels' bodies on each layer,
+/// so the state is bitwise the per-layer commit's. Returns false (nothing launched) where the per-layer commit would not
+/// take the state-replay kernel (STRATA_GDN_SPLIT off): the caller keeps the loop.
+bool gdn_commit_replay_layers(float* state0, int64_t state_stride, int64_t conv_off, const float* qkv0, const float* h0,
+                              int64_t qkv_stride, const float* gate0, const float* beta0, int64_t gb_stride, int conv_channels,
+                              int h_k, int h_v, int n_tok, int n_layers, const int32_t* n_keep, void* stream);
 bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, const float* qkv, int64_t qkv_stride,
                        const float* h, int64_t h_stride, const float* gate, const float* beta, int64_t gb_stride,
                        int conv_channels, int h_k, int h_v, int n_max, int n_layers, const int32_t* n_keep, void* stream);
