@@ -1957,6 +1957,15 @@ the pairs in which the switched arm won). They are here so you can try them on y
   `tools/batch_test.py --n 16` prompts (solo and batch) were identical too, and to those of a build without the
   option. The uniform cache (no profile) holds no resident expert when a native pack's prompt is read (serve needs the
   profile, and a one-shot run fills the cache only while it decodes), so `expert_cache_slot_guard_test` covers it.
+- **`STRATA_MTP_ROOM_MIN=TOKENS` (`--serve`, `--mtp`): the MTP drafter's 512 routed experts are the prompt path's ring
+  while a prompt of TOKENS tokens or more is read** (0: every prompt). They are 708 MB that only the decode reads -
+  `record_rest` is their only reader; a prompt's passes run the draft layer's dense tensors and its K/V - so the prompt
+  path's ring is pointed at those bytes (nothing is freed, nothing is allocated: the block never moves, so the decode's
+  captured graphs stay valid) and the decode's own bytes are back before the first generated token. Measured on the
+  Q8_0 4-way rig: the ring really did take the 675 MiB and the decode did not move, but the deeper ring bought no time
+  at 3,080 or 14,859 tokens (it was not what the prompt waited on) - the same shape the Maya checkout implemented for
+  its DFlash drafter and then for its MTP config's NextN block (local commits `7df369c`, `5ccf9a4`). Details, how to
+  measure it and what it costs: [MTP_PROMPT_ROOM.md](MTP_PROMPT_ROOM.md).
 
 ## Thread placement: `--aux-cpus` (Linux, off by default)
 
