@@ -25,6 +25,7 @@
 
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
@@ -1983,6 +1984,313 @@ bool try_wide(const void* weights, const void* x_q8_1, float* y, int n_in, int n
     }
 }
 
+// SYCL port: KREG small-batch kernels for Q4_K, Q5_K, Q6_K and IQ4_XS (STRATA_MMVQ_KREG=1, default off)
+//
+// K split across the work-group, activations in registers. Lane l of a group owns 32 weights of every row (8 lanes per
+// 256-block, block l / 8, position group g = l % 8: the wide kernels' per-lane split) and loads its NCOLS activation
+// pieces ONCE (plus, for Q4_K/Q5_K, the min term's activation sums). The group then streams tiles of R rows: R
+// independent weight loads per lane, R x NCOLS dots, a transposed sub-group butterfly (each SIMD16 lane ends with
+// R*NCOLS/16 finished sums) and a double-buffered SLM sum across the sub-groups (one SLM-only barrier per tile).
+// The wide kernels re-read every column's activations per row (6 columns: ~10x the weight bytes in L1 loads, issued
+// one at a time through one register block) and are issue-bound at 4-6 columns. Summation order differs from the
+// wide kernels (FP32 rounding-level differences, not bitwise). A column's sum does not depend on the column count or
+// the tile: the transposed butterfly adds the same pairs as a plain one and the SLM sum runs sub-group 0 first, so a
+// T-column call is bitwise T one-column calls (the multi_exact contract; mmvq_kreg_parity checks it). To keep that,
+// whether a call takes KREG never depends on ncols (IQ4_XS below 2048 rows at one column measured 0.91-0.97x of
+// WideIQ4XS and takes KREG anyway). Q4_K/Q5_K need a 16-byte aligned matrix (as WideQ4K), IQ4_XS an 8-byte aligned
+// one; any other matrix, n_in > 32768 (one work-group spans a row) or the flag unset keeps the existing kernels.
+constexpr int KREG_SG = 16;
+inline bool kreg_env() {   // latched before graph capture
+    static const bool v = [] {
+        const char* e = std::getenv("STRATA_MMVQ_KREG");
+        const bool on = e && e[0] == '1';
+        if (on) std::fprintf(stderr, "strata: STRATA_MMVQ_KREG=1: Q4_K/Q5_K/Q6_K/IQ4_XS mmvq at 1-8 columns runs the KREG kernels\n");
+        return on;
+    }();
+    return v;
+}
+int g_kreg_override = -1;   // native_mmvq_set_kreg (tests): -1 = the STRATA_MMVQ_KREG latch
+inline bool kreg_on() { return g_kreg_override >= 0 ? g_kreg_override != 0 : kreg_env(); }
+
+template <int O, int N, int P>
+__dpct_inline__ void kreg_tsum(float (&v)[P], const sycl::sub_group& sg, int lane) {
+    if constexpr (O > 0) {
+        constexpr int H = N / 2;
+        const bool up = (lane & O) != 0;
+#pragma unroll
+        for (int i = 0; i < H; ++i) {
+            const float lo = v[i], hi = v[i + H];   // values: a ?: of two array lvalues selects ADDRESSES and
+            const float send = up ? lo : hi;        // sends v[] to private (global) memory
+            const float keep = up ? hi : lo;
+            v[i] = keep + sycl::permute_group_by_xor(sg, send, O);
+        }
+        kreg_tsum<O / 2, H, P>(v, sg, lane);
+    }
+}
+struct KregActK { sycl::int4 ua, uc; float da, dc, sa, sc; };
+__dpct_inline__ KregActK kreg_act_k(const Q81Block* xb, int g) {
+    const int sb = 2 * (g >> 1), half = g & 1;
+    const sycl::int4 ones(0x01010101, 0x01010101, 0x01010101, 0x01010101);
+    KregActK v;
+    v.ua = ld_q8_16(xb + sb, half); v.uc = ld_q8_16(xb + sb + 1, half);
+    v.da = (float) xb[sb].ds[0]; v.dc = (float) xb[sb + 1].ds[0];
+    v.sa = v.da * (float) dp4a4(ones, v.ua, 0);
+    v.sc = v.dc * (float) dp4a4(ones, v.uc, 0);
+    return v;
+}
+struct KregWK { sycl::int4 lo, hi; float dl, dh, ml, mh; };
+// dm + the 12 scale bytes = the block's first 16 bytes; ggml get_scale_min_k4 for j = sb, sb + 1, branchless
+__dpct_inline__ void kreg_scales_k(const sycl::int4 hdr, int g, KregWK& r) {
+    const int sb = 2 * (g >> 1), sh = 8 * (sb & 3);
+    const uint32_t A = ((uint32_t) hdr.y() >> sh) & 0xFFFF, B = ((uint32_t) hdr.z() >> sh) & 0xFFFF,
+                   C = ((uint32_t) hdr.w() >> sh) & 0xFFFF;
+    const uint32_t ls0 = A & 63, ls1 = (A >> 8) & 63, lm0 = B & 63, lm1 = (B >> 8) & 63;
+    const uint32_t hs0 = (C & 0xF) | (((A >> 6) & 3) << 4), hs1 = ((C >> 8) & 0xF) | (((A >> 14) & 3) << 4);
+    const uint32_t hm0 = ((C >> 4) & 0xF) | (((B >> 6) & 3) << 4), hm1 = ((C >> 12) & 0xF) | (((B >> 14) & 3) << 4);
+    const bool lo4 = sb < 4;
+    const uint32_t s0 = lo4 ? ls0 : hs0, s1 = lo4 ? ls1 : hs1, m0 = lo4 ? lm0 : hm0, m1 = lo4 ? lm1 : hm1;
+    const sycl::half2 dmh = sycl::bit_cast<sycl::half2>(hdr.x());
+    const float d = (float) dmh.x(), dmin = (float) dmh.y();
+    r.dl = d * (float) s0; r.ml = dmin * (float) m0; r.dh = d * (float) s1; r.mh = dmin * (float) m1;
+}
+__dpct_inline__ float kreg_dot_k(const KregWK& r, const KregActK& v) {
+    return r.dl * (v.da * (float) dp4a4(r.lo, v.ua, 0)) - r.ml * v.sa +
+           r.dh * (v.dc * (float) dp4a4(r.hi, v.uc, 0)) - r.mh * v.sc;
+}
+struct KregQ4K {
+    static constexpr int kTableWords = 0;
+    static uint32_t table_entry(int) { return 0; }
+    using Block = Q4KBlock; using A = KregActK; using W = KregWK;
+    static A act(const Q81Block* xb, int g) { return kreg_act_k(xb, g); }
+    static W load(const Block* b, int g) {
+        W r;
+        const sycl::int4 hdr = *reinterpret_cast<const sycl::int4*>(b);
+        const sycl::int4 q = reinterpret_cast<const sycl::int4*>(b->qs)[g];
+        r.lo = sycl::int4(q.x() & 0x0f0f0f0f, q.y() & 0x0f0f0f0f, q.z() & 0x0f0f0f0f, q.w() & 0x0f0f0f0f);
+        r.hi = sycl::int4((q.x() >> 4) & 0x0f0f0f0f, (q.y() >> 4) & 0x0f0f0f0f, (q.z() >> 4) & 0x0f0f0f0f, (q.w() >> 4) & 0x0f0f0f0f);
+        kreg_scales_k(hdr, g, r);
+        return r;
+    }
+    static float dot(const W& r, const A& v) { return kreg_dot_k(r, v); }
+};
+struct KregQ5K {
+    static constexpr int kTableWords = 0;
+    static uint32_t table_entry(int) { return 0; }
+    using Block = Q5KBlock; using A = KregActK; using W = KregWK;
+    static A act(const Q81Block* xb, int g) { return kreg_act_k(xb, g); }
+    static W load(const Block* b, int g) {
+        W r;
+        const int sb = 2 * (g >> 1), half = g & 1;
+        const sycl::int4 hdr = *reinterpret_cast<const sycl::int4*>(b);
+        const sycl::int4 q = reinterpret_cast<const sycl::int4*>(b->qs)[g];
+        const sycl::int4 h = reinterpret_cast<const sycl::int4*>(b->qh)[half];
+        auto hb = [](int v, int bit) { return ((v >> bit) & 0x01010101) << 4; };
+        r.lo = sycl::int4((q.x() & 0x0f0f0f0f) | hb(h.x(), sb), (q.y() & 0x0f0f0f0f) | hb(h.y(), sb),
+                          (q.z() & 0x0f0f0f0f) | hb(h.z(), sb), (q.w() & 0x0f0f0f0f) | hb(h.w(), sb));
+        r.hi = sycl::int4(((q.x() >> 4) & 0x0f0f0f0f) | hb(h.x(), sb + 1), ((q.y() >> 4) & 0x0f0f0f0f) | hb(h.y(), sb + 1),
+                          ((q.z() >> 4) & 0x0f0f0f0f) | hb(h.z(), sb + 1), ((q.w() >> 4) & 0x0f0f0f0f) | hb(h.w(), sb + 1));
+        kreg_scales_k(hdr, g, r);
+        return r;
+    }
+    static float dot(const W& r, const A& v) { return kreg_dot_k(r, v); }
+};
+struct KregQ6K {   // the wide Q6_K kernel's lane mapping and dot expression; (q - 32) per byte by (q + 0x60) ^ 0x80
+    static constexpr int kTableWords = 0;
+    static uint32_t table_entry(int) { return 0; }
+    using Block = Q6KBlock;
+    struct A { sycl::int4 u0, u1; float ds0, ds1; };
+    struct W { int vi0[4], vi1[4]; float dsc0, dsc1; };
+    static A act(const Q81Block* xb, int g) {
+        const int bq8_offset = 4 * (g >> 2) + ((g & 3) >> 1);
+        A a;
+        a.u0 = ld_q8_16(xb + bq8_offset, g & 1); a.u1 = ld_q8_16(xb + bq8_offset + 2, g & 1);
+        a.ds0 = (float) xb[bq8_offset].ds[0]; a.ds1 = (float) xb[bq8_offset + 2].ds[0];
+        return a;
+    }
+    static W load(const Block* b, int g) {
+        W r;
+        const int vh_shift = 2 * ((g & 3) >> 1);
+        const int qh4_idx = 2 * (g >> 2) + (g & 1);
+        const int scale_offset = 8 * (g >> 2) + (g & 3);
+        const sycl::int4 ql4 = load16_a2(b->ql + 16 * g), qh4 = load16_a2(b->qh + 16 * qh4_idx);
+        const float d = b->d;
+        r.dsc0 = d * (float) b->scales[scale_offset]; r.dsc1 = d * (float) b->scales[scale_offset + 4];
+        const int vl[4] = {ql4.x(), ql4.y(), ql4.z(), ql4.w()};
+        const int vh[4] = {qh4.x() >> vh_shift, qh4.y() >> vh_shift, qh4.z() >> vh_shift, qh4.w() >> vh_shift};
+#pragma unroll
+        for (int p = 0; p < 4; ++p) {
+            r.vi0[p] = (int) ((uint32_t((vl[p] & 0x0f0f0f0f) | ((vh[p] << 4) & 0x30303030)) + 0x60606060u) ^ 0x80808080u);
+            r.vi1[p] = (int) ((uint32_t(((vl[p] >> 4) & 0x0f0f0f0f) | (((vh[p] >> 4) << 4) & 0x30303030)) + 0x60606060u) ^ 0x80808080u);
+        }
+        return r;
+    }
+    static float dot(const W& r, const A& a) {
+        int s0 = 0, s1 = 0;
+        s0 = strata::dp4a(r.vi0[0], a.u0.x(), s0); s0 = strata::dp4a(r.vi0[1], a.u0.y(), s0);
+        s0 = strata::dp4a(r.vi0[2], a.u0.z(), s0); s0 = strata::dp4a(r.vi0[3], a.u0.w(), s0);
+        s1 = strata::dp4a(r.vi1[0], a.u1.x(), s1); s1 = strata::dp4a(r.vi1[1], a.u1.y(), s1);
+        s1 = strata::dp4a(r.vi1[2], a.u1.z(), s1); s1 = strata::dp4a(r.vi1[3], a.u1.w(), s1);
+        return a.ds0 * r.dsc0 * (float) s0 + a.ds1 * r.dsc1 * (float) s1;
+    }
+};
+// IQ4_XS (lane g = sub-block g, as WideIQ4XS): the codebook through a 256-entry SLM table indexed by a qs byte,
+// TL[b] = code(b & 15) | code(b >> 4) << 16, so two lookups and two shifts give four low and four high codes.
+// The select-chain lookup (iq4_lut4) costs ~10 instructions per nibble and made a K-split kernel slower than WideIQ4XS.
+struct KregIQ4XS {
+    using Block = IQ4XSBlock;
+    static constexpr int kTableWords = 256;
+    static uint32_t table_entry(int i) {
+        return (uint32_t) (uint8_t) kIq4nlTable[i & 15] | ((uint32_t) (uint8_t) kIq4nlTable[i >> 4] << 16);
+    }
+    struct A { sycl::int4 u0, u1; float ds; };
+    struct W { sycl::int4 lo, hi; float d; };
+    static A act(const Q81Block* xb, int g) {
+        A a; a.u0 = ld_q8_16(xb + g, 0); a.u1 = ld_q8_16(xb + g, 1); a.ds = (float) xb[g].ds[0]; return a;
+    }
+    static W load(const Block* b, int g, const uint32_t* tl) {
+        W r;
+        const sycl::int2 hdr = *reinterpret_cast<const sycl::int2*>(b);              // 136 = 17 x 8: 8-byte aligned
+        const sycl::int2* q2 = reinterpret_cast<const sycl::int2*>(b->qs + 16 * g);
+        const sycl::int2 qa = q2[0], qb = q2[1];
+        const uint32_t v[4] = {(uint32_t) qa.x(), (uint32_t) qa.y(), (uint32_t) qb.x(), (uint32_t) qb.y()};
+        int lo[4], hi[4];
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            const uint32_t P = tl[v[i] & 0xFF] | (tl[(v[i] >> 8) & 0xFF] << 8);
+            const uint32_t Q = tl[(v[i] >> 16) & 0xFF] | (tl[v[i] >> 24] << 8);
+            lo[i] = (int) ((P & 0xFFFFu) | (Q << 16));
+            hi[i] = (int) ((P >> 16) | (Q & 0xFFFF0000u));
+        }
+        r.lo = sycl::int4(lo[0], lo[1], lo[2], lo[3]); r.hi = sycl::int4(hi[0], hi[1], hi[2], hi[3]);
+        const uint32_t h0 = (uint32_t) hdr.x(), sl = (uint32_t) hdr.y();
+        const int ls = (int) (((sl >> (8 * (g >> 1) + 4 * (g & 1))) & 0x0f) | (((h0 >> (16 + 2 * g)) & 0x03) << 4));
+        r.d = (float) sycl::bit_cast<sycl::half>((uint16_t) (h0 & 0xFFFF)) * (float) (ls - 32);
+        return r;
+    }
+    static float dot(const W& r, const A& v) { return r.d * v.ds * (float) dp4a4(r.hi, v.u1, dp4a4(r.lo, v.u0, 0)); }
+};
+template <int R, int NCOLS> constexpr int kreg_p() { return (R * NCOLS + KREG_SG - 1) / KREG_SG * KREG_SG; }
+template <typename F, int NCOLS, int R>
+void native_mmvq_kreg_kernel(const typename F::Block* __restrict__ w, const Q81Block* __restrict__ x,
+                             float* __restrict__ y, int n_in, int n_out, float* __restrict__ slm) {
+    auto it = sycl::ext::oneapi::this_work_item::get_nd_item<1>();
+    const sycl::sub_group sg = it.get_sub_group();
+    constexpr int P0 = R * NCOLS, P = kreg_p<R, NCOLS>(), PL = P / KREG_SG;
+    const int lid = int(it.get_local_id(0)), lane = int(sg.get_local_linear_id()), sgi = lid / KREG_SG;
+    const int nsg = int(it.get_local_range(0)) / KREG_SG;
+    const int bpr = n_in / QK, x_stride = n_in / Q8K;
+    const bool live = (lid >> 3) < bpr;
+    const int kb = live ? (lid >> 3) : 0, g = lid & 7;
+    typename F::A a[NCOLS];
+#pragma unroll
+    for (int j = 0; j < NCOLS; ++j) {
+        a[j] = F::act(x + std::size_t(j) * x_stride + kb * (QK / Q8K), g);
+        if (!live) a[j] = typename F::A{};
+    }
+    const uint32_t* tbl = nullptr;
+    if constexpr (F::kTableWords > 0) {   // per-group codebook table after the two reduction buffers
+        uint32_t* tw = reinterpret_cast<uint32_t*>(slm + 2 * nsg * P);
+        for (int i = lid; i < F::kTableWords; i += int(it.get_local_range(0))) tw[i] = F::table_entry(i);
+        it.barrier(sycl::access::fence_space::local_space);
+        tbl = tw;
+    }
+    const int ntiles = (n_out + R - 1) / R;
+    int buf = 0;
+    for (int t = int(it.get_group(0)); t < ntiles; t += int(it.get_group_range(0))) {
+        const int row0 = t * R;
+        const typename F::Block* wt = w + std::size_t(row0) * bpr + kb;
+        const int rlast = n_out - 1 - row0;
+        typename F::W wv[R];
+#pragma unroll
+        for (int r = 0; r < R; ++r) {
+            if constexpr (F::kTableWords > 0) wv[r] = F::load(wt + (r < rlast ? r : rlast) * bpr, g, tbl);
+            else wv[r] = F::load(wt + (r < rlast ? r : rlast) * bpr, g);
+        }
+        float v[P];
+#pragma unroll
+        for (int r = 0; r < R; ++r)
+#pragma unroll
+            for (int j = 0; j < NCOLS; ++j) v[r * NCOLS + j] = F::dot(wv[r], a[j]);
+#pragma unroll
+        for (int k = P0; k < P; ++k) v[k] = 0.0f;
+        kreg_tsum<KREG_SG / 2, P, P>(v, sg, lane);
+        float* b = slm + buf * nsg * P;
+#pragma unroll
+        for (int i = 0; i < PL; ++i) b[sgi * P + lane * PL + i] = v[i];
+        it.barrier(sycl::access::fence_space::local_space);   // SLM-only fence (group_barrier also fences global)
+        for (int k = lid; k < P0; k += int(it.get_local_range(0))) {
+            float s = 0.0f;
+            for (int q = 0; q < nsg; ++q) s += b[q * P + k];
+            const int r = k / NCOLS, j = k % NCOLS;
+            if (row0 + r < n_out) y[std::size_t(j) * n_out + row0 + r] = s;
+        }
+        buf ^= 1;   // the next tile writes the other buffer; this one is rewritten only after the next barrier
+    }
+}
+template <typename F, int NCOLS, int R, int GRF>
+void launch_kreg(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, dpct::queue_ptr s) {
+    const auto* w = static_cast<const typename F::Block*>(weights);
+    const auto* x = static_cast<const Q81Block*>(x_q8_1);
+    const int L = ((n_in / QK) * 8 + KREG_SG - 1) / KREG_SG * KREG_SG;
+    const int nsg = L / KREG_SG;
+    constexpr int P = kreg_p<R, NCOLS>();
+    const int tiles = (n_out + R - 1) / R;
+    s->submit([&](sycl::handler& h) {
+        sycl::local_accessor<float, 1> slm(sycl::range<1>(2 * nsg * P + F::kTableWords), h);
+        auto k = [=](sycl::nd_item<1>) [[sycl::reqd_sub_group_size(16)]] {
+            native_mmvq_kreg_kernel<F, NCOLS, R>(w, x, y, n_in, n_out, slm.get_multi_ptr<sycl::access::decorated::no>().get());
+        };
+        const sycl::nd_range<1> nr(std::size_t(tiles) * L, L);
+        if constexpr (GRF == 256)
+            h.parallel_for<dpct_kernel_name<class native_mmvq_kreg_grf256, F, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<R>>>(
+                nr, sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>}, k);
+        else
+            h.parallel_for<dpct_kernel_name<class native_mmvq_kreg, F, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<R>>>(nr, k);
+    });
+}
+// Per-(format, columns) tile shape from a sweep on an Arc Pro B70 (2026-10-16): R rows per tile, GRF mode.
+template <typename F, int NCOLS>
+void kreg_dispatch(const void* w, const void* x, float* y, int n_in, int n_out, dpct::queue_ptr s) {
+    if constexpr (std::is_same_v<F, KregIQ4XS>) {
+        if constexpr (NCOLS == 1) launch_kreg<F, 1, 8, 128>(w, x, y, n_in, n_out, s);
+        else launch_kreg<F, NCOLS, 4, 128>(w, x, y, n_in, n_out, s);
+    } else if constexpr (std::is_same_v<F, KregQ6K>) {
+        if constexpr (NCOLS <= 3) launch_kreg<F, NCOLS, 4, 128>(w, x, y, n_in, n_out, s);
+        else launch_kreg<F, NCOLS, 2, 128>(w, x, y, n_in, n_out, s);
+    } else {
+        if constexpr (NCOLS == 1) launch_kreg<F, 1, 4, 128>(w, x, y, n_in, n_out, s);
+        else if constexpr (NCOLS == 2) {
+            if (n_in <= 4096) launch_kreg<F, 2, 8, 256>(w, x, y, n_in, n_out, s);
+            else launch_kreg<F, 2, 4, 128>(w, x, y, n_in, n_out, s);
+        } else if constexpr (NCOLS <= 4) launch_kreg<F, NCOLS, 4, 128>(w, x, y, n_in, n_out, s);
+        else if constexpr (std::is_same_v<F, KregQ5K>) {
+            if (n_in <= 4096) launch_kreg<F, NCOLS, 8, 256>(w, x, y, n_in, n_out, s);
+            else launch_kreg<F, NCOLS, 2, 128>(w, x, y, n_in, n_out, s);
+        } else launch_kreg<F, NCOLS, 8, 256>(w, x, y, n_in, n_out, s);
+    }
+}
+template <typename F>
+bool try_kreg(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
+    if (!kreg_on()) return false;   // STRATA_MMVQ_KREG unset: nothing below runs
+    if (ncols < 1 || ncols > 8 || n_out <= 0 || n_in <= 0 || n_in % QK != 0 || n_in > 32768) return false;
+    if (!weights || !x_q8_1 || !y) return false;   // the caller's checks report it
+    const uintptr_t wa = reinterpret_cast<uintptr_t>(weights);
+    if ((std::is_same_v<F, KregQ4K> || std::is_same_v<F, KregQ5K>) && (wa & 15u) != 0) return false;
+    if (std::is_same_v<F, KregIQ4XS> && (wa & 7u) != 0) return false;
+    if ((wa & 1u) != 0 || (reinterpret_cast<uintptr_t>(x_q8_1) & 3u) != 0) return false;
+    const auto s = strata::q_of(stream);
+    switch (ncols) {
+        case 1: kreg_dispatch<F, 1>(weights, x_q8_1, y, n_in, n_out, s); return true;
+        case 2: kreg_dispatch<F, 2>(weights, x_q8_1, y, n_in, n_out, s); return true;
+        case 3: kreg_dispatch<F, 3>(weights, x_q8_1, y, n_in, n_out, s); return true;
+        case 4: kreg_dispatch<F, 4>(weights, x_q8_1, y, n_in, n_out, s); return true;
+        case 5: kreg_dispatch<F, 5>(weights, x_q8_1, y, n_in, n_out, s); return true;
+        case 6: kreg_dispatch<F, 6>(weights, x_q8_1, y, n_in, n_out, s); return true;
+        case 7: kreg_dispatch<F, 7>(weights, x_q8_1, y, n_in, n_out, s); return true;
+        default: kreg_dispatch<F, 8>(weights, x_q8_1, y, n_in, n_out, s); return true;
+    }
+}
+
 // SYCL port: wide kernels for the 32-element formats Q8_0 (34-byte blocks) and IQ4_NL (18). Both are only 2-byte
 // aligned, so the weights come through load16_a2 (page-safe). Q8_0: 2 lanes per block (16 quants each), 16 blocks
 // per sub-group step; IQ4_NL: 1 lane per block (its 16 bytes = 32 nibbles), 32 blocks per step. One row per
@@ -3049,6 +3357,7 @@ void native_q6_k_unpack(const void* weights) {
 
 void native_mmvq_set_multi_exact(bool exact) { g_multi_exact = exact; }
 void native_mmvq_set_q6k_wide(bool on) { g_q6k_wide = on; }
+void native_mmvq_set_kreg(int on) { g_kreg_override = on; }
 void native_q6_k_mmvq_stride224(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols,
                                 void* stream) {
     const auto s = strata::q_of(stream);
@@ -3137,6 +3446,7 @@ void native_q5_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
+    if (try_kreg<KregQ5K>(weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }   // STRATA_MMVQ_KREG=1
     if (try_wide<WideQ5K>(weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }
     STRATA_WAVE_MMVQ(Q5KTraits)
     if (ncols > 1) {
@@ -3360,6 +3670,7 @@ void native_iq4_xs_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
+    if (try_kreg<KregIQ4XS>(weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }   // STRATA_MMVQ_KREG=1
     if (try_wide<WideIQ4XS>(weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }
     STRATA_WAVE_MMVQ(IQ4XSTraits)
     if (ncols > 1) {
@@ -3451,6 +3762,7 @@ void native_q4_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
+    if (try_kreg<KregQ4K>(weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }   // STRATA_MMVQ_KREG=1
     if (try_wide<WideQ4K>(weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }
     STRATA_WAVE_MMVQ(Q4KTraits)
     if (ncols > 1) {
@@ -3522,6 +3834,7 @@ void native_q4_k_f32(const void* weights, const float* x, void* scratch_q8_1,
 void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y,
                       int n_in, int n_out, int ncols, void* stream) {
     if (q6_packed_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream)) return;   // STRATA_Q6_PACKED=1 heads
+    if (try_kreg<KregQ6K>(weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }   // STRATA_MMVQ_KREG=1
     // SYCL port: 16-byte-load kernel for the decode shapes (ncols <= 4)
     // With the aligned loads (load16_a2) the wide kernel wins on every Q6_K shape and window width: 2.6-3.4x the
     // misaligned-load kernels in q6k_align_bench, decode 44.9 -> 54 tok/s on the Coder, output tokens identical.
