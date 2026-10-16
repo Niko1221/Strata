@@ -460,11 +460,11 @@ tokens. The policy weighs length and age, and every threshold is a parameter:
   `STRATA_SLOT_IDLE_VALUE_ZERO_S` (default 1800 s; 0 disables decay). Reclaiming and parking use this value; it never
   changes whether a history can match.
 - **Park** (with `slot_padding_safe=1`): not when the main session's conversation's value at its idle age is below
-  `STRATA_SLOT_PARK_MIN_VALUE` (default 0.01, about 2.6K tokens at expiry; no separate length cut-off), or when a
-  slot holds 90% of it already. Then its own older copy, else an idle expired slot in the
-  reclaim order above (not worth keeping first, then group load, then the lowest value); a history worth keeping is
-  taken only when the main session's conversation is worth at least `STRATA_SLOT_PARK_VALUE_RATIO` (default 2) times
-  more. Never another conversation's protected slot. The parked copy keeps the main session's last-use time.
+  `STRATA_SLOT_PARK_MIN_VALUE` (default 0.01, about 2.6K tokens at expiry; no separate length cut-off), or when a slot
+  holds `STRATA_SLOT_PARK_KEPT_SHARE` (default 98%) of it already. Then its own older copy, else an idle expired slot
+  in the reclaim order above (not worth keeping first, then group load, then the lowest value); a history worth
+  keeping is taken only when the main session's conversation is worth at least `STRATA_SLOT_PARK_VALUE_RATIO` (default
+  2) times more. Never another conversation's protected slot. The parked copy keeps the main session's last-use time.
 - A busy slot is never matched or overwritten. On an engine without `slot_padding_safe=1`, a slot that would pad
   over a protected idle history below it costs that history's retention too.
 
