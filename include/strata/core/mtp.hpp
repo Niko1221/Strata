@@ -71,6 +71,21 @@ public:
     int32_t top2(int j) const { return j >= 0 && j < (int) top2_.size() ? top2_[(size_t) j] : -1; }
     int max_t() const { return max_t_; }
     uint64_t vram_bytes() const { return vram_; }
+
+    /// THE PROMPT ROOM (STRATA_MTP_ROOM_MIN).  The layer's 512 routed experts (708 MB) are read by the DECODE alone:
+    /// `record_rest` is their only reader, and every prompt pass - the capture's K/V (record_front) and the prompt
+    /// path's Prefill::draft_kv - touches the dense tensors and the K/V state instead.  So a long prompt may take
+    /// their bytes: `experts_out` copies them into pinned host memory (taken once, so a later `experts_back` is a DMA
+    /// and not another read of experts.bin) and frees the device block; `experts_back` allocates it again and copies
+    /// them back.  The decode's captured graphs carry the address, so if the block comes back somewhere else they are
+    /// dropped and captured again at the next round.
+    /// While the experts are out no decode pass may run: `draft`, `draft_first`, `chain_launch` and `record_rest`
+    /// refuse (with `err`), rather than run a graph that reads freed memory.
+    uint64_t experts_bytes() const;    ///< 0: this drafter does not own the experts (shared weights: --batch-mtp)
+    bool experts_resident() const { return experts_ != nullptr; }
+    bool experts_out(std::string& err);
+    bool experts_back(std::string& err);
+
     /// The draft layer's K/V state (read-only: --serve's STRATA_STATE_HASH check hashes it)
     const QsaState& kv_state() const { return st_; }
     /// KV streaming: refill the ring of the drafter's window from its host copy for a sequence that continues at
@@ -165,6 +180,12 @@ public:
 
 private:
     bool record_forward(int T, int step_row0, cudaStream_t cs, std::string& err);
+    /// False (with `err`) while the experts are lent to a prompt: a decode pass reads them (record_rest), and a
+    /// captured graph would read the address they had.  Every decode entry checks this before it launches anything.
+    bool decode_ready(std::string& err) const {
+        if (experts_lent_) { err = "mtp: the 512 experts are lent to a prompt (STRATA_MTP_ROOM_MIN)"; return false; }
+        return true;
+    }
     /// The layer's front for T rows at step rows [row0, +T): the embedding, the fc projections, the attention
     /// hyper-connection read (R_, inj_, mixed_) and the K/V appended.
     bool record_front(int T, int row0, cudaStream_t cs, std::string& err);
@@ -242,6 +263,13 @@ private:
     std::vector<Tensor> tensors_;
     uint8_t* dense_ = nullptr;
     uint8_t* experts_ = nullptr;
+    // the prompt room: the experts' pinned host copy, its size, the address the captured graphs carry, and whether
+    // they are out (experts_ is null then)
+    void* experts_host_ = nullptr;
+    uint64_t experts_host_bytes_ = 0;
+    uint8_t* experts_at_ = nullptr;
+    bool experts_lent_ = false;
+    void drop_expert_graphs();   ///< the round/step graphs, whose captured MoE kernel reads `experts_`
     // Slot drafters borrow immutable weights and head; each still owns its state and scratch.
     bool owns_weights_ = true;
     bool owns_draft_head_ = true;

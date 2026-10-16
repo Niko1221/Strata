@@ -90,6 +90,16 @@ public:
     /// fits it keeps 0.1.39's ring).  0 slots = none.  A layer split's set_ring_override and STRATA_PREFILL_RING win.
     static void set_ring_budget(int slots, int64_t small_max);
 
+    /// THE PROMPT ROOM (STRATA_MTP_ROOM_MIN): `slots` MORE ring slots than the rule above gives a chunk, laid out on
+    /// top of them - bytes another device user gave back for the length of one prompt (the MTP drafter's 512 routed
+    /// experts: see MtpDrafter::experts_out).  In a borrowed layout these are the buffers that spill past the region
+    /// (bytes_needed does not count them, so the loan does not move), which fixes the layout: `relayout` refuses a
+    /// hybrid one.  Never past ring_cap() (the ring's events are sized for that), and only where the ring is a big one
+    /// (a chunk at or above stream_all_min(): below it the ring is STAGE slots of a different mechanism).
+    /// Set before `init`/`relayout`; 0 (the default): the rule's ring exactly, as before.
+    void set_ring_room(int slots) { ring_room_ = slots > 0 ? slots : 0; }
+    int ring_room() const { return ring_room_; }
+
     /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).  `src`: init gets an
     /// ExpertSource (carve picks the fused MoE layout only then).
     static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
@@ -191,6 +201,7 @@ private:
     static uint64_t bytes_needed_impl(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
                                       bool owned_pages, bool src);
     kernels::cpu::ExpertPool* cpu_pool_ = nullptr;   ///< set_cpu_pool
+    int ring_room_ = 0;                              ///< set_ring_room (this instance's, and it survives `reset`)
     // Stage-1 pipeline: intermediate stages return after handing their chunk to
     // the direct successor. The public run() drains the chain once at prompt end.
     bool run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);

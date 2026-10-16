@@ -7547,6 +7547,44 @@ int main(int argc, char** argv) {
                                  "%lld MiB free\n",
                          (long long) o.prefill_chunk, (long long) (borrow_bytes >> 20), (long long) (free_b >> 20));
         }
+        // STRATA_MTP_ROOM_MIN=TOKENS (opt-in): a prompt of at least TOKENS tokens (0: every prompt) takes the MTP
+        // drafter's 512 routed experts - 708 MB that only the DECODE reads (record_rest; the prompt's own passes,
+        // record_front's K/V and the prompt path's Prefill::draft_kv, run the layer's dense tensors and its K/V) -
+        // and leaves them to the prompt path's ring for as long as the prompt is read.  Same turn-taking as
+        // --prefill-head-alias, one layer down: unload, lay the prompt path out again with the room, read, put back.
+        // Unset (the default): not one line below runs, and the prompt path is laid out exactly as before.
+        const int64_t mtp_room_min = [] {
+            const char* v = std::getenv("STRATA_MTP_ROOM_MIN");
+            if (v == nullptr || v[0] == '\0') return (int64_t) -1;
+            char* end = nullptr;
+            const long long n = std::strtoll(v, &end, 10);
+            if (end == v || *end != '\0' || n < 0) return (int64_t) -2;   // not a count: say so, not "0: every prompt"
+            return (int64_t) n;
+        }();
+        if (mtp_room_min == -2) {
+            std::fprintf(stderr, "strata generate: STRATA_MTP_ROOM_MIN=%s is not a token count (0: every prompt)\n",
+                         std::getenv("STRATA_MTP_ROOM_MIN"));
+            return 2;
+        }
+        int mtp_room_slots = 0;
+        if (mtp_room_min >= 0) {
+            const char* why = !o.serve ? "it needs --serve"
+                            : o.mtp.empty() ? "it needs --mtp"
+                            : o.batch > 0 ? "it does not support --batch: its slot drafters share the drafter's weights"
+                            : mtp.experts_bytes() == 0 ? "the drafter's 512 experts are not this drafter's to lend"
+                            : nullptr;
+            if (why != nullptr) {
+                std::fprintf(stderr, "strata generate: STRATA_MTP_ROOM_MIN is unavailable: %s\n", why);
+                return 2;
+            }
+            const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
+            mtp_room_slots = blob > 0 ? (int) std::min<int64_t>(mtp.experts_bytes() / blob, 4096) : 0;
+            std::fprintf(stderr, "strata serve: STRATA_MTP_ROOM_MIN=%lld: a prompt of %lld tokens or more lends the "
+                                 "drafter's %llu MiB of experts on CUDA%d to the prompt path's ring (%d slots past its "
+                                 "own), and they are back before the first window\n",
+                         (long long) mtp_room_min, (long long) mtp_room_min,
+                         (unsigned long long) (mtp.experts_bytes() >> 20), mtp.device(), mtp_room_slots);
+        }
         bool any_loan = borrow != nullptr;
         for (size_t i = 1; i < pf_parts.size(); ++i) any_loan = any_loan || pf_parts[i].first >= 0;
         if (any_loan) {
@@ -7586,7 +7624,8 @@ int main(int argc, char** argv) {
         // the prompt path's own buffers (no loan) are not priced into them: with the whole arena pinned (#253) a
         // `--prefill auto` split could stop at start with "device buffers for a chunk of 2048 tokens do not fit".  A
         // chunk that does not fit is tried again one size smaller, down to 512 tokens (a smaller chunk only reads slower).
-        auto init_prompt_paths = [&]() -> int {   // 0: ready; 1: failed (err set); 2: failed with "do not fit"
+        auto init_prompt_paths = [&](int room_slots = 0) -> int {   // 0: ready; 1: failed (err set); 2: failed with "do not fit"
+            int roomed = 0;   // paths laid out with the drafter's experts' room (STRATA_MTP_ROOM_MIN)
             for (size_t i = 0; i < stages.size(); ++i) {
                 GpuStage& st = *stages[i];
                 st.sp.set_stage(st.lb, i + 1 < stages.size() ? st.le : -1, i + 1 < stages.size() ? &stages[i + 1]->sp : nullptr);
@@ -7598,18 +7637,30 @@ int main(int argc, char** argv) {
                     sb = st.cache.device_slot(pf_parts[i + 1].first);
                     sbb = part_bytes(pf_parts[i + 1], pf_parts[i + 1].first);
                 }
+                // STRATA_MTP_ROOM_MIN: the drafter's card is the one whose prompt path is laid out with the room
+                const bool room_here = room_slots > 0 && mtp.device() == st.dev;
+                if (room_here) ++roomed;
+                st.sp.set_ring_room(room_here ? room_slots : 0);
                 if (share_pool) st.sp.set_cpu_pool(&pool);   // one stage at a time takes it for a chunk (prefill.cpp)
                 if (!st.sp.init(st.wt, g, st.ss, srcp, &st.cache, host_res.data(), o.prefill_chunk, (void*) st.stream,
-                                err, sb, sbb)) {
+                                err, sb, sbb, room_here)) {
                     err = "layer split, CUDA" + std::to_string(st.dev) + " prompt path: " + err;
                     return err.find("do not fit") != std::string::npos ? 2 : 1;
                 }
             }
             if (multi_gpu) sp.set_stage(0, split_at[0], &stages[0]->sp);
             if (share_pool) sp.set_cpu_pool(&pool);
+            int cur_dev = 0;
+            cudaGetDevice(&cur_dev);   // the device this path is about to run on (dev -1: the current one)
+            const bool room_here = room_slots > 0 && mtp.device() == cur_dev;
+            if (room_here) ++roomed;
+            sp.set_ring_room(room_here ? room_slots : 0);
             if (!sp.init(wt, g, ss, prefill_src, &xcache, host_res.data(), o.prefill_chunk, main_cs, err, borrow, borrow_bytes,
-                         o.prefill_head_alias))
+                         room_here || o.prefill_head_alias))
                 return err.find("do not fit") != std::string::npos ? 2 : 1;
+            if (room_slots > 0 && roomed == 0)   // the drafter's card holds none of the prompt paths: nothing to spill
+                std::fprintf(stderr, "strata serve: prompt room: no prompt path runs on CUDA%d, the drafter's card: the "
+                                     "prompt reads with its own ring\n", mtp.device());
             return 0;
         };
         static constexpr int64_t kStepChunks[] = {6144, 4096, 3072, 2048, 1536, 1024, 512};
@@ -7690,26 +7741,32 @@ int main(int argc, char** argv) {
                                      "context, or read prompts in smaller chunks (--prefill 512)\n");
             return 1;
         }
-        if (peer.valid() && o.peer_prefill_rows != 0) {
-            const int64_t rows = o.peer_prefill_rows > 0 ? o.peer_prefill_rows : o.prefill_chunk * K / 2;
-            if (!sp.set_peer(&peer, rows, err)) {
-                std::fprintf(stderr, "strata serve: %s - the prompt path stays on the primary GPU\n", err.c_str());
-                err.clear();
-            }
-        }
-        // a layer split: a one-chunk prompt runs the stages one after the other, so each stage's prompt path gets the
-        // next stage's GPU (the last one the first's) to stream and compute a share of its experts meanwhile
-        if (multi_gpu && !stages.empty()) {
-            std::vector<std::pair<strata::prefill::Prefill*, int>> paths{{&sp, 0}};
-            for (const auto& st : stages) paths.emplace_back(&st->sp, st->dev);
-            for (size_t i = 0; i < paths.size(); ++i) {
-                const strata::core::OnDevice on(paths[i].second);
-                if (!paths[i].first->set_stage_helper(paths[(i + 1) % paths.size()].first, err)) {
-                    std::fprintf(stderr, "strata serve: %s - stage %zu reads its prompts alone\n", err.c_str(), i);
+        // The peer's streaming and a split's helpers live INSIDE the layout (`set_peer` / `set_stage_helper` build
+        // them in the path's own Impl), so a path that is laid out again - the prompt room, below - has to be armed
+        // again.  Both calls start by dropping what they built before, and both leave `err` clear on a decline.
+        auto arm_prompt_helpers = [&]() {
+            if (peer.valid() && o.peer_prefill_rows != 0) {
+                const int64_t rows = o.peer_prefill_rows > 0 ? o.peer_prefill_rows : o.prefill_chunk * K / 2;
+                if (!sp.set_peer(&peer, rows, err)) {
+                    std::fprintf(stderr, "strata serve: %s - the prompt path stays on the primary GPU\n", err.c_str());
                     err.clear();
                 }
             }
-        }
+            // a layer split: a one-chunk prompt runs the stages one after the other, so each stage's prompt path gets the
+            // next stage's GPU (the last one the first's) to stream and compute a share of its experts meanwhile
+            if (multi_gpu && !stages.empty()) {
+                std::vector<std::pair<strata::prefill::Prefill*, int>> paths{{&sp, 0}};
+                for (const auto& st : stages) paths.emplace_back(&st->sp, st->dev);
+                for (size_t i = 0; i < paths.size(); ++i) {
+                    const strata::core::OnDevice on(paths[i].second);
+                    if (!paths[i].first->set_stage_helper(paths[(i + 1) % paths.size()].first, err)) {
+                        std::fprintf(stderr, "strata serve: %s - stage %zu reads its prompts alone\n", err.c_str(), i);
+                        err.clear();
+                    }
+                }
+            }
+        };
+        arm_prompt_helpers();
         mem_mark("the head and the prompt path");
         // #340: STRATA_SPLIT_SMALL_OWN=S (tokens): on a layer split, every stage that borrows keeps the slots for an
         // S-token chunk's buffers for the whole session (0.1.29's own buffers, carved from the tail of its cache):
@@ -10868,7 +10925,102 @@ int main(int argc, char** argv) {
                 std::printf("ERR %s\n", err.c_str());
                 return 1;
             }
-            if (o.prefill_head_alias && native_head.loaded()) {
+            // STRATA_MTP_ROOM_MIN: this prompt takes the drafter's experts, if they are this long and the room
+            // applies here.  The prompt path is laid out again around them (a spilled layout cannot be relaid out,
+            // so `lend` keeps this one for the request), and `room_close` below puts them back before the first
+            // window.  A room left open by an earlier request (a cancelled prompt) is closed first.
+            bool mtp_room_open = mtp_room_slots > 0 && !mtp.experts_resident();
+            // --prefill-head-alias is the same trade one device user over, and its rebuild is the rebuild below when
+            // the room applies to this request: the head's bytes and the drafter's go to the prompt path together
+            // (one `init_prompt_paths` with both flags), and `room_close` puts both back.  Without the room, both
+            // calls are the flag's own blocks, unchanged.
+            auto head_unload = [&]() {
+                if (o.prefill_head_alias && native_head.loaded()) native_head.unload();
+            };
+            auto head_restore = [&]() -> int {
+                if (!o.prefill_head_alias || native_head.loaded()) return 0;
+                sp.reset();
+                const auto head_t0 = Clock::now();
+                if (!native_head.load(o.native_head_shards, g.n_embd, n_vocab, err)) {
+                    std::printf("ERR restoring the native output head failed: %s\n", err.c_str());
+                    return 1;
+                }
+                // the verify windows' captured graphs read the head at the address of their capture
+                if (prefill_head_alias_at == nullptr) prefill_head_alias_at = native_head.weights();
+                if (native_head.weights() != prefill_head_alias_at) {
+                    std::printf("ERR --prefill-head-alias: the output head was reloaded at another address, so the "
+                                "captured verify graphs would read freed memory\n");
+                    return 1;
+                }
+                std::fprintf(stderr, "strata serve: --prefill-head-alias: output head restored in %.1f ms before decode\n",
+                             std::chrono::duration<double, std::milli>(Clock::now() - head_t0).count());
+                return 0;
+            };
+            // A rebuild lays every path out at its START-UP region again (`init_prompt_paths`: `borrow` for the path on
+            // this device, `pf_parts[i + 1].first` for a stage), so the lending state points there too: `lend` then
+            // finds first == first_now, marks only the slots the layout really covers as lent, and keeps the layout -
+            // which a spilled one requires anyway (it cannot be relaid out).
+            auto reanchor_loans = [&]() {
+                for (PfPart& p : pf_parts)
+                    if (p.first >= 0) p.first_now = p.first;
+            };
+            auto room_close = [&](const char* why) -> int {
+                for (size_t i = 0; i < stages.size(); ++i) stages[i]->sp.reset();
+                sp.reset();
+                const auto t0 = Clock::now();
+                if (!mtp.experts_back(err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                if (o.prefill_head_alias) {
+                    // the head goes back before any layout: a rebuild now would take its bytes.  The path is left
+                    // without buffers, as --prefill-head-alias leaves it - its own rebuild at the next request lays
+                    // it out again
+                    if (head_restore() != 0) return 1;
+                } else {
+                    if (init_prompt_paths(0) != 0) {
+                        std::printf("ERR rebuilding the prompt path after the prompt room failed: %s\n", err.c_str());
+                        return 1;
+                    }
+                    arm_prompt_helpers();
+                }
+                reanchor_loans();
+                mtp_room_open = false;
+                std::fprintf(stderr, "strata serve: prompt room (%s): the drafter's experts are back in %.1f ms\n", why,
+                             std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+                return 0;
+            };
+            if (mtp_room_open && room_close("left open") != 0) return 1;
+            if (mtp_room_slots > 0 && (int64_t) n >= mtp_room_min && mtp.experts_resident()) {
+                const auto room_t0 = Clock::now();
+                if (!mtp.experts_out(err)) {
+                    std::fprintf(stderr, "strata serve: prompt room: %s: this prompt reads as it always did\n", err.c_str());
+                } else {
+                    head_unload();
+                    for (size_t i = 0; i < stages.size(); ++i) stages[i]->sp.reset();
+                    sp.reset();
+                    if (init_prompt_paths(mtp_room_slots) == 0) {
+                        arm_prompt_helpers();
+                        reanchor_loans();
+                        mtp_room_open = true;
+                        std::fprintf(stderr, "strata serve: prompt room: %lld tokens, the drafter's %llu MiB are the "
+                                             "prompt path's (rebuilt in %.1f ms)\n", (long long) n,
+                                     (unsigned long long) (mtp.experts_bytes() >> 20),
+                                     std::chrono::duration<double, std::milli>(Clock::now() - room_t0).count());
+                    } else {
+                        // the roomed layout does not fit: everything back, and the prompt reads as it always did
+                        std::fprintf(stderr, "strata serve: prompt room: the layout with %d more ring slots does not "
+                                             "fit (%s): this prompt reads as it always did\n", mtp_room_slots, err.c_str());
+                        for (size_t i = 0; i < stages.size(); ++i) stages[i]->sp.reset();
+                        sp.reset();
+                        if (!mtp.experts_back(err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                        if (init_prompt_paths(0) != 0) {
+                            std::printf("ERR rebuilding the prompt path failed: %s\n", err.c_str());
+                            return 1;
+                        }
+                        arm_prompt_helpers();
+                        reanchor_loans();
+                    }
+                }
+            }
+            if (o.prefill_head_alias && native_head.loaded() && !mtp_room_open) {
                 const auto head_t0 = Clock::now();
                 native_head.unload();
                 sp.reset();
@@ -10876,6 +11028,7 @@ int main(int argc, char** argv) {
                     std::printf("ERR rebuilding the head-alias prompt path failed: %s\n", err.c_str());
                     return 1;
                 }
+                arm_prompt_helpers();   // the rebuild above dropped them (they live inside the layout)
                 std::fprintf(stderr, "strata serve: --prefill-head-alias: prompt workspace rebuilt in %.1f ms\n",
                              std::chrono::duration<double, std::milli>(Clock::now() - head_t0).count());
             }
@@ -11480,7 +11633,7 @@ int main(int argc, char** argv) {
                 // prompt needs, so a large chunk costs a short prompt nothing
                 const int64_t want_full = equal_chunk(tokens, o.prefill_chunk);
                 // #340: a short enough request reads in the stages' own S-token chunks (nothing lent)
-                const int64_t want = o.prefill_head_alias ? o.prefill_chunk
+                const int64_t want = o.prefill_head_alias || mtp_room_open ? o.prefill_chunk
                                    : split_small > 0 && tokens <= split_small_max ? std::min(want_full, split_small)
                                                                                   : want_full;
                 if (want <= 0) {
@@ -11500,8 +11653,10 @@ int main(int argc, char** argv) {
                     const strata::core::OnDevice on(p.dev);
                     int64_t want_p = want;
                     int32_t first = p.first_now;
-                    // --prefill-head-alias: the loan laid out at start (slot 1 on) is kept; a hybrid layout cannot relayout
-                    if (!o.prefill_head_alias) {
+                    // --prefill-head-alias: the loan laid out at start (slot 1 on) is kept; a hybrid layout cannot relayout.
+                    // STRATA_MTP_ROOM_MIN's room is the same case: its ring spilled past the loan, and it is put back
+                    // after the prompt (room_close), so this request keeps this layout
+                    if (!o.prefill_head_alias && !mtp_room_open) {
                         // #2090: the loan a chunk needs is NOT monotonic in the chunk: a chunk above the scan's small_max
                         // lays out the byte-budget ring (199 slots at 5120), one at or below it 0.1.39's (384 at 4096), so
                         // a request's smaller chunk can need MORE slots than the auto chunk's region (p.first) holds.  The
@@ -11824,23 +11979,8 @@ int main(int argc, char** argv) {
                 std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
                 return 1;
             }
-            if (o.prefill_head_alias) {
-                sp.reset();
-                const auto head_t0 = Clock::now();
-                if (!native_head.load(o.native_head_shards, g.n_embd, n_vocab, err)) {
-                    std::printf("ERR restoring the native output head failed: %s\n", err.c_str());
-                    return 1;
-                }
-                // the verify windows' captured graphs read the head at the address of their capture
-                if (prefill_head_alias_at == nullptr) prefill_head_alias_at = native_head.weights();
-                if (native_head.weights() != prefill_head_alias_at) {
-                    std::printf("ERR --prefill-head-alias: the output head was reloaded at another address, so the "
-                                "captured verify graphs would read freed memory\n");
-                    return 1;
-                }
-                std::fprintf(stderr, "strata serve: --prefill-head-alias: output head restored in %.1f ms before decode\n",
-                             std::chrono::duration<double, std::milli>(Clock::now() - head_t0).count());
-            }
+            if (mtp_room_open && room_close("prompt done") != 0) return 1;
+            if (head_restore() != 0) return 1;
             tr("prompt done (slots refilled)");
             if (il_parts > 0)
                 std::fprintf(stderr, "strata batch: the prompt was read in %lld parts, the slots decoding %.0f ms between "

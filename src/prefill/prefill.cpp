@@ -1316,6 +1316,16 @@ bool Prefill::carve(size_t T, void* alloc) {
         if (!m.mmq_ctx) m.mmq_ctx = std::make_unique<mmq::Context>();
     }
     m.ring = ring_slots(T);
+    const int ring_rule = m.ring;   // the rule's ring: inside the region, because the loan was sized for it
+    int ring_room = 0;              // THE PROMPT ROOM's extra slots (set_ring_room): past the region, one block, below
+    // THE PROMPT ROOM (set_ring_room): another device user's bytes, given back for this prompt.  The ring is carved
+    // last, so in a borrowed layout these are the buffers that spill past the region - and the only ones that can,
+    // because the region was sized (bytes_needed) for everything the rule's ring leaves.  Never past ring_cap():
+    // `copied`/`used` exist for i < ring_cap(), and the arrays are RING_MAX.
+    if (ring_room_ > 0 && m.ring > STAGE) {
+        const int64_t room = std::min<int64_t>((int64_t) ring_room_, (int64_t) ring_cap() - m.ring);
+        if (room > 0) { ring_room = (int) room; m.ring += (int) room; }
+    }
     if (o.base == nullptr && m.ring > 0) {
         // OWNED buffers: the ring in ONE allocation.  384 separate 2.7 MiB cudaMallocs each round up to a 2 MiB page
         // (~1.3 MiB a slot, ~0.5 GiB in all) that no count ever saw.  A borrowed region keeps its per-slot layout (and
@@ -1327,7 +1337,7 @@ bool Prefill::carve(size_t T, void* alloc) {
             m.used_of[i] = i;
         }
     } else {
-        for (int i = 0; i < m.ring; ++i) {
+        for (int i = 0; i < ring_rule; ++i) {
             m.stage_dev[i] = o.take<uint8_t>((size_t) MAXBLOB(), ok);
             m.stage_live[i] = false;                        // a new buffer: nothing of an earlier layout to wait for
             m.used_of[i] = i;
@@ -1336,6 +1346,25 @@ bool Prefill::carve(size_t T, void* alloc) {
     m.ple_emb = o.take<float>(T * N, ok);
     m.ple_norm = o.take<float>((size_t) strata::kernels::NG_HC_DIM, ok);
     take_stage(o, ss, s, m.stage, ok);
+    if (ring_room > 0) {
+        // THE PROMPT ROOM's slots, taken LAST and in ONE allocation: a slot at a time (`o.take`), each 4.98 MiB
+        // cudaMalloc rounds up to a 2 MiB page, and 135 of them are 130 MiB the free VRAM does not have.  Not through
+        // `o`: a spilled take would make every later buffer of the layout cudaMalloc too, and the region those come
+        // from is what the loan already paid for.
+        uint8_t* room_base = nullptr;
+        const uint64_t room_bytes = (uint64_t) ring_room * (uint64_t) MAXBLOB();
+        if (cudaMalloc((void**) &room_base, (size_t) room_bytes) != cudaSuccess) {
+            o.failed_bytes = room_bytes;
+            ok = false;
+        } else {
+            m.owned.push_back(room_base);
+            for (int i = ring_rule; i < m.ring; ++i) {
+                m.stage_dev[i] = room_base + (size_t) (i - ring_rule) * (size_t) MAXBLOB();
+                m.stage_live[i] = false;
+                m.used_of[i] = i;
+            }
+        }
+    }
     m.T = (int64_t) T;
     return ok;
 }

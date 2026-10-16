@@ -1786,6 +1786,13 @@ the pairs in which the switched arm won). They are here so you can try them on y
   instead of 512: prefill 292.5 -> 667.1 tok/s on a 29,854-token prompt (medians of 12 and 6 fresh-engine trials).
   Reads of up to 512 fresh tokens cost about 0.6-0.75 s more per request, and the card had 0 MiB free while decoding.
   Details, limits and the measurement: [PREFILL_HEAD_ALIAS.md](PREFILL_HEAD_ALIAS.md).
+- **`STRATA_MTP_ROOM_MIN=TOKENS` (`--serve`, `--mtp`): the MTP drafter's 512 routed experts are the prompt path's ring
+  while a prompt of TOKENS tokens or more is read** (0: every prompt). They are 708 MB that only the decode reads -
+  `record_rest` is their only reader; a prompt's passes run the draft layer's dense tensors and its K/V - so they are
+  copied into pinned host memory, freed, and given back to the prompt path's ring as extra staging slots, and they are
+  back before the first generated token. Not measured here yet, and the same switch in the reference implementation
+  ([mw00/project-maya#223](https://github.com/mw00/project-maya/pull/223)) moved the ring rather than the clock on a
+  compute-bound prompt. Details, how to measure it and what it costs: [MTP_PROMPT_ROOM.md](MTP_PROMPT_ROOM.md).
 
 ## Thread placement: `--aux-cpus` (Linux, off by default)
 

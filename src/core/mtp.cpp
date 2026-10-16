@@ -154,6 +154,7 @@ MtpDrafter::~MtpDrafter() {
     if (sh_join_) cudaEventDestroy(sh_join_);
     if (owns_weights_ && dense_) cudaFree(dense_);
     if (owns_weights_ && experts_) cudaFree(experts_);
+    if (experts_host_) cudaFreeHost(experts_host_);   // the prompt room's host copy (the device copy is out or here)
     if (state_arena_) cudaFree(state_arena_);
     if (arena_) cudaFree(arena_);
     if (head_logits_) cudaFree(head_logits_);
@@ -534,6 +535,90 @@ void MtpDrafter::record_top2(int j) {
         else if (b2 < 0 || v > lg_host_[(size_t) b2]) b2 = i;
     }
     top2_[(size_t) j] = b2 < 0 ? -1 : dhead_ != nullptr ? dvocab_host_[(size_t) b2] : (int32_t) b2;
+}
+
+// ---- the prompt room (see the header): the 512 experts leave the device while a prompt is read, and come back
+uint64_t MtpDrafter::experts_bytes() const {
+    if (!owns_weights_ || g_ == nullptr) return 0;          // a shared drafter's experts are the owner's to lend
+    if (experts_ == nullptr && !experts_lent_) return 0;
+    return (uint64_t) g_->n_expert * strata::kernels::cpu::BLOB;
+}
+
+void MtpDrafter::drop_expert_graphs() {
+    // The round and step graphs end in the MoE kernel, whose `experts_` argument was captured with the old address.
+    // The prefill graphs are the layer's K/V alone and stay.  `experts_out` and `experts_back` sync the drafter's
+    // stream first (its own `side_` branch is joined into it), so nothing is in flight here.
+    for (auto& e : round_exec_) if (e) { cudaGraphExecDestroy(e); e = nullptr; }
+    for (auto& e : step_exec_) if (e) { cudaGraphExecDestroy(e); e = nullptr; }
+    for (auto& e : round_exec_c_) if (e) { cudaGraphExecDestroy(e); e = nullptr; }
+    for (auto& e : step_exec_c_) if (e) { cudaGraphExecDestroy(e); e = nullptr; }
+}
+
+bool MtpDrafter::experts_out(std::string& err) {
+    const uint64_t bytes = experts_bytes();
+    if (bytes == 0) { err = "mtp: the 512 experts are not this drafter's to lend"; return false; }
+    if (experts_lent_) return true;
+    const OnDevice on_device(device_);
+    if (!idle(err)) return false;
+    if (chain_live_) { err = "mtp: a chain is in flight"; return false; }
+    if (experts_host_ == nullptr) {
+        // taken once and kept: the room opens and closes around every long prompt, and a second read of experts.bin
+        // (675 MiB) per prompt is what this avoids
+        if (cudaMallocHost(&experts_host_, (size_t) bytes) != cudaSuccess) {
+            (void) cudaGetLastError();
+            err = "mtp: the 512 experts have no room in pinned host memory (they stay in VRAM)";
+            return false;
+        }
+        experts_host_bytes_ = bytes;
+    }
+    if (cudaMemcpy(experts_host_, experts_, (size_t) bytes, cudaMemcpyDeviceToHost) != cudaSuccess) {
+        (void) cudaGetLastError();
+        err = "mtp: copying the 512 experts to host memory failed (they stay in VRAM)";
+        return false;
+    }
+    experts_at_ = experts_;
+    if (cudaFree(experts_) != cudaSuccess) {
+        (void) cudaGetLastError();
+        err = "mtp: freeing the 512 experts failed";
+        experts_at_ = nullptr;
+        return false;
+    }
+    experts_ = nullptr;
+    experts_lent_ = true;
+    return true;
+}
+
+bool MtpDrafter::experts_back(std::string& err) {
+    if (!experts_lent_) return true;
+    const OnDevice on_device(device_);
+    if (!idle(err)) return false;
+    void* p = nullptr;
+    if (cudaMalloc(&p, (size_t) experts_host_bytes_) != cudaSuccess) {
+        size_t fb = 0, tb = 0;
+        const cudaError_t info = cudaMemGetInfo(&fb, &tb);
+        (void) cudaGetLastError();
+        err = "mtp: the 512 experts do not fit in VRAM again (" + std::to_string(experts_host_bytes_ >> 20) +
+              " MiB, " + (info == cudaSuccess ? std::to_string(fb >> 20) + " MiB free" : std::string("free unknown")) +
+              ")";
+        return false;
+    }
+    if (cudaMemcpy(p, experts_host_, (size_t) experts_host_bytes_, cudaMemcpyHostToDevice) != cudaSuccess) {
+        (void) cudaFree(p);
+        (void) cudaGetLastError();
+        err = "mtp: copying the 512 experts back failed";
+        return false;
+    }
+    experts_ = (uint8_t*) p;
+    experts_lent_ = false;
+    if (experts_ != experts_at_) {
+        // the decode's graphs read them at the address of their capture (the prompt path's spilled ring, which took
+        // these bytes, is what usually moves them): drop the graphs, and the round that needs one captures it again
+        std::fprintf(stderr, "mtp: the 512 experts came back at %p, not %p: the round/step graphs are dropped\n",
+                     (void*) experts_, (void*) experts_at_);
+        drop_expert_graphs();
+        experts_at_ = experts_;
+    }
+    return true;
 }
 
 uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const {
@@ -994,6 +1079,7 @@ void MtpDrafter::norm_rope(float* data, const float* gamma, int rows, int cols, 
 
 bool MtpDrafter::record_rest(int step_row, cudaStream_t cs, std::string& err) {
     using namespace strata::kernels;
+    if (!decode_ready(err)) return false;   // this is the 512 experts' only reader
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
     const int T = 1;
@@ -1515,6 +1601,7 @@ DraftTiming g_dt;
 
 bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
                        float* probs, float min_p, int* n_drafts) {
+    if (!decode_ready(err)) return false;   // the steps read the 512 experts (record_rest)
 #if defined(STRATA_GPU_METAL)
     {
         if (T < 1 || T > max_t_ || a < 0 || a >= T) { err = "mtp: draft arguments out of range"; return false; }
@@ -1733,6 +1820,7 @@ bool MtpDrafter::prepare_chain(std::string& err) {
 bool MtpDrafter::chain_launch(int T, const int32_t* tokens, int64_t p, int a, const int32_t* force, int n_force,
                               int n_out, int n_early, std::string& err) {
     const OnDevice on_device(device_);
+    if (!decode_ready(err)) return false;   // the chain's step graphs read the 512 experts
     if (chain_live_) { err = "mtp: a chain is already in flight"; return false; }
     if (!force_on_ || ev_chain_ == nullptr) { err = "mtp: chains need prepare_chain"; return false; }
     if (T < 1 || T > max_t_ || a < 0 || a >= T || n_out < 1 || n_out > max_t_ - 1 || n_force < 0 || n_force > n_out ||
@@ -1814,6 +1902,7 @@ int MtpDrafter::chain_poll(std::string& err) {
 
 bool MtpDrafter::draft_first(int T, const float* R_row, int32_t token, int64_t cell, int32_t* drafts, std::string& err,
                              float* probs, float min_p, int* n_drafts) {
+    if (!decode_ready(err)) return false;   // the first round's steps read the 512 experts
 #if defined(STRATA_GPU_METAL)
     {   // the decode window's row 0 is the residual (the window that just ran)
         (void) R_row;
