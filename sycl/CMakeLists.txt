@@ -338,6 +338,18 @@ if(STRATA_SYCL_PARITY)
     target_link_libraries(${p}_parity PRIVATE strata_kernels)
     add_test(NAME ${p}_parity COMMAND ${p}_parity)
   endforeach()
+  # the opt-in decode QSA paths (STRATA_BATCH_QSA_ATTN, STRATA_QSA_TOPK_SCAN, STRATA_QSA_SCORES_TRANSPOSED,
+  # STRATA_ATTN_MERGE_ACTIVE) against the default ones, bitwise: the run without the switches writes the hashes of its
+  # outputs, the run with them requires the same hashes (both also check in process, synthetic, no model)
+  strata_resolve(_src src/kernels/qsa_verify_batch_parity.cpp)
+  add_executable(qsa_verify_batch_parity ${_src})
+  target_link_libraries(qsa_verify_batch_parity PRIVATE strata_kernels)
+  set(_qvb_ref ${CMAKE_CURRENT_BINARY_DIR}/qsa_verify_batch_ref.txt)
+  add_test(NAME qsa_verify_batch_parity COMMAND qsa_verify_batch_parity --selftest --write-ref ${_qvb_ref})
+  set_tests_properties(qsa_verify_batch_parity PROPERTIES FIXTURES_SETUP qsa_verify_batch_ref)
+  add_test(NAME qsa_verify_batch_parity_switches COMMAND qsa_verify_batch_parity --selftest --ref ${_qvb_ref})
+  set_tests_properties(qsa_verify_batch_parity_switches PROPERTIES FIXTURES_REQUIRED qsa_verify_batch_ref
+                       ENVIRONMENT "STRATA_QSA_TOPK_SCAN=1;STRATA_QSA_SCORES_TRANSPOSED=1;STRATA_ATTN_MERGE_ACTIVE=1")
   # not built here: qsa_topk_parity / qsa_topk_active_parity (the sm_90 thread-block-cluster QSA top-k has no SYCL
   # counterpart: the callers take the plain kernels), route_window_parity and fused_gr_bench (no migrated copy yet)
   # (upstream PR #413's gdn_rec_parity is an SM-holding NVIDIA bench - PTX timers, __nanosleep - not built here; the
