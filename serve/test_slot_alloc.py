@@ -353,6 +353,37 @@ class RetentionPolicy(unittest.TestCase):
                     e.slot_held[slot] = list(h)
                     e.slot_used[slot] = self.NOW - 300
 
+    def test_an_older_version_of_the_prompt_is_replaced_in_place_even_while_protected(self):
+        # 2026-10-16: each Claude Code classifier query inserts its new tool calls before the closing text of the
+        # last one's transcript, so it is no slot's continuation; every version took a blank slot of its own
+        e = self.e()
+        transcript = [1] * 42000
+        e.slot_held[3] = transcript + [8] * 60 + [9] * 40        # the last query, protected (just used)
+        e.slot_held[0] = [2] * 30000                              # another chat
+        prompt = transcript + [8] * 60 + [7] * 300 + [9] * 40
+        plan = self.place(e, prompt, padding_safe=True)
+        self.assertEqual((plan.slot, plan.reason), (3, "sibling"))
+        other = [1] * 20000 + [5] * 22000                         # shares under 98% of slot 3: a blank slot
+        self.assertEqual(self.place(e, other, padding_safe=True).reason, "reclaim")
+        self.assertEqual(self.place(e, prompt + [4], padding_safe=True).slot, 3)
+        e.slot_held[5] = transcript[:40000]                       # a full-prefix source still decides first
+        self.assertEqual(self.place(e, prompt, padding_safe=True).reason, "reuse")
+        e.slot_held[5] = []
+        e.slot_busy[3] = True                                     # a busy slot is never replaced
+        self.assertEqual(self.place(e, prompt, padding_safe=True).reason, "reclaim")
+        e.slot_busy[3] = False
+        slot_policy.configure({"STRATA_SLOT_SIBLING_SHARE": "0"})
+        try:
+            self.assertEqual(self.place(e, prompt, padding_safe=True).reason, "reclaim")   # 0: off
+        finally:
+            slot_policy.configure({})
+
+    def test_common_prefix(self):
+        for a, b, n in (([], [1], 0), ([1, 2, 3], [1, 2, 3], 3), ([1, 2, 3], [1, 2], 2), ([1, 2, 3], [1, 5, 3], 1),
+                        (list(range(100000)), list(range(77777)) + [0], 77777)):
+            self.assertEqual(slot_policy.common_prefix(a, b), n)
+            self.assertEqual(slot_policy.common_prefix(b, a), n)
+
     def test_match_moves_only_into_a_blank_slot_of_a_less_loaded_group(self):
         e = self.e()
         e.slot_busy[0] = True
@@ -637,6 +668,29 @@ class ParkMainSession(unittest.TestCase):
         e.slot_held[5] = [7] * 30000                      # this conversation, a few turns back
         self.assertEqual(self.dest(e), 5)
 
+    def test_an_older_version_is_replaced_by_the_park_protected_or_not(self):
+        # the main session ran a classifier query; slot 2 holds the previous one (the same transcript with another
+        # end), worth about as much as the main one, so the value ratio would never let the park take it
+        e = self.e()
+        e.slot_held = [[b] * 40000 for b in range(6)]                 # every slot holds another fresh conversation
+        e.slot_held[2] = e.main_held[:49900] + [3] * 80
+        self.assertEqual(self.dest(e), 2)
+        e.slot_held[4] = e.main_held[:49950] + [3] * 30               # the version sharing more goes first
+        self.assertEqual(self.dest(e), 4)
+        self.assertEqual(self.dest(e, exclude=(4,)), 2)
+        e.slot_held[1] = e.main_held[:30000]                          # its own older copy is still preferred
+        self.assertEqual(self.dest(e), 1)
+        e.slot_held[1] = [1] * 40000
+        e.slot_held[2] = e.main_held[:40000] + [3] * 9000             # 82%: another conversation
+        e.slot_held[4] = e.main_held[:40000] + [4] * 9000
+        self.assertIsNone(self.dest(e))
+        e.slot_held[2] = e.main_held[:49900] + [3] * 80
+        slot_policy.configure({"STRATA_SLOT_SIBLING_SHARE": "0"})
+        try:
+            self.assertIsNone(self.dest(e))                           # 0: off
+        finally:
+            slot_policy.configure({})
+
     def test_nowhere_to_park_without_evicting(self):
         e = self.e()
         e.slot_held = [[b] * 40000 for b in range(6)]     # every slot holds another fresh conversation
@@ -728,7 +782,8 @@ class PolicyTunables(unittest.TestCase):
         got = slot_policy.configure({"STRATA_SLOT_TTL_MAX_S": "240", "STRATA_SLOT_PARK_MIN_VALUE": "x"})
         self.assertEqual(got, {"ttl_max_s": 240.0,
                                "expired_keep_score": 0.01, "idle_value_zero_s": 1800.0, "park_value_ratio": 2.0,
-                               "park_min_value": 0.01, "park_kept_share": 0.98})
+                               "park_min_value": 0.01, "park_kept_share": 0.98,
+                               "sibling_share": 0.98})
         self.assertAlmostEqual(slot_policy.cache_ttl(100000), 180.0)     # the whole curve doubles
         self.assertAlmostEqual(slot_policy.cache_ttl(10 ** 6), 240.0)
         self.assertEqual(slot_policy.configure({})["ttl_max_s"], 120.0)
