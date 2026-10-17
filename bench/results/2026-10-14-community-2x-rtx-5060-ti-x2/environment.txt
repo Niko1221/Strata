@@ -1,0 +1,14 @@
+# Environment (recorded 2026-10-14 before the runs)
+
+OS:            Linux Mint 22.3, kernel 7.0.0-31-generic
+CPU:           Intel Xeon E5-2690 v4 @ 2.60 GHz, 1 CPU (1 socket), 14 cores / 28 threads, no AVX-512 (the engine logs "the expert kernels run on AVX-2"); 13 expert-pool workers + the host thread
+Motherboard:   HUANANZHI X99-BD4, BIOS 5.11 (from the 2026-10-05 report; unchanged hardware, dmidecode not re-run this day)
+RAM:           128 GB installed as 4x 32 GB DDR4-2133 ECC, quad-channel (from the 2026-10-05 report; 71 GB MemAvailable at benchmark start)
+Swap:          /swapfile 2 GB
+Storage:       repo + packs on Netac NVMe SSD 1TB (/); GGUF shards on SATA SSD (MSI S270 960 GB) at /mnt/data
+GPUs:          2x NVIDIA GeForce RTX 5060 Ti, 16,311 MiB each, power limit 180 W, compute capability 12.0; PCIe link max Gen3 x16 (idle link at query time Gen2 x8 on both cards)
+Driver:        NVIDIA 610.57.04 (CUDA UMD 13.3)
+CUDA:          toolkit 13.4 (/usr/local/cuda-13.4), gcc 13.3.0
+Strata build:  engine 0.1.44.1 (reported by /metrics), locally compiled, CMAKE_BUILD_TYPE=Release, CUDA_ARCHITECTURES=120; engine/BUILD.json: source local, src 7dfd34378bd2d32a, archs [120], vision gpu
+Repository:    main at 296b59d2 (in sync with origin/main at run time)
+Launch:        .venv/bin/python serve/server.py --engine strata --config strata-iq3_xxs.json --port 31000 --host 0.0.0.0
