@@ -56,6 +56,8 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-12: Tesla P40 24 GB (sm_61), 20 vCPUs of a Xeon E5-2695 v4 without AVX-512, 98 GB RAM](../bench/results/2026-10-12-p40-sm61-kernels/README.md):
   Strata `a0116b2` (0.1.43.1) CUDA 12.4 source build, Flash-Next IQ3_S, 262,144-token context, the profile of a prompt and of a decode window on Pascal and four bitwise changes for sm_61:
   a 565-token prompt 205 -> 255 tok/s, decode 34-35 -> 37-38 tok/s, and with the opt-in `STRATA_DENSE_F32=1` a 7K prompt 360-432 -> 464-474 tok/s. Short and 7K prompts only; cuBLAS 12.4 only.
+- [2026-10-14: RTX 3080 Laptop 8 GB (sm_86), i7-11800H, 32 GB RAM, Linux](../bench/results/2026-10-14-community-rtx-3080-laptop-gpu-qwen3-8-flash-next-coder-iq1-m/README.md):
+  Strata 0.1.44.1 source build, Coder IQ1_M (resident low-RAM mode) and original Flash-Next IQ2_XS (mapped: VRAM + RAM + NVMe), 32,768-token context, int8 KV, setup's configs. One engine start per configuration, 9 short chats and three runs each at 4K and 16K prompt tokens. Coder chat decode 24.0 tok/s, prompt 294 / 283 tok/s at 4K / 16K (541 / 628 with `STRATA_PREFILL_CPU_SHARE=auto`); IQ2_XS chat decode 32.6 tok/s, prompt 226 / 196 tok/s. Answers the "Linux host with 32 GB of RAM or less" request (#1194). An 8 GB laptop card.
 - [2026-10-09: RTX 5060 Ti 16 GB + Xeon E5-2680 v4 (Windows 10)](../bench/results/2026-10-09-community-rtx-5060-ti-e5-2680-v4/README.md):
   Strata 0.1.41, Coder IQ1_M and abliterated Q2_0 at 262K; prompt and decode at 4K / 32K / 128K.
 - [2026-10-09: RTX 5060 Ti 16 GB under WSL2, Ryzen 7 3700X, 128 GB RAM](../bench/results/2026-10-09-community-rtx-5060ti-wsl2-iq3_s-0141/README.md):
