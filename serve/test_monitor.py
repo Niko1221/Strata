@@ -256,6 +256,17 @@ class ConversationCacheCard(unittest.TestCase):
             self.assertIn(f'id="{el}"', html)
             self.assertIn(f'"{el}"', js)
 
+    def test_the_workers_card_is_on_the_page_and_opt_in(self):
+        """One widget per batch slot (#465). The card is in the markup but hidden: without "parallel": N in the
+        run config /metrics sends no live.parallel, so the Monitor stays as it was."""
+        web = Path(__file__).parent / "web"
+        html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
+        for el in ("workers-card", "workers-sum", "workers", "workers-note"):
+            self.assertIn(f'id="{el}"', html)
+            self.assertIn(f'"{el}"', js)
+        self.assertIn('id="workers-card" hidden', html)
+        self.assertIn("card.hidden = !live.parallel", js)
+
 
 if __name__ == "__main__":
     unittest.main()

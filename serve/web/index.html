@@ -112,6 +112,13 @@
         <div class="st-progress" id="state-progress"><div class="st-progress__bar" id="state-bar" style="width:0%"></div></div>
       </div>
 
+      <!-- one widget per batch slot: "parallel": N in the run config (docs/BATCHING.md), shown only when N > 1 -->
+      <div class="st-card workers-card" id="workers-card" hidden>
+        <div class="req-head"><span class="card-title">Workers</span><span class="muted small" id="workers-sum"></span></div>
+        <div class="workers" id="workers"></div>
+        <p class="muted small workers-note" id="workers-note"></p>
+      </div>
+
       <div class="metrics" id="metrics">
         <!-- filled by app.js: Speed, GPU load, VRAM, GPU temp, Power, PCIe, CPU, Disk read -->
       </div>

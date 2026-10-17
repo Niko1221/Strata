@@ -99,6 +99,23 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-metric__spark .speed-prefill { color: color-mix(in srgb, var(--st-accent) 65%, black); }
 .st-metric__spark[data-tone="warn"] { color: var(--st-warn); }
 .st-metric__spark[data-tone="info"] { color: var(--st-info); }
+/* Batch slots (#465, "parallel": N): one widget per slot, so several agents' speeds are side by side. */
+.workers-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
+.workers-card[hidden] { display: none; }
+.workers { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--st-s-4); }
+.worker { display: flex; flex-direction: column; gap: var(--st-s-2); min-width: 0; padding: var(--st-s-4);
+          border: 1px solid var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface-2);
+          transition: border-color var(--st-dur) var(--st-ease), background var(--st-dur) var(--st-ease); }
+.worker[data-state="decoding"] { border-color: var(--st-accent); background: var(--st-accent-tint); }
+.worker[data-state="reading"] { border-color: var(--st-info); background: var(--st-info-tint); }
+.worker__head { display: flex; align-items: center; justify-content: space-between; gap: var(--st-s-2); }
+.worker__name { font-size: var(--st-fs-sm); font-weight: var(--st-fw-bold); }
+.worker__rate { line-height: 1; font-size: clamp(22px, 2.2vw, var(--st-fs-stat)); }
+.worker__rate small { font-size: var(--st-fs-md); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin-left: 4px; }
+.worker__ctx { display: flex; justify-content: space-between; gap: var(--st-s-2); font-size: var(--st-fs-xs);
+               color: var(--st-ink-muted); font-variant-numeric: tabular-nums; }
+.workers-note { margin: 0; }
+.workers-note:empty { display: none; }
 .monitor-row { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2.4fr); gap: var(--st-s-4); }
 .ctx-card { display: flex; flex-direction: column; gap: var(--st-s-2); }
 .ctx-gauge { position: relative; width: 150px; height: 150px; margin: var(--st-s-2) auto var(--st-s-3); }

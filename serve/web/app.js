@@ -188,7 +188,11 @@ function render(m) {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
     setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
   } else if (live.state === "generating") {
-    setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
+    // several slots decoding together (#465): every stream's own rate, so two agents are visible at once
+    const rates = (live.slots || []).filter((s) => s.state === "decoding" && s.tok_s != null).map((s) => s.tok_s);
+    setPill("generating", rates.length > 1
+      ? `${rates.length} decoding · ${rates.map((r) => fmt(r, 1)).join(" + ")} tok/s`
+      : `Generating · ${fmt(live.tok_s, 1)} tok/s`);
   } else {
     setPill("idle", "Idle");
   }
@@ -240,7 +244,65 @@ function renderTotals(t) {
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
+// Batch slots (#465, "parallel": N in the run config): one widget per slot, each with its own live tok/s, so
+// agents running together are visible side by side. Built once per slot count and updated in place, so the
+// state and progress transitions animate instead of being replaced every second.
+const text2 = (el, value) => { const s = String(value); if (el && el.textContent !== s) el.textContent = s; };
+let workerWidgets = [];
+function workerWidgetsFor(n) {
+  if (workerWidgets.length === n) return workerWidgets;
+  $("workers").replaceChildren();
+  workerWidgets = Array.from({length: n}, (_, i) => {
+    const el = document.createElement("div");
+    el.className = "worker"; el.dataset.state = "idle";
+    el.innerHTML = `<div class="worker__head"><span class="worker__name">Worker ${i + 1}</span><span class="st-badge worker__badge">Free</span></div>
+      <div class="st-metric__value worker__rate">&ndash;</div>
+      <div class="st-metric__sub worker__sub"></div>
+      <div class="st-progress"><div class="st-progress__bar worker__bar" style="width:0%"></div></div>
+      <div class="worker__ctx"><span class="worker__ctx-label">Context</span><span class="worker__ctx-value">&ndash;</span></div>`;
+    $("workers").append(el);
+    return {el, badge: el.querySelector(".worker__badge"), rate: el.querySelector(".worker__rate"),
+            sub: el.querySelector(".worker__sub"), bar: el.querySelector(".worker__bar"),
+            ctx: el.querySelector(".worker__ctx-value")};
+  });
+  return workerWidgets;
+}
+function renderWorkers(live, eng) {
+  const card = $("workers-card"), slots = live.slots || [];
+  card.hidden = !live.parallel;
+  if (!live.parallel) return;                                   // one request at a time: the card stays away
+  const busy = slots.filter((s) => s.state !== "idle");
+  const waiting = (live.waiting || 0) + (live.admitting || 0);
+  text2($("workers-sum"), `${busy.length} / ${slots.length} slots busy` +
+    (live.running ? ` · ${fmt(live.running)} running` : "") + (waiting ? ` · ${fmt(waiting)} waiting` : ""));
+  const ctx = eng.max_context || 0;
+  const widgets = workerWidgetsFor(slots.length);
+  for (const s of slots) {
+    const w = widgets[s.slot] || widgets[0];
+    if (!w) continue;
+    const decoding = s.state === "decoding", reading = s.state === "reading";
+    w.el.dataset.state = s.state;
+    text2(w.badge, decoding ? "Decoding" : reading ? "Reading" : "Free");
+    w.badge.className = `st-badge worker__badge${decoding ? " st-badge--generating" : reading ? " st-badge--reading" : ""}`;
+    if (decoding && s.tok_s != null) w.rate.innerHTML = `${fmt(s.tok_s, 1)}<small>t/s</small>`;
+    else w.rate.innerHTML = "&ndash;";
+    text2(w.sub, decoding ? `${fmt(s.generated)} tokens · ${fmt(s.elapsed_s, 1)} s in this slot`
+          : reading ? `reading ${fmt(s.prompt_tokens)} prompt tokens`
+          : s.held_tokens ? `holds ${fmt(s.held_tokens)} tokens for its next turn` : "free for a request");
+    const used = s.state === "idle" ? (s.held_tokens || 0) : (s.prompt_tokens || 0) + (s.generated || 0);
+    const pct = ctx ? Math.min(100, (100 * used) / ctx) : 0;
+    w.bar.style.width = `${pct.toFixed(2)}%`;
+    text2(w.ctx, ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : `${fmt(used)} tokens`);
+  }
+  const note = live.outside_slots
+    ? `${fmt(live.outside_slots)} request is outside a slot: on the solo path, or waiting for a free one.`
+    : busy.length >= slots.length && slots.length > 1
+        ? `${slots.length === 2 ? "Both" : `All ${slots.length}`} decode together in the same windows: separate, simultaneous streams.`
+        : "Every slot keeps its conversation, so an agent's next turn lands here without re-reading its history.";
+  text2($("workers-note"), note);
+}
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
+  renderWorkers(live, eng);
   // model state
   const on = live.queued > 0 ? "queued" : live.state;
   for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);
