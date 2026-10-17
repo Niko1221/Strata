@@ -191,6 +191,9 @@ public:
     /// run_split_multi's phases, accumulated ms: gate/up rows, the intermediate quantization, down rows.
     double ms_multi_gu = 0, ms_multi_q = 0, ms_multi_down = 0;
     int64_t multi_bytes = 0;
+    /// Layers run fused (STRATA_POOL_FUSED=1): no barrier between an expert's gate/up rows and its down rows, so one
+    /// expert's down overlaps another's gate/up.  Their whole time is in ms_multi_gu (ms_multi_down gets none).
+    int64_t multi_fused = 0;
 
     /// Total `_mm_pause` iterations spent waiting, over all workers, is no longer counted - see the note on the
     /// atomics below.  It was a LOCKED read-modify-write in the park loop, so measuring the contention added to
@@ -300,6 +303,14 @@ private:
     };
     const NativeFmt* nfmt_ = nullptr;
     std::vector<SplitBufMulti> split_multi_;
+    // run_split_multi_native's fused layer, mode 7: task i is forder_[i] = expert << 8 | down << 7 | part.  An
+    // expert's down parts wait for fready_[expert] == fbatch_, which the thread finishing its last gate/up part
+    // (fgu_left_ reaching 0) sets after quantizing the intermediate.
+    std::vector<int> forder_;
+    std::unique_ptr<std::atomic<int32_t>[]> fgu_left_;
+    std::unique_ptr<std::atomic<uint32_t>[]> fready_;
+    uint32_t fbatch_ = 0;
+    int fparts_gu_ = 8, fparts_d_ = 4;
     PoolAffinity affinity_ = PoolAffinity::All;
     CpuTopology topo_;
 };

@@ -1531,6 +1531,10 @@ if(STRATA_NATIVE_EXPERTS)
   # MODEL-UPDATE: the pool's expert rows per format on T threads against the RAM bandwidth (a benchmark, no test)
   add_executable(kq_cpu_bench src/kernels/cpu/kq_cpu_bench.cpp)
   target_link_libraries(kq_cpu_bench PRIVATE strata_kernels_cpu)
+  # the real ExpertPool at decode's batch size (one layer's CPU experts a call), with an output hash: its batching
+  # against kq_cpu_bench, and STRATA_POOL_FUSED against the phases
+  add_executable(pool_layer_bench src/kernels/cpu/pool_layer_bench.cpp)
+  target_link_libraries(pool_layer_bench PRIVATE strata_kernels_cpu)
   if(STRATA_BUILD_TESTS)
     add_test(NAME iq_avx2_parity COMMAND iq_avx2_parity)
     add_test(NAME iq_avx2_parity_iq3s_mt1 COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ3S_MT1=1 $<TARGET_FILE:iq_avx2_parity>)
