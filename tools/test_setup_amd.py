@@ -509,6 +509,60 @@ class DeviceAccess(unittest.TestCase):
         self.assertIn("another program (or an engine that is still exiting)", src)
 
 
+class EngineLaunchEnv(unittest.TestCase):
+    """#2372: every engine program setup runs gets the ready-made HIP engine's rocm/bin on PATH, or Windows shows a
+    "hipblas.dll not found" dialog per DLL and `strata --families` prints nothing (setup then said the engine does
+    not run Qwen3.6)."""
+
+    def engine(self, tmp: Path) -> Path:
+        eng = tmp / "engine"
+        (eng / "rocm" / "bin").mkdir(parents=True)
+        (eng / "BUILD.json").write_text('{"backend": "hip", "lib_dirs": ["rocm/bin"]}', encoding="utf-8")
+        return eng
+
+    def test_engine_env_puts_rocm_bin_first(self):
+        with tempfile.TemporaryDirectory() as t:
+            eng = self.engine(Path(t))
+            with mock.patch.dict("os.environ", {"PATH": "C:\\Windows"}):
+                env = setup.engine_env(eng)
+            self.assertEqual(env["PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))
+            self.assertTrue(env["PATH"].endswith("C:\\Windows"))
+
+    def test_engine_without_lib_dirs_keeps_the_environment(self):
+        with tempfile.TemporaryDirectory() as t:
+            with mock.patch.dict("os.environ", {"PATH": "/usr/bin"}):
+                self.assertEqual(setup.engine_env(Path(t))["PATH"], "/usr/bin")
+
+    def test_families_probe_runs_with_that_env(self):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"], seen["env"] = cmd, kw.get("env")
+            return mock.Mock(stdout="qwen4exp qwen35moe\n")
+        with tempfile.TemporaryDirectory() as t:
+            eng = self.engine(Path(t))
+            with mock.patch.object(setup.subprocess, "run", fake_run):
+                names = setup.engine_families(eng)
+            self.assertEqual(names, {"qwen4exp", "qwen35moe"})
+            self.assertEqual(seen["cmd"][1], "--families")
+            self.assertEqual(seen["env"]["PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))
+
+    def test_device_probe_runs_with_that_env(self):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["env"] = kw.get("env")
+            return mock.Mock(returncode=0, stdout="device 0: AMD Radeon RX 7900 XT\n  arch gfx1100, 20.0 GiB, wave32\n")
+        with tempfile.TemporaryDirectory() as t:
+            eng = self.engine(Path(t))
+            probe = eng / ("strata-device.exe" if setup.WIN else "strata-device")
+            probe.write_text("x")
+            with mock.patch.object(setup.subprocess, "run", fake_run),                     mock.patch.object(setup, "hip_runtime_beside_exe", lambda d: None):
+                found = setup.hip_devices(probe)
+            self.assertEqual(found[0]["arch"], "gfx1100")
+            self.assertEqual(seen["env"]["PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))
+
+
 class TdrPointer(unittest.TestCase):
     def test_setup_points_windows_gfx12_to_the_entry(self):
         src = Path(setup.__file__).read_text(encoding="utf-8")

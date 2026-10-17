@@ -93,7 +93,7 @@ arm = [f"-DGGML_CPU_ARM_ARCH={setup.arm_cpu_arch()}"] if setup.ARM else []
 vision = "gpu" if os.environ.get("BUILD_VISION", "1") == "1" else "none"
 
 setup.cmake_build(setup.ROOT, setup.ROOT / "build", "strata",
-    ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF",
+    ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DSTRATA_BUILD_TESTS=OFF",
      f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
      f"-DSTRATA_GGML_DIR={llama}", *arm], None, "build-strata.bat")
 if vision != "none":

@@ -89,6 +89,7 @@ private:
     void ahead(int ln, int T, const float* pred, int K);
     void submit(int slot, int l, int e, bool urgent);
     void wait_slot(int s);
+    uint8_t* standalone_region(uint64_t bytes);   // the prompt's buffers as their own allocation, when no region of the arena's slots takes them
 
     int fd_ = -1;
     // <gguf>.experts (metal/tools/stream_experts.py): each expert's gate, up and down rows together, read with one
