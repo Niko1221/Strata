@@ -3,6 +3,7 @@
 //   1. `auto` picks the most groups, at most one per stage, that divide the slots;
 //   2. a layer split with --batch >= 2 and no --batch-groups means `auto` (0.1.41);
 //   3. --batch-mtp (or --adapt-async 1) turns that default into one group, and says which feature did it;
+//      with STRATA_PIPED_MTP and one slot per group, --batch-mtp keeps the pipeline and drafts in it;
 //   4. a number or `auto` given explicitly is honoured, with or without those features;
 //   5. no layer split: the number given (1) stays.
 #include "strata/program/batch_groups.hpp"
@@ -57,6 +58,26 @@ int main() {
         check(r.groups == 1 && r.from_auto && r.serial == bg::Serial::BatchMtp && r.would_be == 2 && !r.mtp_dropped,
               "STRATA_BATCH_MTP_SERIAL: one group, because of --batch-mtp");
         check(bg::serial_what(r.serial)[0] == '-', "the reason names the feature");
+    }
+    {   // STRATA_PIPED_MTP: one slot per group pipelines AND drafts
+        bg::Input i = in(4, 3);
+        i.batch_mtp = true;
+        i.mtp_piped = true;
+        auto r = bg::resolve(i);
+        check(r.groups == 4 && r.mtp_piped && !r.mtp_dropped && r.serial == bg::Serial::None,
+              "STRATA_PIPED_MTP, 4 slots on 4 GPUs: 4 groups of 1 slot, and the drafts stay");
+        i.batch = 8;   // two slots per group: the pipelined path drafts only for one slot per group
+        r = bg::resolve(i);
+        check(r.groups == 4 && !r.mtp_piped && r.mtp_dropped, "STRATA_PIPED_MTP, 8 slots on 4 GPUs: dropped as before");
+        i.batch = 4;
+        i.mtp_serial = true;   // asked for the serial windows: those win
+        r = bg::resolve(i);
+        check(r.groups == 1 && !r.mtp_piped && r.serial == bg::Serial::BatchMtp,
+              "STRATA_PIPED_MTP with STRATA_BATCH_MTP_SERIAL: one serial group");
+        i.mtp_serial = false;
+        i.batch_mtp = false;
+        r = bg::resolve(i);
+        check(r.groups == 4 && !r.mtp_piped && !r.mtp_dropped, "STRATA_PIPED_MTP without --batch-mtp: nothing to draft");
     }
     {
         bg::Input i = in(2, 1);

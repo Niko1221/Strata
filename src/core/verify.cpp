@@ -583,6 +583,11 @@ Verifier::~Verifier() {
         if (kv.second) cudaGraphExecDestroy(kv.second);
     if (arena_b_) cudaFree(arena_b_);
     if (h_commitb_) cudaFreeHost(h_commitb_);
+    for (auto* m : {&save_bm_, &dcommit_bm_})
+        for (auto& kv : *m)
+            if (kv.second) cudaGraphExecDestroy(kv.second);
+    if (dc_arena_) cudaFree(dc_arena_);
+    if (h_commitd_) cudaFreeHost(h_commitd_);
     if (qcnt_) cudaFree(qcnt_);
     if (d_spec_) cudaFree(d_spec_);
     if (logit_bias_device_) cudaFree(logit_bias_device_);
@@ -3402,6 +3407,234 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
     return made;
 }
 
+// ---- STRATA_PIPED_MTP: commits after the verdict (see the header)
+
+bool Verifier::init_deferred_commit(int rows, std::string& err) {
+    const OnDevice on_device(device_);
+    if (slots_.empty()) { err = "verify: init_deferred_commit before init_slots"; return false; }
+    if (rows < 1) { err = "verify: init_deferred_commit needs at least one row"; return false; }
+    const ModelGeometry& g = *g_;
+    const uint64_t R = (uint64_t) rows, C = (uint64_t) g.ssm_conv_channels, HV = (uint64_t) g.ssm_v_heads;
+    const uint64_t ID = (uint64_t) g.idx_key_dim;
+    const uint64_t nG = (uint64_t) std::max<int64_t>(g.n_gdn_layers(), 1), nQ = (uint64_t) std::max<int64_t>(g.n_qsa_layers(), 1);
+    const uint64_t HS = (uint64_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM;
+    const uint64_t CB = 2 + (uint64_t) max_t_, nS = (uint64_t) slots_.size();
+    const uint64_t floats[6] = {nG * R * C, nG * R * C, nG * R * HV, nG * R * HV, nQ * R * ID, R * HS};
+    uint64_t bytes = (nS * CB * 4 + 255) & ~255ull;
+    for (uint64_t f : floats) bytes += (f * 4 + 255) & ~255ull;
+    if (cudaMalloc(&dc_arena_, bytes) != cudaSuccess) {
+        err = "verify: the saved commit rows (" + std::to_string(bytes >> 20) + " MiB) do not fit";
+        return false;
+    }
+    uint8_t* p = (uint8_t*) dc_arena_;
+    commitd_ = (int32_t*) p;
+    p += (nS * CB * 4 + 255) & ~255ull;
+    float** dst[6] = {&dc_qkv_, &dc_h_, &dc_gate_, &dc_beta_, &dc_idx_, &dc_hist_};
+    for (int i = 0; i < 6; ++i) {
+        *dst[i] = (float*) p;
+        p += (floats[i] * 4 + 255) & ~255ull;
+    }
+    if (!mapped((size_t) (nS * CB * 4 + 16), (void**) &h_commitd_, (void**) &m_commitd_)) {
+        err = "verify: the deferred commit staging failed";
+        return false;
+    }
+    dc_rows_ = rows;
+    std::fprintf(stderr, "strata verify: pipelined batch windows commit after the verdict (layers [%lld, %lld), %d rows, "
+                         "%.1f MiB saved rows)\n", (long long) lb_, (long long) le_, rows, (double) bytes / 1048576.0);
+    return true;
+}
+
+bool Verifier::capture_deferred(const int* rows, int S, int hbase, std::string& err) {
+    using namespace strata::kernels;
+    const auto key = bkey(rows, S, hbase);
+    cudaGraphExec_t& sex = save_bm_[key];
+    cudaGraphExec_t& cex = dcommit_bm_[key];
+    if (sex != nullptr && cex != nullptr) return true;
+    const ModelGeometry& g = *g_;
+    const QsaShapes s = shapes_of(g);
+    const int64_t C = g.ssm_conv_channels, HV = g.ssm_v_heads, ZV = g.ssm_value_dim, ID = g.idx_key_dim, MT = max_t_;
+    const int64_t R = dc_rows_, CB = 2 + MT, nQ = g.n_qsa_layers();
+    const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
+                                (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
+    const int64_t TS = (s.idx_block - 1) * ID;
+    const int64_t HS = (int64_t) NG_HIST * NG_HC_DIM;
+    const bool ple = ss_->ple.ready() && ple_stage();
+    auto layer_index = [&](int64_t& qsa_index, int64_t& gdn_index) {
+        qsa_index = gdn_index = 0;
+        for (int64_t l = 0; l < lb_; ++l) (is_qsa_layer(g, l) ? qsa_index : gdn_index) += 1;
+    };
+    auto finish = [&](cudaGraphExec_t& ex, bool ok, const char* what) {
+        cudaGraph_t graph = nullptr;
+        const cudaError_t ce = cudaStreamEndCapture(cs_, &graph);
+        if (!ok || ce != cudaSuccess) {
+            if (graph) cudaGraphDestroy(graph);
+            if (ok) err = std::string(what) + cudaGetErrorString(ce);
+            return false;
+        }
+        const bool made = instantiate_evicting(ex, graph, key, what, err);
+        cudaGraphDestroy(graph);
+        return made;
+    };
+    // the save: the window's rows [0, S) of the scratch the commit replays -> the group's saved rows [hbase, +S)
+    if (sex == nullptr) {
+        if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
+            err = "verify: begin save capture failed";
+            return false;
+        }
+        bool ok = true;
+        int64_t qsa_index = 0, gdn_index = 0;
+        layer_index(qsa_index, gdn_index);
+        auto copy = [&](float* dst, const float* src, int64_t n) {
+            ok = ok && cudaMemcpyAsync(dst, src, (size_t) n * sizeof(float), cudaMemcpyDeviceToDevice, cs_) == cudaSuccess;
+        };
+        for (int64_t l = lb_; l < le_; ++l) {
+            if (!is_qsa_layer(g, l)) {
+                copy(dc_qkv_ + (size_t) (gdn_index * R + hbase) * C, qkv_L_ + (size_t) gdn_index * MT * C, S * C);
+                copy(dc_h_ + (size_t) (gdn_index * R + hbase) * C, h_L_ + (size_t) gdn_index * MT * C, S * C);
+                copy(dc_gate_ + (size_t) (gdn_index * R + hbase) * HV, gate_L_ + (size_t) gdn_index * MT * HV, S * HV);
+                copy(dc_beta_ + (size_t) (gdn_index * R + hbase) * HV, beta_L_ + (size_t) gdn_index * MT * HV, S * HV);
+                ++gdn_index;
+            } else {
+                copy(dc_idx_ + (size_t) (qsa_index * R + hbase) * ID, idx_raw_L_ + (size_t) qsa_index * MT * ID, S * ID);
+                ++qsa_index;
+            }
+        }
+        if (ple) copy(dc_hist_ + (size_t) hbase * HS, hist_snap_, S * HS);
+        if (!finish(sex, ok, "verify: save capture: ")) {
+            if (ok && err.empty()) err = "verify: save capture failed";
+            return false;
+        }
+    }
+    // the commit: as capture_commit_batch, replaying the saved rows; the accepted prefixes come from commitd_
+    if (cex == nullptr) {
+        if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
+            err = "verify: begin deferred commit capture failed";
+            return false;
+        }
+        bool ok = true;
+        try {
+            for (int t = 0; t < S; ++t)
+                if (t == 0 || rows[t] != rows[t - 1])
+                    copy_i32_from_mapped(commitd_ + (size_t) rows[t] * CB, m_commitd_ + (size_t) rows[t] * CB, CB, cs_);
+            int64_t qsa_index = 0, gdn_index = 0;
+            layer_index(qsa_index, gdn_index);
+            for (int64_t l = lb_; l < le_ && ok; ++l) {
+                const LayerView v(*wt_, l);
+                if (!is_qsa_layer(g, l)) {
+                    const WeightRef* wnm = need(v, "ssm_norm.weight", err);
+                    if (!wnm) { ok = false; break; }
+                    for (int t = 0; t < S;) {
+                        const int first = t;
+                        while (t < S && rows[t] == rows[first]) ++t;
+                        SessionState& sx = *slots_[(size_t) rows[first]];
+                        const int32_t* keep = commitd_ + (size_t) rows[first] * CB;
+                        float* state = sx.gdn_state + (size_t) (gdn_index - sx.gdn_ord0) * gdn_floats;
+                        float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                        const int64_t row = gdn_index * R + hbase + first;
+                        gdn_conv_commit(conv, dc_qkv_ + (size_t) row * C, (int) C, keep, cs_);
+                        // z only feeds the norm's output, which the commit discards (y_dummy_): the window scratch will do
+                        gdn_step_norm_multi(state, dc_h_ + (size_t) row * C, (int) C, dc_gate_ + (size_t) row * HV,
+                                            dc_beta_ + (size_t) row * HV, z_ + (size_t) first * ZV,
+                                            (const float*) wnm->data, EPS, y_dummy_ + (size_t) first * ZV,
+                                            (int) g.ssm_k_heads, (int) HV, t - first, keep, cs_,
+                                            t - first > 1 ? t - first : 0);
+                    }
+                    ++gdn_index;
+                } else {
+                    const WeightRef* wikn = need(v, "indexer.k_norm.weight", err);
+                    if (!wikn) { ok = false; break; }
+                    for (int t = 0; t < S;) {
+                        const int first = t;
+                        while (t < S && rows[t] == rows[first]) ++t;
+                        const QsaState& st = slots_[(size_t) rows[first]]->qsa_states[qsa_index];
+                        copy_from_mapped(st.idx_tail, tail_snap_b_ + ((size_t) rows[first] * nQ + qsa_index) * TS, TS, cs_);
+                        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
+                        for (int u = first; u < t; ++u)
+                            native_qsa_indexer_append(dc_idx_ + (size_t) (qsa_index * R + hbase + u) * ID,
+                                                      commitd_ + (size_t) rows[first] * CB + 2 + (u - first), 0,
+                                                      (const float*) wikn->data, EPS, ib, s, st.max_cells,
+                                                      rope_scaling(), cs_);
+                    }
+                    ++qsa_index;
+                }
+            }
+            if (ok && ple)
+                for (int t = 0; t < S;) {
+                    const int first = t;
+                    while (t < S && rows[t] == rows[first]) ++t;
+                    copy_indexed(slots_[(size_t) rows[first]]->ple_hist, dc_hist_ + (size_t) (hbase + first) * HS, HS,
+                                 commitd_ + (size_t) rows[first] * CB + 1, HS, cs_);
+                }
+        } catch (const std::exception& e) {
+            err = std::string("verify deferred commit: ") + e.what();
+            ok = false;
+        }
+        if (!finish(cex, ok, "verify: deferred commit capture: ")) {
+            if (ok && err.empty()) err = "verify: deferred commit capture failed";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool Verifier::batch_launch_rows(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos,
+                                 std::string& err) {
+    const OnDevice on_device(device_);
+    if (dc_rows_ < 1) { err = "verify: batch_launch_rows without init_deferred_commit"; return false; }
+    if (b_running_) { err = "verify: batch_launch_rows while this stage is busy"; return false; }
+    if (S < 1 || hbase < 0 || hbase + S > dc_rows_) { err = "verify: a pipelined window outside the saved rows"; return false; }
+    if (pre_launch_ && !pre_launch_(cs_, err)) return false;
+    staging_deferred_ = true;
+    const bool staged = stage_batch(rows, S, hbase, tokens, pos, err);
+    staging_deferred_ = false;
+    if (!staged || !capture_deferred(rows, S, hbase, err)) return false;
+    const auto key = bkey(rows, S, hbase);
+    cudaError_t le = cudaGraphLaunch(exec_bm_[key], cs_);
+    if (le == cudaSuccess) le = cudaGraphLaunch(save_bm_[key], cs_);   // the rows the commit replays, kept for it
+    if (le != cudaSuccess) { err = std::string("verify: batch launch: ") + cudaGetErrorString(le); return false; }
+    (void) cudaStreamQuery(cs_);
+    b_k_ = 0;
+    b_steps_ = le_ - lb_;
+    ring_now();
+    b_running_.store(true, std::memory_order_release);   // last: an external server reads the rest after it
+    return true;
+}
+
+bool Verifier::batch_commit_rows(const int* rows, int S, int hbase, const int* keep, const int32_t* tokens,
+                                 const int64_t* pos, std::string& err) {
+    const OnDevice on_device(device_);
+    const auto it = dcommit_bm_.find(bkey(rows, S, hbase));
+    if (it == dcommit_bm_.end() || it->second == nullptr) { err = "verify: a deferred commit without its window"; return false; }
+    const int64_t CB = 2 + max_t_;
+    // Each slot's accepted prefix.  The graph reads it from mapped memory when it runs; this slot's entry is written
+    // again only at its next verdict, which comes after its next window has passed this stage - behind this commit.
+    for (int t = 0; t < S;) {
+        const int first = t;
+        while (t < S && rows[t] == rows[first]) ++t;
+        const int n = keep[rows[first]];
+        if (n < 1 || n > t - first) { err = "verify: accepted prefix is outside its slot group"; return false; }
+        int32_t* c = h_commitd_ + (size_t) rows[first] * CB;
+        c[0] = n;
+        c[1] = n - 1;
+        for (int64_t j = 0; j < max_t_; ++j) c[2 + j] = j < n ? (int32_t) pos[first + j] : -1;
+    }
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    const cudaError_t le = cudaGraphLaunch(it->second, cs_);
+    if (le != cudaSuccess) { err = std::string("verify: deferred commit launch: ") + cudaGetErrorString(le); return false; }
+    (void) cudaStreamQuery(cs_);
+    if (ple_stage())   // the host's side of the commit (the hash's last two tokens), the accepted rows only
+        for (int t = 0; t < S;) {
+            const int first = t;
+            while (t < S && rows[t] == rows[first]) ++t;
+            SessionState& sx = *slots_[(size_t) rows[first]];
+            for (int u = first; u < first + keep[rows[first]]; ++u) {
+                sx.ple_prev[0] = sx.ple_prev[1];
+                sx.ple_prev[1] = tokens[u];
+            }
+        }
+    return true;
+}
+
 bool Verifier::evict_batch_graph(const std::vector<int>& keep, bool& evicted, std::string& err) {
     evicted = false;
     auto old = exec_bm_.end();
@@ -3481,7 +3714,9 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
         !evict_batch_graph(key, evicted, err))
         return false;
     bm_used_[key] = ++bm_tick_;
-    if (!capture_batch(rows, S, hbase, err) || !capture_commit_batch(rows, S, hbase, err)) return false;
+    // (a pipelined window that commits after the verdict has its own commit graph: capture_deferred)
+    if (!capture_batch(rows, S, hbase, err) || (!staging_deferred_ && !capture_commit_batch(rows, S, hbase, err)))
+        return false;
     const Clock::time_point t0 = Clock::now();
     const QsaShapes s = shapes_of(g);
     for (int t = 0; t < S; ++t) {

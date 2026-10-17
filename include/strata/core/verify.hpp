@@ -235,6 +235,23 @@ public:
     /// -1 = an error (err).  Serves every layer that has rung so far.
     int batch_poll(PoolMultiFn pool, void* user, std::string& err);
     bool batch_busy() const { return b_running_.load(std::memory_order_acquire); }
+    // ---- STRATA_PIPED_MTP: the pipelined groups with --batch-mtp's drafts.  A group's window holds its slot's token
+    // and its drafts, so how many rows to keep is known only once the LAST stage has picked - and by then this stage
+    // runs another group's window, which reuses the scratch the commit replays from.  So right behind the window a
+    // save graph copies those rows (each GDN layer's conv and recurrence inputs, each QSA layer's raw indexer keys, the
+    // PLE history snapshot) to the group's own rows [hbase, hbase + S) of the saved buffers, and the commit, queued
+    // after the verdict, replays from there.  Everything else the commit reads is per slot already.
+    /// The saved buffers for `rows` hand-off rows (after init_slots).
+    bool init_deferred_commit(int rows, std::string& err);
+    bool deferred_commit_on() const { return dc_rows_ > 0; }
+    /// The window over the slots `rows` (a slot's rows contiguous) at hand-off rows [hbase, hbase + S), its save right
+    /// behind it, and no commit (batch_commit_rows, after the verdict).  The PLE history advances at the commit.
+    bool batch_launch_rows(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos,
+                           std::string& err);
+    /// Queue the commit of that window's accepted prefixes on this stage's stream (no host wait): `keep` per slot ID,
+    /// 1..the slot's rows.  `rows`, `S`, `hbase`, `tokens` and `pos` are the window's, as batch_launch_rows got them.
+    bool batch_commit_rows(const int* rows, int S, int hbase, const int* keep, const int32_t* tokens,
+                           const int64_t* pos, std::string& err);
     /// Serves the layers of this stage's window that have rung (the CPU pool and the flags), with no CUDA call: 1 once
     /// every layer is served (or the window raises no host doorbells), 0 while one is still to ring.  batch_poll
     /// calls it, unless set_external_serve(true) moved it to a thread of its own (STRATA_PIPED_CONCURRENT: a CUDA
@@ -409,6 +426,16 @@ private:
     void* arena_b_ = nullptr;
     int64_t last_pos_b_[8] = {};
     bool capture_batch(const int* rows, int S, int hbase, std::string& err);
+    // STRATA_PIPED_MTP (init_deferred_commit): the saved rows, laid out as the window scratch (global layer index) with
+    // dc_rows_ rows per layer instead of max_t_; the slots' accepted prefixes (mapped and device, 2 + max_t_ per slot)
+    int dc_rows_ = 0;
+    bool staging_deferred_ = false;   ///< stage_batch for batch_launch_rows: no capture_commit_batch
+    float *dc_qkv_ = nullptr, *dc_h_ = nullptr, *dc_gate_ = nullptr, *dc_beta_ = nullptr, *dc_idx_ = nullptr;
+    float* dc_hist_ = nullptr;
+    void* dc_arena_ = nullptr;
+    int32_t *h_commitd_ = nullptr, *m_commitd_ = nullptr, *commitd_ = nullptr;
+    std::map<std::vector<int>, cudaGraphExec_t> save_bm_, dcommit_bm_;
+    bool capture_deferred(const int* rows, int S, int hbase, std::string& err);
     /// Free the graph pair of the least recently used batch layout other than `keep` (`evicted`: there was one).
     bool evict_batch_graph(const std::vector<int>& keep, bool& evicted, std::string& err);
     /// cudaGraphInstantiate; out of VRAM, batch layouts other than `key` are evicted (LRU) until it fits.

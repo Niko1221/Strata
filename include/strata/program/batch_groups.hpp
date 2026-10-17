@@ -27,6 +27,7 @@ struct Input {
     bool batch_mtp = false;    ///< --batch-mtp is on (it passed the gates that do not concern the groups)
     bool adapt_async = false;  ///< --adapt-async 1 was asked for
     bool mtp_serial = false;   ///< STRATA_BATCH_MTP_SERIAL=1: --batch-mtp with no --batch-groups runs one serial group (0.1.43)
+    bool mtp_piped = false;    ///< STRATA_PIPED_MTP=1: the pipelined groups draft too, when each group is one slot
 };
 
 struct Result {
@@ -35,6 +36,7 @@ struct Result {
     Serial serial = Serial::None;      ///< `auto` would have pipelined, but this feature needs the serial windows
     int would_be = 1;                  ///< what `auto` would have picked without it (== groups unless `serial`)
     bool mtp_dropped = false;          ///< --batch-mtp met the default pipeline: the pipeline wins, --batch-mtp is off
+    bool mtp_piped = false;            ///< STRATA_PIPED_MTP: --batch-mtp's drafts run in the pipelined groups
 };
 
 /// The most groups, at most one per stage of the layer split (`later_stages` + 1 GPUs), that divide `batch`.
@@ -58,7 +60,9 @@ inline Result resolve(const Input& in) {
     if (!in.set && r.would_be > 1) {   // only the default gives way; `--batch-groups auto` asked for the pipeline
         if (in.batch_mtp && in.mtp_serial) r.serial = Serial::BatchMtp;
         else if (in.adapt_async) r.serial = Serial::AdaptAsync;
-        r.mtp_dropped = in.batch_mtp && r.serial == Serial::None;
+        // STRATA_PIPED_MTP: one slot per group (the slots as many as the stages) pipelines AND drafts
+        r.mtp_piped = in.batch_mtp && in.mtp_piped && r.serial == Serial::None && r.would_be == in.batch;
+        r.mtp_dropped = in.batch_mtp && r.serial == Serial::None && !r.mtp_piped;
         if (r.serial != Serial::None) r.groups = 1;
     }
     return r;
