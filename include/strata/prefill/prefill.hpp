@@ -124,6 +124,33 @@ public:
     /// fits it keeps 0.1.39's ring).  0 slots = none.  A layer split's set_ring_override and STRATA_PREFILL_RING win.
     static void set_ring_budget(int slots, int64_t small_max);
 
+    /// THE PROMPT ROOM (STRATA_MTP_ROOM_MIN): `slots` ring slots ON TOP of the rule above, POINTED AT another device
+    /// user's bytes - the MTP drafter's 512 routed experts, which only the decode reads (MtpDrafter::experts_lend).
+    /// A slot at or past the rule's ring is `base + (i - rule) * max_blob`: nothing is allocated for it, nothing is
+    /// owned and nothing spills, so the room costs no VRAM of its own and `relayout` keeps working.  The layout holds
+    /// them for the instance's life; ONE PROMPT takes them by `set_ring_room_active(true)`, which moves the ring's
+    /// count (the rule's <-> the rule's + the room's) and nothing else.
+    /// Never past ring_cap() (the ring's events are sized for that), never past what `set_ring_room_base` says the
+    /// lender has, and only where the ring is a big one (a chunk at or above stream_all_min(): below it the ring is
+    /// STAGE slots of a different mechanism).  Set before `init`/`relayout`; 0 (the default): the rule's ring exactly,
+    /// as before.
+    void set_ring_room(int slots) { ring_room_ = slots > 0 ? slots : 0; }
+    int ring_room() const { return ring_room_; }
+
+    /// The memory the room's slots are carved from: `bytes` of another device user's, given to this path's ring for
+    /// the length of one prompt (the drafter's expert block).  Null (the default): no room, whatever `slots` says.
+    void set_ring_room_base(void* base, uint64_t bytes) { ring_room_base_ = base; ring_room_bytes_ = bytes; }
+
+    /// While true the room is THIS prompt's: `ring()` (the streamed ring's slot count) counts it too, and an
+    /// `init`/`relayout` after this re-carves with it.  False (the default): the rule's ring, so a slot of the room
+    /// is never staged into and the lender's bytes are left alone.
+    void set_ring_room_active(bool on);
+    bool ring_room_active() const { return ring_room_active_; }
+
+    /// True when every stream of this path has finished.  The room's close needs it: what a prompt staged into those
+    /// slots is written over by the lender's own bytes, and a prompt pass still reading them would take the DMA.
+    bool idle(std::string& err);
+
     /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).  `src`: init gets an
     /// ExpertSource (carve picks the fused MoE layout only then).
     static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
@@ -241,6 +268,10 @@ private:
     static uint64_t bytes_needed_impl(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
                                       bool owned_pages, bool src);
     kernels::cpu::ExpertPool* cpu_pool_ = nullptr;   ///< set_cpu_pool
+    int ring_room_ = 0;                              ///< set_ring_room (this instance's, and it survives `reset`)
+    void* ring_room_base_ = nullptr;                 ///< set_ring_room_base: the bytes the room's slots are
+    uint64_t ring_room_bytes_ = 0;
+    bool ring_room_active_ = false;                  ///< the room is this prompt's (survives `reset` with it)
     // Stage-1 pipeline: intermediate stages return after handing their chunk to
     // the direct successor. The public run() drains the chain once at prompt end.
     bool run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
