@@ -54,8 +54,16 @@ def _clean(text):
     return _html.unescape(re.sub(r"<[^>]+>", " ", text or "")).strip()
 
 
+def _http_url(url, what):
+    """Only http/https may be fetched: a base or result URL must not turn this server into a local file reader."""
+    u = str(url or "").strip()
+    if not u.lower().startswith(("http://", "https://")):
+        raise SearchError(f"{what} must be an http(s) URL (got {u[:40]!r})")
+    return u
+
+
 def _searxng(query, cfg, n):
-    base = (cfg.get("url") or DEFAULT_SEARCH_URL).rstrip("/")
+    base = _http_url((cfg.get("url") or DEFAULT_SEARCH_URL).rstrip("/"), "the SearXNG base")
     q = urllib.parse.urlencode({"q": query, "format": "json"})
     try:
         data = json.loads(_get(f"{base}/search?{q}"))
@@ -265,6 +273,10 @@ def _both_reasons(direct: str, jina: str) -> str:
 def _read_with_reader(result: dict, budget: int, reader: str) -> tuple[str, str | None, bool]:
     """(text-or-reason, read_via, ok). reader: off = direct only; fallback = Jina when direct fails;
     always = Jina first, direct as its fallback. Both failing gives both reasons."""
+    url = str(result.get("url") or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        # a poisoned result (file://, data:, javascript:) must not turn page reading into a local file reader
+        return "(refused: the result URL is not an http(s) page)", None, False
     if reader == "always":
         jina, jok = _read_page_jina(result, budget)
         if jok:
