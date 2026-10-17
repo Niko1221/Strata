@@ -1,0 +1,10 @@
+{
+  "python": "../../.venv/Scripts/python.exe",
+  "repository": "../..",
+  "profiles": {
+    "My model": "../../strata-config.json"
+  },
+  "port": 8095,
+  "upstream_port": 8096,
+  "automatic_upgrade": false
+}
