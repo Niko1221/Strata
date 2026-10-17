@@ -1121,6 +1121,25 @@ void expert_blob(const Layer& L, int64_t e, uint8_t* dst) {
     std::memcpy(dst + L.L.down_off, L.src_d + (size_t) e * L.src_dsz, L.src_dsz);
 }
 
+/// How many threads copy the routed experts (STRATA_Q36_PARALLEL_PLACE): 0 = the serial path,
+/// N = N threads, unset = one thread per logical core.  The chunks are disjoint and the bytes
+/// are identical either way, so this only changes load time, never the placed experts.
+static int parallel_place_threads() {
+    const char* e = std::getenv("STRATA_Q36_PARALLEL_PLACE");
+    if (e != nullptr) {
+        const int n = std::atoi(e);
+        return n > 0 ? (std::min)(n, 128) : 0;
+    }
+    return (int) (std::min)(128u, std::thread::hardware_concurrency());
+}
+
+/// Copy experts [e0, e1) of layer L into the host arena.  The ranges are disjoint, so several
+/// threads can run this at once (the load's hot loop).
+void place_expert_range(const Layer& L, int64_t e0, int64_t e1) {
+    for (int64_t e = e0; e < e1; ++e)
+        expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
+}
+
 // ------------------------------------------------------------------------------------------------ the engine
 float* dalloc(size_t n) {
     float* p = nullptr;
@@ -2946,7 +2965,19 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         L.hblobs = arena + off;
         off += L.stride * (size_t) ne + kMmqTail;
         std::memset(L.hblobs, 0, L.stride * (size_t) ne + kMmqTail);
-        for (int64_t e = 0; e < ne; ++e) expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
+        const int pt = parallel_place_threads();
+        if (pt <= 1) {
+            place_expert_range(L, 0, ne);
+        } else {
+            const int nt = (int) std::min<int64_t>((int64_t) pt, ne);
+            std::vector<std::thread> th;
+            th.reserve((size_t) nt);
+            for (int i = 0; i < nt; ++i) {
+                const int64_t e0 = (int64_t) ne * i / nt, e1 = (int64_t) ne * (i + 1) / nt;
+                th.emplace_back([&L, e0, e1] { place_expert_range(L, e0, e1); });
+            }
+            for (auto& t : th) t.join();
+        }
         L.n_slots = S;
         if (S > 0) {
             CK(cudaMalloc(&L.blobs, L.stride * (size_t) S + kMmqTail));
