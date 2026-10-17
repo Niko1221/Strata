@@ -78,15 +78,19 @@ struct CpuTopology {
     int e_cores = 0;                ///< Efficient cores
     std::vector<int> worker_cores;  ///< Ordered CPU IDs; on Windows, group * 64 + processor within the group
     int host_core = -1;             ///< Logical core reserved for host thread
+    int host_sibling = -1;          ///< The host core's SMT sibling (-1: none), the logical processor `Sibling` takes
 };
 
 /// Which core the host thread - the layer loop that spins on the GPU's flags - takes when `skip_first` reserves one
-/// (--host-core first|last, STRATA_HOST_CORE).  `First` is the layout the pool has always used.  `Last` (eddoursul's
-/// fork, F12) puts the host on the last physical core and lets the workers have the first: Windows sends a GPU's
-/// interrupts to one logical processor, usually the first, and every copy that lands raises one (~13 us in the ISR
-/// and a DPC), which delays a spinning host there.  The placement changes no result, only where threads run.  A hybrid
-/// CPU keeps `First` (its first core is the best P-core).
-enum class HostCore { First, Last };
+/// (--host-core first|last|sibling, STRATA_HOST_CORE).  `First` is the layout the pool has always used.  `Last`
+/// (eddoursul's fork, F12) puts the host on the last physical core and lets the workers have the first: Windows sends
+/// a GPU's interrupts to one logical processor, usually the first, and every copy that lands raises one (~13 us in the
+/// ISR and a DPC), which delays a spinning host there.  The placement changes no result, only where threads run.  A
+/// hybrid CPU keeps `First` under `Last` (its first core is the best P-core).  `Sibling` keeps the host on that first
+/// core but on its other hardware thread: the interrupts stay on the first logical processor, no worker shares the
+/// core (the workers take one logical processor per core), and it applies to hybrid CPUs too.  Without an SMT sibling
+/// it is `First`.
+enum class HostCore { First, Last, Sibling };
 void set_host_core(HostCore where);
 HostCore host_core_setting();
 

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <vector>
@@ -32,6 +33,13 @@ template <typename T> std::vector<T> host(const T* d, size_t n) {
 }  // namespace
 
 int main() {
+    // variants 0 and 1 are the references here; STRATA_GDN_CHUNKED=1 would turn them into the opt-in chunked recurrence
+    // (tests/hip/gdn_chunked.cpp), whose bits differ
+#ifdef _WIN32
+    _putenv_s("STRATA_GDN_CHUNKED", "");
+#else
+    unsetenv("STRATA_GDN_CHUNKED");
+#endif
     std::mt19937 rng(11);
     std::normal_distribution<float> nd(0.f, 1.f);
     std::uniform_real_distribution<float> ud(0.f, 1.f);

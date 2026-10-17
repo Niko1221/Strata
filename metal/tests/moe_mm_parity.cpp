@@ -31,7 +31,7 @@ float h16(float v) { return ref::f16_to_f32(ref::f32_to_f16(v)); }
 }  // namespace
 
 int main(int argc, char** argv) {
-    int gu = ref::Q2_0, dn = ref::Q2_0, T = 256, TM = 16, TN = 64, TK = 16, SG = 2, DTN = -1, DTK = -1, DSG = -1;
+    int gu = ref::Q2_0, dn = ref::Q2_0, T = 256, TM = 16, TN = 64, TK = 64, SG = 2, DTN = -1, DTK = -1, DSG = -1;
     bool bench = false, v2 = false, v3 = false, v4 = false, v5 = false;
     int MS = 1;
     for (int i = 1; i < argc; ++i) {
@@ -119,17 +119,17 @@ int main(int argc, char** argv) {
         if (gemm) {
             MmArgs ma{(uint64_t)layer * NE * blob, (uint64_t)layer * NE * blob + up_off, (uint64_t)layer * NE * blob + down_off,
                       blob, blob, (uint32_t)gu_row, (uint32_t)d_row, N_EMBD, N_FF};
-            if (v2) {
+            if (v2 || v3) {   // v3 is v2's gather plus the register-operand GEMMs
                 const uint32_t ne = N_EMBD;
                 mtl::Dispatch ga; ga.p = &pgat; ga.args = {mtl::Arg::B(x), mtl::Arg::B(stok), mtl::Arg::B(XS), mtl::Arg::V(ne)};
                 ga.grid[0] = meta.as<uint32_t>()[1]; ga.tg[0] = 256; ds.push_back(ga);
             }
             mtl::Dispatch g; g.p = &pgu;
-            if (v2) g.args = {mtl::Arg::B(W), mtl::Arg::B(XS), mtl::Arg::B(HS), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
+            if (v2 || v3) g.args = {mtl::Arg::B(W), mtl::Arg::B(XS), mtl::Arg::B(HS), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
             else g.args = {mtl::Arg::B(W), mtl::Arg::B(x), mtl::Arg::B(H), mtl::Arg::B(stok), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
             g.grid[0] = N_FF / (v3 ? TN * SG : TN); g.grid[1] = meta.as<uint32_t>()[0]; g.tg[0] = 32 * SG; ds.push_back(g);
-            mtl::Dispatch d; d.p = &pdn; d.args = {mtl::Arg::B(W), mtl::Arg::B(v2 ? HS : H), mtl::Arg::B(YE), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
-            d.grid[0] = N_EMBD / (v3 ? DTN * DSG : v2 ? DTN : TN); d.grid[1] = meta.as<uint32_t>()[0]; d.tg[0] = 32 * (v2 ? DSG : SG); ds.push_back(d);
+            mtl::Dispatch d; d.p = &pdn; d.args = {mtl::Arg::B(W), mtl::Arg::B(v2 || v3 ? HS : H), mtl::Arg::B(YE), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
+            d.grid[0] = N_EMBD / (v3 ? DTN * DSG : v2 ? DTN : TN); d.grid[1] = meta.as<uint32_t>()[0]; d.tg[0] = 32 * ((v2 || v3) ? DSG : SG); ds.push_back(d);
             const uint32_t ca[4] = {(uint32_t)T, N_EMBD, TOPK, 0};
             mtl::Dispatch cb; cb.p = &pcomb; cb.args = {mtl::Arg::B(YE), mtl::Arg::B(pos), mtl::Arg::B(sw), mtl::Arg::B(y), mtl::Arg::V(ca)};
             cb.grid[0] = (T * N_EMBD + 255) / 256; cb.tg[0] = 256; ds.push_back(cb);

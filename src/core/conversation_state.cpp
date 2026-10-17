@@ -30,10 +30,10 @@ bool sync(std::string& error) {
     return false;
 }
 
-bool copy(void* dst, const void* src, size_t bytes, std::string& error) {
+bool copy(void* dst, const void* src, size_t bytes, std::string& error, bool queued = false) {
     if (!bytes) return true;
     if (!dst || !src) return fail(error, "missing running-state buffer");
-    const auto status = conversation_detail::copy_nonblocking(dst, src, bytes);
+    const auto status = conversation_detail::copy_nonblocking(dst, src, bytes, queued);
     if (status == cudaSuccess) return true;
     error = std::string("conversation snapshot running-state copy: ") + cudaGetErrorString(status);
     return false;
@@ -213,6 +213,37 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionSta
     ss.ple_prev[0] = tokens >= 2 ? c.ids[tokens - 2] : -1;
     ss.ple_prev[1] = tokens >= 1 ? c.ids[tokens - 1] : -1;
     return sync(error);
+}
+
+bool conversation_checkpoint_copy(const SessionState& from, SessionState& to, const std::vector<int32_t>& ids,
+                                  const ModelGeometry& g, std::string& error, bool queued) {
+    // conversation_checkpoint_save(from) + conversation_checkpoint_restore(to) without the host image, for two
+    // sessions carved alike on the same device (a stage's own session and its batch slots): the same bytes into
+    // the same places, through copy() like the restore (the private non-blocking stream, complete on return unless
+    // `queued`: then the caller synchronizes the device).
+    ConversationStateSizes zf, zt;
+    if (!checkpoint_targets(from, g, ids.size(), zf, error) || !checkpoint_targets(to, g, ids.size(), zt, error))
+        return false;
+    if (zf.gdn != zt.gdn || zf.tail != zt.tail || zf.dead != zt.dead || zf.block_pos != zt.block_pos ||
+        owned_qsa(from) != owned_qsa(to) || (from.ple_hist != nullptr) != (to.ple_hist != nullptr))
+        return fail(error, "direct copy between differently carved sessions");
+    auto acopy = [&](void* dst, const void* src, size_t bytes) { return copy(dst, src, bytes, error, queued); };
+    if (!acopy(to.gdn_state, from.gdn_state, zf.gdn) ||
+        !acopy(to.ple_hist, from.ple_hist, from.ple_hist ? zf.ple : 0)) return false;
+    for (size_t j = 0; j < owned_qsa(from); ++j) {
+        const auto& a = owned(from, j);
+        const auto& b = owned(to, j);
+        if (!acopy(b.idx_tail, a.idx_tail, zf.tail) || !acopy(b.idx_dead, a.idx_dead, zf.dead) ||
+            !acopy(b.idx_block_pos, a.idx_block_pos, zf.block_pos)) return false;
+        if (!ids.empty()) {   // restore writes the saved `dead` row into the pooled row the next token fills
+            const size_t row = ids.size() / strata::kernels::qsa_real_shapes().idx_block;
+            if (!acopy(b.idx_pooled + row * g.idx_key_dim, a.idx_dead, zf.dead)) return false;
+        }
+    }
+    const size_t tokens = ids.size();
+    to.ple_prev[0] = tokens >= 2 ? ids[tokens - 2] : -1;
+    to.ple_prev[1] = tokens >= 1 ? ids[tokens - 1] : -1;
+    return true;
 }
 
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& ss,
@@ -403,5 +434,32 @@ bool conversation_snapshot_validate(const SavedConversation& image, const Sessio
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& ss,
                                                    const ModelGeometry& g, const QsaState& draft, std::string& error) {
     return conversation_snapshot_restore(image, ss, g, &draft, error);
+}
+ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation& image, int64_t upto,
+                                                          SessionState& ss, const ModelGeometry& g,
+                                                          const QsaState& draft, std::string& error) {
+    return conversation_snapshot_restore_prefix(image, upto, ss, g, &draft, error);
+}
+ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation& image, int64_t upto,
+                                                          SessionState& ss, const ModelGeometry& g,
+                                                          const QsaState* draft, std::string& error) {
+    // a layer split's image (stage images) is restored stage by stage, never in part
+    if (!image.stage_images.empty()) {
+        fail(error, "a layer split's image restored as a single session");
+        return ConversationRestore::invalid;
+    }
+    if (!conversation_snapshot_validate(image, ss, g, draft, error)) return ConversationRestore::invalid;
+    const int64_t captured = (int64_t) image.live.ids.size();
+    if (upto < 1 || upto > captured) {
+        fail(error, "the borrowed prefix is not inside the parked conversation");
+        return ConversationRestore::invalid;
+    }
+    if (!sync(error)) return ConversationRestore::transfer_failed;
+    for (size_t j = 0; j < owned_qsa(ss); ++j)
+        if (!conversation_kv_restore_prefix(image.kv[j], owned(ss, j), g, captured, upto, true, error))
+            return ConversationRestore::transfer_failed;
+    if (draft && !conversation_kv_restore_prefix(image.kv.back(), *draft, g, captured, upto, false, error))
+        return ConversationRestore::transfer_failed;
+    return ConversationRestore::restored;
 }
 } // namespace strata::core
