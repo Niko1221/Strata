@@ -36,6 +36,10 @@
 #include "strata/kernels/qsa_prompt_attn.hpp"
 #include "strata/kernels/qsa_select.hpp"
 #include "strata/prefill/gemm.hpp"
+#include "strata/kernels/route_prior.hpp"   // QWEN3.8 STRATA_PF_ROUTE_PRIOR
+#include "strata/kernels/iq_kernels.hpp"   // QWEN3.8 STRATA_PF_DIRETTO
+#include "strata/kernels/s2_expert_grouped.hpp"   // QWEN3.8 PF_DIRETTO v2
+#include "strata/kernels/quantize_act.hpp"   // QWEN3.8 PF_DIRETTO v2
 #include "strata/prefill/moe_fused.hpp"
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/prefill/moe_mmq.hpp"
@@ -3288,6 +3292,17 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     pt.mark(kPfRouter, cs);
                     if (!bf16_proj(m.gemm, wr, m.mixed_bf, m.logits, T, v.name("ffn_gate_inp.weight"), err, 0, m.mixed_bf_lo)) return false;
                     route(m.logits, m.ids, m.w, T, m.g->n_expert, m.cs);
+                    {   // QWEN3.8 16/10/2026 STRATA_PF_ROUTE_PRIOR=lambda: the push toward resident experts in short chunks
+                        static const float pf_prior = [] { const char* v = std::getenv("STRATA_PF_ROUTE_PRIOR"); return v ? (float) std::atof(v) : 0.0f; }();
+                        static int32_t* d_res_row = nullptr;
+                        if (pf_prior > 0.0f && !stream_all && m.host_res != nullptr && m.cache != nullptr && m.g->n_expert == 512 && m.g->n_expert_used == 10) {
+                            if (d_res_row == nullptr && cudaMalloc((void**) &d_res_row, 512 * sizeof(int32_t)) != cudaSuccess) d_res_row = nullptr;
+                            if (d_res_row != nullptr) {
+                                cudaMemcpyAsync(d_res_row, m.host_res + (size_t) l * 512, 512 * sizeof(int32_t), cudaMemcpyHostToDevice, m.cs);
+                                strata::kernels::route_prior_top10(m.logits, d_res_row, pf_prior, m.ids, m.w, (int) T, m.cs);
+                            }
+                        }
+                    }
                     // RESEARCH HOOK (141-research, opt-in, never on by default): STRATA_DBG_FEAT=<file> dumps, per MoE layer and chunk,
                     // the routed ids + weights (and for the layers in STRATA_DBG_FEAT_LAYERS the router-input hidden state, bf16);
                     // STRATA_DBG_ROUTE_OVERRIDE=<file> replaces the routing of the layers listed in that file with the file's ids + weights.
@@ -3630,6 +3645,19 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 ++n_cpu;
                             }
                         }
+                        // QWEN3.8 16/10/2026 PF_DIRETTO v2 (patch_pfdiretto2.py): the short chunk's resident experts leave MMQ's
+                        // list; their rows form a block after the local ones and the decode's grouped kernel computes them
+                        static const bool pf_dir_on = [] { const char* v = std::getenv("STRATA_PF_DIRETTO"); return v == nullptr || std::atoi(v) != 0; }();
+                        static bool pf_dir_failed = false;
+                        static const int pf_max_rows = [] { const char* v = std::getenv("STRATA_PF_DIRETTO_MAX"); return v ? std::atoi(v) : 8; }();   // QWEN3.8 PF_DIRETTO v5: experts with few rows only
+                        std::vector<char> on_pf;
+                        if (pf_dir_on && !pf_dir_failed && !stream_all && m.pp == nullptr && m.cache != nullptr && m.host_res != nullptr) {
+                            on_pf.assign((size_t) m.g->n_expert, 0);
+                            for (int32_t e = 0; e < m.g->n_expert; ++e)
+                                if (m.cnt[(size_t) e] > 0 && m.cnt[(size_t) e] <= pf_max_rows && m.host_res[(size_t) l * m.g->n_expert + e] >= 0 &&
+                                    (on_cpu.empty() || !on_cpu[(size_t) e]))
+                                    on_pf[(size_t) e] = 1;
+                        }
                         // multi-GPU: the rows of the experts the peer computes go last, as one block [rows_local, T*K)
                         const bool pre_mmq = mmq_plan().any && mmq_plan().layer[(size_t) l];
                         std::vector<char> on_peer;
@@ -3655,10 +3683,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         {
                             int32_t r = 0;
                             for (int32_t e = 0; e < m.g->n_expert; ++e)
-                                if ((on_peer.empty() || !on_peer[(size_t) e]) && (on_cpu.empty() || !on_cpu[(size_t) e])) {
+                                if ((on_peer.empty() || !on_peer[(size_t) e]) && (on_cpu.empty() || !on_cpu[(size_t) e]) &&
+                                    (on_pf.empty() || !on_pf[(size_t) e])) {
                                     m.off[(size_t) e] = r;
                                     r += m.cnt[(size_t) e];
                                 }
+                            for (int32_t e = 0; e < m.g->n_expert && !on_pf.empty(); ++e)   // QWEN3.8 PF_DIRETTO v2: our block
+                                if (on_pf[(size_t) e]) { m.off[(size_t) e] = r; r += m.cnt[(size_t) e]; }
                             // the peer's rows in order_peer's order (peer-held, then peer-streamed): its groups need them contiguous
                             for (int kind = 1; kind <= 2 && !on_peer.empty(); ++kind)
                                 for (int32_t e = 0; e < m.g->n_expert; ++e)
@@ -3667,6 +3698,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 if (on_cpu[(size_t) e]) { m.off[(size_t) e] = r; r += m.cnt[(size_t) e]; }
                             m.off[(size_t) m.g->n_expert] = r;
                             rows_local -= rows_cpu;
+                            for (int32_t e = 0; e < m.g->n_expert && !on_pf.empty(); ++e)   // QWEN3.8 PF_DIRETTO v3: MMQ ends before our block
+                                if (on_pf[(size_t) e]) rows_local -= m.cnt[(size_t) e];
                         }
                         std::vector<int32_t> fill(m.off.begin(), m.off.end() - 1);
                         for (int64_t i = 0; i < T * K; ++i) {
@@ -3679,7 +3712,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         std::vector<int32_t> order, order_peer;
                         for (int32_t e = 0; e < m.g->n_expert; ++e)
                             if (m.cnt[(size_t) e] > 0 && (on_peer.empty() || on_peer[(size_t) e] != 2) &&
-                                (on_cpu.empty() || !on_cpu[(size_t) e]))
+                                (on_cpu.empty() || !on_cpu[(size_t) e]) && (on_pf.empty() || !on_pf[(size_t) e]))
                                 (!on_peer.empty() && on_peer[(size_t) e] ? order_peer : order).push_back(e);
                         for (int32_t e = 0; e < m.g->n_expert && !on_peer.empty(); ++e)   // the peer-streamed ones last:
                             if (on_peer[(size_t) e] == 2) order_peer.push_back(e);        // their copies get the most time
@@ -3726,6 +3759,78 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             }
                         }
                         n_order = order.size();
+                        if (!on_pf.empty()) {   // QWEN3.8 PF_DIRETTO v2: the resident experts on the decode's grouped kernel
+                            constexpr int64_t CH = 1024;
+                            static void* d_buf = nullptr;
+                            static size_t sc_bytes = 0, xq_bytes = 0, xs_bytes = 0;
+                            const strata::kernels::cpu::ExpertLayout& lay2 = strata::kernels::cpu::expert_layout();
+                            const bool nat = lay2.native;
+                            const size_t xq_need = nat ? (size_t) T * (size_t) (N / 32) * 36 : (size_t) T * (size_t) (N / 32) * 34;
+                            const size_t xs_need = nat ? 0 : (size_t) T * (size_t) (N / 32) * 4;
+                            if (d_buf == nullptr || xq_need > xq_bytes || xs_need > xs_bytes) {
+                                if (d_buf) cudaFree(d_buf);
+                                d_buf = nullptr;
+                                const int64_t nff = nat ? lay2.fmt[(size_t) l].n_ff : 640;
+                                const size_t s1 = nat ? strata::kernels::native_expert_scratch_bytes(CH, nff)
+                                                      : (size_t) strata::kernels::moe_hit_grouped_scratch_bytes(CH, N, 640);
+                                sc_bytes = (s1 + 255) & ~(size_t) 255;
+                                xq_bytes = (std::max<size_t>(xq_need, (size_t) 1024 * (N / 32) * 36) + 255) & ~(size_t) 255;
+                                xs_bytes = (std::max<size_t>(xs_need, (size_t) 1024 * (N / 32) * 4) + 255) & ~(size_t) 255;
+                                const size_t grp_bytes = (size_t) CH * 8 + (size_t) (CH + 1) * 4 + (size_t) CH * 8 + 64;
+                                if (cudaMalloc(&d_buf, sc_bytes + xq_bytes + xs_bytes + grp_bytes) != cudaSuccess) {
+                                    (void) cudaGetLastError(); d_buf = nullptr; pf_dir_failed = true;
+                                    err = "prefill: PF_DIRETTO scratch (QWEN3.8): no VRAM";
+                                    return false;
+                                }
+                                std::fprintf(stderr, "QWEN3.8 PF_DIRETTO v2: on (%s kernel, %.1f MiB of scratch)\n", nat ? "native" : "s2",
+                                             (double) (sc_bytes + xq_bytes + xs_bytes + grp_bytes) / 1048576.0);
+                            }
+                            uint8_t* base8 = (uint8_t*) d_buf;
+                            void* scratch = base8;
+                            uint8_t* xq = base8 + sc_bytes;
+                            float* xs = (float*) (base8 + sc_bytes + xq_bytes);
+                            unsigned long long* g_ptr = (unsigned long long*) (base8 + sc_bytes + xq_bytes + xs_bytes);
+                            int32_t* g_start = (int32_t*) (g_ptr + CH);
+                            int32_t* g_dst = g_start + (CH + 1);
+                            int32_t* g_tok = g_dst + CH;
+                            int32_t* g_n = g_tok + CH;
+                            pt.mark(kPfDequant, cs);
+                            if (nat) strata::kernels::quantize_q8_1_rows(m.mixed, T, N, xq, m.cs);
+                            else strata::kernels::quantize_q8_0_scaled(m.mixed, xq, xs, (int64_t) T * N, m.cs);
+                            // host tables (pageable: cudaMemcpyAsync stages them before returning, so they can be reused)
+                            std::vector<unsigned long long> hp; std::vector<int32_t> hs, hd, ht;
+                            auto run = [&]() {
+                                if (hp.empty()) return;
+                                hs.push_back((int32_t) hd.size());
+                                const int32_t ng = (int32_t) hp.size();
+                                cudaMemcpyAsync(g_ptr, hp.data(), hp.size() * 8, cudaMemcpyHostToDevice, m.cs);
+                                cudaMemcpyAsync(g_start, hs.data(), hs.size() * 4, cudaMemcpyHostToDevice, m.cs);
+                                cudaMemcpyAsync(g_dst, hd.data(), hd.size() * 4, cudaMemcpyHostToDevice, m.cs);
+                                cudaMemcpyAsync(g_tok, ht.data(), ht.size() * 4, cudaMemcpyHostToDevice, m.cs);
+                                cudaMemcpyAsync(g_n, &ng, 4, cudaMemcpyHostToDevice, m.cs);
+                                if (nat) {
+                                    const auto& f = lay2.fmt[(size_t) l];
+                                    const strata::kernels::NativeExpertLayout L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
+                                    strata::kernels::native_expert_grouped(L, g_ptr, g_start, g_n, g_dst, g_tok, ng, (int64_t) hd.size(), xq, scratch, m.Dm, m.cs);
+                                } else {
+                                    strata::kernels::moe_grouped_s2(g_ptr, g_start, g_n, g_dst, g_tok, ng, (int64_t) hd.size(), xq, xs, scratch, m.Dm, m.cs);
+                                }
+                                hp.clear(); hs.clear(); hd.clear(); ht.clear();
+                            };
+                            for (int32_t e = 0; e < m.g->n_expert; ++e) {
+                                if (!on_pf[(size_t) e]) continue;
+                                const int64_t o0 = m.off[(size_t) e], ne = m.cnt[(size_t) e];
+                                if ((int64_t) hd.size() + ne > CH) run();
+                                const unsigned long long bp = (unsigned long long) m.cache->device_slot(m.host_res[(size_t) l * m.g->n_expert + e]);
+                                const int64_t gmax = nat ? ne : 8;   // QWEN3.8 PF_DIRETTO v4: moe_grouped_s2 takes <= 8 rows a group
+                                for (int64_t r2 = 0; r2 < ne; ++r2) {
+                                    if (r2 % gmax == 0) { hp.push_back(bp); hs.push_back((int32_t) hd.size()); }
+                                    hd.push_back((int32_t) (o0 + r2)); ht.push_back(src_h[(size_t) (o0 + r2)]);
+                                }
+                                stats_.experts_resident++;
+                            }
+                            run();
+                        }
                         // set_cpu_pool: the CPU's experts on a thread while this one streams and runs the GPU's; their
                         // unweighted rows land in Dm's row order, so the combine weights them as any other row
                         if (rows_cpu > 0) {
