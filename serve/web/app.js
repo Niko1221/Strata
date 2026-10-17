@@ -562,15 +562,250 @@ function markdown(text) {
 // ------------------------------------------------------------------ Chat
 const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
-let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
 
+// ------------------------------------------------------------------ the chat list (this browser only, opt-in)
+// "strata.history" is the switch and it is off by default: with it off the page keeps one chat under
+// "strata.chat" exactly as before. With it on the conversations live in IndexedDB (database "strata", store
+// "chats", one record per chat), because a conversation can be several megabytes and localStorage is capped at
+// about 5 MB for the whole page. The small keys - the switch and which chat is open - stay in localStorage. A
+// browser that only had "strata.chat" gets it as the first record.
+const TITLE_MAX = 60;
+const node = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls;
+  if (text != null) n.textContent = text; return n; };
+
+function newChat() {
+  return {id: `c${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`,
+          title: "", time: Date.now(), messages: []};
+}
+// the name in the list: what the user called it, else the first line of their first question
+function chatTitle(c) {
+  if (c.title) return c.title;
+  const first = (c.messages.find((m) => m.role === "user") || {}).text || "";
+  return first.split("\n")[0].trim().slice(0, TITLE_MAX) || "New chat";
+}
+
+// pictures are kept as their names only: a data URL would fill the browser's storage
+const cleanMessages = (list) => list.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
+                                                  files: (m.files || []).map((f) => ({name: f.name}))}));
+const cleanChat = (c) => ({...c, messages: cleanMessages(c.messages)});
+
+let historyOn = store.get("history", false);
+let chats = [], chat = null, chatId = "", db = null;
+let messages = store.get("chat", []);         // off: the single chat; on: the open chat's messages
+let sidebarQuery = "", sidebarOpen = true, storageWarned = false;
+
+function warnStorage(text) {
+  if (storageWarned) return;
+  storageWarned = true;
+  toast("warn", "Chat list not saved", text, 6000);
+}
+function openDb() {
+  return new Promise((resolve) => {
+    let r;
+    try { r = indexedDB.open("strata", 1); } catch (e) { resolve(null); return; }      // private mode: memory only
+    r.onupgradeneeded = () => { const d = r.result;
+      if (!d.objectStoreNames.contains("chats")) d.createObjectStore("chats", {keyPath: "id"}); };
+    // a database already at version 1 does not run onupgradeneeded, so the store may not be there
+    r.onsuccess = () => resolve(r.result.objectStoreNames.contains("chats") ? r.result : null);
+    r.onerror = () => resolve(null);
+    r.onblocked = () => resolve(null);           // another tab holds an older version of the database
+  });
+}
+function allChats() {
+  return new Promise((resolve) => {
+    // the result is on the request, not on the store: reading it at oncomplete gives nothing
+    const req = db.transaction("chats", "readonly").objectStore("chats").getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => resolve([]);
+    req.transaction.onabort = () => resolve([]);
+  });
+}
+// a request that fails because the storage is full aborts the transaction, so it fires abort rather than error
+function onQuota(t) {
+  const warn = () => warnStorage(t.error && t.error.name === "QuotaExceededError"
+    ? "This browser cannot keep more; the chats on the screen are still there."
+    : "The chat list could not be saved; the chats on the screen are still there.");   // a transaction also aborts on a bad record or an I/O error
+  t.onerror = warn; t.onabort = warn;
+}
+// one record per chat: rewriting the whole list for one message is wasteful when a chat is megabytes.
+// Another tab's writes do not show up here until that page is reloaded - there is no event for them.
+function writeChat(c) {                           // the record only; the caller renders the list once
+  if (!db) return;
+  const t = db.transaction("chats", "readwrite");
+  t.objectStore("chats").put(cleanChat(c));
+  onQuota(t);
+}
+function dropRecord(c) {
+  if (!db) return;
+  const t = db.transaction("chats", "readwrite");
+  t.objectStore("chats").delete(c.id);
+  onQuota(t);
+}
+function putChat(c) { writeChat(c); renderSidebar(); }   // memory only: the change still has to show
+function dropChat(c) { dropRecord(c); renderSidebar(); }
+
+// turning the switch on: the chat on the screen becomes the first record. Only when the switch is flipped in
+// this session: on a page load the list is the list, so a fresh chat stays empty and "strata.chat" is read once,
+// when the store is empty.
+async function openHistory(fromScreen) {
+  db = await openDb();
+  chats = db ? await allChats() : [];
+  if (!chats.length) {
+    const old = fromScreen ? messages : store.get("chat", []);          // the single chat from before the sidebar
+    if (old.length) {
+      const c = {...newChat(), messages: old, time: old[old.length - 1].time || Date.now()};
+      chats = [c];
+      if (db) putChat(c);                                   // the migrated chat is a record like the others
+    }
+  }
+  chat = chats.find((c) => c.id === store.get("chatId", "")) || chats[0] || newChat();
+  if (!chats.includes(chat)) chats.push(chat);
+  chatId = chat.id;
+  messages = chat.messages;
+  if (!db) warnStorage("This browser will not keep IndexedDB; the list lives in memory until the page is closed.");
+}
+
 function saveChat() {
-  store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
-                                           files: (m.files || []).map((f) => ({name: f.name}))})));
+  if (!historyOn) { store.set("chat", cleanMessages(messages)); return; }   // off: one chat, as before
+  chat.time = Date.now();
+  putChat(chat);
 }
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
+
+function groupName(t) {
+  const days = Math.floor((Date.now() - t) / 86400000);
+  if (!days) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days <= 7) return "Previous 7 days";
+  if (days <= 30) return "Previous 30 days";
+  return "Older";
+}
+function chatItem(c) {
+  const t = chatTitle(c);
+  const row = node("div", `chat-item${c.id === chatId ? " on" : ""}`);
+  row.dataset.id = c.id;
+  row.innerHTML = `<button class="chat-item__title" data-open-chat title="${esc(t)}">${esc(t)}</button>` +
+    `<span class="chat-item__actions">` +
+    `<button class="st-btn st-btn--icon" data-rename aria-label="Rename this chat" title="Rename">${icon("edit")}</button>` +
+    `<button class="st-btn st-btn--icon" data-delete aria-label="Delete this chat" title="Delete">${icon("trash")}</button>` +
+    `</span>`;
+  return row;
+}
+function renderSidebar() {
+  // the search reads every chat's message text, so the whole store is in memory after the first load
+  const q = sidebarQuery.trim().toLowerCase();
+  const list = chats.filter((c) => !q || chatTitle(c).toLowerCase().includes(q) ||
+                                   c.messages.some((m) => (m.text || "").toLowerCase().includes(q)))
+                     .sort((a, b) => b.time - a.time);
+  const box = $("sidebar-list");
+  box.innerHTML = "";
+  if (!list.length) {
+    box.appendChild(node("p", "muted small sidebar-empty", q ? "No chat matches" : "No chats yet"));
+  } else {
+    let group = "";
+    for (const c of list) {
+      const g = groupName(c.time);
+      if (g !== group) { group = g; box.appendChild(node("p", "sidebar-group", g)); }
+      box.appendChild(chatItem(c));
+    }
+  }
+  $("sidebar-foot").textContent = `${fmt(chats.length)} chat${chats.length === 1 ? "" : "s"} · kept in this browser`;
+}
+
+function showChat(c) {
+  chat = c; chatId = c.id; messages = c.messages;
+  store.set("chatId", chatId);
+  writeChat(chat);            // renderChat renders the list, so the write here does not render it again
+  renderChat();
+}
+function openChat(id) {
+  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  const c = chats.find((x) => x.id === id);
+  if (c) showChat(c);
+}
+function startChat() {
+  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  if (!messages.length) { $("input").focus(); return; }        // already a fresh chat
+  const prev = chatId, c = newChat();
+  chats.push(c);
+  showChat(c);
+  $("input").focus();
+  toast("info", "New chat", "The one you were in is in the list on the left.", 6000,
+        {label: "Undo", run: () => openChat(prev)});
+}
+function deleteChat(c) {
+  if (busy && c.id === chatId) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  const i = chats.indexOf(c), wasOpen = c.id === chatId;
+  if (i < 0) return;                                // the list only ever passes a chat it holds
+  chats.splice(i, 1);
+  dropRecord(c);                                    // the record; the Undo puts it back
+  if (wasOpen) {
+    const next = chats[0] || newChat();
+    if (!chats.includes(next)) chats.push(next);
+    showChat(next);
+  } else renderSidebar();
+  toast("info", "Chat deleted", chatTitle(c), 6000, {label: "Undo", run: () => {
+    if (chats.includes(c)) return;                  // already put back
+    chats.splice(Math.min(i, chats.length), 0, c);  // the display is sorted by time, so only the index matters
+    if (wasOpen) showChat(c); else { writeChat(c); renderSidebar(); }
+  }});
+}
+// rename: the row turns into a field; Enter or a click outside keeps the name, Escape gives it up
+function renameChat(row, c) {
+  const title = row.querySelector(".chat-item__title");
+  const input = node("input", "st-input chat-item__input");
+  input.value = chatTitle(c);
+  input.setAttribute("aria-label", "Name for this chat");
+  title.replaceWith(input);
+  input.focus(); input.select();
+  let done = false;
+  const finish = (keep) => {
+    if (done) return;
+    done = true;
+    if (keep) { c.title = input.value.trim(); putChat(c); } else renderSidebar();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+function setSidebar(open, save) {
+  sidebarOpen = open;
+  $("sidebar").dataset.open = String(open);
+  if (save) store.set("sidebar", open);
+}
+$("sidebar-toggle").onclick = () => setSidebar(!sidebarOpen, true);
+$("sidebar-new").onclick = startChat;
+$("sidebar-search").addEventListener("input", () => { sidebarQuery = $("sidebar-search").value; renderSidebar(); });
+$("sidebar-list").addEventListener("click", (e) => {
+  // a click inside the rename field is caret placement, not a click on the row: the row's handler would
+  // open the chat, which re-renders the list and takes the field away mid-click
+  if (e.target.closest(".chat-item__input")) return;
+  const row = e.target.closest(".chat-item");
+  if (!row) return;
+  const c = chats.find((x) => x.id === row.dataset.id);
+  if (!c) return;
+  if (e.target.closest("[data-delete]")) { deleteChat(c); return; }
+  if (e.target.closest("[data-rename]")) { renameChat(row, c); return; }
+  openChat(c.id);
+});
+
+// the switch under About > Settings. Off is the old page: one chat, "New chat" clears it.
+function setHistory(on, save, fromScreen) {
+  historyOn = on;
+  $("history-toggle").setAttribute("aria-checked", String(on));
+  $("sidebar").hidden = !on;
+  $("new-btn").title = on ? "New chat (the one you are in stays in the list)" : "New chat";
+  if (save) store.set("history", on);
+  // off writes the single chat here as well, so a reload shows the chat you were in, not the one from before the switch
+  if (!on) { messages = chat ? chat.messages : messages; store.set("chat", cleanMessages(messages)); renderChat(); return; }
+  openHistory(fromScreen).then(renderChat);          // the store is opened before the list can be read
+}
+$("history-toggle").onclick = () => setHistory($("history-toggle").getAttribute("aria-checked") !== "true", true, true);
 
 function msgEl(m, i) {
   const el = document.createElement("div");
@@ -695,6 +930,7 @@ function renderChat() {
   chat.querySelectorAll(".st-msg").forEach((e) => e.remove());
   $("chat-empty").hidden = messages.length > 0;
   messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
+  if (historyOn) renderSidebar();                   // the name in the list follows the first question
   scrollDown(true);
 }
 function nearBottom() { const s = $("chat-scroll"); return s.scrollHeight - s.scrollTop - s.clientHeight < 120; }
@@ -881,12 +1117,17 @@ $("input").addEventListener("input", autosize);
 
 $("new-btn").onclick = () => {
   if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
-  if (!messages.length) return;
-  const backup = messages;
-  messages = [];
-  saveChat();
-  renderChat();
-  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
+  if (!historyOn) {                                   // off: the old behaviour, clear with an Undo
+    if (!messages.length) return;
+    const backup = messages;
+    messages = [];
+    saveChat();
+    renderChat();
+    toast("info", "New chat", "The last one was cleared.", 6000,
+          {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
+    return;
+  }
+  startChat();
 };
 $("export-btn").onclick = () => {
   if (!messages.length) { toast("info", "Nothing to save yet"); return; }
@@ -1078,7 +1319,9 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawe
 
 // ------------------------------------------------------------------ start
 setBusy(false);
-renderChat();
+// a narrow screen starts with the list closed so the chat has room
+setSidebar(store.get("sidebar", true) && !matchMedia("(max-width: 760px)").matches, false);
+setHistory(historyOn, false, false);                   // off by default: the page as it was
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
