@@ -35,7 +35,10 @@ this PC only. The details and every setting are in [docs/DETAILS.md](docs/DETAIL
   page's Model settings may change - never the network, key, MCP or program keys), `/load` and `/unload` and the
   MCP tools are accepted only as JSON from Strata's own page (or `"trusted_origins"`), so a page elsewhere cannot
   change settings or run tools.
-- **CORS** is off unless `"cors_origins"` lists origins, and then only for `/v1/*`.
+- **CORS** is off unless `"cors_origins"` lists origins, and then only for `/v1/*`. A page you list there can send
+  `/v1` requests (without a key when none is set), and `http(s)` image URLs in them are downloaded by the server itself
+  (when it reads images): the page can have it fetch addresses on your network and read the error back. List only
+  pages you trust (`["*"]` lets every page in). Files on this PC are not read as images for such a page.
 - **MCP tools** are opt-in: only the servers you put in the run config, only for requests from Strata's own page
   that ask for them. They run with your user's rights, and the model decides when to call them.
 - **The request monitor** (`/api-monitor`, which keeps the last prompts and answers in memory) is off unless
