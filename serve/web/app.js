@@ -180,20 +180,52 @@ function setPill(state, text) {
   $("pill-text").textContent = text;
 }
 
+// A slot's live tok/s, on the server's own window rule (RATE_WINDOW_S / RATE_MIN_SPAN_S, server.py:220) taken from
+// consecutive samples here. live.slots[].tok_s is the mean since the first token: it opens at the burst rate (the
+// first tokens over the sliver of a second since the last one) and only decays to the truth over minutes - 300
+// falling to 35 on a 4090 with two agents. Called once per poll, from render(), so the pill and the widgets agree.
+const SLOT_RATE_WINDOW_S = 2.0, SLOT_RATE_MIN_SPAN_S = 0.25;
+const slotRateSamples = new Map();
+function slotRates(live) {
+  const slots = live.slots || [];
+  if (!slots.length) { slotRateSamples.clear(); return []; }        // no slots: forget every ring, nothing to age
+  const rates = [];
+  for (const s of slots) {
+    if (s.state !== "decoding" || s.generated == null || s.elapsed_s == null) {
+      slotRateSamples.delete(s.slot); rates.push(null); continue;   // reading, free: no rate of its own
+    }
+    let ring = slotRateSamples.get(s.slot);
+    if (!ring || s.generated < ring[ring.length - 1][1]) ring = [];  // a new request in this slot: start clean
+    ring.push([s.elapsed_s, s.generated]);
+    while (ring.length > 8) ring.shift();
+    slotRateSamples.set(s.slot, ring);
+    const newest = ring[ring.length - 1];
+    const oldest = ring.find(([t]) => newest[0] - t <= SLOT_RATE_WINDOW_S);   // the oldest sample inside the window
+    const span = newest[0] - oldest[0];
+    rates.push(span >= SLOT_RATE_MIN_SPAN_S ? Math.max(0, (newest[1] - oldest[1]) / span) : s.tok_s);
+  }
+  return rates;
+}
+
 function render(m) {
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
+  const slotRate = slotRates(live);   // each slot's window rate, once per poll: the pill and the widgets share it
   // the header pill
   if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
     setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
   } else if (live.state === "generating") {
-    setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
+    // several slots decoding together (#465): every stream's own rate, so two agents are visible at once
+    const rates = (live.slots || []).map((s, i) => (s.state === "decoding" ? slotRate[i] : null)).filter((r) => r != null);
+    setPill("generating", rates.length > 1
+      ? `${rates.length} decoding · ${rates.map((r) => fmt(r, 1)).join(" + ")} tok/s`
+      : `Generating · ${fmt(live.tok_s, 1)} tok/s`);
   } else {
     setPill("idle", "Idle");
   }
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
-  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
+  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept, slotRate);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
   if (tab === "about") renderAbout(eng, hw, st);
 }
@@ -240,7 +272,113 @@ function renderTotals(t) {
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
-function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
+// Batch slots (#465, "parallel": N in the run config): one row per slot, each stretching the card, so several
+// agents' speeds read as a list and the rows stack in the order the slots are numbered. Built once per slot count
+// and updated in place, so the state and progress transitions animate instead of being replaced every second.
+// The last row is the requests in flight that are not in a slot (server.py:3775): they get a row of their own,
+// labelled Solo, because the payload carries only their count - no per-request rate to put in a slot's number.
+const text2 = (el, value) => { const s = String(value); if (el && el.textContent !== s) el.textContent = s; };
+let workerWidgets = [], workerSolo = null;
+const rowHTML = (name) => `<span class="worker__name">${esc(name)}</span>
+  <span class="st-badge worker__badge">Free</span>
+  <div class="st-metric__value worker__rate">&ndash;</div>
+  <span class="st-metric__sub worker__sub"></span>
+  <span class="worker__ctx"><span class="worker__ctx-label">Context</span> <span class="worker__ctx-value">&ndash;</span></span>
+  <div class="st-progress worker__progress"><div class="st-progress__bar worker__bar" style="width:0%"></div></div>`;
+const rowParts = (el) => ({el, badge: el.querySelector(".worker__badge"), rate: el.querySelector(".worker__rate"),
+                           sub: el.querySelector(".worker__sub"), bar: el.querySelector(".worker__bar"),
+                           ctx: el.querySelector(".worker__ctx-value")});
+function workerWidgetsFor(n) {
+  if (workerWidgets.length === n) return workerWidgets;
+  $("workers").replaceChildren();
+  const solo = document.createElement("div");        // first row, always there: the queue and the requests outside a slot
+  solo.className = "worker worker--solo"; solo.dataset.state = "idle";
+  solo.innerHTML = rowHTML("Solo");
+  $("workers").append(solo);
+  workerSolo = rowParts(solo);
+  workerWidgets = Array.from({length: n}, (_, i) => {
+    const el = document.createElement("div");
+    el.className = "worker"; el.dataset.state = "idle";
+    el.innerHTML = rowHTML(`Worker ${i + 1}`);
+    $("workers").append(el);
+    return rowParts(el);
+  });
+  return workerWidgets;
+}
+function renderWorkers(live, eng, rates) {
+  const card = $("workers-card"), slots = live.slots || [];
+  card.hidden = !live.parallel;
+  if (!live.parallel) return;                                   // one request at a time: the card stays away
+  const busy = slots.filter((s) => s.state !== "idle");
+  const waiting = (live.waiting || 0) + (live.admitting || 0);
+  const outside = live.outside_slots || 0;
+  text2($("workers-sum"), `${busy.length} / ${slots.length} slots busy` +
+    (live.running ? ` · ${fmt(live.running)} running` : "") + (outside ? ` · ${fmt(outside)} outside a slot` : "") +
+    (waiting ? ` · ${fmt(waiting)} waiting` : ""));
+  const ctx = eng.max_context || 0;
+  const widgets = workerWidgetsFor(slots.length);
+  for (const s of slots) {
+    const w = widgets[s.slot] || widgets[0];
+    if (!w) continue;
+    const decoding = s.state === "decoding", reading = s.state === "reading";
+    w.el.dataset.state = s.state;
+    text2(w.badge, decoding ? "Decoding" : reading ? "Reading" : "Free");
+    w.badge.className = `st-badge worker__badge${decoding ? " st-badge--generating" : reading ? " st-badge--reading" : ""}`;
+    const rate = (rates || [])[s.slot];
+    // a slot that is reading shows the engine's own prefill rate - the Speed card's right-hand number, and the
+    // same live reading: the slot reader goes through _control(), which parses the engine's PP progress lines
+    // (server.py:1283-1288). It is one engine-wide figure, so it belongs to the slot that is reading, which is
+    // the only one: prompts are admitted one at a time. The cached prefix is not read, so this is the rate over
+    // the new tail tokens only.
+    const prefill = live.prefill_tok_s_mean;
+    if (decoding && rate != null) w.rate.innerHTML = `${fmt(rate, 1)}<small>t/s</small>`;
+    else if (reading && prefill != null) w.rate.innerHTML = `${fmt(prefill, 0)}<small>t/s</small>`;
+    else w.rate.innerHTML = "&ndash;";
+    text2(w.sub, decoding ? `${fmt(s.generated)} tokens · ${fmt(s.elapsed_s, 1)} s in this slot`
+          : reading ? `reading ${fmt(s.prompt_tokens)} prompt tokens · engine prefill`
+          : s.held_tokens ? `holds ${fmt(s.held_tokens)} tokens for its next turn` : "free for a request");
+    const used = s.state === "idle" ? (s.held_tokens || 0) : (s.prompt_tokens || 0) + (s.generated || 0);
+    const pct = ctx ? Math.min(100, (100 * used) / ctx) : 0;
+    w.bar.style.width = `${pct.toFixed(2)}%`;
+    text2(w.ctx, ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : `${fmt(used)} tokens`);
+  }
+  if (workerSolo) {              // the top row, always there: what is queued, and what is in flight outside a slot
+    const admitting = live.admitting || 0, queued = live.waiting || 0;
+    // the aggregate live block is the newest parallel request's status, so its numbers belong to the request
+    // outside a slot only when that is the one and only request in flight; with a slotted request alongside,
+    // the row shows the count and the queue state and no rate, rather than one request's speed on another's row
+    const one = outside === 1 && (live.running || 0) === 1;
+    const gen = one && live.state === "generating" && live.tok_s != null;
+    const read = one && live.state === "reading";
+    workerSolo.el.dataset.state = gen ? "decoding" : read || admitting || queued ? "reading" : "idle";
+    text2(workerSolo.badge, gen ? "Decoding" : read ? "Reading" : admitting ? "Admitting"
+          : queued ? "Waiting" : outside ? "Outside" : "Free");
+    workerSolo.badge.className = `st-badge worker__badge${gen ? " st-badge--generating"
+      : read || admitting || queued ? " st-badge--reading" : ""}`;
+    workerSolo.rate.innerHTML = gen ? `${fmt(live.tok_s, 1)}<small>t/s</small>`
+      : read && live.prefill_tok_s_mean != null ? `${fmt(live.prefill_tok_s_mean, 0)}<small>t/s</small>` : "&ndash;";
+    const prog = read && live.prompt_total ? `reading ${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} prompt tokens`
+                : read && live.prompt_tokens ? `reading ${fmt(live.prompt_tokens)} prompt tokens` : "";
+    text2(workerSolo.sub, gen ? `${fmt(live.generated)} tokens · ${fmt(live.elapsed_s, 1)} s outside a slot`
+          : prog ? `${prog} · outside a slot`
+          : outside ? `${fmt(outside)} ${outside === 1 ? "request" : "requests"} in flight outside a slot` +
+            (admitting ? ` · ${fmt(admitting)} being admitted` : "") + (queued ? ` · ${fmt(queued)} waiting` : "")
+          : queued + admitting ? `${fmt(queued + admitting)} ${queued + admitting === 1 ? "request" : "requests"} waiting for a slot`
+          : "nothing outside a slot");
+    const used = one ? (live.prompt_tokens || 0) + (live.generated || 0) : 0;
+    const pct = ctx && one ? Math.min(100, (100 * used) / ctx) : 0;
+    workerSolo.bar.style.width = `${pct.toFixed(2)}%`;
+    text2(workerSolo.ctx, one && used ? (ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : `${fmt(used)} tokens`) : "no slot");
+  }
+  const note = live.outside_slots
+    ? `${fmt(live.outside_slots)} request is outside a slot: on the solo path, or waiting for a free one.`
+    : busy.length >= slots.length && slots.length > 1
+        ? `${slots.length === 2 ? "Both" : `All ${slots.length}`} decode together in the same windows: separate, simultaneous streams.`
+        : "Every slot keeps its conversation, so an agent's next turn lands here without re-reading its history.";
+  text2($("workers-note"), note);
+}
+function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept, slotRate) {
+  renderWorkers(live, eng, slotRate);
   // model state
   const on = live.queued > 0 ? "queued" : live.state;
   for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);

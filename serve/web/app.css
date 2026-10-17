@@ -99,6 +99,32 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-metric__spark .speed-prefill { color: color-mix(in srgb, var(--st-accent) 65%, black); }
 .st-metric__spark[data-tone="warn"] { color: var(--st-warn); }
 .st-metric__spark[data-tone="info"] { color: var(--st-info); }
+/* Batch slots (#465, "parallel": N): one row per slot, each stretching the card, so several agents' speeds read
+   as a list. The rows stack top-down in slot order, and a request in flight outside a slot gets a row of its own. */
+.workers-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
+.workers-card[hidden] { display: none; }
+.workers { display: grid; gap: var(--st-s-2); }
+.worker { display: grid; grid-template-columns: minmax(64px, auto) auto minmax(96px, auto) minmax(0, 1fr) auto;
+          align-items: center; gap: var(--st-s-3); min-width: 0; padding: var(--st-s-3) var(--st-s-4);
+          border: 1px solid var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface-2);
+          transition: border-color var(--st-dur) var(--st-ease), background var(--st-dur) var(--st-ease); }
+.worker[hidden] { display: none; }
+.worker[data-state="decoding"] { border-color: var(--st-accent); background: var(--st-accent-tint); }
+.worker[data-state="reading"] { border-color: var(--st-info); background: var(--st-info-tint); }
+.worker--solo { border-style: dashed; }
+.worker__name { font-size: var(--st-fs-sm); font-weight: var(--st-fw-bold); }
+.worker__rate { line-height: 1; font-size: clamp(19px, 1.9vw, var(--st-fs-stat)); font-variant-numeric: tabular-nums; }
+.worker__rate small { font-size: var(--st-fs-md); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin-left: 4px; }
+.worker__sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.worker__ctx { display: flex; align-items: baseline; gap: var(--st-s-2); font-size: var(--st-fs-xs);
+               color: var(--st-ink-muted); font-variant-numeric: tabular-nums; }
+.worker__progress { grid-column: 1 / -1; }
+.workers-note { margin: 0; }
+.workers-note:empty { display: none; }
+@media (max-width: 1000px) {
+  .worker { grid-template-columns: auto auto minmax(96px, auto) minmax(0, 1fr); }
+  .worker__ctx { grid-column: 1 / -1; }
+}
 .monitor-row { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2.4fr); gap: var(--st-s-4); }
 .ctx-card { display: flex; flex-direction: column; gap: var(--st-s-2); }
 .ctx-gauge { position: relative; width: 150px; height: 150px; margin: var(--st-s-2) auto var(--st-s-3); }
