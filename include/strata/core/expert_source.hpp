@@ -331,7 +331,8 @@ private:
     std::condition_variable cv_;
     bool quit_ = false, pending_ = false, busy_ = false;
     int64_t layer_ = -1, n_tok_ = 0;
-    const int32_t* host_res_ = nullptr;
+    std::vector<int32_t> res_;   ///< the residency rows of the layers predicted, copied at submit (admissions write the table)
+    bool has_res_ = false;
     uint64_t sub_gen_ = 0;
     ForesightSwap* fs_ = nullptr;                   ///< (under mu_)
     std::vector<float> x_;
@@ -365,6 +366,9 @@ struct GpuPlanSink {
     /// copy engine.  counts[0] = VRAM groups, counts[1] = all entries, counts[2] = PCIe groups.
     unsigned long long* ptr2 = nullptr;
     int32_t* start2 = nullptr;
+    /// STRATA_ADAPT_FETCH (pcie_mode 2): per PCIe group, the VRAM cache slot its blob is copied into instead of
+    /// staging (0: staging).  staging_cap entries.
+    unsigned long long* dst2 = nullptr;
     unsigned long long staging = 0;
     int64_t staging_cap = 0;
     int64_t cap = 0;
@@ -630,6 +634,24 @@ struct ExpertDispatch {
     /// whose routed ids all look resident there publishes no activation (doorbell_publish_res) - counted
     const int32_t* dres_check = nullptr;
     int64_t stale_x = 0;
+    /// Opt-in (STRATA_ADAPT_FETCH): the PCIe share admits into the VRAM tier.  Its blobs cross into VRAM anyway, so the
+    /// layer's most-routed misses (`usage`) take the share, and one routed at least `fetch_min` and `fetch_margin` more
+    /// than its layer's least-routed resident expert not routed in the window is copied into that one's slot instead
+    /// of staging - a swap with no RAM read of its own.  `res_mut` is `host_res`, written here (and listed in
+    /// `res_dirty_idx`); `in_flight`: experts the adaptive tier is copying in.
+    int fetch_admit = 0;
+    float fetch_min = 1.0f, fetch_margin = 0.5f;
+    int32_t* res_mut = nullptr;
+    std::vector<uint8_t> in_flight;
+    std::vector<uint8_t> fetch_mark;   ///< per expert of the layer: routed in the window
+    /// STRATA_ADAPT_FETCH: whether the pool can admit into `layer` now (a window still needs a PCIe share there)
+    bool fetch_can(int64_t layer) const;
+    /// per layer: the PCIe share fetched there since the tier's last round (the tier leaves those layers' fetchable
+    /// candidates to the admission under STRATA_ADAPT_FETCH=2, and swaps the rest itself)
+    std::vector<uint8_t> fetch_avail;
+    int64_t fetch_admitted = 0;
+    bool fetch_log_on = false;          ///< STRATA_ADAPT_FETCH_VERIFY: keep the admissions for a read-back
+    std::vector<std::pair<int64_t, int32_t>> fetch_log;   ///< (layer * n_expert + expert, slot)
     int64_t multi_misses = 0;      ///< distinct (layer, expert) pairs the CPU computed in verify windows
     int64_t multi_entries = 0;     ///< routed (token, expert) entries the CPU served in verify windows
     /// Multi-GPU: the second GPU's tier.  Its experts are computed there instead of on the CPU (kind 2).
