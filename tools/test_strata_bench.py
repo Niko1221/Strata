@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import socket
 import sys
 import tempfile
 import threading
@@ -297,6 +298,49 @@ class ReportTests(unittest.TestCase):
                     {"hardware_static": {"gpu_name": "Intel Arc Pro B70"}} if path == "/metrics" else {})):
             m = B.collect_machine(srv.base, "", {"backend": "sycl"})
         self.assertEqual((m["gpu"], m["cuda"]), (["Intel Arc Pro B70"], None))
+
+    def test_a_server_on_another_pc_is_not_described_with_this_pc_2062(self):
+        """#2062: --url of a server on another PC recorded the client's RAM (3.8 GiB on a 64 GB box), OS, driver and CUDA.
+        The server's own RAM total and cards are used; what it does not report is not read."""
+        srv = FakeStrata()
+        self.addCleanup(srv.stop)
+        # this PC has a card named like the server's: its VRAM, driver and CUDA must still not be taken
+        client = {"gpus": [{"name": "NVIDIA GeForce RTX 9999", "vram_mib": 16384, "driver": "560.1"}], "cuda": "12.6"}
+        real_try_json = B.try_json
+        elsewhere = "http://192.0.2.7:8080"                     # TEST-NET-1, answered by the fake server
+        with mock.patch.object(B, "gpu_info_local", return_value=client), \
+                mock.patch.object(B, "total_ram_gib", return_value=3.8), \
+                mock.patch.object(B, "try_json", side_effect=lambda base, *a, **k: real_try_json(srv.base, *a, **k)):
+            m = B.collect_machine(elsewhere, "", {"gpu": 0})
+            self.assertEqual((m["gpu"], m["gpu_vram_mib"], m["ram_gib"]), (["NVIDIA GeForce RTX 9999"], 12288, 64.0))
+            self.assertEqual((m["os"], m["gpu_driver"], m["cuda"], m["cpu"]), (None, None, None, "Fake CPU 9"))
+            # the same server on this PC (127.0.0.1): this PC's reads, as before
+            m = B.collect_machine(srv.base, "", {})
+            self.assertEqual((m["gpu_vram_mib"], m["ram_gib"], m["gpu_driver"], m["cuda"]), (16384, 3.8, "560.1", "12.6"))
+            self.assertTrue(m["os"])
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(B, "on_this_pc", return_value=False):
+            self.assertEqual(self.run_main(srv, d), 0)
+            readme = (next(Path(d).iterdir()) / "README.md").read_text(encoding="utf-8")
+        self.assertIn("installed RAM: 64.0 GiB", readme)
+        self.assertIn("- OS: not read; GPU driver: not read; CUDA: not read", readme)
+
+    def test_on_this_pc(self):
+        for url in ("http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080", "http://0.0.0.0:8080",
+                    "http://[::ffff:127.0.0.1]:8080", "http://127.0.0.5:8080"):
+            self.assertTrue(B.on_this_pc(url), url)
+        self.assertFalse(B.on_this_pc("http://192.0.2.7:8080"))                 # TEST-NET-1: never this PC's address
+        self.assertFalse(B.on_this_pc("http://no-such-host.invalid:8080"))
+        for url in ("http://224.0.0.1:8080", "http://255.255.255.255:8080", "http://[::1:8080"):
+            self.assertFalse(B.on_this_pc(url), url)
+        # this PC's own network address (a server reached by its LAN IP is on this PC)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("192.0.2.1", 9))                     # no packet is sent: it only picks the outgoing address
+                own = s.getsockname()[0]
+        except OSError:
+            own = None
+        if own and own != "0.0.0.0":
+            self.assertTrue(B.on_this_pc(f"http://{own}:8080"), own)
 
     def test_a_bench_server_never_saves_over_the_users_profile(self):
         """#2088: --expert-profile-save writes the profile at quit; the bench's own server runs without it."""
