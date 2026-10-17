@@ -2302,7 +2302,8 @@ directory must exist. A process lock prevents simultaneous servers from overwrit
 the second server continues inference but reports that usage history is unavailable. Separate
 simultaneous servers should use separate stores. Keep the JSON file when upgrading Strata.
 
-The large **Tokens generated locally · all time** figure stays visible above the range statistics.
+The Usage card is appended after the existing Monitor sections, keeping speed, hardware and cache information first.
+Its **Tokens generated locally · all time** figure stays visible above the range statistics.
 It counts output, including reasoning and tool calls; reused input and rejected MTP drafts are not
 new output. Optional `imported` counters (`requests`, `output_tokens`) in an initial store can carry
 undated counts recovered from retained logs. The panel labels them, adds them only to the large
