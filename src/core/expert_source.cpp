@@ -2708,10 +2708,29 @@ bool FileExpertSource::pin_cache_complement(
             err = "FileExpertSource: cannot determine available memory for --resident-budget-gib";
             return false;
         }
+        // S1: reserve_resident_arena faulted this budget's own arena in before this reading (nothing has been
+        // copied into it yet), so the claim sits in `physical` - and in the cgroup's MemoryAvailable, whose tighter
+        // of the two bounds `physical` already is - while it is also the very memory this budget is sizing.  Counting
+        // it as consumed clamps the budget by the claim itself (measured 2026-10-15: 49 GiB requested -> 42.75).
+        // Add the not-yet-used claim back, which is the reading the clamp would have taken had it run before the
+        // claim.  Zero when nothing was claimed, so the non-arena path is unchanged.
+        const uint64_t claim_credit = arena_preclaim_ != nullptr ? arena_preclaim_bytes_ : 0;
+        physical += claim_credit;
         budget_physical = physical;
         const uint64_t available = std::min(physical, budget_commit);
         const char* limit = budget_commit < physical ? "commit" : "RAM";
         const uint64_t clamped = detail::clamp_resident_budget(budget_bytes, physical, budget_commit, headroom_bytes);
+        if (claim_credit > 0) {
+            char requested[32];
+            if (what_fits) std::snprintf(requested, sizeof requested, "%s", "what fits");
+            else std::snprintf(requested, sizeof requested, "%.2f GiB", (double) budget_bytes / 1073741824.0);
+            std::fprintf(stderr, "FileExpertSource: --resident-budget-gib %s: reading %.2f GiB + the %.2f GiB of the "
+                                 "pre-claimed arena not yet used = %.2f GiB available, minus %.0f GiB headroom and "
+                                 "a 0.25 GiB margin: %.2f GiB granted\n",
+                         requested, (double) (physical - claim_credit) / 1073741824.0,
+                         (double) claim_credit / 1073741824.0, (double) available / 1073741824.0,
+                         (double) headroom_bytes / 1073741824.0, (double) clamped / 1073741824.0);
+        }
         if (budget_bytes > clamped) {
             // #403: 256 MiB under the room, so the engine's own allocations after this reading still leave the
             // headroom (a budget clamped to exactly the room failed the safety check below on a reading a few MB
