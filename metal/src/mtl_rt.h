@@ -82,6 +82,7 @@ public:
     bool supports_metal4() const;
     uint64_t recommended_working_set() const;
     uint64_t max_buffer_length() const;
+    uint64_t max_threadgroup_memory() const;
     uint64_t allocated() const { return allocated_; }   // bytes of alloc() + wrap() buffers so far
 
     // Compiles a library from MSL source files (paths), prepended by `prelude` (defines) and, if include_ggml,
@@ -90,6 +91,7 @@ public:
     // Safe math unless STRATA_METAL_MATH=fast (the argument is ignored; kept for callers).
     int compile(const std::vector<std::string>& files, const std::string& prelude = "", bool fast_math = false);
     Pipeline pipeline(int lib, const std::string& fn, const Constants& c = {});
+    bool has_function(int lib, const std::string& fn) const;
 
     Buffer alloc(size_t bytes);                  // shared storage, zeroed
     Buffer wrap(void* page_aligned, size_t bytes);  // no-copy wrap (page-aligned, size multiple of page)
