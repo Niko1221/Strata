@@ -1,0 +1,351 @@
+{
+  "results": [
+    {
+      "case": "arithmetic",
+      "passed": true,
+      "expected": "1517",
+      "counted_input_tokens": null,
+      "metrics": {
+        "ok": true,
+        "err": null,
+        "ttft_s": 1.218,
+        "total_s": 1.408,
+        "prompt_tokens": 27,
+        "reused_tokens": 0,
+        "read_tokens": 27,
+        "generated_tokens": 5,
+        "prompt_tps": 25.0,
+        "prompt_tps_source": "engine",
+        "decode_tps": 16.4,
+        "decode_tps_source": "engine",
+        "prompt_ms": 1081.7,
+        "decode_ms": 304.4,
+        "drafts_offered": 3,
+        "drafts_accepted": 3
+      },
+      "response": {
+        "first": 1.21781136514619,
+        "total": 1.4075776939280331,
+        "text": "1517",
+        "usage": {
+          "prompt_tokens": 27,
+          "completion_tokens": 5,
+          "total_tokens": 32,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 27,
+          "prompt_ms": 1081.7,
+          "prompt_per_token_ms": 40.063,
+          "prompt_per_second": 25.0,
+          "predicted_n": 5,
+          "predicted_ms": 304.4,
+          "predicted_per_token_ms": 60.88,
+          "predicted_per_second": 16.4,
+          "draft_n": 3,
+          "draft_n_accepted": 3
+        },
+        "err": null,
+        "pieces": 4
+      }
+    },
+    {
+      "case": "decode-128",
+      "passed": true,
+      "expected": null,
+      "counted_input_tokens": null,
+      "metrics": {
+        "ok": true,
+        "err": null,
+        "ttft_s": 0.825,
+        "total_s": 6.163,
+        "prompt_tokens": 34,
+        "reused_tokens": 0,
+        "read_tokens": 34,
+        "generated_tokens": 128,
+        "prompt_tps": 44.3,
+        "prompt_tps_source": "engine",
+        "decode_tps": 23.8,
+        "decode_tps_source": "engine",
+        "prompt_ms": 767.4,
+        "decode_ms": 5375.5,
+        "drafts_offered": 106,
+        "drafts_accepted": 78
+      },
+      "response": {
+        "first": 0.824601924046874,
+        "total": 6.16316058812663,
+        "text": "A hash table is a fundamental data structure that provides efficient data retrieval by mapping keys to values using a hash function. Ideally, this function distributes keys uniformly across an array of buckets, ensuring that each key maps to a unique index. However, because the range of possible keys is typically much larger than the number of available buckets, collisions are inevitable. A collision occurs when two distinct keys produce the same hash index. To maintain data integrity and performance, hash tables employ specific strategies to handle these conflicts, primarily through separate chaining and open addressing.\n\n**Separate Chaining** is one of the most common and intuitive methods for resolving collisions. In",
+        "usage": {
+          "prompt_tokens": 34,
+          "completion_tokens": 128,
+          "total_tokens": 162,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 34,
+          "prompt_ms": 767.4,
+          "prompt_per_token_ms": 22.571,
+          "prompt_per_second": 44.3,
+          "predicted_n": 128,
+          "predicted_ms": 5375.5,
+          "predicted_per_token_ms": 41.996,
+          "predicted_per_second": 23.8,
+          "draft_n": 106,
+          "draft_n_accepted": 78
+        },
+        "err": null,
+        "pieces": 127
+      }
+    },
+    {
+      "case": "context-32k",
+      "passed": true,
+      "expected": "H20-FLASH-7391",
+      "counted_input_tokens": 32762,
+      "metrics": {
+        "ok": true,
+        "err": null,
+        "ttft_s": 9.452,
+        "total_s": 10.046,
+        "prompt_tokens": 32762,
+        "reused_tokens": 0,
+        "read_tokens": 32762,
+        "generated_tokens": 11,
+        "prompt_tps": 3510.2,
+        "prompt_tps_source": "engine",
+        "decode_tps": 16.1,
+        "decode_tps_source": "engine",
+        "prompt_ms": 9333.5,
+        "decode_ms": 684.5,
+        "drafts_offered": 11,
+        "drafts_accepted": 7
+      },
+      "response": {
+        "first": 9.452401075977832,
+        "total": 10.046103481203318,
+        "text": "H20-FLASH-7391",
+        "usage": {
+          "prompt_tokens": 32762,
+          "completion_tokens": 11,
+          "total_tokens": 32773,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 32762,
+          "prompt_ms": 9333.5,
+          "prompt_per_token_ms": 0.285,
+          "prompt_per_second": 3510.2,
+          "predicted_n": 11,
+          "predicted_ms": 684.5,
+          "predicted_per_token_ms": 62.227,
+          "predicted_per_second": 16.1,
+          "draft_n": 11,
+          "draft_n_accepted": 7
+        },
+        "err": null,
+        "pieces": 10
+      }
+    },
+    {
+      "case": "context-128k",
+      "passed": true,
+      "expected": "H20-FLASH-7391",
+      "counted_input_tokens": 131071,
+      "metrics": {
+        "ok": true,
+        "err": null,
+        "ttft_s": 36.312,
+        "total_s": 37.514,
+        "prompt_tokens": 131071,
+        "reused_tokens": 0,
+        "read_tokens": 131071,
+        "generated_tokens": 11,
+        "prompt_tps": 3624.0,
+        "prompt_tps_source": "engine",
+        "decode_tps": 8.8,
+        "decode_tps_source": "engine",
+        "prompt_ms": 36167.6,
+        "decode_ms": 1249.4,
+        "drafts_offered": 7,
+        "drafts_accepted": 6
+      },
+      "response": {
+        "first": 36.31190782831982,
+        "total": 37.514215134084225,
+        "text": "H20-FLASH-7391",
+        "usage": {
+          "prompt_tokens": 131071,
+          "completion_tokens": 11,
+          "total_tokens": 131082,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 131071,
+          "prompt_ms": 36167.6,
+          "prompt_per_token_ms": 0.276,
+          "prompt_per_second": 3624.0,
+          "predicted_n": 11,
+          "predicted_ms": 1249.4,
+          "predicted_per_token_ms": 113.582,
+          "predicted_per_second": 8.8,
+          "draft_n": 7,
+          "draft_n_accepted": 6
+        },
+        "err": null,
+        "pieces": 10
+      }
+    },
+    {
+      "case": "context-256k",
+      "passed": true,
+      "expected": "H20-FLASH-7391",
+      "counted_input_tokens": 261992,
+      "metrics": {
+        "ok": true,
+        "err": null,
+        "ttft_s": 77.879,
+        "total_s": 79.153,
+        "prompt_tokens": 261992,
+        "reused_tokens": 0,
+        "read_tokens": 261992,
+        "generated_tokens": 11,
+        "prompt_tps": 3376.0,
+        "prompt_tps_source": "engine",
+        "decode_tps": 8.3,
+        "decode_tps_source": "engine",
+        "prompt_ms": 77604.5,
+        "decode_ms": 1323.4,
+        "drafts_offered": 8,
+        "drafts_accepted": 6
+      },
+      "response": {
+        "first": 77.87904127314687,
+        "total": 79.1528895450756,
+        "text": "H20-FLASH-7391",
+        "usage": {
+          "prompt_tokens": 261992,
+          "completion_tokens": 11,
+          "total_tokens": 262003,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 261992,
+          "prompt_ms": 77604.5,
+          "prompt_per_token_ms": 0.296,
+          "prompt_per_second": 3376.0,
+          "predicted_n": 11,
+          "predicted_ms": 1323.4,
+          "predicted_per_token_ms": 120.309,
+          "predicted_per_second": 8.3,
+          "draft_n": 8,
+          "draft_n_accepted": 6
+        },
+        "err": null,
+        "pieces": 10
+      }
+    },
+    {
+      "case": "decode-128-at-256k",
+      "passed": false,
+      "expected": null,
+      "counted_input_tokens": 262009,
+      "metrics": {
+        "ok": false,
+        "err": "HTTP 400: b'{\"error\": {\"type\": \"invalid_request_error\", \"message\": \"request exceeds the context window: prompt (262009 tokens) + max tokens (128) exceeds the context (262144); requests are never truncated. Send a'",
+        "ttft_s": null,
+        "total_s": 0.13,
+        "prompt_tokens": null,
+        "reused_tokens": null,
+        "read_tokens": null,
+        "generated_tokens": 0,
+        "prompt_tps": null,
+        "prompt_tps_source": null,
+        "decode_tps": null,
+        "decode_tps_source": null,
+        "prompt_ms": null,
+        "decode_ms": null,
+        "drafts_offered": null,
+        "drafts_accepted": null
+      },
+      "response": {
+        "first": null,
+        "total": 0.12968576373532414,
+        "text": "",
+        "usage": null,
+        "timings": null,
+        "err": "HTTP 400: b'{\"error\": {\"type\": \"invalid_request_error\", \"message\": \"request exceeds the context window: prompt (262009 tokens) + max tokens (128) exceeds the context (262144); requests are never truncated. Send a'",
+        "pieces": 0
+      },
+      "resolution": "Retained boundary rejection; retry reduces filler and includes server CTX_SLACK in output budgeting."
+    },
+    {
+      "case": "decode-128-at-256k-margin",
+      "passed": true,
+      "expected": null,
+      "counted_input_tokens": 261785,
+      "metrics": {
+        "ok": true,
+        "err": null,
+        "ttft_s": 6.056,
+        "total_s": 14.528,
+        "prompt_tokens": 261785,
+        "reused_tokens": 245760,
+        "read_tokens": 16025,
+        "generated_tokens": 128,
+        "prompt_tps": 2748.9,
+        "prompt_tps_source": "engine",
+        "decode_tps": 15.1,
+        "decode_tps_source": "engine",
+        "prompt_ms": 5829.6,
+        "decode_ms": 8495.6,
+        "drafts_offered": 117,
+        "drafts_accepted": 74
+      },
+      "response": {
+        "first": 6.0560402572155,
+        "total": 14.527725780382752,
+        "text": "A hash table is a fundamental data structure that provides efficient data retrieval by mapping keys to values using a hash function. Ideally, the hash function distributes keys uniformly across an array of buckets, ensuring that each key maps to a unique index. However, in practice, it is statistically inevitable that two distinct keys will produce the same hash value, a phenomenon known as a collision. Since a single bucket cannot store multiple distinct values simultaneously without a specific strategy, hash tables must employ robust collision resolution techniques to maintain data integrity and performance.\n\nThe most common method for handling collisions is separate chaining. In this approach, each bucket in the hash table does not",
+        "usage": {
+          "prompt_tokens": 261785,
+          "completion_tokens": 128,
+          "total_tokens": 261913,
+          "prompt_tokens_details": {
+            "cached_tokens": 245760
+          }
+        },
+        "timings": {
+          "cache_n": 245760,
+          "prompt_n": 16025,
+          "prompt_ms": 5829.6,
+          "prompt_per_token_ms": 0.364,
+          "prompt_per_second": 2748.9,
+          "predicted_n": 128,
+          "predicted_ms": 8495.6,
+          "predicted_per_token_ms": 66.372,
+          "predicted_per_second": 15.1,
+          "draft_n": 117,
+          "draft_n_accepted": 74
+        },
+        "err": null,
+        "pieces": 127
+      }
+    }
+  ],
+  "gpu_peak_mib": 93941.0
+}

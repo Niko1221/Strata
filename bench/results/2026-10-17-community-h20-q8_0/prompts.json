@@ -1,0 +1,606 @@
+{
+  "schema": "synthetic-prompts.v1",
+  "prompts": [
+    {
+      "id": "arithmetic",
+      "group": "capacity",
+      "sha256": "5448e2e4b646319e4feac954b3bb559255afc9f51f5fc1c72daa44b338a24e5a",
+      "bytes": 53,
+      "segments": [
+        {
+          "text": "Compute 37 multiplied by 41. Return only the integer."
+        }
+      ]
+    },
+    {
+      "id": "context-128k",
+      "group": "capacity",
+      "sha256": "21b375e44b65e46d20548e398e0fe939547a0f8dc7c64050e0263b92427ffd7e",
+      "bytes": 636543,
+      "segments": [
+        {
+          "text": "CASE_context-128k: Read the context and answer the final question.\n"
+        },
+        {
+          "repeat": " The river crosses a quiet valley.",
+          "count": 9357
+        },
+        {
+          "text": "\nThe unique verification passphrase is H20-FLASH-7391. Remember this exact passphrase.\n"
+        },
+        {
+          "repeat": " The river crosses a quiet valley.",
+          "count": 9358
+        },
+        {
+          "text": "\nQuestion: Return only the unique verification passphrase, without explanation."
+        }
+      ]
+    },
+    {
+      "id": "context-256k",
+      "group": "capacity",
+      "sha256": "dfd28e8a6ac92d3d85612abdaa7d3c1cb7528affcd551f15c2a157e9b1011092",
+      "bytes": 1272445,
+      "segments": [
+        {
+          "text": "CASE_context-256k: Read the context and answer the final question.\n"
+        },
+        {
+          "repeat": " The river crosses a quiet valley.",
+          "count": 18709
+        },
+        {
+          "text": "\nThe unique verification passphrase is H20-FLASH-7391. Remember this exact passphrase.\n"
+        },
+        {
+          "repeat": " The river crosses a quiet valley.",
+          "count": 18709
+        },
+        {
+          "text": "\nQuestion: Return only the unique verification passphrase, without explanation."
+        }
+      ]
+    },
+    {
+      "id": "context-32k",
+      "group": "capacity",
+      "sha256": "eea3d15fe615767f0ca0a0ce4e8251c65d45cb6eca97c64b3abdd77f8db769d7",
+      "bytes": 159046,
+      "segments": [
+        {
+          "text": "CASE_context-32k: Read the context and answer the final question.\n"
+        },
+        {
+          "repeat": " The river crosses a quiet valley.",
+          "count": 2335
+        },
+        {
+          "text": "\nThe unique verification passphrase is H20-FLASH-7391. Remember this exact passphrase.\n"
+        },
+        {
+          "repeat": " The river crosses a quiet valley.",
+          "count": 2336
+        },
+        {
+          "text": "\nQuestion: Return only the unique verification passphrase, without explanation."
+        }
+      ]
+    },
+    {
+      "id": "decode-128-at-256k-margin",
+      "group": "capacity",
+      "sha256": "05b3315081300f5b776f69016795f6948f678041b13cf5252f4fb2ae2e580306",
+      "bytes": 1271415,
+      "segments": [
+        {
+          "text": "CASE_context-256k: Read the context and answer the final question.\n"
+        },
+        {
+          "repeat": " The river crosses a quiet valley.",
+          "count": 18709
+        },
+        {
+          "text": "\nThe unique verification passphrase is H20-FLASH-7391. Remember this exact passphrase.\n"
+        },
+        {
+          "repeat": " The river crosses a quiet valley.",
+          "count": 18677
+        },
+        {
+          "text": "\nQuestion: Explain how a hash table handles collisions. Give a detailed explanation of at least 300 words. Do not mention the passphrase."
+        }
+      ]
+    },
+    {
+      "id": "decode-128-at-256k",
+      "group": "capacity",
+      "sha256": "566022e7bba000bd7406e6c072e6c0d44337e90728ef28770ed02993c3201e02",
+      "bytes": 1272503,
+      "segments": [
+        {
+          "text": "CASE_context-256k: Read the context and answer the final question.\n"
+        },
+        {
+          "repeat": " The river crosses a quiet valley.",
+          "count": 18709
+        },
+        {
+          "text": "\nThe unique verification passphrase is H20-FLASH-7391. Remember this exact passphrase.\n"
+        },
+        {
+          "repeat": " The river crosses a quiet valley.",
+          "count": 18709
+        },
+        {
+          "text": "\nQuestion: Explain how a hash table handles collisions. Give a detailed explanation of at least 300 words. Do not mention the passphrase."
+        }
+      ]
+    },
+    {
+      "id": "decode-128",
+      "group": "capacity",
+      "sha256": "a6dac14b1349e4811281f7262f404db78ca25cee202aafd4f01123ac49d6dfc7",
+      "bytes": 95,
+      "segments": [
+        {
+          "text": "Explain how a hash table handles collisions. Give a detailed explanation of at least 300 words."
+        }
+      ]
+    },
+    {
+      "id": "baseline-single-512-w0-client0",
+      "group": "serving",
+      "sha256": "a795fc5efd28282b59b8efcdc56f7db874450f3d6ed9dbd31eba4d198b494ae4",
+      "bytes": 1912,
+      "segments": [
+        {
+          "text": "Client reference baseline-single-512-w0-client0.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "baseline-single-512-w1-client0",
+      "group": "serving",
+      "sha256": "af7bc8a406a7c61179b4d2d2839c43c94eae9a7b3b36940bdadb64f047177837",
+      "bytes": 1912,
+      "segments": [
+        {
+          "text": "Client reference baseline-single-512-w1-client0.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "baseline-single-512-w2-client0",
+      "group": "serving",
+      "sha256": "f880098d597a60640be039619cde76772348b410dcca233a91f11c2711bfec02",
+      "bytes": 1912,
+      "segments": [
+        {
+          "text": "Client reference baseline-single-512-w2-client0.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "baseline-warmup-w0-client0",
+      "group": "serving",
+      "sha256": "055334652397206b3b7cc0ee045d73f840ead0f935a09db082e1bb63eeec5705",
+      "bytes": 1908,
+      "segments": [
+        {
+          "text": "Client reference baseline-warmup-w0-client0.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-batch-warmup-w0-client0",
+      "group": "serving",
+      "sha256": "22988959c125a747f49f4a6d5888f03b61dda6d844c060f13c8391ae01ca909f",
+      "bytes": 1914,
+      "segments": [
+        {
+          "text": "Client reference parallel-batch-warmup-w0-client0.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-batch-warmup-w0-client1",
+      "group": "serving",
+      "sha256": "a6f3ed06ce73935b3ed240e1779eecd49e3115201f522a698721bc750028f51c",
+      "bytes": 1912,
+      "segments": [
+        {
+          "text": "Client reference parallel-batch-warmup-w0-client1.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain database transaction isolation, lost updates, write skew, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-batch-warmup-w0-client2",
+      "group": "serving",
+      "sha256": "1ef67ac68de470bf8ec441ad626f9711b69fa182fc95916b60ca2ec555d91dc7",
+      "bytes": 1914,
+      "segments": [
+        {
+          "text": "Client reference parallel-batch-warmup-w0-client2.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain HTTP connection pooling, keepalive, timeouts, backpressure, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-batch-warmup-w0-client3",
+      "group": "serving",
+      "sha256": "0e7ea6d49c0ba6b2299ca8963c11e1c5736e704217d25b2c2aa6510c8b3ee64e",
+      "bytes": 1916,
+      "segments": [
+        {
+          "text": "Client reference parallel-batch-warmup-w0-client3.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain an LRU cache with concurrency, eviction, memory bounds, observability, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-context-32k-w0-client0",
+      "group": "serving",
+      "sha256": "8144710fe0809db307e36891b61a44e5c9fdb05e8a7763af432530ffa3ea0c81",
+      "bytes": 159336,
+      "segments": [
+        {
+          "text": "Client reference parallel-context-32k-w0-client0.\nContext:\nCASE_context-32k: Read the context and answer the final question.\n"
+        },
+        {
+          "repeat": " The river crosses a quiet valley.",
+          "count": 2335
+        },
+        {
+          "text": "\nThe unique verification passphrase is H20-FLASH-7391. Remember this exact passphrase.\n"
+        },
+        {
+          "repeat": " The river crosses a quiet valley.",
+          "count": 2336
+        },
+        {
+          "text": "\nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c1-w0-client0",
+      "group": "serving",
+      "sha256": "1012620ddcf05b67c7372efaf3a2c6b8dcb08a08fdf2b01aadc5be63aaf870c3",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c1-w0-client0.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c1-w1-client0",
+      "group": "serving",
+      "sha256": "f1c821e1e994a1f28d937f4baf4be126c7d407e7fd26b5a282d7d75978bd7952",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c1-w1-client0.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c1-w2-client0",
+      "group": "serving",
+      "sha256": "94c3e52b4bb96bd3c6fab045207d01b9add9f7e505da72767e40d172e55dadd4",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c1-w2-client0.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c2-w0-client0",
+      "group": "serving",
+      "sha256": "228f29163fbe5a709735c27488e3bf0cf93e9ccdea637a988e84f97624a5b5f4",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c2-w0-client0.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c2-w0-client1",
+      "group": "serving",
+      "sha256": "080df38b7438e692a2919e394bbf0d88469966a25af79e68b7ee85872e48b147",
+      "bytes": 1908,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c2-w0-client1.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain database transaction isolation, lost updates, write skew, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c2-w1-client0",
+      "group": "serving",
+      "sha256": "c6e1a02c156c0c9c38779e7e7eac36ebd0e5427be8b26e51e0ad35ce04a9f96a",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c2-w1-client0.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c2-w1-client1",
+      "group": "serving",
+      "sha256": "0fd844872eddbcd94c283aeeab82d3af8f0de7fdd17835275dcb639e2fcb9054",
+      "bytes": 1908,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c2-w1-client1.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain database transaction isolation, lost updates, write skew, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c4-w0-client0",
+      "group": "serving",
+      "sha256": "737b984a257a216e837e925f7972b36c982e925ee9908b6fb3004d64191b29fd",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c4-w0-client0.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c4-w0-client1",
+      "group": "serving",
+      "sha256": "7fc7581e4d24f639004fdd5e2f9d1bc944c46701178303aacc10a4de21c6f27c",
+      "bytes": 1908,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c4-w0-client1.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain database transaction isolation, lost updates, write skew, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c4-w0-client2",
+      "group": "serving",
+      "sha256": "e1bde7cb57ab7c8b4df6eed2f4b2680652a994d2b1c964680bad3f4f7812c015",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c4-w0-client2.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain HTTP connection pooling, keepalive, timeouts, backpressure, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c4-w0-client3",
+      "group": "serving",
+      "sha256": "10db08ffd80fc16a731fe1a0460dc86d8592cb30c5f66f242a14a98d8a86f193",
+      "bytes": 1912,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c4-w0-client3.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain an LRU cache with concurrency, eviction, memory bounds, observability, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c4-w1-client0",
+      "group": "serving",
+      "sha256": "3c11a5098d2fdf8dd5134ab26e2f9b120201eaf964d29c6cbd4e29416a9b2cd4",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c4-w1-client0.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c4-w1-client1",
+      "group": "serving",
+      "sha256": "a0eedc4a91269bb731a3de69c913c809da2dc68f94f0024a3cccf2635ac2269a",
+      "bytes": 1908,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c4-w1-client1.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain database transaction isolation, lost updates, write skew, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c4-w1-client2",
+      "group": "serving",
+      "sha256": "14701eab4ae397349a5dc8ba7663701269346e86e4909fa6d33506729591c472",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c4-w1-client2.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain HTTP connection pooling, keepalive, timeouts, backpressure, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c4-w1-client3",
+      "group": "serving",
+      "sha256": "c4e5870ea60f7a509fcaab4b4a31bbab375747f1e890367150cfcd15873d6537",
+      "bytes": 1912,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c4-w1-client3.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain an LRU cache with concurrency, eviction, memory bounds, observability, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w0-client0",
+      "group": "serving",
+      "sha256": "506058c0ee4abdca133edc193246bbb3ce22787016ce81ef9f37d0e34e4be559",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w0-client0.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w0-client1",
+      "group": "serving",
+      "sha256": "50226fb00417ca8b89fb9530491079011111241643f69a977a5e4e68f9abe827",
+      "bytes": 1908,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w0-client1.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain database transaction isolation, lost updates, write skew, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w0-client2",
+      "group": "serving",
+      "sha256": "5cb03beeb244d0e3c8222478c0bce6bdb1cc04cbb42fa7ad4892417527fac814",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w0-client2.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain HTTP connection pooling, keepalive, timeouts, backpressure, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w0-client3",
+      "group": "serving",
+      "sha256": "21bdaaec1623d624e23a119a88cfb9e258c2293ed23ed5e7c7ba024debfe32b1",
+      "bytes": 1912,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w0-client3.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain an LRU cache with concurrency, eviction, memory bounds, observability, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w0-client4",
+      "group": "serving",
+      "sha256": "ca5d8f19e31335f1fcc82d1b71def50c6404ac4656726bae2ce622cf4df816f6",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w0-client4.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w0-client5",
+      "group": "serving",
+      "sha256": "66338a3bbcc441f9eb7a733b6cb3a3c23849884db2f99476066c143031dcbc40",
+      "bytes": 1908,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w0-client5.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain database transaction isolation, lost updates, write skew, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w0-client6",
+      "group": "serving",
+      "sha256": "9e5db55b86b852438514f00956ce4140cc9bc61e0191e636d8c5f2e97a5a9f65",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w0-client6.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain HTTP connection pooling, keepalive, timeouts, backpressure, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w0-client7",
+      "group": "serving",
+      "sha256": "a148829c851caaa842d6c5bb201c947b3d1a01613ca44033c49444632cab60a6",
+      "bytes": 1912,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w0-client7.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain an LRU cache with concurrency, eviction, memory bounds, observability, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w1-client0",
+      "group": "serving",
+      "sha256": "fb50577450a6a626396bb612afc1bb812dcbddc9e646a545ce4f8bc34734e64b",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w1-client0.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w1-client1",
+      "group": "serving",
+      "sha256": "460bb99bb0e12e3d11d20f3558e9a17f7f7fd751bf1fa0429648e7290acb945e",
+      "bytes": 1908,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w1-client1.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain database transaction isolation, lost updates, write skew, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w1-client2",
+      "group": "serving",
+      "sha256": "7654bb980ff6d0dbfa77fa1fac2913e7265edf94e6d4ac77d293cd7738964ea5",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w1-client2.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain HTTP connection pooling, keepalive, timeouts, backpressure, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w1-client3",
+      "group": "serving",
+      "sha256": "8bc2956a0f9a97823219107f48e88a99eb76b3d5338c1f1d5de938eca6316dff",
+      "bytes": 1912,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w1-client3.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain an LRU cache with concurrency, eviction, memory bounds, observability, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w1-client4",
+      "group": "serving",
+      "sha256": "69be748067ecef16055058f7fb86539173cef4e377907075f70530cdd65eec2d",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w1-client4.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain hash-table collisions, separate chaining, open addressing, resizing, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w1-client5",
+      "group": "serving",
+      "sha256": "5f5c70dc6ef00176309e855b44ea6a9e2ee3c56767c1527caa8067b19004c593",
+      "bytes": 1908,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w1-client5.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain database transaction isolation, lost updates, write skew, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w1-client6",
+      "group": "serving",
+      "sha256": "70ef589d50f84bbc36aeca0ae34a1f00e303f2272cec8fb43e6c6788fac7b9f5",
+      "bytes": 1910,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w1-client6.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain HTTP connection pooling, keepalive, timeouts, backpressure, retries, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    },
+    {
+      "id": "parallel-short-c8-w1-client7",
+      "group": "serving",
+      "sha256": "bc07338a7ca596811977b8fbd154210306850bcee74d8638b38fb7a9fa339c43",
+      "bytes": 1912,
+      "segments": [
+        {
+          "text": "Client reference parallel-short-c8-w1-client7.\nContext:\nA service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. A service stores records in a hash table. Keys are strings and values are versioned documents. Several tenants share the same process, so the design must keep latency predictable as the table grows. Reads greatly outnumber writes, but bursts of writes arrive together. The system must preserve every record during resizing, and operators need concrete examples to understand tradeoffs. \nTask: Explain an LRU cache with concurrency, eviction, memory bounds, observability, and practical failure cases. Write a detailed engineering guide of at least 1500 words, with concrete examples and tradeoffs. Continue until the output limit. Do not mention the client reference or the verification passphrase."
+        }
+      ]
+    }
+  ]
+}

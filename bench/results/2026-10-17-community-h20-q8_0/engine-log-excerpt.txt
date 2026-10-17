@@ -1,0 +1,18 @@
+Capacity/single-slot server log excerpts; output timings here are server log summaries, not the client estimator.
+BF16_BEGIN T=8192 N=320 K=10240 cublas=120804
+BF16_WITNESS T=8192 N=320 K=10240 seed=42 device=NVIDIA H20 cublas=120804 max_error=0
+BF16_BEGIN T=8192 N=10240 K=320 cublas=120804
+BF16_WITNESS T=8192 N=10240 K=320 seed=42 device=NVIDIA H20 cublas=120804 max_error=0
+BF16_BEGIN T=8192 N=2560 K=2560 cublas=120804
+BF16_WITNESS T=8192 N=2560 K=2560 seed=42 device=NVIDIA H20 cublas=120804 max_error=0
+[strata] filling the GPU's expert cache (17136 experts, 83.35 GiB of VRAM) ...
+[strata] done: 5 tokens in 1 s (26.4 tok/s) (stop, cancel=False), expert cache 85.9% hit (+7.9% of the routed experts over PCIe)
+[strata] done: 128 tokens in 6 s (24.0 tok/s) (length, cancel=False), expert cache 98.1% hit (+0.6% of the routed experts over PCIe)
+[strata] done: 11 tokens in 10 s (18.5 tok/s) (stop, cancel=False), expert cache 92.1% hit (+5.9% of the routed experts over PCIe)
+[strata] done: 11 tokens in 37 s (9.1 tok/s) (stop, cancel=False), expert cache 95.9% hit (+2.5% of the routed experts over PCIe)
+[strata] done: 11 tokens in 79 s (8.6 tok/s) (stop, cancel=False), expert cache 97.6% hit (+1.2% of the routed experts over PCIe)
+[strata] done: 128 tokens in 14 s (15.1 tok/s) (length, cancel=False), expert cache 99.2% hit (+0.2% of the routed experts over PCIe)
+[strata] done: 64 tokens in 6 s (14.2 tok/s) (length, cancel=False), expert cache 98.9% hit (+0.2% of the routed experts over PCIe)
+[strata] done: 512 tokens in 29 s (18.0 tok/s) (length, cancel=False), expert cache 99.1% hit (+0.2% of the routed experts over PCIe)
+[strata] done: 512 tokens in 21 s (25.8 tok/s) (length, cancel=False), expert cache 99.4% hit (+0.1% of the routed experts over PCIe)
+[strata] done: 512 tokens in 21 s (25.2 tok/s) (length, cancel=False), expert cache 99.5% hit (+0.2% of the routed experts over PCIe)

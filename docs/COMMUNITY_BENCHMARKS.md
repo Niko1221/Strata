@@ -13,6 +13,11 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-17: one NVIDIA H20, 150 visible logical CPUs, 1,700 GiB host-visible RAM](../bench/results/2026-10-17-community-h20-q8_0/README.md):
+  frozen Strata 0.1.44.1 source build (sm_90), Unsloth Q8_0 at 262,144-token context;
+  actual uncached 261,992-token middle-phrase recall, single-stream and temporary four-slot serving,
+  a separately qualified TP4 FP8 reference, and a private-cuBLAS runtime compatibility observation.
+  Shared NFS-backed host; single-pass capacity cases and two-wave C2/C4/C8 measurements.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.

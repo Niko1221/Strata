@@ -1,0 +1,2842 @@
+[
+  {
+    "phase": "baseline",
+    "backend": "tp4",
+    "concurrency": 1,
+    "wave": 0,
+    "case": "warmup",
+    "warmup": true,
+    "output_limit": 64,
+    "wall_s": 0.7299844529479742,
+    "aggregate_tps": 87.67310007979206,
+    "per_gpu_tps": 21.918275019948016,
+    "requests": [
+      {
+        "start": 3853039.822180958,
+        "end": 3853040.552165411,
+        "ttft_s": 0.22274116892367601,
+        "total_s": 0.7299844529479742,
+        "client_decode_tps": 124.20075727800499,
+        "completion_tokens": 64,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 427,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing Resilient Hash Tables for Multi-Tenant, Read-Heavy Systems\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the theoretical promise of $O(1)$ average-case time complexity for lookups, insertions, and delet",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792172853.43773
+  },
+  {
+    "phase": "baseline",
+    "backend": "strata",
+    "concurrency": 1,
+    "wave": 0,
+    "case": "warmup",
+    "warmup": true,
+    "output_limit": 64,
+    "wall_s": 5.798467623069882,
+    "aggregate_tps": 11.037398871620582,
+    "per_gpu_tps": 11.037398871620582,
+    "requests": [
+      {
+        "start": 3853040.605388903,
+        "end": 3853046.403856526,
+        "ttft_s": 1.2761920047923923,
+        "total_s": 5.798467623069882,
+        "client_decode_tps": 13.931039440713336,
+        "completion_tokens": 64,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 64,
+          "total_tokens": 427,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 1242.3,
+          "prompt_per_token_ms": 3.422,
+          "prompt_per_second": 292.2,
+          "predicted_n": 64,
+          "predicted_ms": 4547.4,
+          "predicted_per_token_ms": 71.053,
+          "predicted_per_second": 14.1,
+          "draft_n": 55,
+          "draft_n_accepted": 32
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the backbone for caching layers, in-memory databases, and state management services. However, when designing a service that stores",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792172859.289468
+  },
+  {
+    "phase": "baseline",
+    "backend": "strata",
+    "concurrency": 1,
+    "wave": 0,
+    "case": "single-512",
+    "warmup": false,
+    "output_limit": 512,
+    "wall_s": 29.351559615228325,
+    "aggregate_tps": 17.443706798270494,
+    "per_gpu_tps": 17.443706798270494,
+    "requests": [
+      {
+        "start": 3853046.428631878,
+        "end": 3853075.780191493,
+        "ttft_s": 0.9075187058188021,
+        "total_s": 29.351559615228325,
+        "client_decode_tps": 17.96509861687609,
+        "completion_tokens": 512,
+        "prompt_tokens": 365,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 365,
+          "completion_tokens": 512,
+          "total_tokens": 877,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 365,
+          "prompt_ms": 874.9,
+          "prompt_per_token_ms": 2.397,
+          "prompt_per_second": 417.2,
+          "predicted_n": 512,
+          "predicted_ms": 28469.2,
+          "predicted_per_token_ms": 55.604,
+          "predicted_per_second": 18.0,
+          "draft_n": 498,
+          "draft_n_accepted": 277
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table remains the cornerstone of in-memory data structures. For a service storing versioned documents where keys are strings and values are complex objects, the choice of hashing strategy is not merely an academic exercise; it is a critical determinant of system stability, latency predictability, and operational resilience. This guide explores the fundamental mechanics of hash tables, specifically focusing on collision resolution strategies, resizing mechanisms, and the practical failure modes that arise in multi-tenant environments.\n\nThe context provided highlights several stringent constraints: high read-to-write ratios, bursty write patterns, multi-tenancy requiring predictable latency, and the absolute necessity of data preservation during resizing. We will dissect how standard implementations often fail these constraints and propose architectural patterns that mitigate these risks.\n\n## 1. The Fundamental Problem: Collisions\n\nA hash table maps keys to indices in an array using a hash function. Ideally, the hash function distributes keys uniformly across the array. However, because the space of possible keys (strings) is infinite while the array size is finite, collisions are inevitable. A collision occurs when two distinct keys hash to the same index.\n\nIn a multi-tenant environment, collisions are not just performance nuisances; they are potential vectors for denial-of-service (DoS) attacks or latency spikes. If Tenant A sends a burst of keys that all collide, they can degrade the performance for Tenant B, violating the requirement for predictable latency. Therefore, understanding how we handle collisions is the first step in designing a robust system.\n\n### The Role of the Hash Function\nFor string keys, the choice of hash function is paramount. Simple functions like `sum of characters` or `polynomial rolling hash` are fast but prone to clustering. In production systems, cryptographic-strength hash functions (like SHA-256) are too slow for hot paths. Instead, non-cryptographic hash functions like MurmurHash3, xxHash, or CityHash are preferred. These functions offer excellent distribution properties and speed.\n\nHowever, even with a good hash function, adversarial inputs can cause collisions. If an attacker knows the hash function, they can craft keys that collide intentionally. To mitigate this, many systems use \"salted\" hashing, where a random secret is mixed into the hash calculation. This prevents attackers from predicting collision patterns, ensuring that latency remains predictable regardless of input distribution.\n\n## 2. Collision Resolution Strategies",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792172888.6657946
+  },
+  {
+    "phase": "baseline",
+    "backend": "tp4",
+    "concurrency": 1,
+    "wave": 0,
+    "case": "single-512",
+    "warmup": false,
+    "output_limit": 512,
+    "wall_s": 5.1674172901548445,
+    "aggregate_tps": 99.08237931074028,
+    "per_gpu_tps": 24.77059482768507,
+    "requests": [
+      {
+        "start": 3853075.803665875,
+        "end": 3853080.971083165,
+        "ttft_s": 0.2905543218366802,
+        "total_s": 5.1674172901548445,
+        "client_decode_tps": 104.78047124137743,
+        "completion_tokens": 512,
+        "prompt_tokens": 365,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 365,
+          "total_tokens": 877,
+          "completion_tokens": 512,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing Resilient Hash Tables for Multi-Tenant, Read-Heavy Systems\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the theoretical promise of $O(1)$ average-case time complexity for lookups, insertions, and deletions. However, in production environments—particularly those serving multiple tenants within a single process with strict latency Service Level Agreements (SLAs)—this theoretical promise often clashes with physical reality. When keys are strings, values are versioned documents, and write bursts occur amidst a sea of reads, the naive implementation of a hash table can become a source of catastrophic latency spikes and data integrity issues.\n\nThis guide explores the mechanics of hash tables, focusing on collision resolution strategies, resizing algorithms, and failure modes. We will analyze these concepts through the lens of a multi-tenant service where predictable latency is paramount. By understanding the tradeoffs between separate chaining and open addressing, and by implementing robust resizing strategies, engineers can build systems that remain stable under pressure.\n\n## The Core Problem: Collisions and Predictability\n\nA hash function maps a key (in this case, a string) to an index in an array. Ideally, every key maps to a unique index. In reality, collisions are inevitable. A collision occurs when two distinct keys hash to the same index. For a multi-tenant system, the distribution of keys is rarely uniform. One tenant might generate keys with a specific prefix, while another uses UUIDs. If the hash function is weak or the table is poorly sized, collisions cluster, leading to \"hot spots\" that degrade performance from $O(1)$ to $O(n)$ in the worst case.\n\nFor a system where reads greatly outnumber writes, the primary goal is to minimize read latency. However, the presence of write bursts complicates this. If a write burst triggers a resize, and that resize is synchronous and blocking, it can stall all reads, violating the latency SLA. Therefore, the choice of collision resolution and resizing strategy is not just an academic exercise; it is a critical architectural decision.\n\n## Collision Resolution Strategies\n\nThere are two primary families of collision resolution: Separate Chaining and Open Addressing. Each has distinct implications for memory locality, cache performance, and resizing behavior.\n\n### Separate Chaining\n\nIn separate chaining, each bucket in the hash table array points to a linked list (or another dynamic structure) of entries that hash to that bucket.\n\n**Mechanism:**\nWhen",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792172893.8566484
+  },
+  {
+    "phase": "baseline",
+    "backend": "tp4",
+    "concurrency": 1,
+    "wave": 1,
+    "case": "single-512",
+    "warmup": false,
+    "output_limit": 512,
+    "wall_s": 4.582382024731487,
+    "aggregate_tps": 111.73228186491099,
+    "per_gpu_tps": 27.933070466227747,
+    "requests": [
+      {
+        "start": 3853080.995339975,
+        "end": 3853085.577722,
+        "ttft_s": 0.28838726598769426,
+        "total_s": 4.582382024731487,
+        "client_decode_tps": 119.00340561884919,
+        "completion_tokens": 512,
+        "prompt_tokens": 365,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 365,
+          "total_tokens": 877,
+          "completion_tokens": 512,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Hash Table Design for Multi-Tenant, Read-Heavy Systems\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides average-case $O(1)$ time complexity for lookups, insertions, and deletions, making it the backbone of caches, databases, and in-memory stores. However, the theoretical elegance of $O(1)$ performance often collapses under the weight of real-world constraints, particularly in multi-tenant environments where latency predictability is paramount.\n\nThis guide explores the internal mechanics of hash tables, focusing on collision resolution strategies, resizing mechanisms, and failure modes. We will specifically address a scenario where a service stores versioned documents keyed by strings, serving multiple tenants within a single process. The workload is characterized by a high read-to-write ratio, with occasional bursts of writes. The primary engineering challenge is maintaining predictable latency during table growth and ensuring data integrity during resizing operations.\n\n## 1. The Core Problem: Hash Collisions\n\nA hash table operates by mapping keys to indices in an array (the bucket array) using a hash function. Ideally, every unique key maps to a unique index. In reality, because the range of possible keys (strings of arbitrary length) is vastly larger than the finite number of buckets, collisions are inevitable. A collision occurs when two distinct keys hash to the same index.\n\n### The Impact of Collisions on Latency\n\nIn a read-heavy system, collisions are the primary enemy of latency predictability. If a hash function distributes keys poorly, or if the table becomes too full, multiple keys may map to the same bucket. The time complexity of a lookup then degrades from $O(1)$ to $O(k)$, where $k$ is the number of keys in that specific bucket.\n\nFor a multi-tenant service, this is critical. If Tenant A’s keys happen to collide frequently due to a poor hash function or clustering, Tenant A experiences high latency. In a shared process, this can lead to \"noisy neighbor\" issues, where one tenant’s poor performance impacts the overall system stability, even if other tenants are operating normally. Therefore, understanding how to manage collisions is not just an academic exercise; it is a requirement for Service Level Agreement (SLA) compliance.\n\n## 2. Collision Resolution Strategies\n\nThere are two primary families of collision resolution: Separate Chaining and Open Addressing. Each has distinct tradeoffs regarding memory usage, cache locality, and performance under load.\n\n",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792172898.4632285
+  },
+  {
+    "phase": "baseline",
+    "backend": "strata",
+    "concurrency": 1,
+    "wave": 1,
+    "case": "single-512",
+    "warmup": false,
+    "output_limit": 512,
+    "wall_s": 20.620117228943855,
+    "aggregate_tps": 24.830120717321655,
+    "per_gpu_tps": 24.830120717321655,
+    "requests": [
+      {
+        "start": 3853085.60128609,
+        "end": 3853106.221403319,
+        "ttft_s": 0.79907156387344,
+        "total_s": 20.620117228943855,
+        "client_decode_tps": 25.7806782061205,
+        "completion_tokens": 512,
+        "prompt_tokens": 365,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 365,
+          "completion_tokens": 512,
+          "total_tokens": 877,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 365,
+          "prompt_ms": 766.3,
+          "prompt_per_token_ms": 2.099,
+          "prompt_per_second": 476.3,
+          "predicted_n": 512,
+          "predicted_ms": 19846.3,
+          "predicted_per_token_ms": 38.762,
+          "predicted_per_second": 25.8,
+          "draft_n": 468,
+          "draft_n_accepted": 296
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides average-case $O(1)$ time complexity for lookups, insertions, and deletions, making it the backbone of caching layers, in-memory databases, and state management services. However, when designing a service that stores versioned documents for multiple tenants within a single process, the theoretical simplicity of a hash table collapses under the weight of real-world constraints. The requirements are stringent: latency must remain predictable despite table growth, reads must vastly outnumber writes, write bursts must be handled gracefully, and data integrity must be absolute during resizing operations.\n\nThis guide explores the internal mechanics of hash tables, specifically focusing on collision resolution strategies, resizing algorithms, and failure modes. We will analyze how these mechanisms interact with multi-tenancy and versioned data models, providing concrete examples and tradeoffs to help engineers build robust, high-performance systems.\n\n## The Core Problem: Collisions and Determinism\n\nA hash table works by mapping a key (in this case, a string representing a document ID) to an index in an array (the bucket array) using a hash function. Ideally, every unique key maps to a unique index. In reality, because the space of possible keys is infinite while the bucket array is finite, collisions are inevitable. A collision occurs when two distinct keys hash to the same index.\n\nFor a multi-tenant service, collisions are not just a performance nuisance; they are a source of latency variance. If Tenant A’s keys consistently collide with Tenant B’s keys due to poor hash distribution or specific key patterns, Tenant A may experience \"noisy neighbor\" effects, where their read latency spikes because they are forced to traverse long chains or probe sequences occupied by Tenant B’s data. Therefore, the choice of collision resolution strategy is critical for maintaining predictable latency.\n\n### Strategy 1: Separate Chaining\n\nSeparate chaining is the most common approach in general-purpose libraries (such as Java’s `HashMap` or Python’s `dict`). In this model, each bucket in the array points to a linked list (or a balanced tree in modern implementations) of entries that hash to that bucket.\n\n**Mechanism:**\nWhen a collision occurs, the new entry is simply appended to the list at that bucket index. During a lookup, the hash function identifies the bucket, and the system traverses the list, comparing keys until a",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792172919.1069784
+  },
+  {
+    "phase": "baseline",
+    "backend": "strata",
+    "concurrency": 1,
+    "wave": 2,
+    "case": "single-512",
+    "warmup": false,
+    "output_limit": 512,
+    "wall_s": 21.14236053498462,
+    "aggregate_tps": 24.21678502515294,
+    "per_gpu_tps": 24.21678502515294,
+    "requests": [
+      {
+        "start": 3853106.263373415,
+        "end": 3853127.40573395,
+        "ttft_s": 0.8298254180699587,
+        "total_s": 21.14236053498462,
+        "client_decode_tps": 25.156879584886475,
+        "completion_tokens": 512,
+        "prompt_tokens": 365,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 365,
+          "completion_tokens": 512,
+          "total_tokens": 877,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 365,
+          "prompt_ms": 784.2,
+          "prompt_per_token_ms": 2.148,
+          "prompt_per_second": 465.4,
+          "predicted_n": 512,
+          "predicted_ms": 20337.9,
+          "predicted_per_token_ms": 39.722,
+          "predicted_per_second": 25.2,
+          "draft_n": 479,
+          "draft_n_accepted": 274
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table remains one of the most fundamental data structures for storing key-value pairs. However, when applied to a multi-tenant service storing versioned documents, the naive implementation of a hash table is insufficient. The requirements specified—predictable latency under growth, handling read-heavy workloads with write bursts, preserving data integrity during resizing, and supporting multiple tenants within a single process—demand a rigorous engineering approach. This guide explores the core mechanics of hash tables, specifically focusing on collision resolution strategies, resizing algorithms, and practical failure modes. We will analyze these concepts through the lens of a high-throughput document store, providing concrete examples and tradeoffs to help operators and engineers make informed architectural decisions.\n\n## The Core Challenge: Predictable Latency in a Shared Process\n\nThe primary constraint in this scenario is \"predictable latency.\" In a multi-tenant environment, one tenant’s heavy write burst must not degrade the read performance of another tenant. Standard hash tables, particularly those using dynamic resizing, can introduce significant latency spikes (tail latency) during rehashing operations. If a resize operation blocks the main thread or consumes excessive CPU cycles, it violates the Service Level Agreement (SLA) for latency-sensitive reads.\n\nFurthermore, the workload is read-heavy with bursty writes. This suggests that the data structure must be optimized for read throughput (cache locality, minimal pointer chasing) while remaining resilient to sudden spikes in insertion volume. The requirement to \"preserve every record during resizing\" implies that data loss is unacceptable, ruling out probabilistic data structures like Bloom filters for primary storage and mandating strict consistency guarantees during structural changes.\n\n## Hash Collisions: The Fundamental Problem\n\nA hash function maps a variable-length string key to a fixed-size integer index. Given that the space of possible keys is infinite and the space of indices is finite, collisions are mathematically inevitable. A collision occurs when two distinct keys, $K_1$ and $K_2$, produce the same hash index $H(K_1) = H(K_2)$.\n\nIn a multi-tenant system, the quality of the hash function is critical. Poor hash functions lead to clustering, where many keys map to a small subset of buckets. This degrades the average time complexity from $O(1)$ to $O(N)$, where $N$ is the number of elements in the bucket. For versioned documents,",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792172940.2913225
+  },
+  {
+    "phase": "baseline",
+    "backend": "tp4",
+    "concurrency": 1,
+    "wave": 2,
+    "case": "single-512",
+    "warmup": false,
+    "output_limit": 512,
+    "wall_s": 4.56173071404919,
+    "aggregate_tps": 112.23810261818953,
+    "per_gpu_tps": 28.059525654547382,
+    "requests": [
+      {
+        "start": 3853127.429527597,
+        "end": 3853131.991258311,
+        "ttft_s": 0.3019549548625946,
+        "total_s": 4.56173071404919,
+        "client_decode_tps": 119.95936614691085,
+        "completion_tokens": 512,
+        "prompt_tokens": 365,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 365,
+          "total_tokens": 877,
+          "completion_tokens": 512,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides average-case $O(1)$ time complexity for lookups, insertions, and deletions, making it the backbone of caching layers, in-memory databases, and state management services. However, when designing a service that stores versioned documents for multiple tenants within a single process, the theoretical simplicity of a hash table dissolves into a complex web of engineering tradeoffs. The requirements are stringent: latency must remain predictable despite table growth, reads must vastly outnumber writes, write bursts must be handled gracefully, and data integrity must be absolute during resizing operations.\n\nThis guide explores the mechanics of hash tables, focusing on collision resolution strategies, resizing algorithms, and failure modes. We will examine how separate chaining and open addressing interact with memory locality and concurrency, and how to design a system that preserves every record while maintaining strict Service Level Objectives (SLOs) for latency.\n\n## The Core Problem: Collisions and Distribution\n\nA hash table works by mapping keys to indices in an array (the bucket array) using a hash function. Ideally, the hash function distributes keys uniformly across the array. In reality, collisions occur when two distinct keys hash to the same index. For a service storing string keys representing document IDs, the quality of the hash function is paramount. Poor distribution leads to \"hot spots,\" where certain buckets contain disproportionately many entries, degrading performance from $O(1)$ to $O(n)$ in the worst case.\n\nFor multi-tenant systems, the distribution problem is exacerbated. If one tenant generates keys that cluster in a specific hash range, that tenant’s operations can degrade the performance of others sharing the same process. This is known as the \"noisy neighbor\" problem. To mitigate this, the hash function must be robust against adversarial or skewed key distributions. Algorithms like MurmurHash3 or xxHash are preferred over simple modulo-based hashes because they provide better avalanche effects, ensuring that small changes in the input key result in significant changes in the output hash, thereby spreading keys more evenly.\n\n## Collision Resolution Strategies\n\nWhen collisions occur, the system must decide how to store multiple entries at the same index. The two primary strategies are Separate Chaining and Open Addressing. Each has distinct implications for latency, memory usage, and concurrency.\n\n### Separate Chaining\n\nIn separate chaining, each bucket in the array points",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792172944.8768106
+  },
+  {
+    "phase": "parallel",
+    "backend": "strata",
+    "concurrency": 4,
+    "wave": 0,
+    "case": "batch-warmup",
+    "warmup": true,
+    "output_limit": 32,
+    "wall_s": 7.1213005017489195,
+    "aggregate_tps": 17.974245008838555,
+    "per_gpu_tps": 17.974245008838555,
+    "requests": [
+      {
+        "start": 3853220.617471914,
+        "end": 3853227.662205727,
+        "ttft_s": 2.534839706029743,
+        "total_s": 7.044733813032508,
+        "client_decode_tps": 6.87377558419045,
+        "completion_tokens": 32,
+        "prompt_tokens": 365,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 365,
+          "completion_tokens": 32,
+          "total_tokens": 397,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 365,
+          "prompt_ms": 851.8,
+          "prompt_per_token_ms": 2.334,
+          "prompt_per_second": 428.5,
+          "predicted_n": 32,
+          "predicted_ms": 4410.2,
+          "predicted_per_token_ms": 137.819,
+          "predicted_per_second": 7.3,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing Resilient Hash Tables for Multi-Tenant, Read-Heavy Systems\n\n## Introduction\n\nIn modern distributed systems, the hash table",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853220.617571911,
+        "end": 3853227.662723853,
+        "ttft_s": 3.5716057550162077,
+        "total_s": 7.045151941943914,
+        "client_decode_tps": 8.924597034772406,
+        "completion_tokens": 32,
+        "prompt_tokens": 365,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 365,
+          "completion_tokens": 32,
+          "total_tokens": 397,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 365,
+          "prompt_ms": 821.2,
+          "prompt_per_token_ms": 2.25,
+          "prompt_per_second": 444.5,
+          "predicted_n": 32,
+          "predicted_ms": 3358.5,
+          "predicted_per_token_ms": 104.953,
+          "predicted_per_second": 9.5,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Handling in High-Throughput Hash-Based Storage\n\n## Introduction\n\nIn modern distributed systems,",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853220.617730485,
+        "end": 3853227.738632165,
+        "ttft_s": 4.6898044180125,
+        "total_s": 7.120901680085808,
+        "client_decode_tps": 12.751443754892113,
+        "completion_tokens": 32,
+        "prompt_tokens": 367,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 367,
+          "completion_tokens": 32,
+          "total_tokens": 399,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 367,
+          "prompt_ms": 789.5,
+          "prompt_per_token_ms": 2.151,
+          "prompt_per_second": 464.9,
+          "predicted_n": 32,
+          "predicted_ms": 2344.2,
+          "predicted_per_token_ms": 73.256,
+          "predicted_per_second": 13.7,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Resilient HTTP Communication in Multi-Tenant Hash Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant work",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853220.617331663,
+        "end": 3853227.32898249,
+        "ttft_s": 1.3827940826304257,
+        "total_s": 6.711650826968253,
+        "client_decode_tps": 5.817382881035229,
+        "completion_tokens": 32,
+        "prompt_tokens": 368,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 368,
+          "completion_tokens": 32,
+          "total_tokens": 400,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 368,
+          "prompt_ms": 1282.0,
+          "prompt_per_token_ms": 3.484,
+          "prompt_per_second": 287.1,
+          "predicted_n": 32,
+          "predicted_ms": 5282.1,
+          "predicted_per_token_ms": 165.066,
+          "predicted_per_second": 6.1,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing a High-Performance, Concurrent LRU Cache for Multi-Tenant Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173040.6243753
+  },
+  {
+    "phase": "parallel",
+    "backend": "tp4",
+    "concurrency": 4,
+    "wave": 0,
+    "case": "batch-warmup",
+    "warmup": true,
+    "output_limit": 32,
+    "wall_s": 0.7789875399321318,
+    "aggregate_tps": 164.31585030378255,
+    "per_gpu_tps": 41.07896257594564,
+    "requests": [
+      {
+        "start": 3853227.775833286,
+        "end": 3853228.554355389,
+        "ttft_s": 0.5042390450835228,
+        "total_s": 0.7785221030935645,
+        "client_decode_tps": 113.02192787592833,
+        "completion_tokens": 32,
+        "prompt_tokens": 365,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 365,
+          "total_tokens": 397,
+          "completion_tokens": 32,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing a Predictable, Multi-Tenant Hash Table for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853227.775964614,
+        "end": 3853228.554433352,
+        "ttft_s": 0.5102508282288909,
+        "total_s": 0.7784687378443778,
+        "client_decode_tps": 115.57766610157067,
+        "completion_tokens": 32,
+        "prompt_tokens": 365,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 365,
+          "total_tokens": 397,
+          "completion_tokens": 32,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in High-Throughput Hash-Table Services\n\n## Introduction\n\nIn modern distributed systems",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853227.776255216,
+        "end": 3853228.554698352,
+        "ttft_s": 0.5101027311757207,
+        "total_s": 0.7784431357868016,
+        "client_decode_tps": 115.52490593032326,
+        "completion_tokens": 32,
+        "prompt_tokens": 367,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 367,
+          "total_tokens": 399,
+          "completion_tokens": 32,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: HTTP Connection Pooling, Keepalive, and Resilience Patterns\n\nIn modern distributed systems, the HTTP protocol serves as the primary transport layer",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853227.775710812,
+        "end": 3853228.554651566,
+        "ttft_s": 0.5103041990660131,
+        "total_s": 0.7789407540112734,
+        "client_decode_tps": 115.39754895351761,
+        "completion_tokens": 32,
+        "prompt_tokens": 368,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 368,
+          "total_tokens": 400,
+          "completion_tokens": 32,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing a High-Performance, Concurrent LRU Cache for Multi-Tenant Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173041.4402487
+  },
+  {
+    "phase": "parallel",
+    "backend": "strata",
+    "concurrency": 1,
+    "wave": 0,
+    "case": "short-c1",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 9.418624877929688,
+    "aggregate_tps": 27.18018854322092,
+    "per_gpu_tps": 27.18018854322092,
+    "requests": [
+      {
+        "start": 3853228.579452338,
+        "end": 3853237.998077216,
+        "ttft_s": 0.7943154247477651,
+        "total_s": 9.418624877929688,
+        "client_decode_tps": 29.567584672639295,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 761.6,
+          "prompt_per_token_ms": 2.098,
+          "prompt_per_second": 476.6,
+          "predicted_n": 256,
+          "predicted_ms": 8649.4,
+          "predicted_per_token_ms": 33.787,
+          "predicted_per_second": 29.6,
+          "draft_n": 232,
+          "draft_n_accepted": 149
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides average-case $O(1)$ time complexity for lookups, insertions, and deletions, making it the backbone of caching layers, in-memory databases, and state management services. However, when designing a service that stores versioned documents for multiple tenants within a single process, the theoretical simplicity of the hash table collapses under the weight of real-world constraints. The requirements are stringent: latency must remain predictable despite table growth, reads must vastly outnumber writes, write bursts must be handled gracefully, and data integrity must be absolute during resizing operations.\n\nThis guide explores the internal mechanics of hash tables, specifically focusing on collision resolution strategies, resizing algorithms, and failure modes. We will analyze how these mechanisms interact with multi-tenancy and versioned data models, providing concrete examples and tradeoffs to help engineers build robust, high-performance systems.\n\n## The Core Problem: Collisions and Determinism\n\nA hash table works by mapping a key (in this case, a string representing a document ID) to an index in an array (the bucket array) using a hash function.",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173050.8836546
+  },
+  {
+    "phase": "parallel",
+    "backend": "tp4",
+    "concurrency": 1,
+    "wave": 0,
+    "case": "short-c1",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 2.3286791439168155,
+    "aggregate_tps": 109.93356498629112,
+    "per_gpu_tps": 27.48339124657278,
+    "requests": [
+      {
+        "start": 3853238.023354288,
+        "end": 3853240.352033432,
+        "ttft_s": 0.2457903907634318,
+        "total_s": 2.3286791439168155,
+        "client_decode_tps": 122.4261255498852,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing a High-Performance, Multi-Tenant Hash Table for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is the fundamental data structure underpinning almost every high-throughput service. However, when the requirements shift from simple key-value storage to complex, multi-tenant environments with versioned documents, the naive implementation of a hash table becomes insufficient. The scenario described—a service storing versioned documents for multiple tenants within a single process, characterized by read-heavy workloads, bursty writes, and strict latency predictability—presents a unique set of engineering challenges.\n\nThis guide explores the theoretical underpinnings of hash tables, specifically focusing on collision resolution strategies, resizing mechanics, and failure modes. It then transitions into practical architectural decisions, offering concrete examples and tradeoffs to help operators and engineers design a system that remains robust as the table grows. The goal is not merely to store data, but to do so with deterministic latency, ensuring that one tenant’s burst of writes does not degrade the read performance of another.\n\n## Part 1: The Core Problem – Collisions and Resolution Strategies\n\nA hash table operates by mapping keys to indices in an array using a hash function. Ideally, every key maps to a unique",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173053.2375085
+  },
+  {
+    "phase": "parallel",
+    "backend": "tp4",
+    "concurrency": 1,
+    "wave": 1,
+    "case": "short-c1",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 2.29762797197327,
+    "aggregate_tps": 111.41925634729269,
+    "per_gpu_tps": 27.854814086823172,
+    "requests": [
+      {
+        "start": 3853240.377099984,
+        "end": 3853242.674727956,
+        "ttft_s": 0.21514694998040795,
+        "total_s": 2.29762797197327,
+        "client_decode_tps": 122.45009549041356,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the theoretical promise of $O(1)$ average-case time complexity for lookups, insertions, and deletions. However, in production environments—particularly those serving multi-tenant services with versioned documents—this theoretical promise often clashes with physical reality. When keys are strings, values are complex versioned objects, and the workload is characterized by read-heavy traffic punctuated by write bursts, naive implementations fail to deliver predictable latency.\n\nThis guide explores the mechanics of hash tables, focusing on collision resolution strategies (separate chaining vs. open addressing), the critical process of resizing, and the practical failure modes that plague multi-tenant architectures. We will examine how to design a system that preserves data integrity during resizing while maintaining strict latency Service Level Objectives (SLOs) for operators and tenants alike.\n\n## 1. The Core Problem: Collisions and Distribution\n\nA hash table works by mapping a key to an index in an array (the bucket array) using a hash function. Ideally, every key maps to a unique index. In reality, because the space",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173055.5602036
+  },
+  {
+    "phase": "parallel",
+    "backend": "strata",
+    "concurrency": 1,
+    "wave": 1,
+    "case": "short-c1",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 7.231577184982598,
+    "aggregate_tps": 35.40029974811311,
+    "per_gpu_tps": 35.40029974811311,
+    "requests": [
+      {
+        "start": 3853242.69997196,
+        "end": 3853249.931549145,
+        "ttft_s": 0.8141266340389848,
+        "total_s": 7.231577184982598,
+        "client_decode_tps": 39.73540551278656,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 781.8,
+          "prompt_per_token_ms": 2.154,
+          "prompt_per_second": 464.3,
+          "predicted_n": 256,
+          "predicted_ms": 6442.6,
+          "predicted_per_token_ms": 25.166,
+          "predicted_per_second": 39.7,
+          "draft_n": 244,
+          "draft_n_accepted": 142
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the theoretical promise of $O(1)$ average-case time complexity for lookups, insertions, and deletions. However, in production environments—particularly those serving multi-tenant applications with mixed read/write workloads and strict latency requirements—this theoretical promise often collapses under the weight of real-world constraints.\n\nThis guide explores the engineering realities of implementing a robust hash table for a service that stores versioned documents. The specific constraints are significant: keys are strings, values are versioned documents, multiple tenants share the same process, reads vastly outnumber writes, but write bursts occur unpredictably. Furthermore, the system must guarantee data integrity during resizing operations, and operators require clear visibility into performance tradeoffs.\n\nWe will dissect the core mechanics of hash tables, analyze collision resolution strategies (separate chaining vs. open addressing), examine the critical process of resizing, and discuss practical failure modes. Throughout, we will provide concrete examples and tradeoff analyses to help engineers make informed architectural decisions.\n\n## 1. The Core Mechanism: Hashing and Collisions\n\nAt its heart",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173062.8171005
+  },
+  {
+    "phase": "parallel",
+    "backend": "strata",
+    "concurrency": 1,
+    "wave": 2,
+    "case": "short-c1",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 7.389957915060222,
+    "aggregate_tps": 34.641604585905654,
+    "per_gpu_tps": 34.641604585905654,
+    "requests": [
+      {
+        "start": 3853249.958681075,
+        "end": 3853257.34863899,
+        "ttft_s": 0.8389039570465684,
+        "total_s": 7.389957915060222,
+        "client_decode_tps": 38.92503429743061,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 805.6,
+          "prompt_per_token_ms": 2.219,
+          "prompt_per_second": 450.6,
+          "predicted_n": 256,
+          "predicted_ms": 6576.1,
+          "predicted_per_token_ms": 25.688,
+          "predicted_per_second": 38.9,
+          "draft_n": 244,
+          "draft_n_accepted": 137
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the backbone for caching layers, in-memory databases, and state management services. However, when designing a service that stores versioned documents for multiple tenants within a single process, the naive implementation of a hash table is insufficient. The requirements are stringent: latency must remain predictable despite table growth, reads must vastly outnumber writes, write bursts must be handled gracefully, and data integrity must be absolute during resizing operations.\n\nThis guide explores the mechanics of hash tables, focusing on collision resolution strategies, resizing algorithms, and the specific engineering tradeoffs required to meet the constraints of a multi-tenant, read-heavy, burst-write environment. We will dissect separate chaining and open addressing, analyze the dangers of resizing, and provide concrete examples of failure cases that operators must understand to maintain system stability.\n\n## The Core Problem: Collisions and Predictability\n\nA hash table maps keys to values using a hash function. Ideally, the hash function distributes keys uniformly across an array of buckets. In practice, collisions occur when two distinct keys hash to the same index. For a multi-tenant service, collisions",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173070.2341793
+  },
+  {
+    "phase": "parallel",
+    "backend": "tp4",
+    "concurrency": 1,
+    "wave": 2,
+    "case": "short-c1",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 2.386169485282153,
+    "aggregate_tps": 107.28491902147061,
+    "per_gpu_tps": 26.821229755367654,
+    "requests": [
+      {
+        "start": 3853257.374429587,
+        "end": 3853259.760599072,
+        "ttft_s": 0.2834300179965794,
+        "total_s": 2.386169485282153,
+        "client_decode_tps": 121.27037322849108,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is the fundamental data structure underpinning almost every high-throughput service. From in-memory caches to database indexes, the ability to retrieve a value associated with a unique key in constant time, $O(1)$, is the bedrock of low-latency performance. However, the theoretical simplicity of hash tables masks significant engineering complexities when applied to real-world constraints. Specifically, when designing a service that stores versioned documents for multiple tenants within a single process, where reads vastly outnumber writes but write bursts are common, the choice of collision resolution strategy, resizing mechanism, and memory management becomes critical.\n\nThis guide explores the mechanics of hash-table collisions, the tradeoffs between separate chaining and open addressing, the intricacies of resizing without data loss, and practical failure modes. It provides concrete examples and architectural recommendations for maintaining predictable latency in a multi-tenant environment.\n\n## 1. The Fundamental Problem: Collisions\n\nA hash table works by mapping a key (in this case, a string) to an index in an array (the bucket array) using a hash function. Ideally, every unique key maps to a unique",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173072.6460881
+  },
+  {
+    "phase": "parallel",
+    "backend": "strata",
+    "concurrency": 2,
+    "wave": 0,
+    "case": "short-c2",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 12.989808894693851,
+    "aggregate_tps": 39.41551443525429,
+    "per_gpu_tps": 39.41551443525429,
+    "requests": [
+      {
+        "start": 3853259.788881637,
+        "end": 3853272.463958608,
+        "ttft_s": 1.7810320458374918,
+        "total_s": 12.67507697083056,
+        "client_decode_tps": 23.407283681654384,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 719.5,
+          "prompt_per_token_ms": 1.982,
+          "prompt_per_second": 504.5,
+          "predicted_n": 256,
+          "predicted_ms": 10797.4,
+          "predicted_per_token_ms": 42.177,
+          "predicted_per_second": 23.7,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the theoretical promise of $O(1)$ average-case time complexity for lookups, insertions, and deletions. However, in production environments—particularly those serving multi-tenant services with versioned documents—this theoretical promise often clashes with physical reality. When a service stores records where keys are strings and values are versioned documents, the design must account for memory locality, cache misses, garbage collection pauses, and the unpredictable nature of network traffic.\n\nThis guide explores the mechanics of hash tables, focusing on collision resolution strategies, resizing algorithms, and failure modes. We will analyze how these components interact in a high-concurrency, read-heavy environment where write bursts occur. The goal is to provide operators and engineers with concrete examples and tradeoffs to build systems that maintain predictable latency even as the dataset grows.\n\n## 1. The Core Problem: Collisions\n\nA hash table works by mapping a key to an index in an array (the bucket array) using a hash function. Ideally, every unique key maps to a unique index. In reality, because the space of",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853259.788724941,
+        "end": 3853272.778533836,
+        "ttft_s": 0.7805539756081998,
+        "total_s": 12.989808894693851,
+        "client_decode_tps": 20.885795381451246,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 749.2,
+          "prompt_per_token_ms": 2.064,
+          "prompt_per_second": 484.5,
+          "predicted_n": 256,
+          "predicted_ms": 12110.2,
+          "predicted_per_token_ms": 47.305,
+          "predicted_per_second": 21.1,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in High-Throughput Hash-Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with mixed read-write patterns, the integrity of data consistency is paramount. The scenario described—a service storing versioned documents in a hash table where reads vastly outnumber writes, yet write bursts occur unpredictably—presents a classic concurrency control challenge. While hash tables offer $O(1)$ average-case lookup times, they do not inherently provide transactional guarantees. When multiple tenants share the same process, and the underlying storage engine must resize dynamically while preserving every record, the interaction between concurrency control mechanisms and storage internals becomes critical.\n\nThis guide explores the fundamental concepts of database transaction isolation, specifically focusing on the anomalies of lost updates and write skew. It further details the mechanics of optimistic concurrency control via retries and analyzes practical failure cases that operators must understand to maintain predictable latency and data integrity. By examining these concepts through the lens of a versioned document store, we can derive concrete engineering tradeoffs that balance throughput, latency, and correctness.\n\n## The Foundation: Transaction Isolation Levels\n\nTransaction isolation is the degree to which the operations of one transaction are separated from those of other concurrent",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173085.6641955
+  },
+  {
+    "phase": "parallel",
+    "backend": "tp4",
+    "concurrency": 2,
+    "wave": 0,
+    "case": "short-c2",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 2.6860196380876005,
+    "aggregate_tps": 190.61662570886307,
+    "per_gpu_tps": 47.65415642721577,
+    "requests": [
+      {
+        "start": 3853272.806632395,
+        "end": 3853275.492254492,
+        "ttft_s": 0.5064254063181579,
+        "total_s": 2.685622096993029,
+        "client_decode_tps": 117.01559620165793,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the theoretical promise of $O(1)$ average-case time complexity for lookups, insertions, and deletions. However, in production environments—particularly those serving multi-tenant services with versioned documents—this theoretical promise often clashes with physical reality. When keys are strings, values are complex versioned objects, and the workload is characterized by read-heavy traffic punctuated by write bursts, naive implementations fail to deliver predictable latency.\n\nThis guide explores the mechanics of hash tables, focusing on collision resolution strategies (separate chaining vs. open addressing), the critical process of resizing, and the practical failure modes that plague multi-tenant architectures. We will examine how to design a system that preserves data integrity during resizing while maintaining strict latency Service Level Objectives (SLOs) for operators and tenants alike.\n\n## 1. The Core Problem: Collisions and Distribution\n\nA hash table works by mapping a key to an index in an array (the bucket array) using a hash function. Ideally, every key maps to a unique index. In reality, because the space",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853272.806508265,
+        "end": 3853275.492527903,
+        "ttft_s": 0.5106210829690099,
+        "total_s": 2.6860196380876005,
+        "client_decode_tps": 117.21989949841574,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in High-Throughput Hash-Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with mixed read/write patterns, the integrity of data consistency is paramount. The scenario described—a service storing versioned documents in a hash table, shared by multiple tenants, with read-heavy traffic and bursty write patterns—presents a classic concurrency control challenge. While hash tables offer $O(1)$ average-case access times, they do not inherently provide transactional guarantees. When multiple threads or processes attempt to modify the same logical record simultaneously, race conditions emerge.\n\nThis guide explores the fundamental concepts of database transaction isolation, specifically focusing on the anomalies of lost updates and write skew. It further details the mechanisms of optimistic concurrency control (retries) and examines practical failure cases that operators must understand to maintain predictable latency and data integrity. By grounding these abstract concepts in concrete examples relevant to a versioned document store, we aim to provide engineers with the mental models necessary to design robust, scalable systems.\n\n## The Foundation: ACID and Isolation Levels\n\nTo understand concurrency anomalies, one must first grasp the ACID properties: Atomicity, Consistency, Isolation, and",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173088.3780224
+  },
+  {
+    "phase": "parallel",
+    "backend": "tp4",
+    "concurrency": 2,
+    "wave": 1,
+    "case": "short-c2",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 2.3886245358735323,
+    "aggregate_tps": 214.34930116078664,
+    "per_gpu_tps": 53.58732529019666,
+    "requests": [
+      {
+        "start": 3853275.521818661,
+        "end": 3853277.910068061,
+        "ttft_s": 0.225159693043679,
+        "total_s": 2.3882494000717998,
+        "client_decode_tps": 117.88692774575019,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the theoretical promise of $O(1)$ average-case time complexity for lookups, insertions, and deletions. However, in production environments—particularly those serving multi-tenant services with versioned documents—this theoretical promise often clashes with physical reality. When keys are strings, values are complex versioned objects, and the workload is characterized by read-heavy traffic punctuated by write bursts, naive implementations fail to deliver predictable latency.\n\nThis guide explores the mechanics of hash tables, focusing on collision resolution strategies (separate chaining vs. open addressing), the critical process of resizing, and the practical failure modes that plague multi-tenant architectures. We will examine how to design a system that preserves data integrity during resizing while maintaining strict latency Service Level Objectives (SLOs) for operators and tenants alike.\n\n## 1. The Core Problem: Collisions and Distribution\n\nA hash table works by mapping a key to an index in an array (the bucket array) using a hash function. Ideally, every key maps to a unique index. In reality, because the space",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853275.521650513,
+        "end": 3853277.910275049,
+        "ttft_s": 0.22554336860775948,
+        "total_s": 2.3886245358735323,
+        "client_decode_tps": 117.88739315886649,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in High-Throughput Hash-Table Backed Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with strict latency requirements, the underlying data structure and its concurrency control mechanisms are critical to system stability. This guide explores the intricate relationship between database transaction isolation levels, specific concurrency anomalies like lost updates and write skew, and the operational realities of handling retries and failures. We will contextualize these concepts within a service architecture that utilizes a hash table for storage, where keys are strings and values are versioned documents. This specific architecture presents unique challenges: the need for predictable latency as the table grows, the handling of read-heavy workloads interspersed with write bursts, and the absolute requirement to preserve data integrity during resizing operations.\n\n## The Foundation: Hash Tables and Versioned Documents\n\nTo understand the transactional implications, we must first define the storage layer. In this system, records are stored in a hash table. A hash table provides average-case O(1) time complexity for lookups, insertions, and deletions, making it ideal for high-throughput services. However, standard hash tables are not inherently thread-safe or transactional. When multiple tenants share",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173090.7957644
+  },
+  {
+    "phase": "parallel",
+    "backend": "strata",
+    "concurrency": 2,
+    "wave": 1,
+    "case": "short-c2",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 12.670943913049996,
+    "aggregate_tps": 40.40740796529637,
+    "per_gpu_tps": 40.40740796529637,
+    "requests": [
+      {
+        "start": 3853277.939177713,
+        "end": 3853290.251724324,
+        "ttft_s": 1.7876206091605127,
+        "total_s": 12.312546611297876,
+        "client_decode_tps": 24.228198844173875,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 753.9,
+          "prompt_per_token_ms": 2.077,
+          "prompt_per_second": 481.5,
+          "predicted_n": 256,
+          "predicted_ms": 10441.1,
+          "predicted_per_token_ms": 40.786,
+          "predicted_per_second": 24.5,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table remains the cornerstone of in-memory data structures. For a service managing versioned documents across multiple tenants, the choice of hash table implementation is not merely an academic exercise; it is a critical architectural decision that dictates latency profiles, memory efficiency, and system stability. The specific constraints of this environment—high read-to-write ratios, bursty write patterns, multi-tenancy, and the absolute requirement for data preservation during resizing—demand a nuanced approach beyond standard library implementations.\n\nThis guide explores the fundamental mechanics of hash tables, specifically focusing on collision resolution strategies (separate chaining vs. open addressing), the complexities of dynamic resizing, and the practical failure modes that can degrade performance in production. We will analyze these concepts through the lens of a multi-tenant document store, providing concrete examples and tradeoffs to help operators and engineers make informed decisions.\n\n## 1. The Fundamental Problem: Collisions\n\nA hash table maps keys to values by computing a hash code from the key and using it to determine an index in an underlying array (the bucket array). Ideally, every key maps to a unique index. However, since the",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853277.938966097,
+        "end": 3853290.60991001,
+        "ttft_s": 0.7889345362782478,
+        "total_s": 12.670943913049996,
+        "client_decode_tps": 21.461016559918047,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 767.7,
+          "prompt_per_token_ms": 2.115,
+          "prompt_per_second": 472.8,
+          "predicted_n": 256,
+          "predicted_ms": 11776.7,
+          "predicted_per_token_ms": 46.003,
+          "predicted_per_second": 21.7,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in High-Throughput Hash-Based Storage\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant applications with high read-to-write ratios, the underlying storage engine plays a pivotal role in determining system reliability and performance. When a service utilizes a hash table structure to store versioned documents, the challenge extends beyond simple key-value retrieval. The core complexity lies in managing concurrent access while preserving data integrity. This guide explores the fundamental concepts of database transaction isolation, specifically focusing on the phenomena of lost updates and write skew, the mechanics of retry logic, and the practical failure cases that operators must anticipate. By understanding these mechanisms, engineers can design systems that maintain predictable latency even during write bursts and resizing operations, ensuring that every record is preserved without compromising consistency.\n\n## The Foundation: Transaction Isolation Levels\n\nTransaction isolation is the degree to which the operations of one transaction are separated from those of other concurrent transactions. In a hash-table-based storage system where multiple tenants share the same process, isolation is critical to prevent one tenant’s heavy write load from corrupting another tenant’s read consistency. The standard isolation levels, ranging from weakest to strongest, provide a spectrum of tradeoffs between performance and correctness.\n\n",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173103.4955523
+  },
+  {
+    "phase": "parallel",
+    "backend": "strata",
+    "concurrency": 4,
+    "wave": 0,
+    "case": "short-c4",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 22.190618576016277,
+    "aggregate_tps": 46.14562665264068,
+    "per_gpu_tps": 46.14562665264068,
+    "requests": [
+      {
+        "start": 3853290.647650356,
+        "end": 3853312.255418228,
+        "ttft_s": 0.7839963072910905,
+        "total_s": 21.60776787204668,
+        "client_decode_tps": 12.245620309799675,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 744.8,
+          "prompt_per_token_ms": 2.052,
+          "prompt_per_second": 487.4,
+          "predicted_n": 256,
+          "predicted_ms": 20721.0,
+          "predicted_per_token_ms": 80.941,
+          "predicted_per_second": 12.4,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the backbone for caching layers, in-memory databases, and state management services. However, when designing a service that stores versioned documents for multiple tenants within a single process, the naive implementation of a hash table is insufficient. The requirements are stringent: latency must remain predictable despite table growth, reads must vastly outnumber writes, write bursts must be handled gracefully, and data integrity must be preserved during resizing operations.\n\nThis guide explores the mechanics of hash tables, focusing on collision resolution strategies, resizing algorithms, and practical failure modes. We will examine how these components interact in a multi-tenant environment and provide concrete examples to illustrate the tradeoffs involved in choosing between separate chaining and open addressing.\n\n## The Core Challenge: Predictable Latency in a Shared Process\n\nThe primary constraint in this scenario is \"predictable latency.\" In a multi-tenant environment, one tenant’s heavy write burst should not cause another tenant’s read latency to spike. This is known as the \"noisy neighbor\" problem. If the underlying data structure degrades in performance due to internal fragmentation or excessive collision",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853290.647838545,
+        "end": 3853312.837765307,
+        "ttft_s": 3.9201123281382024,
+        "total_s": 22.189926762133837,
+        "client_decode_tps": 13.957448824740533,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 732.5,
+          "prompt_per_token_ms": 2.018,
+          "prompt_per_second": 495.6,
+          "predicted_n": 256,
+          "predicted_ms": 18173.6,
+          "predicted_per_token_ms": 70.991,
+          "predicted_per_second": 14.1,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in Multi-Tenant Hash-Based Storage\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multiple tenants within a shared process, the integrity of data under concurrent access is paramount. When a service stores records in a hash table where keys are strings and values are versioned documents, the underlying storage engine must balance high read throughput with the ability to handle bursts of writes without compromising data consistency. This guide explores the fundamental concepts of database transaction isolation, specifically focusing on the phenomena of lost updates and write skew, the mechanisms of retries, and practical failure cases. By understanding these concepts, engineers can design systems that maintain predictable latency and data correctness even as the table grows and resizing operations occur.\n\n### The Context: Multi-Tenancy and Predictable Latency\n\nThe scenario described involves a multi-tenant environment where several tenants share the same process. This architectural choice introduces specific challenges. First, resource contention is inevitable; a heavy write burst from one tenant can impact the read latency of another if not properly isolated. Second, the requirement for predictable latency as the table grows necessitates a storage structure that avoids catastrophic performance cliffs. Hash tables, while offering O(1) average-case access, can suffer from clustering",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853290.64745671,
+        "end": 3853312.757214836,
+        "ttft_s": 2.874670643825084,
+        "total_s": 22.1097581256181,
+        "client_decode_tps": 13.257023148003377,
+        "completion_tokens": 256,
+        "prompt_tokens": 365,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 365,
+          "completion_tokens": 256,
+          "total_tokens": 621,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 365,
+          "prompt_ms": 736.1,
+          "prompt_per_token_ms": 2.017,
+          "prompt_per_second": 495.9,
+          "predicted_n": 256,
+          "predicted_ms": 19139.9,
+          "predicted_per_token_ms": 74.765,
+          "predicted_per_second": 13.4,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Resilient HTTP Communication in Multi-Tenant Hash Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with strict latency requirements, the transport layer is often the silent bottleneck. Consider a service that stores versioned documents in an in-memory hash table. This service is read-heavy, with occasional bursts of writes, and must maintain predictable latency as the dataset grows. While the internal data structure (the hash table) is optimized for $O(1)$ average-case access, the external interface—typically HTTP/REST or gRPC over HTTP/2—is subject to the chaotic nature of network communication.\n\nThis guide details the critical mechanisms required to build a robust HTTP client and server interaction: connection pooling, keepalive, timeouts, backpressure, and retries. We will explore how these components interact, the tradeoffs involved, and concrete failure scenarios that operators must understand to maintain system stability. The goal is not just to make the system work, but to make it degrade gracefully under load, ensuring that a burst of writes from one tenant does not cause a cascading failure for others.\n\n## 1. HTTP Connection Pooling: The Foundation of Efficiency\n\n### The Cost of Connection Establishment\nEstablishing a TCP connection is",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853290.647146731,
+        "end": 3853312.756682417,
+        "ttft_s": 1.8334265407174826,
+        "total_s": 22.10953568574041,
+        "client_decode_tps": 12.576377359982477,
+        "completion_tokens": 256,
+        "prompt_tokens": 366,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 366,
+          "completion_tokens": 256,
+          "total_tokens": 622,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 366,
+          "prompt_ms": 749.0,
+          "prompt_per_token_ms": 2.046,
+          "prompt_per_second": 488.7,
+          "predicted_n": 256,
+          "predicted_ms": 20176.6,
+          "predicted_per_token_ms": 78.815,
+          "predicted_per_second": 12.7,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing a High-Performance, Concurrent LRU Cache for Multi-Tenant Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant applications where latency predictability is paramount, the design of the caching layer is often the difference between a responsive service and a degraded one. When a service stores versioned documents in a hash table, the primary bottleneck is rarely the storage engine itself, but rather the access patterns and the overhead of managing memory efficiently under concurrent load. This guide details the architecture of a Least Recently Used (LRU) cache designed specifically for high-concurrency environments. It addresses the critical requirements of maintaining predictable latency, handling write bursts, enforcing strict memory bounds, and providing deep observability, while navigating the complex tradeoffs inherent in concurrent data structures.\n\nThe core challenge lies in the tension between speed and consistency. An LRU cache is inherently stateful; every read and write operation modifies the internal metadata of the cache (specifically, the order of elements). In a single-threaded environment, this is trivial. In a multi-tenant, high-throughput environment, every access becomes a potential contention point. If not handled correctly, the cache itself becomes the bottleneck, introducing \"stop-the-world\" pauses or severe lock contention",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173125.723666
+  },
+  {
+    "phase": "parallel",
+    "backend": "tp4",
+    "concurrency": 4,
+    "wave": 0,
+    "case": "short-c4",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 2.739482290111482,
+    "aggregate_tps": 373.7932541839242,
+    "per_gpu_tps": 93.44831354598105,
+    "requests": [
+      {
+        "start": 3853312.874481588,
+        "end": 3853315.613112333,
+        "ttft_s": 0.43835066305473447,
+        "total_s": 2.7386307450942695,
+        "client_decode_tps": 110.85606574217917,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the theoretical promise of $O(1)$ average-case time complexity for lookups, insertions, and deletions. However, in production environments—particularly those serving multi-tenant applications with strict Service Level Agreements (SLAs) regarding latency—the theoretical simplicity of a hash table masks a complex web of engineering tradeoffs.\n\nThis guide explores the internal mechanics of hash tables, specifically focusing on collision resolution strategies, resizing algorithms, and failure modes. We will apply these concepts to a specific scenario: a service storing versioned documents for multiple tenants, where reads vastly outnumber writes, but write bursts are common. The primary constraint is maintaining predictable latency as the dataset grows, ensuring that no single tenant’s activity degrades the performance of others, and guaranteeing data integrity during structural changes like resizing.\n\n## 1. The Core Problem: Hash Collisions\n\nAt its heart, a hash table maps keys to values using a hash function. The hash function takes an input key (in our case, a string representing a document ID or tenant-specific identifier) and produces an integer",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853312.874196698,
+        "end": 3853315.612814638,
+        "ttft_s": 0.439014851115644,
+        "total_s": 2.73861793987453,
+        "client_decode_tps": 110.88870129219801,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in High-Throughput Hash-Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with high read-to-write ratios, the underlying data structure and its concurrency control mechanisms are critical to performance and correctness. This guide explores the theoretical and practical aspects of database transaction isolation, specifically focusing on scenarios involving hash-table-based storage engines. We will examine the phenomena of lost updates and write skew, the mechanics of optimistic and pessimistic concurrency control, retry strategies, and practical failure cases. The context assumes a service where keys are strings and values are versioned documents, shared across multiple tenants within a single process, requiring predictable latency even during resizing operations.\n\n## 1. The Foundation: Transaction Isolation Levels\n\nTransaction isolation is the degree to which the operations of one transaction are separated from those of other transactions. In a hash-table-based system, where data is accessed via direct key lookups, isolation is often managed through locking or versioning mechanisms rather than traditional row-level locks found in relational databases. Understanding the standard isolation levels is essential for choosing the right tradeoff between consistency and performance.\n\n### Read Uncommitted\nAt the lowest level, transactions can read data that",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853312.87433362,
+        "end": 3853315.61328436,
+        "ttft_s": 0.4386981436982751,
+        "total_s": 2.738950740080327,
+        "client_decode_tps": 110.85739035837904,
+        "completion_tokens": 256,
+        "prompt_tokens": 365,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 365,
+          "total_tokens": 621,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Resilient HTTP Communication in Multi-Tenant Hash Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with strict latency requirements, the transport layer is often the silent bottleneck. Consider a service that stores versioned documents in an in-memory hash table. The core data structure is optimized for O(1) average-case lookups, but this theoretical performance is meaningless if the network layer introduces unpredictable jitter, connection exhaustion, or cascading failures. When reads vastly outnumber writes, the system is read-heavy, but bursts of writes create transient spikes in load that can destabilize connection pools. Furthermore, because multiple tenants share the same process, a failure in one tenant’s network handling can starve resources for others, violating the requirement for predictable latency.\n\nThis guide provides a comprehensive engineering framework for managing HTTP communication in such environments. We will dissect connection pooling, keepalive mechanisms, timeout strategies, backpressure implementation, retry logic, and practical failure scenarios. The goal is to move beyond theoretical definitions and provide concrete examples of how these mechanisms interact with a hash-table-backed service, ensuring data integrity during resizing and maintaining fairness across tenants.\n\n## 1. HTTP Connection Pooling: The Foundation of Efficiency\n\n### The Cost of Connection",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853312.873936961,
+        "end": 3853315.613419251,
+        "ttft_s": 0.4327490059658885,
+        "total_s": 2.739482290111482,
+        "client_decode_tps": 110.54594033590284,
+        "completion_tokens": 256,
+        "prompt_tokens": 366,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 366,
+          "total_tokens": 622,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Building a Production-Grade Concurrent LRU Cache\n\nIn high-throughput distributed systems, the latency of data retrieval is often the primary bottleneck. When a service stores records in a hash table where keys are strings and values are versioned documents, and where reads vastly outnumber writes, an in-memory cache is the standard solution to mitigate backend load. However, implementing a Least Recently Used (LRU) cache in a multi-tenant, concurrent environment is deceptively complex. It requires balancing strict memory bounds, predictable latency, thread safety, and operational observability. This guide details the architectural decisions, implementation strategies, and failure modes for such a system.\n\n## 1. The Core Data Structure: Hash Map + Doubly Linked List\n\nThe fundamental requirement of an LRU cache is $O(1)$ time complexity for both `get` and `put` operations. A standard hash map provides $O(1)$ lookup but no ordering. A doubly linked list provides $O(1)$ insertion and removal but $O(n)$ lookup. The canonical solution is to combine these two structures.\n\n### The Hybrid Design\nWe maintain a hash map where the key is the string identifier, and the value is a pointer to a node in a doubly linked",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173128.4989772
+  },
+  {
+    "phase": "parallel",
+    "backend": "tp4",
+    "concurrency": 4,
+    "wave": 1,
+    "case": "short-c4",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 2.6724849259480834,
+    "aggregate_tps": 383.163994699326,
+    "per_gpu_tps": 95.7909986748315,
+    "requests": [
+      {
+        "start": 3853315.649972635,
+        "end": 3853318.322198972,
+        "ttft_s": 0.4161024782806635,
+        "total_s": 2.672226337250322,
+        "client_decode_tps": 113.02570955322243,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides average-case $O(1)$ time complexity for lookups, insertions, and deletions, making it the backbone of caching layers, in-memory databases, and state management services. However, when designing a service that stores versioned documents for multiple tenants within a single process, the theoretical simplicity of the hash table dissolves into a complex web of engineering tradeoffs. The requirements are stringent: latency must remain predictable despite table growth, reads must vastly outnumber writes, write bursts must be handled gracefully, and data integrity must be preserved during resizing operations.\n\nThis guide explores the internal mechanics of hash tables, specifically focusing on collision resolution strategies, resizing algorithms, and failure modes. We will examine how separate chaining and open addressing interact with memory locality and cache performance, and how these choices impact multi-tenant isolation. Furthermore, we will provide concrete examples of how to handle the specific constraints of versioned documents and bursty write patterns, ensuring that operators have a clear mental model of the system’s behavior under stress.\n\n## The Core Problem: Collisions and Load Factors\n\nA",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853315.65013704,
+        "end": 3853318.321758076,
+        "ttft_s": 0.4155842959880829,
+        "total_s": 2.6716210362501442,
+        "client_decode_tps": 113.0300741336239,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in Multi-Tenant Hash-Based Storage\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant applications with high read-to-write ratios, the underlying storage engine plays a pivotal role in determining system reliability and performance. When a service utilizes a hash table structure to store versioned documents, the challenge shifts from simple data retrieval to managing complex concurrency scenarios. The requirement to maintain predictable latency as the table grows, while handling bursts of writes and ensuring data integrity during resizing, introduces significant engineering constraints. This guide explores the fundamental concepts of database transaction isolation, specific concurrency anomalies such as lost updates and write skew, the mechanics of retries, and practical failure cases. By understanding these mechanisms, engineers can design systems that balance throughput, consistency, and availability.\n\n## The Foundation: Transaction Isolation Levels\n\nTransaction isolation is the degree to which the operations of one transaction are separated from those of other transactions. In a multi-tenant environment where several tenants share the same process, isolation is not just a data integrity concern but a security and performance boundary. If one tenant’s heavy write burst interferes with another tenant’s read latency, the system fails its service level objectives (SLOs).\n\n### Read Com",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853315.649852848,
+        "end": 3853318.322106365,
+        "ttft_s": 0.4109043446369469,
+        "total_s": 2.6722535169683397,
+        "client_decode_tps": 112.76454035495172,
+        "completion_tokens": 256,
+        "prompt_tokens": 365,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 365,
+          "total_tokens": 621,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: HTTP Connection Management, Resilience, and Performance Tuning\n\nIn modern distributed systems, the HTTP protocol serves as the primary transport layer for inter-service communication. While HTTP is ubiquitous and well-understood at a surface level, the underlying mechanics of connection management, state maintenance, and failure handling are complex. For a service that stores versioned documents in a hash table, shared across multiple tenants with predictable latency requirements, the efficiency of the HTTP client and server stack is not merely an optimization—it is a critical component of system stability.\n\nThis guide provides a detailed engineering perspective on HTTP connection pooling, keepalive mechanisms, timeout strategies, backpressure, retry logic, and practical failure cases. It is designed to help operators and engineers understand the tradeoffs involved in tuning these parameters to maintain high availability and low latency, particularly in environments where read-heavy workloads coexist with bursty write patterns.\n\n## 1. The Cost of Connections: Why Pooling Matters\n\nTo understand connection pooling, one must first understand the cost of establishing a new HTTP connection. In the TCP/IP stack, establishing a connection involves a three-way handshake (SYN, SYN-ACK, ACK). If TLS (Transport Layer Security) is used, which is standard for production services,",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853315.649714046,
+        "end": 3853318.322159667,
+        "ttft_s": 0.41618080204352736,
+        "total_s": 2.6724456208758056,
+        "client_decode_tps": 113.01864828614148,
+        "completion_tokens": 256,
+        "prompt_tokens": 366,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 366,
+          "total_tokens": 622,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing a High-Performance, Concurrent LRU Cache for Multi-Tenant Systems\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant applications where latency predictability is paramount, the design of the caching layer is often the single most critical factor in determining system performance. When a service stores versioned documents keyed by strings, and reads vastly outnumber writes, a well-tuned Least Recently Used (LRU) cache can reduce database load by orders of magnitude. However, implementing an LRU cache in a concurrent, multi-tenant environment introduces significant complexity. It is not merely a data structure problem; it is a systems engineering challenge involving memory management, concurrency control, eviction policies, and observability.\n\nThis guide details the architecture of a production-grade LRU cache designed for high-read, burst-write workloads. We will explore the internal mechanics, concurrency models, memory bounding strategies, and the inevitable failure modes that operators must understand to maintain system stability.\n\n## 1. The Core Data Structure: Balancing Speed and Order\n\nThe fundamental requirement of an LRU cache is to provide $O(1)$ time complexity for both `get` and `put` operations while maintaining the order of usage. The standard implementation combines a Hash Map",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173131.2078323
+  },
+  {
+    "phase": "parallel",
+    "backend": "strata",
+    "concurrency": 4,
+    "wave": 1,
+    "case": "short-c4",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 21.86254610028118,
+    "aggregate_tps": 46.838094488309856,
+    "per_gpu_tps": 46.838094488309856,
+    "requests": [
+      {
+        "start": 3853318.361240438,
+        "end": 3853340.223505819,
+        "ttft_s": 3.9298498407006264,
+        "total_s": 21.86226538103074,
+        "client_decode_tps": 14.220058609867893,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 743.0,
+          "prompt_per_token_ms": 2.047,
+          "prompt_per_second": 488.6,
+          "predicted_n": 256,
+          "predicted_ms": 17823.0,
+          "predicted_per_token_ms": 69.621,
+          "predicted_per_second": 14.4,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the theoretical promise of $O(1)$ average-case time complexity for lookups, insertions, and deletions. However, in production environments—particularly those serving multi-tenant applications with strict Service Level Agreements (SLAs) regarding latency—the theoretical simplicity of a hash table masks a complex web of engineering tradeoffs.\n\nThis guide explores the internal mechanics of hash tables, specifically focusing on collision resolution strategies, resizing algorithms, and failure modes. We will apply these concepts to a specific scenario: a service storing versioned documents for multiple tenants, where reads vastly outnumber writes, but write bursts are common. The primary constraint is maintaining predictable latency as the dataset grows, ensuring that no single tenant’s activity degrades the performance of others, and guaranteeing data integrity during structural changes like resizing.\n\n## 1. The Core Problem: Collisions\n\nAt its heart, a hash table maps keys to values using a hash function. The hash function takes an input key (in our case, a string representing a document ID or tenant-specific identifier) and produces an integer index",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853318.361099799,
+        "end": 3853340.071852929,
+        "ttft_s": 0.8065128140151501,
+        "total_s": 21.710753129795194,
+        "client_decode_tps": 12.198482037517882,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 767.7,
+          "prompt_per_token_ms": 2.115,
+          "prompt_per_second": 472.8,
+          "predicted_n": 256,
+          "predicted_ms": 20819.9,
+          "predicted_per_token_ms": 81.328,
+          "predicted_per_second": 12.3,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in High-Throughput Hash-Based Storage\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant applications with high read-to-write ratios, the underlying storage engine plays a pivotal role in determining system reliability and performance. When a service utilizes a hash table structure to store versioned documents, the challenge extends beyond simple key-value retrieval. The core complexity lies in managing concurrent access while preserving data integrity. This guide explores the fundamental concepts of database transaction isolation, specific concurrency anomalies such as lost updates and write skew, the mechanics of retry logic, and practical failure scenarios. By understanding these mechanisms, engineers can design systems that maintain predictable latency even during write bursts and resizing operations, ensuring that every record is preserved without compromising consistency.\n\n## The Foundation: Transaction Isolation Levels\n\nTransaction isolation is the degree to which the operations of one transaction are separated from those of other concurrent transactions. In a hash-table-based system where multiple tenants share the same process, isolation is critical to prevent one tenant’s heavy write burst from corrupting another tenant’s read consistency. The standard isolation levels, ranging from weakest to strongest, provide a spectrum of tradeoffs between performance and correctness.\n\n### Read Uncommitted\nAt the",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853318.361427626,
+        "end": 3853340.18680998,
+        "ttft_s": 2.911030912771821,
+        "total_s": 21.82538235373795,
+        "client_decode_tps": 13.481826262765836,
+        "completion_tokens": 256,
+        "prompt_tokens": 365,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 365,
+          "completion_tokens": 256,
+          "total_tokens": 621,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 365,
+          "prompt_ms": 819.9,
+          "prompt_per_token_ms": 2.246,
+          "prompt_per_second": 445.2,
+          "predicted_n": 256,
+          "predicted_ms": 18821.0,
+          "predicted_per_token_ms": 73.52,
+          "predicted_per_second": 13.6,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Resilient HTTP Communication in Multi-Tenant Hash Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with strict latency requirements, the transport layer is often the silent bottleneck. Consider a service that stores versioned documents in an in-memory hash table. The core data structure is optimized for O(1) average-case lookups, but this theoretical performance is meaningless if the network layer introduces unpredictable jitter, connection exhaustion, or cascading failures. When reads vastly outnumber writes, the system is read-heavy, yet bursts of writes can trigger expensive resizing operations or cache invalidations that ripple through the network.\n\nThis guide provides a comprehensive engineering framework for managing HTTP communication in such environments. We will dissect connection pooling, keepalive mechanisms, timeout strategies, backpressure handling, retry logic, and practical failure modes. The goal is to provide operators and engineers with concrete examples and tradeoffs to maintain predictable latency as the table grows and to ensure data integrity during high-load scenarios.\n\n## 1. HTTP Connection Pooling: The Foundation of Efficiency\n\n### The Cost of Connection Establishment\nHTTP/1.1 and HTTP/2 rely on TCP connections. Establishing a new TCP connection involves a three-way handshake, and if TLS is",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853318.360959719,
+        "end": 3853339.842814578,
+        "ttft_s": 1.8382959952577949,
+        "total_s": 21.48185485927388,
+        "client_decode_tps": 12.981354436090497,
+        "completion_tokens": 256,
+        "prompt_tokens": 366,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 366,
+          "completion_tokens": 256,
+          "total_tokens": 622,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 366,
+          "prompt_ms": 770.2,
+          "prompt_per_token_ms": 2.104,
+          "prompt_per_second": 475.2,
+          "predicted_n": 256,
+          "predicted_ms": 19533.1,
+          "predicted_per_token_ms": 76.301,
+          "predicted_per_second": 13.1,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing a High-Performance, Concurrent LRU Cache for Multi-Tenant Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant applications where latency predictability is paramount, the design of the caching layer is often the single most critical factor in determining system performance. When a service stores versioned documents in a hash table, the primary bottleneck shifts from disk I/O to memory management and concurrency control. While the underlying storage engine handles persistence, the in-memory cache acts as the gatekeeper for read-heavy workloads.\n\nThis guide details the architectural design of a Least Recently Used (LRU) cache tailored for a multi-tenant environment. The design prioritizes predictable latency, strict memory bounds, and robust observability. We will explore the internal data structures, concurrency models, eviction strategies, and the practical failure modes that operators must understand to maintain system stability. The core challenge lies in balancing the high read throughput required by the workload against the bursty nature of writes, all while ensuring that resizing operations do not violate the requirement to preserve every record or introduce unacceptable latency spikes.\n\n## Core Data Structure: The Hash Map and Doubly Linked List Hybrid\n\nThe fundamental requirement of an LRU cache is to provide $O(1)$ time",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173153.1092134
+  },
+  {
+    "phase": "parallel",
+    "backend": "strata",
+    "concurrency": 8,
+    "wave": 0,
+    "case": "short-c8",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 43.0492280991748,
+    "aggregate_tps": 47.57344301927815,
+    "per_gpu_tps": 47.57344301927815,
+    "requests": [
+      {
+        "start": 3853340.275244047,
+        "end": 3853360.597051768,
+        "ttft_s": 0.7995619340799749,
+        "total_s": 20.321807721164078,
+        "client_decode_tps": 13.062021797139124,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 732.7,
+          "prompt_per_token_ms": 2.018,
+          "prompt_per_second": 495.4,
+          "predicted_n": 256,
+          "predicted_ms": 19429.5,
+          "predicted_per_token_ms": 75.896,
+          "predicted_per_second": 13.2,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the backbone for caching layers, in-memory databases, and state management services. However, when designing a service that stores versioned documents for multiple tenants within a single process, the naive implementation of a hash table is insufficient. The requirements are stringent: latency must remain predictable despite table growth, reads must vastly outnumber writes, write bursts must be handled gracefully, and data integrity must be absolute during resizing operations.\n\nThis guide explores the mechanics of hash tables, focusing on collision resolution strategies, resizing algorithms, and the specific engineering tradeoffs required to meet the constraints of a multi-tenant, read-heavy, burst-write environment. We will dissect separate chaining and open addressing, analyze the dangers of resizing, and provide concrete examples of failure cases that operators must understand to maintain system stability.\n\n## The Core Challenge: Predictable Latency in a Shared Process\n\nThe primary constraint in this scenario is \"predictable latency.\" In a multi-tenant environment, one tenant’s workload cannot degrade another’s performance. If Tenant A triggers a massive write burst that causes a hash table resize, Tenant B",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853340.275700769,
+        "end": 3853383.324105841,
+        "ttft_s": 24.021816159132868,
+        "total_s": 43.04840507218614,
+        "client_decode_tps": 13.402297236004092,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 754.9,
+          "prompt_per_token_ms": 2.08,
+          "prompt_per_second": 480.9,
+          "predicted_n": 256,
+          "predicted_ms": 18942.2,
+          "predicted_per_token_ms": 73.993,
+          "predicted_per_second": 13.5,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in Multi-Tenant Hash-Based Storage\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multiple tenants within a shared process, the integrity of data under concurrent access is paramount. When a service stores records in a hash table where keys are strings and values are versioned documents, the underlying storage engine must balance high read throughput with the ability to handle bursts of writes without compromising data consistency. This guide explores the fundamental concepts of database transaction isolation, specifically focusing on the phenomena of lost updates and write skew, the mechanisms of retries, and practical failure cases. By understanding these concepts, engineers can design systems that maintain predictable latency and data correctness even as the table grows and resizing operations occur.\n\n### The Context: Multi-Tenancy and Predictable Latency\n\nThe scenario described involves a multi-tenant environment where several tenants share the same process. This architectural choice introduces specific challenges. First, resource contention is inevitable; a heavy write burst from one tenant can impact the read latency of another if not properly isolated. Second, the requirement for predictable latency as the table grows dictates that the data structure must avoid pathological behaviors, such as excessive rehashing or long lock hold times.\n\nHash tables are excellent for",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853340.275014918,
+        "end": 3853363.511983438,
+        "ttft_s": 1.7969264653511345,
+        "total_s": 23.236968520097435,
+        "client_decode_tps": 11.893633386952674,
+        "completion_tokens": 256,
+        "prompt_tokens": 365,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 365,
+          "completion_tokens": 256,
+          "total_tokens": 621,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 365,
+          "prompt_ms": 749.1,
+          "prompt_per_token_ms": 2.052,
+          "prompt_per_second": 487.3,
+          "predicted_n": 256,
+          "predicted_ms": 21340.6,
+          "predicted_per_token_ms": 83.362,
+          "predicted_per_second": 12.0,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Resilient HTTP Communication in Multi-Tenant Hash Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with strict latency requirements, the transport layer is often the silent bottleneck. Consider a service that stores versioned documents in an in-memory hash table. The core data structure is optimized for O(1) average-case lookups, but this theoretical performance is meaningless if the network layer introduces unpredictable jitter, connection exhaustion, or cascading failures. When reads vastly outnumber writes, the system is read-heavy, yet bursts of writes can trigger expensive resizing operations or contention. In such an environment, the HTTP client and server configuration are not merely implementation details; they are critical components of the service level objective (SLO).\n\nThis guide provides a comprehensive engineering analysis of HTTP connection pooling, keepalive mechanisms, timeout strategies, backpressure handling, retry logic, and practical failure modes. It is designed for engineers building high-throughput, low-latency services where predictability is paramount. We will explore how these mechanisms interact, the tradeoffs involved, and concrete examples of how misconfiguration can lead to catastrophic latency spikes or data loss during critical operations like hash table resizing.\n\n## 1. HTTP Connection Pooling: The Foundation of",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853340.275345767,
+        "end": 3853382.571509032,
+        "ttft_s": 22.422616187948734,
+        "total_s": 42.29616326512769,
+        "client_decode_tps": 12.83112667354786,
+        "completion_tokens": 256,
+        "prompt_tokens": 366,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 366,
+          "completion_tokens": 256,
+          "total_tokens": 622,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 366,
+          "prompt_ms": 747.0,
+          "prompt_per_token_ms": 2.041,
+          "prompt_per_second": 490.0,
+          "predicted_n": 256,
+          "predicted_ms": 19787.7,
+          "predicted_per_token_ms": 77.296,
+          "predicted_per_second": 12.9,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Building a Production-Grade Concurrent LRU Cache\n\nIn high-throughput distributed systems, the latency of data retrieval is often the primary bottleneck. When a service stores records in a hash table where keys are strings and values are versioned documents, and where reads vastly outnumber writes, an in-memory Least Recently Used (LRU) cache is the standard architectural pattern to mitigate database load and ensure predictable latency. However, implementing a naive LRU cache in a multi-tenant, concurrent environment introduces significant complexity. This guide details the engineering principles required to build a robust, observable, and memory-bounded LRU cache that handles write bursts, preserves data integrity during resizing, and provides operators with the visibility needed to debug production issues.\n\n## 1. The Core Data Structure: Balancing Speed and Order\n\nThe fundamental challenge of an LRU cache is maintaining two conflicting requirements: $O(1)$ time complexity for lookups and $O(1)$ time complexity for updating the \"recency\" of an item. A standard hash table provides $O(1)$ lookups but has no inherent ordering. A linked list provides $O(1)$ insertion and deletion but requires $O(n)$ time to search for a specific node.\n\nThe canonical solution is",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853340.27545683,
+        "end": 3853383.290187023,
+        "ttft_s": 25.060323493089527,
+        "total_s": 43.01473019318655,
+        "client_decode_tps": 14.20264140494389,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 779.1,
+          "prompt_per_token_ms": 2.146,
+          "prompt_per_second": 465.9,
+          "predicted_n": 256,
+          "predicted_ms": 17831.7,
+          "predicted_per_token_ms": 69.655,
+          "predicted_per_second": 14.4,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides average-case $O(1)$ time complexity for lookups, insertions, and deletions, making it the backbone of caching layers, in-memory databases, and state management services. However, when designing a service that stores versioned documents for multiple tenants within a single process, the theoretical simplicity of a hash table collapses under the weight of real-world constraints. The requirements are stringent: latency must remain predictable despite table growth, reads must vastly outnumber writes, write bursts must be handled gracefully, and data integrity must be absolute during resizing operations.\n\nThis guide explores the internal mechanics of hash tables, specifically focusing on collision resolution strategies, resizing algorithms, and failure modes. We will analyze how these mechanisms interact with multi-tenancy and versioned data models, providing concrete examples and tradeoffs to help engineers make informed architectural decisions.\n\n## The Core Problem: Collisions and Distribution\n\nA hash table works by mapping keys to indices in an array (the bucket array) using a hash function. Ideally, the hash function distributes keys uniformly across the array. In practice, collisions are",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853340.275130131,
+        "end": 3853361.80114054,
+        "ttft_s": 2.7971753221936524,
+        "total_s": 21.526010408997536,
+        "client_decode_tps": 13.615368965455305,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 757.5,
+          "prompt_per_token_ms": 2.087,
+          "prompt_per_second": 479.2,
+          "predicted_n": 256,
+          "predicted_ms": 18633.6,
+          "predicted_per_token_ms": 72.787,
+          "predicted_per_second": 13.7,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in High-Throughput Hash-Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with high read-to-write ratios, the underlying data structure and its concurrency control mechanisms are critical to performance and correctness. Consider a service that stores versioned documents in a hash table, where keys are strings and values are complex objects. This service operates under specific constraints: latency must remain predictable as the table grows, reads vastly outnumber writes, but writes arrive in unpredictable bursts. Furthermore, the system must guarantee data integrity during resizing operations, and operators require clear mental models to understand the tradeoffs inherent in the design.\n\nThis guide explores the fundamental concepts of database transaction isolation, specifically focusing on lost updates, write skew, and retry mechanisms. It provides concrete examples relevant to a hash-table-based storage engine and discusses practical failure cases that engineers must anticipate. By understanding these concepts, developers can design systems that balance throughput, latency, and consistency effectively.\n\n## The Foundation: Transactions and Isolation Levels\n\nA transaction is a logical unit of work that must be executed as a single, indivisible operation. In the context of our hash-table service, a transaction might involve reading a document",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853340.275604515,
+        "end": 3853363.448054739,
+        "ttft_s": 3.901604707352817,
+        "total_s": 23.17245022393763,
+        "client_decode_tps": 13.232424066735563,
+        "completion_tokens": 256,
+        "prompt_tokens": 365,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 365,
+          "completion_tokens": 256,
+          "total_tokens": 621,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 365,
+          "prompt_ms": 788.0,
+          "prompt_per_token_ms": 2.159,
+          "prompt_per_second": 463.2,
+          "predicted_n": 256,
+          "predicted_ms": 19165.5,
+          "predicted_per_token_ms": 74.865,
+          "predicted_per_second": 13.4,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Resilient HTTP Communication in Multi-Tenant Hash Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with strict latency requirements, the transport layer is often the silent bottleneck. Consider a service that stores versioned documents in an in-memory hash table. This service is characterized by a read-heavy workload, where reads vastly outnumber writes, but it also experiences bursts of write traffic. Furthermore, because multiple tenants share the same process, resource isolation and predictable latency are paramount. When this service communicates with downstream dependencies—such as a persistence layer, a cache invalidation service, or an external API—the HTTP client configuration becomes a critical determinant of system stability.\n\nThis guide provides a detailed engineering analysis of HTTP connection pooling, keepalive mechanisms, timeout strategies, backpressure handling, retry logic, and practical failure cases. The goal is to equip operators and engineers with concrete examples and tradeoff analyses to design resilient communication patterns that preserve data integrity and maintain predictable latency, even under load.\n\n## 1. HTTP Connection Pooling: The Foundation of Efficiency\n\n### The Cost of Connection Establishment\nHTTP/1.1 and HTTP/2 rely on TCP connections. Establishing a new TCP connection involves a three-way handshake, and if",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853340.274877742,
+        "end": 3853382.571330298,
+        "ttft_s": 21.184692645911127,
+        "total_s": 42.296452556271106,
+        "client_decode_tps": 12.07857616241961,
+        "completion_tokens": 256,
+        "prompt_tokens": 366,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 366,
+          "completion_tokens": 256,
+          "total_tokens": 622,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 366,
+          "prompt_ms": 757.8,
+          "prompt_per_token_ms": 2.07,
+          "prompt_per_second": 483.0,
+          "predicted_n": 256,
+          "predicted_ms": 21026.8,
+          "predicted_per_token_ms": 82.136,
+          "predicted_per_second": 12.2,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Building a Production-Grade Concurrent LRU Cache\n\nIn high-throughput distributed systems, the latency of data retrieval is often the primary bottleneck. When a service stores records in a hash table where keys are strings and values are versioned documents, and where reads vastly outnumber writes, an in-memory Least Recently Used (LRU) cache is the standard architectural pattern to mitigate database load and ensure predictable latency. However, implementing an LRU cache in a multi-tenant environment with concurrent access, strict memory bounds, and the requirement for zero data loss during resizing is a non-trivial engineering challenge. This guide details the architecture, concurrency models, eviction strategies, and observability requirements for such a system, providing concrete examples and tradeoffs for operators and engineers.\n\n## 1. The Core Data Structure: Hash Map + Doubly Linked List\n\nThe fundamental requirement of an LRU cache is $O(1)$ time complexity for both `get` and `put` operations. A standard hash table provides $O(1)$ average-case lookup, but it does not inherently track the order of access. To maintain the \"Least Recently Used\" property, we must combine a hash map with a doubly linked list.\n\n### The Mechanism\nThe hash map stores",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173196.210409
+  },
+  {
+    "phase": "parallel",
+    "backend": "tp4",
+    "concurrency": 8,
+    "wave": 0,
+    "case": "short-c8",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 2.9827257241122425,
+    "aggregate_tps": 686.62028943662,
+    "per_gpu_tps": 171.655072359155,
+    "requests": [
+      {
+        "start": 3853383.373718521,
+        "end": 3853386.356065994,
+        "ttft_s": 0.46960840793326497,
+        "total_s": 2.982347473036498,
+        "client_decode_tps": 101.48288118787362,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the theoretical promise of $O(1)$ average-case time complexity for lookups, insertions, and deletions. However, in production environments—particularly those serving multi-tenant applications with strict Service Level Agreements (SLAs)—theoretical complexity often diverges sharply from observed latency. When a service stores versioned documents for multiple tenants within a single process, the design of the underlying hash table becomes a critical determinant of system stability, predictability, and resource efficiency.\n\nThis guide explores the mechanics of hash tables, focusing on collision resolution strategies, resizing algorithms, and failure modes. We will examine how to design a system that maintains predictable latency despite read-heavy workloads, write bursts, and the necessity of preserving data integrity during dynamic resizing. By understanding the tradeoffs between separate chaining and open addressing, and by implementing robust resizing strategies, engineers can build storage engines that remain responsive even under extreme load.\n\n## The Fundamental Challenge: Collisions\n\nA hash table operates by mapping keys to indices in an array (the bucket array) using a hash function. Ideally,",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853383.373483794,
+        "end": 3853386.355694436,
+        "ttft_s": 0.4696757369674742,
+        "total_s": 2.9822106421925128,
+        "client_decode_tps": 101.49112733506904,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in Multi-Tenant Hash-Based Storage\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant environments with high read-to-write ratios, the integrity of data consistency is paramount. When a service stores versioned documents in a hash table structure, the underlying storage engine must handle complex concurrency scenarios. While hash tables offer $O(1)$ average-case lookup times, they do not inherently provide transactional guarantees. To ensure that concurrent operations do not corrupt data or violate business logic, we must implement robust transaction isolation levels and concurrency control mechanisms.\n\nThis guide explores the fundamental concepts of database transaction isolation, specifically focusing on the phenomena of lost updates and write skew. It further details the mechanics of optimistic concurrency control via retries and examines practical failure cases that operators must understand to maintain predictable latency and data integrity. The context of a multi-tenant system sharing a single process adds a layer of complexity, as resource contention and \"noisy neighbor\" effects can exacerbate concurrency issues, making predictable latency a critical design constraint.\n\n## 1. The Foundation: ACID and Isolation Levels\n\nTo understand the specific anomalies of lost updates and write skew, one must first grasp the ACID properties, with",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853383.374058172,
+        "end": 3853386.35602097,
+        "ttft_s": 0.4689283510670066,
+        "total_s": 2.9819627976976335,
+        "client_decode_tps": 101.47095291188447,
+        "completion_tokens": 256,
+        "prompt_tokens": 365,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 365,
+          "total_tokens": 621,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Resilient HTTP Communication in Multi-Tenant Hash Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with strict latency requirements, the transport layer is often the silent bottleneck. Consider a service that stores versioned documents in an in-memory hash table. The core data structure is optimized for O(1) average-case lookups, but this theoretical performance is meaningless if the network layer introduces unpredictable jitter, connection exhaustion, or cascading failures. When reads vastly outnumber writes, the system is read-heavy, yet bursts of writes can trigger expensive resizing operations or cache invalidations that ripple through the network.\n\nThis guide provides a comprehensive engineering framework for managing HTTP communication in such environments. We will dissect connection pooling, keepalive mechanisms, timeout strategies, backpressure handling, retry logic, and practical failure modes. The goal is to provide operators and engineers with concrete examples and tradeoffs to ensure that latency remains predictable as the table grows and that every record is preserved during high-load scenarios.\n\n## 1. HTTP Connection Pooling: The Foundation of Efficiency\n\n### The Cost of Connection Establishment\nHTTP/1.1 and HTTP/2 rely on TCP connections. Establishing a new TCP connection involves a three-way handshake, and",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853383.373613081,
+        "end": 3853386.355145136,
+        "ttft_s": 0.4690500982105732,
+        "total_s": 2.981532054953277,
+        "client_decode_tps": 101.49326617676236,
+        "completion_tokens": 256,
+        "prompt_tokens": 366,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 366,
+          "total_tokens": 622,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing a High-Performance, Concurrent LRU Cache for Multi-Tenant Systems\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant applications where latency predictability is paramount, the design of the caching layer is often the difference between a responsive user experience and a cascading failure. When a service stores versioned documents in a hash table, the primary bottleneck is rarely the storage engine itself, but rather the access patterns and the overhead of managing memory under concurrent load. This guide details the architecture of a robust, concurrent Least Recently Used (LRU) cache designed specifically for environments where reads vastly outnumber writes, yet write bursts occur unpredictably.\n\nThe core challenge in such systems is not merely implementing an LRU algorithm, but doing so while maintaining strict memory bounds, ensuring thread safety without introducing significant lock contention, and providing observability into cache behavior. Furthermore, because multiple tenants share the same process, the cache must prevent \"noisy neighbor\" issues where one tenant’s burst of writes evicts critical data for another. This document explores the theoretical underpinnings, practical implementation strategies, concurrency models, and failure modes of such a system.\n\n## The Core Data Structure: Balancing Speed and Order\n\nThe fundamental requirement of an L",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853383.373945681,
+        "end": 3853386.355648334,
+        "ttft_s": 0.4622995029203594,
+        "total_s": 2.9817026532255113,
+        "client_decode_tps": 101.2144483383353,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides average-case $O(1)$ time complexity for lookups, insertions, and deletions, making it the backbone of caches, databases, and in-memory stores. However, when designing a service that stores versioned documents for multiple tenants within a single process, the theoretical simplicity of a hash table collapses under the weight of real-world constraints. The requirements are stringent: latency must remain predictable despite table growth, reads must vastly outnumber writes, write bursts must be handled gracefully, and data integrity must be absolute during resizing operations.\n\nThis guide explores the mechanics of hash tables, specifically focusing on collision resolution strategies, resizing algorithms, and failure modes. We will analyze these concepts through the lens of a multi-tenant service handling versioned documents, providing concrete examples and tradeoffs to help operators and engineers make informed architectural decisions.\n\n## 1. The Core Problem: Collisions\n\nA hash table works by mapping keys to indices in an array using a hash function. Ideally, every unique key maps to a unique index. In reality, this is impossible. If the number of",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853383.374167999,
+        "end": 3853386.355223043,
+        "ttft_s": 0.46834410121664405,
+        "total_s": 2.981055044103414,
+        "client_decode_tps": 101.48401698248625,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Handling in Multi-Tenant Hash-Based Storage Systems\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multiple tenants within a shared process, the integrity of data under concurrent access is paramount. When a service stores versioned documents in a hash table where keys are strings and values are complex objects, the underlying storage engine must handle high read throughput, bursty write patterns, and strict consistency guarantees. This guide explores the critical concepts of database transaction isolation, specific concurrency anomalies like lost updates and write skew, retry mechanisms, and practical failure cases. By understanding these mechanisms, engineers can design systems that maintain predictable latency and data correctness even as the hash table grows and resizes.\n\n## 1. The Foundation: Transaction Isolation Levels\n\nTransaction isolation defines the degree to which the operations of one transaction are visible to other concurrent transactions. In a multi-tenant environment where latency predictability is a key requirement, choosing the right isolation level is a trade-off between performance and correctness.\n\n### Read Committed (RC)\nRead Committed is the most common default isolation level in many relational databases. It guarantees that any data read is committed at the moment it is read. It prevents \"dirty reads\" (reading",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853383.37382627,
+        "end": 3853386.355961657,
+        "ttft_s": 0.46899736020714045,
+        "total_s": 2.9821353871375322,
+        "client_decode_tps": 101.46677073342575,
+        "completion_tokens": 256,
+        "prompt_tokens": 365,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 365,
+          "total_tokens": 621,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Resilient HTTP Communication in Multi-Tenant Hash Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with strict latency requirements, the transport layer is often the silent bottleneck. Consider a service that stores versioned documents in an in-memory hash table. The core data structure is optimized for O(1) average-case lookups, but this theoretical performance is meaningless if the network layer introduces unpredictable jitter, connection exhaustion, or cascading failures. When reads vastly outnumber writes, the system is read-heavy, but bursts of writes create transient spikes in load. If the HTTP client or server implementation does not handle connection lifecycle, timeouts, and backpressure correctly, these write bursts can starve read requests, leading to Service Level Objective (SLO) violations.\n\nThis guide provides a detailed engineering analysis of HTTP connection pooling, keepalive mechanisms, timeout strategies, backpressure handling, retry logic, and practical failure cases. We will explore how these components interact within a multi-tenant environment where latency predictability is paramount. The goal is to move beyond theoretical definitions to concrete implementation strategies that preserve data integrity during resizing operations and maintain stability under load.\n\n## 1. HTTP Connection Pooling: The Foundation of Efficiency\n\n### The",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853383.37334027,
+        "end": 3853386.355915798,
+        "ttft_s": 0.46310074580833316,
+        "total_s": 2.982575527857989,
+        "client_decode_tps": 101.2115706879793,
+        "completion_tokens": 256,
+        "prompt_tokens": 366,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 366,
+          "total_tokens": 622,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing a High-Performance, Concurrent LRU Cache for Multi-Tenant Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant applications where latency predictability is paramount, the design of the caching layer is often the single most critical factor in determining system performance. When a service stores versioned documents in a hash table, the primary bottleneck is rarely the storage engine itself, but rather the cost of accessing that storage. Reads vastly outnumber writes, yet write bursts can cause significant contention. To mitigate this, an In-Memory Least Recently Used (LRU) cache is employed. However, a naive implementation fails under concurrency, memory pressure, and operational complexity.\n\nThis guide details the architecture of a production-grade, concurrent LRU cache. It addresses the specific constraints of multi-tenancy, predictable latency, and data integrity during resizing. We will explore the data structures, concurrency models, eviction strategies, memory management, observability requirements, and practical failure modes. The goal is to provide operators and engineers with concrete examples and tradeoffs to make informed architectural decisions.\n\n## 1. Core Data Structure: The Hash Map and Doubly Linked List\n\nThe fundamental requirement of an LRU cache is $O(1)$ time complexity for",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173199.2418444
+  },
+  {
+    "phase": "parallel",
+    "backend": "tp4",
+    "concurrency": 8,
+    "wave": 1,
+    "case": "short-c8",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 3.008454869966954,
+    "aggregate_tps": 680.7481210520855,
+    "per_gpu_tps": 170.18703026302137,
+    "requests": [
+      {
+        "start": 3853386.417467216,
+        "end": 3853389.425319726,
+        "ttft_s": 0.43295388808473945,
+        "total_s": 3.0078525100834668,
+        "client_decode_tps": 99.03302515345632,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the theoretical promise of $O(1)$ average-case time complexity for lookups, insertions, and deletions. However, in production environments—particularly those serving multi-tenant services with versioned documents—this theoretical simplicity masks a complex web of engineering tradeoffs. When keys are strings, values are versioned documents, and the workload is characterized by read-heavy traffic with bursty writes, the naive implementation of a hash table will fail to meet latency Service Level Objectives (SLOs).\n\nThis guide explores the mechanics of hash tables, focusing on collision resolution strategies (separate chaining vs. open addressing), the critical process of resizing, and the practical failure modes that plague multi-tenant architectures. We will examine how to maintain predictable latency as the table grows, ensuring data integrity during resizing, and providing concrete examples to illustrate the tradeoffs inherent in each design decision.\n\n## 1. The Core Problem: Collisions and Distribution\n\nA hash table works by mapping a key to an index in an array (the bucket array) using a hash function. Ideally",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853386.417242473,
+        "end": 3853389.424975927,
+        "ttft_s": 0.43267276184633374,
+        "total_s": 3.0077334539964795,
+        "client_decode_tps": 99.02679217516926,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in Multi-Tenant Hash-Based Storage\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multiple tenants within a shared process, the integrity of data under concurrent access is paramount. When a service stores records in a hash table where keys are strings and values are versioned documents, the underlying storage engine must balance high read throughput with the ability to handle bursts of writes without compromising data consistency. This guide explores the critical concepts of database transaction isolation, specific concurrency anomalies like lost updates and write skew, the mechanics of retries, and practical failure cases. By understanding these mechanisms, engineers can design systems that maintain predictable latency and data correctness even as the table grows and resizing operations occur.\n\n### The Context: Multi-Tenancy and Predictable Latency\n\nThe scenario described involves a multi-tenant environment where several tenants share the same process. This architectural choice introduces unique challenges. In a single-tenant system, resource contention is limited to that tenant’s workload. In a multi-tenant system, a \"noisy neighbor\" can degrade performance for others. If one tenant initiates a massive write burst, it can cause lock contention or CPU spikes that increase latency for read-heavy tenants.\n\nFurthermore, the requirement",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853386.416993984,
+        "end": 3853389.425221259,
+        "ttft_s": 0.43309466587379575,
+        "total_s": 3.0082272747531533,
+        "client_decode_tps": 99.02402661545672,
+        "completion_tokens": 256,
+        "prompt_tokens": 365,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 365,
+          "total_tokens": 621,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: HTTP Connection Management, Resilience, and Backpressure in Multi-Tenant Systems\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multiple tenants from a shared process, the efficiency and reliability of network communication are paramount. While the underlying data structure—such as a hash table storing versioned documents—handles the state management, the transport layer determines how quickly and reliably that state is accessed by clients. For a service where reads vastly outnumber writes but write bursts occur, the HTTP layer must be tuned to handle high concurrency without introducing latency spikes or resource exhaustion.\n\nThis guide provides a detailed engineering perspective on HTTP connection pooling, keepalive mechanisms, timeout strategies, backpressure implementation, retry logic, and practical failure cases. The goal is to provide operators and engineers with concrete examples and tradeoffs to build resilient, low-latency services that maintain predictable performance as they scale.\n\n## 1. HTTP Connection Pooling: The Foundation of Efficiency\n\n### The Cost of Connection Establishment\nHTTP/1.1 and HTTP/2 rely on TCP connections. Establishing a new TCP connection involves a three-way handshake (SYN, SYN-ACK, ACK), which incurs significant latency, especially over wide-area networks. If TLS is used, the cost increases further",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853386.417128977,
+        "end": 3853389.425032324,
+        "ttft_s": 0.4334686561487615,
+        "total_s": 3.0079033472575247,
+        "client_decode_tps": 99.05087158772555,
+        "completion_tokens": 256,
+        "prompt_tokens": 366,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 366,
+          "total_tokens": 622,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing a High-Performance, Concurrent LRU Cache for Multi-Tenant Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant applications where latency predictability is paramount, the cache is not merely an optimization; it is a critical infrastructure component. When a service stores versioned documents keyed by strings, and reads vastly outnumber writes, the efficiency of the retrieval path dictates the overall system performance. However, introducing a cache into a shared process environment introduces complex challenges: memory pressure, concurrency contention, and the risk of \"thundering herds\" during cache misses or evictions.\n\nThis guide details the architecture of a robust, concurrent Least Recently Used (LRU) cache designed for high-throughput, low-latency environments. We will explore the data structures required to achieve O(1) time complexity for both reads and writes, the mechanisms for safe concurrency without global locks, strategies for handling write bursts, and the observability metrics necessary to maintain operational health. Furthermore, we will examine practical failure cases, such as cache stampedes and memory fragmentation, providing concrete examples of how to mitigate them.\n\n## The Core Data Structure: Hash Map + Doubly Linked List\n\nThe fundamental requirement of an LRU cache is to track the",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853386.41735452,
+        "end": 3853389.424921607,
+        "ttft_s": 0.43239614088088274,
+        "total_s": 3.007567087188363,
+        "client_decode_tps": 99.02255241177006,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides average-case $O(1)$ time complexity for lookups, insertions, and deletions, making it the backbone of caching layers, in-memory databases, and state management services. However, when designing a service that stores versioned documents for multiple tenants within a single process, the theoretical simplicity of the hash table dissolves into a complex web of engineering tradeoffs. The requirements are stringent: latency must remain predictable despite table growth, reads must vastly outnumber writes, write bursts must be handled gracefully, and data integrity must be preserved during resizing operations.\n\nThis guide explores the mechanics of hash tables, focusing on collision resolution strategies, resizing algorithms, and failure modes. We will examine how separate chaining and open addressing behave under load, how to manage memory and latency in a multi-tenant environment, and how to ensure zero data loss during dynamic resizing. By understanding these mechanisms deeply, engineers can build systems that maintain stability even under the pressure of high-concurrency access patterns.\n\n## The Core Problem: Collisions\n\nA hash table works by mapping keys to indices in an array",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853386.417577377,
+        "end": 3853389.424182099,
+        "ttft_s": 0.43199802888557315,
+        "total_s": 3.0066047217696905,
+        "client_decode_tps": 99.04425429514625,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 363,
+          "total_tokens": 619,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in High-Throughput Hash-Based Storage\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant applications with high read-to-write ratios, the underlying storage engine plays a pivotal role in determining system reliability and performance. When a service utilizes a hash table structure to store versioned documents, the challenge extends beyond simple key-value retrieval. The core complexity lies in managing concurrent access while preserving data integrity. This guide explores the fundamental concepts of database transaction isolation, specifically focusing on the phenomena of lost updates and write skew, the mechanics of retry logic, and the practical failure cases that operators must anticipate. By understanding these mechanisms, engineers can design systems that maintain predictable latency even during write bursts and resizing operations, ensuring that every record is preserved without compromising consistency.\n\n## The Foundation: Transaction Isolation Levels\n\nTransaction isolation is the degree to which the operations of one transaction are separated from those of other concurrent transactions. In a hash-table-based storage system where multiple tenants share the same process, isolation is critical to prevent one tenant’s heavy write burst from corrupting another tenant’s read consistency. The standard isolation levels, ranging from weakest to strongest, provide a spectrum of tradeoffs between performance and correctness.\n\n",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853386.417807407,
+        "end": 3853389.42517162,
+        "ttft_s": 0.4324512998573482,
+        "total_s": 3.007364213000983,
+        "client_decode_tps": 99.03247550561936,
+        "completion_tokens": 256,
+        "prompt_tokens": 365,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 365,
+          "total_tokens": 621,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Resilient HTTP Communication in Multi-Tenant Hash Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with strict latency requirements, the transport layer is often the silent bottleneck. Consider a service that stores versioned documents in an in-memory hash table. The core data structure is optimized for O(1) average-case lookups, but this theoretical performance is meaningless if the network layer introduces unpredictable jitter, connection exhaustion, or cascading failures. When reads vastly outnumber writes, the system is read-heavy, but bursts of writes can trigger expensive resizing operations or cache invalidations that ripple through the network.\n\nThis guide provides a comprehensive engineering framework for managing HTTP communication in such environments. We will dissect connection pooling, keepalive mechanisms, timeout strategies, backpressure handling, retry logic, and practical failure modes. The goal is to provide operators and engineers with concrete examples and tradeoffs to maintain predictable latency and data integrity, even under extreme load and during critical operations like hash table resizing.\n\n## 1. HTTP Connection Pooling: The Foundation of Efficiency\n\n### The Cost of Connection Establishment\nHTTP/1.1 and HTTP/2 rely on TCP connections. Establishing a new TCP connection involves a three-way handshake, which",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853386.416864856,
+        "end": 3853389.425271716,
+        "ttft_s": 0.42576786363497376,
+        "total_s": 3.0084068598225713,
+        "client_decode_tps": 98.73621531171108,
+        "completion_tokens": 256,
+        "prompt_tokens": 366,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 366,
+          "total_tokens": 622,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing a High-Performance, Concurrent LRU Cache for Multi-Tenant Systems\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant applications where latency predictability is paramount, the design of the caching layer is often the difference between a responsive user experience and a cascading failure. When a service stores versioned documents in a hash table, the primary bottleneck is rarely the storage engine itself, but rather the access patterns and the overhead of managing concurrency. Reads vastly outnumber writes, yet write bursts can cause significant contention. To mitigate this, an in-memory Least Recently Used (LRU) cache is a standard architectural component. However, implementing a production-grade LRU cache that is concurrent, memory-bounded, observable, and resilient to failure is a non-trivial engineering challenge.\n\nThis guide details the architecture of such a cache, focusing on the interplay between data structure efficiency, thread safety, and operational visibility. We will explore how to maintain predictable latency as the table grows, how to handle write bursts without blocking readers, and how to ensure that resizing operations preserve data integrity.\n\n## Core Data Structure: The Hash Map and Doubly Linked List\n\nThe fundamental requirement of an LRU cache is $O(1)$ time complexity for",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173202.3111396
+  },
+  {
+    "phase": "parallel",
+    "backend": "strata",
+    "concurrency": 8,
+    "wave": 1,
+    "case": "short-c8",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 43.42512216093019,
+    "aggregate_tps": 47.161640499484804,
+    "per_gpu_tps": 47.161640499484804,
+    "requests": [
+      {
+        "start": 3853389.474667965,
+        "end": 3853410.504271233,
+        "ttft_s": 0.8281931388191879,
+        "total_s": 21.029603268019855,
+        "client_decode_tps": 12.622881193397655,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 773.1,
+          "prompt_per_token_ms": 2.13,
+          "prompt_per_second": 469.5,
+          "predicted_n": 256,
+          "predicted_ms": 20094.7,
+          "predicted_per_token_ms": 78.495,
+          "predicted_per_second": 12.7,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides the backbone for caching layers, in-memory databases, and state management services. However, when designing a service that stores versioned documents for multiple tenants within a single process, the naive implementation of a hash table is insufficient. The requirements are stringent: latency must remain predictable despite table growth, reads must vastly outnumber writes, write bursts must be handled gracefully, and data integrity must be preserved during resizing operations.\n\nThis guide explores the mechanics of hash tables, focusing on collision resolution strategies, resizing algorithms, and practical failure modes. We will examine how these components interact in a multi-tenant environment where isolation and predictability are paramount. By understanding the tradeoffs between separate chaining and open addressing, and by implementing robust resizing strategies, engineers can build systems that maintain sub-millisecond latency even under heavy load.\n\n## The Core Challenge: Predictable Latency in a Shared Process\n\nThe primary constraint in this scenario is \"predictable latency.\" In a multi-tenant environment, one tenant’s heavy write burst should not cause another tenant’s read latency to spike. Traditional hash tables often suffer",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853389.475119456,
+        "end": 3853432.899672363,
+        "ttft_s": 25.384230384603143,
+        "total_s": 43.42455290677026,
+        "client_decode_tps": 14.135002280955218,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 733.6,
+          "prompt_per_token_ms": 2.021,
+          "prompt_per_second": 494.8,
+          "predicted_n": 256,
+          "predicted_ms": 17943.4,
+          "predicted_per_token_ms": 70.091,
+          "predicted_per_second": 14.3,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in High-Throughput Hash-Based Storage\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant applications with high read-to-write ratios, the underlying storage engine plays a pivotal role in determining system reliability and performance. When a service utilizes a hash table structure to store versioned documents, the challenge extends beyond simple key-value retrieval. The core complexity lies in managing concurrent access while preserving data integrity. This guide explores the fundamental concepts of database transaction isolation, specifically focusing on the phenomena of lost updates and write skew, the mechanisms of optimistic concurrency control via retries, and the practical failure cases that operators must anticipate. By understanding these tradeoffs, engineers can design systems that maintain predictable latency even during write bursts and resizing operations.\n\n## The Foundation: Transaction Isolation Levels\n\nTransaction isolation is the degree to which the operations of one transaction are separated from those of other concurrent transactions. In a hash-table-based storage system where multiple tenants share the same process, isolation ensures that one tenant’s write burst does not corrupt the read consistency of another tenant’s queries. The SQL standard defines four isolation levels, but in NoSQL and document-oriented systems, we often deal with variations of these concepts.\n\n### Read",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853389.474911029,
+        "end": 3853411.9586574,
+        "ttft_s": 1.857996726874262,
+        "total_s": 22.483746371231973,
+        "client_decode_tps": 12.363187006381446,
+        "completion_tokens": 256,
+        "prompt_tokens": 365,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 365,
+          "completion_tokens": 256,
+          "total_tokens": 621,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 365,
+          "prompt_ms": 765.9,
+          "prompt_per_token_ms": 2.098,
+          "prompt_per_second": 476.6,
+          "predicted_n": 256,
+          "predicted_ms": 20540.5,
+          "predicted_per_token_ms": 80.236,
+          "predicted_per_second": 12.5,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Resilient HTTP Communication in Multi-Tenant Hash Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with strict latency requirements, the efficiency and reliability of network communication are paramount. Consider a service architecture where a central hash table stores versioned documents for multiple tenants. The access pattern is read-heavy, but the system must gracefully handle bursts of writes while maintaining predictable latency during table resizing operations. In such an environment, the underlying HTTP transport layer is not merely a plumbing detail; it is a critical component that dictates system stability, resource utilization, and user experience.\n\nThis guide provides a comprehensive engineering analysis of HTTP connection pooling, keepalive mechanisms, timeout strategies, backpressure handling, retry logic, and practical failure cases. By understanding these mechanisms deeply, engineers can design systems that remain robust under load, preserve data integrity during resizing, and provide operators with clear visibility into system behavior.\n\n## 1. HTTP Connection Pooling: The Foundation of Efficiency\n\n### The Cost of Connection Establishment\nEstablishing a new TCP connection is an expensive operation. It involves a three-way handshake (SYN, SYN-ACK, ACK), which incurs at least one round-trip time (RTT). If TLS is enabled,",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853389.475248302,
+        "end": 3853412.039851887,
+        "ttft_s": 3.943578856997192,
+        "total_s": 22.564603585284203,
+        "client_decode_tps": 13.694198021907573,
+        "completion_tokens": 256,
+        "prompt_tokens": 366,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 366,
+          "completion_tokens": 256,
+          "total_tokens": 622,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 366,
+          "prompt_ms": 781.0,
+          "prompt_per_token_ms": 2.134,
+          "prompt_per_second": 468.6,
+          "predicted_n": 256,
+          "predicted_ms": 18522.8,
+          "predicted_per_token_ms": 72.355,
+          "predicted_per_second": 13.8,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing a High-Performance, Concurrent LRU Cache for Multi-Tenant Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant applications where latency predictability is paramount, the design of the caching layer is often the difference between a responsive service and a degraded one. When a service stores versioned documents in a hash table, the primary bottleneck is rarely the storage medium itself, but rather the management of memory and the coordination of concurrent access patterns. This guide details the architecture of a Least Recently Used (LRU) cache designed for high-concurrency environments, focusing on eviction strategies, strict memory bounds, observability, and handling practical failure modes.\n\nThe core challenge addressed here is maintaining predictable latency as the table grows, specifically in scenarios where reads vastly outnumber writes, yet bursts of writes occur simultaneously. In a multi-tenant environment, \"noisy neighbors\" can easily degrade performance if the cache does not isolate resources or manage contention effectively. An LRU cache is the standard solution for this, but a naive implementation fails under high concurrency due to lock contention and memory fragmentation. This guide explores a robust, production-grade implementation.\n\n## 1. The Core Data Structure: Balancing Speed and Order\n\nThe fundamental requirement of an L",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853389.47502133,
+        "end": 3853431.633040807,
+        "ttft_s": 21.886260563042015,
+        "total_s": 42.15801947703585,
+        "client_decode_tps": 12.579076195700535,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 749.0,
+          "prompt_per_token_ms": 2.063,
+          "prompt_per_second": 484.6,
+          "predicted_n": 256,
+          "predicted_ms": 20161.8,
+          "predicted_per_token_ms": 78.757,
+          "predicted_per_second": 12.7,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Designing High-Performance, Multi-Tenant Hash Tables for Versioned Documents\n\n## Introduction\n\nIn modern distributed systems, the hash table is arguably the most fundamental data structure. It provides average-case $O(1)$ time complexity for lookups, insertions, and deletions, making it the backbone of caches, databases, and in-memory stores. However, when designing a service that stores versioned documents for multiple tenants within a single process, the theoretical simplicity of a hash table collapses under the weight of real-world constraints. The requirements are stringent: latency must remain predictable despite table growth, reads must vastly outnumber writes, write bursts must be handled gracefully, and data integrity must be absolute during resizing operations.\n\nThis guide explores the mechanics of hash tables, focusing on collision resolution strategies, resizing algorithms, and failure modes. We will analyze how these components interact in a multi-tenant environment where latency spikes can cascade into service degradation. By examining concrete examples and tradeoffs, we aim to provide operators and engineers with the mental models necessary to tune and debug these systems effectively.\n\n## The Core Mechanism: Hashing and Collisions\n\nAt its heart, a hash table maps keys to values using a hash function. The function takes an input key (in",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853389.474785402,
+        "end": 3853432.581259672,
+        "ttft_s": 23.34454797487706,
+        "total_s": 43.10647427011281,
+        "client_decode_tps": 12.903600397572374,
+        "completion_tokens": 256,
+        "prompt_tokens": 363,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 363,
+          "completion_tokens": 256,
+          "total_tokens": 619,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 363,
+          "prompt_ms": 748.8,
+          "prompt_per_token_ms": 2.063,
+          "prompt_per_second": 484.8,
+          "predicted_n": 256,
+          "predicted_ms": 19664.5,
+          "predicted_per_token_ms": 76.814,
+          "predicted_per_second": 13.0,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Transaction Isolation, Concurrency Control, and Failure Modes in High-Throughput Hash-Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with high read-to-write ratios, the underlying data structure and its concurrency control mechanisms are critical to performance and correctness. Consider a service that stores versioned documents in a hash table, where keys are strings and values are complex objects. This service operates under strict constraints: latency must remain predictable as the table grows, reads vastly outnumber writes, yet writes arrive in unpredictable bursts. Furthermore, the system must guarantee data integrity during resizing operations, ensuring no records are lost or corrupted.\n\nWhile the hash table provides the storage primitive, the logical consistency of the data relies heavily on database transaction isolation levels. This guide explores the fundamental concepts of transaction isolation, specific concurrency anomalies like lost updates and write skew, the mechanics of retries, and practical failure cases. By understanding these concepts, engineers can design systems that balance throughput, latency, and correctness, particularly in environments where shared processes host multiple tenants.\n\n## The Foundation: ACID and Isolation Levels\n\nTo understand concurrency issues, one must first grasp the ACID properties of transactions: Atomicity, Consistency, Isolation, and Dur",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853389.475414893,
+        "end": 3853413.050810068,
+        "ttft_s": 2.892760837916285,
+        "total_s": 23.575395174790174,
+        "client_decode_tps": 12.32918378996698,
+        "completion_tokens": 256,
+        "prompt_tokens": 365,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 365,
+          "completion_tokens": 256,
+          "total_tokens": 621,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 365,
+          "prompt_ms": 766.8,
+          "prompt_per_token_ms": 2.101,
+          "prompt_per_second": 476.0,
+          "predicted_n": 256,
+          "predicted_ms": 20574.2,
+          "predicted_per_token_ms": 80.368,
+          "predicted_per_second": 12.4,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Resilient HTTP Communication in Multi-Tenant Hash Table Services\n\n## Introduction\n\nIn modern distributed systems, particularly those serving multi-tenant workloads with strict latency requirements, the efficiency and reliability of network communication are paramount. Consider a service architecture where a central hash table stores versioned documents for multiple tenants. Keys are strings, and values are complex documents. The operational profile is characterized by a high read-to-write ratio, yet the system must handle sudden bursts of write traffic without degrading read latency. Furthermore, the underlying storage mechanism must preserve data integrity during resizing operations, a process that can introduce significant CPU and I/O spikes.\n\nWhile the internal mechanics of the hash table are critical, the external interface through which clients interact with this service is equally vital. Most such services expose their functionality via HTTP APIs. Consequently, the robustness of the HTTP layer—specifically connection pooling, keepalive mechanisms, timeout configurations, backpressure strategies, and retry logic—directly impacts the system’s ability to meet its Service Level Objectives (SLOs). This guide provides a detailed engineering analysis of these HTTP transport-layer concepts, illustrating how they interact with the specific constraints of a multi-tenant, read-heavy, burst-write environment.\n\n## 1. HTTP",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      },
+      {
+        "start": 3853389.474550202,
+        "end": 3853432.361570298,
+        "ttft_s": 24.396029146853834,
+        "total_s": 42.88702009618282,
+        "client_decode_tps": 13.79049942205794,
+        "completion_tokens": 256,
+        "prompt_tokens": 366,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 366,
+          "completion_tokens": 256,
+          "total_tokens": 622,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 366,
+          "prompt_ms": 789.8,
+          "prompt_per_token_ms": 2.158,
+          "prompt_per_second": 463.4,
+          "predicted_n": 256,
+          "predicted_ms": 18399.5,
+          "predicted_per_token_ms": 71.873,
+          "predicted_per_second": 13.9,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide: Building a Production-Grade Concurrent LRU Cache\n\nIn high-throughput distributed systems, the latency of data retrieval is often the primary bottleneck. When a service stores records in a hash table where keys are strings and values are versioned documents, and where reads vastly outnumber writes, an in-memory Least Recently Used (LRU) cache is the standard architectural pattern to mitigate database load and ensure predictable latency. However, implementing an LRU cache in a multi-tenant, concurrent environment is deceptively complex. It requires balancing strict memory bounds, thread safety, eviction accuracy, and observability. This guide details the engineering principles, data structure choices, concurrency models, and failure modes necessary to build a robust LRU cache suitable for production environments.\n\n## 1. The Core Data Structure: Hash Map + Doubly Linked List\n\nThe fundamental requirement of an LRU cache is $O(1)$ time complexity for both `get` and `put` operations. A standard hash map provides $O(1)$ lookup but does not maintain insertion or access order. A doubly linked list maintains order but offers $O(n)$ lookup. The solution is a hybrid structure combining a hash map with a doubly linked list.\n\n### The Mechanism\nThe hash map",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173245.78571
+  },
+  {
+    "phase": "parallel",
+    "backend": "tp4",
+    "concurrency": 1,
+    "wave": 0,
+    "case": "context-32k",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 4.768283552955836,
+    "aggregate_tps": 53.68808233757551,
+    "per_gpu_tps": 13.422020584393877,
+    "requests": [
+      {
+        "start": 3853432.933928225,
+        "end": 3853437.702211778,
+        "ttft_s": 2.2775853518396616,
+        "total_s": 4.768283552955836,
+        "client_decode_tps": 102.380930730879,
+        "completion_tokens": 256,
+        "prompt_tokens": 32826,
+        "cached_tokens": null,
+        "usage": {
+          "prompt_tokens": 32826,
+          "total_tokens": 33082,
+          "completion_tokens": 256,
+          "prompt_tokens_details": null,
+          "reasoning_tokens": 0
+        },
+        "engine_timings": null,
+        "finish_reason": "length",
+        "output": "# The Engineering Guide to Hash Tables: Collisions, Strategies, and Real-World Pitfalls\n\nHash tables are arguably the most ubiquitous data structure in modern software engineering. From the underlying implementation of Python dictionaries and Java HashMaps to the indexing mechanisms in databases like PostgreSQL and the caching layers in Redis, hash tables provide the backbone for fast, average-case $O(1)$ lookups, insertions, and deletions. However, the theoretical elegance of hashing often masks the complex engineering challenges that arise when real-world data meets finite memory. This guide explores the mechanics of hash tables, focusing specifically on collision resolution strategies, dynamic resizing, and the practical failure modes that can degrade performance from constant time to linear time.\n\n## The Fundamental Problem: Collisions\n\nTo understand collision resolution, one must first understand why collisions are inevitable. A hash table works by mapping a key (such as a string, integer, or object) to an index in an array using a hash function. The hash function takes an input of arbitrary size and produces a fixed-size output, typically a 32-bit or 64-bit integer. This output is then modulo-divided by the size of the underlying array to determine the bucket index.\n\nThe core issue is the Pigeonhole Principle",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173250.5877051
+  },
+  {
+    "phase": "parallel",
+    "backend": "strata",
+    "concurrency": 1,
+    "wave": 0,
+    "case": "context-32k",
+    "warmup": false,
+    "output_limit": 256,
+    "wall_s": 16.551148509141058,
+    "aggregate_tps": 15.46720457849879,
+    "per_gpu_tps": 15.46720457849879,
+    "requests": [
+      {
+        "start": 3853437.733588709,
+        "end": 3853454.284737218,
+        "ttft_s": 9.48406392801553,
+        "total_s": 16.551148509141058,
+        "client_decode_tps": 36.08277176716454,
+        "completion_tokens": 256,
+        "prompt_tokens": 32826,
+        "cached_tokens": 0,
+        "usage": {
+          "prompt_tokens": 32826,
+          "completion_tokens": 256,
+          "total_tokens": 33082,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "engine_timings": {
+          "cache_n": 0,
+          "prompt_n": 32826,
+          "prompt_ms": 9426.3,
+          "prompt_per_token_ms": 0.287,
+          "prompt_per_second": 3482.4,
+          "predicted_n": 256,
+          "predicted_ms": 7093.5,
+          "predicted_per_token_ms": 27.709,
+          "predicted_per_second": 36.1,
+          "draft_n": 228,
+          "draft_n_accepted": 146
+        },
+        "finish_reason": "length",
+        "output": "# Engineering Guide to Hash Table Internals: Collisions, Strategies, and Failure Modes\n\nHash tables are arguably the most ubiquitous data structure in modern software engineering. From the underlying implementation of Python dictionaries and Java HashMaps to the indexing mechanisms in databases and the caching layers in distributed systems, hash tables provide the promise of $O(1)$ average-case time complexity for insertions, deletions, and lookups. However, this promise is contingent upon a specific set of assumptions regarding the distribution of keys and the behavior of the hash function. When these assumptions are violated, or when the internal mechanics of collision resolution are misunderstood, systems can suffer from catastrophic performance degradation, memory exhaustion, or security vulnerabilities.\n\nThis guide provides a deep technical dive into the mechanics of hash tables, focusing specifically on the phenomenon of collisions, the two primary strategies for resolving them (separate chaining and open addressing), the critical process of resizing, and the practical failure cases that engineers must anticipate in production environments.\n\n## The Fundamental Problem: Collisions\n\nAt its core, a hash table maps keys to values by computing a hash code for the key and using that code to determine an index in an underlying array, often called a bucket array. The hash function transforms an arbitrary-sized input (the key)",
+        "reasoning_chars": 0,
+        "errors": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true,
+    "measured_at": 1792173267.17026
+  }
+]
