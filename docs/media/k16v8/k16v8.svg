@@ -1,0 +1,288 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 560" width="420" height="560"
+     role="img" aria-labelledby="ttl dsc">
+  <title id="ttl">Anthropomorphic cat holding a sword</title>
+  <desc id="dsc">A grey cat in a crimson cape stands on a moonlit ridge, one paw on its hip,
+  the other raising a longsword to the sky. Its tail sways, ears twitch, eyes blink and light runs along the blade.</desc>
+
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0d1428"/><stop offset=".5" stop-color="#243057"/><stop offset="1" stop-color="#425074"/>
+    </linearGradient>
+    <radialGradient id="vig" cx=".5" cy=".45" r=".78">
+      <stop offset=".5" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".55"/>
+    </radialGradient>
+    <radialGradient id="moonG" cx=".38" cy=".34" r=".75">
+      <stop offset="0" stop-color="#fffaf0"/><stop offset="1" stop-color="#ded0a4"/>
+    </radialGradient>
+    <linearGradient id="fur" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#98a7c4"/><stop offset=".55" stop-color="#6e7d9c"/><stop offset="1" stop-color="#495670"/>
+    </linearGradient>
+    <linearGradient id="cream" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f5f1e6"/><stop offset="1" stop-color="#cfc9b8"/>
+    </linearGradient>
+    <linearGradient id="capeG" x1=".1" y1="0" x2=".9" y2="1">
+      <stop offset="0" stop-color="#d8455a"/><stop offset=".6" stop-color="#9c2233"/><stop offset="1" stop-color="#5c1320"/>
+    </linearGradient>
+    <linearGradient id="bladeG" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#6d7d93"/><stop offset=".3" stop-color="#dfe8f4"/><stop offset=".52" stop-color="#ffffff"/>
+      <stop offset=".72" stop-color="#a7b5c8"/><stop offset="1" stop-color="#5c6a80"/>
+    </linearGradient>
+    <linearGradient id="goldG" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffeaa9"/><stop offset=".5" stop-color="#e0aa3c"/><stop offset="1" stop-color="#96661a"/>
+    </linearGradient>
+    <linearGradient id="leather" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4c4254"/><stop offset="1" stop-color="#25202e"/>
+    </linearGradient>
+    <radialGradient id="irisG" cx=".4" cy=".35" r=".8">
+      <stop offset="0" stop-color="#ffe07a"/><stop offset=".6" stop-color="#f0b13a"/><stop offset="1" stop-color="#b3711a"/>
+    </radialGradient>
+
+    <filter id="blur10" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="10"/></filter>
+    <filter id="blur4"><feGaussianBlur stdDeviation="4"/></filter>
+
+    <clipPath id="bladeClip"><path d="M286 216 L286 92 L294 58 L302 92 L302 216 Z"/></clipPath>
+    <clipPath id="eyeL"><ellipse cx="188" cy="196" rx="13" ry="14"/></clipPath>
+    <clipPath id="eyeR"><ellipse cx="230" cy="196" rx="13" ry="14"/></clipPath>
+
+    <style>
+      #upper,#tail,#earL,#earR,#armSword,#head,#whisk,#capeWrap,#glint,.lid,.gaze{transform-box:view-box}
+      .spark{transform-box:fill-box;transform-origin:center}
+
+      #upper{animation:breathe 3.9s ease-in-out infinite}
+      #tail{transform-origin:252px 354px;animation:tailSway 3.6s ease-in-out infinite}
+      #earL{transform-origin:176px 150px;animation:earTwitch 5.4s ease-in-out infinite}
+      #earR{transform-origin:240px 142px;animation:earTwitch 5.4s ease-in-out .9s infinite}
+      #armSword{transform-origin:246px 266px;animation:armSway 5.4s ease-in-out infinite}
+      #head{transform-origin:208px 252px;animation:headTilt 8s ease-in-out infinite}
+      #whisk{transform-origin:208px 218px;animation:whiskers 4.4s ease-in-out infinite}
+      #capeWrap{transform-origin:196px 244px;animation:capeSway 4.2s ease-in-out infinite}
+      #glint{animation:glint 4.8s ease-in-out infinite}
+      #bladeAura{animation:aura 3.4s ease-in-out infinite}
+      .lid{animation:blink 6.2s ease-in-out infinite}
+      #lidL{transform-origin:188px 181px} #lidR{transform-origin:230px 181px}
+      .gaze{animation:gaze 7.5s ease-in-out infinite}
+      .star{animation:twinkle 3.2s ease-in-out infinite}
+      .spark{animation:sparkle 2.8s ease-in-out infinite}
+      .mote{animation:rise 9s linear infinite}
+      #mist1{animation:drift 22s ease-in-out infinite alternate}
+      #mist2{animation:drift 27s ease-in-out infinite alternate-reverse}
+
+      @keyframes breathe{0%,100%{transform:translateY(0)}50%{transform:translateY(-3.5px)}}
+      @keyframes tailSway{0%{transform:rotate(-10deg)}32%{transform:rotate(8deg)}58%{transform:rotate(-3deg)}100%{transform:rotate(-10deg)}}
+      @keyframes earTwitch{0%,58%,100%{transform:rotate(0)}64%{transform:rotate(-10deg)}70%{transform:rotate(5deg)}76%{transform:rotate(-3deg)}82%{transform:rotate(0)}}
+      @keyframes armSway{0%,100%{transform:rotate(-4deg)}45%{transform:rotate(3deg)}}
+      @keyframes headTilt{0%,100%{transform:rotate(-1.4deg)}50%{transform:rotate(1.8deg)}}
+      @keyframes whiskers{0%,100%{transform:rotate(-1.6deg)}50%{transform:rotate(1.8deg)}}
+      @keyframes capeSway{0%,100%{transform:rotate(-1.2deg)}50%{transform:rotate(1.6deg)}}
+      @keyframes glint{0%{transform:translateY(-14px);opacity:0}7%{opacity:.9}34%{transform:translateY(158px);opacity:0}100%{transform:translateY(158px);opacity:0}}
+      @keyframes aura{0%,100%{opacity:.18}50%{opacity:.5}}
+      @keyframes blink{0%,90%,100%{transform:scaleY(0)}93%{transform:scaleY(1)}96%{transform:scaleY(0)}}
+      @keyframes gaze{0%,18%,100%{transform:translateX(0)}28%,44%{transform:translateX(3px)}58%,76%{transform:translateX(-3px)}}
+      @keyframes twinkle{0%,100%{opacity:.2}50%{opacity:1}}
+      @keyframes sparkle{0%,100%{opacity:0;transform:scale(.4) rotate(0)}50%{opacity:1;transform:scale(1.15) rotate(35deg)}}
+      @keyframes rise{0%{transform:translateY(0);opacity:0}12%{opacity:.7}100%{transform:translateY(-110px);opacity:0}}
+      @keyframes drift{0%{transform:translateX(-26px)}100%{transform:translateX(26px)}}
+      @media (prefers-reduced-motion:reduce){*{animation:none!important}}
+    </style>
+  </defs>
+
+  <!-- ══ night sky ══ -->
+  <rect width="420" height="560" fill="url(#sky)"/>
+  <g fill="#fdf6e0">
+    <circle class="star" cx="42"  cy="62"  r="1.8"/>
+    <circle class="star" cx="96"  cy="120" r="1.2" style="animation-delay:.7s"/>
+    <circle class="star" cx="150" cy="52"  r="1.6" style="animation-delay:1.4s"/>
+    <circle class="star" cx="204" cy="96"  r="1.1" style="animation-delay:2.1s"/>
+    <circle class="star" cx="378" cy="212" r="1.5" style="animation-delay:.4s"/>
+    <circle class="star" cx="58"  cy="240" r="1.3" style="animation-delay:1.8s"/>
+    <circle class="star" cx="264" cy="34"  r="1.4" style="animation-delay:1.1s"/>
+    <circle class="star" cx="392" cy="76"  r="1.1" style="animation-delay:2.6s"/>
+  </g>
+
+  <!-- moon -->
+  <circle cx="332" cy="104" r="62" fill="#f6efd8" opacity=".14" filter="url(#blur10)"/>
+  <circle cx="332" cy="104" r="46" fill="url(#moonG)"/>
+  <g fill="#c9bd93" opacity=".45">
+    <circle cx="318" cy="90" r="9"/><circle cx="346" cy="118" r="6"/><circle cx="326" cy="126" r="4"/>
+  </g>
+
+  <!-- clouds -->
+  <g fill="#6c7ba4" opacity=".28">
+    <g id="mist1"><ellipse cx="110" cy="150" rx="70" ry="11"/><ellipse cx="180" cy="140" rx="40" ry="8"/></g>
+    <g id="mist2"><ellipse cx="300" cy="228" rx="86" ry="12"/><ellipse cx="220" cy="216" rx="36" ry="7"/></g>
+  </g>
+
+  <!-- distant hills + ground -->
+  <path d="M0 444 L0 392 C58 372 108 392 158 416 C210 442 262 420 302 400 C344 380 392 388 420 404 L420 444 Z" fill="#1a2340"/>
+  <rect y="440" width="420" height="120" fill="#151e37"/>
+  <ellipse cx="210" cy="446" rx="230" ry="26" fill="#1d2846" opacity=".8"/>
+  <g stroke="#2c3a58" stroke-width="3" fill="none" stroke-linecap="round">
+    <path d="M52 452 q7-20 2-28 M52 452 q-7-14-13-18"/><path d="M356 456 q6-18 1-26 M356 456 q-8-12-14-16"/>
+  </g>
+  <ellipse cx="118" cy="454" rx="15" ry="6" fill="#232e4d"/><ellipse cx="300" cy="462" rx="10" ry="4" fill="#232e4d"/>
+  <ellipse cx="210" cy="462" rx="92" ry="15" fill="#000" opacity=".45" filter="url(#blur4)"/>
+
+  <!-- ══ the cat ══ -->
+  <g id="hero">
+    <!-- planted legs -->
+    <g id="legs" stroke-linecap="round" fill="none">
+      <path d="M190 342 L182 428" stroke="url(#fur)" stroke-width="27"/>
+      <path d="M228 342 L238 428" stroke="url(#fur)" stroke-width="27"/>
+    </g>
+    <g fill="url(#leather)">
+      <path d="M168 418 L200 418 L200 446 Q200 456 190 456 L154 456 Q144 456 144 447 Q144 439 154 434 L168 428 Z"/>
+      <path d="M248 418 L216 418 L216 446 Q216 456 226 456 L262 456 Q272 456 272 447 Q272 439 262 434 L248 428 Z"/>
+      <rect x="166" y="410" width="36" height="10" rx="4" fill="url(#goldG)"/>
+      <rect x="214" y="410" width="36" height="10" rx="4" fill="url(#goldG)"/>
+    </g>
+
+    <g id="upper">
+      <!-- cape (fluttering cloth, morphing path) -->
+      <g id="capeWrap">
+        <path fill="url(#capeG)" stroke="#59121e" stroke-width="1.5" stroke-linejoin="round"
+              d="M178 240 C136 252 108 300 100 356 C94 398 100 428 112 448 C130 432 146 428 162 440 C174 418 180 400 186 378 C194 336 196 286 206 256 Z">
+          <animate attributeName="d" dur="4.2s" repeatCount="indefinite" calcMode="spline"
+            keyTimes="0;.5;1" keySplines=".4 0 .6 1;.4 0 .6 1"
+            values="M178 240 C136 252 108 300 100 356 C94 398 100 428 112 448 C130 432 146 428 162 440 C174 418 180 400 186 378 C194 336 196 286 206 256 Z;
+                    M178 240 C132 256 100 306 90 364 C82 406 90 434 104 452 C124 438 140 436 158 452 C172 424 178 402 184 380 C192 338 196 288 206 256 Z;
+                    M178 240 C136 252 108 300 100 356 C94 398 100 428 112 448 C130 432 146 428 162 440 C174 418 180 400 186 378 C194 336 196 286 206 256 Z"/>
+        </path>
+      </g>
+
+      <!-- scabbard at the hip -->
+      <g>
+        <path d="M158 344 L112 424" stroke="#2a2f42" stroke-width="16" stroke-linecap="round"/>
+        <path d="M158 344 L112 424" stroke="url(#goldG)" stroke-width="3" stroke-dasharray="4 26" opacity=".7"/>
+        <circle cx="111" cy="426" r="7" fill="url(#goldG)"/>
+        <path d="M170 330 L134 372" stroke="#3a3346" stroke-width="5"/>
+      </g>
+
+      <!-- tail -->
+      <g id="tail" fill="none" stroke-linecap="round">
+        <path d="M252 354 C300 366 336 344 336 306 C336 278 318 262 302 268" stroke="url(#fur)" stroke-width="21"/>
+        <path d="M252 354 C300 366 336 344 336 306 C336 278 318 262 302 268" stroke="#42506c" stroke-width="21"
+              stroke-dasharray="11 22" opacity=".5"/>
+      </g>
+
+      <!-- torso -->
+      <path d="M208 236 C172 238 154 268 156 308 C158 344 172 368 208 372 C244 368 258 344 260 308 C262 268 244 238 208 236 Z" fill="url(#fur)"/>
+      <ellipse cx="208" cy="314" rx="27" ry="38" fill="url(#cream)" opacity=".92"/>
+      <path d="M178 242 q10 13 30 13 q20 0 30 -13 q-14 7 -30 7 q-16 0 -30 -7 z" fill="url(#cream)"/>
+      <!-- harness + belt -->
+      <path d="M172 262 L248 330" stroke="#3a3346" stroke-width="8" stroke-linecap="round"/>
+      <circle cx="238" cy="320" r="6" fill="url(#goldG)"/>
+      <path d="M155 334 Q208 348 261 334 L262 353 Q208 369 154 353 Z" fill="url(#leather)"/>
+      <rect x="199" y="335" width="19" height="19" rx="4" fill="url(#goldG)"/>
+      <circle cx="208.5" cy="344.5" r="4" fill="#5c1320"/>
+      <circle cx="176" cy="258" r="7" fill="url(#goldG)"/><circle cx="176" cy="258" r="3" fill="#5c1320"/>
+
+      <!-- left paw on hip -->
+      <g>
+        <path d="M170 268 C144 286 142 314 160 330" fill="none" stroke="url(#fur)" stroke-width="21" stroke-linecap="round"/>
+        <circle cx="163" cy="334" r="12" fill="url(#fur)"/>
+        <g stroke="#3f4c66" stroke-width="1.6" opacity=".55" fill="none">
+          <path d="M156 330 q8 3 14 8"/><path d="M155 336 q8 3 13 7"/>
+        </g>
+      </g>
+
+      <!-- head -->
+      <g id="head">
+        <g id="earL"><path d="M168 152 L152 100 L204 132 Z" fill="url(#fur)"/><path d="M173 148 L163 116 L192 133 Z" fill="#cf8a95"/></g>
+        <g id="earR"><path d="M212 130 L264 98 L252 150 Z" fill="url(#fur)"/><path d="M221 128 L253 111 L246 142 Z" fill="#cf8a95"/></g>
+
+        <path d="M208 141 C245 141 267 164 269 192 C271 217 262 233 246 243 C231 251 185 251 170 243 C154 233 147 217 147 192 C149 164 171 141 208 141 Z" fill="url(#fur)"/>
+        <g fill="url(#fur)" opacity=".95">
+          <path d="M149 198 l-16 5 l16 7 l-14 9 l18 3 z"/><path d="M267 198 l16 5 l-16 7 l14 9 l-18 3 z"/>
+        </g>
+        <g stroke="#3d4a64" stroke-width="4" stroke-linecap="round" fill="none" opacity=".5">
+          <path d="M194 148 C196 158 195 166 192 174"/><path d="M208 145 C209 155 209 163 208 172"/><path d="M222 148 C220 158 221 166 224 174"/>
+        </g>
+
+        <!-- eyes -->
+        <g>
+          <ellipse cx="188" cy="196" rx="13" ry="14" fill="#fbf6e9"/>
+          <ellipse cx="230" cy="196" rx="13" ry="14" fill="#fbf6e9"/>
+          <g class="gaze">
+            <circle cx="188" cy="197" r="8.6" fill="url(#irisG)"/><ellipse cx="188" cy="197" rx="3.8" ry="8.6" fill="#171a28"/>
+            <circle cx="184.6" cy="191" r="2.9" fill="#fff" opacity=".92"/><circle cx="192" cy="202" r="1.4" fill="#fff" opacity=".6"/>
+          </g>
+          <g class="gaze">
+            <circle cx="230" cy="197" r="8.6" fill="url(#irisG)"/><ellipse cx="230" cy="197" rx="3.8" ry="8.6" fill="#171a28"/>
+            <circle cx="226.6" cy="191" r="2.9" fill="#fff" opacity=".92"/><circle cx="234" cy="202" r="1.4" fill="#fff" opacity=".6"/>
+          </g>
+          <g clip-path="url(#eyeL)"><rect id="lidL" class="lid" x="174" y="181" width="28" height="34" fill="#7d8caa"/></g>
+          <g clip-path="url(#eyeR)"><rect id="lidR" class="lid" x="216" y="181" width="28" height="34" fill="#7d8caa"/></g>
+          <path d="M175 187 q13 -11 26 0" stroke="#3b4661" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+          <path d="M217 187 q13 -11 26 0" stroke="#3b4661" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+        </g>
+
+        <!-- muzzle, nose, mouth -->
+        <ellipse cx="196" cy="222" rx="16" ry="12" fill="url(#cream)"/>
+        <ellipse cx="220" cy="222" rx="16" ry="12" fill="url(#cream)"/>
+        <path d="M201 208 h14 q4 0 1 5 l-7 7 q-1 1 -2 0 l-7 -7 q-3 -5 1 -5 z" fill="#d1757f"/>
+        <path d="M208 221 v5 M208 226 q-9 9 -17 3 M208 226 q9 9 17 3" stroke="#3a3346" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+        <!-- whiskers -->
+        <g id="whisk" stroke="#eee9dc" stroke-width="2" stroke-linecap="round" opacity=".8">
+          <path d="M180 216 L128 204"/><path d="M180 224 L124 223"/><path d="M182 232 L130 244"/>
+          <path d="M236 216 L288 204"/><path d="M236 224 L292 223"/><path d="M234 232 L286 244"/>
+        </g>
+      </g>
+
+      <!-- sword arm + sword -->
+      <g id="armSword">
+        <path d="M246 266 C268 254 280 244 288 234" fill="none" stroke="url(#fur)" stroke-width="22" stroke-linecap="round"/>
+        <path d="M264 246 L284 233" fill="none" stroke="url(#leather)" stroke-width="25" stroke-linecap="round"/>
+        <path d="M263 240 L283 227" fill="none" stroke="url(#goldG)" stroke-width="3" opacity=".85"/>
+
+        <g transform="rotate(20 296 214)">
+          <!-- blade -->
+          <path id="bladeAura" d="M286 216 L286 92 L294 58 L302 92 L302 216 Z" fill="none" stroke="#bfe4ff" stroke-width="3" filter="url(#blur4)"/>
+          <path d="M286 216 L286 92 L294 58 L302 92 L302 216 Z" fill="url(#bladeG)"/>
+          <path d="M294 214 L294 92" stroke="#8ea0b7" stroke-width="1.4" opacity=".65"/>
+          <path d="M287.6 212 L287.6 94 L293 70" fill="none" stroke="#f9fcff" stroke-width="2" opacity=".85"/>
+          <!-- travelling glint -->
+          <g clip-path="url(#bladeClip)">
+            <g id="glint"><rect x="276" y="50" width="38" height="20" fill="#ffffff" transform="rotate(-26 295 60)"/></g>
+          </g>
+          <!-- guard, grip, pommel -->
+          <ellipse cx="294" cy="215" rx="19" ry="6.4" fill="url(#goldG)"/>
+          <ellipse cx="294" cy="217" rx="19" ry="3" fill="#7c5416" opacity=".5"/>
+          <rect x="288" y="214" width="12" height="42" rx="5" fill="url(#leather)"/>
+          <g stroke="url(#goldG)" stroke-width="1.6" opacity=".85"><path d="M289 222 L299 228 M289 232 L299 238 M289 242 L299 248"/></g>
+          <circle cx="294" cy="259" r="6.5" fill="url(#goldG)"/>
+          <!-- hilt ribbon -->
+          <path fill="none" stroke="#d24152" stroke-width="5" stroke-linecap="round"
+                d="M292 258 C300 270 286 280 294 292 C300 302 288 312 296 324">
+            <animate attributeName="d" dur="3.1s" repeatCount="indefinite"
+              values="M292 258 C300 270 286 280 294 292 C300 302 288 312 296 324;
+                      M292 258 C286 270 300 282 292 294 C286 304 300 314 292 326;
+                      M292 258 C300 270 286 280 294 292 C300 302 288 312 296 324"/>
+          </path>
+        </g>
+
+        <!-- gripping paw -->
+        <circle cx="290" cy="232" r="15" fill="url(#fur)"/>
+        <g stroke="#3f4c66" stroke-width="1.8" opacity=".55" fill="none">
+          <path d="M281 226 q10 -2 18 2"/><path d="M280 232 q10 -1 18 3"/><path d="M282 238 q10 0 16 4"/>
+        </g>
+      </g>
+    </g>
+  </g>
+
+  <!-- ══ magic sparkles around the blade ══ -->
+  <g fill="#fff8d8">
+    <g transform="translate(348,104)"><path class="spark" style="animation-delay:-.3s" d="M0 -9 L2.2 -2.2 L9 0 L2.2 2.2 L0 9 L-2.2 2.2 L-9 0 L-2.2 -2.2 Z"/></g>
+    <g transform="translate(310,58)"><path class="spark" style="animation-delay:-1.4s" d="M0 -6 L1.6 -1.6 L6 0 L1.6 1.6 L0 6 L-1.6 1.6 L-6 0 L-1.6 -1.6 Z"/></g>
+    <g transform="translate(360,168)"><path class="spark" style="animation-delay:-2.2s" d="M0 -7 L1.8 -1.8 L7 0 L1.8 1.8 L0 7 L-1.8 1.8 L-7 0 L-1.8 -1.8 Z"/></g>
+  </g>
+
+  <!-- drifting motes -->
+  <g fill="#cbd8f2">
+    <circle class="mote" cx="78"  cy="430" r="2"/>
+    <circle class="mote" cx="336" cy="452" r="2.4" style="animation-delay:-2.4s"/>
+    <circle class="mote" cx="142" cy="470" r="1.6" style="animation-delay:-5.1s"/>
+    <circle class="mote" cx="288" cy="488" r="2" style="animation-delay:-7.3s"/>
+  </g>
+
+  <rect width="420" height="560" fill="url(#vig)"/>
+</svg>
