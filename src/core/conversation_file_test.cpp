@@ -190,6 +190,21 @@ int main() {
         check(read == written, "read reports the file size");
         check(same(original, back), "round trip is identical");
     }
+    // --rope-scaling dynamic: the factor rides in the cvec word's upper bits (0 = 1: the golden file above), beside the
+    // cvec bit
+    for (const bool cv : {false, true}) {
+        SavedConversation dyn = sample();
+        dyn.cvec = cv;
+        dyn.rope = cv ? 1.875 : 2.0;
+        const fs::path p = dir / "rope.bin";
+        check(session_file_write(p.string(), dyn, id, written, error), "write with a rope factor");
+        SavedConversation back;
+        size_t read = 0;
+        check(session_file_read(p.string(), id, back, read, error), "read with a rope factor");
+        check(same(dyn, back) && back.rope == dyn.rope && back.cvec == cv, "the rope factor and the cvec bit round trip");
+        SavedConversation plain;
+        check(session_file_read(good.string(), id, plain, read, error) && plain.rope == 1.0, "a file without one reads 1");
+    }
     // writing twice produces the same bytes (deterministic format)
     {
         const fs::path again = dir / "again.bin";

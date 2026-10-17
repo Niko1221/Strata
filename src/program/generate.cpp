@@ -55,6 +55,8 @@
 #include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/native_rope.hpp"
+#include "strata/kernels/rope_dynamic.hpp"
+#include "strata/core/rope_dynamic.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/qsa.hpp"
@@ -450,6 +452,10 @@ struct Options {
     double yarn_attn_factor = 1.0;      ///< --yarn-attn-factor F
     double yarn_beta_fast = 32.0;       ///< --yarn-beta-fast F
     double yarn_beta_slow = 1.0;        ///< --yarn-beta-slow F
+    /// --rope-scaling dynamic (or STRATA_ROPE_DYNAMIC=1 over yarn): none while a dialog fits the trained context,
+    /// yarn with a factor by its length past it; the cached keys are rotated over (core/rope_dynamic.hpp)
+    bool rope_dynamic = false;
+    double rope_dynamic_step = 0.125;   ///< --rope-dynamic-step F: factors are multiples of F
     bool native_rope = false;         // pinned text-only CUDA rotary arithmetic
     bool native_ple_postops = false;  // pinned PLE postprojection arithmetic
     bool native_router = false;       // pinned fused 512-expert top-10 router
@@ -845,9 +851,14 @@ void usage() {
                  "  --rope-scaling T     extend the context past the trained one: none, linear\n"
                  "                       (position interpolation) or yarn - llama.cpp's types and names.\n"
                  "                       Default: the model file's rope keys, else none. Fixed at startup:\n"
-                 "                       K in the cache is post-RoPE, so one run one scaling\n"
+                 "                       K in the cache is post-RoPE, so one run one scaling.\n"
+                 "                       dynamic (--serve, one GPU): none while a dialog fits the trained\n"
+                 "                       context, yarn with factor = its length / trained (rounded up to\n"
+                 "                       --rope-dynamic-step, at most --rope-scale) past it; the cached keys\n"
+                 "                       are rotated over (STRATA_ROPE_DYNAMIC=1 makes yarn dynamic)\n"
                  "  --rope-scale F       the extension factor for linear/yarn (default: the model file's\n"
-                 "                       factor, else 1 = off)\n"
+                 "                       factor, else 1 = off); dynamic: the largest factor\n"
+                 "  --rope-dynamic-step F  dynamic: factors are multiples of F (default 0.125)\n"
                  "  --rope-freq-base N   the raw ggml knobs: the frequency base (0 = the model's 1e7) and\n"
                  "  --rope-freq-scale F  the angle shrink (0 = 1/--rope-scale)\n"
                  "  --yarn-orig-ctx N    the trained context the correction targets (0 = 262144)\n"
@@ -2301,6 +2312,7 @@ int main(int argc, char** argv) {
         else if (a == "--max-context") o.max_context = std::atoll(next("--max-context"));
         else if (a == "--rope-scaling") o.rope_scaling = next("--rope-scaling");
         else if (a == "--rope-scale") o.rope_scale = std::atof(next("--rope-scale"));
+        else if (a == "--rope-dynamic-step") o.rope_dynamic_step = std::atof(next("--rope-dynamic-step"));
         else if (a == "--rope-freq-base") o.rope_freq_base = std::atof(next("--rope-freq-base"));
         else if (a == "--rope-freq-scale") o.rope_freq_scale = std::atof(next("--rope-freq-scale"));
         else if (a == "--yarn-orig-ctx") o.yarn_orig_ctx = std::atof(next("--yarn-orig-ctx"));
@@ -3083,15 +3095,33 @@ int main(int argc, char** argv) {
     // NaN angle inside one of the twelve QSA layers.  Only the RANGES are checked - the config itself is
     // resolved after the model file has had its say, right before session_init.
     strata::kernels::RopeScaling rope_cfg;   // type filled here; the rest at the resolution below
+    strata::core::RopeDynamic rope_dyn;      // --rope-scaling dynamic: the yarn knobs, resolved below
     {
         using RST = strata::kernels::RopeScalingType;
+        // dynamic: yarn's knobs, applied by the dialog's length (STRATA_ROPE_DYNAMIC=1 turns yarn or the absent
+        // flag into it)
+        if (o.rope_scaling == "dynamic" || o.rope_scaling == "dynamic-yarn") o.rope_dynamic = true;
+        if (const char* e = std::getenv("STRATA_ROPE_DYNAMIC"); e != nullptr && e[0] == '1') {
+            if (o.rope_scaling.empty() || o.rope_scaling == "yarn") o.rope_dynamic = true;
+            else if (!o.rope_dynamic)
+                std::fprintf(stderr, "strata generate: note: STRATA_ROPE_DYNAMIC=1 ignored with --rope-scaling %s\n",
+                             o.rope_scaling.c_str());
+        }
+        if (o.rope_dynamic) {
+            o.rope_scaling = "yarn";
+            if (const char* e = std::getenv("STRATA_ROPE_DYNAMIC_STEP")) o.rope_dynamic_step = std::atof(e);
+            if (!std::isfinite(o.rope_dynamic_step) || o.rope_dynamic_step < 0.01 || o.rope_dynamic_step > 64) {
+                std::fprintf(stderr, "strata generate: --rope-dynamic-step must be in [0.01, 64]\n");
+                return 2;
+            }
+        }
         // an absent --rope-scaling (the empty default) leaves the type to the model file's rope keys,
         // resolved below; anything present must be one of the three names
         if (o.rope_scaling == "none") rope_cfg.type = RST::None;
         else if (o.rope_scaling == "linear") rope_cfg.type = RST::Linear;
         else if (o.rope_scaling == "yarn") rope_cfg.type = RST::YaRN;
         else if (!o.rope_scaling.empty()) {
-            std::fprintf(stderr, "strata generate: --rope-scaling must be none, linear or yarn (got '%s')\n",
+            std::fprintf(stderr, "strata generate: --rope-scaling must be none, linear, yarn or dynamic (got '%s')\n",
                          o.rope_scaling.c_str());
             return 2;
         }
@@ -3475,6 +3505,35 @@ int main(int argc, char** argv) {
                          why, rope_cfg.type == RST::YaRN ? "yarn" : rope_cfg.type == RST::Linear ? "linear" : "none",
                          rope_cfg.factor, rope_cfg.freq_scale(), rope_cfg.freq_base, rope_cfg.orig_ctx);
             return 2;
+        }
+        if (o.rope_dynamic) {
+            // the resolved yarn is the template; the run starts with the factor its first dialog needs (none)
+            rope_dyn.on = true;
+            rope_dyn.base = rope_cfg;
+            rope_dyn.orig = rope_cfg.orig_ctx;
+            rope_dyn.step = o.rope_dynamic_step;
+            const double need = std::ceil((double) o.max_context / rope_dyn.orig / rope_dyn.step - 1e-9) * rope_dyn.step;
+            rope_dyn.max_factor =
+                strata::core::RopeDynamic::on_grid(o.rope_scale > 0 ? o.rope_scale : std::max(1.0, need));
+            if (const char* e = std::getenv("STRATA_ROPE_DYNAMIC_REREAD")) rope_dyn.reread = e[0] == '1';
+            if (const char* why = strata::kernels::rope_scaling_invalid(
+                    rope_dyn.config(std::max(rope_dyn.max_factor, 1.0 + rope_dyn.step)))) {
+                std::fprintf(stderr, "strata generate: invalid dynamic rope scaling: %s\n", why);
+                return 2;
+            }
+            // the rope kernels read #280's float64 table (as with STRATA_ROPE_TABLE=1): a switch rebuilds it in place
+            // and the captured graphs read the new angles; the analytic constants would stay as captured
+            strata::kernels::rope_table_force_on();
+            // one-shot: the prompt and --max-new are known now, so one factor for the run
+            const double f0 = o.serve ? 1.0 : rope_dyn.factor_for((int64_t) o.tokens.size() + o.max_new);
+            rope_dyn.live = rope_dyn.table = f0;
+            rope_cfg = rope_dyn.config(f0);
+            std::fprintf(stderr, "strata generate: rope scaling dynamic: none up to %.0f positions, past them yarn with "
+                                 "factor = positions / %.0f rounded up to %.6g, at most %.6g (beta %g/%g, ext %g, attn "
+                                 "%g; the float64 rope table on, as STRATA_ROPE_TABLE=1)%s\n",
+                         rope_dyn.orig, rope_dyn.orig, rope_dyn.step, rope_dyn.max_factor,
+                         rope_dyn.base.beta_fast, rope_dyn.base.beta_slow, rope_dyn.base.ext_factor,
+                         rope_dyn.base.attn_factor, rope_dyn.reread ? "; a change reads the prompt again" : "");
         }
         strata::kernels::rope_scaling_set(rope_cfg);
         if (rope_cfg.type != RST::None) {
@@ -7850,6 +7909,18 @@ int main(int argc, char** argv) {
         // neither fires, plain one-token-per-round decoding - slower, never wrong: the verify window still
         // confirms every emitted token against the real model regardless of where the draft came from.
         const bool use_mtp = !o.mtp.empty();
+        // --rope-scaling dynamic moves the cached keys of ONE session: int8/fp16 K/V (in VRAM or streamed), no slots,
+        // no split (for now)
+        if (rope_dyn.on) {
+            const char* why = (o.kv != "int8" && o.kv != "fp16") ? "--kv q4_0 / k8v4"
+                            : o.batch > 0 ? "--batch"
+                            : (multi_gpu || !stages.empty()) ? "a layer split" : nullptr;
+            if (why != nullptr) {
+                std::fprintf(stderr, "strata serve: --rope-scaling dynamic does not work with %s yet; use --rope-scaling "
+                                     "yarn --rope-scale F\n", why);
+                return 2;
+            }
+        }
         // STRATA_PREFILL_HELPER_SOURCE (opt-in): the prompt path may take a blob a helper's VRAM cache already
         // holds from that cache instead of reading the files again.  The helpers are idle while a prompt is read
         // (the serve path is serial: no batch slots), so the copy needs no ordering against their kernel streams.
@@ -8787,6 +8858,57 @@ int main(int argc, char** argv) {
         strata::core::ConversationCache conversations(
             o.prompt_cache > 0 ? (size_t) o.conversation_cache_mib * 1024 * 1024 : 0,
             (size_t) o.conversation_cache_slots, o.conversation_cache_min_tokens);
+        // --rope-scaling dynamic (core/rope_dynamic.hpp): what the session holds - the main layers' K and indexer keys
+        // over `cells`, the drafter's K over `draft_cells`, the checkpoints' `dead` - goes from factor `from` to `to`,
+        // and the table to `to`.  The device is quiet before and after.
+        auto dyn_switch = [&](int64_t cells, int64_t draft_cells, double from, double to, const char* why) -> bool {
+            if (from == to && rope_dyn.table == to) { rope_dyn.live = to; return true; }
+            const auto t0 = Clock::now();
+            std::string e;
+            cudaDeviceSynchronize();
+            if (from != to && (cells > 0 || draft_cells > 0)) {
+                const strata::kernels::RopeScaling a = rope_dyn.config(from), b = rope_dyn.config(to);
+                for (int64_t j = 0; j < ss.qsa_alloc; ++j)
+                    if (!strata::core::rope_rerotate_state(ss.qsa_states[ss.qsa_ord0 + j], cells, true, a, b, main_cs, e)) {
+                        err = e;
+                        return false;
+                    }
+                if (use_mtp && draft_cells > 0 &&
+                    !strata::core::rope_rerotate_state(mtp.kv_state(), draft_cells, false, a, b, main_cs, e)) {
+                    err = e;
+                    return false;
+                }
+                if (use_mtp && draft_cells > 0 && cudaStreamSynchronize(main_stream) == cudaSuccess)
+                    mtp.kv_restore(draft_cells);   // a ring (--kv-resident): its window from the turned host copy
+                const double ratio = strata::kernels::rope_rates(64, b).mscale / strata::kernels::rope_rates(64, a).mscale;
+                if (ratio != 1.0)
+                    for (ConvCheckpoint& c : checks)
+                        strata::kernels::rope_rescale_rows_host((float*) c.dead.data(),
+                                                                (int64_t) (c.dead.size() / (g.idx_key_dim * 4)),
+                                                                (int) g.idx_key_dim, ratio);
+                conversations.limit_reuse(0);   // the retained image no longer holds these bytes
+                if (cudaStreamSynchronize(main_stream) != cudaSuccess) {
+                    err = "dynamic rope: the re-rotation failed";
+                    return false;
+                }
+                ++rope_dyn.switches;
+                rope_dyn.rotated_cells += cells;
+            }
+            const auto t1 = Clock::now();
+            if (rope_dyn.table != to) {
+                if (!strata::core::rope_table_rebuild(ss.qsa_states[ss.qsa_primary()], rope_dyn.config(to), e)) {
+                    err = e;
+                    return false;
+                }
+                rope_dyn.table = to;
+            }
+            rope_dyn.live = to;
+            std::fprintf(stderr, "strata serve: rope dynamic: factor %.4g -> %.4g (%s): %lld cells re-rotated in %.1f ms, "
+                                 "table %.1f ms\n", from, to, why, (long long) (from != to ? cells : 0),
+                         std::chrono::duration<double, std::milli>(t1 - t0).count(),
+                         std::chrono::duration<double, std::milli>(Clock::now() - t1).count());
+            return true;
+        };
         // Disk sessions: what a session file is bound to.  The model fingerprint samples every model input this
         // engine loaded, by role (conversation_file.hpp), once; the config fingerprint covers the RESOLVED settings
         // that change what the saved bytes mean - the rope (K is cached post-RoPE), the loaded control vector, the
@@ -8839,9 +8961,11 @@ int main(int argc, char** argv) {
                 c.mtp_window = o.mtp.empty() ? -1 : o.mtp_window;
                 const char* rot = std::getenv("STRATA_KV_ROT");
                 c.kv_rot = rot != nullptr && rot[0] == '1';
-                c.rope = {(int64_t) rope_cfg.type, rope_cfg.freq_base, rope_cfg.factor, rope_cfg.freq_scale(),
-                          rope_cfg.orig_ctx, rope_cfg.ext_factor, rope_cfg.attn_factor, rope_cfg.beta_fast,
-                          rope_cfg.beta_slow};
+                // dynamic: the template (the image says its own factor) and a switch of its own below
+                const strata::kernels::RopeScaling& rc = rope_dyn.on ? rope_dyn.base : rope_cfg;
+                c.rope = {(int64_t) rc.type, rc.freq_base, rc.factor, rc.freq_scale(),
+                          rc.orig_ctx, rc.ext_factor, rc.attn_factor, rc.beta_fast,
+                          rc.beta_slow};
                 c.cvec = cvec_digest;
                 c.switches = {
                     {"no_ple", o.no_ple}, {"native_bf16", o.native_bf16}, {"native_bf16_extra", o.native_bf16_extra},
@@ -8855,6 +8979,7 @@ int main(int argc, char** argv) {
                     {"keep_canonical", o.keep_canonical}, {"no_fused_gr", o.no_fused_gr},
                     {"no_fast_attn", o.no_fast_attn}, {"no_fused_gdn", o.no_fused_gdn},
                     {"no_fast_select", o.no_fast_select}, {"vision", o.vision}};
+                if (rope_dyn.on) c.switches.push_back({"rope_dynamic", 1});
                 config_fp = strata::core::session_config_fingerprint(c);
             }
             id.model = *model_fp;
@@ -9015,6 +9140,7 @@ int main(int argc, char** argv) {
                                  (long long) o.conversation_cache_min_free_mib, ram_note(mem_after).c_str());
                     return true;
                 }
+                image.rope = rope_dyn.live;   // --rope-scaling dynamic: the factor its K/V holds
                 const size_t snapshot_bytes = image.bytes();
                 const bool stored = conversations.put(std::move(image), held);
                 std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens in %.1f ms; parked=%zu bytes=%zu evictions=%zu snapshot_bytes=%zu reused_kv_bytes=%zu\n",
@@ -11514,6 +11640,7 @@ int main(int argc, char** argv) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
                         }
+                        meta.rope = rope_dyn.live;
                         capture_ms = ms();
                         strata::core::SessionWriteOptions wo;
                         wo.min_free_bytes = (uint64_t) o.session_min_free_mib << 20;
@@ -11576,6 +11703,11 @@ int main(int argc, char** argv) {
                         refuse(err);
                         continue;
                     }
+                    if (image.rope != 1.0 && (!rope_dyn.on || image.rope > rope_dyn.max_factor)) {
+                        refuse("saved with --rope-scaling dynamic at factor " + std::to_string(image.rope) +
+                               ", which this engine does not hold");
+                        continue;
+                    }
                     // the elastic K/V (--kv-grow) maps only the cells it has grown to: make room for the file's cells
                     if (!kvg_ensure((int64_t) image.live.ids.size() + 256, adapt_quiesce)) {
                         refuse("the K/V cannot grow to the saved conversation: no VRAM is left", strata::core::SessionError::memory);
@@ -11601,6 +11733,7 @@ int main(int argc, char** argv) {
                     checks = std::move(image.checkpoints);
                     for (const ConvCheckpoint& c : checks) check_clock = std::max(check_clock, c.used);
                     cvec_cached = image.cvec;
+                    if (rope_dyn.on) rope_dyn.live = image.rope;   // the next request moves it to its own factor
                     live_ok = true;
                     if (nan_flush) {   // #879: the file replaced the poisoned session; the parked ones go (no slots here)
                         nan_flush = false;
@@ -11915,6 +12048,7 @@ int main(int argc, char** argv) {
             }
             int64_t resume = 0;
             bool from_live = false;
+            double sess_f = rope_dyn.live;   // --rope-scaling dynamic: the factor the session's K/V holds once restored
             if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
                 for (const ConvCheckpoint& c : checks)
@@ -12180,6 +12314,7 @@ int main(int argc, char** argv) {
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() == parked.tokens) { live = c.ids; live_imgs = c.imgs; }
                 cvec_cached = donor->cvec;
+                sess_f = donor->rope;
                 resume = parked.tokens;
                 from_live = false;
                 conversations.count_borrow();
@@ -12234,6 +12369,7 @@ int main(int argc, char** argv) {
                     if (!strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear();
                 }
                 cvec_cached = incoming->cvec;
+                sess_f = incoming->rope;
                 resume = parked.tokens;
                 from_live = parked.live;
                 if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
@@ -12360,6 +12496,26 @@ int main(int argc, char** argv) {
                         }
                         break;
                     }
+            // --rope-scaling dynamic: this prompt's factor; the cells it keeps are rotated over (STRATA_ROPE_DYNAMIC_REREAD=1:
+            // read again from token 0)
+            if (rope_dyn.on) {
+                const double to = rope_dyn.factor_for(n);
+                if (resume > 0 && sess_f != to && rope_dyn.reread && reread_to <= 0) {
+                    strata::core::session_zero(ss, g, nullptr, main_cs);
+                    cudaStreamSynchronize(main_stream);
+                    std::fprintf(stderr, "strata serve: rope dynamic: factor %.4g -> %.4g: reading %lld tokens again\n",
+                                 sess_f, to, (long long) resume);
+                    checks.clear();
+                    resume = 0;
+                    from_live = false;
+                }
+                const int64_t kept = reread_to > 0 ? 0 : resume;
+                if (kept == 0) sess_f = to;   // nothing kept: only the table may change
+                if (!dyn_switch(kept, kept, sess_f, to, "request")) {
+                    std::printf("ERR %s\n", err.c_str());
+                    return 1;
+                }
+            }
             // KV streaming: the drafter's ring may hold cells past `resume` from a longer turn; the main layers'
             // host copies and slots are always current (every writer writes both), so they need nothing
             if (use_mtp && resume > 0 && reread_to <= 0) mtp.kv_restore(resume);
@@ -14235,6 +14391,14 @@ int main(int argc, char** argv) {
                 const bool timed_round = !first_window;
                 const Clock::time_point round0 = Clock::now();
                 if (p + T > o.max_context) break;
+                // --rope-scaling dynamic: the reply grows past the table's positions - the committed cells [0, p) and
+                // the drafter's move to the next factor (its cells from p on are written again before they are read)
+                if (rope_dyn.on && p + T > rope_dyn.limit() && rope_dyn.factor_for(p + T) != rope_dyn.live) {
+                    if (!ver.wait_commit(err) || !dyn_switch(p, p, rope_dyn.live, rope_dyn.factor_for(p + T), "decode")) {
+                        std::printf("ERR %s\n", err.c_str());
+                        return 1;
+                    }
+                }
                 window[0] = x;
                 for (int i = 1; i < T_mtp; ++i)
                     window[(size_t) i] = merged     ? (int32_t) ids[(size_t) (p + i)]

@@ -44,6 +44,10 @@ void rope_table_release(const float* cos_tab);
 /// The registered table when STRATA_ROPE_TABLE=1 and it was built with `scaling`; otherwise none (the default: the
 /// kernels compute the angle exactly as before).
 RopeTab rope_table_for(const RopeScaling& scaling);
+/// --rope-scaling dynamic: the kernels read the table as with STRATA_ROPE_TABLE=1.  A factor change rewrites the
+/// table in place and the captured graphs keep reading it; the analytic path's constants are baked into them at
+/// capture.  Called once before the first session is built.
+void rope_table_force_on();
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
 /// ggml rope_multi, is_imrope, sections {11, 11, 10, 0}: sector = pair % 32; sector % 3 == 1 -> h (sector < 33),

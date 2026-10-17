@@ -148,13 +148,15 @@ bool same_scaling(const RopeScaling& a, const RopeScaling& b) {
            a.orig_ctx == b.orig_ctx && a.ext_factor == b.ext_factor && a.attn_factor == b.attn_factor &&
            a.beta_fast == b.beta_fast && a.beta_slow == b.beta_slow;
 }
-// opt-in: STRATA_ROPE_TABLE=1 (the table's angles differ from the fast-math ones in the last bits, so outputs move)
+// opt-in: STRATA_ROPE_TABLE=1 (the table's angles differ from the fast-math ones in the last bits, so outputs move),
+// or rope_table_force_on() (--rope-scaling dynamic)
+std::atomic<bool> rope_table_forced{false};
 bool rope_table_enabled() {
     static const bool on = [] {
         const char* e = std::getenv("STRATA_ROPE_TABLE");
         return e != nullptr && e[0] == '1';
     }();
-    return on;
+    return on || rope_table_forced.load(std::memory_order_relaxed);
 }
 }  // namespace
 void rope_table_set(const float* cos_tab, const float* sin_tab, int max_pos, const RopeScaling& scaling) {
@@ -165,6 +167,7 @@ void rope_table_release(const float* cos_tab) {
     for (RopeReg& r : rope_tab)
         if (cos_tab != nullptr && r.tab.cos == cos_tab) r = RopeReg{};
 }
+void rope_table_force_on() { rope_table_forced.store(true, std::memory_order_relaxed); }
 RopeTab rope_table_for(const RopeScaling& scaling) {
     if (!rope_table_enabled()) return {};
     const RopeReg& r = rope_tab[mrope_dev()];

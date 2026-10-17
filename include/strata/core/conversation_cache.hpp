@@ -164,6 +164,9 @@ struct SavedConversation {
     std::vector<ConversationCheckpoint> checkpoints;
     std::vector<ConversationKv> kv; // main layers followed by the draft layer
     bool cvec = true;
+    // --rope-scaling dynamic: the rope factor the K/V (and the checkpoints' `dead`) were written with; 1 = none.
+    // In the file it rides in the cvec word's upper bits (0 there = 1, so other files read unchanged).
+    double rope = 1.0;
     // with a layer split, the later stages' own images, one per stage, in stage order
     std::vector<SavedConversation> stage_images;
 

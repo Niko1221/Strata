@@ -1543,6 +1543,18 @@ position, not only past the trained end. That is why the setup turns scaling on 
 262,144. Pictures read the same scaled table (their (t, h, w) positions feed it). That should work, but it is
 unmeasured: all the runs above are text.
 
+`--rope-scaling dynamic` (opt-in; `--serve` on one GPU) changes the scaling per dialog instead. While a dialog fits
+the trained 262,144 positions it is none, bit for bit the run with `STRATA_ROPE_TABLE=1`: dynamic turns on #280's
+float64 angle table, because a factor change rebuilds that table in place and the captured graphs read it. Past
+262,144 it is yarn with the factor positions / 262,144, rounded up to `--rope-dynamic-step` (0.125) and at most
+`--rope-scale` (default: `--max-context` / 262,144). The factor is chosen per request from the prompt's length and again
+in decode when the reply passes the table's positions. The cached keys follow a change in place: K (int8 or fp16, with
+or without `STRATA_KV_ROT`'s Hadamard), the indexer's pooled keys, the checkpoints' `dead` and the drafter's K are
+turned by the angle difference (with `--kv-resident` the host copy, and the VRAM slots are fetched again).
+`STRATA_ROPE_DYNAMIC_REREAD=1` reads the prompt again instead. A switch costs tens of milliseconds with the K/V in VRAM.
+Parked conversations and session files carry their factor (a file written without dynamic reads as factor 1). Not yet
+with `--batch`, a layer split or `--kv q4_0` / `k8v4`: the engine refuses them at start and names static yarn.
+
 ---
 
 ## Manage Strata from your AI assistant (MCP server)
