@@ -12,6 +12,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <string>
@@ -234,6 +235,36 @@ uint64_t session_read_peak_bytes(uint64_t file_bytes);
 bool session_file_read(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
                        size_t& bytes, std::string& error, const SessionReadLimits& limits = {},
                        SessionStatus* status = nullptr);
+
+struct SessionFileMeta {
+    std::array<int64_t, 18> geometry{};
+    int64_t layer_lo = 0, layer_hi = 0;
+    bool cvec = true;
+    std::vector<int32_t> ids;                    // the live state's tokens
+    std::vector<ConversationImageKey> imgs;
+    std::vector<ConversationCheckpoint> checkpoints;  // ids/imgs/used only; state arrays empty
+};
+// The cheap scan read: open without following a link, verify header, version, identity and payload
+// size, then read only the token/image metadata of the live state and each checkpoint; every state
+// array and the K/V are skipped unread-in-RAM, the payload checksum is NOT verified (the full read
+// at restore validates again).  False + `error` for a foreign, damaged or oversized file.
+bool session_file_read_meta(const std::string& path, const SessionFileIdentity& id, SessionFileMeta& out,
+                            std::string& error, uint64_t max_tokens, uint64_t max_checkpoints);
+
+// The cache folder scan for startup: files named <prefix>*.sess are indexed; everything else in the
+// folder is removed (the folder belongs to the cache).  A file whose identity is not `id`, whose meta
+// read fails, or (when max_age_days > 0) whose mtime is older than max_age_days is removed.
+// max_age_days <= 0: remove every cached file and return none.  Survivors come back oldest-mtime
+// first (the cache's LRU order).
+struct CachedConversationFile {
+    SessionFileMeta meta;
+    std::string path;
+    uint64_t bytes = 0;
+};
+bool conversation_cache_index(const std::filesystem::path& dir, const std::string& prefix,
+                              const SessionFileIdentity& id, double max_age_days,
+                              uint64_t max_tokens, uint64_t max_checkpoints,
+                              std::vector<CachedConversationFile>& out, std::string& error);
 
 // The folder the free-space preflight asks about for `path`, by the rules of Windows or of POSIX (exposed so both can
 // be tested anywhere).  Windows: backslashes and a trailing backslash, as GetDiskFreeSpaceExW requires for a UNC
