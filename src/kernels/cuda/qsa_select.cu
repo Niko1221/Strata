@@ -2535,7 +2535,16 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
                          (any_card || topk_active_turing_device());
 #endif
     const int64_t reach = counted && active_blocks < max_blocks ? active_blocks : max_blocks;
+#if defined(__HIPCC__)
+    // Decode (no count) with --max-context 262144 has a capacity of 65,538 blocks: past TK_T * TK_PER, so it used to
+    // fall to the one-CTA ref kernel, which reads every key from memory on each radix pass (2 ms a window at 157K on an
+    // R9700 + 7900 XTX split).  The PER_MAX register kernel holds that capacity (the reason it exists on AMD) and reads
+    // only the live n_bid + 1 blocks; the same ids.  STRATA_TOPK_DECODE_REG=0 keeps the ref kernel for decode.
+    static const bool decode_reg = [] { const char* v = std::getenv("STRATA_TOPK_DECODE_REG"); return v == nullptr || v[0] != '0'; }();
+    const int64_t fit = (int64_t) TK_T * (counted || decode_reg ? TK_PER_MAX : TK_PER);
+#else
     const int64_t fit = (int64_t) TK_T * (counted ? TK_PER_MAX : TK_PER);
+#endif
 #if defined(__HIPCC__)
     // gfx1201: below ~28K cells (7,168 blocks) the 1,024-thread kernel's fixed cost loses to the ref.  STRATA_TOPK_REG_MIN_BLOCKS
     // moves the line (0: the register kernel always); gfx1151's table sets 4096, the crossover with the cooperative scan
