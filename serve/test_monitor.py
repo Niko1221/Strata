@@ -269,6 +269,23 @@ class ConversationCacheCard(unittest.TestCase):
         self.assertIn('id="workers-card" hidden', html)
         self.assertIn("card.hidden = !live.parallel", js)
 
+    def test_the_slots_read_as_rows_and_a_request_outside_a_slot_has_its_own_row(self):
+        """Rows, not boxes: each slot's row stretches the card and the rows stack in slot order, which is what
+        makes a fourth row - the requests in flight outside a slot - read as part of the same list. That row is
+        hidden without live.outside_slots, and it shows no rate: the payload carries their count, not a rate
+        (server.py:3775), so putting the newest request's numbers there would attribute them to the wrong one."""
+        web = Path(__file__).parent / "web"
+        js, css = (web / "app.js").read_text(encoding="utf-8"), (web / "app.css").read_text(encoding="utf-8")
+        self.assertIn(".workers { display: grid; gap: var(--st-s-2); }", css)
+        self.assertNotIn("repeat(auto-fit, minmax(210px, 1fr))", css)      # the boxes are gone
+        self.assertIn('solo.className = "worker worker--solo"', js)
+        self.assertLess(js.index("worker--solo"), js.index("Worker ${i + 1}"))   # the queue row comes first
+        self.assertNotIn("workerSolo.el.hidden", js)                       # and it is always there
+        self.assertIn('id="workers-sum"', (web / "index.html").read_text(encoding="utf-8"))
+        # a slot that is reading shows the engine's prefill rate (the Speed card's right-hand number): the slot
+        # reader goes through _control(), which parses the engine's PP lines, so it is live - server.py:1283-1288
+        self.assertIn("engine prefill", js)
+
     def test_a_slot_shows_its_window_rate_not_the_mean_since_the_first_token(self):
         """live.slots[].tok_s is the mean since the first token, so a slot opens at the burst rate and only decays
         to the truth over minutes: 300 falling to 35 on a 4090 with two agents. The card's number is the server's
