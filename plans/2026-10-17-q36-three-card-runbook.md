@@ -142,3 +142,56 @@ P100-12G 做主卡（CUDA0），两张 P104-8G 做助手卡（CUDA1/CUDA2，`--e
 120 ms。上游 explorer 的结论与实测一致：`moe_helpers()` 每层做两次主机拷贝 + 一次
 `cudaStreamSynchronize`，40 层就是 40 次主机往返，且与主卡的下一层完全串行——这是真正的
 瓶颈，下一步就该从这里下手。
+
+---
+
+## 2026-10-18 瓶颈实测与 warmup 越界的独立复核
+
+### warmup 越界：上游遗留，已独立确认
+
+一个独立的诊断任务（`CUDA_LAUNCH_BLOCKING=1` + 上游基线对照）给出三条我们之前没有的证据：
+
+1. **越界的确切位置**是 `k_attn_prep` 的 K/V 存储，`src/qwen35/q36_engine.cu:337`：
+   `((float*)kc)[(kh*ctx + pos)*HD + i] = v`，`pos` 从不与 `ctx` 比较（int8 变体在 :324/:341）。
+   加 `CUDA_LAUNCH_BLOCKING=1` 时崩在 `iq_embed_rows`
+   （`src/kernels/cuda/iq_kernels.cu:3508`，第一个真实请求的第一个 launch），
+   不加时崩在 `native MMVQ launch` 或 `cudaMemcpyAsync(ecpu, ...)`
+   （`q36_engine.cu:2055`）——典型的 sticky error 滞后。
+
+2. **不只是 warmup 的问题**：`--no-warmup` 下把 600 个 token 灌进 512 格缓存同样崩，
+   500 个才通过。说明 `process()` 缺的是"`pos` 不许越过 `ctx`"这一道防护，warmup 只是
+   最容易撞上的入口（默认 chunk 2048 + 9 + 1 = 2058 > 2048）。
+
+3. **上游 `296b59d2` 复现同样崩溃**（`/home/Strata/build-upstream/strata-q36`，源码 md5 已核）。
+   多卡、int8 KV、计算图、混合槽位表都被排除：上游不带任何 helper 也崩，
+   `--no-graph` 崩得一模一样。
+
+对策分两层：
+- 已做（`4fe4bd3f`）：`warmup()` 每轮把 `pos` 归零，并把 chunk 夹到 `ctx`。实测通过。
+- 待做（纵深防御）：在 K/V 存储处加 `pos < ctx` 的钳制，并把越界报出来而不是静默写坏
+  相邻分配。这一处要等当前的 overlap workflow 收尾后再动，避免同时改同一个文件。
+
+### 真正的瓶颈：不是暂存，是主机阻塞等结果
+
+把 `RemoteExperts::ms_begin()` / `ms_wait()` 临时打到 stderr（用完即删、远端已重建干净）：
+
+| 项目 | 每 token |
+|---|---|
+| `ms_begin`（暂存 + launch，两张助手卡合计） | **1.50 ms** |
+| `ms_wait`（`finish()` 等助手卡算完 + 回传，两张合计） | **21.07 ms** |
+| 合计 | **22.58 ms** |
+
+对照每步 39.3–40.2 ms，**22.58 ms 占 56%**。由此：
+
+- 删掉 `moe_helpers()` 里那次 `cudaStreamSynchronize(st)` 最多只赚 1.5 ms/tok（约 +1 tok/s），
+  因为那 21 ms 花在 `RemoteExperts::finish()` 的阻塞等（`src/core/remote_experts.cpp:401`，
+  CUDA 构建走阻塞分支，没有 spin）。
+- 把整条助手主机路径完全重叠掉，上限约 **56 tok/s（2.2 倍）**；而主卡自身剩余的
+  17.8 ms/tok 也正好算出 56.1 tok/s。两条路减出来是同一个数，说明这个上限是真的。
+- 助手卡其实是**过度取用**：每 token 约 289 个条目分给两张卡，PCIe 行数据只有约 59 MB/s。
+  所以瓶颈既不是助手卡算力也不是 PCIe 带宽，而是主线程同步等待。
+
+这解释了之前那个反直觉现象：命中率 46.5% → 94.5% 只换 19% 提速，因为省下的 CPU 池时间
+本来就和 GPU 工作重叠着，而 21 ms 的等待一直没变。
+
+下一步方向已定：让它异步，而不是优化暂存。
