@@ -147,6 +147,10 @@ VISION_START = "<|vision_start|>"
 # broken state that answers one token forever (an issue saw 36,689 tokens of "!"). The config's "repeat_stop_tokens"
 # sets it; 0 turns it off.
 REPEAT_STOP_TOKENS = 256
+# Opt-in STRATA_REPLY_REUSE=1: the next turn's prompt keeps the reply's own token ids (what the engine holds) up to where
+# its text differs, and a thinking budget's stop keeps the tokens the engine generated past it, so neither re-reads the
+# reply.  Off: every prompt is a fresh encode, as before.
+REPLY_REUSE = os.environ.get("STRATA_REPLY_REUSE", "") == "1"
 ANSWER_ROOM_MIN_CAP = 1024    # 0.1.45: from this max_tokens on, thinking without a budget is closed early enough to leave room to answer
 ANSWER_RESERVE_MIN = 512      # #984: the tokens kept for the answer when a thinking budget is cut down to fit max_tokens
 # #123: what closes the thinking when it reaches reasoning_budget_tokens (the model's own end-of-thinking tag after it)
@@ -1928,6 +1932,7 @@ class StrataEngine:
         if not self.alive():
             raise EngineDied("the engine is unavailable; this request was not sent")
         bias_api.validate_request(sampling or {}, self, None)
+        self.drained = []        # tokens the engine sent after a STOP (its session holds them)
         if getattr(self, "batch", 0):
             yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
             return
@@ -2043,6 +2048,8 @@ class StrataEngine:
                         break
                     if not self.can_stop:
                         heard = time.monotonic()
+                    if line.startswith("T "):
+                        self.drained.append(int(line[2:]))
 
     def _activity(self) -> tuple[float, int] | None:
         """#1317: (CPU seconds, I/O bytes) the engine process has used so far, or None when they cannot be read."""
@@ -4514,6 +4521,30 @@ class Service:
                         # was generated plus the wrap-up, so the engine continues from the prefix it already holds.
                         # A forced call (tool_choice) is opened the same way: after the wrap-up, or where the
                         # thinking ended, after the blank line the template puts before a call.
+                        if wrap and REPLY_REUSE:
+                            # The engine had generated a few tokens past the budget's stop before the STOP reached
+                            # it, and its session holds them.  Dropped, the wrap-up continuation left the session
+                            # there and the engine read the whole thinking again (a reply has no checkpoint inside
+                            # it).  They join the thinking - when they are plain text: no stop or tag, no split
+                            # character - so the continuation extends the engine's own state.
+                            spill = list(getattr(self.engine, "drained", None) or [])
+                            spill_text = self.tok.decode(spill) if spill else ""
+                            if spill and not any(t in self.stop_ids for t in spill) and "<" not in spill_text \
+                                    and "�" not in spill_text and max_new - n - len(spill) > 1:
+                                for t in spill:
+                                    n += 1
+                                    raw_ids.append(t)
+                                    seg.append(t)
+                                    thought += 1
+                                    thinking_n += parser.state in ("reasoning", "rcall")
+                                    piece = detok.push(t)
+                                    tail = (tail + piece)[-2:]
+                                    evs = cut(parser.feed(piece))
+                                    self._note(n, evs, st, rate)
+                                    for ev in evs:
+                                        if self.reasoning_loop_recovery and ev.kind == "reasoning":
+                                            reasoning_text += ev.text or ""
+                                        yield "event", ev
                         if wrap:
                             budget = st["thinking_budget"] = None
                             text = REASONING_WRAP_UP + (force or "")
@@ -4538,6 +4569,12 @@ class Service:
                             finish = "stop"
                             break
                         prompt = prompt + seg + extra
+                    # The engine now holds this prompt plus the reply's own ids; the next turn's prompt reuses them
+                    # up to where its text differs (PromptEncoder.remember_reply), not up to the first piece of the
+                    # reply BPE would have split another way
+                    if REPLY_REUSE and self.prompts is not None and raw_ids and not emb and not recovery_count:
+                        with contextlib.suppress(Exception):
+                            self.prompts.remember_reply(ids, raw_ids)
                     if cancel.is_set():
                         finish = "cancel"
                     elif looped:
