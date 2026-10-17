@@ -4,6 +4,7 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <atomic>
 #include <climits>
 #include <cerrno>
@@ -31,6 +32,9 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#if defined(__linux__)
+#include <sys/vfs.h>   // fstatfs: --shared-expert-arena's hugetlbfs check
+#endif
 #include <unistd.h>
 #include <linux/mman.h>
 #ifndef MAP_HUGE_2MB
@@ -42,8 +46,13 @@ namespace strata::core {
 
 namespace {
 
-constexpr uint64_t kSharedArenaHeaderBytes = 4096;
-constexpr char kSharedArenaMagic[16] = "STRATA-ARENA-V1";
+// --shared-expert-arena's file: a 2 MiB header, then the arena, rounded up to whole 2 MiB pages.  The header is
+// one huge page so the arena starts 2 MiB-aligned in the file and in memory: on tmpfs (huge=) and hugetlbfs every
+// huge page then holds arena bytes only, and a hugetlbfs file is a whole number of its pages.  V1 (a 4 KiB header,
+// every engine loading the file again) is replaced like a file of another pack.
+constexpr uint64_t kSharedArenaHeaderBytes = 2ull << 20;
+constexpr char kSharedArenaMagic[16] = "STRATA-ARENA-V2";
+constexpr uint32_t kSharedFilling = 0, kSharedReady = 1;
 
 struct SharedArenaHeader {
     char magic[16];
@@ -51,7 +60,9 @@ struct SharedArenaHeader {
     uint32_t header_bytes;
     uint64_t arena_bytes;
     uint64_t pack_hash;
-    uint64_t reserved[4];
+    uint32_t state;              // kSharedFilling until the loading engine's shared_publish()
+    int32_t filler_pid;          // the engine that loads it, for the message of the ones waiting
+    uint64_t reserved[3];
 };
 static_assert(sizeof(SharedArenaHeader) <= kSharedArenaHeaderBytes);
 
@@ -82,18 +93,225 @@ uint64_t free_huge_bytes() {
     }
     return total;
 }
+
+// --shared-expert-arena is Linux only (OFD locks, posix_fallocate, fstatfs, /proc/self/smaps).  The Mac engine
+// compiles this file too (metal/CMakeLists.txt), so all of it stays behind __linux__; elsewhere reserve() refuses
+// a shared file as the Windows branch does.
+#if defined(__linux__)
+#ifndef F_OFD_SETLK
+#define F_OFD_SETLK 37
+#define F_OFD_SETLKW 38
+#endif
+#ifndef MADV_POPULATE_READ
+#define MADV_POPULATE_READ 22
+#define MADV_POPULATE_WRITE 23
+#endif
+#ifndef MADV_COLLAPSE
+#define MADV_COLLAPSE 25
+#endif
+
+// Two one-byte OFD locks (Linux 3.15) on the shared file.  They belong to the open file, not to the process, so the
+// kernel drops them when an engine exits or dies, and a second arena in the same process conflicts like another
+// engine would.
+//   byte 0, FILL: exclusive while one engine loads the file; the others wait for it shared, then look again.
+//   byte 1, USER: shared while an engine maps the file; exclusive only to replace a file no other engine maps.
+constexpr off_t kFillLock = 0, kUserLock = 1;
+
+bool ofd_lock(int fd, short type, off_t byte, bool wait) {
+    struct flock l{};
+    l.l_type = type;
+    l.l_whence = SEEK_SET;
+    l.l_start = byte;
+    l.l_len = 1;
+    while (fcntl(fd, wait ? F_OFD_SETLKW : F_OFD_SETLK, &l) != 0)
+        if (errno != EINTR) return false;
+    return true;
+}
+
+// The bytes of the mapping at `p` the kernel maps with 2 MiB pages: tmpfs and file THP (ShmemPmdMapped,
+// FilePmdMapped) or hugetlbfs (Shared_/Private_Hugetlb: its pages are not in Rss).  -1: /proc/self/smaps unreadable.
+int64_t huge_mapped_bytes(const void* p) {
+    std::ifstream f("/proc/self/smaps");
+    if (!f) return -1;
+    const uintptr_t at = (uintptr_t) p;
+    std::string line;
+    bool in = false;
+    int64_t hugetlb = 0, pmd = 0, page_kb = 4;
+    while (std::getline(f, line)) {
+        const size_t dash = line.find('-'), sp = line.find(' ');
+        if (dash != std::string::npos && dash < sp) {        // a mapping's header line: "lo-hi perms ..."
+            if (in) break;
+            const uintptr_t lo = std::strtoull(line.c_str(), nullptr, 16);
+            const uintptr_t hi = std::strtoull(line.c_str() + dash + 1, nullptr, 16);
+            in = at >= lo && at < hi;
+            continue;
+        }
+        if (!in) continue;
+        long long kb = 0;
+        if (std::sscanf(line.c_str(), "Shared_Hugetlb: %lld kB", &kb) == 1) hugetlb += kb << 10;
+        else if (std::sscanf(line.c_str(), "Private_Hugetlb: %lld kB", &kb) == 1) hugetlb += kb << 10;
+        else if (std::sscanf(line.c_str(), "ShmemPmdMapped: %lld kB", &kb) == 1) pmd += kb << 10;
+        else if (std::sscanf(line.c_str(), "FilePmdMapped: %lld kB", &kb) == 1) pmd += kb << 10;
+        else if (std::sscanf(line.c_str(), "KernelPageSize: %lld kB", &kb) == 1) page_kb = kb;
+    }
+    return page_kb >= 2048 ? hugetlb : pmd;
+}
+
+// --shared-expert-arena: opens (or makes) the file, takes its locks and maps it; the arena after the header.
+// `loaded`: the file already holds the pack (attach, nothing to read).  Otherwise this engine holds the FILL lock
+// until PinnedArena::shared_publish().  The file stays when the last engine exits, so a restart attaches.
+void* open_shared(uint64_t bytes, const std::string& file, uint64_t pack_hash, std::string& note, int& fd_out,
+                  bool& loaded, void*& mapping_base, uint64_t& mapping_bytes) {
+    const uint64_t arena_bytes = (bytes + kSharedArenaHeaderBytes - 1) / kSharedArenaHeaderBytes * kSharedArenaHeaderBytes;
+    const uint64_t file_bytes = kSharedArenaHeaderBytes + arena_bytes;
+    const double gib = 1073741824.0;
+    char num[160];
+    for (int attempt = 0; attempt < 16; ++attempt) {
+        const int fd = open(file.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        if (fd < 0) {
+            note = "cannot open shared arena " + file + ": " + std::strerror(errno);
+            return nullptr;
+        }
+        auto fail = [&](const std::string& why) -> void* {
+            close(fd);
+            note = why;
+            return nullptr;
+        };
+        if (!ofd_lock(fd, F_RDLCK, kUserLock, true))
+            return fail("cannot lock shared arena " + file + ": " + std::strerror(errno));
+        struct stat st{}, now{};
+        if (fstat(fd, &st) != 0) return fail("cannot stat shared arena " + file + ": " + std::strerror(errno));
+        if (st.st_nlink == 0 || stat(file.c_str(), &now) != 0 || now.st_ino != st.st_ino || now.st_dev != st.st_dev) {
+            close(fd);                                       // replaced since it was opened: open the new one
+            continue;
+        }
+        SharedArenaHeader h{};
+        if (!ofd_lock(fd, F_WRLCK, kFillLock, false)) {      // another engine is loading it: wait, then look again
+            if (pread(fd, &h, sizeof h, 0) != (ssize_t) sizeof h) h.filler_pid = 0;
+            const std::string who = h.filler_pid > 0 ? "engine " + std::to_string(h.filler_pid) : "another engine";
+            std::fprintf(stderr, "strata generate: shared arena %s: %s is loading it, waiting\n", file.c_str(),
+                         who.c_str());
+            const bool waited = ofd_lock(fd, F_RDLCK, kFillLock, true);
+            close(fd);
+            if (!waited) {
+                note = "cannot wait for shared arena " + file + ": " + std::strerror(errno);
+                return nullptr;
+            }
+            continue;
+        }
+        // The FILL lock is ours: nobody loads the file now.
+        const bool fresh = st.st_size == 0;
+        const bool ours = !fresh && (uint64_t) st.st_size == file_bytes &&
+                          pread(fd, &h, sizeof h, 0) == (ssize_t) sizeof h &&
+                          std::memcmp(h.magic, kSharedArenaMagic, sizeof h.magic) == 0 && h.version == 2 &&
+                          h.header_bytes == kSharedArenaHeaderBytes && h.arena_bytes == bytes && h.pack_hash == pack_hash;
+        if (!fresh && !ours) {                               // another pack's, size's or format's file
+            std::snprintf(num, sizeof num, "%.2f GiB, expected %.2f GiB for pack %016llx",
+                          (double) st.st_size / gib, (double) file_bytes / gib, (unsigned long long) pack_hash);
+            if (!ofd_lock(fd, F_WRLCK, kUserLock, false))
+                return fail("shared arena " + file + " holds another pack, size or format (" + num +
+                            ") and another engine maps it: name another file");
+            if (unlink(file.c_str()) != 0)
+                return fail("cannot replace shared arena " + file + ": " + std::strerror(errno));
+            std::fprintf(stderr, "strata generate: shared arena %s held another pack, size or format (%s), unused: "
+                                 "replaced\n", file.c_str(), num);
+            close(fd);
+            continue;
+        }
+        if (fresh) {
+            // allocated, not only sized: a filesystem too small for the arena fails here (ENOSPC) rather than with
+            // SIGBUS part-way through the load
+            const int e = posix_fallocate(fd, 0, (off_t) file_bytes);
+            if (e != 0) {
+                if (ftruncate(fd, 0) != 0) {}   // best effort: the error returned below says why
+                std::snprintf(num, sizeof num, "%.2f GiB", (double) file_bytes / gib);
+                return fail("cannot allocate shared arena " + file + " (" + num + "): " + std::strerror(e) +
+                            (e == ENOSPC ? " - its filesystem is smaller than the arena (tmpfs size=)" : ""));
+            }
+            std::memcpy(h.magic, kSharedArenaMagic, sizeof h.magic);
+            h.version = 2;
+            h.header_bytes = (uint32_t) kSharedArenaHeaderBytes;
+            h.arena_bytes = bytes;
+            h.pack_hash = pack_hash;
+        }
+        loaded = !fresh && h.state == kSharedReady;
+        void* map = mmap(nullptr, (size_t) file_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (map == MAP_FAILED) return fail("cannot map shared arena " + file + ": " + std::strerror(errno));
+        if (loaded) {
+            ofd_lock(fd, F_UNLCK, kFillLock, false);
+        } else {                                             // fresh, or an engine died while loading it
+            h.state = kSharedFilling;
+            h.filler_pid = (int32_t) getpid();
+            std::memcpy(map, &h, sizeof h);                  // through the mapping: hugetlbfs has no write()
+        }
+        uint8_t* arena = (uint8_t*) map + kSharedArenaHeaderBytes;
+        // #2126 as for the private arena: the engine that fills the file asks for 2 MiB pages (MADV_HUGEPAGE, then
+        // MADV_COLLAPSE) only when free 2 MiB blocks could back half of it - otherwise every fault reclaims and
+        // compacts.  A tmpfs huge=always still takes the free blocks it finds; hugetlbfs has its pages already.
+        bool ask_huge = std::getenv("STRATA_NO_LARGEPAGES") == nullptr && std::getenv("STRATA_NO_ARENA_THP") == nullptr;
+        std::string thp_note;
+        struct statfs fs{};
+        const bool hugetlbfs = fstatfs(fd, &fs) == 0 && (unsigned long) fs.f_type == 0x958458f6ul;   // HUGETLBFS_MAGIC
+        const uint64_t free_huge = ask_huge && !loaded && !hugetlbfs && std::getenv("STRATA_ARENA_THP") == nullptr
+                                       ? free_huge_bytes() : UINT64_MAX;
+        if (free_huge < arena_bytes / 2) {
+            ask_huge = false;
+            thp_note = "; 2 MiB pages NOT requested: only " + std::to_string(free_huge >> 30) +
+                       " GiB of free 2 MiB blocks for it, compaction would stall the load (STRATA_ARENA_THP=1 "
+                       "requests them anyway) (#2126)";
+            std::fprintf(stderr, "strata generate: shared arena %s%s\n", file.c_str(), thp_note.c_str());
+        }
+        if (ask_huge) (void) madvise(arena, (size_t) arena_bytes, MADV_HUGEPAGE);   // a tmpfs mounted huge=advise
+        // Map every page now, before the GPU registration (Linux 5.14; older kernels fault them in as they go).  The
+        // engine that loads the file makes its huge pages whole first (Linux 6.1; not when #2126 held them back): on
+        // AMD the 4 KB pages of a
+        // registered arena are the ones compaction moves, and every move stops the engine's GPU queues while the
+        // driver maps the range again.  The pages are still empty and unregistered here, so that costs nothing.
+        (void) madvise(arena, (size_t) arena_bytes, loaded ? MADV_POPULATE_READ : MADV_POPULATE_WRITE);
+        int64_t huge = huge_mapped_bytes(arena);   // the header's page is not mapped yet (or not on a huge page)
+        std::string collapsed;
+        if (!loaded && ask_huge && huge >= 0 && (uint64_t) huge < arena_bytes) {
+            const bool ok = madvise(arena, (size_t) arena_bytes, MADV_COLLAPSE) == 0;
+            collapsed = ok ? " (after MADV_COLLAPSE)" : std::string(" (MADV_COLLAPSE: ") + std::strerror(errno) + ")";
+            huge = huge_mapped_bytes(arena);
+        }
+        mapping_base = map;
+        mapping_bytes = file_bytes;
+        fd_out = fd;
+        note = std::string(loaded ? "attached to the shared file " : "loads the shared file ") + file;
+        if (huge >= 0) {
+            huge = std::min<int64_t>(huge, (int64_t) arena_bytes);
+            const bool small = arena_bytes < (1ull << 30);   // MiB below a GiB (the selftest's arenas)
+            const double unit = small ? 1048576.0 : gib;
+            std::snprintf(num, sizeof num, "; %.2f of %.2f %s on 2 MiB pages%s", (double) huge / unit,
+                          (double) arena_bytes / unit, small ? "MiB" : "GiB", collapsed.c_str());
+            note += num;
+            note += thp_note;
+#if defined(__HIP_PLATFORM_AMD__)
+            if ((uint64_t) huge < arena_bytes)
+                note += " - on AMD the kernel's compaction moves the 4 KB pages and every move stops the GPU queues "
+                        "for a moment: mount the tmpfs with huge=always, or use hugetlbfs (docs/DETAILS.md)";
+#endif
+        }
+        return arena;
+    }
+    note = "shared arena " + file + " kept being replaced while it was opened";
+    return nullptr;
+}
+#endif  // __linux__: --shared-expert-arena
 #endif
 
 // A 2 MB-aligned reservation.  Large pages first, then the largest alignment the OS will give us for free.
-// A non-empty shared_file instead maps one file whose first 4 KiB identify the pack and whose remaining bytes
-// are the resident arena.  This shared-file layout is intended for tmpfs (/dev/shm); hugetlbfs would need
-// hugepage-aligned file size and arena offset rather than the 4 KiB header layout used here.
+// A non-empty shared_file instead maps that file (open_shared above).
 void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::string& shared_file,
-              uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes) {
+              uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes, int& shared_fd,
+              bool& shared_loaded) {
     mapping_base = nullptr;
     mapping_bytes = 0;
 
 #ifdef _WIN32
+    (void) shared_fd;
+    (void) shared_loaded;
     if (!shared_file.empty()) {
         note = "shared-file arena backing is not implemented on Windows";
         return nullptr;
@@ -150,87 +368,18 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
             note = "shared arena requires a nonzero pack hash";
             return nullptr;
         }
-        if (bytes > UINT64_MAX - kSharedArenaHeaderBytes) {
-            note = "shared arena size overflows its header";
+        if (bytes > UINT64_MAX / 2) {
+            note = "shared arena size overflows its file";
             return nullptr;
         }
-        const uint64_t file_bytes = kSharedArenaHeaderBytes + bytes;
-        const int fd = open(shared_file.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-        if (fd < 0) {
-            note = "cannot open shared arena " + shared_file + ": " + std::strerror(errno);
-            return nullptr;
-        }
-        struct stat st{};
-        if (fstat(fd, &st) != 0) {
-            const int e = errno;
-            close(fd);
-            note = "cannot stat shared arena " + shared_file + ": " + std::strerror(e);
-            return nullptr;
-        }
-
-        const bool fresh = st.st_size == 0;
-        if (fresh) {
-            if (ftruncate(fd, (off_t) file_bytes) != 0) {
-                const int e = errno;
-                close(fd);
-                note = "cannot size shared arena " + shared_file + ": " + std::strerror(e);
-                return nullptr;
-            }
-            SharedArenaHeader hdr{};
-            std::memcpy(hdr.magic, kSharedArenaMagic, sizeof hdr.magic);
-            hdr.version = 1;
-            hdr.header_bytes = (uint32_t) kSharedArenaHeaderBytes;
-            hdr.arena_bytes = bytes;
-            hdr.pack_hash = shared_pack_hash;
-            const ssize_t written = pwrite(fd, &hdr, sizeof hdr, 0);
-            if (written != (ssize_t) sizeof hdr) {
-                const int e = errno;
-                close(fd);
-                note = "cannot write shared arena header " + shared_file + ": " +
-                       (written < 0 ? std::string(std::strerror(e)) : std::string("short write"));
-                return nullptr;
-            }
-        } else {
-            if (st.st_size < 0 || (uint64_t) st.st_size != file_bytes) {
-                close(fd);
-                note = "shared arena " + shared_file + " is " +
-                       std::to_string((unsigned long long) st.st_size) + " B, expected " +
-                       std::to_string((unsigned long long) file_bytes) + " B including its header";
-                return nullptr;
-            }
-            SharedArenaHeader hdr{};
-            const ssize_t got_header = pread(fd, &hdr, sizeof hdr, 0);
-            if (got_header != (ssize_t) sizeof hdr ||
-                std::memcmp(hdr.magic, kSharedArenaMagic, sizeof hdr.magic) != 0 ||
-                hdr.version != 1 || hdr.header_bytes != kSharedArenaHeaderBytes || hdr.arena_bytes != bytes) {
-                close(fd);
-                note = "shared arena " + shared_file + " has an incompatible or missing header";
-                return nullptr;
-            }
-            if (hdr.pack_hash != shared_pack_hash) {
-                close(fd);
-                char b[256];
-                std::snprintf(b, sizeof b,
-                              "shared arena %s was written for pack hash %016llx, expected %016llx",
-                              shared_file.c_str(), (unsigned long long) hdr.pack_hash,
-                              (unsigned long long) shared_pack_hash);
-                note = b;
-                return nullptr;
-            }
-        }
-
-        void* map = mmap(nullptr, (size_t) file_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        const int e = errno;
-        close(fd);
-        if (map == MAP_FAILED) {
-            note = "cannot map shared arena " + shared_file + ": " + std::strerror(e);
-            return nullptr;
-        }
-        mapping_base = map;
-        mapping_bytes = file_bytes;
+#if defined(__linux__)
         got = PageBacking::NormalPages;
-        note = "MAP_SHARED file " + shared_file + " (pack hash checked)";
-        return (uint8_t*) map + kSharedArenaHeaderBytes;
+        return open_shared(bytes, shared_file, shared_pack_hash, note, shared_fd, shared_loaded, mapping_base,
+                           mapping_bytes);
+#else
+        note = "shared-file arena backing is implemented on Linux only";
+        return nullptr;
+#endif
     }
 
     // STRATA_NO_LARGEPAGES=1 is the same-run A/B switch the Windows branch documents; honor it
@@ -401,7 +550,8 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
                          uint64_t max_pinned_bytes, const std::string& shared_file,
                          uint64_t shared_pack_hash) : capacity(bytes) {
     if (bytes == 0) return;
-    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes, shared_fd,
+                   shared_loaded);
     if (base != nullptr && mapping_base == nullptr) {
         mapping_base = base;
         mapping_bytes = bytes;
@@ -504,7 +654,8 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
                          uint64_t shared_pack_hash) : capacity(bytes) {
     by_need = true;
     if (bytes == 0) return;
-    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes, shared_fd,
+                   shared_loaded);
     if (base != nullptr && mapping_base == nullptr) {
         mapping_base = base;
         mapping_bytes = bytes;
@@ -589,7 +740,7 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred)
     : capacity(bytes), bounds_(bounds) {
     if (bytes == 0 || bounds.size() < 2) return;
-    base = reserve(bytes, backing, note, std::string{}, 0, mapping_base, mapping_bytes);
+    base = reserve(bytes, backing, note, std::string{}, 0, mapping_base, mapping_bytes, shared_fd, shared_loaded);
     if (base != nullptr && mapping_base == nullptr) {
         mapping_base = base;
         mapping_bytes = bytes;
@@ -650,6 +801,28 @@ PinnedArena::~PinnedArena() {
         mapping_base = nullptr;
         mapping_bytes = 0;
     }
+#ifndef _WIN32
+    if (shared_fd >= 0) close(shared_fd);   // drops the locks: an unpublished file goes to the next engine to load
+    shared_fd = -1;
+#endif
+}
+
+bool PinnedArena::shared_publish(std::string& err) {
+#if defined(__linux__)
+    if (shared_fd < 0 || shared_loaded) return true;
+    // The arena's bytes are in the file's pages before the flag: the waiting engines read the flag after the lock.
+    std::atomic_thread_fence(std::memory_order_release);
+    ((volatile SharedArenaHeader*) mapping_base)->state = kSharedReady;
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (!ofd_lock(shared_fd, F_UNLCK, kFillLock, false)) {
+        err = std::string("cannot release the shared arena's fill lock: ") + std::strerror(errno);
+        return false;
+    }
+    shared_loaded = true;
+#else
+    (void) err;
+#endif
+    return true;
 }
 
 LoadStats load_experts(const std::string& path, uint8_t* dst, uint64_t blob_bytes, uint64_t blobs_per_layer,

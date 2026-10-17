@@ -1027,9 +1027,10 @@ void usage() {
                  "  --mmap-experts       R2.1: opt OUT of the resident expert arena, back to MapViewOfFile.\n"
                  "                       The A/B arm: the mmap's rate depends on the OS page cache holding\n"
                  "                       34 GB, and measured 71.97 vs 34.78 ms/token cold vs warm.\n"
-                 "  --shared-expert-arena FILE  Linux: back the resident arena with one MAP_SHARED file.\n"
-                 "                       Put this file on /dev/shm, not ordinary SSD storage.\n"
-                 "                       A small header binds an existing backing file to the same pack.\n"
+                 "  --shared-expert-arena FILE  Linux: the resident arena in one file that every engine naming it\n"
+                 "                       shares: the first loads it, the others wait and attach without\n"
+                 "                       reading the pack. Put it on tmpfs or hugetlbfs (docs/DETAILS.md); it\n"
+                 "                       stays after the last engine exits - delete it to free the RAM.\n"
                  "  --resident-cpu-experts  with mmap and a static profile, keep the experts the GPU cache does not\n"
                  "                       hold resident in ordinary RAM (and the prompt path's lend region as far as\n"
                  "                       RAM allows); adaptive swaps exchange them, so none is read from the file again.\n"
@@ -5591,9 +5592,13 @@ int main(int argc, char** argv) {
         if (!arena_src.ram_warning().empty())   // #633: said before the load's numbers, which it explains
             std::fprintf(stderr, "strata generate: WARNING: %s\n", arena_src.ram_warning().c_str());
         std::fprintf(stderr, "strata generate: expert arena: %s\n", arena_src.note().c_str());
-        std::fprintf(stderr, "strata generate: loaded %.2f GiB at %.2f GiB/s\n",
-                     (double) strata::kernels::cpu::expert_layout().total / (1024.0 * 1024 * 1024),
-                     arena_src.load_gib_per_second());
+        if (arena_src.attached())   // --shared-expert-arena: another engine loaded the file
+            std::fprintf(stderr, "strata generate: attached %.2f GiB another engine loaded, nothing read\n",
+                         (double) strata::kernels::cpu::expert_layout().total / (1024.0 * 1024 * 1024));
+        else
+            std::fprintf(stderr, "strata generate: loaded %.2f GiB at %.2f GiB/s\n",
+                         (double) strata::kernels::cpu::expert_layout().total / (1024.0 * 1024 * 1024),
+                         arena_src.load_gib_per_second());
         // A rate under ~0.2 GiB/s is not the hardware.  Task Scheduler / service contexts throttle this
         // read+fill about 24x (measured 0.05 vs 1.42 GiB/s for the same binary, args and cache state; the
         // scheduler's defaults - Below normal priority and a least-privilege token - were the only

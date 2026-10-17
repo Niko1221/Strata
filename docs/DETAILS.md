@@ -242,6 +242,70 @@ start writes `experts.bin` (when the drive has room for it), later starts map it
 are handed back to the OS. Run it with `--pcie-frac 0` (the GPUs get no mapped alias). Without the variable nothing
 changes.
 
+**One expert arena for several engines (Linux, opt-in): `--shared-expert-arena FILE`.** Engines of the same pack -
+for example one per GPU, each with its own expert cache and K/V - keep one RAM copy of the experts instead of one
+each. The arena lives in FILE: the first engine loads it; an engine started meanwhile waits for that load and then
+attaches without reading the pack, and so does any later start while the file is there. The file stays after the last
+engine exits, so a restart attaches too; delete it to free the RAM. An engine that dies while loading leaves the file
+to the next one, which loads it again. A file left for another pack, size or format is replaced when no engine maps it
+and refused while one does. Put FILE on tmpfs or hugetlbfs, not on a drive:
+
+```
+sudo mkdir -p /mnt/strata-arena
+sudo mount -t tmpfs -o size=58G,huge=always,noswap,uid=$(id -u),mode=0700 strata-arena /mnt/strata-arena
+strata ... --shared-expert-arena /mnt/strata-arena/ud-iq4_xs.arena
+```
+
+`size=` is the arena plus 2 MiB (a start on a smaller tmpfs says so and names the size); `noswap` needs Linux 6.4 (the
+arena is registered or locked as before either way); `huge=always` puts the arena on 2 MiB pages, and the engine that
+loads the file makes the rest whole with `MADV_COLLAPSE` (Linux 6.1) - unless free 2 MiB blocks could back less than
+half of it: then, as for the private arena (#2126), it asks for none and says so (`STRATA_ARENA_THP=1` asks anyway;
+a `huge=always` tmpfs still takes the free blocks it finds). The start says what it got: `loads the shared
+file ...` or `attached to the shared file ...`, then `N of M GiB on 2 MiB pages`. `/dev/shm` works too, on 4 KB pages
+(it is 64 MB in a default Docker container: `--shm-size`, or mount a tmpfs into the container).
+
+On AMD the 2 MiB pages are about more than speed: `hipHostRegister` does not pin host memory on ROCm 7.14.1 (`VmPin`
+stays 0), the kernel's memory compaction moves the arena's 4 KB pages, and every move stops the engine's GPU queues
+while the driver maps the range again. Measured on an R9700 (PCIe 4.0 x16), ROCm 7.14.1, Linux 6.8, Ryzen 9 3900, 16
+GiB registered by a test program, one forced compaction (`/proc/sys/vm/compact_memory`) per arm, three rounds:
+
+| arena memory | queues stopped | worst batch of 16 expert copies | CPU reads of whole experts | host->device, 3 MB copies |
+|---|---|---|---|---|
+| tmpfs `huge=always` (all on 2 MiB pages) | 0 / 18 / 0 ms | 2-11 ms | 45.4 GB/s | 27.0-27.3 GB/s |
+| anonymous, transparent huge pages (the default arena) | 51 / 54 / 80 ms | 17-28 ms | 45.4-45.5 GB/s | 27.1-27.3 GB/s |
+| `/dev/shm`, 4 KB pages | 194 / 295 / 206 ms | 98-150 ms | 45.3-45.4 GB/s | 27.2-27.3 GB/s |
+
+The page size changed neither the CPU's reads nor the copies on this machine; it changed how long the queues stopped.
+
+End to end on the same machine with the UD-IQ4_XS pack (55.4 GiB of experts, `--spec 4 --mtp`, 48 greedy tokens): the
+arena's checksum (`STRATA_VERIFY_ARENA=1`) and the tokens were the same for the default arena, the engine that loaded
+the file and an engine that attached to it. A start that attached took 68 s against 105-108 s for a start that loaded
+(the load itself: about 32 s at 1.7-1.8 GiB/s from the file cache). Two engines started 3 s apart on a fresh file: one
+loaded, the other waited and attached, with the same tokens.
+
+Two engines generating at the same time, one per GPU - the R9700 above and a second R9700 on PCIe 3.0 x4 - with one
+copy of the experts in RAM (69 GB of the 125 GB stayed available with both running), 512 greedy tokens each:
+
+| arena file | x16 card alone | x4 card alone | both at once (two runs): x16 / x4 |
+|---|---|---|---|
+| tmpfs `huge=always` | 63.3 tok/s | 42.2 tok/s | 63.9 / 41.3, 66.9 / 42.1 |
+| hugetlbfs | 67.2 tok/s | - | 66.8 / 37.4, 66.9 / 41.9 |
+
+Each engine gave the same tokens alone and in the pair (the two cards' tokens differ from each other: a slower link
+changes how the misses are split between the CPU and the GPU). A forced compaction during the pair's decode stopped the
+x16 engine's queues for 0 ms in three of the four runs and the x4 engine's for 0.6-0.7 s in each, on tmpfs and
+hugetlbfs alike, so that is memory other than the arena (not traced further). In the first hugetlbfs pair the queues
+stopped 1.4 s and 2.8 s before that compaction, while the kernel was still compacting after handing out the 28,384
+huge pages. hugetlbfs needs its pages allowed first; taken when the file is filled, they go back when it is deleted:
+
+```
+sudo sysctl -w vm.nr_overcommit_hugepages=29000
+sudo mount -t hugetlbfs -o pagesize=2M,uid=$(id -u),mode=0700 strata-arena /mnt/strata-arena
+```
+
+The load into hugetlbfs ran at 4.1 GiB/s against 3.4 GiB/s into tmpfs (both from the file cache). Not tested: NVIDIA
+(it builds; `cudaHostRegister` pins the file's pages there), and the server (`serve/`) running two engines.
+
 **Releasing mapped expert pages on Windows (opt-in):** `STRATA_FILE_RELEASE=1` lets `FileExpertSource` trim the
 full file-backed pages of experts after their GPU uploads complete, including the slots lent to prefill and then
 refilled. It works with `experts.bin` and the direct GGUF views; shared boundary pages and private/pinned buffers

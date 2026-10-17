@@ -1098,6 +1098,8 @@ public:
     /// #633: set by `open` when the RAM available is less than the arena needs (a recommendation; it still loads)
     const std::string& ram_warning() const { return ram_warning_; }
     double load_gib_per_second() const { return gib_per_s_; }
+    /// --shared-expert-arena: the file was loaded by another engine and this one only attached to it.
+    bool attached() const { return attached_; }
     // Loader fix: the load, split.  `load_seconds()` is the wall clock of the load loop; the other two are
     // sums over the reader threads (see LoadStats), so on their own they say how much of that wall was spent
     // waiting for the disk and how much in memcpy + FNV-1a.
@@ -1119,6 +1121,7 @@ private:
     std::string ram_warning_;
     double gib_per_s_ = 0.0;
     double load_seconds_ = 0.0;
+    bool attached_ = false;
     double load_read_s_ = 0.0;
     double load_copy_s_ = 0.0;
     uint64_t pinned_bytes_ = 0;
