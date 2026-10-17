@@ -330,6 +330,87 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
     const unsigned g_ff = (unsigned) ((n_ff + THREADS - 1) / THREADS);
     const unsigned g_embd = (unsigned) ((n_embd + THREADS - 1) / THREADS);
 
+#if defined(STRATA_EXPERIMENTAL_SM60)
+    // V100 (experimental sm_70 build): gate and up projections, then silu(gate) * up - ONE kernel when both
+    // projections are S-family (`s_gemv_pair_silu`: one read of x, SwiGLU in the epilogue, `up` never
+    // materialised).  The pair kernel is bit-exact vs the three-kernel sequence (shared row math, shared
+    // SwiGLU expression).  The ready-made engine's path below is untouched.
+    bool paired = false;
+    if (native_gate || native_up)
+        native_quantize_q8_1(x_f32, native->q8_1, (int) n_embd, 1, stream);
+    if (!native_gate && !native_up) {
+        paired = s_gemv_pair_silu(x_q8_0, x_q8k, gate_form, gate_codes, gate_scales, gate_off,
+                                  up_form, up_codes, up_scales, up_off, gate, n_embd, n_ff, 32,
+                                  native_projection ? 2 : 0, stream);
+    }
+    if (paired) {
+        // `gate` already holds the products
+    } else {
+        if (native_gate)
+            native_mmvq(native->gate_type, native->gate_data, native->q8_1, gate, (int) n_embd, (int) n_ff, 1, stream);
+        else
+            gemv(gate_form, gate_codes, gate_scales, gate_off, x_q8_0, x_q8k, gate, n_embd, n_ff);
+        if (native_up)
+            native_mmvq(native->up_type, native->up_data, native->q8_1, up, (int) n_embd, (int) n_ff, 1, stream);
+        else
+            gemv(up_form, up_codes, up_scales, up_off, x_q8_0, x_q8k, up, n_embd, n_ff);
+    }
+
+    // down: (n_ff) -> (n_embd), and THE INTERMEDIATE IS QUANTIZED TO THE DOWN WEIGHT'S OWN CONTRACT - which is
+    // what `ggml_mul_mat` does for every matmul in the model.  It used to be rounded to fp16 with no
+    // justification beyond "the kernel takes fp16".
+    //
+    // When the pair kernel ran, `gate` already holds the products and only the quantizer is left.  Otherwise
+    // silu(gate) * up AND the quantization are ONE kernel (was: swiglu pass, then quantize); the products
+    // land in `gate` exactly as `swiglu_kernel` left them and the blocks are the same bytes the standalone
+    // quantizers produced.  The legacy silu is the double-precision `ref/moe.py` form (`swilu_kind` 0).
+    if (paired) {
+        if (native_down) {
+            native_quantize_q8_1(gate, native->q8_1, (int) n_ff, 1, stream);
+        } else if (down_form.act_kind == 1) {
+            if (n_ff % 256 != 0) {
+                std::fprintf(stderr, "shared_expert: the down weight wants Q8_K but n_ff %lld is not a multiple "
+                                     "of 256; Q8_K is structurally impossible here\n", (long long) n_ff);
+                std::exit(1);
+            }
+            quantize_q8_K(gate, h_q8k, n_ff, stream);
+        } else {
+            quantize_q8_0(gate, h_q8_0, n_ff, stream);
+        }
+    } else if (native_projection) {
+        native_swiglu_kernel<<<g_ff, THREADS, 0, (cudaStream_t) stream>>>(gate, up, gate, (int) n_ff);
+        if (native_down) {
+            native_quantize_q8_1(gate, native->q8_1, (int) n_ff, 1, stream);
+        } else if (down_form.act_kind == 1) {
+            if (n_ff % 256 != 0) {
+                std::fprintf(stderr, "shared_expert: the down weight wants Q8_K but n_ff %lld is not a multiple "
+                                     "of 256; Q8_K is structurally impossible here\n", (long long) n_ff);
+                std::exit(1);
+            }
+            quantize_q8_K(gate, h_q8k, n_ff, stream);
+        } else {
+            quantize_q8_0(gate, h_q8_0, n_ff, stream);
+        }
+    } else if (native_down) {
+        // no fused entry for the Q8_1 contract; the swilu pass and the q8_1 quantizer stay separate
+        swiglu_kernel<<<g_ff, THREADS, 0, (cudaStream_t) stream>>>(gate, up, gate, (int) n_ff);
+        native_quantize_q8_1(gate, native->q8_1, (int) n_ff, 1, stream);
+    } else if (down_form.act_kind == 1) {
+        if (n_ff % 256 != 0) {
+            std::fprintf(stderr, "shared_expert: the down weight wants Q8_K but n_ff %lld is not a multiple "
+                                 "of 256; Q8_K is structurally impossible here\n", (long long) n_ff);
+            std::exit(1);
+        }
+        swilu_quantize_q8_K(gate, up, gate, n_ff, 0, h_q8k, stream);
+    } else {
+        swilu_quantize_q8_0(gate, up, gate, n_ff, 0, h_q8_0, stream);
+    }
+    if (native_down) {
+        native_mmvq(native->down_type, native->down_data, native->q8_1, out, (int) n_ff, (int) n_embd, 1, stream);
+    } else {
+        gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
+    }
+#else
     // gate and up projections, then silu(gate) * up in place in `gate`
     if (native_gate || native_up)
         native_quantize_q8_1(x_f32, native->q8_1, (int) n_embd, 1, stream);
@@ -372,6 +453,7 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
             gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
         }
     }
+#endif
 
     // the per-token scalar gate, then the multiply.  Note the gate is computed from `x`, the ORIGINAL hidden
     // state, not from anything the expert produced. The historical branch uses BF16-rounded inputs; the
