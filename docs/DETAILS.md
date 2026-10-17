@@ -1196,6 +1196,17 @@ snapshot's estimated size, less the K/V it already retains) and again after capt
 Unknown telemetry or insufficient RAM skips parking, and the same figure and floor
 decide whether a session file may be saved or restored (below). An 8 GiB budget
 is a cap, not a recommendation for every machine.
+The floor also holds after a park: before every request, between batch windows and every 2 s while the engine is
+idle, an available RAM below `--conversation-cache-min-free-mib` makes the cache give RAM back - the retained K/V
+first, then the parked conversations least recently active first (dropped: a client that comes back has its prompt
+read again), then the idle `--batch` slots' host checkpoints (their K/V in VRAM stays) - until the floor plus 1024 MiB
+is available or nothing is left (pinned shared prefixes stay). One line per event: `conversation cache: RAM below the
+floor: released N dialogs, X MiB (...)`. The reading is the one the park gate uses (below); an unknown reading
+releases nothing. `STRATA_CONV_PRESSURE_MS` (2000; 0 = off) is the idle period, `STRATA_CONV_PRESSURE_HYST_MIB` (1024)
+the margin above the floor. With the cache off (the default) or RAM above the floor nothing changes. The freed images
+leave the process at once: on Windows the CRT heap hands blocks this large back to the OS on free, on glibc
+`malloc_trim` runs after each step (a freed 16 MiB mmap chunk raises glibc's mmap threshold, so later segments come
+from the heap).
 
 **The RAM figure (`available_host_bytes()`).** The headroom is the smallest of three
 numbers, sampled each time it is asked and not a reservation (other writers can take the
