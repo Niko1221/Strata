@@ -12224,11 +12224,11 @@ int main(int argc, char** argv) {
                             sstatus != strata::program::suffix_reuse::SpliceStatus::NoOp) {
                             const char* reason =
                                 (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedFormat)
-                                    ? "head_dim != 256 with a rotated format, or an unhandled pool layout (fp16, int8, k8v4, q4_0 and int8+kv_rot are supported)"
+                                    ? "head_dim is not 256 in a rotated (kv_rot or q4) store, or an unhandled pool layout (fp16, int8, k8v4, q4_0 and int8+kv_rot are supported)"
                                     : (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedResident)
-                                      ? "kv_resident > 0 (streaming-ring splice is Phase 3)"
+                                      ? "kv_resident > 0 (ring-layout splice is future work)"
                                       : (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedSplit)
-                                        ? "layer split active (per-stage is Phase 3)"
+                                        ? "layer split active (per-stage splice is future work)"
                                         : "no applicable snapshot / reasons unstated";
                             std::fprintf(stderr,
                                 "[strata] suffix-reuse: REPLAY_NOT_AVAILABLE: %s.  "
@@ -12650,11 +12650,11 @@ int main(int argc, char** argv) {
                                 sstatus != strata::program::suffix_reuse::SpliceStatus::NoOp) {
                                 const char* reason =
                                     (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedFormat)
-                                        ? "head_dim != 256 with a rotated format, or an unhandled pool layout (fp16, int8, k8v4, q4_0 and int8+kv_rot are supported)"
+                                        ? "head_dim is not 256 in a rotated (kv_rot or q4) store, or an unhandled pool layout (fp16, int8, k8v4, q4_0 and int8+kv_rot are supported)"
                                         : (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedResident)
-                                          ? "kv_resident > 0 (streaming-ring splice is Phase 3)"
+                                          ? "kv_resident > 0 (ring-layout splice is future work)"
                                           : (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedSplit)
-                                            ? "layer split active (per-stage is Phase 3)"
+                                            ? "layer split active (per-stage splice is future work)"
                                             : "no applicable snapshot / reasons unstated";
                                 std::fprintf(stderr,
                                     "[strata] suffix-reuse: REPLAY_NOT_AVAILABLE (partial mount): %s.  "
