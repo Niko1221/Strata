@@ -1,0 +1,78 @@
+== bench-run-output.txt — added by the submitter (not tool output) ==
+cwd: D:\Strata
+interpreter: D:\Strata\.venv\Scripts\python.exe (Python 3.14.7)
+env: PYTHONUTF8=1 (PEP 540 UTF-8 mode; added after first attempt crashed on GBK default — see upstream-defect note below)
+command: .venv\Scripts\python.exe tools\strata_bench.py --url http://127.0.0.1:8080 --long
+started_server: false (live production service, HTTP client only)
+timestamps: START 2026-10-16 03:17:03 / END 2026-10-16 03:18:15 (elapsed 72 s; tool elapsed_s 71.24)
+exit_code: 0
+
+-- first-attempt defect (without PYTHONUTF8) verbatim:
+UnicodeDecodeError: 'gbk' codec can't decode byte 0xbf in position 2: illegal multibyte sequence
+
+== full raw stdout/stderr of the successful run ==
+ENV: PYTHONUTF8=1
+Using the Strata server already running at http://127.0.0.1:8080.
+Running the suite (about 3-10 minutes) ...
+warming up (not measured) ...
+  calibrated: about 1.08 tokens per word
+chat: 3 short questions x 3 runs, up to 100 new tokens
+  run 1 q1: decode 149.0 tok/s, first token 0.216 s, 100 tokens
+  run 1 q2: decode 104.6 tok/s, first token 0.221 s, 100 tokens
+  run 1 q3: decode 118.1 tok/s, first token 0.212 s, 100 tokens
+  run 2 q1: decode 185.5 tok/s, first token 0.196 s, 100 tokens
+  run 2 q2: decode 129.2 tok/s, first token 0.174 s, 100 tokens
+  run 2 q3: decode 140.7 tok/s, first token 0.19 s, 100 tokens
+  run 3 q1: decode 188.8 tok/s, first token 0.188 s, 100 tokens
+  run 3 q2: decode 123.3 tok/s, first token 0.161 s, 100 tokens
+  run 3 q3: decode 148.0 tok/s, first token 0.174 s, 100 tokens
+4K prompt: 3 fresh prompts of about 4096 tokens, 24 new tokens
+  run 1: 4019 tokens, prompt 3473.3 tok/s (0 reused), first token 1.176 s
+  run 2: 4019 tokens, prompt 3697.0 tok/s (0 reused), first token 1.11 s
+  run 3: 4019 tokens, prompt 3709.6 tok/s (0 reused), first token 1.104 s
+16K prompt: 3 fresh prompts of about 16384 tokens, 24 new tokens
+  run 1: 16058 tokens, prompt 4988.8 tok/s (0 reused), first token 3.246 s
+  run 2: 16058 tokens, prompt 5098.9 tok/s (0 reused), first token 3.176 s
+  run 3: 16058 tokens, prompt 5022.8 tok/s (0 reused), first token 3.223 s
+agent: a session of 6 turns with four tools, x 3 runs
+  run 1 turn 0: prompt 661, reused 0, read 661, first token 0.641 s
+  run 1 turn 1: prompt 3797, reused 674, read 3123, first token 1.34 s
+  run 1 turn 2: prompt 5330, reused 3861, read 1469, first token 0.829 s
+  run 1 turn 3: prompt 8767, reused 5387, read 3380, first token 1.388 s
+  run 1 turn 4: prompt 11677, reused 8815, read 2862, first token 1.349 s
+  run 1 turn 5: prompt 14598, reused 11699, read 2899, first token 1.26 s
+  run 2 turn 0: prompt 661, reused 0, read 661, first token 0.643 s
+  run 2 turn 1: prompt 3800, reused 679, read 3121, first token 1.218 s
+  run 2 turn 2: prompt 5333, reused 3864, read 1469, first token 0.791 s
+  run 2 turn 3: prompt 8774, reused 5394, read 3380, first token 1.312 s
+  run 2 turn 4: prompt 11678, reused 8816, read 2862, first token 1.194 s
+  run 2 turn 5: prompt 14624, reused 11725, read 2899, first token 1.192 s
+  run 3 turn 0: prompt 661, reused 0, read 661, first token 0.655 s
+  run 3 turn 1: prompt 3800, reused 679, read 3121, first token 1.2 s
+  run 3 turn 2: prompt 5333, reused 3864, read 1469, first token 0.779 s
+  run 3 turn 3: prompt 8777, reused 5396, read 3381, first token 1.274 s
+  run 3 turn 4: prompt 11703, reused 8770, read 2933, first token 1.205 s
+  run 3 turn 5: prompt 14649, reused 11750, read 2899, first token 1.199 s
+32K prompt: 3 fresh prompts of about 32768 tokens, 24 new tokens
+  run 1: 32049 tokens, prompt 5204.0 tok/s (0 reused), first token 6.195 s
+  run 2: 32049 tokens, prompt 5242.6 tok/s (0 reused), first token 6.152 s
+  run 3: 32049 tokens, prompt 5240.0 tok/s (0 reused), first token 6.152 s
+
+Results (median, range over the runs):
+  chat decode tok/s                    140.70   (104.60 - 188.80, n=9)
+  chat first token (s)                   0.19   (0.16 - 0.22, n=9)
+  4K prompt tok/s                     3697.00   (3473.30 - 3709.60, n=3)
+  4K first token (s)                     1.11   (1.10 - 1.18, n=3)
+  16K prompt tok/s                    5022.80   (4988.80 - 5098.90, n=3)
+  16K first token (s)                    3.22   (3.18 - 3.25, n=3)
+  32K prompt tok/s                    5240.00   (5204.00 - 5242.60, n=3)
+  32K first token (s)                    6.15   (6.15 - 6.20, n=3)
+  agent cache hit %                     68.91   (68.81 - 68.94, n=3)
+  agent re-read tokens/session           4.00   (3.00 - 73.00, n=3)
+  agent turn first token (s)             1.21   (0.78 - 1.39, n=15)
+  agent decode tok/s                   144.10   (122.60 - 172.20, n=15)
+
+Report: bench\results\2026-10-16-community-rtx-4090-qwen3-8-flash-next-nvfp4\README.md
+Share it: open a pull request that adds the folder bench\results\2026-10-16-community-rtx-4090-qwen3-8-flash-next-nvfp4 (see docs/COMMUNITY_BENCHMARKS.md), or paste README.md into a GitHub issue. Home folders, user and host names and IP addresses are already replaced; read it once before you share it.
+EXIT_CODE=0
+END: 2026-10-16 03:18:15
