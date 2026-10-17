@@ -7,6 +7,9 @@
 //               (the shared input x is read from cache), h = silu(gate) * up per entry.
 //   moe_down    per group, a block of output rows: ye[entry] = weight * (down . h[entry]).
 //   moe_combine y[token] = sum over k of ye[entry(token, k)], in k order.
+//   route_dump  one layer's moe_route output (the top-k ids and weights) copied to that layer's own slot, for
+//               the routing trace of a resident window: ids_ is reused by every layer, and a model that does
+//               not stream has no host turn between layers where the handshake could read it.
 //
 // The plan is one int buffer (see P_* below).  Expert addressing: MoeArgs (a pack blob or the GGUF tensors):
 // [gate rows | up rows | down rows] in GGUF blocks (tools/iq_pack.py's experts.bin layout).
@@ -334,3 +337,13 @@ DN_SET(T_Q5_1) DN_SET(T_Q8_0)
 DN_SET(T_Q2_0)
 DN_SET(T_Q2_0R)
 DN_SET(T_IQ4_NL)
+
+// One layer's routed ids and weights, copied to that layer's slot (the host passes the slot as the buffer offset).
+// A resident window has no host turn between layers, so this is what lets STRATA_METAL_DUMP_ROUTING see the routing
+// of every layer; ids_ and w_ hold n_tok rows of 10 (moe_route writes them token major).
+kernel void route_dump(device const int* ids [[buffer(0)]], device const float* w [[buffer(1)]],
+                       device int* slot_ids [[buffer(2)]], device float* slot_w [[buffer(3)]],
+                       constant MoeArgs& a [[buffer(4)]], uint t [[thread_position_in_grid]]) {
+    const uint n = a.n_tok * a.topk;
+    if (t < n) { slot_ids[t] = ids[t]; slot_w[t] = w[t]; }
+}
