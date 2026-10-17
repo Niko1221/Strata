@@ -56,6 +56,9 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-12: Tesla P40 24 GB (sm_61), 20 vCPUs of a Xeon E5-2695 v4 without AVX-512, 98 GB RAM](../bench/results/2026-10-12-p40-sm61-kernels/README.md):
   Strata `a0116b2` (0.1.43.1) CUDA 12.4 source build, Flash-Next IQ3_S, 262,144-token context, the profile of a prompt and of a decode window on Pascal and four bitwise changes for sm_61:
   a 565-token prompt 205 -> 255 tok/s, decode 34-35 -> 37-38 tok/s, and with the opt-in `STRATA_DENSE_F32=1` a 7K prompt 360-432 -> 464-474 tok/s. Short and 7K prompts only; cuBLAS 12.4 only.
+- [2026-10-15: RTX 3090 24 GB, Core Ultra 9 285K, 95 GB RAM (Windows 11)](../bench/results/2026-10-15-community-rtx-3090-iq3-s-0.1.44.1/README.md):
+  Strata v0.1.44.1 source build (CUDA 13.4), Flash-Next IQ3_S, 262,144-token context, `--prefill auto:32768 --spec 3 --kv-resident 65536`; the `strata_bench.py --long` suite: chat decode 81.8 tok/s, prompt 2086/2703/2781 tok/s at 4K/16K/32K, agent cache hit 68.8%.
+  Also A/Bs of prefill chunk, `--spec`, `--lookup-chain`, `--kv`, `--kv-resident` up to 84K tokens, and `"parallel": 2` with `--batch-mtp` 21% slower in total than one at a time on this 24 GB card (those on a v0.1.43 build with local changes).
 - [2026-10-09: RTX 5060 Ti 16 GB + Xeon E5-2680 v4 (Windows 10)](../bench/results/2026-10-09-community-rtx-5060-ti-e5-2680-v4/README.md):
   Strata 0.1.41, Coder IQ1_M and abliterated Q2_0 at 262K; prompt and decode at 4K / 32K / 128K.
 - [2026-10-09: RTX 5060 Ti 16 GB under WSL2, Ryzen 7 3700X, 128 GB RAM](../bench/results/2026-10-09-community-rtx-5060ti-wsl2-iq3_s-0141/README.md):
