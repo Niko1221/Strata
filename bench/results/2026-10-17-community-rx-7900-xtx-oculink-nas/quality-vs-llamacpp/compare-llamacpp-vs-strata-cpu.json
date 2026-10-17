@@ -1,0 +1,58 @@
+{
+ "code": {
+  "positionen": 999,
+  "top1": 0.9819819819819819,
+  "kl_llamacpp_strata": 0.0058807609522299655,
+  "kl_strata_llamacpp": 0.0063971235320350196,
+  "ppl_positionen": 996,
+  "ppl_llamacpp": 2.0204414539917686,
+  "ppl_strata": 2.0123492648098917
+ },
+ "docs": {
+  "positionen": 999,
+  "top1": 0.9259259259259259,
+  "kl_llamacpp_strata": 0.019357348643122708,
+  "kl_strata_llamacpp": 0.01952603854132131,
+  "ppl_positionen": 997,
+  "ppl_llamacpp": 10.007014869349199,
+  "ppl_strata": 9.978084658829992
+ },
+ "english": {
+  "positionen": 999,
+  "top1": 0.9579579579579579,
+  "kl_llamacpp_strata": 0.007691341654693626,
+  "kl_strata_llamacpp": 0.007615514312450543,
+  "ppl_positionen": 999,
+  "ppl_llamacpp": 4.323952198737743,
+  "ppl_strata": 4.299081636135854
+ },
+ "multilingual": {
+  "positionen": 999,
+  "top1": 0.9769769769769769,
+  "kl_llamacpp_strata": 0.004957691006369955,
+  "kl_strata_llamacpp": 0.004905543852775912,
+  "ppl_positionen": 997,
+  "ppl_llamacpp": 2.6286896905470485,
+  "ppl_strata": 2.6415298457581353
+ },
+ "agent": {
+  "positionen": 999,
+  "top1": 0.93993993993994,
+  "kl_llamacpp_strata": 0.06153276149411579,
+  "kl_strata_llamacpp": 0.06273203543371005,
+  "ppl_positionen": 993,
+  "ppl_llamacpp": 4.506688911986402,
+  "ppl_strata": 4.5847325984151945
+ },
+ "gesamt": {
+  "positionen": 4995,
+  "top1": 0.9565565565565566,
+  "kl_llamacpp_strata": 0.019883980750106407,
+  "kl_strata_llamacpp": 0.02023525113445852,
+  "kl_p99": 0.26919707623838407,
+  "kl_median": 0.0016749036010731085,
+  "ppl_positionen": 4982,
+  "ppl_llamacpp": 4.009385732077487,
+  "ppl_strata": 4.016845438298193
+ }
+}
