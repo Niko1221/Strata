@@ -407,12 +407,31 @@ A slot that receives the main session's conversation (`park=B`, an admission tha
 checkpoint of it: the deepest. A client that rewrites the end of its history every time leaves that one behind:
 Claude Code's safety classifier inserts each query's new tool calls before the closing text of its transcript, so
 the next query branches a few dozen tokens before the end, and its whole prompt was read again (42-74K tokens,
-15.6-27.4 s per query on the machine above). With `STRATA_SLOT_CHECKPOINTS=N` (N > 1; unset: 1) the slot keeps the
-main session's N deepest checkpoints of that conversation (one per length), a restore from a slot checkpoint brings
-the slot's shallower ones back with it, and the engine logs `slot 2 keeps 2 checkpoints (at 32768 43372; 227.5 MiB)`
-(each is a whole running state, about 114 MiB on Qwen3.8-Flash-Next). Alone it lets such a query resume at the last
-periodic checkpoint (`--prompt-cache-every`, up to 16K tokens before the branch); with
-`STRATA_BRANCH_CHECKPOINT` (below), at the branch.
+15.6-27.4 s per query on the machine above). With `STRATA_SLOT_CHECKPOINTS=N` the slot keeps N of the main session's
+checkpoints of that conversation (one per length): the deepest, the deepest branch checkpoint
+(`STRATA_BRANCH_CHECKPOINT`, below), then the deepest others. Unset, N is 2 when `STRATA_BRANCH_CHECKPOINT` is set
+(the turn and the branch) and 1 otherwise, as before. A restore from a slot checkpoint brings the slot's shallower ones
+back with it, and the engine logs `slot 2 keeps 2 checkpoints (at 43340 43372; 227.5 MiB)` (each is a whole running
+state, about 114 MiB on Qwen3.8-Flash-Next). Without a branch checkpoint such a query resumes at the last periodic
+checkpoint (`--prompt-cache-every`, up to 16K tokens before the branch).
+
+Why two rather than the turn and a branch checkpoint only: a conversation that never branched (an ordinary chat) has
+none, and its second checkpoint is the turn before or a periodic one. The first query of a classifier transcript is
+such a conversation (nothing to branch from yet); its next query resumes at that periodic checkpoint instead of reading
+the whole transcript again when the main session has moved on. With the move below the second one costs no memory (it
+leaves the main session's chain). `STRATA_SLOT_CHECKPOINTS=1` keeps the turn checkpoint only, as before.
+
+With `STRATA_SLOT_CKPT_MOVE=1` an admission moves them all into the slot instead of copying them (`, all moved` at the
+end of that line), except the chain's root and a pinned prefix, which every new conversation of the client starts
+from. A copy would buy no second chance: the main session keeps only checkpoints of the conversation it holds, so it
+drops them at the next request of another conversation - and a request of another conversation is what takes the slot.
+While the main session still holds their tokens (the conversation's next query comes first) it restores one from the
+slot as from its own chain. A slot that gives back all it holds (the request continues its whole conversation)
+gives back these checkpoints with it, moved, so the admission that follows keeps them again: they are the only ones
+(without this the main session lost them there, and a next turn sent back without its thinking read its prompt again: 19,342
+tokens in 8.5 s against 154 in 0.66 s). Without the switch they are copied, into dropped checkpoints' storage with
+`STRATA_CKPT_POOL=1`; a slot that gives back all it holds then copies them back only with
+`STRATA_SLOT_CHECKPOINTS` above 1, or moves them when the request continues in that slot.
 
 ### Engine: a checkpoint where the prompt branches (`STRATA_BRANCH_CHECKPOINT=<margin>`)
 
