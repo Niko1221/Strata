@@ -1,0 +1,137 @@
+import datetime,hashlib,json,os,pathlib,subprocess,sys,time,urllib.request
+import psutil
+ROOT=pathlib.Path('<EXPERIMENT_ROOT>')
+RUN=ROOT/'performance-audit-02';RUN.mkdir(exist_ok=False)
+sys.path.insert(0,str(ROOT));from run_ab import Engine,digest,compare
+CFG=pathlib.Path('<INSTALL_ROOT>/strata-coder-iq1_m.json')
+cfg=json.loads(CFG.read_text(encoding='utf-8-sig'));bench=json.loads((ROOT/'gguf-bench-config.json').read_text())
+record={'started_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'arms':[],'restored':False,'completed':False}
+def save(): (RUN/'results.json').write_text(json.dumps(record,indent=2))
+def get(path):return json.load(urllib.request.urlopen('http://127.0.0.1:8080/'+path,timeout=8))
+def idle():
+ m=get('metrics');return m.get('live',{}).get('state')=='idle' and m.get('live',{}).get('queued',0)==0
+save()
+listeners={c.pid for c in psutil.net_connections(kind='tcp') if c.status=='LISTEN' and c.laddr.port==8080 and c.pid}
+assert len(listeners)==1,'ambiguous 8080 listener'
+server=psutil.Process(listeners.pop());cmd=server.cmdline()
+assert any('serve\\server.py' in x.replace('/','\\') for x in cmd) and str(CFG).lower().replace('/','\\') in [x.lower().replace('/','\\') for x in cmd]
+launcher=server.parent()
+if launcher is None or not any('server.py' in x for x in launcher.cmdline()):launcher=server
+orig_env={k.upper():v for k,v in server.environ().items()}
+engines=[p for p in server.children(recursive=True) if p.name().lower()=='strata.exe']
+assert len(engines)==1,'ambiguous original engine'
+engine_env={k.upper():v for k,v in engines[0].environ().items()}
+# Preserve the actual engine environment in memory, not in the archived report.
+bench['env']={**engine_env,**bench.get('env',{})}
+actual_args=engines[0].cmdline()[1:]
+if '--serve' in actual_args:actual_args.remove('--serve')
+assert '--expert-profile-save' not in actual_args and '--session-save' not in actual_args,'redirect writeback outputs before testing'
+actual_args[actual_args.index('--pack')+1]=str(ROOT/'gguf-pack')
+budget=json.loads((ROOT/'cache-budget.json').read_text())
+assert budget['predicted_slots']==5759 and digest(actual_args[actual_args.index('--expert-profile')+1])==budget['profile_sha256']
+actual_args[actual_args.index('--expert-cache')+1]=str(budget['cli_uniform_slots'])
+bench['args']=actual_args
+assert '--max-context' in bench['args'] and bench['args'][bench['args'].index('--max-context')+1]=='131072'
+assert bench['args'][bench['args'].index('--expert-cache')+1]=='4416'
+assert digest(bench['exe'])=='9adcf628b6c944ec17e3c68f8e638be57fcca8e8529a841a6ea54ea6ae10b21f'
+manifest=json.loads((ROOT/'gguf-pack-manifest.json').read_text())
+for f in manifest['files']:assert digest(pathlib.Path(manifest['pack'])/f['name'])==f['sha256']
+assert not (pathlib.Path(manifest['pack'])/'experts.bin').exists()
+record['original']={'server_pid':server.pid,'launcher_pid':launcher.pid,'engine_pid':engines[0].pid,
+                    'config_sha256':digest(CFG),'engine_sha256':digest(cfg['exe'])}
+record['candidate_sha256']=digest(bench['exe']);record['test_args']=bench['args']
+record['limits']={'ab_pairs':12,'aa_pairs':2,'arms':28,'requests_per_arm':3,'warmup_tokens':600,'max_output_tokens':600,'startup_seconds':300,'overall_seconds':5400,'restore_seconds':300}
+schedule=json.loads((ROOT/'audit-schedule.json').read_text(encoding='utf8'))
+record['schedule']=schedule
+fixtures=json.loads((ROOT/'performance-fixtures.json').read_text(encoding='utf8'))
+fixtures=[x for x in fixtures if x['name'] in ('warmup','english','code')]
+assert [x['name'] for x in fixtures]==['warmup','english','code']
+qualification=json.loads((ROOT/'qualification-final-01/results.json').read_text())
+assert qualification['completed'] and qualification['restored']
+record['cache_budget']=budget
+record['fixture_source_sha256']=digest(ROOT/'performance-fixtures.json')
+record['purpose']='Predeclared 12 balanced randomized A/B pairs plus two A/A controls; 600-token warmup and English/code workloads.'
+(RUN/'fixtures.json').write_text(json.dumps(fixtures));record['fixture_sha256']=digest(RUN/'fixtures.json');save()
+assert idle() and get('health').get('loaded') is True,'original service not ready and idle'
+stopped=False;deadline=time.monotonic()+5400
+try:
+ assert idle() and digest(CFG)==record['original']['config_sha256']
+ children=launcher.children(recursive=True)
+ launcher.terminate();stopped=True
+ for child in reversed(children):
+  try:child.terminate()
+  except psutil.NoSuchProcess:pass
+ _,alive=psutil.wait_procs([launcher,*children],timeout=20)
+ if alive:raise RuntimeError('original process tree did not exit')
+ time.sleep(3)
+ reference=dict(item.split('=',1) for item in qualification['arms'][0]['info'][-1].split()[1:] if '=' in item)
+ keys=('context','kv','expert_slots','expert_cache_mib','arena_mib','pool_workers','pcie_frac','spec','mtp_max')
+ record['comparisons']=[]
+ for pair,specification in enumerate(schedule):
+  pair_results={}
+  for arm in specification['order']:
+   folder=RUN/f'{pair:02d}-{arm}';folder.mkdir();r={'pair':pair,'kind':specification['kind'],'arm':arm,'engine_arm':'on' if specification['kind']=='aa' else arm,'requests':[]};record['arms'].append(r);save()
+   # Match the prior fully resident plan only after the previous process has released memory.
+   settle=[];until=min(deadline,time.monotonic()+90);stable=0
+   while time.monotonic()<until:
+    avail=psutil.virtual_memory().available
+    settle.append({'elapsed_s':90-(until-time.monotonic()),'available_bytes':avail})
+    stable=stable+1 if avail>=20*1024**3 else 0
+    if stable>=3:break
+    time.sleep(2)
+   r['memory_settle']=settle;save()
+   if stable<3:raise RuntimeError('insufficient released RAM for the fixed full-residency plan (20 GiB pre-start gate)')
+   started=time.monotonic()
+   e=Engine(bench,r['engine_arm'],folder,deadline)
+   r['startup_s']=time.monotonic()-started
+   try:
+    r['info']=[line for line in (folder/'stdout.log').read_text().splitlines() if line.startswith('INFO ')]
+    if not r['info']:raise RuntimeError('missing startup INFO')
+    plan=dict(item.split('=',1) for item in r['info'][-1].split()[1:] if '=' in item)
+    difference={k:[reference.get(k),plan.get(k)] for k in keys if reference.get(k)!=plan.get(k)}
+    if difference:r['plan_differences']=difference;raise RuntimeError('allocation/execution plan differs from qualification')
+    proc=psutil.Process(e.p.pid)
+    for i,prompt in enumerate(fixtures):
+     before=proc.cpu_times();memory=proc.memory_info();available=psutil.virtual_memory().available
+     host_before=psutil.cpu_times()._asdict()
+     x=e.generate(prompt,600,1922,180)
+     host_after=psutil.cpu_times()._asdict()
+     x['host_cpu_before']=host_before;x['host_cpu_after']=host_after
+     after=proc.cpu_times()
+     x['process_cpu_s']=(after.user+after.system)-(before.user+before.system)
+     x['memory_before']=memory._asdict();x['memory_after']=proc.memory_info()._asdict()
+     x['system_available_before']=available;x['system_available_after']=psutil.virtual_memory().available
+     r['requests'].append(x);save()
+     if x['decode_file_blobs'] or x['finish'] not in ('length','stop'):raise RuntimeError('file read or abnormal generation finish')
+   finally:e.close()
+   pair_results[arm]=r['requests']
+  history_ok=True; comparisons=[]
+  for i,(x,y) in enumerate(zip(pair_results['on'],pair_results['auto'])):
+   same_work=(x['output_ids']==y['output_ids'] and x['draft_accepted']==y['draft_accepted'] and x['draft_offered']==y['draft_offered'])
+   if i:
+    comparison=compare(x,y,600)
+    if not history_ok:comparison['reasons'].append('preceding output or draft work differed')
+    if (x['draft_accepted'],x['draft_offered'])!=(y['draft_accepted'],y['draft_offered']):comparison['reasons'].append('different MTP draft work')
+    comparison['eligible']=not comparison['reasons'];comparisons.append(comparison)
+   history_ok=history_ok and same_work
+  record['comparisons'].append({'pair':pair,'kind':specification['kind'],'order':specification['order'],'requests':comparisons});save()
+ record['completed']=True
+except BaseException as ex:record['error']=type(ex).__name__+': '+str(ex)
+finally:
+ if stopped:
+  with (RUN/'restore-server.log').open('wb') as log:
+   p=subprocess.Popen(['<INSTALL_ROOT>/.venv/Scripts/python.exe','<INSTALL_ROOT>/serve/server.py','--engine','strata','--config',str(CFG),'--port','8080'],cwd='<INSTALL_ROOT>',env=orig_env,stdout=log,stderr=subprocess.STDOUT)
+   record['restore_launcher_pid']=p.pid;save()
+   until=time.monotonic()+300
+   while time.monotonic()<until:
+    try:
+     h=get('health');record['restore_health']=h
+     if h.get('loaded') is True and h.get('status')=='ok' and idle():record['restored']=True;break
+    except Exception:pass
+    if p.poll() is not None:break
+    time.sleep(3)
+ record['config_unchanged']=digest(CFG)==record['original']['config_sha256']
+ record['installed_engine_unchanged']=digest(cfg['exe'])==record['original']['engine_sha256']
+ record['finished_utc']=datetime.datetime.now(datetime.timezone.utc).isoformat();save()
+print(json.dumps({k:v for k,v in record.items() if k not in ('arms','test_args')},indent=2))
+sys.exit(0 if record['completed'] and record['restored'] else 1)

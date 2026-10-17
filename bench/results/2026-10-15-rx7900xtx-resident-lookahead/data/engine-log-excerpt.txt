@@ -1,0 +1,599 @@
+# pair=0 kind=aa logical_arm=on actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.41 s (1898 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 8.56 GiB, 19.70 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 19.70 GiB, available commit 23.76 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 10 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2129 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.0% (283824 hits / 341760 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2129 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 880.4 18598.5 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 895.3 14585.2 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1744.2 14611.4 length 408 520 0 283824 341760 51265 0 0.0 74 0
+
+# pair=0 kind=aa logical_arm=auto actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.41 s (1921 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 9.17 GiB, 20.25 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 20.25 GiB, available commit 23.81 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 13 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2130 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (282309 hits / 339840 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2130 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 940.8 18814.7 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 955.3 14722.8 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1759.2 15082.2 length 409 516 0 282309 339840 50907 0 0.0 74 0
+
+# pair=1 kind=ab logical_arm=on actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1886 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.59 GiB, 21.70 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.70 GiB, available commit 23.76 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 11 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2045 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2045 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 904.3 19312.7 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 864.4 14876.1 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1751.5 14910.9 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=1 kind=ab logical_arm=auto actual_mode=auto
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1880 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.94 GiB, 21.99 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.99 GiB, available commit 23.79 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 11 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2048 MiB of VRAM free with everything loaded
+strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2048 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 881.3 18029.6 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 814.0 14660.2 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1778.6 14428.0 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=2 kind=ab logical_arm=auto actual_mode=auto
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.41 s (1894 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.75 GiB, 21.83 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.83 GiB, available commit 23.77 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 11 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2092 MiB of VRAM free with everything loaded
+strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2092 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 886.9 18468.5 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 878.1 14621.9 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1762.1 14572.3 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=2 kind=ab logical_arm=on actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.43 s (1834 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.72 GiB, 21.80 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.80 GiB, available commit 23.75 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 11 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2034 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2034 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 893.6 19121.4 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 856.8 14881.1 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1789.3 14820.0 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=3 kind=ab logical_arm=on actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1879 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.52 GiB, 21.60 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.60 GiB, available commit 23.74 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 12 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2048 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.0% (283824 hits / 341760 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2048 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 822.1 17993.1 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 851.8 14826.0 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1798.1 14696.3 length 408 520 0 283824 341760 51265 0 0.0 74 0
+
+# pair=3 kind=ab logical_arm=auto actual_mode=auto
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1859 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.78 GiB, 21.97 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.97 GiB, available commit 23.74 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 11 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2041 MiB of VRAM free with everything loaded
+strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2041 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 836.3 18725.0 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 861.8 14555.1 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1746.1 14562.9 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=4 kind=ab logical_arm=on actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1869 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.61 GiB, 21.75 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.75 GiB, available commit 23.77 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 10 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2049 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2049 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 747.7 17385.8 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 845.5 14518.0 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1778.0 14452.2 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=4 kind=ab logical_arm=auto actual_mode=auto
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1856 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.47 GiB, 21.61 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.61 GiB, available commit 23.74 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 12 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2034 MiB of VRAM free with everything loaded
+strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.0% (283824 hits / 341760 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2034 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 1118.1 18385.0 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 863.2 14562.7 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1758.6 14592.9 length 408 520 0 283824 341760 51265 0 0.0 74 0
+
+# pair=5 kind=ab logical_arm=on actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1872 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.63 GiB, 21.78 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.78 GiB, available commit 23.68 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 12 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2042 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2042 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 925.7 20027.0 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 848.7 14916.8 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1777.9 15317.4 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=5 kind=ab logical_arm=auto actual_mode=auto
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1892 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.36 GiB, 20.87 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 20.87 GiB, available commit 23.65 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 11 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2058 MiB of VRAM free with everything loaded
+strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2058 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 848.1 18740.6 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 886.3 14589.2 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1786.5 14555.5 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=6 kind=ab logical_arm=auto actual_mode=auto
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1871 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.37 GiB, 21.48 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.48 GiB, available commit 23.70 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 12 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2081 MiB of VRAM free with everything loaded
+strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.0% (283824 hits / 341760 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2081 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 906.7 18480.7 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 873.9 14569.5 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1797.2 14613.3 length 408 520 0 283824 341760 51265 0 0.0 74 0
+
+# pair=6 kind=ab logical_arm=on actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1850 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.37 GiB, 21.50 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.50 GiB, available commit 23.66 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 12 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2094 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2094 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 918.8 19704.5 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 892.9 14964.1 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1757.9 15251.8 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=7 kind=ab logical_arm=auto actual_mode=auto
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1882 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.04 GiB, 21.17 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.17 GiB, available commit 23.62 GiB (limit 85.16 GiB), available virtual address space 130772.13 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 10 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2121 MiB of VRAM free with everything loaded
+strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2121 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 797.1 17912.6 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 851.8 14409.3 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1824.4 14468.7 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=7 kind=ab logical_arm=on actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.43 s (1823 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.19 GiB, 21.32 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.32 GiB, available commit 23.68 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 12 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2071 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.0% (283824 hits / 341760 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2071 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 926.6 19562.8 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 869.0 15141.4 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1774.2 15236.5 length 408 520 0 283824 341760 51265 0 0.0 74 0
+
+# pair=8 kind=ab logical_arm=on actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1880 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.40 GiB, 21.59 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.59 GiB, available commit 23.66 GiB (limit 85.16 GiB), available virtual address space 130772.12 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 11 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2048 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 91.8% (355059 hits / 386880 lookups)
+strata serve: decode expert cache hit rate: 83.4% (289577 hits / 347040 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2048 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 882.4 18728.4 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 871.7 15231.4 length 353 556 0 355059 386880 30350 0 0.0 61 0
+DONE 600 74 1857.8 15227.2 length 398 520 0 289577 347040 51013 0 0.0 74 0
+
+# pair=8 kind=ab logical_arm=auto actual_mode=auto
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1867 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.40 GiB, 21.48 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.48 GiB, available commit 23.64 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 12 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2031 MiB of VRAM free with everything loaded
+strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2031 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 1036.5 19297.0 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 791.2 14744.1 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1758.3 14929.6 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=9 kind=ab logical_arm=auto actual_mode=auto
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.41 s (1905 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.63 GiB, 21.76 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.76 GiB, available commit 23.65 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 13 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2097 MiB of VRAM free with everything loaded
+strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2097 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 1346.3 19830.6 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 814.5 14946.8 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1818.3 14827.5 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=9 kind=ab logical_arm=on actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.43 s (1827 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.33 GiB, 21.45 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.45 GiB, available commit 23.64 GiB (limit 85.16 GiB), available virtual address space 130772.12 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 12 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2037 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2037 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 848.2 18560.4 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 876.0 14786.1 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1732.5 14916.2 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=10 kind=ab logical_arm=auto actual_mode=auto
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1878 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.23 GiB, 21.33 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.33 GiB, available commit 23.51 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 12 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2073 MiB of VRAM free with everything loaded
+strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (282309 hits / 339840 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2073 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 846.7 18675.9 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 882.4 14597.0 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1814.2 14599.3 length 409 516 0 282309 339840 50907 0 0.0 74 0
+
+# pair=10 kind=ab logical_arm=on actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1863 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.60 GiB, 21.36 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.36 GiB, available commit 23.65 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 12 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2058 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2058 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 881.9 18522.8 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 872.5 14764.7 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1800.5 14962.4 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=11 kind=ab logical_arm=auto actual_mode=auto
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1868 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.70 GiB, 21.78 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.78 GiB, available commit 23.53 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 12 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2113 MiB of VRAM free with everything loaded
+strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.0% (283824 hits / 341760 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2113 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 850.7 18951.6 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 919.3 14682.9 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1778.8 14564.5 length 408 520 0 283824 341760 51265 0 0.0 74 0
+
+# pair=11 kind=ab logical_arm=on actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1866 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.20 GiB, 21.32 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.32 GiB, available commit 23.64 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 11 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2053 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2053 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 857.9 19401.3 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 823.7 14904.5 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1726.7 15159.9 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=12 kind=ab logical_arm=on actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.41 s (1900 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.42 GiB, 21.49 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.49 GiB, available commit 23.65 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 12 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2060 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2060 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 1002.8 18150.9 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 851.7 14780.6 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1803.5 14693.6 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=12 kind=ab logical_arm=auto actual_mode=auto
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1866 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.38 GiB, 21.51 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.51 GiB, available commit 23.66 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 11 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2058 MiB of VRAM free with everything loaded
+strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (282309 hits / 339840 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2058 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 870.4 18741.4 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 873.1 14473.6 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1822.5 14794.6 length 409 516 0 282309 339840 50907 0 0.0 74 0
+
+# pair=13 kind=aa logical_arm=auto actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.41 s (1893 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.30 GiB, 21.51 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.51 GiB, available commit 23.66 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 12 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2121 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2121 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 866.5 18758.6 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 883.4 14785.7 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1743.7 14976.7 length 408 521 0 284264 342240 51300 0 0.0 74 0
+
+# pair=13 kind=aa logical_arm=on actual_mode=on
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.42 s (1881 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 10.73 GiB, 21.84 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: before complement allocation: requested 15.12 GiB, available RAM 21.84 GiB, available commit 23.66 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 15.12 GiB, pinned 0.00 GiB in 12 s
+strata generate: resident RAM mode: 15.12 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2056 MiB of VRAM free with everything loaded
+strata serve: decode expert cache hit rate: 90.1% (376109 hits / 417600 lookups)
+strata serve: decode expert cache hit rate: 92.7% (360232 hits / 388800 lookups)
+strata serve: decode expert cache hit rate: 83.1% (284264 hits / 342240 lookups)
+INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2056 cvec=0 arena_mib=15481 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1
+READY 131072 stop
+DONE 600 37 970.9 19024.8 length 322 590 0 376109 417600 38827 0 0.0 37 0
+DONE 600 61 990.9 14972.1 length 349 559 0 360232 388800 27902 0 0.0 61 0
+DONE 600 74 1767.6 14934.5 length 408 521 0 284264 342240 51300 0 0.0 74 0

@@ -1,0 +1,75 @@
+{
+  "measured_commit": "c3a2919b1a9e14e121b445f9629b009b3a6c965e",
+  "base_commit": "296b59d2f73c8f04a805df29c2fa97655adace78",
+  "engine_version": "0.1.44.1",
+  "hip_sha256": "9adcf628b6c944ec17e3c68f8e638be57fcca8e8529a841a6ea54ea6ae10b21f",
+  "gpu": "AMD Radeon RX 7900 XTX",
+  "cpu": "AMD Ryzen 5 7600X",
+  "logical_cpus": 12,
+  "visible_ram_gib": 31.16,
+  "source_build": {
+    "backend": "HIP",
+    "arch": "gfx1100",
+    "compiler": "Clang 24.0.0",
+    "build_type": "Release",
+    "options": {
+      "STRATA_ENABLE_HIP": true,
+      "STRATA_ENABLE_CUDA": false,
+      "STRATA_PREFILL_MMQ": true,
+      "STRATA_NATIVE_EXPERTS": true,
+      "STRATA_PORTABLE": true,
+      "STRATA_BUILD_TESTS": false
+    },
+    "ggml_commit": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+    "rocm_sdk_wheels_queried_at_packaging": "10.2.0a20260930"
+  },
+  "software_query": {
+    "os": "Microsoft Windows 11 Pro",
+    "os_version": "10.0.26300",
+    "gpu_driver_version": "32.0.31041.1004",
+    "timing": "queried during report packaging, not per measured run",
+    "rocm_sdk_wheels": "10.2.0a20260930",
+    "os_driver_queried_utc": "2026-10-15T00:58:34.4517445Z"
+  },
+  "benchmark_environment": {
+    "HIP_VISIBLE_DEVICES": "1",
+    "STRATA_STARTUP_UNBUFFERED": "0"
+  },
+  "expert_profile_sha256": "a514661124d5305effe9c1bcecff7dc069af398b2b19ff9d11628a2cad0a8915",
+  "pack_files": [
+    {
+      "name": "dense.bin",
+      "bytes": 1475120640,
+      "sha256": "99853263806e25450074fc9945f1e955b175bea05aa171ceeb6b5837bf6a1d9d"
+    },
+    {
+      "name": "index.txt",
+      "bytes": 93633,
+      "sha256": "2cb3352786bcae81ea4d933eee6b2d5db45774069320c924a6dea48eb65a3cd3"
+    },
+    {
+      "name": "native_experts.txt",
+      "bytes": 3269,
+      "sha256": "9ace1b92e1fe12595de469409e69dd52c8d5418c7981c405d9a51aa9d574dd3b"
+    },
+    {
+      "name": "conversions.json",
+      "bytes": 322,
+      "sha256": "f7f29b579988e96d73b99023048745bc3cf0f900840dbae1c067f1667601750d"
+    }
+  ],
+  "storage": "not captured",
+  "pcie_link": "not captured",
+  "gpu_power_limit": "not captured",
+  "clock_and_temperature_traces": "not captured",
+  "model_repository_revision": "not captured",
+  "draft_vocabulary_revision": "not captured",
+  "background": "Other user applications remained open; host CPU and memory snapshots were captured. No affinity, worker-count or power-setting changes.",
+  "gpu_nominal_vram_gb": 24,
+  "recorded_wddm_budget_total_mib": [
+    [
+      23749,
+      24560
+    ]
+  ]
+}

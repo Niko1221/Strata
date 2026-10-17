@@ -1,0 +1,33 @@
+# #1922 performance audit — protocol fixed before execution
+
+Candidate: PR #2476, commit c3a2919b1a9e14e121b445f9629b009b3a6c965e.
+HIP SHA256: 9adcf628b6c944ec17e3c68f8e638be57fcca8e8529a841a6ea54ea6ae10b21f.
+
+## Questions
+
+1. At normal machine settings, how much does the automatic policy change decode throughput and request CPU time?
+2. How much variation occurs when both arms keep lookahead enabled?
+3. Does the effect depend on workload or arm order?
+
+Previous five-pair datasets remain historical context. The earlier positive result is not established to be accidental; the reason for disagreement is unresolved.
+
+## Fixed design
+
+- 12 A/B pairs, balanced six ON-first and six AUTO-first, shuffled once with seed 20261015. schedule.json fixes the order before testing.
+- One A/A pair before and one after the A/B series. Both A/A engines force lookahead ON; logical arm labels only identify first/second comparisons and must not be mistaken for automatic mode.
+- Fresh engine per arm: 28 engine starts. Every arm performs a 600-token database-index warmup, then 600-token English exposition and 600-token code generation, using archived prompt IDs and seed 1922, temperature 0.
+- English is the primary workload; code is secondary. Same model, MTP, context capacity 131072, five workers, pcie_frac 0.55, 5759 actual cache slots (CLI budget 4416), 15481 MiB RAM complement. GGUF-backed experimental pack, original installed pack untouched.
+- No CPU affinity, power, context-capacity or worker-count changes. No diagnostic timing/statistics switches during performance requests.
+- Every request records process CPU user+system delta, DONE decode time, wall time/TTFT, memory/page-fault counters when available, and host CPU-time snapshots. Host busy time beyond engine CPU is descriptive, not a precise attribution to background tasks. Frequency snapshots, if available, do not establish measured thermal behavior.
+- No remote PowerShell polling during timed requests. Only SFTP progress reads. Preserve every outcome, including mismatches and failures. No extra rounds chosen after looking at the sign of the result.
+- Engine/protocol/source/plan failures abort and restore the original service. Overall experiment deadline 5400 seconds plus restoration allowance.
+
+## Analysis fixed in advance
+
+For each workload, report all pair outcomes and exclusions. A controlled pair needs identical generated IDs, MTP offered/accepted work, preceding-request work, requested length and prompt reuse, plus zero decode expert-file reads and equal allocation plans. The all-pair same-prompt results remain visible separately.
+
+Primary estimate: geometric mean of paired decode-throughput ratios ON_ms/AUTO_ms, with a 95% paired bootstrap interval (50000 resamples, seed 1922476). Report median, individual effects and order groups as well. CPU-time reduction uses the paired ratio of whole-request process CPU seconds (prefill plus decode); wall-latency ratios are secondary. Resample independent engine pairs, not tokens or the multiple requests within an engine. With fewer than 8 eligible A/B pairs, mark the primary estimate exploratory.
+
+A ±2% throughput band is the predeclared practical band. An interval entirely above zero supports a gain for this workload/setup; entirely below zero supports a loss. An interval entirely within ±2% supports a small effect at this resolution. An interval crossing zero and extending outside that band leaves the magnitude unresolved. These are approximate bootstrap intervals, not proof of universal behavior. Two A/A pairs provide descriptive noise checks only.
+
+Code output is truncated at 600 tokens and is not an executable-code quality benchmark. 128K is allocated capacity, not a tested 128K prompt. The original flat pack does not activate this lookahead path.

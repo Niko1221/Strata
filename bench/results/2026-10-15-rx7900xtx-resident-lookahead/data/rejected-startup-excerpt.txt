@@ -1,0 +1,15 @@
+strata mtp: draft layer loaded, 950 MiB of VRAM (experts 675, dense 111), files read in 0.43 s (1839 MiB/s)
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 2,4,6,8,10, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 5759 slots, 10.95 GiB of VRAM; policy is
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: 5 expert-pool workers + the host thread
+FileExpertSource: available RAM 5.14 GiB, 16.25 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: available RAM 16.25 GiB, 16.26 GiB after the mapped experts left the process working set (#467)
+FileExpertSource: room for the complement: 12.01 GiB (16.26 GiB available RAM minus 4 GiB headroom and a 0.25 GiB margin)
+FileExpertSource: RAM budget 12.01 GiB: 6286 of the 12.47 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: before complement allocation: requested 12.00 GiB, available RAM 16.26 GiB, available commit 23.69 GiB (limit 85.16 GiB), available virtual address space 130772.14 GiB
+FileExpertSource: pageable resident cache complement ready: resident 12.00 GiB, pinned 0.00 GiB in 9 s
+strata generate: WARNING: the whole resident RAM mode does not fit (FileExpertSource: resident complement 12.47 GiB exceeds available RAM (16.25 GiB) minus the 4 GiB safety headroom); 12.00 GiB of the experts the GPU does not hold, the hottest by the expert profile, are kept in RAM and the rest are read from the model folder through the OS file cache
+strata generate: resident RAM mode: 12.00 GiB of experts in RAM (pageable), 5759 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: 2074 MiB of VRAM free with everything loaded

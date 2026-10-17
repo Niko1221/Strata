@@ -1,0 +1,100 @@
+[
+  {
+    "kind": "aa",
+    "order": [
+      "on",
+      "auto"
+    ]
+  },
+  {
+    "kind": "ab",
+    "order": [
+      "on",
+      "auto"
+    ]
+  },
+  {
+    "kind": "ab",
+    "order": [
+      "auto",
+      "on"
+    ]
+  },
+  {
+    "kind": "ab",
+    "order": [
+      "on",
+      "auto"
+    ]
+  },
+  {
+    "kind": "ab",
+    "order": [
+      "on",
+      "auto"
+    ]
+  },
+  {
+    "kind": "ab",
+    "order": [
+      "on",
+      "auto"
+    ]
+  },
+  {
+    "kind": "ab",
+    "order": [
+      "auto",
+      "on"
+    ]
+  },
+  {
+    "kind": "ab",
+    "order": [
+      "auto",
+      "on"
+    ]
+  },
+  {
+    "kind": "ab",
+    "order": [
+      "on",
+      "auto"
+    ]
+  },
+  {
+    "kind": "ab",
+    "order": [
+      "auto",
+      "on"
+    ]
+  },
+  {
+    "kind": "ab",
+    "order": [
+      "auto",
+      "on"
+    ]
+  },
+  {
+    "kind": "ab",
+    "order": [
+      "auto",
+      "on"
+    ]
+  },
+  {
+    "kind": "ab",
+    "order": [
+      "on",
+      "auto"
+    ]
+  },
+  {
+    "kind": "aa",
+    "order": [
+      "auto",
+      "on"
+    ]
+  }
+]

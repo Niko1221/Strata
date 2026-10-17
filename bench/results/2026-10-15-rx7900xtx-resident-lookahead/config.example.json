@@ -1,0 +1,46 @@
+{
+  "exe": "<ENGINE_PATH>/strata.exe",
+  "cwd": "<INSTALL_ROOT>",
+  "args": [
+    "--pack",
+    "<EXPERIMENT_ROOT>/gguf-pack",
+    "--native",
+    "<MODEL_DATA>/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+    "--ple-gguf",
+    "<MODEL_DATA>/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+    "--expert-profile",
+    "<INSTALL_ROOT>/data/expert-profile-coder.bin",
+    "--expert-cache",
+    "4416",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<MODEL_DATA>/mtp/rt",
+    "--max-context",
+    "131072",
+    "--kv",
+    "int8",
+    "--resident-experts"
+  ],
+  "env": {
+    "HIP_VISIBLE_DEVICES": "1",
+    "STRATA_STARTUP_UNBUFFERED": "0"
+  },
+  "startup_seconds": 300,
+  "min_available_gib": 20,
+  "reference_plan": {
+    "context": "131072",
+    "kv": "int8",
+    "expert_slots": "5759",
+    "expert_cache_mib": "11211",
+    "arena_mib": "15481",
+    "pool_workers": "5",
+    "pcie_frac": "0.55",
+    "spec": "6",
+    "mtp_max": "4"
+  }
+}

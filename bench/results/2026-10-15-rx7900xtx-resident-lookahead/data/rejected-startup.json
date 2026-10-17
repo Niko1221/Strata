@@ -1,0 +1,27 @@
+{
+  "started_utc": "2026-10-14T23:52:26.255306+00:00",
+  "finished_utc": "2026-10-14T23:53:54.646007+00:00",
+  "arms": [
+    {
+      "pair": 0,
+      "kind": "aa",
+      "arm": "on",
+      "engine_arm": "on",
+      "requests": [],
+      "startup_s": 41.64100000000326,
+      "info": [
+        "INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=2074 cvec=0 arena_mib=12293 pool_workers=5 pcie_frac=0.55 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 engine=0.1.44.1"
+      ],
+      "plan_differences": {
+        "arena_mib": [
+          "15481",
+          "12293"
+        ]
+      }
+    }
+  ],
+  "completed": false,
+  "restored": true,
+  "error": "RuntimeError: allocation/execution plan differs from qualification",
+  "candidate_sha256": "9adcf628b6c944ec17e3c68f8e638be57fcca8e8529a841a6ea54ea6ae10b21f"
+}

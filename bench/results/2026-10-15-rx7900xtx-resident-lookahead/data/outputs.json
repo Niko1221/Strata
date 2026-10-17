@@ -1,0 +1,458 @@
+{
+  "9624fa851ca5a894fb63d671ae77c0221c72f85bf5acecba10636b822528186e": {
+    "name": "warmup",
+    "text": "# The Mechanics of Database Indexing: A Deep Dive into Data Structures and Algorithms\n\nTo understand how a database index works, one must first grasp the fundamental problem it solves: efficient data retrieval. In a standard, unindexed database (often called a \"linear scan\" or \"sequential search\"), finding a specific record requires the database engine to read every single row in the table, one by one, until it finds a match. If a table contains one million records, and you are searching for the last one, the system must perform one million comparisons. This is an $O(n)$ time complexity operation, which becomes prohibitively slow as data scales.\n\nAn index transforms this problem from a linear search into a logarithmic search ($O(\\log n)$) or even constant time ($O(1)$) lookup, depending on the data structure used. The core mechanism behind most modern database indexes is the **B-Tree** (or its variant, the **B+ Tree**). This document will explain the theoretical foundation, the specific data structure implementation, the role of pointers, and the trade-offs involved in indexing.\n\n## 1. The Conceptual Foundation: Separation of Data and Metadata\n\nAt a high level, an index is a separate data structure that stores a subset of the data (the \"keys\") along with pointers to the actual location of that data in the main storage. Think of it like the index at the back of a book. The index lists keywords alphabetically, and next to each keyword is a page number. You do not read the whole book to find the term; you look at the index, find the term, and jump directly to the page.\n\nIn a database, the \"book\" is the table stored on disk. The \"index\" is a separate file or memory structure. The \"keywords\" are the values in the indexed column (e.g., `user_id` or `last_name`). The \"page numbers\" are memory addresses or disk block offsets pointing to the actual row data.\n\n## 2. The Data Structure: Why B-Trees?\n\nWhile simple binary search trees (BSTs) can provide $O(\\log n)$ search times, they are rarely used in database implementations for two critical reasons:\n1.  **Disk I/O Bottlenecks:** Reading from a hard disk is significantly slower than reading from RAM. A standard BST might require traversing deep down the tree, causing many separate disk seeks.\n2.  **Cache Efficiency:** Modern CPUs fetch data in \"cache lines\" (typically 64 bytes). A B-Tree is designed to maximize the number of keys that fit into a single disk block or cache line, reducing the number of physical reads required.\n\n### The B+ Tree Structure\n\nMost modern databases (SQL Server, MySQL, PostgreSQL, etc.) use **B+ Trees**. A B+ Tree is a balanced multi-way search tree with the following properties:",
+    "occurrences": [
+      {
+        "pair": 0,
+        "kind": "aa",
+        "arm": "on"
+      },
+      {
+        "pair": 0,
+        "kind": "aa",
+        "arm": "auto"
+      },
+      {
+        "pair": 1,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 1,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 2,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 2,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 3,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 3,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 4,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 4,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 5,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 5,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 6,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 6,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 7,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 7,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 8,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 8,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 9,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 9,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 10,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 10,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 11,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 11,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 12,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 12,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 13,
+        "kind": "aa",
+        "arm": "auto"
+      },
+      {
+        "pair": 13,
+        "kind": "aa",
+        "arm": "on"
+      }
+    ]
+  },
+  "5dcd545d41b281559c3d3d6bb4f031f267be4f6bd38410985660a68eb4255b3b": {
+    "name": "english",
+    "text": "# Mastering Memory Management in Autoregressive Mixture-of-Experts Inference Servers\n\nThe deployment of Large Language Models (LLMs) has become a critical bottleneck in modern AI infrastructure. As models scale to hundreds of billions of parameters, the cost of inference—specifically memory bandwidth and latency—dominates the computational cost. The Mixture-of-Experts (MoE) architecture offers a compelling solution to this problem by decoupling the number of parameters from the computational cost per token. However, implementing an efficient MoE inference server is significantly more complex than handling dense models. This tutorial provides a comprehensive, deep-dive guide to memory management in an autoregressive MoE inference server, covering the fundamental concepts of KV caches, expert placement strategies, the distinct phases of prefill and decode, dynamic batching, and the intricate trade-offs involved in system design.\n\n## 1. The Architecture of Mixture-of-Experts\n\nTo understand memory management, one must first understand the data flow. In a standard dense Transformer, every token passes through every layer, and every layer contains a single feed-forward network (FFN). In an MoE model, the FFN is replaced by $N$ distinct \"experts.\" For each token, a gating network selects a subset of $K$ experts (typically $K=2$ or $K=8$) to process that token.\n\nThis sparsity is the core advantage: while the model may have 100 billion parameters, only a fraction (e.g., 10 billion) are active for any given token. However, this sparsity introduces significant challenges in memory management because the active parameters change dynamically for every token.\n\n## 2. The KV Cache: The Foundation of Autoregressive Inference\n\nIn autoregressive generation, the model predicts the next token based on all previous tokens. Without optimization, generating a sequence of length $L$ would require recomputing the attention mechanism for all $L$ tokens at every step, resulting in $O(L^2)$ complexity. The **KV Cache** solves this by storing the Key ($K$) and Value ($V$) vectors for all previous tokens.\n\n### Memory Layout and Challenges in MoE\n\nIn a dense model, the KV cache is straightforward: for each layer, we store a contiguous block of memory for $K$ and $V$. In an MoE model, the situation is more nuanced.\n\n1.  **Attention Layers:** The attention mechanism in MoE models is typically dense (all tokens attend to all previous tokens). Therefore, the KV cache for attention layers is identical to that of dense models. It grows linearly with sequence length.\n2.  **Expert Layers:** The experts themselves do not maintain a KV cache in the traditional sense. They are stateless feed-forward networks. However, the *routing* information must be stored. For each token, we must remember which experts were selected. This routing metadata",
+    "occurrences": [
+      {
+        "pair": 0,
+        "kind": "aa",
+        "arm": "on"
+      },
+      {
+        "pair": 0,
+        "kind": "aa",
+        "arm": "auto"
+      },
+      {
+        "pair": 1,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 1,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 2,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 2,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 3,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 3,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 4,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 4,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 5,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 5,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 6,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 6,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 7,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 7,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 8,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 9,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 9,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 10,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 10,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 11,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 11,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 12,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 12,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 13,
+        "kind": "aa",
+        "arm": "auto"
+      },
+      {
+        "pair": 13,
+        "kind": "aa",
+        "arm": "on"
+      }
+    ]
+  },
+  "8a347bcba7cec11f7be60986937cbefc0b7fcd0c1d0d363d2205568e95b934ec": {
+    "name": "code",
+    "text": "```python\n\"\"\"\nA bounded LRU (Least Recently Used) cache implementation using a doubly linked list\nand a dictionary for O(1) operations.\n\nThis module provides an LRUCache class that supports get, put, and other operations\nwith constant time complexity. The cache maintains a fixed capacity and evicts the\nleast recently used item when full.\n\nExample usage:\n    cache = LRUCache(capacity=3)\n    cache.put(1, \"a\")\n    cache.put(2, \"b\")\n    cache.put(3, \"c\")\n    print(cache.get(1))  # Returns \"a\", moves 1 to most recent\n    cache.put(4, \"d\")    # Evicts 2 (least recently used)\n    print(cache.get(2))  # Returns None (evicted)\n\"\"\"\n\nimport unittest\nfrom collections import deque\n\n\nclass Node:\n    \"\"\"\n    A node in the doubly linked list representing a cache entry.\n    \n    Attributes:\n        key: The key associated with this cache entry.\n        value: The value associated with this cache entry.\n        prev: Pointer to the previous node in the linked list.\n        next: Pointer to the next node in the linked list.\n    \"\"\"\n    def __init__(self, key=None, value=None):\n        self.key = key\n        self.value = value\n        self.prev = None\n        self.next = None\n\n\nclass LRUCache:\n    \"\"\"\n    A bounded LRU cache with O(1) get and put operations.\n    \n    The cache uses a doubly linked list to maintain the order of usage and a\n    dictionary for fast key lookup. When the cache is full and a new item is\n    added, the least recently used item is evicted.\n    \n    Parameters:\n        capacity: The maximum number of items the cache can hold. Must be >= 1.\n    \n    Examples:\n        >>> cache = LRUCache(capacity=2)\n        >>> cache.put(1, \"one\")\n        >>> cache.put(2, \"two\")\n        >>> cache.get(1)\n        'one'\n        >>> cache.put(3, \"three\")\n        >>> cache.get(2)\n        None\n        >>> cache.get(3)\n        'three'\n    \"\"\"\n    \n    def __init__(self, capacity: int):\n        \"\"\"\n        Initialize the LRU cache with the given capacity.\n        \n        Parameters:\n            capacity: Maximum number of items in the cache. Must be >= 1.\n        \n        Raises:\n            ValueError: If capacity is less than 1.\n        \n        Examples:\n            >>> cache = LRUCache(capacity=5)\n            >>> cache = LRUCache(capacity=1)\n            >>> LR",
+    "occurrences": [
+      {
+        "pair": 0,
+        "kind": "aa",
+        "arm": "on"
+      },
+      {
+        "pair": 1,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 1,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 2,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 2,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 3,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 3,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 4,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 4,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 5,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 5,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 6,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 6,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 7,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 7,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 8,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 9,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 9,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 10,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 11,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 11,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 12,
+        "kind": "ab",
+        "arm": "on"
+      },
+      {
+        "pair": 13,
+        "kind": "aa",
+        "arm": "auto"
+      },
+      {
+        "pair": 13,
+        "kind": "aa",
+        "arm": "on"
+      }
+    ]
+  },
+  "62c6fda5ec064b577de0f7bf1edff7fd235ea30e9a8b9ac12ffeab9e8d0b703f": {
+    "name": "code",
+    "text": "```python\n\"\"\"\nA bounded LRU (Least Recently Used) cache implementation using a doubly linked list\nand a dictionary for O(1) operations.\n\nThis module provides an LRUCache class that supports get, put, and other operations\nwith constant time complexity. The cache maintains a fixed capacity and evicts the\nleast recently used item when full.\n\nExample usage:\n    cache = LRUCache(capacity=3)\n    cache.put(1, \"a\")\n    cache.put(2, \"b\")\n    cache.put(3, \"c\")\n    print(cache.get(1))  # Returns \"a\", moves 1 to most recent\n    cache.put(4, \"d\")    # Evicts 2 (least recently used)\n    print(cache.get(2))  # Returns None (evicted)\n\"\"\"\n\nimport unittest\nfrom collections import deque\n\n\nclass Node:\n    \"\"\"\n    A node in the doubly linked list representing a cache entry.\n    \n    Attributes:\n        key: The key associated with this cache entry.\n        value: The value associated with this cache entry.\n        prev: Pointer to the previous node in the linked list.\n        next: Pointer to the next node in the linked list.\n    \"\"\"\n    def __init__(self, key=None, value=None):\n        self.key = key\n        self.value = value\n        self.prev = None\n        self.next = None\n\n\nclass LRUCache:\n    \"\"\"\n    A bounded LRU cache with O(1) get and put operations.\n    \n    The cache uses a doubly linked list to maintain the order of usage and a\n    dictionary for fast key lookup. When the cache is full and a new item is\n    added, the least recently used item is evicted.\n    \n    Parameters:\n        capacity: The maximum number of items the cache can hold. Must be >= 1.\n    \n    Examples:\n        >>> cache = LRUCache(capacity=2)\n        >>> cache.put(1, \"one\")\n        >>> cache.put(2, \"two\")\n        >>> cache.get(1)\n        'one'\n        >>> cache.put(3, \"three\")\n        >>> cache.get(2)\n        None\n        >>> cache.get(3)\n        'three'\n    \"\"\"\n    \n    def __init__(self, capacity: int):\n        \"\"\"\n        Initialize the LRU cache with the given capacity.\n        \n        Parameters:\n            capacity: Maximum number of items in the cache. Must be >= 1.\n        \n        Raises:\n            ValueError: If capacity is less than 1.\n        \n        Examples:\n            >>> cache = LRUCache(capacity=5)\n            >>> cache = LRUCache(capacity=0)\n            ValueError:",
+    "occurrences": [
+      {
+        "pair": 0,
+        "kind": "aa",
+        "arm": "auto"
+      },
+      {
+        "pair": 10,
+        "kind": "ab",
+        "arm": "auto"
+      },
+      {
+        "pair": 12,
+        "kind": "ab",
+        "arm": "auto"
+      }
+    ]
+  },
+  "93822b0e8bde65a516232afed8e02b122003be49dd230d62bd1c2318b0315f40": {
+    "name": "english",
+    "text": "# Mastering Memory Management in Autoregressive Mixture-of-Experts Inference Servers\n\nThe deployment of Large Language Models (LLMs) has become a critical bottleneck in modern AI infrastructure. As models scale to hundreds of billions of parameters, the cost of inference—specifically memory bandwidth and latency—dominates the computational cost. The Mixture-of-Experts (MoE) architecture offers a compelling solution to this problem by decoupling the number of parameters from the computational cost per token. However, implementing an efficient MoE inference server is significantly more complex than handling dense models. This tutorial provides a comprehensive, deep-dive guide to memory management in an autoregressive MoE inference server, covering the fundamental concepts of KV caches, expert placement strategies, the distinct phases of prefill and decode, dynamic batching, and the intricate trade-offs involved in system design.\n\n## 1. The Architecture of Mixture-of-Experts\n\nTo understand memory management, one must first understand the data flow. In a standard dense Transformer, every token passes through every layer, and every layer contains a single feed-forward network (FFN). In an MoE model, the FFN is replaced by $N$ distinct \"experts.\" For each token, a gating network selects a subset of $K$ experts (typically $K=2$ or $K=8$) to process that token.\n\nThis sparsity is the core advantage: while the model may have 100 billion parameters, only a fraction (e.g., 10 billion) are active for any given token. However, this sparsity introduces significant challenges in memory management because the active parameters change dynamically for every token.\n\n## 2. The KV Cache: The Foundation of Autoregressive Inference\n\nIn autoregressive generation, the model predicts the next token based on all previous tokens. Without optimization, this would require recomputing the attention mechanism for the entire sequence history at every step, resulting in $O(N^2)$ complexity. The standard solution is the **KV Cache**, which stores the Key ($K$) and Value ($V$) vectors for all previous tokens.\n\n### Memory Layout and Challenges in MoE\n\nIn a dense model, the KV cache is a contiguous block of memory. For a model with $L$ layers, $H$ heads, and head dimension $D$, the cache size for a sequence of length $S$ is:\n$$ \\text{Size} = 2 \\times L \\times S \\times H \\times D \\times \\text{bytes\\_per\\_element} $$\n\nIn an MoE model, the KV cache structure remains largely similar to dense models regarding the attention mechanism itself, because the attention layers are typically dense (shared across experts). The experts reside in the FFN layers. Therefore, the KV cache memory footprint is determined by the attention layers, not the experts.\n\nHowever, the **interaction** between the KV cache",
+    "occurrences": [
+      {
+        "pair": 8,
+        "kind": "ab",
+        "arm": "on"
+      }
+    ]
+  },
+  "5e875924aeec38d4e3ad391ee0eede3cec54f69af7f7d332e872ac4f59d1883c": {
+    "name": "code",
+    "text": "```python\n\"\"\"\nA bounded LRU (Least Recently Used) cache implementation using a doubly linked list\nand a dictionary for O(1) operations.\n\nThis module provides an LRUCache class that supports get, put, and other standard\ncache operations with guaranteed O(1) time complexity for all operations.\n\nThe implementation uses:\n- A dictionary mapping keys to nodes in the linked list for O(1) lookup\n- A doubly linked list to maintain the order of usage (most recent at head, least recent at tail)\n- Sentinel nodes (dummy head and tail) to simplify edge case handling\n\nExample usage:\n    cache = LRUCache(capacity=3)\n    cache.put(1, 100)\n    cache.put(2, 200)\n    cache.put(3, 300)\n    print(cache.get(1))  # Returns 100, moves 1 to most recent\n    cache.put(4, 400)    # Evicts least recently used (2)\n    print(cache.get(2))  # Returns None (evicted)\n\"\"\"\n\nimport unittest\nfrom collections import deque\n\n\nclass Node:\n    \"\"\"\n    Represents a node in the doubly linked list.\n    \n    Attributes:\n        key: The key associated with this node\n        value: The value associated with this key\n        prev: Pointer to the previous node in the list\n        next: Pointer to the next node in the list\n    \"\"\"\n    def __init__(self, key=None, value=None):\n        self.key = key\n        self.value = value\n        self.prev = None\n        self.next = None\n\n\nclass LRUCache:\n    \"\"\"\n    A bounded LRU (Least Recently Used) cache with O(1) time complexity for all operations.\n    \n    The cache maintains a fixed capacity. When a new item is added and the cache is full,\n    the least recently used item is evicted. Accessing an item (via get) marks it as\n    the most recently used.\n    \n    Time Complexity:\n        - get: O(1)\n        - put: O(1)\n        - delete: O(1)\n        - clear: O(n) where n is the number of items in the cache\n    \n    Space Complexity: O(capacity)\n    \n    Example:\n        >>> cache = LRUCache(capacity=2)\n        >>> cache.put(1, 1)\n        >>> cache.put(2, 2)\n        >>> cache.get(1)\n        1\n        >>> cache.put(3, 3)\n        >>> cache.get(2)\n        None\n        >>> cache.get(3)\n        3\n    \"\"\"\n    \n    def __init__(self, capacity: int",
+    "occurrences": [
+      {
+        "pair": 8,
+        "kind": "ab",
+        "arm": "on"
+      }
+    ]
+  }
+}

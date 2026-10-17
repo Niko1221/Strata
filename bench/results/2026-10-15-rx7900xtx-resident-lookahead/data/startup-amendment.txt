@@ -1,0 +1,7 @@
+# Startup-memory qualification amendment
+
+No timed request was executed in audit-01. Its first ON startup allocated 12293 MiB RAM rather than the required 15481 MiB and was rejected; the original service was restored. The log confirms partial residency and remaining file-backed experts. Current Windows memory compression working set was about 8998 MiB after restoration. This does not establish the cause of earlier performance variation.
+
+Audit-02 adds a bounded release-settling gate before each engine start: wait at most 90 seconds for three readings at least 20 GiB available, two seconds apart. This is an admission check derived from the 15.12 GiB complement plus 4 GiB safety headroom and source/startup margin. It neither clears system caches nor changes memory settings. The engine's actual allocation/coverage checks remain authoritative. If the gate or allocation fails, restore the original service without collecting performance data.
+
+The 12 A/B and two A/A pairs, randomized order, workloads, sample counts and analysis remain unchanged. This amendment precedes any timed observation. No other application is stopped, and no headroom, context or worker limit is lowered.
