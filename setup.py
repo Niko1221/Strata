@@ -3258,7 +3258,8 @@ def build_image_engine(backend: str, gpu: dict) -> tuple[Path, list[str]]:
         defs = QI.cmake_defs("cuda", arch=arch, cuda_root=root) + [f"-DCMAKE_CUDA_COMPILER={nvcc}"] + \
             host_compiler_defs(True)
         vcvars = find_vcvars(cuda_v) if WIN else None
-        lib_dirs = [str(root / "bin")] if WIN else [str(d) for d in (root / "lib64", root / "lib") if d.is_dir()]
+        lib_dirs = ([str(d) for d in (root / "bin" / "x64", root / "bin") if d.is_dir()] if WIN
+                    else [str(d) for d in (root / "lib64", root / "lib") if d.is_dir()])
     elif backend == "hip":
         root, dirs = rocm_root([arch])
         os.environ.update({"HIP_PLATFORM": "amd", "ROCM_PATH": str(root), "HIP_PATH": str(root)})
