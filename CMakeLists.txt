@@ -969,14 +969,18 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # adds timings).  Not a ctest: whether the two agree is a property of the cuBLAS build, which this checks.
     add_executable(gemm_f32_parity src/prefill/gemm_f32_parity.cu)
     target_link_libraries(gemm_f32_parity PRIVATE strata_prefill )
-    # the hyper-connection read's fused up projection + mix (gr_upmix, STRATA_HC_UPMIX) against cuBLAS + gr_mix_r,
-    # bitwise where cuBLAS sums K in the same order, else within FP32 rounding and as close to FP64 (GPU, synthetic,
-    # no model; --bench adds timings)
-    add_executable(gr_upmix_parity src/prefill/gr_upmix_parity.cu)
-    target_link_libraries(gr_upmix_parity PRIVATE strata_prefill )
-    add_test(NAME gr_upmix_parity COMMAND gr_upmix_parity)
-    set_tests_properties(gr_upmix_parity PROPERTIES SKIP_RETURN_CODE 77)
   endif()
+  # the hyper-connection read's fused up projection + mix (gr_upmix, STRATA_HC_UPMIX) against cuBLAS/hipBLAS + gr_mix_r,
+  # bitwise where the GEMM sums K in the same order, else within FP32 rounding and as close to FP64 (GPU, synthetic,
+  # no model; --bench adds timings)
+  if(STRATA_ENABLE_HIP)
+    set_source_files_properties(src/prefill/gr_upmix_parity.cu PROPERTIES LANGUAGE HIP)
+  endif()
+  add_executable(gr_upmix_parity src/prefill/gr_upmix_parity.cu)
+  target_include_directories(gr_upmix_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(gr_upmix_parity PRIVATE strata_prefill ${_strata_gpu_runtime_target})
+  add_test(NAME gr_upmix_parity COMMAND gr_upmix_parity)
+  set_tests_properties(gr_upmix_parity PROPERTIES SKIP_RETURN_CODE 77)
   # native_expert_grouped's group stride and fused SwiGLU + q8_1, bitwise vs the launches before them (GPU, synthetic,
   # no model; --bench adds v1/new timings of a window's 48 calls in a graph)
   add_executable(native_grouped_parity src/kernels/native_grouped_parity.cpp)
