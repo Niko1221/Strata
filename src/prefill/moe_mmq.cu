@@ -157,6 +157,62 @@ __global__ void down_row_scales_kernel(float* __restrict__ sd, const int32_t* __
     sd[r] = tails[4 * q + 2];
 }
 
+// swiglu_kernel (n_ff 640), then quantize_mmq_q8_1<D4>'s rows of its output, in one pass: a block per row (128
+// threads, 4 values each, blockIdx.y the row's 512-value half), H never stored.  Each value is swiglu_kernel's
+// expression (SC: swiglu_scaled_kernel's, the row's expert scales applied as read) and each 32-value block
+// quantize_mmq_q8_1's (the same unit and flags: the same bits).
+template <bool IL, bool SC>
+__global__ void __launch_bounds__(128) swiglu_quant_kernel(const float* __restrict__ gu, block_q8_1_mmq* __restrict__ y,
+                                                           int64_t rows, const int32_t* __restrict__ bounds, int n,
+                                                           const float* __restrict__ tails, int64_t row0) {
+    constexpr int64_t n_ff = 640, ne0 = 1024;   // the padded row: pad512(640)
+    const int64_t i0 = ((int64_t) blockDim.x * blockIdx.y + threadIdx.x) * 4;
+    if (i0 >= ne0) return;
+    const int64_t r = blockIdx.x;
+    float4 xi = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    if (i0 < n_ff) {
+        const float* row = gu + r * 2 * n_ff;
+        float4 g4, u4;
+        if constexpr (IL) {   // gate 2k, up 2k + 1
+            const float4 a = *reinterpret_cast<const float4*>(row + 2 * i0), b = *reinterpret_cast<const float4*>(row + 2 * i0 + 4);
+            g4 = make_float4(a.x, a.z, b.x, b.z);
+            u4 = make_float4(a.y, a.w, b.y, b.w);
+        } else {
+            g4 = *reinterpret_cast<const float4*>(row + i0);
+            u4 = *reinterpret_cast<const float4*>(row + n_ff + i0);
+        }
+        if constexpr (SC) {   // swiglu_scaled_kernel: the row's expert's {s_gate, s_up}
+            const int64_t ra = row0 + r;
+            int q = 0;
+            while (q + 1 < n && ra >= bounds[q + 1]) ++q;
+            const float sg = tails[4 * q], su = tails[4 * q + 1];
+            g4 = make_float4(g4.x * sg, g4.y * sg, g4.z * sg, g4.w * sg);
+            u4 = make_float4(u4.x * su, u4.y * su, u4.z * su, u4.w * su);
+        }
+        xi.x = g4.x / (1.0f + __expf(-g4.x)) * u4.x;
+        xi.y = g4.y / (1.0f + __expf(-g4.y)) * u4.y;
+        xi.z = g4.z / (1.0f + __expf(-g4.z)) * u4.z;
+        xi.w = g4.w / (1.0f + __expf(-g4.w)) * u4.w;
+    }
+    float amax = fabsf(xi.x);
+    amax = fmaxf(amax, fabsf(xi.y));
+    amax = fmaxf(amax, fabsf(xi.z));
+    amax = fmaxf(amax, fabsf(xi.w));
+#pragma unroll
+    for (int offset = 32 / 8; offset > 0; offset >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, offset, WARP_SIZE));
+    const float d_inv = 127.0f / amax;
+    char4 c;
+    c.x = roundf(xi.x * d_inv);
+    c.y = roundf(xi.y * d_inv);
+    c.z = roundf(xi.z * d_inv);
+    c.w = roundf(xi.w * d_inv);
+    const float d = 1.0f / d_inv;
+    const int64_t k_block = i0 / QK8_1_MMQ, iqs = i0 % QK8_1_MMQ;
+    block_q8_1_mmq* yb = y + k_block * rows + r;
+    reinterpret_cast<char4*>(yb->qs)[iqs / 4] = c;
+    if (iqs % 32 == 0) yb->d4[iqs / 32] = d;
+}
+
 __global__ void iota_kernel(int32_t* dst, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) dst[i] = (int32_t) i;
@@ -645,6 +701,29 @@ void swiglu(const float* gu, float* h, int64_t rows, int64_t n_ff, bool interlea
     if (rows <= 0) return;
     swiglu_kernel<<<blocks(rows * n_ff), 256, 0, (cudaStream_t) stream>>>(gu, h, rows, n_ff, interleaved);
     ck(cudaGetLastError(), "swiglu");
+}
+
+bool swiglu_quant_ok(int t) {
+#if defined(__HIPCC__)
+    (void) t;
+    return false;   // not checked against the HIP build's quantizer
+#else
+    // the q8_1 D4 rows quantize() writes for a down product's H (K 640); not NVFP4's w4a4 activations
+    return supported(t) && !fp4_activations(t) && mmq_get_q8_1_ds_layout((ggml_type) t) == MMQ_Q8_1_DS_LAYOUT_D4;
+#endif
+}
+
+void swiglu_quant(const float* gu, void* hq, int64_t rows, bool interleaved, void* stream, const int32_t* bounds, int n,
+                  const float* tails, int64_t row0) {
+    if (rows <= 0) return;
+    const dim3 grid((unsigned) rows, 2);
+    block_q8_1_mmq* y = (block_q8_1_mmq*) hq;
+    cudaStream_t cs = (cudaStream_t) stream;
+    if (tails != nullptr)   // NVFP4: split rows (swiglu_scaled reads them so)
+        swiglu_quant_kernel<false, true><<<grid, 128, 0, cs>>>(gu, y, rows, bounds, n, tails, row0);
+    else if (interleaved) swiglu_quant_kernel<true, false><<<grid, 128, 0, cs>>>(gu, y, rows, nullptr, 0, nullptr, 0);
+    else swiglu_quant_kernel<false, false><<<grid, 128, 0, cs>>>(gu, y, rows, nullptr, 0, nullptr, 0);
+    ck(cudaGetLastError(), "swiglu_quant");
 }
 
 void iota(int32_t* dst, int64_t n, void* stream) {

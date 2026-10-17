@@ -127,6 +127,13 @@ void swiglu_scaled(const float* gu, float* h, int64_t rows, int64_t n_ff, const 
                    const float* tails, int64_t row0, void* stream);
 /// sd[r] = the s_down of row r's expert (group-local bounds): the combine applies it as it reads the row.
 void down_row_scales(float* sd, const int32_t* bounds, int n, const float* tails, int64_t nrows, void* stream);
+/// swiglu (n_ff 640), then quantize() of its rows for a down product of `ggml_type`, in one pass: H never stored,
+/// the same bytes in hq.  Only where swiglu_quant_ok (q8_1 rows of the D4 layout; gu 16-byte aligned).  With `tails`
+/// (NVFP4 experts, split gate/up rows): swiglu_scaled's values instead, each row's expert found in `bounds` (n + 1,
+/// absolute, on the device) from `row0`.
+bool swiglu_quant_ok(int ggml_type);
+void swiglu_quant(const float* gu, void* hq, int64_t rows, bool interleaved, void* stream, const int32_t* bounds = nullptr,
+                  int n = 0, const float* tails = nullptr, int64_t row0 = 0);
 
 /// dst[i] = i for i < n (the identity row map MMQ's MoE mode writes through).
 void iota(int32_t* dst, int64_t n, void* stream);
