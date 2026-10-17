@@ -139,9 +139,12 @@ Follow the prompts to download and start a model. [Terminal guide](docs/TERMINAL
   <br><sub>Watch your model and hardware while it runs.</sub>
 </p>
 
+**Nix / NixOS (AMD ROCm):** in a checkout of the repository, `nix build ./tools/nix#strata-rocm` builds the ROCm
+engine and API server without the installer. See [Nix packaging](docs/NIX.md) for GPU targets and configuration.
+
 <a id="build-from-source"></a>
 
-[Build from source](docs/SOURCE_INSTALL.md) · [Docker](docs/DOCKER.md) · [Full install guide](docs/INSTALL.md)
+[Build from source](docs/SOURCE_INSTALL.md) · [Docker](docs/DOCKER.md) · [Nix packaging](docs/NIX.md) · [Full install guide](docs/INSTALL.md)
 
 <a id="what-you-need"></a>
 
