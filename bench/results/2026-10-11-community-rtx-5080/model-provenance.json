@@ -1,0 +1,82 @@
+{
+  "captured_at": "2026-10-11 12:48:44",
+  "model_repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "model_revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "native_gguf": "D:\\8_KI\\Strata-data\\models\\IQ3_XXS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+  "ple_gguf": "D:\\8_KI\\Strata-data\\models\\IQ3_XXS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+  "mmproj_gguf": "D:\\8_KI\\Strata-data\\models\\mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+  "pack_dir": "D:\\8_KI\\Strata-data\\packs\\iq3_xxs",
+  "mtp_dir": "D:\\8_KI\\Strata-data\\mtp\\rt",
+  "expert_profile": "D:\\8_KI\\Strata\\data\\expert-profile.bin",
+  "files": {
+    "native": {
+      "path": "D:\\8_KI\\Strata-data\\models\\IQ3_XXS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "bytes": 47039860096,
+      "sha256": "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15",
+      "seconds": 27.4
+    },
+    "ple": {
+      "path": "D:\\8_KI\\Strata-data\\models\\IQ3_XXS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+      "bytes": 28800138432,
+      "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+      "seconds": 17.4
+    },
+    "mmproj": {
+      "path": "D:\\8_KI\\Strata-data\\models\\mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+      "bytes": 907543008,
+      "sha256": "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0",
+      "seconds": 0.5
+    }
+  },
+  "mtp_manifest": "mtp-manifest.json",
+  "artifacts": {
+    "engine": {
+      "path": "D:\\8_KI\\Strata\\engine\\strata.exe",
+      "bytes": 60728320,
+      "sha256": "1cf3a4d8050daaf9695540aa4f53f707fa271d12f628d165ae156006d4cca2ea",
+      "seconds": 0.0
+    },
+    "vision_exe": {
+      "path": "D:\\8_KI\\Strata\\engine\\strata-vision.exe",
+      "bytes": 59275776,
+      "sha256": "1f260f9e330c392215d71b7dec00f07219f5c1d4fbffc026407bb08a6eda447e",
+      "seconds": 0.0
+    },
+    "expert_profile": {
+      "path": "D:\\8_KI\\Strata\\data\\expert-profile.bin",
+      "bytes": 196632,
+      "sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf",
+      "seconds": 0.0
+    },
+    "BUILD.json": {
+      "path": "D:\\8_KI\\Strata\\engine\\BUILD.json",
+      "bytes": 326,
+      "sha256": "0fb996a743331f5f04196319eeb34aa69c11470fb74f5c4825b05ecaafe7a151",
+      "seconds": 0.0
+    },
+    "pack/conversions.json": {
+      "path": "D:\\8_KI\\Strata-data\\packs\\iq3_xxs\\conversions.json",
+      "bytes": 326,
+      "sha256": "0b5fd7f418b9a01029067e51b1d2cc36f70fc85c17d0c889fff2273006a4fff5",
+      "seconds": 0.0
+    },
+    "pack/dense.bin": {
+      "path": "D:\\8_KI\\Strata-data\\packs\\iq3_xxs\\dense.bin",
+      "bytes": 1538035200,
+      "sha256": "d2af3d8331e5c7a1985d1d589747230f9d56719a6d33c7cddc9ee6b81cde6b13",
+      "seconds": 0.9
+    },
+    "pack/index.txt": {
+      "path": "D:\\8_KI\\Strata-data\\packs\\iq3_xxs\\index.txt",
+      "bytes": 93687,
+      "sha256": "1afe12b36cd2d13bf122b741fa0e81e1f751319cc3c451e54ba75524d825f148",
+      "seconds": 0.0
+    },
+    "pack/native_experts.txt": {
+      "path": "D:\\8_KI\\Strata-data\\packs\\iq3_xxs\\native_experts.txt",
+      "bytes": 3296,
+      "sha256": "ae28cf7a2a1c9063c4b55d6c8cf86d4d079dcddcf597f9e8697c9157d462c0ee",
+      "seconds": 0.0
+    }
+  }
+}

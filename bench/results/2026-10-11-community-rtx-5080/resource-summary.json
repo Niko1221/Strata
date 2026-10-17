@@ -1,0 +1,21 @@
+{
+  "samples": 150,
+  "span_s": 309.2,
+  "ram_available_mib": {
+    "median": 6963.3,
+    "min": 6234.6,
+    "max": 52412.3,
+    "n": 150
+  },
+  "ram_percent_max": 90.4,
+  "swap_first_mib": 0.0,
+  "swap_max_mib": 25.0,
+  "vram_used_mib": {
+    "median": 15269.0,
+    "min": 1247.0,
+    "max": 15351.0,
+    "n": 150
+  },
+  "gpu_temp_c_max": 70.0,
+  "gpu_power_w_max": 297.23
+}

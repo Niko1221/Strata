@@ -1,0 +1,14 @@
+{
+ "source": "local",
+ "version": "0.1.42",
+ "archs": [
+  120
+ ],
+ "vision": "gpu",
+ "cuda_dirs": [
+  "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.4\\bin",
+  "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.4\\bin\\x64"
+ ],
+ "src": "ce8fa084659f667d",
+ "vision_src": "1fb2b3fb797ec402"
+}

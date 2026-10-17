@@ -1,0 +1,16 @@
+{
+  "captured_at": "2026-10-11 12:48:44",
+  "script_version": "1.0.0",
+  "os": "Windows 11 (build 26200)",
+  "os_platform": "Windows-11-10.0.26200-SP0",
+  "os_version": "10.0.26200",
+  "os_edition": "Professional",
+  "python": "3.13.15 (tags/v3.13.15:4061bc4, Aug  5 2026, 13:05:39) [MSC v.1944 64 bit (AMD64)]",
+  "python_executable": "D:\\8_KI\\Strata\\.venv\\Scripts\\python.exe",
+  "cpu_name": "AMD Ryzen 7 7800X3D 8-Core Processor",
+  "cpu_logical": 16,
+  "cpu_physical": 8,
+  "ram_total_gib": 63.38,
+  "swap_total_gib": 4.0,
+  "hostname": "MyPC"
+}

@@ -1,0 +1,35 @@
+{
+  "script_version": "1.0.0",
+  "args": {
+    "install_root": "D:\\8_KI\\Strata",
+    "data_dir": "D:\\8_KI\\Strata-data",
+    "config": null,
+    "port": 18080,
+    "url": null,
+    "attach": false,
+    "keep_server": false,
+    "out": null,
+    "targets": "4096,32768,128000",
+    "runs": 3,
+    "max_tokens": 256,
+    "timeout": 1800.0,
+    "load_timeout": 1200.0,
+    "skip_needle": false,
+    "needle_lengths": "32k,128k",
+    "needle_depths": "10,50,90",
+    "no_hash": false,
+    "hash_only": false,
+    "gpu": 0,
+    "dry_run": false,
+    "allow_running": false
+  },
+  "started_at": "2026-10-11 12:49:31",
+  "finished_at": "2026-10-11 12:54:40",
+  "targets": [
+    4096,
+    32768,
+    128000
+  ],
+  "runs": 3,
+  "exit_code": 0
+}

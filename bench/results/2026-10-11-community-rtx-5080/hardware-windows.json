@@ -1,0 +1,101 @@
+{
+  "sampled_at": "2026-10-11 12:48:44",
+  "nvidia_smi": {
+    "name": "NVIDIA GeForce RTX 5080",
+    "memory.total": "16303",
+    "driver_version": "616.64",
+    "vbios_version": "98.03.3b.08.43",
+    "pcie.link.gen.max": "5",
+    "pcie.link.width.max": "16",
+    "pcie.link.gen.current": "5",
+    "pcie.link.width.current": "16",
+    "power.limit": "360.00",
+    "power.default_limit": "360.00",
+    "power.max_limit": "400.00",
+    "clocks.max.sm": "3090",
+    "clocks.max.mem": "15001",
+    "clocks.current.sm": "2737",
+    "temperature.gpu": "36"
+  },
+  "processes": {
+    "captured_at": "2026-10-11 12:48:44",
+    "process_count": 328,
+    "top_by_rss_mib": [
+      {
+        "name": "Code.exe",
+        "pid": 23436,
+        "rss_mib": 666.5
+      },
+      {
+        "name": "bdservicehost.exe",
+        "pid": 3384,
+        "rss_mib": 657.4
+      },
+      {
+        "name": "Code.exe",
+        "pid": 26440,
+        "rss_mib": 519.6
+      },
+      {
+        "name": "Code.exe",
+        "pid": 29260,
+        "rss_mib": 467.8
+      },
+      {
+        "name": "Signal.exe",
+        "pid": 3404,
+        "rss_mib": 252.0
+      },
+      {
+        "name": "explorer.exe",
+        "pid": 17200,
+        "rss_mib": 249.5
+      },
+      {
+        "name": "Everything.exe",
+        "pid": 22348,
+        "rss_mib": 235.4
+      },
+      {
+        "name": "Cryptomator.exe",
+        "pid": 14312,
+        "rss_mib": 233.9
+      },
+      {
+        "name": "Signal.exe",
+        "pid": 8424,
+        "rss_mib": 232.6
+      },
+      {
+        "name": "",
+        "pid": 236,
+        "rss_mib": 212.8
+      },
+      {
+        "name": "Code.exe",
+        "pid": 26296,
+        "rss_mib": 197.4
+      },
+      {
+        "name": "TextInputHost.exe",
+        "pid": 22416,
+        "rss_mib": 195.7
+      },
+      {
+        "name": "NVDisplay.Container.exe",
+        "pid": 5804,
+        "rss_mib": 184.3
+      },
+      {
+        "name": "Code.exe",
+        "pid": 27396,
+        "rss_mib": 177.9
+      },
+      {
+        "name": "Adobe Desktop Service.exe",
+        "pid": 25336,
+        "rss_mib": 166.8
+      }
+    ]
+  }
+}

@@ -1,0 +1,164 @@
+{
+  "4096": {
+    "runs_total": 3,
+    "runs_ok": 3,
+    "prompt_tokens": {
+      "median": 4086,
+      "min": 4086,
+      "max": 4086,
+      "n": 3
+    },
+    "reused_tokens": {
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 3
+    },
+    "output_tokens": {
+      "median": 256,
+      "min": 256,
+      "max": 256,
+      "n": 3
+    },
+    "prompt_tok_s": {
+      "median": 3060.9034384598094,
+      "min": 2728.912041675015,
+      "max": 3126.004131282993,
+      "n": 3
+    },
+    "decode_tok_s": {
+      "median": 91.93090817682337,
+      "min": 90.93815495009059,
+      "max": 95.16021113671846,
+      "n": 3
+    },
+    "client_ttft_s": {
+      "median": 1.3794444000000112,
+      "min": 1.3480652000000077,
+      "max": 1.5317763999999556,
+      "n": 3
+    },
+    "client_total_s": {
+      "median": 4.145768799999985,
+      "min": 4.051742300000001,
+      "max": 4.301983399999983,
+      "n": 3
+    },
+    "drafts_offered_sum": 486,
+    "drafts_accepted_sum": 424,
+    "hit_rate": {
+      "median": 0.986,
+      "min": 0.981,
+      "max": 0.988,
+      "n": 3
+    }
+  },
+  "32768": {
+    "runs_total": 3,
+    "runs_ok": 3,
+    "prompt_tokens": {
+      "median": 32764,
+      "min": 32764,
+      "max": 32764,
+      "n": 3
+    },
+    "reused_tokens": {
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 3
+    },
+    "output_tokens": {
+      "median": 256,
+      "min": 256,
+      "max": 256,
+      "n": 3
+    },
+    "prompt_tok_s": {
+      "median": 3461.8513783375424,
+      "min": 3428.6671061857073,
+      "max": 3482.2349052492855,
+      "n": 3
+    },
+    "decode_tok_s": {
+      "median": 94.83588945691635,
+      "min": 94.77620228795676,
+      "max": 96.66213562905905,
+      "n": 3
+    },
+    "client_ttft_s": {
+      "median": 9.51680429999999,
+      "min": 9.459684699999968,
+      "max": 9.594230799999991,
+      "n": 3
+    },
+    "client_total_s": {
+      "median": 12.197992599999964,
+      "min": 12.090025799999978,
+      "max": 12.277211000000023,
+      "n": 3
+    },
+    "drafts_offered_sum": 535,
+    "drafts_accepted_sum": 429,
+    "hit_rate": {
+      "median": 0.992,
+      "min": 0.99,
+      "max": 0.992,
+      "n": 3
+    }
+  },
+  "128000": {
+    "runs_total": 3,
+    "runs_ok": 3,
+    "prompt_tokens": {
+      "median": 127990,
+      "min": 127990,
+      "max": 127990,
+      "n": 3
+    },
+    "reused_tokens": {
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 3
+    },
+    "output_tokens": {
+      "median": 256,
+      "min": 256,
+      "max": 256,
+      "n": 3
+    },
+    "prompt_tok_s": {
+      "median": 3606.957462758073,
+      "min": 3605.3724246333777,
+      "max": 3610.8446651244144,
+      "n": 3
+    },
+    "decode_tok_s": {
+      "median": 95.50457004290244,
+      "min": 89.02489915148143,
+      "max": 96.75712449920628,
+      "n": 3
+    },
+    "client_ttft_s": {
+      "median": 35.573585800000046,
+      "min": 35.54990829999997,
+      "max": 35.58706920000003,
+      "n": 3
+    },
+    "client_total_s": {
+      "median": 38.23525440000003,
+      "min": 38.17777559999996,
+      "max": 38.44314200000002,
+      "n": 3
+    },
+    "drafts_offered_sum": 497,
+    "drafts_accepted_sum": 425,
+    "hit_rate": {
+      "median": 0.991,
+      "min": 0.991,
+      "max": 0.992,
+      "n": 3
+    }
+  }
+}

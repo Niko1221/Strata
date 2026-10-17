@@ -1,0 +1,74 @@
+{
+  "service": "strata",
+  "model": "qwen3.8-flash-next-iq3_xxs",
+  "loaded": true,
+  "auto_load": true,
+  "structured_output": {
+    "formats": [
+      "json_object",
+      "json_schema"
+    ],
+    "method": "prompt_and_validate",
+    "constrained_decoding": false,
+    "stream_buffered": true
+  },
+  "engine": "0.1.42",
+  "started": 1791715790,
+  "uptime_s": 289,
+  "cache_max_tokens": 262144,
+  "context": {
+    "native": 262144,
+    "max_positions": 262144
+  },
+  "concurrency": {
+    "serving": 1,
+    "requested": 1
+  },
+  "dialects": [
+    "/v1/chat/completions",
+    "/v1/messages",
+    "/v1/responses"
+  ],
+  "vision": {
+    "enabled": true,
+    "available": true,
+    "error": null
+  },
+  "activity": {
+    "requests": 16,
+    "in_flight": 0,
+    "last_request_at": 1791716080
+  },
+  "last_timings": {
+    "cache_n": 57600,
+    "prompt_n": 67456,
+    "prompt_ms": 19640.9,
+    "prompt_per_token_ms": 0.291,
+    "prompt_per_second": 3434.5,
+    "predicted_n": 9,
+    "predicted_ms": 100.5,
+    "predicted_per_token_ms": 11.167,
+    "predicted_per_second": 89.6,
+    "draft_n": 7,
+    "draft_n_accepted": 7,
+    "at": 1791716080
+  },
+  "vram": {
+    "elastic": false
+  },
+  "machine": {
+    "at": 1791716080,
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 5080",
+      "used_mib": 15605.0,
+      "total_mib": 16303.0,
+      "util_pct": 99,
+      "temp_c": 68,
+      "power_w": 291.675
+    },
+    "ram": {
+      "used_gib": 56.9,
+      "total_gib": 63.4
+    }
+  }
+}
