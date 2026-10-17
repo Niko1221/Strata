@@ -340,5 +340,77 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(B.main(["--url", "http://127.0.0.1:9", "--quiet"]), 2)
 
 
+class ComparePathTests(unittest.TestCase):
+    """#2792's tail: a --compare path that is not a results folder ended the whole run in a traceback.  A typo is what
+    it usually is, and the two flags are easy to swap, so it has to say which path is wrong and why."""
+
+    MINIMAL = {"chat": {}, "prompts": {}, "agent": {}, "clients": {}}      # the four keys summary_metrics reads
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="strata-compare-test-")
+        self.addCleanup(tmp.cleanup)
+        self.d = Path(tmp.name)
+
+    def message_for(self, path) -> str:
+        with self.assertRaises(ValueError) as ctx:
+            B.load_results(path)
+        return str(ctx.exception)
+
+    def test_the_message_names_the_path_and_what_is_wrong_with_it(self):
+        missing = self.d / "nope"                                          # not there at all
+        self.assertIn(str(missing), self.message_for(missing))
+        folder = self.d / "a-folder"                                       # a real folder, but not a results folder
+        folder.mkdir()
+        self.assertIn("has no results.json", self.message_for(folder))
+        junk = self.d / "results.json"                                     # a file that is not a report
+        junk.write_text("this is not json", encoding="utf-8")
+        self.assertIn("is not valid JSON", self.message_for(junk))
+
+    def test_the_other_tools_reports_are_not_bench_reports(self):
+        # bench/results/ holds results.json from the other tools in tools/ too: ab_engine.py and the
+        # conversation_cache_* ones write a top-level list, or a dict of "summary"/"runs".  --compare on one of
+        # those has to say so rather than raise TypeError deep inside compare_table.
+        other_tool = self.d / "another-tool"
+        other_tool.mkdir()
+        (other_tool / "results.json").write_text(json.dumps({"summary": {}, "runs": []}), encoding="utf-8")
+        self.assertIn("is not a report tools/strata_bench.py wrote", self.message_for(other_tool))
+
+        as_list = self.d / "a-list"
+        as_list.mkdir()
+        (as_list / "results.json").write_text(json.dumps([{"label": "warmup"}]), encoding="utf-8")
+        self.assertIn("is not a report tools/strata_bench.py wrote", self.message_for(as_list))
+
+    def test_a_real_results_folder_still_loads(self):
+        run = self.d / "2026-10-01-community-rtx-3060"
+        run.mkdir()
+        (run / "results.json").write_text(json.dumps({"schema": B.SCHEMA, "machine": {}, "results": self.MINIMAL}), encoding="utf-8")
+        self.assertEqual(B.load_results(run)["schema"], B.SCHEMA)
+        self.assertEqual(B.load_results(run / "results.json")["schema"], B.SCHEMA)      # the file itself works too
+
+    def test_compare_only_with_a_bad_path_is_a_message_not_a_traceback(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = B.main(["--compare", str(self.d / "old-typo"), "--compare-only", str(self.d / "new-typo")])
+        self.assertEqual(rc, 2)
+        self.assertIn("--compare needs two results folders", err.getvalue())
+        self.assertIn(str(self.d / "old-typo"), err.getvalue())            # the first path, which is the one checked first
+
+    def test_a_bad_path_after_a_finished_run_loses_only_the_comparison(self):
+        # --compare is read after the report is written, so a bad path there must not undo the run
+        said, err = [], io.StringIO()
+        with contextlib.redirect_stderr(err):
+            B.compare_with_saved({"machine": {}, "results": self.MINIMAL}, self.d / "nope", lambda s: s, said.append)
+        self.assertEqual(said, [])
+        self.assertIn("--compare skipped", err.getvalue())
+
+    def test_a_good_path_after_a_finished_run_prints_the_comparison(self):
+        run = self.d / "earlier"
+        run.mkdir()
+        (run / "results.json").write_text(json.dumps({"machine": {}, "results": self.MINIMAL}), encoding="utf-8")
+        said = []
+        B.compare_with_saved({"machine": {}, "results": self.MINIMAL}, run, lambda s: s, said.append)
+        self.assertTrue(said and "Compared with" in said[0], said)
+
+
 if __name__ == "__main__":
     unittest.main()
