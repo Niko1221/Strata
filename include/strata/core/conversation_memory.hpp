@@ -65,6 +65,11 @@ std::optional<HostMemoryReading> sample_host_memory();
 std::optional<uint64_t> available_host_bytes();
 
 std::optional<uint64_t> conversation_mem_available(std::istream& meminfo);
+// Hand the free heap the allocator still holds back to the kernel, so that a parked conversation that was dropped shows
+// up in conversation_available_memory().  glibc keeps freed segments in its heap once its mmap threshold has risen
+// (a ConversationBuffer is 16 MiB segments and that threshold rises to 32 MiB); elsewhere freed segments of this size
+// already go back at once and this does nothing.
+void conversation_release_freed_memory();
 
 inline bool conversation_memory_admit(std::optional<uint64_t> available,
                                       uint64_t allocation, uint64_t floor) {

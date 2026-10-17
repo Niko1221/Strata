@@ -8,6 +8,10 @@
 #include <fstream>
 #include <limits>
 #include <sstream>
+
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include <string>
 #include <system_error>
 #include <vector>
@@ -288,6 +292,17 @@ std::optional<HostMemoryReading> sample_host_memory() {
     return sample_host_memory(MemoryProbePaths{}, memory_limit_bytes());
 #else
     return {};
+#endif
+}
+
+// Hand the free heap the allocator still holds back to the kernel, so that a parked conversation that was
+// dropped shows up in the next reading of the host's free RAM.  glibc keeps freed segments in its heap once its
+// mmap threshold has risen (a ConversationBuffer is a list of 16 MiB segments and that threshold rises to
+// 32 MiB); measured on a serving box: freeing a 64 MiB snapshot in the middle of the heap moved RSS by -0.3 MB,
+// malloc_trim(0) then returned 127.7 MB.  Elsewhere freed segments of this size already go back at once.
+void conversation_release_freed_memory() {
+#if defined(__GLIBC__)
+    malloc_trim(0);
 #endif
 }
 
