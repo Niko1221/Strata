@@ -491,6 +491,14 @@ and compare the prompt speed with and without it).
   | 65,045 tokens | 754-757 tok/s | 380 tok/s | 1.99x |
   | 130,091 tokens (the same flags) | 719 tok/s | 363-370 tok/s | 1.98x |
 
+- **gfx1200, RX 9060 XT 16 GB** (Windows 11, Ryzen 9 3900X, 64 GiB RAM, engine 0.1.44.1 with the packaged
+  hipBLASLt 1.5.0): Swift 1.5 IQ2_XS at 65536 ctx (`--kv int8 --kv-resident 32768`), an A/B of
+  `tools/hip/gfx1200-hipblaslt-100500.txt` against plain hipBLAS, 3 runs per test and nothing else changed: fresh
+  prompts read at 506.2 tok/s (502.3-507.5) vs 478.5 (472.0-479.6) at 4,019 tokens and 580.6 (579.6-581.1) vs 548.3
+  (545.5-552.8) at 16,058 tokens, first token 7.99 / 27.70 s vs 8.43 / 29.33 s, decode unchanged (42.5 vs 42.4 tok/s).
+  The engine logged `prefill gemm: hipBLASLt tuning enabled (57 rows, gfx1200, version 100500)` and no fallbacks.
+  Data: [bench/results/2026-10-16-community-rx-9060-xt-swift-1-5-iq2-xs-hipblaslt-100500](../bench/results/2026-10-16-community-rx-9060-xt-swift-1-5-iq2-xs-hipblaslt-100500/README.md).
+
 ## RDNA2 (gfx1030)
 
 The RX 6800 / 6800 XT / 6900 XT / 6950 XT run the same kernels: wave32 and 64 KiB of LDS per workgroup. The one
@@ -741,6 +749,15 @@ Shipped tables:
   hipBLAS; with this table a 0.1.38-lineage nightly engine prefills a 131071-token prompt at 1687 tok/s vs 926
   without it (median of 3 clean runs each, greedy; decode unchanged). Per-run data and the calibration command:
   the `2026-10-04-community-rx7900xtx-hipblaslt-100500` folder of PR #745.
+- `gfx1200-hipblaslt-100500.txt`: RX 9060 XT (gfx1200, 16 GB, Windows), 57 rows over 22 GEMM geometries at
+  T = 37 .. 6144, calibrated against AMD's TheRock hipBLASLt 1.5.0 for gfx1200 (version number 100500) - the same
+  library version the prebuilt Windows engine packages. setup picks it by the header. On a Windows RX 9060 XT 16 GB
+  (engine 0.1.44.1, Swift 1.5 IQ2_XS at 65536 ctx, `--kv int8 --kv-resident 32768`), fresh prompts read at
+  478.5 -> 506.2 tok/s at 4,019 tokens and 548.3 -> 580.6 tok/s at 16,058 tokens, plain hipBLAS -> this table,
+  medians of 3 each; first token 8.43 -> 7.99 s and 29.33 -> 27.70 s, decode unchanged. The engine logged
+  `prefill gemm: hipBLASLt tuning enabled (57 rows, gfx1200, version 100500)` and no fallbacks. Method and
+  per-request data:
+  [bench/results/2026-10-16-community-rx-9060-xt-swift-1-5-iq2-xs-hipblaslt-100500](../bench/results/2026-10-16-community-rx-9060-xt-swift-1-5-iq2-xs-hipblaslt-100500/README.md).
 - `gfx1201-hipblaslt-100500.txt`: Radeon AI PRO R9700 (gfx1201, 32 GB), calibrated with ROCm 10.2.0a20260914
   (AMD's `gfx120X-all` nightly, hipBLASLt 1.5.0, library build `d3164197`). 16 dense GEMM geometries at T=4096 and
   T=8192, 32 rows. setup uses it only when the installed hipBLASLt reports 1.5.0 (it is found in `/opt/rocm`
