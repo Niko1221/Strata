@@ -193,6 +193,11 @@ request; with less spare page cache it would be disk traffic. Not measured: both
 The card that drives the monitors needs more headroom than one that drives none; with the display on the last card,
 `--vram-reserve-mib 300 --vram-reserve-later-mib 1800` gives the first card's cache that VRAM.
 
+**A reserve per part:** `STRATA_VRAM_RESERVE_MIB=A,B,C,D` (opt-in; `STRATA_GLM_RESERVE_MB` is the same knob) sets one
+reserve per part of the split, in its order - entry 0 is the first card, entry *i* the *i*-th later card. A shorter
+list reuses its last number, and the list overrides both flags above for the parts it names; unset, nothing changes.
+That is how one card's reserve can differ from the next on a rig whose free VRAM is not worth the same on every card.
+
 **auto** tries every placement (all of them for two, three or, since 0.1.40, four cards; proportional to the free VRAM beyond that) and
 keeps the one whose caches would hold the most of the expert profile, hottest pairs weighted most; ties go to the
 placement that leaves the fullest card the most room. The startup log prints the choice:
