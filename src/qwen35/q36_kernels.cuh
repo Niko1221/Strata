@@ -265,20 +265,24 @@ __global__ void __launch_bounds__(1024) k_moe_out_small(float* x, const float* p
 
 /// k_group / k_group_hy for n_ent <= 64 entries: one block of 64 threads ranks each entry by (expert id, entry) in
 /// parallel instead of one thread walking all the experts; the same group / entry arrays.  HY: only the entries whose
-/// expert has a VRAM slot (slot_of >= 0), the group's blob at blobs + slot * blob.
-template <bool HY>
-__global__ void k_group_small(const int32_t* ids, int n_ent, int K_, const int32_t* slot_of, const uint8_t* blobs,
-                              unsigned long long blob, unsigned long long* grp_ptr, int32_t* grp_start, int32_t* n_groups,
-                              int32_t* ent_dst, int32_t* ent_tok) {
+/// expert has a VRAM slot (slot_of >= 0), the group's blob at blobs + slot * blob.  SKIP (--expert-cache-device1..3,
+/// not null): the entries the helper tier already computed into `eparts`, one = the helper took it.  The grouping
+/// then is the one it would have been had those entries never been in `ids`, so the two paths cover one window
+/// without overlap.
+template <bool HY, bool SKIP>
+__global__ void k_group_small(const int32_t* ids, int n_ent, int K_, const int32_t* slot_of, const uint8_t* skip,
+                              const uint8_t* blobs, unsigned long long blob, unsigned long long* grp_ptr, int32_t* grp_start,
+                              int32_t* n_groups, int32_t* ent_dst, int32_t* ent_tok) {
     __shared__ int sid[64];
     const int e = threadIdx.x;
     const int id = e < n_ent ? ids[e] : 0;
-    const bool valid = e < n_ent && (!HY || slot_of[id] >= 0);
+    const bool valid = e < n_ent && (!HY || slot_of[id] >= 0) && (!SKIP || !skip[e]);
     int rank = 0;
     if (valid) {
         for (int e2 = 0; e2 < n_ent; ++e2) {
             const int id2 = ids[e2];
             if (HY && slot_of[id2] < 0) continue;
+            if (SKIP && skip[e2]) continue;
             if (id2 < id || (id2 == id && e2 < e)) ++rank;
         }
         ent_dst[rank] = e;
@@ -287,7 +291,7 @@ __global__ void k_group_small(const int32_t* ids, int n_ent, int K_, const int32
     }
     __syncthreads();
     int nv = 0;
-    for (int e2 = 0; e2 < n_ent; ++e2) nv += (!HY || slot_of[ids[e2]] >= 0) ? 1 : 0;
+    for (int e2 = 0; e2 < n_ent; ++e2) nv += (!HY || slot_of[ids[e2]] >= 0) && (!SKIP || !skip[e2]) ? 1 : 0;
     if (valid && (rank == 0 || sid[rank - 1] != sid[rank])) {
         int g = 0;
         for (int q = 1; q < rank; ++q) g += sid[q - 1] != sid[q] ? 1 : 0;
@@ -304,11 +308,12 @@ __global__ void k_group_small(const int32_t* ids, int n_ent, int K_, const int32
 }
 
 /// route_topk<256, 8> (native_router.cu, copied: the same expressions) for n_tok <= 8 tokens (one warp each) and, in the same
-/// launch, k_group_small's grouping of the picks.  block (32, 8).  HY as k_group_small.
-template <bool HY>
+/// launch, k_group_small's grouping of the picks.  block (32, 8).  HY as k_group_small.  SKIP (--expert-cache-device1..3):
+/// the entries the helper tier already computed, left out of the grouping exactly as k_group_small leaves them out.
+template <bool HY, bool SKIP>
 __global__ void __launch_bounds__(256) k_route_group(const float* __restrict__ logits, int32_t* __restrict__ ids,
                                                      float* __restrict__ weights, int n_tok, int ld, const int32_t* slot_of,
-                                                     const uint8_t* blobs, unsigned long long blob,
+                                                     const uint8_t* skip, const uint8_t* blobs, unsigned long long blob,
                                                      unsigned long long* grp_ptr, int32_t* grp_start, int32_t* n_groups,
                                                      int32_t* ent_dst, int32_t* ent_tok) {
     constexpr int NE = 256, K = 8, V = NE / 32;
@@ -366,12 +371,13 @@ __global__ void __launch_bounds__(256) k_route_group(const float* __restrict__ l
     const int n_ent = n_tok * K;
     const int e = tk * 32 + lane;   // 0 .. 255: the entries are the first n_ent threads
     const int id = e < n_ent ? sids[e] : 0;
-    const bool valid = e < n_ent && (!HY || slot_of[id] >= 0);
+    const bool valid = e < n_ent && (!HY || slot_of[id] >= 0) && (!SKIP || !skip[e]);
     int rank = 0;
     if (valid) {
         for (int e2 = 0; e2 < n_ent; ++e2) {
             const int id2 = sids[e2];
             if (HY && slot_of[id2] < 0) continue;
+            if (SKIP && skip[e2]) continue;
             if (id2 < id || (id2 == id && e2 < e)) ++rank;
         }
         ent_dst[rank] = e;
@@ -380,7 +386,7 @@ __global__ void __launch_bounds__(256) k_route_group(const float* __restrict__ l
     }
     __syncthreads();
     int nv = 0;
-    for (int e2 = 0; e2 < n_ent; ++e2) nv += (!HY || slot_of[sids[e2]] >= 0) ? 1 : 0;
+    for (int e2 = 0; e2 < n_ent; ++e2) nv += (!HY || slot_of[sids[e2]] >= 0) && (!SKIP || !skip[e2]) ? 1 : 0;
     if (valid && (rank == 0 || sid[rank - 1] != sid[rank])) {
         int g = 0;
         for (int q = 1; q < rank; ++q) g += sid[q - 1] != sid[q] ? 1 : 0;

@@ -520,6 +520,72 @@ __global__ void k_group_hy(const int32_t* ids, int n_ent, int K_, int n_expert, 
         }
     }
 }
+/// k_group_hy with a skip mask (the helper tier's split, --expert-cache-device1..3): the entries the helper already
+/// computed into `eparts` (mask 1) are left out, the rest grouped exactly as k_group_hy would group them had those
+/// entries not been in `ids`.  A helper that does not hold every expert of a layer still contributes what it does
+/// hold (Qwen3.8 Flash splits one window per entry, expert_source.cpp: kind[i] = 2 for the helper, -1 for the host
+/// pool).  One block.
+__global__ void k_group_hy_masked(const int32_t* ids, int n_ent, int K_, int n_expert, const int32_t* slot_of,
+                                   const uint8_t* skip, const uint8_t* blobs, unsigned long long blob,
+                                   unsigned long long* grp_ptr, int32_t* grp_start, int32_t* n_groups, int32_t* ent_dst,
+                                   int32_t* ent_tok) {
+    __shared__ int cnt[512], off[512];
+    for (int x = threadIdx.x; x < n_expert; x += blockDim.x) cnt[x] = 0;
+    __syncthreads();
+    for (int e = threadIdx.x; e < n_ent; e += blockDim.x)
+        if (!skip[e] && slot_of[ids[e]] >= 0) atomicAdd(&cnt[ids[e]], 1);
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        int g = 0, pos = 0;
+        for (int x = 0; x < n_expert; ++x) {
+            off[x] = pos;
+            if (cnt[x] == 0) continue;
+            grp_ptr[g] = (unsigned long long) (blobs + (size_t) slot_of[x] * blob);
+            grp_start[g] = pos;
+            pos += cnt[x];
+            ++g;
+        }
+        grp_start[g] = pos;
+        *n_groups = g;
+        for (int e = 0; e < n_ent; ++e) {
+            if (skip[e] || slot_of[ids[e]] < 0) continue;
+            const int p = off[ids[e]]++;
+            ent_dst[p] = e;
+            ent_tok[p] = e / K_;
+        }
+    }
+}
+/// k_group with a skip mask (the helper tier's split): only the entries the mask keeps are grouped, into the same
+/// `eparts` rows the full kernel would have used (see k_group_hy_masked).
+__global__ void k_group_masked(const int32_t* ids, int n_ent, int K_, int n_expert, const uint8_t* skip,
+                               const uint8_t* blobs, unsigned long long blob, unsigned long long* grp_ptr,
+                               int32_t* grp_start, int32_t* n_groups, int32_t* ent_dst, int32_t* ent_tok) {
+    __shared__ int cnt[512], off[512];
+    for (int x = threadIdx.x; x < n_expert; x += blockDim.x) cnt[x] = 0;
+    __syncthreads();
+    for (int e = threadIdx.x; e < n_ent; e += blockDim.x)
+        if (!skip[e]) atomicAdd(&cnt[ids[e]], 1);
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        int g = 0, pos = 0;
+        for (int x = 0; x < n_expert; ++x) {
+            off[x] = pos;
+            if (cnt[x] == 0) continue;
+            grp_ptr[g] = (unsigned long long) (blobs + (size_t) x * blob);
+            grp_start[g] = pos;
+            pos += cnt[x];
+            ++g;
+        }
+        grp_start[g] = pos;
+        *n_groups = g;
+        for (int e = 0; e < n_ent; ++e) {
+            if (skip[e]) continue;
+            const int p = off[ids[e]]++;
+            ent_dst[p] = e;
+            ent_tok[p] = e / K_;
+        }
+    }
+}
 /// The CPU pool's expert rows into the entries' rows: parts[e] = cpu[e] where miss[e].  grid (n_ent), block 256.
 __global__ void k_merge_cpu(float* parts, const float* cpu, const int32_t* miss, int n) {
     const int e = blockIdx.x;
@@ -1397,15 +1463,17 @@ struct Engine {
     bool main_hybrid = false;   // some main layer is hybrid (else only the MTP block is: the decode graph stays)
     bool mtp_graph = true;      // the MTP draft step may be a graph (not when its layer is hybrid)
 
-    // ---- the helper expert tier (--expert-cache-device1..3): whole layers' routed experts on other CUDA devices,
-    // a P100 plus two P104s.  Layers are striped across the helpers (see open_helpers); for a layer that a helper
-    // owns, every routed entry is computed there through begin()/finish() and the local grouped kernel is skipped.
-    // Off by default: without the flags, helpers_enabled() is false everywhere and this path costs one branch.
+    // ---- the helper expert tier (--expert-cache-device1..3): routed experts on other CUDA devices, a P100
+    // plus two P104s.  Layers are striped across the helpers (see open_helpers) as a preference; a helper
+    // computes the entries it holds in its VRAM cache and the local path computes the rest of that layer, so a
+    // helper that does not fit a whole layer still contributes everything it does hold (Qwen3.8 Flash's per-
+    // entry split).  Off by default: without the flags, helpers_enabled() is false everywhere and this path
+    // costs one branch.
     std::array<strata::core::RemoteExperts, 3> helpers;
     std::vector<int8_t> helper_of_layer;   // [n_layers]: -1 local, else 0..2 the helper's index
     int helper_count = 0;
     bool helpers_enabled() const { return helper_count > 0; }
-    /// Whether state index li's layer is wholly on a helper (its routed experts skip the local grouped kernel).
+    /// Whether state index li's layer is offered to a helper (the entries the helper holds leave the local path).
     bool helper_layer(size_t li) const {
         // only main-model layers carry a helper slot: the MTP block (li == m->layers.size()) stays local
         return !helper_of_layer.empty() && li < (size_t) m->g.n_layers && helper_of_layer[li] >= 0;
@@ -1433,10 +1501,16 @@ struct Engine {
     float *h_h = nullptr, *cpu_out = nullptr, *ecpu = nullptr;
     int32_t *h_ids = nullptr, *h_miss = nullptr, *d_miss = nullptr, *h_cnt = nullptr;
     uint8_t* acts = nullptr;   // per token: its quantized activation (kNativeActBytes)
-    // the helper tier's host staging: routing ids and the normed activation, and the result rows it fills
+    // the helper tier's host staging: routing ids and the normed activation, and the result rows it fills.
+    // `helper_mask` is the per-entry mark of what the helpers computed in the current window (1 = the helper
+    // took that entry); `d_helper_mask` is its device copy, read by the masked grouping kernels.  The local
+    // paths complete every entry the mask leaves at 0.
     int32_t* h_helper_ids = nullptr;
     float* h_helper_x = nullptr;
     float* helper_out = nullptr;   // [n_entries][N] the helpers' rows (sparse; finish() scatters by row)
+    std::vector<uint8_t> helper_mask;
+    uint8_t* d_helper_mask = nullptr;   // [n_entries] the same mask, on the device
+    int helper_mask_li = -1;   // the state index whose window helper_mask belongs to (-1: none)
     Q36ExpertSource helper_src;
     cudaEvent_t ev_route = nullptr;
     uint8_t* stage[2] = {};
@@ -1445,6 +1519,7 @@ struct Engine {
     std::vector<int> stream_seq;   // the state indices a streamed forward visits, in order
     int stream_pos = 0;
     long long hy_cpu = 0, hy_gpu = 0, hy_swaps = 0;   // entries computed on the CPU / GPU, slot replacements
+    long long hy_helper = 0;   // batch entries computed on a helper GPU (--expert-cache-device1..3)
     double hy_cpu_ms = 0;
     // decode / verify rows: their routing is counted once the rows are kept (commit), so a verify window's rejected
     // drafts never move the slots; the slots follow the counts at every kRebalanceEvery-th position exactly (a
@@ -1962,12 +2037,18 @@ struct Engine {
             K::native_mmvq(w.type, w.d, (const char*) q + (size_t) c0 * qb, out + (size_t) c0 * w.n_out, w.n_in, w.n_out, nc, st);
         }
     }
-    void group_old(const Layer& L, const int32_t* slot_of, int T, unsigned long long* o_ptr, int32_t* o_start, int32_t* o_ng,
-                   int32_t* o_dst, int32_t* o_tok) {
+    void group_old(const Layer& L, const int32_t* slot_of, const uint8_t* skip, int T, unsigned long long* o_ptr, int32_t* o_start,
+                   int32_t* o_ng, int32_t* o_dst, int32_t* o_tok) {
         const int Kp = (int) m->top_k, n_ent = T * Kp;
-        if (slot_of)
+        if (slot_of && skip)
+            k_group_hy_masked<<<1, kThreads, 0, st>>>(ids, n_ent, Kp, (int) m->g.n_expert, slot_of, skip, L.blobs, L.stride, o_ptr,
+                                                      o_start, o_ng, o_dst, o_tok);
+        else if (slot_of)
             k_group_hy<<<1, kThreads, 0, st>>>(ids, n_ent, Kp, (int) m->g.n_expert, slot_of, L.blobs, L.stride, o_ptr, o_start,
                                                o_ng, o_dst, o_tok);
+        else if (skip)
+            k_group_masked<<<1, kThreads, 0, st>>>(ids, n_ent, Kp, (int) m->g.n_expert, skip, L.blobs, L.stride, o_ptr, o_start,
+                                                   o_ng, o_dst, o_tok);
         else
             k_group<<<1, kThreads, 0, st>>>(ids, n_ent, Kp, (int) m->g.n_expert, L.blobs, L.stride, o_ptr, o_start, o_ng, o_dst,
                                             o_tok);
@@ -1980,7 +2061,7 @@ struct Engine {
         int32_t* o_ng = o_start + 66;
         int32_t* o_dst = o_ng + 2;
         int32_t* o_tok = o_dst + 64;
-        group_old(L, slot_of, T, o_ptr, o_start, o_ng, o_dst, o_tok);
+        group_old(L, slot_of, nullptr, T, o_ptr, o_start, o_ng, o_dst, o_tok);
         CK(cudaStreamSynchronize(st));
         int nn = 0, no = 0;
         CK(cudaMemcpy(&nn, n_groups, 4, cudaMemcpyDeviceToHost));
@@ -2011,17 +2092,25 @@ struct Engine {
     }
     bool grouped_by_route = false;   // route_group already filled the group arrays of this layer
     /// The router's top-k and the grouping of the picks in one launch (T <= 8, 256 experts, 8 picks); the logits are in logits_r.
-    /// `slot_of`: the hybrid mode's slot table (null: every expert resident).  Returns false when the old kernels must run.
-    bool route_group(const Layer& L, const int32_t* slot_of, int T, int ld) {
+    /// `slot_of`: the hybrid mode's slot table (null: every expert resident).  `skip`: the helper tier's per-entry
+    /// mask (--expert-cache-device1..3, null when no helper took part), the entries it already computed into `eparts`.
+    /// Returns false when the old kernels must run.
+    bool route_group(const Layer& L, const int32_t* slot_of, const uint8_t* skip, int T, int ld) {
         const int Kp = (int) m->top_k;
         grouped_by_route = false;
         if (!fast_k || T > 8 || m->g.n_expert != 256 || Kp != 8) return false;
-        if (slot_of)
-            q36k::k_route_group<true><<<1, dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T, ld, slot_of, L.blobs, L.stride, grp_ptr,
-                                                                 grp_start, n_groups, ent_dst, ent_tok);
+        if (slot_of && skip)
+            q36k::k_route_group<true, true><<<1, dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T, ld, slot_of, skip, L.blobs, L.stride, grp_ptr,
+                                                                       grp_start, n_groups, ent_dst, ent_tok);
+        else if (slot_of)
+            q36k::k_route_group<true, false><<<1, dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T, ld, slot_of, nullptr, L.blobs, L.stride, grp_ptr,
+                                                                        grp_start, n_groups, ent_dst, ent_tok);
+        else if (skip)
+            q36k::k_route_group<false, true><<<1, dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T, ld, nullptr, skip, L.blobs, L.stride, grp_ptr,
+                                                                        grp_start, n_groups, ent_dst, ent_tok);
         else
-            q36k::k_route_group<false><<<1, dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T, ld, nullptr, L.blobs, L.stride, grp_ptr,
-                                                                  grp_start, n_groups, ent_dst, ent_tok);
+            q36k::k_route_group<false, false><<<1, dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T, ld, nullptr, nullptr, L.blobs, L.stride, grp_ptr,
+                                                                         grp_start, n_groups, ent_dst, ent_tok);
         grouped_by_route = true;
         if (verify_k) {
             // the old top-k into scratch, the ids / weights compared, then the old grouping of the new ids
@@ -2035,24 +2124,31 @@ struct Engine {
         }
         return true;
     }
-    /// The routed entries of T rows grouped per expert (k_group; with slot_of the hybrid mode's k_group_hy).
-    void group_entries(const Layer& L, const int32_t* slot_of, int T) {
+    /// The routed entries of T rows grouped per expert (k_group; with slot_of the hybrid mode's k_group_hy; with
+    /// `skip` the helper tier's entries left out).
+    void group_entries(const Layer& L, const int32_t* slot_of, const uint8_t* skip, int T) {
         if (grouped_by_route) {   // route_group did it
             grouped_by_route = false;
             return;
         }
         const int Kp = (int) m->top_k, n_ent = T * Kp;
         if (fast_k && n_ent <= 64) {
-            if (slot_of)
-                q36k::k_group_small<true><<<1, 64, 0, st>>>(ids, n_ent, Kp, slot_of, L.blobs, L.stride, grp_ptr, grp_start,
-                                                            n_groups, ent_dst, ent_tok);
+            if (slot_of && skip)
+                q36k::k_group_small<true, true><<<1, 64, 0, st>>>(ids, n_ent, Kp, slot_of, skip, L.blobs, L.stride, grp_ptr, grp_start,
+                                                                 n_groups, ent_dst, ent_tok);
+            else if (slot_of)
+                q36k::k_group_small<true, false><<<1, 64, 0, st>>>(ids, n_ent, Kp, slot_of, nullptr, L.blobs, L.stride, grp_ptr, grp_start,
+                                                                  n_groups, ent_dst, ent_tok);
+            else if (skip)
+                q36k::k_group_small<false, true><<<1, 64, 0, st>>>(ids, n_ent, Kp, nullptr, skip, L.blobs, L.stride, grp_ptr, grp_start,
+                                                                   n_groups, ent_dst, ent_tok);
             else
-                q36k::k_group_small<false><<<1, 64, 0, st>>>(ids, n_ent, Kp, nullptr, L.blobs, L.stride, grp_ptr, grp_start,
-                                                             n_groups, ent_dst, ent_tok);
+                q36k::k_group_small<false, false><<<1, 64, 0, st>>>(ids, n_ent, Kp, nullptr, nullptr, L.blobs, L.stride, grp_ptr, grp_start,
+                                                                    n_groups, ent_dst, ent_tok);
             if (verify_k) group_verify(L, slot_of, T);
             return;
         }
-        group_old(L, slot_of, T, grp_ptr, grp_start, n_groups, ent_dst, ent_tok);
+        group_old(L, slot_of, skip, T, grp_ptr, grp_start, n_groups, ent_dst, ent_tok);
     }
     void* vgrp = nullptr;
     float *vx_ = nullptr, *vh_ = nullptr;
@@ -2253,16 +2349,20 @@ struct Engine {
         // (its prompt pass too: no staging buffers then)
         const bool hy_rows = lhy(li) && (T <= hybrid_t || !main_hybrid);
         const bool mmq_rows = !hy_rows && T > kGemmT && use_mmq;
-        if (!(!mmq_rows && route_group(L, hy_rows ? hy[li].slot_of_d : nullptr, T, ext ? (int) g.n_expert + 1 : (int) g.n_expert)))
+        if (!(!mmq_rows && route_group(L, hy_rows ? hy[li].slot_of_d : nullptr, nullptr, T,
+                                      ext ? (int) g.n_expert + 1 : (int) g.n_expert)))
             K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
         const int64_t n_ent = (int64_t) T * Kp;
         const int32_t* prow = nullptr;
+        helper_mask_li = -1;   // set below, when this layer's window actually goes to a helper
         if (hy_rows) {
-            // a helper GPU owns this layer's experts: every routed entry goes there (MAXT windows only), neither the
-            // local slots nor the CPU pool take any of it; otherwise the usual slots + CPU pool split.
-            if (!(helpers_enabled() && helper_layer(li) && T <= strata::kernels::cpu::MAXT && !helper_failed &&
-                  moe_helpers(li, T)))
-                moe_hybrid_gpu(L, li, T);
+            // A helper GPU takes the entries it holds in its VRAM cache (MAXT windows only); the local hybrid path
+            // below takes the primary's own slots and the host pool's, neither of which overlaps with the helper's
+            // (open() only admits experts the primary has no slot for).  With no helper this is the plain slots +
+            // host pool split it always was.
+            if (helpers_enabled() && helper_layer(li) && T <= strata::kernels::cpu::MAXT && !helper_failed)
+                moe_helpers(li, T);
+            moe_hybrid_gpu(L, li, T);
         } else if (T > kGemmT && use_mmq) {
             // a prompt chunk: the experts on llama.cpp's MMQ (int8, the weights read once per expert): the entries
             // sorted by expert on the device, gate+up as one [2 FF] product per expert, SwiGLU, down into rows the
@@ -2304,16 +2404,18 @@ struct Engine {
             if (lhy(li)) stream_done();
             prow = rinv;
         } else {
-            // A helper GPU owns this whole layer (--expert-cache-device1..3) and the window fits begin()'s
-            // MAXT: every routed entry is computed there and the local grouped kernel is skipped.  Without
-            // the flags helpers_enabled() is false, so this is the same grouping + grouped launch as it always was.
-            const bool offloaded = helpers_enabled() && helper_layer(li) && T <= strata::kernels::cpu::MAXT &&
-                                   !helper_failed && moe_helpers(li, T);
-            if (!offloaded) group_entries(L, nullptr, T);
+            // A helper computes the entries it holds (the window fits begin()'s MAXT); the local grouped kernel
+            // below computes every other entry.  Without the flags helpers_enabled() is false, so this is the same
+            // grouping + grouped launch as it always was.
+            const bool via_helper = helpers_enabled() && helper_layer(li) && T <= strata::kernels::cpu::MAXT &&
+                                    !helper_failed && moe_helpers(li, T);
             if (!xq_post) quant(h, N, T, xq);   // the experts' and the shared expert's input
-            if (!offloaded)
-                K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
-                                         std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
+            // route_group ran before moe_helpers (it makes the `ids` moe_helpers reads), so its grouping covers
+            // every entry.  With a helper's share, group again with the mask so this launch takes only the rest.
+            if (via_helper) grouped_by_route = false;
+            group_entries(L, nullptr, via_helper ? d_helper_mask : nullptr, T);
+            K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
+                                     std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
         }
         // the shared expert, scaled by sigmoid(w . h)
         if (T > kGemmT) k_to_f16<<<grid1((int64_t) N * T), kThreads, 0, st>>>(h, x16, (int64_t) N * T);
@@ -2486,13 +2588,19 @@ struct Engine {
     /// a window of at most MAXT tokens, so a bigger batch keeps the local path).  The rows land in `eparts` exactly
     /// where the local grouped kernel would have put them - `RemoteExperts::begin` keys its output on the entry
     /// index it was given (tok * k + j), which is `eparts`' own row - so `k_moe_out` combines one way either.
-    /// False (with the reason) leaves the layer to the caller: it must not then also run the local kernel, which is
-    /// what `helper_failed` below reports.
+    /// A helper takes only the (layer, expert) pairs it really holds in its VRAM cache, not the whole layer: a P104
+    /// holds about 4630 of a stripe's 10240 experts, and the entries it missed must still be computed by the local
+    /// slots and the host pool, or the layer's output is wrong.  This is Qwen3.8 Flash's per-entry split (kind[i] =
+    /// 2 the helper, 0 the primary's own cache, -1 the host pool); open() keeps the three buckets from overlapping.
+    ///
+    /// False (with the reason) means a helper errored: `helper_failed` is set and the mask uploaded all-zero, so
+    /// the local paths redo the whole window and rewrite every row.
     bool moe_helpers(size_t li, int T) {
         const auto& g = m->g;
         const int N = (int) g.n_embd, Kp = (int) m->top_k;
         const int64_t n_ent = (int64_t) T * Kp;
         const int hi = (li >= (size_t) m->g.n_layers || helper_of_layer.empty()) ? -1 : helper_of_layer[li];
+        helper_mask.assign((size_t) n_ent, 0);   // the helper takes what it holds; the local paths take the rest
         if (hi < 0) return true;
         CK(cudaMemcpyAsync(h_helper_ids, ids, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaMemcpyAsync(h_helper_x, h, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st));
@@ -2503,12 +2611,31 @@ struct Engine {
             !help.finish(helper_out, err)) {
             std::fprintf(stderr, "strata-q36: helper CUDA%d, layer %zu: %s\n", hi + 1, li, err.c_str());
             helper_failed = true;
+            // an all-zero mask on the device, so the local paths redo the whole window (every row is then written
+            // by the local kernels and the helper's partial rows are overwritten)
+            helper_mask_li = (int) li;
+            CK(cudaMemcpyAsync(d_helper_mask, helper_mask.data(), (size_t) n_ent, cudaMemcpyHostToDevice, st));
             return false;
         }
-        // finish() wrote the rows it owned into helper_out (entry-indexed); every routed entry of this layer is the
-        // helper's, so the whole window uploads in one copy and nothing else can have written these rows.
+        // One whole-window upload: finish() scattered the rows it computed to their own entry index and left the
+        // rest of helper_out stale, but every entry the helper did not compute is rewritten by the local paths
+        // below (exactly the rows whose mask bit is 0), so the stale rows are never read.
         CK(cudaMemcpyAsync(eparts, helper_out, (size_t) n_ent * N * 4, cudaMemcpyHostToDevice, st));
+        helper_mask_li = (int) li;
+        for (int64_t i = 0; i < n_ent; ++i) {
+            if (!help.owns(i)) continue;
+            helper_mask[(size_t) i] = 1;
+            ++hy_helper;
+        }
+        CK(cudaMemcpyAsync(d_helper_mask, helper_mask.data(), (size_t) n_ent, cudaMemcpyHostToDevice, st));
         return true;
+    }
+    /// Whether a helper computed part of state index li's current window, so the local grouping must leave those
+    /// entries out and the CPU pool must keep off them.  False for a layer no helper was offered (moe_helpers was
+    /// not called), which is what keeps the mask from the previous layer out of this one.
+    bool helper_masked(size_t li) const {
+        return helpers_enabled() && helper_layer(li) && !helper_failed && helper_mask_li >= 0 &&
+               (size_t) helper_mask_li == li;
     }
     bool helper_failed = false;   // a helper errored: the run is over rather than half offloaded
     bool mmq_helper_warned = false;   // the helper-idle warning fired once (prompt MMQ chunks stay local)
@@ -2521,7 +2648,11 @@ struct Engine {
         CK(cudaMemcpyAsync(h_ids, ids, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaMemcpyAsync(h_h, h, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaEventRecord(ev_route, st));
-        group_entries(L, hy[li].slot_of_d, T);
+        // route_group grouped this layer's picks before moe_helpers ran (it makes the `ids` the helper reads), so
+        // with a helper's share the grouping is redone without the rows the helper already wrote into `eparts`.
+        const uint8_t* skip = helper_masked(li) ? d_helper_mask : nullptr;
+        if (skip) grouped_by_route = false;
+        group_entries(L, hy[li].slot_of_d, skip, T);
         if (!xq_post) quant(h, N, T, xq);   // the experts' and the shared expert's input
         K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
                                  std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
@@ -2536,9 +2667,8 @@ struct Engine {
         const int n_ent = T * Kp;
         Hy& H = hy[li];
         const Layer& L = layer_at((int) li);
-        // A helper GPU owned the layer's experts (moe_helpers above): there is nothing for the pool, and ev_route
-        // was never recorded for it, so waiting for it here would hang.
-        if (helpers_enabled() && helper_layer(li)) return;
+        // moe_hybrid_gpu recorded ev_route for this layer (helper or not): the pool reads `h_ids` / `h_h` from it,
+        // so it must wait.  The helper path no longer skips the pool, it only adds entries to skip.
         while (cudaEventQuery(ev_route) == cudaErrorNotReady) {
         }
         const auto t0 = Clock::now();
@@ -2555,7 +2685,9 @@ struct Engine {
         for (int e = 0; e < n_ent; ++e) {
             const int x = h_ids[e];
             if (!defer) H.score[(size_t) x] += 1.0;
-            h_miss[e] = H.slot_of[(size_t) x] < 0;
+            // Three buckets, as in Qwen3.8 Flash's expert pool: an entry a helper computed is already in `eparts`
+            // and its expert has no primary slot, so the mask keeps the pool off it.
+            h_miss[e] = H.slot_of[(size_t) x] < 0 && !(helper_masked(li) && helper_mask[(size_t) e]);
             if (!h_miss[e]) continue;
             ++n_miss;
             const int t = e / Kp;
@@ -3054,10 +3186,19 @@ struct Engine {
         const auto t0 = Clock::now();
         warming = true;
         const int32_t filler = 198;   // a newline: any token works
-        std::vector<int32_t> toks((size_t) tmax, filler);
+        // Every throw-away pass runs from cell 0: the passes must not stack their positions, or the last ones write
+        // their K / V past the cache (a context as short as the chunk turns that into an out-of-range device write).
+        // The chunk is also capped at the context (tmax can exceed it with a small --max-context).
+        const int T = (int) std::min<int64_t>(tmax, ctx);
+        std::vector<int32_t> toks((size_t) T, filler);
         process(toks.data(), (int64_t) toks.size(), [](int64_t) {});
-        if (tmax > kGemmT + 1) process(toks.data(), kGemmT + 1, [](int64_t) {});   // the smallest GEMM chunk too
+        pos = 0;
+        if (T > kGemmT + 1) {
+            process(toks.data(), kGemmT + 1, [](int64_t) {});   // the smallest GEMM chunk too
+            pos = 0;
+        }
         process(&filler, 1, [](int64_t) {});
+        pos = 0;
         if (mtp_d > 0) {
             std::vector<int32_t> fix, drafts;
             int32_t picks[16];
@@ -3067,6 +3208,7 @@ struct Engine {
         warming = false;
         for (Hy& H : hy) std::fill(H.score.begin(), H.score.end(), 0.0);
         hy_cpu = hy_gpu = hy_swaps = 0;
+        hy_helper = 0;   // the warmup's helper work is not part of the batch counts
         hy_cpu_ms = 0;
         reset();
         std::fprintf(stderr, "strata-q36: warmed up in %.1f s (one prompt chunk, a decode step%s)\n",
@@ -3276,6 +3418,10 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     CK(cudaHostAlloc((void**) &E.h_cnt, all.size() * (size_t) ne * 4, cudaHostAllocDefault));
     CK(cudaMalloc(&E.ecpu, T * Kp * N * 4));
     CK(cudaMalloc(&E.d_miss, T * Kp * 4));
+    // the helper tier's per-entry mask (--expert-cache-device1..3), read by the masked grouping kernels.  Also
+    // needed when every expert fits in VRAM (no CPU pool, this function returns early), where a helper still takes
+    // the entries it holds - open_helpers allocates it if this path did not.
+    if (E.d_helper_mask == nullptr) CK(cudaMalloc(&E.d_helper_mask, T * Kp));
     E.acts = (uint8_t*) std::malloc(T * C::kNativeActBytes + 64);
     CK(cudaEventCreateWithFlags(&E.ev_route, cudaEventDisableTiming));
     if (staging) {
@@ -4049,16 +4195,19 @@ bool open_helpers(Model& m, Engine& E, const std::array<int, 3>& want, const std
     const int devices = (want[0] > 0 ? 1 : 0) + (want[1] > 0 ? 1 : 0) + (want[2] > 0 ? 1 : 0);
     if (devices == 0) return true;
     // the per-layer table, from each layer's own layout (never a model-level guess): gu_type / d_type / n_embd /
-    // n_ff are read per layer, so a model whose layers differ is sized per layer too.
+    // n_ff are read per layer, so a model whose layers differ is sized per layer too.  The helper layout table
+    // covers the MAIN layers only: the MTP block's experts stay on the primary (its window is one draft step,
+    // see helper_of_layer below), and expert_layout_set_native checks fmt.size() == n_layers - a table that also
+    // carried m.mtp would be refused (41 != 40).
     std::vector<C::NativeFmt> fmt;
     std::vector<strata::kernels::NativeExpertLayout> layouts;
-    fmt.reserve(m.layers.size() + (m.has_mtp ? 1 : 0));
+    fmt.reserve(m.layers.size());
     layouts.reserve(fmt.capacity());
     uint64_t total = 0;
     std::vector<const Layer*> all;
     for (const Layer& L : m.layers) all.push_back(&L);
     if (m.has_mtp) all.push_back(&m.mtp);
-    // The layout table covers the MAIN layers only: the MTP block's experts stay on the primary (its window is one
+// The layout table covers the MAIN layers only: the MTP block's experts stay on the primary (its window is one
     // draft step), and expert_layout_set_native checks fmt.size() == n_layers - a table that also carried m.mtp
     // would be refused (41 != 40).  `all` still holds the MTP block, for the helper tier's own layer map below.
     for (size_t i = 0; i < m.layers.size(); ++i) {
@@ -4119,6 +4268,9 @@ bool open_helpers(Model& m, Engine& E, const std::array<int, 3>& want, const std
     const size_t T = (size_t) strata::kernels::cpu::MAXT;
     CK(cudaHostAlloc((void**) &E.h_helper_ids, T * (size_t) m.top_k * 4, cudaHostAllocDefault));
     CK(cudaHostAlloc((void**) &E.h_helper_x, T * (size_t) g.n_embd * 4, cudaHostAllocDefault));
+    // the per-entry mask the masked grouping kernels read, for every tier above: the all-in-VRAM placement never
+    // reaches place_experts' hybrid branch, where this is otherwise allocated
+    if (E.d_helper_mask == nullptr) CK(cudaMalloc(&E.d_helper_mask, E.tmax * (size_t) m.top_k));
     CK(cudaHostAlloc((void**) &E.helper_out, T * (size_t) m.top_k * (size_t) g.n_embd * 4, cudaHostAllocDefault));
     return true;
 }
@@ -4203,6 +4355,7 @@ int strata::qwen35::run(int argc, char** argv) {
     }
     // --kv (strata's name for the K / V stores) beats STRATA_Q36_KV; the stores are independent: int8 / k8v8 quantize
     // both, k8v32 the K alone, k32v8 the V alone.  q4_0 / k8v4 (PR #21's Hadamard rotation) are not in this engine.
+    bool kv_k8 = false, kv_v8 = false;   // the stores the Engine runs with (its members are set from these below)
     {
         std::string kv = kv_opt;
         if (kv.empty()) { const char* e = std::getenv("STRATA_Q36_KV"); kv = e != nullptr ? e : "fp32"; }
@@ -4303,6 +4456,9 @@ int strata::qwen35::run(int argc, char** argv) {
                 for (const auto& kv : E.v_by)
                     std::fprintf(stderr, "strata-q36 VERIFY   %s: %lld mismatches\n", kv.first.c_str(), kv.second);
             if (!E.m->hybrid) return;
+            if (E.helpers_enabled())
+                std::fprintf(stderr, "strata-q36: helper experts: %lld batch entries on the helper GPUs\n",
+                             E.hy_helper);
             const long long n = E.hy_cpu + E.hy_gpu;
             std::fprintf(stderr, "strata-q36: hybrid experts: %lld of %lld batch entries on the GPU (%.1f%%), %lld on the "
                          "CPU pool in %.0f ms, %lld slot replacements\n", E.hy_gpu, n, n ? 100.0 * E.hy_gpu / n : 0.0,
