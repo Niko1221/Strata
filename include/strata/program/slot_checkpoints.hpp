@@ -25,6 +25,38 @@ std::vector<const Checkpoint*> deepest_prefix_checkpoints(const std::vector<Chec
     return out;
 }
 
+// STRATA_SLOT_CHECKPOINTS: the ones a slot keeps, up to `keep` of the strict starts of `held` (one per length): the
+// deepest (the turn checkpoint), the deepest `branch` one (STRATA_BRANCH_CHECKPOINT: where a client that rewrites the
+// end of its history leaves it next, also when a periodic checkpoint lies between it and the turn), then the deepest
+// others.  Shallowest first.
+template <class Checkpoint>
+std::vector<const Checkpoint*> slot_checkpoint_picks(const std::vector<Checkpoint>& checks,
+                                                     const std::vector<int32_t>& held, std::size_t keep) {
+    const std::vector<const Checkpoint*> all = deepest_prefix_checkpoints(checks, held, checks.size());
+    if (all.size() <= keep) return all;
+    std::vector<char> take(all.size(), 0);
+    std::size_t n = 0;
+    if (keep > 0) {
+        take.back() = 1;
+        ++n;
+    }
+    for (std::size_t i = all.size() - 1; n < keep && i-- > 0;)
+        if (all[i]->branch) {
+            take[i] = 1;
+            ++n;
+            break;
+        }
+    for (std::size_t i = all.size() - 1; n < keep && i-- > 0;)
+        if (!take[i]) {
+            take[i] = 1;
+            ++n;
+        }
+    std::vector<const Checkpoint*> out;
+    for (std::size_t i = 0; i < all.size(); ++i)
+        if (take[i]) out.push_back(all[i]);
+    return out;
+}
+
 // How many leading tokens a prompt and a held conversation share.
 inline int64_t shared_prefix(const std::vector<int64_t>& prompt, const std::vector<int32_t>& held) {
     const std::size_t n = std::min(prompt.size(), held.size());
