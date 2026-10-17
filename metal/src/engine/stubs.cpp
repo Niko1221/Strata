@@ -206,11 +206,9 @@ namespace strata::kernels { void fused_gdn_ab(const float * p0, const uint16_t *
 namespace strata::kernels { void fused_gdn_conv_l2(float * p0, const float * p1, const float * p2, float * p3, int p4, int p5, float p6, void * p7) { strata::metal_engine::missing("strata::kernels::fused_gdn_conv_l2"); } }
 namespace strata::kernels { void fused_gdn_step_norm(float * p0, const float * p1, const float * p2, const float * p3, const float * p4, const float * p5, const float * p6, const float * p7, float p8, float * p9, int p10, int p11, void * p12) { strata::metal_engine::missing("strata::kernels::fused_gdn_step_norm"); } }
 namespace strata::kernels { void fused_gr_dequant_q8_0(const uint8_t * p0, uint16_t * p1, int64_t p2, void * p3) { strata::metal_engine::missing("strata::kernels::fused_gr_dequant_q8_0"); } }
-namespace strata::kernels { void fused_gr_persist_init() { strata::metal_engine::missing("strata::kernels::fused_gr_persist_init"); } }
 namespace strata::kernels { void fused_gr_quantize_q8_0(const uint16_t * p0, uint8_t * p1, int64_t p2, void * p3) { strata::metal_engine::missing("strata::kernels::fused_gr_quantize_q8_0"); } }
 namespace strata::kernels { void fused_gr_read(const FusedGrArgs & p0, void * p1) { strata::metal_engine::missing("strata::kernels::fused_gr_read"); } }
 namespace strata::kernels { bool fused_gr_read_multi(const FusedGrArgs * p0, int p1, float * p2, void * p3, unsigned long long * p4, int p5) { strata::metal_engine::missing("strata::kernels::fused_gr_read_multi"); return {}; } }
-namespace strata::kernels { bool fused_gr_read_persist(const FusedGrArgs * p0, int p1, void * p2) { strata::metal_engine::missing("strata::kernels::fused_gr_read_persist"); return {}; } }
 namespace strata::kernels { bool fused_gr_supported(int64_t p0, int64_t p1, int64_t p2) { strata::metal_engine::missing("strata::kernels::fused_gr_supported"); return {}; } }
 namespace strata::kernels { void fwht256_cuda(const float * p0, float * p1, int64_t p2, void * p3) { strata::metal_engine::missing("strata::kernels::fwht256_cuda"); } }
 namespace strata::kernels { void gdn_ab_multi(const float * p0, const uint16_t * p1, const uint16_t * p2, const float * p3, const float * p4, float * p5, float * p6, int p7, int p8, int p9, void * p10) { strata::metal_engine::missing("strata::kernels::gdn_ab_multi"); } }
