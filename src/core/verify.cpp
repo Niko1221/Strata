@@ -2633,12 +2633,26 @@ void Verifier::accumulate_profile(const unsigned long long* stamps) {
 bool Verifier::adapt_gate_wait(int32_t layer, std::string& err) {
     const Clock::time_point t0 = Clock::now();
     uint32_t spins = 0;
+    progress_at("verify window: waiting for the adaptive tier's copies of layer", layer);
     while (adapt_gate_->reached() < layer) {
         _mm_pause();
         if ((++spins & 1023u) != 0) continue;
         if (Clock::now() - t0 > std::chrono::seconds(20)) {
+            // the release drains the window's own streams, never the tier's copy stream: say so, and hand out the
+            // gate's words and this window's GPU breadcrumbs (STRATA_VERIFY_TRACE) - the last landed layer is the
+            // exact place the stream stopped, which the released window's error line alone never told (#2188's class)
+            const int32_t reach = adapt_gate_->reached(), land = adapt_gate_->landed.load();
+            const int32_t hl = adapt_gate_->hland != nullptr ? *adapt_gate_->hland : -2;
+            if (g_trace) trace_ev("GATE-TIMEOUT", -1, layer, reach);
+            std::fprintf(stderr, "strata verify: the adaptive gate waited %lld ms for layer %d: reached %d "
+                                 "(atomic %d, copy signal %d) - the tier's copy stream was not drained by the release\n",
+                         (long long) ms_since(t0), (int) layer, (int) reach, (int) land, (int) hl);
+            if (g_trace) trace_dump(stderr);
             err = "verify: the adaptive tier's copies for layer " + std::to_string(layer) + " never landed" +
-                  released_note(release_gpu_waits(5000));
+                  released_note(release_gpu_waits(5000)) +
+                  " (the copy stream itself is not drained: reached " + std::to_string(reach) + " of " +
+                  std::to_string(layer) + ", STRATA_VERIFY_TRACE=1 prints where the stream stopped)";
+            std::fflush(stderr);
             return false;
         }
     }
