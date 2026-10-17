@@ -14448,16 +14448,33 @@ int main(int argc, char** argv) {
             if (dec_timing && dec_windows > 0) {
                 const DecSnap d1 = dec_snap();
                 const double w = (double) dec_windows, L = (double) g.n_layers;
-                std::fprintf(stderr, "strata decode timing: %lld windows, avg T %.2f, %.2f tokens/window, %.2f ms/window = "
-                                     "verify %.2f (GPU-reach wait %.2f + per-layer host %.2f [plan %.2f actq %.2f jobs %.2f "
-                                     "CPU %.2f] + stage %.2f) + commit/emit %.2f + draft %.2f; per layer-window: CPU experts "
-                                     "%.2f (%.2f entries), VRAM hits %.2f, PCIe %.2f; adapt wait %.2f join %.2f, %.1f swaps/window\n",
-                             (long long) dec_windows, dec_T / w, produced_n / w, decode_ms / w, dt_run / w,
-                             (d1.wait - ds0.wait) / w, (d1.pool - ds0.pool) / w, (d1.plan - ds0.plan) / w,
-                             (d1.actq - ds0.actq) / w, (d1.jobs - ds0.jobs) / w, (d1.run - ds0.run) / w,
-                             (d1.host - ds0.host) / w, dt_commit / w, dt_draft / w, (d1.misses - ds0.misses) / (w * L),
-                             (d1.entries - ds0.entries) / (w * L), (d1.hits - ds0.hits) / (w * L), (d1.pcie - ds0.pcie) / (w * L),
-                             dt_adapt_wait / w, dt_adapt_join / w, (double) ((ajob ? a_swapped : adapt_nswaps) - dt_sw0) / w);
+                if (!pl_ran) {
+                    const double dt_other = decode_ms - dt_adapt_wait - dt_run - dt_commit - dt_draft - dt_adapt_join;
+                    std::fprintf(stderr,
+                                 "strata decode timing: %lld windows, avg T %.2f, %.2f tokens/window, %.2f ms/window = "
+                                 "adapt wait %.2f + verify %.2f (GPU-reach wait %.2f + per-layer host %.2f "
+                                 "[plan %.2f actq %.2f jobs %.2f CPU %.2f] + stage %.2f) + commit/emit %.2f + "
+                                 "draft %.2f + adapt join %.2f + other %.2f; per layer-window: CPU experts "
+                                 "%.2f (%.2f entries), VRAM hits %.2f, PCIe %.2f; %.1f swaps/window\n",
+                                 (long long) dec_windows, dec_T / w, produced_n / w, decode_ms / w, dt_adapt_wait / w,
+                                 dt_run / w, (d1.wait - ds0.wait) / w, (d1.pool - ds0.pool) / w,
+                                 (d1.plan - ds0.plan) / w, (d1.actq - ds0.actq) / w, (d1.jobs - ds0.jobs) / w,
+                                 (d1.run - ds0.run) / w, (d1.host - ds0.host) / w, dt_commit / w, dt_draft / w,
+                                 dt_adapt_join / w, dt_other / w, (d1.misses - ds0.misses) / (w * L),
+                                 (d1.entries - ds0.entries) / (w * L), (d1.hits - ds0.hits) / (w * L),
+                                 (d1.pcie - ds0.pcie) / (w * L), (double) ((ajob ? a_swapped : adapt_nswaps) - dt_sw0) / w);
+                } else {   // Keep the pipeline's existing timing format.
+                    std::fprintf(stderr, "strata decode timing: %lld windows, avg T %.2f, %.2f tokens/window, %.2f ms/window = "
+                                         "verify %.2f (GPU-reach wait %.2f + per-layer host %.2f [plan %.2f actq %.2f jobs %.2f "
+                                         "CPU %.2f] + stage %.2f) + commit/emit %.2f + draft %.2f; per layer-window: CPU experts "
+                                         "%.2f (%.2f entries), VRAM hits %.2f, PCIe %.2f; adapt wait %.2f join %.2f, %.1f swaps/window\n",
+                                 (long long) dec_windows, dec_T / w, produced_n / w, decode_ms / w, dt_run / w,
+                                 (d1.wait - ds0.wait) / w, (d1.pool - ds0.pool) / w, (d1.plan - ds0.plan) / w,
+                                 (d1.actq - ds0.actq) / w, (d1.jobs - ds0.jobs) / w, (d1.run - ds0.run) / w,
+                                 (d1.host - ds0.host) / w, dt_commit / w, dt_draft / w, (d1.misses - ds0.misses) / (w * L),
+                                 (d1.entries - ds0.entries) / (w * L), (d1.hits - ds0.hits) / (w * L), (d1.pcie - ds0.pcie) / (w * L),
+                                 dt_adapt_wait / w, dt_adapt_join / w, (double) ((ajob ? a_swapped : adapt_nswaps) - dt_sw0) / w);
+                }
                 if (aov)
                     std::fprintf(stderr, "strata decode adapt overlap: %lld windows took swaps still landing, a layer waited %.2f ms in all so far\n",
                                  (long long) aov_flips, ver.ms_gate);
