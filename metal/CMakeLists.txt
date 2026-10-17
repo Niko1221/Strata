@@ -40,10 +40,16 @@ target_link_libraries(mtl_rt PUBLIC "-framework Metal" "-framework Foundation")
 
 file(GLOB STRATA_METAL_TESTS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp)
 list(REMOVE_ITEM STRATA_METAL_TESTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime_hello.cpp)
+enable_testing()
 foreach(src ${STRATA_METAL_TESTS})
   get_filename_component(t ${src} NAME_WE)
   add_executable(${t} ${src})
   target_link_libraries(${t} PRIVATE mtl_rt)
+  # moe_tile_grid_test is a host test: no device, no model, nothing to load, so it is the one the others cannot be -
+  # registered with ctest, and it runs on a configured tree whether or not there is a Metal device to run on
+  if(t STREQUAL "moe_tile_grid_test")
+    add_test(NAME moe_tile_grid COMMAND moe_tile_grid_test)
+  endif()
 endforeach()
 
 # ---- the device runtime and the engine (mac-design) ---------------------------------------------------------------
