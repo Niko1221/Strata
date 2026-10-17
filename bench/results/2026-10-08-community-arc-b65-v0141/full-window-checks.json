@@ -1,0 +1,98 @@
+{
+  "scope": "individual capacity/recall checks, not three-run full-window benchmark",
+  "native_MTP4": {
+    "prompt_tokens": 262016,
+    "output_tokens": 128,
+    "ttft_s": 793.5431629770028,
+    "prompt_tps": 330.21442588481034,
+    "decode_tps": 33.14259081846664,
+    "reused": 0,
+    "exact_matches_target_only": true
+  },
+  "api_full_reads": [
+    {
+      "label": "facts-262144",
+      "http": 200,
+      "valid": true,
+      "rendered_prompt_tokens": 262016,
+      "max_tokens": 128,
+      "usage": {
+        "prompt_tokens": 262016,
+        "completion_tokens": 128,
+        "total_tokens": 262144,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "output_sha256": "8feeb0b869360364349d5c62b3cd75fb0c1cf05755b51866722b0eba509447f5",
+      "finish_reason": "length",
+      "elapsed_s": 807.708848986993,
+      "ttft_s": 804.3631405419874,
+      "output_span_s": 3.3447474220010918,
+      "post_first_tps": 37.9699821770155
+    },
+    {
+      "label": "facts-full-repeat",
+      "http": 200,
+      "valid": true,
+      "rendered_prompt_tokens": 262016,
+      "max_tokens": 128,
+      "usage": {
+        "prompt_tokens": 262016,
+        "completion_tokens": 128,
+        "total_tokens": 262144,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "output_sha256": "4bfdcd9bfe36db5d7badd5062cefcbc7c2128c10eef9a1a081aa9e0cff388b3a",
+      "finish_reason": "length",
+      "elapsed_s": 806.9768667969911,
+      "ttft_s": 803.4681978930021,
+      "output_span_s": 3.5086182009981712,
+      "post_first_tps": 36.196585870719595
+    }
+  ],
+  "private_routed_capacity_checks": {
+    "preboot": {
+      "checks_passed": 7,
+      "all_valid": true,
+      "full_request": {
+        "usage": {
+          "prompt_tokens": 261504,
+          "completion_tokens": 640,
+          "total_tokens": 262144,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "max_tokens": 640,
+        "ttft_s": 792.2858867909963,
+        "elapsed_s": 811.3502217019995,
+        "post_first_tps": 33.51967105214362,
+        "valid": true
+      },
+      "decode_metric": "SSE output tokens after first emitted token divided by output span, distinct from native timing"
+    },
+    "postboot": {
+      "checks_passed": 7,
+      "all_valid": true,
+      "full_request": {
+        "usage": {
+          "prompt_tokens": 262016,
+          "completion_tokens": 128,
+          "total_tokens": 262144,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "max_tokens": 128,
+        "ttft_s": 818.79065969,
+        "elapsed_s": 822.294382589,
+        "post_first_tps": 36.2578470638678,
+        "valid": true
+      },
+      "decode_metric": "SSE output tokens after first emitted token divided by output span, distinct from native timing"
+    }
+  }
+}
