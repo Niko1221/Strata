@@ -10,6 +10,9 @@
 #include <fstream>
 #include <sstream>
 
+// MTLGPUFamilyMetal4 only exists in the macOS 26 SDK.
+enum { STRATA_MTL_GPU_FAMILY_METAL4 = 5002 };
+
 namespace mtl {
 
 double now_s() {
@@ -66,7 +69,7 @@ bool Context::has_family_apple(int n) const {
     return [impl_->dev supportsFamily:(MTLGPUFamily)(MTLGPUFamilyApple1 + (n - 1))];
 }
 bool Context::supports_metal4() const {
-    if (@available(macOS 26.0, *)) return [impl_->dev supportsFamily:MTLGPUFamilyMetal4];
+    if (@available(macOS 26.0, *)) return [impl_->dev supportsFamily:(MTLGPUFamily)STRATA_MTL_GPU_FAMILY_METAL4];
     return false;
 }
 uint64_t Context::recommended_working_set() const { return [impl_->dev recommendedMaxWorkingSetSize]; }
