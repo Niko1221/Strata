@@ -38,6 +38,11 @@ bool native_experts_available() noexcept { return true; }
 // compiled for AVX-512 and iq_avx2.cpp / kq_avx2.cpp for AVX2, and native_gu_rows asks these on every CPU before it
 // has checked what the CPU can run.  A function in a wide-ISA file may use that ISA anywhere in its body, so an
 // answer that is only a comparison must not come from one (#795).
+//
+// DGX Spark GB10 (aarch64): the AVX-2 / AVX-512 i-quant and k-quant kernel files are not built there (CMake
+// excludes them), so portable.cpp provides these three "supported" answers — every one false, so native_gu_rows
+// falls through to ggml-cpu's NEON vec_dot. This guard keeps native_expert.cpp's x86 answers out of that build.
+#if defined(__x86_64__) || defined(_M_X64)
 bool iq512_supported(int type) noexcept {
     return type == 16 || type == 17 || type == 18 || type == 21 || type == 22;
 }
@@ -47,6 +52,7 @@ bool iq256_supported(int type) noexcept {
 }
 
 bool kq256_supported(int type) noexcept { return type == 12 || type == 7 || type == 8; }
+#endif  // __x86_64__
 
 bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err) {
     init_once();
@@ -93,6 +99,9 @@ bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt
     return true;
 }
 
+// DGX Spark GB10 (aarch64): q8k_quant_avx2 (an AVX-2 kernel) does not exist there; native_quant_act/native_quant_h
+// below skip this block on that CPU and always use ggml-cpu's from_float. cpu_avx2_ok() is false there anyway.
+#if defined(__x86_64__) || defined(_M_X64)
 namespace {
 // Q8_K (the activations of every i-quant row): ggml-cpu's x86 quantizer is the scalar reference, ~3 us per token
 // and layer on the host before the pool can start; q8k_quant_avx2 writes the same bytes.  cpu_avx2_ok() too:
@@ -109,16 +118,21 @@ bool q8k_avx1(int type) {
     return on && type == (int) GGML_TYPE_Q8_K;
 }
 }  // namespace
+#endif  // __x86_64__
 
 void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
+#if defined(__x86_64__) || defined(_M_X64)
     if (q8k_avx2(f.gu_act)) { q8k_quant_avx2(x, dst, f.n_embd); return; }
     if (q8k_avx1(f.gu_act)) { q8k_quant_avx1(x, dst, f.n_embd); return; }
+#endif  // __x86_64__
     traits(f.gu_act)->from_float(x, dst, f.n_embd);
 }
 
 void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
+#if defined(__x86_64__) || defined(_M_X64)
     if (q8k_avx2(f.d_act)) { q8k_quant_avx2(h, dst, f.n_ff); return; }
     if (q8k_avx1(f.d_act)) { q8k_quant_avx1(h, dst, f.n_ff); return; }
+#endif  // __x86_64__
     traits(f.d_act)->from_float(h, dst, f.n_ff);
 }
 
@@ -168,6 +182,7 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
     // The exact rows are ggml-cpu's AVX2 single-token dot bit for bit, so they need ggml-cpu itself built for AVX2 and
     // not AVX-512 (ggml_cpu_has_*): a STRATA_ISA_FLOOR build runs ggml's AVX1/SSE dots, a native build on an AVX-512 CPU
     // run with STRATA_FORCE_AVX2=1 runs its AVX-512 one, and both round differently (#2215's guard).
+#if defined(__x86_64__) || defined(_M_X64)
     static const bool exact_one = [] {
         const char* v = std::getenv("STRATA_CPU_IQ_ALL_EXACT1");
         return v && v[0] == '1' && v[1] == 0 && ggml_cpu_has_avx2() && !ggml_cpu_has_avx512();
@@ -181,6 +196,7 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
         iq256_gu_rows_exact_one(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act[0], ff[0], r0, r1);
         return;
     }
+#endif
     const int mt_min = native_gu_mt_min(f.gu_type);   // #152
     // Unsloth UD-Q4_K_XL's Q4_K gate/up: the multi-token kernel is bit-exact against ggml's per-token dot (any group
     // size, no #152 rule).  Opt-in, STRATA_KQ256=1: measured no faster in the engine (a window's expert groups hold

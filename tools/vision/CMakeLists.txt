@@ -35,12 +35,14 @@ if(STRATA_PORTABLE)
   foreach(_f GGML_AVX GGML_AVX2 GGML_FMA GGML_F16C GGML_BMI2)
     set(${_f} ON CACHE BOOL "" FORCE)
   endforeach()
-  # nothing above AVX2 either, even when a -D asks for it (a 9900K or a Zen 3 has neither AVX-512 nor AVX-VNNI)
+# nothing above AVX2 either, even when a -D asks for it (a 9900K or a Zen 3 has neither AVX-512 nor AVX-VNNI)
   foreach(_f GGML_AVX512 GGML_AVX512_VBMI GGML_AVX512_VNNI GGML_AVX512_BF16 GGML_AVX_VNNI
              GGML_AMX_TILE GGML_AMX_INT8 GGML_AMX_BF16)
     set(${_f} OFF CACHE BOOL "" FORCE)
   endforeach()
   message(STATUS "strata-vision: portable build (AVX2 baseline, runs on other PCs)")
+elseif(GGML_CPU_ARM_ARCH)   # aarch64 with explicit flags (setup's arm_cpu_arch): -mcpu=native finds none on GB10
+  set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 else()
   # this PC's instruction set; a build folder that was portable before gets a fresh native build's settings back
   set(GGML_NATIVE ON CACHE BOOL "" FORCE)
