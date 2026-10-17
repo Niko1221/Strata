@@ -128,6 +128,9 @@ public:
     const uint8_t* blob_stable(int64_t layer, int64_t expert) override {
         return fallback_.blob_stable(layer, expert);
     }
+    int blob_parts(int64_t layer, int64_t expert, BlobPart* out) override {
+        return from_helper(layer, expert) ? 0 : fallback_.blob_parts(layer, expert, out);
+    }
     int64_t reads() const override { return fallback_.reads(); }
     bool pinned(int64_t layer, int64_t expert) const override {
         return from_helper(layer, expert) ? false : fallback_.pinned(layer, expert);

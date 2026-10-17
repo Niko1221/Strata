@@ -723,6 +723,21 @@ inline std::string read_geometry(const GgufFile& f, core::ModelGeometry& g) {
         if (v->type != MetaType::ARRAY || v->count != (uint64_t) g.n_layers || v->items.size() != v->count)
             return p + "attention.compress_ratios must list one entry for each of the " + std::to_string(g.n_layers) +
                    " layers";
+        // A list of zeros only is a converter's placeholder, not a layer split (#2396: orcarouter's
+        // Qwen3.8-Flash-Next-Uncensored GGUFs carry 48 zeros; 0.1.43 never read the key): it is treated as absent
+        // and the compiled pooling block is used.  A list with any non-zero entry is checked in full below.
+        bool given = false;
+        for (int64_t l = 0; l < g.n_layers && !given; ++l) given = v->items[(size_t) l].u != 0;
+        if (!given) {
+            static bool said = false;   // the guard runs several times in one process: one line
+            if (!said) {
+                said = true;
+                std::fprintf(stderr, "strata: %sattention.compress_ratios is all zeros (a converter's placeholder): "
+                                     "using the compiled pooling block of %lld cells (#2396)\n",
+                             p.c_str(), (long long) g.idx_block);
+            }
+            return {};
+        }
         int64_t block = 0;
         for (int64_t l = 0; l < g.n_layers; ++l) {
             const int64_t r = (int64_t) v->items[(size_t) l].u;
