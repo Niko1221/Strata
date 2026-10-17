@@ -6,6 +6,8 @@ A background thread samples once a second and keeps the last 60 readings of each
   amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.  On macOS (Metal backend): IOKit's
   IOAccelerator registry - load and VRAM; the temperature and power sensors need root (`powermetrics`), and an Apple
   Silicon GPU sits on the die, so there is no PCIe link.
+- Opt-in Apple Silicon sensors (`STRATA_MACOS_TELEMETRY=1`): IORegistry allocations and optional macmon for GPU
+  temperature, power and frequency, without root.
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
   the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
 Anything that cannot be read is None; nothing here can stop the server.
@@ -345,12 +347,21 @@ class _Metal:
         return out
 
 
+def apple_sensors_enabled():
+    """Extra Apple Silicon sensors are opt-in; the existing readers are the default."""
+    return (os.environ.get("STRATA_MACOS_TELEMETRY") == "1"
+            and sys.platform == "darwin" and platform.machine() == "arm64")
+
+
 def gpu_reader(index=0, amd=False):
     """The card's readings: NVML (NVIDIA), the amdgpu sysfs files with the AMD backend (#301), or IOKit's
     IOAccelerator registry on macOS (Metal backend).  `amd` comes first: no Mac runs the HIP backend, and the
     tests' AMD trees are read on a Mac too."""
     if amd:
         return _Amd(index)
+    if apple_sensors_enabled():
+        from serve.apple_telemetry import AppleGpu
+        return AppleGpu(index)
     return _Metal(index) if sys.platform == "darwin" else _Nvml(index)
 
 
@@ -413,7 +424,9 @@ def windows_amd_cards(adapters=None) -> list:
 
 def free_vram_mib(index=0, amd=False):
     """Free VRAM of a card in MiB, or None when it cannot be read."""
-    g = gpu_reader(index, amd)
+    # The opt-in chart reports driver allocations, not in-use memory. Keep model sizing
+    # on the existing Metal reader rather than subtracting allocations from physical RAM.
+    g = _Metal(index) if apple_sensors_enabled() and not amd else gpu_reader(index, amd)
     if not g.ok():
         return None
     r = g.read()
@@ -518,7 +531,8 @@ class Telemetry:
             gpu_name = " + ".join(c["name"] for c in win_amd) if win_amd else None
         # the macOS reader knows the device's working set (the VRAM budget of the unified memory); None elsewhere
         vram_total = None
-        if win_amd is None and isinstance(self.gpu, _Metal) and self.gpu.ok():
+        apple = getattr(self.gpu, "metadata", {}).get("gpu_backend") == "apple"
+        if win_amd is None and (isinstance(self.gpu, _Metal) or apple) and self.gpu.ok():
             ws = metal_working_set()
             vram_total = ws >> 20 if ws else None
         self.static = {
@@ -531,14 +545,16 @@ class Telemetry:
             "gpu_note": ("no GPU load or VRAM readings for AMD cards on Windows yet (Linux reads them from the amdgpu "
                          "driver); the engine's own VRAM figures are in its log" if amd and not self.gpu.ok()
                          else getattr(self.gpu, "note", None)),
-            "cpu_name": _cpu_name(),
+            "cpu_name": self.gpu.name() if apple else _cpu_name(),
             "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or None,
             "threads": os.cpu_count(),
             "psutil": self.ps is not None,
+            **getattr(self.gpu, "metadata", {}),
         }
         self._disk_prev = None
         self._stop = threading.Event()
-        threading.Thread(target=self._loop, daemon=True).start()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
 
     def _disk(self):
         if not self.ps:
@@ -596,6 +612,10 @@ class Telemetry:
     def close(self):
         """Ends the sampler thread (a server that stops, a test's service): it used to run for the life of the process."""
         self._stop.set()
+        if self.static.get("gpu_backend") == "apple":
+            self.thread.join(timeout=3)
+            for _, gpu in self.gpus:
+                gpu.close()
 
     def _loop(self):
         while not self._stop.is_set():
@@ -606,6 +626,9 @@ class Telemetry:
                           "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
                     v = s.get(k)
                     self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
+                if self.static.get("gpu_backend") == "apple":
+                    v = s.get("gpu_freq_mhz")
+                    self.hist["gpu_freq_mhz"].append(round(v, 2) if isinstance(v, float) else v)
             self._stop.wait(1.0)
 
     def snapshot(self):

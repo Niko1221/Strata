@@ -13,6 +13,9 @@ Strata runs **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Nex
 large, smart AI model that usually needs a server. It chats, writes code, reads pictures and works with your apps
 and coding agents. Nothing leaves your PC.
 
+On Apple Silicon, optional [macOS Monitor charts](docs/MACOS_MONITOR.md) add GPU
+power, temperature and frequency with `STRATA_MACOS_TELEMETRY=1` and `macmon`.
+
 ## How fast is it?
 
 We measured it on two ordinary gaming PCs. A token is about ¾ of a word.
