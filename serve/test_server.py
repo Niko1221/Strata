@@ -3879,6 +3879,29 @@ class ThinkingEngine(MockEngine):
             yield t
 
 
+class SpillingThinkingEngine(ThinkingEngine):
+    """The real engine generates a few tokens past a STOP before it sees it, and keeps them in its session; the
+    client reads them while draining (`drained`).  `spill`: those tokens' text (None = the script's next 3)."""
+
+    def __init__(self, tok, spill=None):
+        super().__init__(tok)
+        self.spill = spill
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.prompts.append(list(ids))
+        self.drained = []
+        done = self.tok.decode(ids).endswith("</think>\n\n")
+        text = self.ANSWER if done else self.THOUGHT + "</think>\n\n" + self.ANSWER
+        toks = (self.tok.encode(text) + self.tok.encode("<|im_end|>", parse_special=True))[:max_new]
+        i = -1
+        try:
+            for i, t in enumerate(toks):
+                yield t
+        finally:
+            if i + 1 < len(toks):
+                self.drained = toks[i + 1:i + 4] if self.spill is None else self.tok.encode(self.spill)
+
+
 class EndsInsideThinkingEngine(ThinkingEngine):
     """The #1053 reply: one sentence of reasoning, then the end-of-turn token, no </think>.  A prompt that ends the
     thinking (the retry) gets the answer."""
@@ -3997,6 +4020,33 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(second, first + self.tok.encode(ThinkingEngine.THOUGHT[:20]) + extra)   # a prefix + more
         self.assertEqual(b["usage"]["completion_tokens"], 20 + len(extra) + len(ThinkingEngine.ANSWER) + 1)
         self.assertEqual(b["usage"]["prompt_tokens"], len(first))
+
+    def spilled(self, spill=None, reuse=True):
+        from unittest import mock
+        from serve.server import REASONING_WRAP_UP
+        self.engine = SpillingThinkingEngine(self.tok, spill)
+        self.svc.engine = self.engine
+        with mock.patch("serve.server.REPLY_REUSE", reuse):
+            code, b = self.openai(reasoning_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        first, second = self.engine.prompts
+        return b["choices"][0]["message"], first, second, self.tok.encode(REASONING_WRAP_UP, parse_special=True)
+
+    def test_tokens_drained_after_the_stop_join_the_thinking(self):
+        """STRATA_REPLY_REUSE=1: the continuation extends what the engine holds - its run-ahead tokens too."""
+        from serve.server import REASONING_WRAP_UP
+        msg, first, second, extra = self.spilled()
+        self.assertEqual(msg["reasoning_content"], ThinkingEngine.THOUGHT[:23] + REASONING_WRAP_UP.split("</think>")[0])
+        self.assertEqual(msg["content"], ThinkingEngine.ANSWER)
+        self.assertEqual(second, first + self.tok.encode(ThinkingEngine.THOUGHT[:23]) + extra)
+
+    def test_drained_tokens_with_a_tag_are_left_out(self):
+        msg, first, second, extra = self.spilled(spill="</th")
+        self.assertEqual(second, first + self.tok.encode(ThinkingEngine.THOUGHT[:20]) + extra)
+
+    def test_drained_tokens_are_dropped_without_the_switch(self):
+        msg, first, second, extra = self.spilled(reuse=False)
+        self.assertEqual(second, first + self.tok.encode(ThinkingEngine.THOUGHT[:20]) + extra)
 
     def test_a_stop_string_is_found_in_the_answer_after_the_wrap_up(self):
         """#454: the continuation after the thinking budget is cut at a stop string too."""

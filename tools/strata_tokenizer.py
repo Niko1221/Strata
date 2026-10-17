@@ -16,6 +16,7 @@ emoji (4-byte), combining marks, whitespace runs, and C0 control bytes.
 from __future__ import annotations
 
 import bisect
+import codecs
 import json
 import pathlib
 import sys
@@ -393,6 +394,12 @@ class PromptEncoder:
         for e in entries:
             same = plain_agree_until(e[1], plain, common_prefix_len(e[0], text))
             k = bisect.bisect_right(e[3], same - margin) - 1   # the last boundary c with c <= same - margin
+            # a reply's own token boundaries (e[5]: where the reply starts) need no margin - the engine holds
+            # those ids, and the text from the cut on is encoded afresh - unless a tag could straddle the cut
+            if len(e) > 5 and same >= e[5]:
+                k2 = bisect.bisect_right(e[3], same) - 1
+                if k2 > k and e[3][k2] >= e[5] and not self._straddles(text, e[3][k2]):
+                    k = k2
             if k >= 0 and (src is None or e[3][k] > src[3][cut_k]):
                 src, cut_k = e, k
         if src is None:
@@ -415,6 +422,47 @@ class PromptEncoder:
         with self.lock:
             self.entries = [(text, plain, ids, ends, counts)] + [e for e in self.entries if e is not old][:self.keep - 1]
         return list(ids)
+
+    def _straddles(self, text: str, c: int) -> bool:
+        """A special literal that starts before `c` and ends after it: a cut there would split the tag."""
+        specials = getattr(self.tok, "special_tokens", None) or {}
+        lo = max(0, c - self.tok.max_special_len + 1)
+        p = text.find("<", lo, c)
+        while p >= 0:
+            if any(len(s) > c - p and text.startswith(s, p) for s in specials):
+                return True
+            p = text.find("<", p + 1, c)
+        return False
+
+    def remember_reply(self, prompt_ids, gen_ids) -> bool:
+        """The engine's session after a request is the prompt plus the reply's OWN ids - which are not always
+        what the reply's text encodes to (a model writes a Turkish word or a number in pieces BPE would merge).  The
+        next turn's prompt renders that text again: encoded afresh, it left the engine's ids at the first such piece
+        and the engine read the whole reply again from the turn's start.  Kept as an entry whose cuts are every token
+        boundary of the reply, the next prompt takes the reply's own ids up to where its text really differs."""
+        if not self.keep or not gen_ids or not hasattr(self.tok, "token_bytes"):
+            return False
+        prompt_ids = [int(t) for t in prompt_ids]
+        with self.lock:
+            entries = self.entries
+        base = next((e for e in entries if list(e[2]) == prompt_ids), None)
+        if base is None:
+            return False
+        dec = codecs.getincrementaldecoder("utf-8")("replace")
+        chars, ends, counts = len(base[0]), list(base[3]), list(base[4])
+        pieces = []
+        for j, t in enumerate(gen_ids):
+            s = dec.decode(self.tok.token_bytes(int(t)))
+            pieces.append(s)
+            chars += len(s)
+            if not dec.getstate()[0]:                   # no character split across this boundary
+                ends.append(chars)
+                counts.append(len(prompt_ids) + j + 1)
+        text = base[0] + "".join(pieces)
+        entry = (text, base[1], prompt_ids + [int(t) for t in gen_ids], ends, counts, len(base[0]))
+        with self.lock:
+            self.entries = [entry] + [e for e in self.entries if e is not base and e[0] != text][:self.keep - 1]
+        return True
 
     def forget(self, ids: list[int]) -> None:
         """The prompt with these ids was refused: it is not kept."""
