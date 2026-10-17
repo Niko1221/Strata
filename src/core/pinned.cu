@@ -351,35 +351,52 @@ int arena_pin_cap_gib() {
     return v < 0 ? -1 : v;
 }
 
-namespace {
+// #243: how much a sliced registration that CUDA device `dev` reads may pin on Windows.  Page-locked memory a GPU
+// maps is charged to its adapter's shared (non-local) WDDM segment; pinned slice by slice until the driver refused one
+// (28 GiB of a 63 GB PC), that segment was left full and every later cudaMalloc failed "out of memory".  A margin of
+// the budget (STRATA_PIN_MARGIN_GIB, default 4 GiB) stays free for what the engine allocates after the registration;
+// without the DXGI numbers, RAM/2 - 8 GiB (the budget is about half the RAM).  False: no limit could be worked out.
+bool shared_pin_limit_for(int dev, uint64_t& limit, std::string& why) {
 #ifdef _WIN32
-// #243: how much of the arena the sliced registration may pin on Windows when the whole arena was refused.
-// Page-locked memory the GPU maps is charged to its shared (non-local) WDDM segment; pinned slice by slice until
-// the driver refused one (28 GiB of a 63 GB PC), that segment was left full and every later cudaMalloc failed
-// "out of memory".  4 GiB of the budget stay free for what the engine allocates after the arena; without the DXGI
-// numbers, RAM/2 - 8 GiB (the budget is about half the RAM).  False: no limit could be worked out.
-bool sliced_pin_limit(uint64_t& limit, std::string& why) {
     constexpr uint64_t GiB = 1ull << 30;
+    static const uint64_t margin = [] {
+        const char* e = std::getenv("STRATA_PIN_MARGIN_GIB");
+        return e != nullptr && *e != '\0' && std::atof(e) >= 0.0 ? (uint64_t) (std::atof(e) * 1073741824.0) : 4 * GiB;
+    }();
     char buf[256];
-    int dev = 0;
     cudaDeviceProp p{};
     uint64_t budget = 0, usage = 0;
     std::string err = "no CUDA device properties";
-    if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
+    if (cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
         strata::platform::gpu_shared_memory_budget(p.luid, budget, usage, err)) {
-        limit = budget > usage + 4 * GiB ? budget - usage - 4 * GiB : 0;
-        std::snprintf(buf, sizeof buf, "the GPU's shared-memory budget %.1f GiB - %.1f GiB in use - 4 GiB",
-                      (double) budget / GiB, (double) usage / GiB);
+        limit = budget > usage + margin ? budget - usage - margin : 0;
+        std::snprintf(buf, sizeof buf, "the shared-memory budget of CUDA%d's adapter %.1f GiB - %.1f GiB in use - %.1f GiB",
+                      dev, (double) budget / GiB, (double) usage / GiB, (double) margin / GiB);
         why = buf;
         return true;
     }
     (void) cudaGetLastError();
     const uint64_t ram = strata::platform::total_physical_memory();
-    if (ram == 0) return false;
+    if (ram == 0) { why = err; return false; }
     limit = ram / 2 > 8 * GiB ? ram / 2 - 8 * GiB : 0;
     std::snprintf(buf, sizeof buf, "%s: RAM/2 - 8 GiB of %.1f GiB", err.c_str(), (double) ram / GiB);
     why = buf;
     return true;
+#else
+    (void) dev;
+    limit = 0;
+    why = "no shared-memory budget outside Windows";
+    return false;
+#endif
+}
+
+namespace {
+#ifdef _WIN32
+// the arena's sliced registration (#243, STRATA_ARENA_PIN_GIB=auto): the current device's adapter
+bool sliced_pin_limit(uint64_t& limit, std::string& why) {
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) { (void) cudaGetLastError(); dev = 0; }
+    return shared_pin_limit_for(dev, limit, why);
 }
 #endif
 }  // namespace

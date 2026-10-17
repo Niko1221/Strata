@@ -230,6 +230,13 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
 - The answers are the plain mapped mode's for the same expert placement: the bytes are the file's. With a page-locked
   copy the GPU also takes its usual share of the misses over PCIe (`--pcie-frac`), as with enough RAM; `--pcie-frac 0`
   (or `STRATA_RESIDENT_PIN=0`) gives the mapped mode's exact tokens.
+- When the driver refuses the copy's one page-locked allocation (a copy larger than the WDDM shared budget, e.g. a
+  Q8_0 pack's ~100 GiB copy on a 128 GB PC), the copy is registered in slices of about a layer each instead, up to the
+  GPU adapter's shared-memory budget less 4 GiB (`STRATA_PIN_MARGIN_GIB`), so the PCIe share still works; only the
+  experts no slice holds whole are the CPU's. Before, the whole copy was locked pageable memory and every miss went to
+  the CPU. The log names the path (`page-locking path 1` one allocation, `2` slices, `3` none pinned).
+  `STRATA_COMPLEMENT_PIN_GIB`: `all` registers slices until the driver refuses one, N caps them at N GiB, 0 keeps the
+  old fallback. `STRATA_TEST_COMPLEMENT_REFUSE=1` takes the one allocation as refused (to test paths 2 and 3).
 - The engine leaves 4 GB of the RAM it finds free (`STRATA_RESIDENT_HEADROOM_GIB`); when even the experts the GPU does
   not hold do not fit, it says so and runs the plain mapped mode. The server log shows, per request, how many expert
   reads went to the file (`resident RAM: ... blob reads from the file`: 0 in steady use).
