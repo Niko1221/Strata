@@ -1,0 +1,71 @@
+[
+ {
+  "length": "32k",
+  "depth": 10,
+  "prompt_tokens": 32792,
+  "seconds": 78.9,
+  "found": true,
+  "word": "meadow-copper-504",
+  "answer": "meadow-copper-504"
+ },
+ {
+  "length": "32k",
+  "depth": 50,
+  "prompt_tokens": 32792,
+  "seconds": 79.1,
+  "found": true,
+  "word": "falcon-quartz-940",
+  "answer": "falcon-quartz-940"
+ },
+ {
+  "length": "32k",
+  "depth": 90,
+  "prompt_tokens": 32793,
+  "seconds": 79.0,
+  "found": true,
+  "word": "willow-cobalt-696",
+  "answer": "willow-cobalt-696"
+ },
+ {
+  "length": "128k",
+  "depth": 10,
+  "prompt_tokens": 127285,
+  "seconds": 328.1,
+  "found": true,
+  "word": "falcon-saffron-138",
+  "answer": "falcon-saffron-138"
+ },
+ {
+  "length": "128k",
+  "depth": 50,
+  "prompt_tokens": 127283,
+  "seconds": 328.4,
+  "found": true,
+  "word": "quartz-tundra-528",
+  "answer": "quartz-tundra-528"
+ },
+ {
+  "length": "128k",
+  "depth": 90,
+  "prompt_tokens": 127283,
+  "seconds": 172.0,
+  "found": true,
+  "word": "quartz-glacier-192",
+  "answer": "quartz-glacier-192"
+ },
+ {
+  "length": "262k",
+  "depth": 10,
+  "error": "HTTP Error 400: Bad Request"
+ },
+ {
+  "length": "262k",
+  "depth": 50,
+  "error": "HTTP Error 400: Bad Request"
+ },
+ {
+  "length": "262k",
+  "depth": 90,
+  "error": "HTTP Error 400: Bad Request"
+ }
+]
