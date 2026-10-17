@@ -10456,7 +10456,7 @@ int main(int argc, char** argv) {
                     slots_all += remote_experts[(size_t) r].resident();
                     mib_all += (int64_t) (remote_experts[(size_t) r].gib() * 1024.0);
                 }
-            std::printf("INFO logit_bias=1 context=%lld kv=%s kv_resident=%lld expert_slots=%lld expert_cache_mib=%lld "
+            std::printf("INFO logit_bias=1 logit_bias_batch=1 context=%lld kv=%s kv_resident=%lld expert_slots=%lld expert_cache_mib=%lld "
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
@@ -11702,9 +11702,9 @@ int main(int argc, char** argv) {
             strata::prefill::Prefill::set_pipe_request(req_pipe);   // every request sets it: none carries over
             std::vector<float> req_bias;
             std::string bias_error;
-            if (req_bias_present && (o.batch > 0 ||
+            if (req_bias_present && (batch_mtp ||
                 !strata::core::parse_logit_bias(req_bias_text, (int) n_vocab, req_bias, bias_error))) {
-                std::printf("ERR logit_bias: %s\n", o.batch > 0 ? "continuous batching is not supported" : bias_error.c_str());
+                std::printf("ERR logit_bias: %s\n", batch_mtp ? "--batch-mtp does not take it yet" : bias_error.c_str());
                 continue;
             }
             std::string emb_path;
@@ -14637,6 +14637,11 @@ int main(int argc, char** argv) {
                     cont = false;
                 }
                 const auto tc1 = Clock::now();
+                if (cont && !ver.set_slot_logit_bias(admit_slot, req_bias, err)) {   // the slot's own bias table (empty: none)
+                    std::fprintf(stderr, "strata serve: batch admission failed: %s\n", err.c_str());
+                    bs[(size_t) admit_slot].cached = false;
+                    cont = false;
+                }
                 if (cont) {
                     ver.set_slot_sampling(admit_slot, req_sp);   // the request's own sampling, row by row
                     BSlot& sl = bs[(size_t) admit_slot];

@@ -1,9 +1,10 @@
 # Per-request token biases
 
 `POST /v1/chat/completions` accepts `logit_bias` with a supporting CUDA or HIP
-engine, without continuous batching. The same bias applies to every generated
-token in the request, including tokens checked together during speculative
-decoding. It does not force single-token verification windows.
+engine, also with continuous batching (`--batch`, not with `--batch-mtp`). The
+same bias applies to every generated token in the request, including tokens
+checked together during speculative decoding. It does not force single-token
+verification windows.
 
 ## Example: Hello becomes Hi
 
@@ -65,9 +66,22 @@ vector is uploaded when the bias changes and reused within the request.
 Malformed entries, duplicate IDs in pair lists, IDs outside the vocabulary,
 out-of-range biases, or banning the entire vocabulary return HTTP 400. Validation
 on the chat route occurs before SSE streaming headers are sent. Nonempty biases
-also return HTTP 400 with older engines, the current SYCL engine, or continuous
-batching (`--batch`), rather than being silently ignored. The engine advertises
-`logit_bias=1` in its `INFO` response when this implementation is present.
+also return HTTP 400 with older engines, the current SYCL engine, an engine
+that cannot take them in batch slots when it runs with `--batch`, or `--batch-mtp`,
+rather than being silently ignored. The engine advertises `logit_bias=1` in its
+`INFO` response when this implementation is present, and `logit_bias_batch=1`
+when it takes a bias in batch slots.
+
+**Batch slots.** Each slot keeps its own table on the GPU of the last stage (one
+float per vocabulary entry, about 1 MB for 248,320 tokens), set when the request is
+admitted into the slot and replaced or cleared by the next request that uses it, so
+a bias reaches only its own request. A greedy row whose slot has a table is drawn on
+the last stage like a sampled row (the graph's argmax does not know the bias); rows
+without a table are unchanged. `tools/batch_test.py --bias-han` checks that every
+slot gives the tokens it gives alone, with a ban on some slots only, and
+`tools/batch_bias_reuse_test.py` that a slot that changes from a banned to a free
+request (and back) keeps nothing of the previous one. Both were run with and
+without pipelined groups, greedy and sampled.
 
 MTP target verification applies the bias; the draft model is not biased, so a
 restrictive list may reduce draft acceptance. Ordinary MTP was tested. The

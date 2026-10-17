@@ -246,8 +246,19 @@ public:
     /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by
     /// default.  Set on the first stage, it reaches the last.
     void set_slot_sampling(int slot, const strata::kernels::SamplerParams& sp) {
-        if (slot >= 0 && slot < (int) slot_sp_.size()) slot_sp_[(size_t) slot] = sp;
+        if (slot >= 0 && slot < (int) slot_sp_.size()) {
+            slot_sp_[(size_t) slot] = sp;
+            // the slot's bias table (set_slot_logit_bias) belongs to the slot: the caller's pointer is not used
+            slot_sp_[(size_t) slot].logit_bias = slot_has_bias(slot) ? slot_bias_dev_[(size_t) slot] : nullptr;
+        }
         if (next_) next_->set_slot_sampling(slot, sp);
+    }
+    /// One slot's vocabulary bias, the table `set_logit_bias` keeps for the solo path: -inf bans.  Empty clears it.
+    /// Kept per slot on the final stage's device (the stage that draws the rows), copied only when changed; it
+    /// survives set_slot_sampling, so call it for every request admitted into the slot (an empty one clears).
+    bool set_slot_logit_bias(int slot, const std::vector<float>& bias, std::string& err);
+    bool slot_has_bias(int slot) const {
+        return slot >= 0 && slot < (int) slot_bias_host_.size() && !slot_bias_host_[(size_t) slot].empty();
     }
     const int32_t* batch_out() const { return b_out_; }
     bool last_stage() const { return g_ != nullptr && le_ == g_->n_layers; }
@@ -402,6 +413,8 @@ private:
     std::chrono::steady_clock::time_point ext_checked_{};   ///< batch_poll's last check with external serving
     int32_t b_out_[8] = {};
     std::vector<strata::kernels::SamplerParams> slot_sp_;
+    std::vector<std::vector<float>> slot_bias_host_;   ///< per slot (final stage only): the bias table it was last given
+    std::vector<float*> slot_bias_dev_;                ///< per slot (final stage only): that table on the device
     bool sample_rows(int S, std::string& err);   ///< the sampled slots' rows of the last batch window
     int32_t* h_commitb_ = nullptr; int32_t* m_commitb_ = nullptr;   // per slot [1, 0, pos, -1 ..], stride 2 + max_t
     int32_t* commitb_ = nullptr;
