@@ -4312,18 +4312,43 @@ inline int down_lanes() { static const int v = lanes_env("STRATA_DOWN_LANES"); r
 // B70, 4-token windows, split on: 16 lanes reads Q4_K/Q5_1 experts at 439 GB/s against 426 at 8; the reduction order differs
 // (other bits), so it stays opt-in.
 inline int kq_gu_lanes() { static const int v = std::getenv("STRATA_KQ_GU_LANES") ? lanes_env("STRATA_KQ_GU_LANES") : gu_lanes(); return v; }
+// Large-GRF mode (256 registers per thread) for the grouped expert kernels: A770, native_grouped_parity --bench2 at the
+// Coder's shape (2560 x 640, 16 groups / 24 entries a call): IQ2_S/IQ4_NL 218 -> 179, IQ3_XXS/IQ4_NL 215 -> 197,
+// IQ3_S/Q2_0 280 -> 232 us.  The same arithmetic in the same order (bitwise, native_grouped_parity).  Default on Arc
+// A-series (Alchemist) only, where it was measured, as gr_large_grf; STRATA_EXPERT_LARGE_GRF=1 forces it on, =0 off.
+bool expert_large_grf(dpct::queue_ptr q) {
+    static const bool v = [q] {
+        const char* e = std::getenv("STRATA_EXPERT_LARGE_GRF");
+        if (e != nullptr) return std::atoi(e) != 0;
+        return strata::intel_gpu_gen(q->get_device()) == strata::IntelGpuGen::Alchemist;
+    }();
+    return v;
+}
+template <int TG, int LN, bool KM, bool BIG>
+void launch_gu_port_k(unsigned groups, dpct::queue_ptr s, const unsigned long long *grp_ptr, const int32_t *grp_start,
+                      const int32_t *n_groups, const int32_t *ent_tok, const block_q8_1 *X,
+                      const NativeExpertLayout &L, float *gate, float *up) {
+    constexpr int ROWS = 256 / LN;
+    const unsigned gx = (unsigned) ((2 * L.n_ff + ROWS - 1) / ROWS);
+    const sycl::nd_range<3> nr(sycl::range<3>(1, groups, (size_t) gx * 256), sycl::range<3>(1, 1, 256));
+    auto body = [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+        native_gu_kernel<TG, LN, KM>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
+    };
+    if constexpr (BIG) {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync,
+                                                                     sycl::ext::intel::experimental::grf_size<256>};
+        s->parallel_for<dpct_kernel_name<class native_gu_port_big, dpct_kernel_scalar<TG>, dpct_kernel_scalar<LN>, dpct_kernel_scalar<KM>>>(nr, exp_props, body);
+    } else {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+        s->parallel_for<dpct_kernel_name<class native_gu_port, dpct_kernel_scalar<TG>, dpct_kernel_scalar<LN>, dpct_kernel_scalar<KM>>>(nr, exp_props, body);
+    }
+}
 template <int TG, int LN, bool KM = true>
 void launch_gu_port(unsigned groups, dpct::queue_ptr s, const unsigned long long *grp_ptr, const int32_t *grp_start,
                     const int32_t *n_groups, const int32_t *ent_tok, const block_q8_1 *X,
                     const NativeExpertLayout &L, float *gate, float *up) {
-    constexpr int ROWS = 256 / LN;
-    const unsigned gx = (unsigned) ((2 * L.n_ff + ROWS - 1) / ROWS);
-    auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
-    s->parallel_for<dpct_kernel_name<class native_gu_port, dpct_kernel_scalar<TG>, dpct_kernel_scalar<LN>, dpct_kernel_scalar<KM>>>(
-        sycl::nd_range<3>(sycl::range<3>(1, groups, (size_t) gx * 256), sycl::range<3>(1, 1, 256)), exp_props,
-        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
-            native_gu_kernel<TG, LN, KM>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
-        });
+    if (expert_large_grf(s)) launch_gu_port_k<TG, LN, KM, true>(groups, s, grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
+    else launch_gu_port_k<TG, LN, KM, false>(groups, s, grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
 }
 // STRATA_KQ_SPLIT=0 (or native_expert_set_kq_split(false)): the K-quant / Q5_1 / Q8_0 lane kernels without the
 // multi-entry split (one weight read per entry, as before); the outputs are the same bits either way
@@ -4348,18 +4373,31 @@ void launch_gu_lanes(dpct::dim3 grid, dpct::queue_ptr s, const unsigned long lon
         default: gu_port_km<TG, 8>(grid.y, s, grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
     }
 }
+template <int TD, int LN, bool KM, bool BIG>
+void launch_down_port_k(unsigned groups, dpct::queue_ptr s, const unsigned long long *grp_ptr, const int32_t *grp_start,
+                        const int32_t *n_groups, const int32_t *ent_dst, const block_q8_1 *hq,
+                        const NativeExpertLayout &L, float *out) {
+    constexpr int ROWS = 256 / LN;
+    const unsigned gx = (unsigned) ((L.n_embd + ROWS - 1) / ROWS);
+    const sycl::nd_range<3> nr(sycl::range<3>(1, groups, (size_t) gx * 256), sycl::range<3>(1, 1, 256));
+    auto body = [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+        native_down_kernel<TD, LN, KM>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+    };
+    if constexpr (BIG) {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync,
+                                                                     sycl::ext::intel::experimental::grf_size<256>};
+        s->parallel_for<dpct_kernel_name<class native_down_port_big, dpct_kernel_scalar<TD>, dpct_kernel_scalar<LN>, dpct_kernel_scalar<KM>>>(nr, exp_props, body);
+    } else {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+        s->parallel_for<dpct_kernel_name<class native_down_port, dpct_kernel_scalar<TD>, dpct_kernel_scalar<LN>, dpct_kernel_scalar<KM>>>(nr, exp_props, body);
+    }
+}
 template <int TD, int LN, bool KM = true>
 void launch_down_port(unsigned groups, dpct::queue_ptr s, const unsigned long long *grp_ptr, const int32_t *grp_start,
                       const int32_t *n_groups, const int32_t *ent_dst, const block_q8_1 *hq,
                       const NativeExpertLayout &L, float *out) {
-    constexpr int ROWS = 256 / LN;
-    const unsigned gx = (unsigned) ((L.n_embd + ROWS - 1) / ROWS);
-    auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
-    s->parallel_for<dpct_kernel_name<class native_down_port, dpct_kernel_scalar<TD>, dpct_kernel_scalar<LN>, dpct_kernel_scalar<KM>>>(
-        sycl::nd_range<3>(sycl::range<3>(1, groups, (size_t) gx * 256), sycl::range<3>(1, 1, 256)), exp_props,
-        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
-            native_down_kernel<TD, LN, KM>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
-        });
+    if (expert_large_grf(s)) launch_down_port_k<TD, LN, KM, true>(groups, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+    else launch_down_port_k<TD, LN, KM, false>(groups, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
 }
 template <int TD, int LN>
 void down_port_km(unsigned groups, dpct::queue_ptr s, const unsigned long long *grp_ptr, const int32_t *grp_start,
