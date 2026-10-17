@@ -13,8 +13,14 @@ cmake==4.4.3
 ninja==1.13.2
 pillow==12.3.0
 psutil==7.2.2
+jsonschema==4.26.0
 
 # their dependencies
+attrs==26.1.0
+jsonschema-specifications==2025.9.1
+referencing==0.37.0
+rpds-py==2026.9.1
+typing_extensions==4.16.0
 markupsafe==3.0.3
 certifi==2026.7.22
 charset-normalizer==3.5.1
