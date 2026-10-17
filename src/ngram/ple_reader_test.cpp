@@ -156,16 +156,22 @@ void format_round_trip(const std::string& dir, const k::PleFormatInfo& f, uint32
     for (uint32_t i = 0; i < rows; ++i) want[i] = rng() % rows;
     want[0] = 0;
     want[1] = rows - 1;
-    for (k::PleIo mode : {k::PleIo::Direct, k::PleIo::Mmap}) {
-        const char* name = mode == k::PleIo::Direct ? "direct" : "mmap";
+    // "ram" is --ple-io ram: the mapped table locked at open, which gather_batch reads without the per-row hint (#2281)
+    for (int leg = 0; leg < 3; ++leg) {
+        const k::PleIo mode = leg == 0 ? k::PleIo::Direct : k::PleIo::Mmap;
+        const char* name = leg == 0 ? "direct" : leg == 1 ? "mmap" : "ram";
         k::PleTable t;
         std::string err;
         k::PleIoOptions io;
         io.mode = mode;
         io.max_inflight = 8;
         io.cache_rows = 0;
+        io.lock = leg == 2;
         CHECK(t.open(path, err, io), "%s: open in %s mode: %s", f.name, name, err.c_str());
         if (g_fail) break;
+        CHECK(leg == 2 || !t.locked(), "%s: %s: locked without --ple-io ram", f.name, name);
+        if (leg == 2 && !t.locked())   // mlock refused (a small RLIMIT_MEMLOCK): this leg reads the table unlocked
+            std::fprintf(stderr, "note: %s: mlock refused, the \"ram\" leg reads the table unlocked\n", f.name);
         CHECK(std::strcmp(t.format(), f.name) == 0, "%s: format() says \"%s\"", f.name, t.format());
         CHECK(t.rows() == rows, "%s: rows %llu, not %u", f.name, (unsigned long long) t.rows(), rows);
         std::vector<uint8_t> raw(f.row_bytes);
