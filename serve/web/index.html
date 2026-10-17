@@ -44,7 +44,7 @@
       <div class="chat" id="chat">
         <div class="chat-empty" id="chat-empty">
           <div class="chat-empty__title">Ask anything</div>
-          <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it &ndash; unless Web search is on: the search query then goes out to the engine.</div>
+          <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.<br>Web search is off by default &ndash; when on, only the search query goes out.</div>
         </div>
       </div>
     </div>
@@ -286,7 +286,16 @@
     <div class="st-field" id="ws-readmax-row">
       <label class="st-label" for="s-ws-readmax">Pages to read <output id="o-ws-readmax"></output></label>
       <input class="st-input" id="s-ws-readmax" type="number" min="1" max="5" step="1">
-    </div>
+          </div>
+          <div class="st-field" id="ws-reader-row">
+            <label class="st-label" for="s-ws-reader">Page reader <output id="o-ws-jina"></output></label>
+            <select class="st-input" id="s-ws-reader">
+              <option value="off">Direct only (default - pages are read on this PC)</option>
+              <option value="fallback">Jina fallback (r.jina.ai reads a page only when direct reading fails)</option>
+              <option value="always">Jina always (best readability on JavaScript-heavy pages)</option>
+            </select>
+          </div>
+          <p class="muted small" id="ws-jina-note" hidden>Privacy: with the Jina reader the page URLs go through r.jina.ai - a third party sees which pages are read.</p>
     <div class="toggle-row"><span>Limit page text<br><span class="muted small">off = whole pages go in; the server still caps the total at the model's context</span></span>
       <button class="st-toggle" id="s-ws-plim" role="switch" aria-checked="true" aria-label="Limit page text"></button></div>
     <div class="st-field" id="ws-plim-row">

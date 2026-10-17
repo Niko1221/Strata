@@ -6174,13 +6174,17 @@ def make_handler(svc: Service):
                     if not q:
                         raise ValueError("query (the text to look up) is required")
                     cfg = {k: req.get(k) for k in ("engine", "url", "api_key", "max_results",
-                                 "read_pages", "read_max", "page_limit", "page_chars")}
+                                 "read_pages", "read_max", "page_limit", "page_chars", "reader")}
                     cfg["n_ctx"] = svc.reported_ctx()   # context-aware reading budget (serve/websearch.py)
                     self._json(200, {"query": q, "results": websearch.search(q, cfg)})
                 except websearch.SearchError as e:
                     self._json(502, {"error": {"message": str(e)}})
                 except ValueError as e:
                     self._json(400, {"error": {"message": str(e)}})
+                except Exception as e:   # a bug must show as a readable error, not a dead connection
+                    print(f"web search failed: {e.__class__.__name__}: {e}", file=sys.stderr)
+                    self._json(502, {"error": {"message": "Web search hit an unexpected error ("
+                                            + e.__class__.__name__ + ")"}})
                 return
             if path in ("/unload", "/load") and not self._control_body():
                 return
