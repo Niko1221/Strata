@@ -1,0 +1,124 @@
+strata serve: prompt 55 tokens = 0 reused + 55 read in 550 ms (100.0 tok/s), 7 generated in 76 ms (92.2 tok/s), drafts accepted 4 of 4, 1 checkpoints
+strata serve: KV streaming: 96.77% of 2976 block reads hit VRAM, 0.4 MiB read from RAM
+strata serve: prompt 72 tokens = 0 reused + 72 read in 3987 ms (18.1 tok/s), 513 generated in 5404 ms (94.9 tok/s), drafts accepted 279 of 447, 1 checkpoints
+strata serve: KV streaming: 99.74% of 338040 block reads hit VRAM, 3.5 MiB read from RAM
+strata serve: suffix drafts: 3 windows, 10 of 13 drafts accepted
+strata serve: prompt 602 tokens = 584 reused + 18 read in 93 ms (194.0 tok/s), 371 generated in 2152 ms (172.4 tok/s), drafts accepted 307 of 315, 1 checkpoints
+strata serve: KV streaming: 99.82% of 806454 block reads hit VRAM, 5.9 MiB read from RAM
+strata serve: suffix drafts: 62 windows, 299 of 306 drafts accepted
+strata serve: prompt 72 tokens = 67 reused + 5 read in 164 ms (30.5 tok/s), 513 generated in 5379 ms (95.4 tok/s), drafts accepted 280 of 446, 1 checkpoints
+strata serve: KV streaming: 99.87% of 1144182 block reads hit VRAM, 5.9 MiB read from RAM
+strata serve: suffix drafts: 3 windows, 14 of 15 drafts accepted
+strata serve: prompt 602 tokens = 584 reused + 18 read in 86 ms (209.2 tok/s), 371 generated in 2128 ms (174.3 tok/s), drafts accepted 308 of 314, 1 checkpoints
+strata serve: KV streaming: 99.91% of 1610568 block reads hit VRAM, 5.9 MiB read from RAM
+strata serve: suffix drafts: 61 windows, 300 of 305 drafts accepted
+strata serve: prompt 72 tokens = 67 reused + 5 read in 189 ms (26.5 tok/s), 513 generated in 5383 ms (95.3 tok/s), drafts accepted 280 of 446, 1 checkpoints
+strata serve: KV streaming: 99.92% of 1948296 block reads hit VRAM, 5.9 MiB read from RAM
+strata serve: suffix drafts: 3 windows, 14 of 15 drafts accepted
+strata serve: prompt 602 tokens = 584 reused + 18 read in 86 ms (209.0 tok/s), 371 generated in 2132 ms (174.0 tok/s), drafts accepted 308 of 314, 1 checkpoints
+strata serve: KV streaming: 99.94% of 2414682 block reads hit VRAM, 5.9 MiB read from RAM
+strata serve: suffix drafts: 61 windows, 300 of 305 drafts accepted
+strata serve: prompt 81 tokens = 0 reused + 81 read in 562 ms (144.0 tok/s), 1024 generated in 9024 ms (113.5 tok/s), drafts accepted 680 of 878, 1 checkpoints
+strata serve: KV streaming: 99.85% of 1081056 block reads hit VRAM, 6.7 MiB read from RAM
+strata serve: suffix drafts: 30 windows, 96 of 150 drafts accepted
+strata serve: prompt 81 tokens = 76 reused + 5 read in 171 ms (29.3 tok/s), 1024 generated in 8639 ms (118.5 tok/s), drafts accepted 681 of 859, 1 checkpoints
+strata serve: KV streaming: 99.92% of 2143368 block reads hit VRAM, 6.7 MiB read from RAM
+strata serve: suffix drafts: 21 windows, 72 of 105 drafts accepted
+strata serve: prompt 81 tokens = 76 reused + 5 read in 192 ms (26.0 tok/s), 1024 generated in 8625 ms (118.7 tok/s), drafts accepted 681 of 853, 1 checkpoints
+strata serve: KV streaming: 99.95% of 3199428 block reads hit VRAM, 6.7 MiB read from RAM
+strata serve: suffix drafts: 18 windows, 64 of 88 drafts accepted
+strata serve: prompt 282 tokens = 0 reused + 282 read in 773 ms (364.8 tok/s), 342 generated in 2986 ms (114.5 tok/s), drafts accepted 225 of 298, 1 checkpoints
+strata serve: KV streaming: 99.66% of 279294 block reads hit VRAM, 3.8 MiB read from RAM
+strata serve: suffix drafts: 30 windows, 138 of 144 drafts accepted
+strata serve: prompt 282 tokens = 277 reused + 5 read in 168 ms (29.8 tok/s), 342 generated in 3027 ms (113.0 tok/s), drafts accepted 226 of 300, 1 checkpoints
+strata serve: KV streaming: 99.83% of 559524 block reads hit VRAM, 3.8 MiB read from RAM
+strata serve: suffix drafts: 34 windows, 147 of 158 drafts accepted
+strata serve: prompt 282 tokens = 277 reused + 5 read in 187 ms (26.7 tok/s), 342 generated in 2970 ms (115.1 tok/s), drafts accepted 226 of 300, 1 checkpoints
+strata serve: KV streaming: 99.89% of 839754 block reads hit VRAM, 3.8 MiB read from RAM
+strata serve: suffix drafts: 34 windows, 147 of 158 drafts accepted
+strata serve: prompt 108 tokens = 0 reused + 108 read in 596 ms (181.1 tok/s), 303 generated in 2323 ms (130.4 tok/s), drafts accepted 214 of 255, 1 checkpoints
+strata serve: KV streaming: 99.54% of 135354 block reads hit VRAM, 2.5 MiB read from RAM
+strata serve: suffix drafts: 7 windows, 22 of 31 drafts accepted
+strata serve: prompt 108 tokens = 103 reused + 5 read in 177 ms (28.2 tok/s), 303 generated in 2299 ms (131.8 tok/s), drafts accepted 215 of 255, 1 checkpoints
+strata serve: KV streaming: 99.77% of 270522 block reads hit VRAM, 2.5 MiB read from RAM
+strata serve: suffix drafts: 6 windows, 21 of 28 drafts accepted
+strata serve: prompt 108 tokens = 103 reused + 5 read in 199 ms (25.2 tok/s), 303 generated in 2294 ms (132.1 tok/s), drafts accepted 215 of 253, 1 checkpoints
+strata serve: KV streaming: 99.85% of 404766 block reads hit VRAM, 2.5 MiB read from RAM
+strata serve: suffix drafts: 5 windows, 20 of 23 drafts accepted
+strata serve: prompt 72 tokens = 67 reused + 5 read in 237 ms (21.1 tok/s), 512 generated in 5993 ms (85.4 tok/s), drafts accepted 249 of 450, 1 checkpoints
+strata serve: KV streaming: 99.75% of 353448 block reads hit VRAM, 3.5 MiB read from RAM
+strata serve: suffix drafts: 4 windows, 10 of 18 drafts accepted
+strata serve: prompt 602 tokens = 583 reused + 19 read in 91 ms (209.2 tok/s), 494 generated in 3671 ms (134.6 tok/s), drafts accepted 363 of 426, 1 checkpoints
+strata serve: KV streaming: 99.85% of 1097772 block reads hit VRAM, 6.6 MiB read from RAM
+strata serve: suffix drafts: 61 windows, 301 of 303 drafts accepted
+strata serve: prompt 72 tokens = 67 reused + 5 read in 165 ms (30.3 tok/s), 512 generated in 6147 ms (83.3 tok/s), drafts accepted 243 of 464, 1 checkpoints
+strata serve: KV streaming: 99.89% of 1470450 block reads hit VRAM, 6.6 MiB read from RAM
+strata serve: suffix drafts: 5 windows, 17 of 19 drafts accepted
+strata serve: prompt 602 tokens = 583 reused + 19 read in 91 ms (209.9 tok/s), 494 generated in 3549 ms (139.2 tok/s), drafts accepted 367 of 407, 1 checkpoints
+strata serve: KV streaming: 99.92% of 2179932 block reads hit VRAM, 6.6 MiB read from RAM
+strata serve: suffix drafts: 64 windows, 307 of 314 drafts accepted
+strata serve: prompt 72 tokens = 67 reused + 5 read in 194 ms (25.7 tok/s), 512 generated in 6000 ms (85.3 tok/s), drafts accepted 243 of 411, 1 checkpoints
+strata serve: KV streaming: 99.93% of 2516490 block reads hit VRAM, 6.6 MiB read from RAM
+strata serve: suffix drafts: 5 windows, 17 of 19 drafts accepted
+strata serve: prompt 602 tokens = 583 reused + 19 read in 90 ms (211.1 tok/s), 434 generated in 3515 ms (123.5 tok/s), drafts accepted 301 of 377, 1 checkpoints
+strata serve: KV streaming: 99.95% of 3168492 block reads hit VRAM, 6.6 MiB read from RAM
+strata serve: suffix drafts: 45 windows, 196 of 219 drafts accepted
+strata serve: prompt 81 tokens = 76 reused + 5 read in 247 ms (20.2 tok/s), 1024 generated in 8615 ms (118.9 tok/s), drafts accepted 689 of 885, 1 checkpoints
+strata serve: KV streaming: 99.85% of 1094766 block reads hit VRAM, 6.7 MiB read from RAM
+strata serve: suffix drafts: 33 windows, 120 of 161 drafts accepted
+strata serve: prompt 81 tokens = 76 reused + 5 read in 166 ms (30.2 tok/s), 514 generated in 5844 ms (87.9 tok/s), drafts accepted 254 of 412, 1 checkpoints
+strata serve: KV streaming: 99.88% of 1429872 block reads hit VRAM, 6.7 MiB read from RAM
+strata serve: suffix drafts: 10 windows, 21 of 42 drafts accepted
+strata serve: prompt 611 tokens = 76 reused + 535 read in 792 ms (675.5 tok/s), 494 generated in 3990 ms (123.8 tok/s), drafts accepted 344 of 436, 1 checkpoints
+strata serve: KV streaming: 99.92% of 2185242 block reads hit VRAM, 6.7 MiB read from RAM
+strata serve: suffix drafts: 8 windows, 17 of 34 drafts accepted
+strata serve: prompt 81 tokens = 76 reused + 5 read in 201 ms (24.9 tok/s), 513 generated in 5521 ms (92.9 tok/s), drafts accepted 272 of 411, 1 checkpoints
+strata serve: KV streaming: 99.93% of 2511912 block reads hit VRAM, 6.7 MiB read from RAM
+strata serve: suffix drafts: 3 windows, 13 of 15 drafts accepted
+strata serve: prompt 611 tokens = 593 reused + 18 read in 86 ms (208.4 tok/s), 494 generated in 4178 ms (118.2 tok/s), drafts accepted 334 of 442, 1 checkpoints
+strata serve: KV streaming: 99.95% of 3310254 block reads hit VRAM, 6.7 MiB read from RAM
+strata serve: suffix drafts: 4 windows, 3 of 18 drafts accepted
+strata serve: prompt 282 tokens = 277 reused + 5 read in 259 ms (19.3 tok/s), 473 generated in 4644 ms (101.9 tok/s), drafts accepted 283 of 408, 1 checkpoints
+strata serve: KV streaming: 99.75% of 459234 block reads hit VRAM, 4.6 MiB read from RAM
+strata serve: suffix drafts: 35 windows, 155 of 169 drafts accepted
+strata serve: prompt 282 tokens = 277 reused + 5 read in 163 ms (30.7 tok/s), 351 generated in 3328 ms (105.5 tok/s), drafts accepted 216 of 296, 1 checkpoints
+strata serve: KV streaming: 99.85% of 752364 block reads hit VRAM, 4.6 MiB read from RAM
+strata serve: suffix drafts: 33 windows, 144 of 155 drafts accepted
+strata serve: prompt 282 tokens = 277 reused + 5 read in 206 ms (24.3 tok/s), 303 generated in 2418 ms (125.3 tok/s), drafts accepted 212 of 258, 1 checkpoints
+strata serve: KV streaming: 99.88% of 978654 block reads hit VRAM, 4.6 MiB read from RAM
+strata serve: suffix drafts: 28 windows, 138 of 140 drafts accepted
+strata serve: prompt 108 tokens = 103 reused + 5 read in 248 ms (20.2 tok/s), 293 generated in 2309 ms (126.9 tok/s), drafts accepted 203 of 247, 1 checkpoints
+strata serve: KV streaming: 99.54% of 129564 block reads hit VRAM, 2.4 MiB read from RAM
+strata serve: suffix drafts: 3 windows, 7 of 15 drafts accepted
+strata serve: prompt 108 tokens = 103 reused + 5 read in 168 ms (29.8 tok/s), 324 generated in 2733 ms (118.6 tok/s), drafts accepted 217 of 277, 1 checkpoints
+strata serve: KV streaming: 99.77% of 287082 block reads hit VRAM, 2.6 MiB read from RAM
+strata serve: suffix drafts: 1 windows, 1 of 5 drafts accepted
+strata serve: prompt 108 tokens = 103 reused + 5 read in 196 ms (25.5 tok/s), 259 generated in 2126 ms (121.8 tok/s), drafts accepted 177 of 230, 1 checkpoints
+strata serve: KV streaming: 99.84% of 398664 block reads hit VRAM, 2.6 MiB read from RAM
+strata serve: suffix drafts: 1 windows, 1 of 3 drafts accepted
+strata serve: prompt 4647 tokens = 0 reused + 4647 read in 2609 ms (1780.9 tok/s), 11 generated in 103 ms (106.9 tok/s), drafts accepted 7 of 9, 1 checkpoints
+strata serve: KV streaming: 89.99% of 52374 block reads hit VRAM, 21.1 MiB read from RAM
+strata serve: prompt 19004 tokens = 0 reused + 19004 read in 8642 ms (2199.1 tok/s), 11 generated in 313 ms (35.1 tok/s), drafts accepted 7 of 9, 2 checkpoints
+strata serve: KV streaming: 86.02% of 52374 block reads hit VRAM, 29.5 MiB read from RAM
+strata serve: prompt 68929 tokens = 0 reused + 68929 read in 18898 ms (3647.4 tok/s), 9 generated in 81 ms (110.8 tok/s), drafts accepted 6 of 6, 5 checkpoints
+strata serve: KV streaming: 78.36% of 40056 block reads hit VRAM, 34.9 MiB read from RAM
+strata serve: prompt 35953 tokens = 0 reused + 35953 read in 12552 ms (2864.3 tok/s), 66 generated in 852 ms (77.4 tok/s), drafts accepted 31 of 54, 3 checkpoints
+strata serve: KV streaming: 92.81% of 286548 block reads hit VRAM, 83.0 MiB read from RAM
+strata serve: suffix drafts: 1 windows, 5 of 5 drafts accepted
+strata serve: prompt 36035 tokens = 35948 reused + 87 read in 944 ms (92.1 tok/s), 46 generated in 634 ms (72.5 tok/s), drafts accepted 24 of 46, 3 checkpoints
+strata serve: KV streaming: 94.58% of 502212 block reads hit VRAM, 109.7 MiB read from RAM
+strata serve: prompt 39052 tokens = 35948 reused + 3104 read in 2262 ms (1372.5 tok/s), 64 generated in 959 ms (66.7 tok/s), drafts accepted 31 of 41, 4 checkpoints
+strata serve: KV streaming: 95.77% of 742530 block reads hit VRAM, 126.4 MiB read from RAM
+strata serve: suffix drafts: 2 windows, 3 of 10 drafts accepted
+strata serve: prompt 39134 tokens = 39115 reused + 19 read in 100 ms (190.2 tok/s), 26 generated in 314 ms (82.8 tok/s), drafts accepted 16 of 20, 4 checkpoints
+strata serve: KV streaming: 96.21% of 899664 block reads hit VRAM, 137.5 MiB read from RAM
+strata serve: prompt 41869 tokens = 39047 reused + 2822 read in 2109 ms (1338.0 tok/s), 64 generated in 727 ms (88.0 tok/s), drafts accepted 34 of 45, 5 checkpoints
+strata serve: KV streaming: 96.68% of 1143054 block reads hit VRAM, 152.8 MiB read from RAM
+strata serve: prompt 41951 tokens = 41932 reused + 19 read in 99 ms (192.5 tok/s), 33 generated in 390 ms (84.6 tok/s), drafts accepted 20 of 32, 5 checkpoints
+strata serve: KV streaming: 97.06% of 1343322 block reads hit VRAM, 159.1 MiB read from RAM
+strata serve: suffix drafts: 1 windows, 1 of 5 drafts accepted
+strata serve: prompt 44819 tokens = 41864 reused + 2955 read in 2123 ms (1391.9 tok/s), 64 generated in 701 ms (91.4 tok/s), drafts accepted 36 of 50, 6 checkpoints
+strata serve: KV streaming: 97.30% of 1595958 block reads hit VRAM, 173.7 MiB read from RAM
+strata serve: prompt 44901 tokens = 44882 reused + 19 read in 99 ms (192.4 tok/s), 31 generated in 323 ms (96.1 tok/s), drafts accepted 19 of 22, 6 checkpoints
+strata serve: KV streaming: 97.52% of 1759248 block reads hit VRAM, 176.1 MiB read from RAM
+strata serve: suffix drafts: 1 windows, 5 of 5 drafts accepted
