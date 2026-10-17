@@ -4,7 +4,7 @@
 // mtmd library and the model's mmproj file (vision encoder + projector).  The engine does the rest: it places the
 // rows at the image's pad tokens and gives them their 2-D M-RoPE positions (see --serve GENI in generate.cpp).
 //
-//   strata-vision --mmproj <mmproj.gguf> --model <text model .gguf, first split> [--gpu] [--threads N]
+//   strata-vision --mmproj <mmproj.gguf> --model <text model .gguf, any split> [--gpu] [--threads N]
 //                 [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]
 // Flash attention defaults to auto, and to off on the CPU when ggml is built with AVX-512 (see main).
 //
@@ -18,6 +18,7 @@
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
+#include "strata/artifact/gguf_split.hpp"
 
 #include <algorithm>
 #if !defined(_WIN32)
@@ -28,6 +29,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -50,6 +52,60 @@ bool parse_enc(const std::string& line, std::string& img, std::string& out) {
     img = rest.substr(0, sp);
     out = rest.substr(sp + 1);
     return !img.empty() && !out.empty();
+}
+
+// llama.cpp's vocab_only loader still constructs a weight index and checks every tensor's file bounds.  Strata's
+// external-PLE path can intentionally omit a split shard, and a PLE tensor in the source GGUF is not needed by the
+// image encoder anyway.  Give llama.cpp a metadata/tokenizer-only GGUF instead: this keeps the model's own vocabulary
+// and architecture metadata without asking the vision process to load or validate text weights.
+struct temporary_file {
+    std::string path;
+    ~temporary_file() {
+        if (!path.empty()) {
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+        }
+    }
+};
+
+std::string vocab_only_model(const std::string& model, temporary_file& temp, std::string& error) {
+    const std::string first = strata::gguf_split_shard_path(model, 1);
+    const std::string source_path = first.empty() ? model : first;
+    gguf_init_params params{true, nullptr};
+    gguf_context* source = gguf_init_from_file(source_path.c_str(), params);
+    if (!source) {
+        error = "cannot read the text model metadata " + source_path;
+        return {};
+    }
+    gguf_context* vocab = gguf_init_empty();
+    if (!vocab) {
+        gguf_free(source);
+        error = "cannot create the vision vocabulary model";
+        return {};
+    }
+    gguf_set_kv(vocab, source);
+    // A metadata-only file must be one GGUF, not a split model with zero tensors and a nonzero expected count.
+    gguf_remove_key(vocab, "split.no");
+    gguf_remove_key(vocab, "split.count");
+    gguf_remove_key(vocab, "split.tensors.count");
+    try {
+        const auto name = std::string("strata-vision-vocab-") +
+                          std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".gguf";
+        temp.path = (std::filesystem::temp_directory_path() / name).string();
+    } catch (const std::exception& e) {
+        gguf_free(vocab);
+        gguf_free(source);
+        error = std::string("cannot create a temporary vision vocabulary model: ") + e.what();
+        return {};
+    }
+    const bool written = gguf_write_to_file(vocab, temp.path.c_str(), true);
+    gguf_free(vocab);
+    gguf_free(source);
+    if (!written) {
+        error = "cannot write the temporary vision vocabulary model " + temp.path;
+        return {};
+    }
+    return temp.path;
 }
 
 }  // namespace
@@ -112,9 +168,17 @@ int main(int argc, char** argv) {
         }
     }
 #endif
+    temporary_file vocab_temp;
+    std::string vocab_error;
+    const std::string text_model = vocab_only_model(model, vocab_temp, vocab_error);
+    if (text_model.empty()) {
+        std::printf("ERR %s\n", vocab_error.c_str());
+        std::fflush(stdout);
+        return 1;
+    }
     llama_model_params mp = llama_model_default_params();
     mp.vocab_only = true;
-    llama_model* text = llama_model_load_from_file(model.c_str(), mp);
+    llama_model* text = llama_model_load_from_file(text_model.c_str(), mp);
     if (!text) { std::printf("ERR cannot open the text model %s\n", model.c_str()); std::fflush(stdout); return 1; }
 
     mtmd_context_params cp = mtmd_context_params_default();

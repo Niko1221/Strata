@@ -118,6 +118,17 @@ More: [details](DETAILS.md#or-swift-15-a-fine-tune-that-thinks-shorter).
 START-HERE.bat --setup --family swift --model IQ2_XS
 ```
 
+For Swift's manual Q4_K_L files, shard 2 is PLE-only. If the external PLE file is available, build the pack without
+downloading that shard:
+
+```
+python tools/iq_pack.py --gguf Swift-...-00001-of-00004.gguf --out packs/swift-q4kl \
+  --ple-gguf ple.gguf --skip-ple-shard 2 --compat-bf16
+```
+
+Pass the same `--skip-ple-shard 2` and `--ple-gguf ple.gguf` to `strata --native`; other missing shards still fail
+validation.
+
 <a id="unsloth-ud-iq4_xs"></a><a id="unsloth-ud-q4_k_xl-experimental"></a>
 
 ### Unsloth's files: UD-IQ4_XS to Q8_0
