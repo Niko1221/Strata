@@ -1,0 +1,196 @@
+{
+  "measurement_date": "2026-10-17",
+  "timezone": "Asia/Shanghai",
+  "source_build": true,
+  "strata_commit": "296b59d2f73c8f04a805df29c2fa97655adace78",
+  "engine_version": "0.1.44.1",
+  "llama_cpp_commit": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+  "cuda_compiler_version": "12.1",
+  "cuda_architecture": "sm_90",
+  "python_version": "3.11",
+  "os": "Ubuntu 22.04.5 LTS",
+  "kernel": "5.10.134-013.8.2.kangaroo.al8.x86_64",
+  "driver": "580.95.05",
+  "gpu": {
+    "name": "NVIDIA H20",
+    "count_for_strata": 1,
+    "physical_index_for_strata": 3,
+    "vram_total_mib": 97871
+  },
+  "host": {
+    "exposed_cpu_model": "Intel(R) Xeon(R) Processor",
+    "visible_logical_cpus": 150,
+    "proc_mem_total_kib": 1782579200,
+    "memory_scope": "host-visible total, not exclusive reservation",
+    "filesystem": "NFS",
+    "physical_storage_medium": null,
+    "ram_speed": null
+  },
+  "post_run_inventory": {
+    "collected_at": "2026-10-17T09:32:53.317654+00:00",
+    "gpu_power_limit_w": 500,
+    "pcie_max_generation": 5,
+    "pcie_max_width": 16,
+    "note": "Read after the experiment; negotiated PCIe link, per-run clocks, CPU quota and NUMA binding were not captured."
+  },
+  "cublas": {
+    "failed_runtime_package": "nvidia-cublas-cu12 12.1.0.26",
+    "successful_runtime_package": "nvidia-cublas-cu12 12.8.4.1",
+    "scope": "private config lib_dirs; original compiler, source and system libraries left in place"
+  },
+  "weights": {
+    "repository": "unsloth/Qwen3.8-Flash-Next-GGUF",
+    "revision": "38bb39ee97821de2c9009abb7e93950eec396e66",
+    "format": "Q8_0 GGUF",
+    "shards": [
+      "Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf",
+      "Qwen3.8-Flash-Next-Q8_0-00002-of-00006.gguf",
+      "Qwen3.8-Flash-Next-Q8_0-00003-of-00006.gguf",
+      "Qwen3.8-Flash-Next-Q8_0-00004-of-00006.gguf",
+      "Qwen3.8-Flash-Next-Q8_0-00005-of-00006.gguf",
+      "Qwen3.8-Flash-Next-Q8_0-00006-of-00006.gguf"
+    ],
+    "total_bytes": 188225033248,
+    "verification": "All six shards matched the fixed-version upstream SHA256; per-shard hashes are not repeated in this report."
+  },
+  "expert_profile": {
+    "upstream_relative_path": "data/expert-profile.bin",
+    "bytes": 196632,
+    "sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf"
+  },
+  "strata_native_artifacts": {
+    "mode": "Prepared upstream native pack and MTP artifacts; no custom model quantization",
+    "per_artifact_binary_hashes": null,
+    "limitation": "Native pack and MTP binary hashes were not captured. Replay scripts require an already prepared service; this is not a bitwise build reproduction claim."
+  },
+  "runtime_details": {
+    "expert_cache_slots": 17136,
+    "expert_cache_gib": 83.35,
+    "host_pinned_kv_gib": 3.09,
+    "native_output_head": "Q5_K experimental",
+    "native_output_head_bytes": 675430400,
+    "cpu_pool_participating_threads": 150
+  },
+  "capacity_observations": {
+    "gpu_sample_interval_s": 2,
+    "gpu_peak_mib": 93941,
+    "engine_rss_kib": 133928676,
+    "engine_threads": 176
+  },
+  "serving_observations": {
+    "baseline": {
+      "strata": {
+        "phase": "baseline",
+        "case": "single-512",
+        "backend": "strata",
+        "concurrency": 1,
+        "requests": 3,
+        "successful": 3,
+        "aggregate_tps": 24.21678502515294,
+        "per_gpu_tps": 24.21678502515294,
+        "decode_tps_p50": 25.156879584886475,
+        "ttft_p50_s": 0.8298254180699587,
+        "ttft_p95_s": 0.8997493770439178,
+        "latency_p95_s": 28.530639707203953,
+        "prompt_tokens_min": 365,
+        "prompt_tokens_max": 365
+      },
+      "tp4": {
+        "phase": "baseline",
+        "case": "single-512",
+        "backend": "tp4",
+        "concurrency": 1,
+        "requests": 3,
+        "successful": 3,
+        "aggregate_tps": 111.73228186491099,
+        "per_gpu_tps": 27.933070466227747,
+        "decode_tps_p50": 119.00340561884919,
+        "ttft_p50_s": 0.2905543218366802,
+        "ttft_p95_s": 0.3008148915600032,
+        "latency_p95_s": 5.108913763612509,
+        "prompt_tokens_min": 365,
+        "prompt_tokens_max": 365
+      }
+    },
+    "concurrency": [
+      {
+        "concurrency": 1,
+        "strata_tps": 34.641604585905654,
+        "tp4_tps": 109.93356498629112,
+        "total_ratio": 3.1734547605516776,
+        "per_gpu_ratio": 0.7933636901379194,
+        "strata_ttft_p95_s": 0.8364262247458101,
+        "tp4_ttft_p95_s": 0.27966605527326466,
+        "strata_latency_p95_s": 9.215758181642741,
+        "tp4_latency_p95_s": 2.380420451145619
+      },
+      {
+        "concurrency": 2,
+        "strata_tps": 39.911461200275326,
+        "tp4_tps": 202.48296343482485,
+        "total_ratio": 5.07330369135741,
+        "per_gpu_ratio": 1.2683259228393524,
+        "strata_ttft_p95_s": 1.7866323246620595,
+        "tp4_ttft_p95_s": 0.5099917314713821,
+        "strata_latency_p95_s": 12.942599106114358,
+        "tp4_latency_p95_s": 2.685960006923415
+      },
+      {
+        "concurrency": 4,
+        "strata_tps": 46.49186057047527,
+        "tp4_tps": 378.47862444162513,
+        "total_ratio": 8.140750225900371,
+        "per_gpu_ratio": 2.0351875564750928,
+        "strata_ttft_p95_s": 3.926441711303778,
+        "tp4_ttft_p95_s": 0.4389040035195649,
+        "strata_latency_p95_s": 22.16186773935333,
+        "tp4_latency_p95_s": 2.7392962476005778
+      },
+      {
+        "concurrency": 8,
+        "strata_tps": 47.36754175938148,
+        "tp4_tps": 683.6842052443528,
+        "total_ratio": 14.433601150706629,
+        "per_gpu_ratio": 3.608400287676657,
+        "strata_ttft_p95_s": 25.14130021596793,
+        "tp4_ttft_p95_s": 0.4696252401918173,
+        "strata_latency_p95_s": 43.185993929277174,
+        "tp4_latency_p95_s": 3.008272171020508
+      }
+    ],
+    "gpu_peak_mib": {
+      "3": 94229.0,
+      "4": 94528.0,
+      "5": 94150.0,
+      "6": 94156.0,
+      "7": 93674.0
+    },
+    "background_tp4_during_strata_wave_interiors": {
+      "samples": 412,
+      "util_ge_20_samples": 1,
+      "utilization_peak": 64.0
+    }
+  },
+  "tp4_reference": {
+    "engine": "SGLang",
+    "installed_package_version": "0.0.0.dev1+gdaf631719",
+    "gpu_count": 4,
+    "physical_gpu_indices": [
+      4,
+      5,
+      6,
+      7
+    ],
+    "weights": "Qwen3.8-Flash-Next FP8",
+    "weight_revision": null,
+    "stream_interval": 8,
+    "speculative_algorithm": null,
+    "chunked_prefill_size": 8192,
+    "mem_fraction_static": 0.85
+  },
+  "parallel4_runtime_details": {
+    "expert_cache_slots": 16303,
+    "expert_cache_gib": 79.29,
+    "private_mtp_kv_buffers_per_slot_mib": 50
+  }
+}

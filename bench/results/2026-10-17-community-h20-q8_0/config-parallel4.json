@@ -1,0 +1,48 @@
+{
+  "exe": "${STRATA_ROOT}/Strata/engine-cuda12/strata",
+  "args": [
+    "--pack",
+    "${STRATA_ROOT}/data/packs/unsloth-q8_0",
+    "--native",
+    "${STRATA_ROOT}/community-models/Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf",
+    "--expert-profile",
+    "${STRATA_ROOT}/Strata/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "${STRATA_ROOT}/data/mtp/rt",
+    "--max-context",
+    "262144",
+    "--kv",
+    "int8",
+    "--kv-resident",
+    "32768",
+    "--vram-reserve-mib",
+    "4096",
+    "--batch-mtp"
+  ],
+  "cwd": "${STRATA_ROOT}/Strata",
+  "tokenizer": "${STRATA_ROOT}/data/packs/unsloth-q8_0/tokenizer",
+  "model_name": "qwen3.8-flash-next-unsloth-q8_0",
+  "log": "${STRATA_ROOT}/report-parallel4.log",
+  "lib_dirs": [
+    "${STRATA_ROOT}/runtime-cu128/nvidia/cublas/lib",
+    "/usr/local/cuda/bin",
+    "/usr/local/cuda/lib64"
+  ],
+  "port": 18083,
+  "cuda": 12,
+  "env": {
+    "STRATA_ROUTE_TAIL_SKIP": "0"
+  },
+  "gpu": 3,
+  "host": "127.0.0.1",
+  "open_browser": false,
+  "parallel": 4
+}
