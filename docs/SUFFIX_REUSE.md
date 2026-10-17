@@ -228,3 +228,18 @@ Refused (logged, falls back to full re-read, never crashes): `--kv-resident > 0`
 5. Adaptive KV Cache Reuse for Fast Long-Context LLM Serving — arXiv:2605.24022. https://arxiv.org/abs/2605.24022
 6. Efficient Serving for Dynamic Agent Workflows with Prediction-based KV-Cache Management (PBKV) — arXiv:2605.06472. https://arxiv.org/abs/2605.06472
 7. vLLM prompt-cache reuse RFC — absolute-position mismatch discussion. https://github.com/vllm-project/vllm/issues/2614
+
+## Review r3 (2026-10-17, mm-reviewer on v0.1.45 rebase) — findings disposition
+
+APPROVE-WITH-FINDINGS, 11 MINOR, 0 MAJOR, 0 BLOCKER (verdict: sfx145-mm-verdict.json).
+9 findings were independent confirmations of correctness (rebase fix e2dae10c, splice
+math per codec, boundary clamps, pool caps, test strength). Two optional items:
+
+- F8 (fixed): both REPLAY_NOT_AVAILABLE reason strings (strict + partial sites in
+  generate.cpp) said "Phase 3" for ring/per-stage refusals — stale wording; now says
+  "future work". Stderr-only, no behavior change.
+- F5 (documented as future hardening): T18 replay-gated gap read fires only on the
+  partial-mount path (`splice_restore_anchor_length > 0`). On the strict
+  splice-narrowed branch the restored anchor covers [C, E) by construction, so no
+  gap-read is needed there today. If FW-2c lifts restore semantics, extend the gate
+  symmetrically. Reviewer marked optional; no bug present.
