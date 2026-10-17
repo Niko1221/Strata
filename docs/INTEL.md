@@ -411,7 +411,22 @@ time:
   `gpu_reader`. That reads the Arc through sysfs (temperature, power and its cap, the PCIe link the card
   trained at). Load and VRAM come from `/run/gpustat.json`: xe reports them per client in `/proc/*/fdinfo`,
   which only root can read, so a small root sampler writes them (`sycl/tools/gpustat.py`; install it with its
-  `gpustat.service` as its header says).
+  `gpustat.service` as its header says). For load/VRAM without background hardware-sensor polling, add a
+  systemd override (`sudo systemctl edit gpustat`):
+
+  ```ini
+  [Service]
+  Environment=GPUSTAT_FDINFO_ONLY=1
+  ```
+
+  Then `sudo systemctl restart gpustat`. This opt-in mode reads only the selected card's process fdinfo and
+  writes load/VRAM to the same JSON file; power, temperature, clocks and PCIe-link measurements are not included.
+  An initial/reset/stalled counter interval has unknown load, not a made-up zero. With no DRM clients, load
+  and resident VRAM are zero. The server must also stop its own GPU sensor reads while unloaded (see #2924);
+  this sampler option alone does not change the server's telemetry or guarantee uninterrupted runtime suspend.
+  On SR-IOV cards, set `GPUSTAT_VRAM_MB` explicitly when auto-detection picks a VF reservation rather than VRAM
+  (for example, another `Environment=GPUSTAT_VRAM_MB=32768` line for a 32 GiB B70). Auto-detection uses the largest
+  PCI resource and also assumes full resizable BAR. The normal full hardware sampler stays the default.
 - **A Model menu.** A run config may name a `model_switcher` (an RPC taking `{"mode": m}`) for a host that swaps
   models on one card. The web app's header then gets a Model menu (`sycl/serve/web/switcher.js`, injected into
   the page).
