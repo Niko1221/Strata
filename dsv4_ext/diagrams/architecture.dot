@@ -1,0 +1,226 @@
+digraph dsv4_architecture {
+    // Graph settings
+    rankdir=TB;
+    fontname="Helvetica";
+    fontsize=12;
+    label="\nDSV4-Strata-Ext Architecture\nDeepSeek-V4-Flash Extension for Strata Engine";
+    labelloc=t;
+    toplabelangle=-30;
+    compound=true;
+
+    // Color schemes
+    color_scheme=blues7;
+
+    // ====================================================================
+    // EXTERNAL DEPENDENCIES
+    // ====================================================================
+    subgraph cluster_external {
+        style=filled;
+        color="#e8e8e8";
+        label="External Dependencies";
+
+        gguf [label="GGUF Files\n(Shards)" shape=folder style=filled fillcolor="#f0f0f0"];
+        llama_cpp [label="llama.cpp\nggml-common.h" shape=note style=filled fillcolor="#e8f4f8"];
+        strata_serve [label="Strata serve/\nserver.py" shape=note style=filled fillcolor="#e8f4f0"];
+        openmp [label="OpenMP\n(libgomp)" shape=box style=filled fillcolor="#f0e8f0"];
+    }
+
+    // ====================================================================
+    // MAIN APPLICATIONS
+    // ====================================================================
+    subgraph cluster_apps {
+        style=filled;
+        color="#d4edda";
+        label="Applications (binaries)";
+
+        dsv4_run [label="dsv4_run\nMain Inference CLI" shape=box3d style=filled fillcolor="#28a745" fontcolor=white];
+        dsv4_plan [label="dsv4_plan\nVRAM Planner" shape=box3d style=filled fillcolor="#17a2b8" fontcolor=white];
+    }
+
+    // ====================================================================
+    // CORE LIBRARY
+    // ====================================================================
+    subgraph cluster_core {
+        style:filled;
+        color="#cce5ff";
+        label="Core Library (dsv4_core)";
+
+        // --- GGUF Layer ---
+        subgraph cluster_gguf {
+            style=filled;
+            color="#fff3cd";
+            label="GGUF Parsing";
+
+            gguf_header_hpp [label="gguf_header.hpp\n+ .cpp" shape=box style=filled fillcolor="#ffc107"];
+        }
+
+        // --- Config Layer ---
+        subgraph cluster_config {
+            style=filled;
+            color="#fff3cd";
+            label="Configuration";
+
+            config_hpp [label="config.hpp\n+ .cpp" shape=box style=filled fillcolor="#ffc107"];
+        }
+
+        // --- Quantization Layer ---
+        subgraph cluster_quant {
+            style=filled;
+            color="#d4edda";
+            label="Quantization Engine";
+
+            dequant_hpp [label="dequant.hpp\n+ .cpp" shape=box style=filled fillcolor="#28a745"];
+            dq_traits_hpp [label="dq_traits.hpp\n(CUDA traits)" shape=box style=filled fillcolor="#28a745"];
+            iq_tables_cpp [label="iq_tables.cpp\n(Codebook tables)" shape=box style=filled fillcolor="#6c757d"];
+        }
+
+        // --- Operations Layer ---
+        subgraph cluster_ops {
+            style=filled;
+            color="#e2d5f0";
+            label="Math Operations (CPU Reference)";
+
+            ops_hpp [label="ops.hpp\n+ .cpp" shape=box style=filled fillcolor="#6f42c1"];
+        }
+
+        // --- Memory Planning Layer ---
+        subgraph cluster_mem {
+            style=filled;
+            color="#e2d5f0";
+            label="Memory Planning";
+
+            mem_plan_hpp [label="mem_plan.hpp\n+ .cpp" shape=box style=filled fillcolor="#6f42c1"];
+        }
+
+        // --- GPU Device Layer ---
+        subgraph cluster_gpu {
+            style=filled;
+            color="#ffe0cc";
+            label="GPU Device Layer (mutually exclusive)";
+
+            gpu_cpp [label="gpu.cpp\nCPU-Emulated Backend" shape=box3d style=filled fillcolor="#fd7e14"];
+            gpu_cuda_cu [label="gpu_cuda.cu\nCUDA Backend" shape=box3d style=filled fillcolor="#dc3545"];
+        }
+
+        // --- Model Layer ---
+        subgraph cluster_model {
+            style:filled;
+            color="#cce5ff";
+            label="Model Inference Engine";
+
+            model_hpp [label="model.hpp\n+ .cpp (Impl)" shape=box3d style=filled fillcolor="#007bff"];
+        }
+
+        // --- Sampling Layer ---
+        subgraph cluster_sampler {
+            style:filled;
+            color="#cce5ff";
+            label="Token Sampling";
+
+            sampler_hpp [label="sampler.hpp\n+ .cpp" shape=box style=filled fillcolor="#007bff"];
+        }
+
+        // --- Serve Layer ---
+        subgraph cluster_serve {
+            style:filled;
+            color="#cce5ff";
+            label="Serve Loop (Line Protocol)";
+
+            serve_loop_hpp [label="serve_loop.hpp\n+ .cpp" shape=box style=filled fillcolor="#007bff"];
+        }
+    }
+
+    // ====================================================================
+    // TOOLS & TESTS
+    // ====================================================================
+    subgraph cluster_tools {
+        style:filled;
+        color="#f8d7da";
+        label="Tools (Python)";
+
+        tiny_model [label="tiny_model.py\n(Tiny model gen)" shape=box style=filled fillcolor="#e8573a" fontcolor=white];
+        dsv4_tokenize [label="dsv4_tokenize.py\n(Token generation)" shape=box style=filled fillcolor="#e8573a" fontcolor=white];
+        serve_dsv4 [label="serve_dsv4.py\n(HTTP Server wrapper)" shape=box style=filled fillcolor="#e8573a" fontcolor=white];
+        extract_iq [label="extract_iq_tables.py\n(Codebook extraction)" shape=box style=filled fillcolor="#e8573a" fontcolor=white];
+        dump_shapes [label="dump_gguf_shapes.py\n(GGUF inspection)" shape=box style=filled fillcolor="#e8573a" fontcolor=white];
+    }
+
+    subgraph cluster_tests {
+        style:filled;
+        color="#f8d7da";
+        label="Tests (C++)";
+
+        test_core [label="test_dsv4_core\n(Config + Plan)" shape=box style=filled fillcolor="#dc3545"];
+        test_ops [label="test_ops\n(Oracle vs golden.txt)" shape=box style=filled fillcolor="#dc3545"];
+        test_dq_traits [label="test_dq_traits\n(CUDA traits vs CPU)" shape=box style=filled fillcolor="#dc3545"];
+        test_prefill [label="test_prefill_batch\n(Chunked prefill)" shape=box style=filled fillcolor="#dc3545"];
+    }
+
+    // ====================================================================
+    // DATA FLOW EDGES
+    // ====================================================================
+
+    // GGUF parsing flow
+    gguf -> gguf_header_hpp [label="reads shards" style=dashed];
+    gguf_header_hpp -> config_hpp [label="GgufHeader" style=solid];
+    config_hpp -> mem_plan_hpp [label="Dsv4Config + ExpertInventory" style=solid];
+
+    // Quantization flow
+    llama_cpp -> extract_iq [label="ggml-common.h" style=dashed];
+    extract_iq -> iq_tables_cpp [label="generates tables"];
+    iq_tables_cpp -> dequant_hpp [label="codebook data" style=dotted];
+    iq_tables_cpp -> dq_traits_hpp [label="G_* macros" style=dotted];
+    dequant_hpp -> ops_hpp [label="ggml types, row_bytes()" style=solid];
+
+    // GPU layer
+    gpu_cpp -> dequant_hpp [label="row_dot()" style=solid];
+    gpu_cpp -> ops_hpp [label="swiglu_clamped()" style=solid];
+    gpu_cuda_cu -> dq_traits_hpp [label="__constant__ mem" style=solid];
+
+    // Model core flow
+    model_hpp -> config_hpp [label="Dsv4Config" style=solid];
+    model_hpp -> mem_plan_hpp [label="MemPlan" style=solid];
+    model_hpp -> dequant_hpp [label="dequant_row, row_dot" style=solid];
+    model_hpp -> gpu_hpp [label="gpu::matvec, experts_hit" style=solid];
+    model_hpp -> ops_hpp [label="all math ops" style=solid];
+    model_hpp -> sampler_hpp [label="Sampler" style=solid];
+
+    // Serve flow
+    serve_loop_hpp -> model_hpp [label="Model&" style=solid];
+    serve_dsv4 -> dsv4_run [label="spawns --serve" style=dashed];
+    strata_serve -> serve_loop_hpp [label="line protocol" style=dashed];
+
+    // Application flow
+    dsv4_run -> model_hpp [label="Model::load, forward" style=solid];
+    dsv4_plan -> config_hpp [label="config_from_gguf" style=solid];
+    dsv4_plan -> mem_plan_hpp [label="plan_expert_memory" style=solid];
+
+    // Tools flow
+    tiny_model -> gguf [label="generates test GGUF"];
+    dsv4_tokenize -> gguf [label="reads tokenizer from GGUF"];
+    dump_shapes -> gguf [label="inspects shards"];
+
+    // Test flow
+    test_core -> config_hpp [label="config_from_gguf" style=solid];
+    test_core -> mem_plan_hpp [label="plan_expert_memory" style=solid];
+    test_ops -> ops_hpp [label="oracle comparison" style=solid];
+    test_dq_traits -> dequant_hpp [label="dequant_row vs traits" style=solid];
+    test_dq_traits -> dq_traits_hpp [label="element-by-element" style=solid];
+    test_prefill -> model_hpp [label="forward_chunk" style=solid];
+
+    // Legend
+    subgraph cluster_legend {
+        rank=sink;
+        style=filled;
+        color="#f8f9fa";
+        label="Legend";
+
+        legend1 [label="Core API Header" shape=box style=filled fillcolor="#ffc107"];
+        legend2 [label="Implementation" shape=box style=filled fillcolor="#6c757d"];
+        legend3 [label="Binary / App" shape=box3d style=filled fillcolor="#28a745" fontcolor=white];
+        legend4 [label="GPU Backend" shape=box3d style=filled fillcolor="#fd7e14"];
+    }
+
+    {rank=same; gguf_header_hpp config_hpp dequant_hpp ops_hpp mem_plan_hpp sampler_hpp serve_loop_hpp;}
+    {rank=same; gpu_cpp gpu_cuda_cu model_hpp;}
+}
