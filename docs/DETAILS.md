@@ -2108,6 +2108,19 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
   against the FP16 prompt path (IQ3_XXS, `--prefill auto`): 8K prompt KL 0.042 (0.1.39: 0.054), top-1 agreement
   93.5% (92.2%); 32K prompt KL 0.020 (0.019), top-1 95.3% (95.0%) - the same band as before. `STRATA_RING_BYTES=0`
   restores 0.1.39's ring, loan and chunk choice.
+- **`STRATA_PREFILL_MAX="8192,4096,8192,8192"` (opt-in): a ceiling on the prompt chunk of each prompt-path
+  participant, in the split's order** - entry 0 is the first card's path (it reads the chunk's embeddings and hands
+  its rows on), entry *i* the *i*-th stage; `0` or an absent entry is no ceiling, and values are multiples of 256.
+  Strata's split is one grid: every stage reads chunks of the chain's size, and a card whose cache cannot fund one
+  pulls *every* stage down to its number (the `#448` warning). A ceiling is the other choice: a card that cannot
+  fund an 8192-token loan lays its path out at 4096 and reads each hand-off in steps of 4096 (`Prefill::run_impl`
+  loops over the incoming rows in steps of its own chunk), while the other stages keep 8192. A ceiling on entry 0
+  caps the chain, because the chain's chunk is the first path's. It is from the Maya checkout
+  (`project-maya`), local commit `ef3b6e7` (2026-10-15), whose name `STRATA_GLM_PREFILL_MAX` is accepted as the same
+  knob; that commit measured per-part chunks as a loss with every part moved - 91,718.9 ms for 13 equal chunks
+  against 94,840 ms for the capped 16k/16k/8k/7k shape, on its byte-identical 100,535-token read - which is why a
+  ceiling only lowers a stage and never raises one, and why it is opt-in. The start prints one line a participant
+  (`prompt chunk: CUDA%d reads N tokens a step`), and unset every number above is what it was.
 
 The full story, with measurements, bottlenecks and what comes next: **[docs/paper/Strata-Paper.pdf](paper/Strata-Paper.pdf)**.
 
