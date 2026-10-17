@@ -488,13 +488,15 @@ class _CpuRamFallback:
 
 # ------------------------------------------------------------------------------------------------ the sampler
 class Telemetry:
-    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False):
+    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False, gpu_active=None):
         """`extra()` -> dict of more series to record each second (the server's tok/s).  `gpu_index`: the card the
         engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus); `gpu_indices`: all of them when
         the model is split across several (issue #112) - the gpu_* readings are then their total (memory, power,
         PCIe traffic), mean (load) or hottest (temperature), and "gpus" has each card's own.  `amd`: the AMD backend's
-        cards, numbered as HIP numbers them, read from sysfs (#301)."""
+        cards, numbered as HIP numbers them, read from sysfs (#301). `gpu_active`: optional () -> bool; while false,
+        skip GPU reads (which can prevent runtime suspend), but keep CPU/RAM/disk and server series updating."""
         self.extra = extra
+        self.gpu_active = gpu_active             # optional () -> bool: unloaded models must not wake a sleeping GPU
         self.lock = threading.Lock()
         self.now: dict = {}
         self.hist = collections.defaultdict(lambda: collections.deque(maxlen=HISTORY))
@@ -558,7 +560,8 @@ class Telemetry:
 
     def sample(self):
         s = {}
-        if self.gpu.ok():
+        gpu_active = self.gpu_active is None or self.gpu_active()
+        if self.gpu.ok() and gpu_active:
             reads = [(i, g.read()) for i, g in self.gpus]
             g = dict(reads[0][1])
             if len(reads) > 1:
@@ -575,6 +578,11 @@ class Telemetry:
                               "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power")}
                              for i, r in reads]
             s.update({f"gpu_{k}": v for k, v in g.items()})
+        elif not gpu_active:
+            for _, g in self.gpus:
+                pause = getattr(g, "pause", None)
+                if pause:
+                    pause()                     # reset reader-side deltas, without reading any GPU registers
         if self.ps:
             try:
                 s["cpu"] = self.ps.cpu_percent(interval=None)
