@@ -265,8 +265,33 @@ std::unique_ptr<HipLtState> create_hipblaslt_state(void* workspace, size_t works
     const auto suffix = arch.find(':');
     if (suffix != std::string::npos) arch.resize(suffix);
 
+    // STRATA_HIPBLASLT_TUNING may list several tables (':'-separated, ';' on Windows): each card loads the first one
+    // whose architecture and hipBLASLt version match it, so a split over two architectures (a gfx1100 + a gfx1201)
+    // tunes both cards' prompt GEMMs.  A single path behaves exactly as before.
+#if defined(_WIN32)
+    const char list_sep = ';';
+#else
+    const char list_sep = ':';
+#endif
     std::string error;
-    if (!state->table.load(path, arch, version, error)) {
+    bool loaded = false;
+    const std::string paths(path);
+    for (size_t begin = 0; !loaded && begin <= paths.size();) {
+        size_t end = paths.find(list_sep, begin);
+        if (end == std::string::npos) end = paths.size();
+        const std::string one = paths.substr(begin, end - begin);
+        begin = end + 1;
+        if (one.empty()) continue;
+        std::string one_error;
+        strata::prefill::hipblaslt::TuningTable table;
+        if (table.load(one, arch, version, one_error)) {
+            state->table = std::move(table);
+            loaded = true;
+        } else {
+            error += (error.empty() ? "" : "; ") + one_error;
+        }
+    }
+    if (!loaded) {
         std::fprintf(stderr, "prefill gemm: %s; using hipBLASEx\n", error.c_str());
         return nullptr;
     }
