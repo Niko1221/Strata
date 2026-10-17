@@ -2452,6 +2452,15 @@ int main(int argc, char** argv) {
                                          "#1630); 7500 and below were stable. Kept as asked; a bare --prefill auto stops at %lld\n",
                                  v.c_str(), (long long) strata::platform::host_limits::kWinHipAutoChunkCap);
             }
+            // #2743: the prompt path launches kernels with one grid row per token of the chunk (the token embedding,
+            // the GDN q/k norm), and a grid's y is at most 65535.  --prefill 65536 read prompts up to 65536 tokens and
+            // stopped the engine at the first longer one ("iq_embed_rows: invalid argument").  auto stays at 32768.
+            constexpr int64_t kMaxChunk = 65280;   // the largest multiple of 256 under that limit
+            if (o.prefill_chunk > kMaxChunk) {
+                std::fprintf(stderr, "strata: --prefill %s: a prompt chunk is at most %lld tokens (one grid row per token, "
+                                     "#2743); using %lld\n", v.c_str(), (long long) kMaxChunk, (long long) kMaxChunk);
+                o.prefill_chunk = kMaxChunk;
+            }
         }
         else if (a == "--prefill-pipe") o.prefill_pipe = std::max(0.0, std::atof(next("--prefill-pipe")));
         else if (a == "--no-split-rows") o.no_split_rows = true;
