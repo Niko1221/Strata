@@ -5105,6 +5105,15 @@ def body_limit() -> int:
     return mib << 20 if mib > 0 else CHUNKED_BODY_MAX
 
 
+# The deadline on a real request's body, as _drain_body and _control_body already have on theirs.  It is the wait for
+# ONE socket read that gets nothing, not a bound on the whole body: a client that is sending, however slowly, is never
+# cut off - only one that has stopped.  Without it a peer that announced a body and died silently (no RST, no FIN)
+# left the handler thread and its fd parked for good, which is what a request of any real size used to be able to do.
+# Generous on purpose, like the engine's own reads (#1317): this is not a slow-client detector.
+# STRATA_BODY_STALL_S overrides it (0 = wait for ever, as before).
+BODY_STALL_S = _timeout_env("STRATA_BODY_STALL_S", 120.0)
+
+
 class BadBody(Exception):
     """A request body that cannot be read (a malformed or oversized chunked body): the status and the sentence."""
 
@@ -5186,19 +5195,33 @@ def make_handler(svc: Service):
         def _body(self) -> bytes:
             self.body_read = True
             limit = body_limit()
-            if self._chunked():
-                return self._read_chunked(limit)
+            # #2814: this is the one body read that had no deadline (the drain and the control body both bound
+            # theirs).  settimeout is the deadline here, as in _read_chunked: it applies to each socket read, so a
+            # client that is sending is never cut off, only one that has stopped.  A body that stops arriving is
+            # answered 408 and the connection ends with the answer - a half-read body leaves the stream unusable.
+            prev = self.connection.gettimeout()
+            if BODY_STALL_S is not None:
+                self.connection.settimeout(BODY_STALL_S)
             try:
-                length = int(self.headers.get("Content-Length", 0))
-            except ValueError:
-                raise BadBody(400, "invalid Content-Length") from None
-            if length < 0:
-                raise BadBody(400, "invalid Content-Length")
-            if length > limit:
-                self.close_connection = True               # the body is not read: the connection ends with the answer
-                raise BadBody(413, f"the request body is larger than {limit >> 20} MiB "
-                                   "(STRATA_MAX_BODY_MIB raises the limit)")
-            return self.rfile.read(length)
+                if self._chunked():
+                    return self._read_chunked(limit)
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                except ValueError:
+                    raise BadBody(400, "invalid Content-Length") from None
+                if length < 0:
+                    raise BadBody(400, "invalid Content-Length")
+                if length > limit:
+                    self.close_connection = True           # the body is not read: the connection ends with the answer
+                    raise BadBody(413, f"the request body is larger than {limit >> 20} MiB "
+                                       "(STRATA_MAX_BODY_MIB raises the limit)")
+                return self.rfile.read(length)
+            except socket.timeout:
+                self.close_connection = True
+                raise BadBody(408, f"the request body stopped arriving ({BODY_STALL_S:.0f} s with nothing sent): "
+                                   "STRATA_BODY_STALL_S changes the wait") from None
+            finally:
+                self.connection.settimeout(prev)
 
         def _drain_body(self):
             """An answer sent before the body was read (a 401, a 403, /load, a method with no handler) must not close
