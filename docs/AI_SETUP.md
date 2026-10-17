@@ -72,7 +72,7 @@ By the PC's RAM (ask the user whether they mainly want it for code - then the Co
 | --- | --- | --- |
 | 32 GB | `--family coder` (size IQ1_M) | for code; with a 24 GB card Q2_0 and IQ2_XS also run (setup picks the low-RAM mode) |
 | 48 GB | `--family qwen --model IQ2_XS` | or `Q2_0` (fastest) |
-| 64 GB | `--family qwen --model IQ2_XS` (recommended) | `IQ3_XXS` / `IQ3_S` are slower and a bit better |
+| 64 GB | `--family qwen --model IQ3_S` (recommended) | `IQ2_XS` / `IQ3_XXS` are faster; IQ3_S wants little else running |
 | 96 GB+ | `--family qwen --model IQ3_S` | `--family unsloth --model UD-IQ4_XS` (~4-bit, 94 GB, part of the experts read from the SSD under ~80 GB of RAM); `--model UD-Q4_K_XL` is experimental: NVIDIA only, NVMe SSD, 7-8.5 tokens/s on 64 GB |
 
 `--family swift` (Swift 1.5, a fine-tune that thinks shorter; sizes Q2_0, IQ2_XS, IQ3_XXS) is the alternative to

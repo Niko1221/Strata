@@ -120,7 +120,7 @@ compressées. Les petites tailles sont plus rapides. Les grandes sont un peu plu
 | --- | --- | --- |
 | **32 Go** | **Coder** | il tient dans 32 Go et il est fait pour le code (avec une carte de 24 Go, Q2_0 et IQ2_XS tournent aussi) |
 | **48 Go** | **IQ2_XS** (ou Q2_0, le plus rapide) | les plus grandes tailles ne tiennent pas |
-| **64 Go** | **IQ2_XS** (recommandé), ou IQ3_XXS / IQ3_S | toutes les tailles tiennent ; IQ3_S est le meilleur et le plus lent |
+| **64 Go** | **IQ3_S** (recommandé), ou IQ2_XS / IQ3_XXS (plus rapides) | toutes les tailles tiennent ; IQ3_S est le meilleur et le plus lent |
 | **96 Go ou plus** | **IQ3_S**, ou l'UD-IQ4_XS d'Unsloth (~4 bits) | de la place pour les plus grandes tailles, avec tout le reste ouvert |
 
 - **[Coder](docs/MODELS.md#coder) :** une version pour le code, avec la moitié des experts en moins. Elle atteint 91 %
