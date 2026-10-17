@@ -57,7 +57,7 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
-from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
+from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, TemplateRequestError, anthropic_to_messages,  # noqa: E402
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
@@ -4093,7 +4093,11 @@ class Service:
             kw = ({k: v for k, v in kwargs.items() if k not in ("reasoning_effort", "enable_thinking")}
                   if self.effort_end and (off or effort not in (None, "", "xhigh", "high")) else dict(kwargs))
             kw["add_generation_prompt"] = False
-            text = self.template.render(marked, tools=marked_tools, **kw)
+            try:
+                text = self.template.render(marked, tools=marked_tools, **kw)
+            except TemplateRequestError as exc:
+                print(f"[strata] strata_prefix {what} ignored: partial conversation cannot be rendered: {exc}", flush=True)
+                return []
             cut = text.find(self.PREFIX_END)
             if cut >= 0:
                 text = text[:cut]

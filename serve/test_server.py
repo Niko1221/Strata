@@ -1622,6 +1622,27 @@ class SharedPrefix(unittest.TestCase):
             with self.assertRaises(ValueError, msg=bad):
                 self.svc.prepare(self.MSGS, None, {}, 16, req={"strata_prefix": bad})
 
+    def test_unrenderable_partial_head_does_not_refuse_valid_request(self):
+        import tempfile
+        from serve.frontend import TemplateRequestError
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "requires-user.jinja"
+            path.write_text("{% if not messages|selectattr('role', 'equalto', 'user')|list %}"
+                            "{{ raise_exception('No user query found in messages.') }}{% endif %}"
+                            + (ROOT / "serve/chat_template.jinja").read_text())
+            svc = Service(MockEngine(self.tok, "ok", max_context=CTX), self.tok,
+                          ChatTemplate(path))
+            messages = [{"role": "system", "content": "System"}, {"role": "user", "content": "Question"}]
+            baseline = svc.prepare(messages, None, {}, 16)
+            for spec in ({"messages": 1}, {"message": 0, "chars": 3}):
+                req = {"strata_prefix": spec}
+                with contextlib.redirect_stdout(io.StringIO()) as log:
+                    self.assertEqual(svc.prepare(messages, None, {}, 16, req=req), baseline)
+                self.assertEqual(req["strata_prefix"], {})
+                self.assertIn("No user query found", log.getvalue())
+            with self.assertRaises(TemplateRequestError):
+                svc.prepare(messages[:1], None, {}, 16, req={"strata_prefix": {"messages": 1}})
+
     def test_chars_end_inside_a_message(self):
         # a document and its question in ONE message: the prefix is the first 160 characters of it
         text = "DOC " * 40 + "Which word repeats?"
