@@ -13,6 +13,11 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-16: 2x RTX 2080 Ti 22 GB, dual-socket Xeon E5-2696 v4 (88 logical CPUs, AVX2 only), 94 GiB RAM, NVLink](../bench/results/2026-10-16-community-2x2080ti-dual-socket/README.md):
+  Strata `main` @ v0.1.43.1 source build, Unsloth UD-IQ4_XS at 131K with `--vision`; the report this list has not had before: a single-GPU vs layer-split
+  comparison on the same cards (decode 28.4/29.8/31.3 -> 52.4/57.9/57.3 tok/s; the win is the CPU pool falling 9.52 -> 0.79 ms on this slow CPU),
+  concurrent-request throughput with `--batch 4 --batch-groups 2` (+21-29% over the split alone), and a same-workload vLLM comparison
+  (Strata 2.45-2.49x vLLM at concurrency 4-8; vLLM stays at ~37 tok/s whether the limit is 180 W or 250 W). Quality 31/31.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
