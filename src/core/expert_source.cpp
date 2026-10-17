@@ -137,6 +137,31 @@ std::string page_cache_hint(const std::string& meminfo_text) {
     return msg;
 }
 
+bool try_resident_allocation(const ResidentAttempt& attempt, const std::function<bool(HostMemory&)>& read_memory,
+                             uint64_t headroom, std::string& err) {
+    err.clear();
+    uint64_t failed_bytes = 0;
+    if (attempt(nullptr, failed_bytes, err)) return true;
+    if (failed_bytes == 0 || !read_memory) return false;
+    ResidentRetry retry;
+    if (!read_memory(retry.memory)) return false;
+    retry.limit = clamp_resident_budget(failed_bytes, retry.memory.available, retry.memory.commit, headroom);
+    if (retry.limit == 0 || retry.limit >= failed_bytes) return false;
+
+    const std::string first_error = err;
+    std::fprintf(stderr, "FileExpertSource: initial allocation failed (%s); retrying with at most %.2f GiB "
+                         "(available RAM %.2f GiB, commit %.2f GiB, %.0f GiB headroom)\n",
+                 first_error.c_str(), (double) retry.limit / 1073741824.0,
+                 (double) retry.memory.available / 1073741824.0, (double) retry.memory.commit / 1073741824.0,
+                 (double) headroom / 1073741824.0);
+    std::fflush(stderr);
+    failed_bytes = 0;
+    err.clear();
+    if (attempt(&retry, failed_bytes, err)) return true;
+    err = first_error + "; smaller retry failed: " + err;
+    return false;
+}
+
 bool make_cache_complement_plan(
     int64_t n_layers, int64_t n_expert, const std::vector<uint64_t>& layer_blob_bytes,
     const std::vector<std::pair<int32_t, int32_t>>& primary_gpu_pairs,
@@ -439,11 +464,10 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo, const std:
 
 namespace {
 
-bool available_memory_bytes(uint64_t& bytes, uint64_t* commit = nullptr) {
+bool available_memory_bytes(uint64_t& bytes) {
     detail::HostMemory m;
     if (!detail::host_available_memory(m)) return false;
     bytes = m.available;
-    if (commit != nullptr) *commit = m.commit;
     return bytes > 0;
 }
 
@@ -2645,7 +2669,26 @@ bool FileExpertSource::pin_cache_complement(
     const ExpertCache& cache, std::string& err, bool pin,
     const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs, int64_t lend_from_slot,
     uint64_t headroom_bytes, uint64_t budget_bytes, const std::vector<std::pair<int32_t, int32_t>>* rank) {
+    const auto attempt = [&](const detail::ResidentRetry* retry, uint64_t& failed_bytes, std::string& reason) {
+        return pin_cache_complement_attempt(cache, reason, pin, additional_gpu_pairs, lend_from_slot,
+                                             headroom_bytes, budget_bytes, rank, retry, failed_bytes);
+    };
+#if defined(_WIN32)
+    return detail::try_resident_allocation(attempt, [](detail::HostMemory& m) { return detail::host_available_memory(m); },
+                                            headroom_bytes, err);
+#else
+    uint64_t failed_bytes = 0;
+    return attempt(nullptr, failed_bytes, err);
+#endif
+}
+
+bool FileExpertSource::pin_cache_complement_attempt(
+    const ExpertCache& cache, std::string& err, bool pin,
+    const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs, int64_t lend_from_slot,
+    uint64_t headroom_bytes, uint64_t budget_bytes, const std::vector<std::pair<int32_t, int32_t>>* rank,
+    const detail::ResidentRetry* retry, uint64_t& failed_bytes) {
     err.clear();
+    failed_bytes = 0;
     const auto pin_t0 = std::chrono::steady_clock::now();
     if (base_ == nullptr) { err = "FileExpertSource: open the mapped experts before pinning a complement"; return false; }
     if (complement_ready_) { err = "FileExpertSource: the cache complement is already pinned"; return false; }
@@ -2686,7 +2729,7 @@ bool FileExpertSource::pin_cache_complement(
     // counts those file pages in this process's working set, not as available: a 32 GB PC read 0.44 GiB here
     // (20.7 GiB before the start).  Trimmed, they move to the standby list (still cached, counted as available).
     // Resident mode only: nothing else calls this function.  Locked/pinned pages stay; the rest fault back softly.
-    {
+    if (retry == nullptr) {
         uint64_t before = 0, after = 0;
         const bool read_before = available_memory_bytes(before);
         (void) SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T) -1, (SIZE_T) -1);
@@ -2698,20 +2741,21 @@ bool FileExpertSource::pin_cache_complement(
 #endif
     const bool what_fits = budget_bytes == kResidentWhatFits;   // #467: the soft mode's second try
     int64_t budget_lent = 0, budget_lendable = 0;   // the lend region's slots kept by a budget (below), and its size
-    uint64_t budget_physical = 0;   // #403: reuse the memory snapshot a budget was sized from
-    uint64_t budget_commit = std::numeric_limits<uint64_t>::max();
+    uint64_t budget_physical = retry ? retry->memory.available : 0;   // #403: reuse the sizing snapshot
+    const uint64_t budget_commit = retry ? retry->memory.commit : std::numeric_limits<uint64_t>::max();
     if (budget_bytes > 0) {
         // CS-T: a RAM budget.  The complement's experts in `rank` order (the expert profile, hottest first) while
-        // they fit, the rest left on the mapped files; Windows commit capacity also limits the allocation (#730).
-        uint64_t physical = 0;
-        if (!available_memory_bytes(physical, &budget_commit)) {
+        // they fit, the rest left on the mapped files. Commit limits only the retry, so a page file can grow (#730).
+        uint64_t physical = budget_physical;
+        if (retry == nullptr && !available_memory_bytes(physical)) {
             err = "FileExpertSource: cannot determine available memory for --resident-budget-gib";
             return false;
         }
         budget_physical = physical;
         const uint64_t available = std::min(physical, budget_commit);
         const char* limit = budget_commit < physical ? "commit" : "RAM";
-        const uint64_t clamped = detail::clamp_resident_budget(budget_bytes, physical, budget_commit, headroom_bytes);
+        uint64_t clamped = detail::clamp_resident_budget(budget_bytes, physical, budget_commit, headroom_bytes);
+        if (retry != nullptr) clamped = std::min(clamped, retry->limit);
         if (budget_bytes > clamped) {
             // #403: 256 MiB under the room, so the engine's own allocations after this reading still leave the
             // headroom (a budget clamped to exactly the room failed the safety check below on a reading a few MB
@@ -2742,7 +2786,7 @@ bool FileExpertSource::pin_cache_complement(
                 at += b;
                 ++held;
             }
-        if (what_fits && held == 0) {   // #467: nothing to keep - the caller's plain mmap fallback, not an empty copy
+        if (what_fits && held == 0) {   // #467: the soft fallback must retain an expert
             err = "FileExpertSource: available memory cannot hold any expert of the complement";
             return false;
         }
@@ -2790,20 +2834,22 @@ bool FileExpertSource::pin_cache_complement(
         // #403: with a budget, the reading it was sized from - a second reading a few MB lower (the engine's own
         // allocations, the file cache) failed a budget the first one had clamped.  (A budget turns `lend` off.)
         uint64_t physical = budget_physical;
-        uint64_t commit = budget_commit;
-        if (physical == 0 && !available_memory_bytes(physical, &commit)) {
+        const uint64_t commit = budget_commit;
+        if (retry == nullptr && physical == 0 && !available_memory_bytes(physical)) {
             err = "FileExpertSource: cannot determine available memory for the resident-memory safety check";
             return false;
         }
         const uint64_t available = std::min(physical, commit);
         budget = available > headroom_bytes ? available - headroom_bytes : 0;
+        if (retry != nullptr) budget = std::min(budget, retry->limit);
         if (bytes > budget) {
             char message[320];
             std::snprintf(message, sizeof message,
-                          "FileExpertSource: resident complement %.2f GiB exceeds available %s (%.2f GiB) minus the "
-                          "%.0f GiB safety headroom",
-                          (double) bytes / 1073741824.0, commit < physical ? "commit" : "RAM",
-                          (double) available / 1073741824.0, (double) headroom_bytes / 1073741824.0);
+                          "FileExpertSource: resident complement %.2f GiB exceeds the %.2f GiB memory budget "
+                          "(available %s %.2f GiB, %.0f GiB headroom%s)",
+                          (double) bytes / 1073741824.0, (double) budget / 1073741824.0,
+                          commit < physical ? "commit" : "RAM", (double) available / 1073741824.0,
+                          (double) headroom_bytes / 1073741824.0, retry ? ", retry margin included" : "");
             err = message;
 #if defined(__linux__)
             if (std::ifstream mi("/proc/meminfo"); mi) {
@@ -2845,13 +2891,15 @@ bool FileExpertSource::pin_cache_complement(
     uint64_t stage_lent_bytes = 0;
     if (!stage_lend_regions_.empty()) {
         if (budget == std::numeric_limits<uint64_t>::max()) {   // #403: the one reading, taken now
-            uint64_t physical = budget_physical, commit = budget_commit;
-            if (physical == 0 && !available_memory_bytes(physical, &commit)) {
+            uint64_t physical = budget_physical;
+            const uint64_t commit = budget_commit;
+            if (retry == nullptr && physical == 0 && !available_memory_bytes(physical)) {
                 err = "FileExpertSource: cannot determine available memory for the stage lend regions";
                 return false;
             }
             const uint64_t available = std::min(physical, commit);
             budget = available > headroom_bytes ? available - headroom_bytes : 0;
+            if (retry != nullptr) budget = std::min(budget, retry->limit);
         }
         uint64_t cap = budget;   // an explicit --resident-budget-gib caps the whole copy, regions included
         if (budget_bytes > 0 && budget_bytes != kResidentWhatFits && budget_bytes < cap) cap = budget_bytes;
@@ -2860,6 +2908,12 @@ bool FileExpertSource::pin_cache_complement(
                                                        stage_lend_regions_, err);
         if (stage_lent < 0) return false;
         stage_lent_bytes = bytes - before;
+    }
+
+    // A retry may consist entirely of stage lend regions; check the completed plan.
+    if (retry != nullptr && bytes == 0) {
+        err = "FileExpertSource: available memory cannot hold any expert on retry";
+        return false;
     }
 
     void* arena = nullptr;
@@ -2980,6 +3034,7 @@ bool FileExpertSource::pin_cache_complement(
                       std::to_string(allocation_errno) + ": " + std::strerror(allocation_errno) + ")";
                 if (!note.empty()) err += "; " + note;
                 log_complement_memory("after pageable allocation failure", bytes);
+                failed_bytes = bytes;
                 return false;
             }
             if (pin) {
