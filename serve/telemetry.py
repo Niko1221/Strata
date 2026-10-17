@@ -572,7 +572,8 @@ class Telemetry:
                 t = vals("temp")
                 g["temp"] = max(t) if t else None
                 s["gpus"] = [{"index": i, "util": r.get("util"), "mem_used": r.get("mem_used"),
-                              "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power")}
+                              "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power"),
+                              "pcie_rx_mb": r.get("pcie_rx_mb"), "pcie_tx_mb": r.get("pcie_tx_mb")}
                              for i, r in reads]
             s.update({f"gpu_{k}": v for k, v in g.items()})
         if self.ps:
@@ -606,6 +607,12 @@ class Telemetry:
                           "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
                     v = s.get(k)
                     self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
+                # local: each card's own series on a layer split (the dashboard draws one line per card)
+                if len(s.get("gpus") or []) > 1:
+                    for g in s["gpus"]:
+                        for k in ("util", "mem_used", "temp", "power", "pcie_rx_mb"):
+                            v = g.get(k)
+                            self.hist[f"gpu{g['index']}_{k}"].append(round(v, 2) if isinstance(v, float) else v)
             self._stop.wait(1.0)
 
     def snapshot(self):

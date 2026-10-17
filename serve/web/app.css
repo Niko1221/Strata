@@ -92,6 +92,11 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-metric__value small { font-size: var(--st-fs-md); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin-left: 4px; }
 .st-metric__sub { font-size: var(--st-fs-xs); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; min-height: 1em; }
 .st-metric__spark { display: block; overflow: visible; }
+.spark-gpu2 { color: var(--st-info); opacity: .9; }   /* local: GPU 1 line on a layer split */
+.st-metric__sub.cards { display: flex; justify-content: space-between; gap: var(--st-s-3); }   /* local: one card per side */
+.st-metric__sub.cards .card { white-space: nowrap; }
+.st-metric__sub.cards .card:last-child { text-align: right; }
+.st-metric__sub.cards b { font-weight: 700; color: var(--st-ink-soft); }   /* bold, a shade greyer than the main value */
 .speed-values { display: flex; justify-content: space-between; gap: var(--st-s-3); }
 .speed-values > div { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .speed-values > div:last-child { text-align: right; }
