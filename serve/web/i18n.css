@@ -1,0 +1,46 @@
+/* Strata — styles for the language picker in the header (see web/i18n.js). */
+#lang-btn {
+  height: 28px;
+  min-width: 42px;
+  padding: 0 10px;
+  margin-right: 8px;
+  font-size: var(--st-fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* The status pill changes width ("Idle" -> "Reading prompt · 63 %") and the header is
+   right-aligned, so a button placed to its left kept sliding around: in one language the
+   text is shorter and the button drifted. An invisible fixed-width slot keeps the button
+   in place, while the pill itself still hugs its own text. */
+.st-pill-slot { display: inline-flex; align-items: center; }
+@media (min-width: 900px) { .st-pill-slot { min-width: 210px; } }
+
+/* language menu: a drop-down under the button (fixed, so it never widens the header) */
+.lang-menu {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  min-width: 9rem;
+  padding: 4px;
+  background: var(--st-surface-2, #fff);
+  border: 1px solid var(--st-line, #d9d9d9);
+  border-radius: var(--st-r-md, 10px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .18);
+}
+.lang-menu__item {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--st-r-sm, 7px);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.lang-menu__item:hover, .lang-menu__item:focus-visible { background: rgba(127, 127, 127, .16); }
+.lang-menu__item.is-current { font-weight: 600; }

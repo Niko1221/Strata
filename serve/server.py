@@ -5386,11 +5386,30 @@ def make_handler(svc: Service):
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if path == "/web/i18n-index":
+                # every language is a file next to the app: i18n-<code>.json with _code and _name
+                found = []
+                for f in sorted((ROOT / "serve" / "web").glob("i18n-*.json")):
+                    try:
+                        meta = json.loads(f.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    code = meta.get("_code") or f.stem[len("i18n-"):]
+                    found.append({"code": code, "name": meta.get("_name") or code})
+                body = json.dumps(found, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if path.startswith("/web/"):
                 # the web app's own files (serve/web): styles, script, icon sprite - same origin, no CDN
                 name = path[len("/web/"):]
                 types = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-                         ".svg": "image/svg+xml"}
+                         ".svg": "image/svg+xml",
+                         ".json": "application/json; charset=utf-8"}
                 f = ROOT / "serve" / "web" / name
                 ext = os.path.splitext(name)[1]
                 if "/" in name or "\\" in name or ext not in types or not f.is_file():
