@@ -1,0 +1,45 @@
+{
+  "args": [
+    "--pack",
+    "/m/packs/ud-q4_k_xl",
+    "--native",
+    "/m/flash-next/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+    "--expert-profile",
+    "/m/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "/m/mtp/rt",
+    "--max-context",
+    "131072",
+    "--kv",
+    "int8",
+    "--kv-resident",
+    "32768",
+    "--ple-io",
+    "direct"
+  ],
+  "tokenizer": "/m/packs/ud-q4_k_xl/tokenizer",
+  "model_name": "udq4-split",
+  "lib_dirs": [
+    "/opt/rocm/lib"
+  ],
+  "port": 8080,
+  "backend": "hip",
+  "gpu": [
+    1,
+    0
+  ],
+  "gpus_asked": true,
+  "layer_split": "auto",
+  "exe": "/work/stock/build-hip/strata",
+  "cwd": "/work/stock",
+  "log": "/bench/udq4-split-stock/engine.log",
+  "env": {}
+}
