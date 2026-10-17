@@ -5567,10 +5567,13 @@ int main(int argc, char** argv) {
         // measured on the 5080 + 3090 rig: cudaMemGetInfo and the next cudaMalloc fail.  Unregistered layers remain
         // in the resident arena; their streamed experts go through the pinned staging ring.  A Linux driver has no
         // such limit, so there the whole arena is pinned (#253).  STRATA_ARENA_PIN_GIB overrides both ways.
-        const int pin_env = strata::core::arena_pin_cap_gib();   // -1 unset, -2 "auto" (#243, Windows sliced pin)
-        const bool pin_wddm_cap = pin_env < 0 && (o.expert_cache_remote[0] > 0 || multi_gpu) && under_wddm();
-        const uint64_t pin_limit = pin_env >= 0 ? (uint64_t) pin_env << 30 : pin_wddm_cap ? (8ull << 30) : 0;
-        if (pin_env >= 0)
+        const int pin_env = strata::core::arena_pin_cap_gib();   // -1 unset, -2 "auto" (#243, Windows sliced pin), -3 "none"
+        const bool pin_wddm_cap = pin_env < 0 && pin_env != -3 && (o.expert_cache_remote[0] > 0 || multi_gpu) && under_wddm();
+        const uint64_t pin_limit = pin_env == -3 ? 1   // "none": a cap of one byte, no slice fits
+                                 : pin_env >= 0 ? (uint64_t) pin_env << 30 : pin_wddm_cap ? (8ull << 30) : 0;
+        if (pin_env == -3)
+            std::fprintf(stderr, "strata generate: STRATA_ARENA_PIN_GIB=none: nothing of the expert arena is pinned\n");
+        else if (pin_env >= 0)
             std::fprintf(stderr, "strata generate: STRATA_ARENA_PIN_GIB=%d: %s\n", pin_env,
                          pin_env == 0 ? "the whole expert arena is pinned" : "the expert arena's pinning is capped");
         else if (pin_wddm_cap)
@@ -7232,6 +7235,7 @@ int main(int argc, char** argv) {
         double share = total ? (double) pinned / (double) total : 1.0;
         if (const char* t = std::getenv("STRATA_TEST_PINNED_SHARE")) share = std::atof(t);   // tests: the Windows-like ring rule
         strata::prefill::Prefill::set_pinned_share(share);
+        strata::prefill::Prefill::set_resident_stage(srcp == &arena_src);   // unpinned experts = resident RAM
     }
     // bytes -> slots for CUDA0's cache: exact when it knows its per-slot offsets (a native pack's blobs differ
     // per layer), otherwise max_blob each.
