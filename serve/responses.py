@@ -55,7 +55,7 @@ def new_id(prefix: str) -> str:
 
 # ------------------------------------------------------------------------------------------------ request -> chat
 def _content(content, param):
-    """A message's (or a tool output's) content -> the template's form: a string, or text and image parts."""
+    """A message's (or a tool output's) content -> the template's form: a string, or text, image and video parts."""
     if content is None:
         return ""
     if isinstance(content, str):
@@ -79,8 +79,14 @@ def _content(content, param):
                 raise ResponsesError("only images given as image_url (a data: or http(s) URL) are supported; "
                                      "this server keeps no files", f"{param}[{j}]", "unsupported_parameter")
             parts.append({"type": "input_image", "image_url": part["image_url"]})
+        elif kind in ("video_url", "input_video"):  # a video's wire formats, passed through: the encoder reads the clip itself
+            if not (part.get("video_url") or (part.get("input_video") or {}).get("data")):
+                raise ResponsesError("only videos given as video_url (a data: or http(s) URL) or "
+                                     "input_video (base64 data) are supported; this server keeps no files",
+                                     f"{param}[{j}]", "unsupported_parameter")
+            parts.append(part)
         else:
-            raise ResponsesError(f"content parts of type {kind!r} are not supported (text and images are)",
+            raise ResponsesError(f"content parts of type {kind!r} are not supported (text, images and videos are)",
                                  f"{param}[{j}].type", "unsupported_parameter")
     return _parts_of(parts)
 

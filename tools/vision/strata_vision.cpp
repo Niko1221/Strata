@@ -9,10 +9,14 @@
 // Flash attention defaults to auto, and to off on the CPU when ggml is built with AVX-512 (see main).
 //
 // Resident: prints "READY <n_embd>", then per stdin line
-//   ENC <image path> <output path>   ->  "OK <n_tokens> <nx> <ny> <ms>"  or  "ERR <message>"
+//   ENC <image path> <output path>        ->  "OK <n_tokens> <ms>"  or  "ERR <message>"
+//   ENCV <video path> <output path> [fps] ->  "OK <n_tokens> <ms>"  or  "ERR <message>"
 //   QUIT
-// The output file is  int32 {0x31455653 'SVE1', n_tokens, nx, ny, n_embd}  then float32 [n_tokens][n_embd],
-// row i at grid position (x = i % nx, y = i / nx).  The text model is opened vocab-only (no weights).
+// An image is one picture; a clip is read and encoded natively by mtmd (it samples the frames at the fps -
+// the clip's own rate when unset - and merges them the model's way).  The output file is one or more records
+// (a clip has one per merged frame group), each  int32 {0x31455653 'SVE1', n_tokens, nx, ny, n_embd}  then
+// float32 [n_tokens][n_embd], row i at grid position (x = i % nx, y = i / nx).  <n_tokens> in the OK line is
+// the total over the file's records.  The text model is opened vocab-only (no weights).
 #include "ggml-cpu.h"
 #include "gguf.h"
 #include "llama.h"
@@ -50,6 +54,33 @@ bool parse_enc(const std::string& line, std::string& img, std::string& out) {
     img = rest.substr(0, sp);
     out = rest.substr(sp + 1);
     return !img.empty() && !out.empty();
+}
+
+// "ENCV <video> <out> [fps]": a clip, read and encoded natively by mtmd (it samples the frames at `fps` and
+// merges them the model's way).  The optional fps is a trailing number; without it the last token is the output
+// path and mtmd uses the clip's own rate.  As with ENC, a path may contain spaces, so the tokens are taken from
+// the right.
+bool parse_encv(const std::string& line, std::string& video, std::string& out, float& fps) {
+    if (line.rfind("ENCV ", 0) != 0) return false;
+    const std::string rest = line.substr(5);
+    const size_t sp = rest.rfind(' ');
+    if (sp == std::string::npos || sp == 0) return false;
+    const std::string last = rest.substr(sp + 1);
+    const std::string mid = rest.substr(0, sp);
+    char* end = nullptr;
+    const float f = std::strtof(last.c_str(), &end);
+    if (!last.empty() && end != last.c_str() && *end == '\0') {          // a trailing number: the fps
+        fps = f;
+        const size_t sp2 = mid.rfind(' ');
+        if (sp2 == std::string::npos || sp2 == 0) return false;
+        video = mid.substr(0, sp2);
+        out = mid.substr(sp2 + 1);
+    } else {                                                              // no fps: the last token is the output
+        fps = 0.0f;
+        video = mid;
+        out = last;
+    }
+    return !video.empty() && !out.empty();
 }
 
 }  // namespace
@@ -187,44 +218,59 @@ int main(int argc, char** argv) {
     while (std::getline(std::cin, line)) {
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
         if (line == "QUIT") break;
-        std::string img, out;
-        if (!parse_enc(line, img, out)) { std::printf("ERR expected: ENC <image> <output>\n"); std::fflush(stdout); continue; }
+        std::string media, out;
+        float fps = 0.0f;
+        const bool clip = parse_encv(line, media, out, fps);
+        if (!clip && !parse_enc(line, media, out)) {
+            std::printf("ERR expected: ENC <image> <output> or ENCV <video> <output> [fps]\n");
+            std::fflush(stdout);
+            continue;
+        }
+        const char* kind = clip ? "video" : "image";
         const auto t0 = std::chrono::steady_clock::now();
-        mtmd_helper_bitmap_wrapper bw = mtmd_helper_bitmap_init_from_file(ctx, img.c_str(), false,
-                                                                            mtmd_helper_init_opt_default());
-        if (!bw.bitmap) { std::printf("ERR cannot read the image %s\n", img.c_str()); std::fflush(stdout); continue; }
+        mtmd_helper_init_opt opt = mtmd_helper_init_opt_default();
+        if (clip) {
+            if (fps > 0.0f) opt.video_params.fps_target = fps;   // 0 = the clip's own rate (mtmd's default)
+            opt.video_params.timestamp_interval_ms = 0;          // no per-frame timestamp text: the engine takes pictures only
+        }
+        mtmd_helper_bitmap_wrapper bw = mtmd_helper_bitmap_init_from_file(ctx, media.c_str(), false, opt);
+        if (!bw.bitmap) { std::printf("ERR cannot read the %s %s\n", kind, media.c_str()); std::fflush(stdout); continue; }
         mtmd_input_chunks* chunks = mtmd_input_chunks_init();
         const std::string prompt = mtmd_default_marker();
         mtmd_input_text txt{prompt.c_str(), prompt.size(), false, true};
         const mtmd_bitmap* bm[1] = {bw.bitmap};
         std::string err;
-        const mtmd_input_chunk* ichunk = nullptr;
-        if (mtmd_tokenize(ctx, chunks, &txt, bm, 1) != 0) err = "the image could not be preprocessed";
-        for (size_t c = 0; err.empty() && c < mtmd_input_chunks_size(chunks); ++c) {
-            const mtmd_input_chunk* ch = mtmd_input_chunks_get(chunks, c);
-            if (mtmd_input_chunk_get_type(ch) == MTMD_INPUT_CHUNK_TYPE_IMAGE) ichunk = ch;
-        }
-        if (err.empty() && !ichunk) err = "no image chunk";
-        if (err.empty() && mtmd_encode_chunk(ctx, ichunk) != 0) err = "the vision encoder failed";
+        int total_n = 0;
+        if (mtmd_tokenize(ctx, chunks, &txt, bm, 1) != 0) err = "the " + std::string(kind) + " could not be preprocessed";
+        FILE* f = nullptr;
         if (err.empty()) {
-            const mtmd_image_tokens* it = mtmd_input_chunk_get_tokens_image(ichunk);
-            const int n = (int) mtmd_input_chunk_get_n_tokens(ichunk);
+            f = std::fopen(out.c_str(), "wb");
+            if (!f) err = "cannot write " + out;
+        }
+        // one record per image chunk: a picture is one, a clip one per merged frame group, in order - the engine
+        // reads them back in that order at the clip's pad tokens
+        for (size_t c = 0; err.empty() && f && c < mtmd_input_chunks_size(chunks); ++c) {
+            const mtmd_input_chunk* ch = mtmd_input_chunks_get(chunks, c);
+            if (mtmd_input_chunk_get_type(ch) != MTMD_INPUT_CHUNK_TYPE_IMAGE) continue;   // skip a clip's text
+            if (mtmd_encode_chunk(ctx, ch) != 0) { err = "the vision encoder failed"; break; }
+            const mtmd_image_tokens* it = mtmd_input_chunk_get_tokens_image(ch);
+            const int n = (int) mtmd_input_chunk_get_n_tokens(ch);
             // the grid from the decoder positions (nx/ny getters are deprecated): x and y of the last token
             const mtmd_decoder_pos last = mtmd_image_tokens_get_decoder_pos(it, 0, (size_t) n - 1);
             const int nx = (int) last.x + 1, ny = (int) last.y + 1;
-            if (nx * ny != n) err = "the image grid is not rectangular (" + std::to_string(n) + " tokens)";
+            if (nx * ny != n) { err = "a " + std::string(kind) + " grid is not rectangular (" + std::to_string(n) + " tokens)"; break; }
             const float* embd = mtmd_get_output_embd(ctx);
-            FILE* f = err.empty() ? std::fopen(out.c_str(), "wb") : nullptr;
-            if (err.empty() && !f) err = "cannot write " + out;
-            if (f) {
-                const int32_t hdr[5] = {0x31455653, n, nx, ny, n_embd};
-                const bool ok = std::fwrite(hdr, sizeof hdr, 1, f) == 1 &&
-                                std::fwrite(embd, sizeof(float) * (size_t) n_embd, (size_t) n, f) == (size_t) n;
-                std::fclose(f);
-                if (!ok) err = "short write to " + out;
-                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-                if (ok) std::printf("OK %d %d %d %.0f\n", n, nx, ny, ms);
-            }
+            const int32_t hdr[5] = {0x31455653, n, nx, ny, n_embd};
+            const bool ok = std::fwrite(hdr, sizeof hdr, 1, f) == 1 &&
+                            std::fwrite(embd, sizeof(float) * (size_t) n_embd, (size_t) n, f) == (size_t) n;
+            if (!ok) { err = "short write to " + out; break; }
+            total_n += n;
+        }
+        if (f) std::fclose(f);
+        if (err.empty() && total_n < 1) err = "no image chunks";
+        if (err.empty()) {
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            std::printf("OK %d %.0f\n", total_n, ms);
         }
         if (!err.empty()) std::printf("ERR %s\n", err.c_str());
         std::fflush(stdout);

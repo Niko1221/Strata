@@ -305,7 +305,7 @@ class ImageMarkers(unittest.TestCase):
             self.rows = self.dir / "img.sve"
             self.rows.write_bytes(b"rows")
 
-        def encode(self, source):
+        def encode(self, source, keep=()):
             return self.rows, 3
 
     def test_literal_marker_with_an_image(self):
@@ -331,7 +331,7 @@ class ImageMarkers(unittest.TestCase):
         tok = ByteTokenizer()
         with tempfile.TemporaryDirectory() as d:
             class Keyed(self.FakeVision):
-                def encode(self, source):
+                def encode(self, source, keep=()):
                     p = self.dir / ("0123456789abcdef0123456789abcdef.sve" if source == "a.png" else
                                     "fedcba9876543210fedcba9876543210.sve")
                     p.write_bytes(b"rows")
@@ -377,7 +377,7 @@ class ImageMarkers(unittest.TestCase):
         # a tool's picture the server cannot read is a note, not a 400 (the client resends it every turn); the user's
         # own picture still fails
         class Refusing(self.FakeVision):
-            def encode(self, source):
+            def encode(self, source, keep=()):
                 if "bad" in str(source):
                     raise ValueError("this image format needs Pillow")
                 return super().encode(source)
@@ -434,7 +434,7 @@ class ImageMarkers(unittest.TestCase):
         quoted = "the template writes <|vision_start|><|image_pad|><|vision_end|> per picture"
 
         class TwoPictures(self.FakeVision):
-            def encode(self, source):
+            def encode(self, source, keep=()):
                 return self.rows, {"a.png": 2, "b.png": 5}[source]
 
         def holds(ids, part):
@@ -3278,8 +3278,12 @@ class WebApp(unittest.TestCase):
                     self.assertEqual(model["id"], svc.model)
                     self.assertEqual(model["status"]["value"], "loaded")
                     self.assertEqual(model["meta"]["n_ctx"], 262144)
-                    self.assertEqual(model["architecture"]["input_modalities"],
-                                     ["text", "image"] if vision else ["text"])
+                    expected = ["text"]
+                    if vision:
+                        expected += ["image"]
+                        if shutil.which("ffmpeg"):      # the encoder reads a video with it (a 400 that says so without it)
+                            expected += ["video"]
+                    self.assertEqual(model["architecture"]["input_modalities"], expected)
                 code, _, body = self.get("/props?model=" + svc.model + "&autoload=false")
                 self.assertEqual(code, 200)
                 props = json.loads(body)
@@ -5102,7 +5106,7 @@ class ImageSources(unittest.TestCase):
             super().__init__(d)
             self.got = []
 
-        def encode(self, source):
+        def encode(self, source, keep=()):
             self.got.append(source)
             return super().encode(source)
 
@@ -5929,7 +5933,7 @@ class PrepareCancelled(unittest.TestCase):
         calls = []
 
         class V(ImageMarkers.FakeVision):
-            def encode(self, source):
+            def encode(self, source, keep=()):
                 calls.append(source)
                 return self.rows, 3
         with tempfile.TemporaryDirectory() as d:

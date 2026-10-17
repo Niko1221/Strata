@@ -14,6 +14,11 @@ Images (optional, when the config has a "vision" entry): OpenAI image_url parts 
 data, http(s) URLs or local file paths) go through `strata-vision` (the model's mmproj file) and reach the engine as
 embeddings (`GENI`).  JPEG/PNG/BMP/GIF go straight in; WebP, TIFF, AVIF, ... (agents like omp send WebP) are
 converted to PNG first with Pillow.
+Videos (the same "vision" entry): OpenAI video_url / input_video parts are read and encoded natively by
+strata-vision - the ENCV line hands the clip to mtmd, which samples its frames at the config's "video_fps"
+(2 by default, the model's own video rate) and merges them the way the model reads them - and the frames'
+embeddings reach the engine as one video's pictures.  The encoder needs ffmpeg (and ffprobe) on the PATH where
+it runs; without it a video request is a 400 that names the missing program - never a silent drop.
 Requests whose prompt plus max tokens exceed the engine's context are REJECTED with 400, never truncated.
 An unset (or 0, or -1) max tokens means "unlimited": whatever the prompt leaves of the context.
 
@@ -58,8 +63,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
 from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
-                            forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
-                            tool_choice_of, unmark_think_literals)
+                            forced_call, literal_tags, mark_think_literals, media_of,
+                            openai_to_messages, tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
@@ -71,6 +76,7 @@ from serve import images as images_api  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
+VIDEO_PAD = "<|video_pad|>"
 
 
 def popen(what: str, args: list, **kw):
@@ -2273,8 +2279,9 @@ def vision_start_error(line: str, log=None) -> str:
 
 class Vision:
     """The resident image encoder: `strata-vision` (llama.cpp mtmd + the mmproj file) reads `ENC <image> <out>`
-    lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
-    sends the same picture again (every turn, with most clients) encodes it once."""
+    and `ENCV <video> <out> [fps]` lines and writes each media's embeddings - a video's file holds one record per
+    merged frame group; results are cached by the media's hash, so a conversation that sends the same picture or
+    clip again (every turn, with most clients) encodes it once."""
 
     @staticmethod
     def work_dir() -> Path:
@@ -2514,6 +2521,42 @@ class Vision:
                     self.cache.pop(old)[0].unlink(missing_ok=True)
             return self.cache[key]
 
+    def encode_video(self, source: str | bytes, fps: float = 2.0, keep=()) -> tuple[Path, int]:
+        """-> (embeddings file, the video's total image tokens).  The clip is read and encoded by the encoder
+        itself (ENCV): mtmd samples its frames at `fps` - the clip's own rate when unset - and merges them the
+        model's way, so one clip is one encode and its file holds one record per merged frame group (the engine
+        reads them at the video's pad tokens, in order).  `source`: what load() reads, or the clip's bytes.
+        `keep`: files the caller still needs (never evicted by this call)."""
+        data = source if isinstance(source, bytes) else self.load(source)
+        key = hashlib.sha256(data).hexdigest()[:32]
+        with self.lock:
+            if key in self.cache:
+                self.cache[key] = self.cache.pop(key)                  # most recently used last
+                return self.cache[key]
+            vid, out = self.dir / f"{key}.vid", self.dir / f"{key}.sve"
+            vid.write_bytes(data)
+            try:
+                self.proc.stdin.write(f"ENCV {vid.name} {out.name} {fps}\n")    # relative to the encoder's cwd (#480)
+                self.proc.stdin.flush()
+                try:
+                    line = self._readline(VISION_ENCODE_S, "the video could not be read").strip()
+                except RuntimeError as e:                 # silent for VISION_ENCODE_S: the encoder was ended (#1317)
+                    self.stopped = True                   # alive() is False, so the next request starts it again
+                    raise ValueError(str(e)) from None
+            finally:                                                   # #352: also when the encoder's pipe is gone
+                vid.unlink(missing_ok=True)
+            if not line.startswith("OK"):
+                raise ValueError("the video could not be read: " + (line[4:] if line.startswith("ERR") else
+                                                                    "the vision encoder stopped"))
+            self.cache[key] = (out, int(line.split()[1]))
+            held = {str(p) for p in keep} | {str(out)}
+            for old in list(self.cache):                               # oldest first, but never one still in use
+                if len(self.cache) <= 64:
+                    break
+                if str(self.cache[old][0]) not in held:
+                    self.cache.pop(old)[0].unlink(missing_ok=True)
+            return self.cache[key]
+
     def close(self):
         proc, self.proc = self.proc, None
         if proc is None:
@@ -2549,6 +2592,16 @@ def gpu_list(cfg: dict) -> list[int]:
         return []
     items = g if isinstance(g, (list, tuple)) else str(g).split(",")
     return [int(str(x).strip()) for x in items if str(x).strip() != ""]
+
+
+def video_fps_of(value):
+    """The config's "video_fps" (vision section): the frames a second the encoder's mtmd samples a video at -
+    the model's own video rate (2 by default, uniform over the clip's length)."""
+    if value is None:
+        return 2.0
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < float(value) <= 64:
+        raise ValueError(f'"video_fps" must be a number greater than 0 and at most 64, not {value!r}')
+    return float(value)
 
 
 def engine_binary(exe: str, cfg: dict | None = None) -> str:
@@ -2934,7 +2987,7 @@ def vision_env(cfg: dict, env: dict) -> dict:
 
 class ByteTokenizer:
     """Tiny stand-in tokenizer for tests without the pack: one id per UTF-8 byte, specials as ids >= 256."""
-    SPECIALS = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|vision_start|>", "<|image_pad|>", "<|vision_end|>"]
+    SPECIALS = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|vision_start|>", "<|image_pad|>", "<|vision_end|>", "<|video_pad|>"]
 
     ALWAYS = ()                                     # specials matched without parse_special (type 4, as <think>)
 
@@ -3109,6 +3162,7 @@ class Service:
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
+        self.video_fps = 2.0                            # the config's "video_fps": the model's own video rate, frames a second
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.answer_room = True                       # 0.1.45: see ANSWER_ROOM_MIN_CAP (the config's "answer_room": false turns it off)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
@@ -3965,13 +4019,14 @@ class Service:
             ids = ids + self.tok.encode(force, parse_special=True)
         self.embeddings.path = None
         self.embeddings.keys = None
-        images = images_of(messages)
-        if images:
+        media = media_of(messages)                    # the pictures and the videos, in the order the prompt draws them
+        if media:
             if self.vision is None:
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
-                                 "'vision'), so it cannot read images")
+                                 "'vision'), so it cannot read images or videos")
             pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
             start = self.tok.encode(VISION_START, parse_special=True)[0]
+            video_pad = self.tok.encode(VIDEO_PAD, parse_special=True)[0]
             # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
             # for as long as urlopen waited.
             def fetch(src):
@@ -3979,7 +4034,7 @@ class Service:
                     raise ClientGone()
                 return fetched[src] if src in fetched else Vision.download(src) \
                     if src.startswith(("http://", "https://")) else src
-            images = [fetch(src) for src in images]
+            items = [fetch(src) for _, src in media]
             # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
@@ -3987,28 +4042,50 @@ class Service:
             with self._turn(cancel):
                 self._vision_up()
                 try:
-                    encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
-                               else [self.vision.encode(src) for src in images])
+                    encoded = []
+                    for (kind, _), src in zip(media, items):
+                        if cancel is not None and cancel.is_set():
+                            raise ClientGone()
+                        keep = [p for p, _ in encoded]
+                        # a video is one ENCV: the encoder samples its frames (mtmd) and encodes them merged the model's
+                        # way - the clip's total image tokens are what its marker expands to below
+                        encoded.append(self.vision.encode_video(src, self.video_fps, keep=keep)
+                                       if kind == "video" else self.vision.encode(src, keep=keep))
                 finally:
                     self.last_image_at = time.time()
-            # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
-            # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
-            # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
+            # one media marker -> image tokens: the template writes its start plus one pad per picture, and its start
+            # alone per video (the clip's frames are the encoder's merged records).  Only the template's media places
+            # expand: the same text inside a message (an agent reading these docs, #150) is kept plain, or it took
+            # one's place and the counts no longer matched.
             literal = self.tok.encode(IMAGE_PAD, parse_special=False)
-            out, k = [], 0
+            out, k, prev_start, skip = [], 0, False, 0
             for j, t in enumerate(ids):
-                if t == pad and j > 0 and ids[j - 1] == start:
-                    # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
+                if skip:
+                    # the video's pad placeholder: its start already expanded it - drop it
+                    skip -= 1
+                    continue
+                if t == pad and prev_start:
+                    # the picture's place: the start before it, then its rows
                     if k == len(encoded):
-                        raise ValueError("the prompt and its images do not match")
+                        raise ValueError("the prompt and its media do not match")
                     out += [pad] * encoded[k][1]
                     k += 1
+                elif t == start and (j + 1 >= len(ids) or ids[j + 1] != pad):
+                    # the video's place: the start on its own, then the clip's rows
+                    if k == len(encoded):
+                        raise ValueError("the prompt and its media do not match")
+                    out += [start] + [pad] * encoded[k][1]
+                    k += 1
+                    # the template writes the video's pad placeholder after its start; consume it
+                    if j + 1 < len(ids) and ids[j + 1] == video_pad:
+                        skip = 1
                 elif t == pad:
                     out += literal
                 else:
                     out.append(t)
+                prev_start = t == start
             if k != len(encoded):
-                raise ValueError("the prompt and its images do not match")
+                raise ValueError("the prompt and its media do not match")
             ids = out
         ctx = self.engine.max_context
         if ctx <= 0:
@@ -4038,8 +4115,8 @@ class Service:
                                  f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
                                  "model's strata-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
-        if images:
-            # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
+        if media:
+            # The request's media in one file for GENI (a video's ~10 MB a frame group), written once nothing above refuses the
             # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
             # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
             combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
@@ -4050,7 +4127,7 @@ class Service:
             self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
             write_temporary(combined, [p for p, _ in encoded])
         if req is not None and req.get("strata_prefix") is not None:
-            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
+            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(media))
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
 
     PREFIX_END = "\u0001strata-prefix-end\u0001"          # marks where a message's shared part ends in the rendered prompt
@@ -5492,9 +5569,14 @@ def make_handler(svc: Service):
             elif path in ("/v1/models", "/models"):
                 if self._authorized():
                     loaded = svc.loaded()
+                    modalities = ["text"]
+                    if svc.vision is not None:
+                        modalities += ["image"]
+                        if shutil.which("ffmpeg"):      # the encoder's mtmd reads a video's frames with it; without it a video request is a 400 that says so
+                            modalities += ["video"]
                     model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
                              "meta": {"n_ctx": svc.reported_ctx()},
-                             "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
+                             "architecture": {"input_modalities": modalities,
                                               "output_modalities": ["text"]}}
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
                         model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
@@ -5854,7 +5936,7 @@ def make_handler(svc: Service):
             and http(s) images are the page's own to send; files come from Strata's own page, a trusted origin or a
             client that is no browser.  ValueError (a 400)."""
             if self._foreign_origin() and any(not src.startswith(("data:", "http://", "https://"))
-                                              for src in images_of(messages)):
+                                              for _, src in media_of(messages)):
                 raise ValueError("a web page of another origin cannot have a file on this computer read as an "
                                  "image: send it as a data: URL (or add the page's origin to the config's "
                                  "trusted_origins)")
@@ -6967,6 +7049,10 @@ def main() -> int:
                   "again", flush=True)
         print(f"[strata] image generation: {svc.images.model} {icfg.get('quant') or ''} on "
               f"{icfg.get('backend') or '?'} (POST /v1/images/generations; GPU policy {svc.images.policy})", flush=True)
+    try:
+        svc.video_fps = video_fps_of((cfg.get("vision") or {}).get("video_fps"))            # the model's own video rate
+    except ValueError as e:
+        raise SystemExit(f"[strata] config {e}")
     if cfg.get("prevent_sleep") is not None and not isinstance(cfg["prevent_sleep"], bool):
         raise SystemExit(f"[strata] config \"prevent_sleep\" must be true or false, not {cfg['prevent_sleep']!r}")
     from serve.keepawake import KeepAwake

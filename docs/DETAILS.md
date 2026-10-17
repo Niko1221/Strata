@@ -1363,7 +1363,7 @@ more than 16 MiB apart. A symbolic link, a second hard link and a file with one 
 
 **Current limits (v1):** one request at a time unless `"parallel": N` is set (opt-in batch slots, up to N requests
 decoded together: [BATCHING.md](BATCHING.md)), and one conversation cached at a time (switching between two chats
-re-reads the other one unless the opt-in cache above is enabled, or each conversation keeps its own batch slot); images only when set up with them (below); no video. **Temperature / top_p / top_k / min_p /
+re-reads the other one unless the opt-in cache above is enabled, or each conversation keeps its own batch slot); images and videos only when set up with them (below; a video is read by the encoder, see Video). **Temperature / top_p / top_k / min_p /
 seed** are honored per request (OpenAI and Anthropic fields), and so are stop strings (OpenAI `stop`, a string or up
 to 4; Anthropic `stop_sequences`): the answer ends before the first one, which is not sent, and the engine stops
 there (`finish_reason` "stop"; `stop_reason` "stop_sequence" with `stop_sequence` set to the one found); with the default adaptive expert tier a sampled result
@@ -1607,6 +1607,22 @@ Accuracy against BF16, per image token: the cosine of the embeddings is 0.997-0.
 a community Q8_0 file, at 300, 768 and 1,024 tokens), and 0.9988 and 0.9987 on two pictures with the file made by
 the command above (300 tokens; the worst single token 0.94-0.96). Encode time above 768 tokens is the same as BF16's
 within about 3%. Numbers on more pictures (charts, small text) are welcome in #625.
+
+**Video: a clip, read by the encoder.** The server takes video parts under `video_url` (a `data:`,
+`http(s)` or local-path URL - a `{"url": ...}` object or a bare string) and `input_video` (`{"data": <base64>}`,
+llama.cpp's spelling; pi's `compat.videoPartFormat` picks the wire format per endpoint).  A video is one media
+place in the prompt, like a picture: the frontend keeps it as one video item, the template writes its marker, and
+the clip itself goes to the encoder (one `ENCV` line) - its mtmd samples the clip's frames at `video_fps` (the
+vision section's `"video_fps"`, 2 by default, the model's own video rate), merges them the model's way, and
+encodes them, one record per merged group - so the marker expands to the encoder's total image tokens, and
+`usage.prompt_tokens` is the tell that it arrived, as with a picture (a 200 whose prompt_tokens stay at the size
+of the text alone would be a dropped video - the old behaviour, gone).  The encoder reads the clip with `ffmpeg`
+(and `ffprobe`) on the PATH where it runs: without them, `/v1/models` leaves `video` out of `input_modalities`,
+and a video request is a 400 that says the clip could not be read.  Budget it like a picture album: the clip
+costs its sampled frames' image tokens (the encoder's `max_tokens`/`min_tokens` bound each frame), with the
+merge making a clip cheaper than its raw frame count - a longer clip still costs more context, so keep `video_fps`
+where the answer needs it.  llama.cpp's own `llama-server` does the same route (external `ffmpeg`/`ffprobe`,
+sampled frames, encoded by the encoder).
 
 **Flash attention on the CPU (#660):** ggml's fast CPU kernel for flash attention needs the encoder's head size (72)
 to be a multiple of the vector width: 8 floats with AVX2, which the release builds use, but 16 with AVX-512, which a
