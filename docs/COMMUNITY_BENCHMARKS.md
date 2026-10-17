@@ -66,6 +66,10 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-10-17: AMD Radeon RX 6900 XT 16 GB (gfx1030), Core i7-5930K without AVX-512, 128 GB DDR4-2400](../bench/results/2026-10-17-community-rx-6900-xt/README.md):
+  Strata 0.1.45 prebuilt Windows HIP engine, six models (Flash-Next Q2_0, IQ3_XXS, IQ3_S; Coder IQ1_M; Swift 1.5 IQ2_XS, IQ3_XXS) on one config at 262,144 context
+  (`--kv int8 --kv-resident 20480 --prefill 12288`); the standard `BENCH.bat` suite. Chat decode 33.9-50.2 tok/s, 16K prompts 892-1,126 tok/s.
+  Removing the low-RAM flags `--resident-experts` (Coder) and `--mmap-experts` (Swift IQ2_XS) on 128 GB: decode +30% / +34%, 16K prompts +17% / +42%.
 
 ## Run the benchmark
 
