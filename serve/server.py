@@ -1149,7 +1149,8 @@ class StrataEngine:
         # the slot that has its start (the engine checks it again); when the slot was last used
         self.slot_held: list[list[int]] = [[] for _ in range(self.batch)]
         self.slot_used = [0.0] * self.batch
-        # engine BCHECKS (STRATA_SLOT_CHECKPOINTS > 1): the lengths of each slot's checkpoints, for the placement hint
+        # engine BCHECKS (STRATA_SLOT_CHECKPOINTS > 1 or STRATA_BRANCH_CHECKPOINT): the lengths of each slot's
+        # checkpoints, for the placement hint
         self.slot_checks: list[tuple[int, ...]] = [() for _ in range(self.batch)]
         # park=: what the engine's main (solo) session holds, as far as this server knows, and slots claimed for a
         # park= copy of it until the engine says PARKED

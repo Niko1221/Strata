@@ -407,19 +407,27 @@ A slot that receives the main session's conversation (`park=B`, an admission tha
 checkpoint of it: the deepest. A client that rewrites the end of its history every time leaves that one behind:
 Claude Code's safety classifier inserts each query's new tool calls before the closing text of its transcript, so
 the next query branches a few dozen tokens before the end, and its whole prompt was read again (42-74K tokens,
-15.6-27.4 s per query on the machine above). With `STRATA_SLOT_CHECKPOINTS=N` the slot keeps N of the main session's
-checkpoints of that conversation (one per length): the deepest, the deepest branch checkpoint
-(`STRATA_BRANCH_CHECKPOINT`, below), then the deepest others. Unset, N is 2 when `STRATA_BRANCH_CHECKPOINT` is set
-(the turn and the branch) and 1 otherwise, as before. A restore from a slot checkpoint brings the slot's shallower ones
-back with it, and the engine logs `slot 2 keeps 2 checkpoints (at 43340 43372; 227.5 MiB)` (each is a whole running
-state, about 114 MiB on Qwen3.8-Flash-Next). Without a branch checkpoint such a query resumes at the last periodic
-checkpoint (`--prompt-cache-every`, up to 16K tokens before the branch).
+15.6-27.4 s per query on the machine above). The two switches are apart:
 
-Why two rather than the turn and a branch checkpoint only: a conversation that never branched (an ordinary chat) has
-none, and its second checkpoint is the turn before or a periodic one. The first query of a classifier transcript is
-such a conversation (nothing to branch from yet); its next query resumes at that periodic checkpoint instead of reading
-the whole transcript again when the main session has moved on. With the move below the second one costs no memory (it
-leaves the main session's chain). `STRATA_SLOT_CHECKPOINTS=1` keeps the turn checkpoint only, as before.
+- `STRATA_BRANCH_CHECKPOINT` (below) alone decides whether the slot keeps the deepest branch checkpoint of that
+  conversation, where the next query of such a client resumes.
+- `STRATA_SLOT_CHECKPOINTS=N` (unset: 1, as before) alone decides how many it keeps of the others, one per length:
+  the deepest, then the deepest others, the branch one counted in N.
+
+| | without `STRATA_BRANCH_CHECKPOINT` | with it |
+| --- | --- | --- |
+| N = 1 | the deepest (the turn checkpoint), as before | the turn and the branch one (one when there is none yet) |
+| N = 2 | the two deepest (the second the turn before or a periodic one) | two: the turn and the branch one, or else the next deepest |
+
+A restore from a slot checkpoint brings the slot's shallower ones back with it, and the engine logs `slot 2 keeps 2
+checkpoints (at 43340 43372; 227.5 MiB)` (each is a whole running state, about 114 MiB on Qwen3.8-Flash-Next). Without a
+branch checkpoint such a query resumes at the last periodic checkpoint (`--prompt-cache-every`, up to 16K tokens before
+the branch).
+
+N = 2 helps where there is no branch checkpoint: an ordinary chat, and the first query of a classifier transcript
+(nothing to branch from yet), whose next query then resumes at the periodic checkpoint instead of reading the whole
+transcript again when the main session has moved on. It costs one more running state per slot, none with the move
+below (it leaves the main session's chain).
 
 With `STRATA_SLOT_CKPT_MOVE=1` an admission moves them all into the slot instead of copying them (`, all moved` at the
 end of that line), except the chain's root and a pinned prefix, which every new conversation of the client starts
@@ -428,10 +436,10 @@ drops them at the next request of another conversation - and a request of anothe
 While the main session still holds their tokens (the conversation's next query comes first) it restores one from the
 slot as from its own chain. A slot that gives back all it holds (the request continues its whole conversation)
 gives back these checkpoints with it, moved, so the admission that follows keeps them again: they are the only ones
-(without this the main session lost them there, and a next turn sent back without its thinking read its prompt again: 19,342
-tokens in 8.5 s against 154 in 0.66 s). Without the switch they are copied, into dropped checkpoints' storage with
-`STRATA_CKPT_POOL=1`; a slot that gives back all it holds then copies them back only with
-`STRATA_SLOT_CHECKPOINTS` above 1, or moves them when the request continues in that slot.
+(without this the main session lost them there, and a next turn sent back without its thinking read its prompt
+again: 19,342 tokens in 8.5 s against 154 in 0.66 s). Without the switch they are copied, into dropped checkpoints'
+storage with `STRATA_CKPT_POOL=1`; a slot that gives back all it holds then copies them back only when it keeps more
+than one (N above 1 or `STRATA_BRANCH_CHECKPOINT`), or moves them when the request continues in that slot.
 
 ### Engine: a checkpoint where the prompt branches (`STRATA_BRANCH_CHECKPOINT=<margin>`)
 
@@ -441,8 +449,8 @@ read starts and before the turn boundary, the read stops there for one more chec
 boundaries; on a layer split too, and without `--batch`), logged as `branch checkpoint at 43340: the prompt leaves
 slot 2's conversation there (read from 32768)`. The next query, which leaves this one later, resumes there. Measured
 on the machine above (`--batch 6`; a 43-45K-token classifier transcript growing by about 250 tokens per query, an
-agent conversation taking the main session between the queries), without and with `STRATA_SLOT_CHECKPOINTS=2
-STRATA_BRANCH_CHECKPOINT=1024`:
+agent conversation taking the main session between the queries), without and with `STRATA_BRANCH_CHECKPOINT=1024`
+(the slot keeping the turn and the branch checkpoint):
 
 | Query | without: reused + read, ms | with: reused + read, ms |
 | --- | ---: | ---: |
@@ -769,7 +777,7 @@ On top of `GEN` / `GENI`:
 | `CACHE_SOURCE <slot> <tokens>` | out | `STRATA_PIPELINE_ACTIVE_ROWS=1`, after a prompt's restore: the idle slot its reused prefix came from (-1: the main session, a checkpoint or the conversation cache) and how long it is |
 | `park=B` (a key of `GEN` / `BGEN`) | in | with `INFO slot_park=1`: before a different conversation replaces the main session's, copy that one into idle slot B |
 | `PARKED <slot> <tokens>` | out | `park=` copied that many tokens into the slot (0: the copy failed, the slot holds nothing usable) |
-| `BCHECKS <slot> <tokens> <lengths>` | out | `STRATA_SLOT_CHECKPOINTS` > 1: after `PARKED`, `BADM 1` and `BYIELD`, what the slot holds and the lengths of the checkpoints it keeps (the server's placement hint, `/metrics` `checkpoint_tokens`) |
+| `BCHECKS <slot> <tokens> <lengths>` | out | `STRATA_SLOT_CHECKPOINTS` > 1 or `STRATA_BRANCH_CHECKPOINT`: after `PARKED`, `BADM 1` and `BYIELD`, what the slot holds and the lengths of the checkpoints it keeps (the server's placement hint, `/metrics` `checkpoint_tokens`) |
 
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.
