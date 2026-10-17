@@ -243,6 +243,45 @@ void check(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::mt19937& 
     g_fail += bad;
 }
 
+// The LDS layouts also accept fewer block rows than the device-side group count.
+// Mode 7's down pass is checked alone; mode 8 checks the fused gate/up and down passes together.
+void check_lds_stride(int gu, int dt, cudaStream_t s, std::mt19937& rng) {
+    Setup S(gu, dt, 512, 256, 8, 4, 11, rng, s);
+    int bad = 0;
+    for (int base : {0, 3}) {
+        S.plan_sizes({1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3}, base, rng);
+        for (int mode : {7, 8}) {
+            if (mode == 7) {
+                k::native_expert_set_mode(0, 1);
+                S.call(0, s);  // prepare every group's scratch before the down-only check
+            }
+            k::native_expert_set_mode(mode, mode == 7 ? 2 : 0);
+            auto result = [&](int cap_groups) {
+                ck(cudaMemsetAsync(S.out, 0xFF, S.out_floats * 4, s), "clear output");
+                if (mode == 8) ck(cudaMemsetAsync(S.scr, 0x7F, S.scr_bytes, s), "poison scratch");
+                k::native_expert_grouped(S.L, S.ptr, S.start, S.n, S.dst, S.tok, cap_groups, S.cap,
+                                        S.xq, S.scr, S.out, s);
+                ck(cudaStreamSynchronize(s), "LDS sync");
+                std::vector<uint32_t> out(S.out_floats);
+                ck(cudaMemcpy(out.data(), S.out, out.size() * 4, cudaMemcpyDeviceToHost), "LDS output");
+                return out;
+            };
+            const auto ref = result(S.cap);
+            for (int cap_groups : {1, 3, 8}) {
+                const auto got = result(cap_groups);
+                if (ref != got) {
+                    std::printf("  LDS mode %d %s/%s base %d cap_groups %d: FAIL\n",
+                                mode, name_of(gu), name_of(dt), base, cap_groups);
+                    ++bad;
+                }
+            }
+        }
+    }
+    k::native_expert_set_mode(-1, 0);
+    std::printf("LDS stride %s/%s: %s\n", name_of(gu), name_of(dt), bad ? "FAIL" : "bitwise equal");
+    g_fail += bad;
+}
+
 // ------------------------------------------------------------------------------------------------ --bench
 // A window's 48 calls, one per layer, each with ITS OWN experts as the layers have: copies of the Setup's blobs in one
 // arena, so the weights stream from DRAM as in the engine.  (48 calls re-reading the same 28 experts - 73 MB, about an
@@ -362,6 +401,8 @@ int main(int argc, char** argv) {
     check(42, 42, 2560, 640, s, rng);
     check(21, 20, 2560, 640, s, rng);                                   // a model's shapes
     check(21, 23, 2560, 768, s, rng);
+    for (int gu : {16, 18, 21, 22, 23})
+        for (int dt : {20, 42}) check_lds_stride(gu, dt, s, rng);
     if (do_bench) bench(s, rng);
     std::printf("native_grouped_parity: %d failures\n", g_fail);
     cudaStreamDestroy(s);

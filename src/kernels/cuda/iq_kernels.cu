@@ -4006,58 +4006,60 @@ __global__ void __launch_bounds__(256) native_down_lds_kernel(const unsigned lon
                                                               float* __restrict__ out) {
     using F = Fmt<TD>;
     extern __shared__ int sh_raw[];   // LDS_NT entries x hb blocks of q8_1
-    const int g = blockIdx.y;
-    if (g >= *n_groups) return;
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
-    const uint8_t* blob = (const uint8_t*) grp_ptr[g];
     const int nb = (int) (L.n_ff / F::qk), hb = (int) (L.n_ff / 32);
-    const int e0 = grp_start[g], e1 = grp_start[g + 1];
     const int nrow = (int) L.n_embd;
     const block_q8_1* sh = (const block_q8_1*) sh_raw;
-    for (int c0 = e0; c0 < e1; c0 += LDS_NT) {
-        const int cn = min(LDS_NT, e1 - c0);
-        __syncthreads();
-        {
-            const int* src = (const int*) (hq + (size_t) c0 * hb);   // the chunk's entries are contiguous
-            for (int i = tid; i < cn * hb * 9; i += 256) sh_raw[i] = src[i];
-        }
-        __syncthreads();
-        for (int p = 0; p < LDS_RB / 16; ++p) {
-            const int r0 = blockIdx.x * LDS_RB + p * 16 + warp, r1 = r0 + 8;
-            if (r0 >= nrow) break;
-            const bool two = r1 < nrow;
-            const uint8_t* w0 = blob + L.down_off + (size_t) r0 * L.d_row;
-            const uint8_t* w1 = blob + L.down_off + (size_t) (two ? r1 : r0) * L.d_row;
-            auto pass = [&](auto ntc) {
-                constexpr int NTC = decltype(ntc)::value;
-                float s0[NTC], s1[NTC];
-#pragma unroll
-                for (int j = 0; j < NTC; ++j) { s0[j] = 0.0f; s1[j] = 0.0f; }
-                for (int k = lane; k < nb * F::ipb; k += 32) {
-                    const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
-#pragma unroll
+    // Visit every group even when the launch has fewer block rows than groups.
+    const int ng = *n_groups;
+    for (int g = blockIdx.y; g < ng; g += gridDim.y) {
+        const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        for (int c0 = e0; c0 < e1; c0 += LDS_NT) {
+            const int cn = min(LDS_NT, e1 - c0);
+            __syncthreads();
+            {
+                const int* src = (const int*) (hq + (size_t) c0 * hb);   // the chunk's entries are contiguous
+                for (int i = tid; i < cn * hb * 9; i += 256) sh_raw[i] = src[i];
+            }
+            __syncthreads();
+            for (int p = 0; p < LDS_RB / 16; ++p) {
+                const int r0 = blockIdx.x * LDS_RB + p * 16 + warp, r1 = r0 + 8;
+                if (r0 >= nrow) break;
+                const bool two = r1 < nrow;
+                const uint8_t* w0 = blob + L.down_off + (size_t) r0 * L.d_row;
+                const uint8_t* w1 = blob + L.down_off + (size_t) (two ? r1 : r0) * L.d_row;
+                auto pass = [&](auto ntc) {
+                    constexpr int NTC = decltype(ntc)::value;
+                    float s0[NTC], s1[NTC];
+    #pragma unroll
+                    for (int j = 0; j < NTC; ++j) { s0[j] = 0.0f; s1[j] = 0.0f; }
+                    for (int k = lane; k < nb * F::ipb; k += 32) {
+                        const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+    #pragma unroll
+                        for (int j = 0; j < NTC; ++j) {
+                            const block_q8_1* xk = sh + (size_t) j * hb + kbx * (F::qk / 32);
+                            const float a = F::dot(w0, xk, kbx, iqs);
+                            const float b = F::dot(w1, xk, kbx, iqs);
+                            s0[j] += a;
+                            s1[j] += b;
+                        }
+                    }
+    #pragma unroll
                     for (int j = 0; j < NTC; ++j) {
-                        const block_q8_1* xk = sh + (size_t) j * hb + kbx * (F::qk / 32);
-                        const float a = F::dot(w0, xk, kbx, iqs);
-                        const float b = F::dot(w1, xk, kbx, iqs);
-                        s0[j] += a;
-                        s1[j] += b;
+                        const float a = warp_sum(s0[j]), b = warp_sum(s1[j]);
+                        if (lane == 0) {
+                            out[(size_t) ent_dst[c0 + j] * L.n_embd + r0] = a;
+                            if (two) out[(size_t) ent_dst[c0 + j] * L.n_embd + r1] = b;
+                        }
                     }
+                };
+                switch (cn) {
+                    case 1: pass(std::integral_constant<int, 1>{}); break;
+                    case 2: pass(std::integral_constant<int, 2>{}); break;
+                    case 3: pass(std::integral_constant<int, 3>{}); break;
+                    default: pass(std::integral_constant<int, 4>{}); break;
                 }
-#pragma unroll
-                for (int j = 0; j < NTC; ++j) {
-                    const float a = warp_sum(s0[j]), b = warp_sum(s1[j]);
-                    if (lane == 0) {
-                        out[(size_t) ent_dst[c0 + j] * L.n_embd + r0] = a;
-                        if (two) out[(size_t) ent_dst[c0 + j] * L.n_embd + r1] = b;
-                    }
-                }
-            };
-            switch (cn) {
-                case 1: pass(std::integral_constant<int, 1>{}); break;
-                case 2: pass(std::integral_constant<int, 2>{}); break;
-                case 3: pass(std::integral_constant<int, 3>{}); break;
-                default: pass(std::integral_constant<int, 4>{}); break;
             }
         }
     }
@@ -4079,75 +4081,77 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
     __shared__ GT sgrid[GridOf<TG>::N];
     __shared__ float res[LDS_NT][64];
     extern __shared__ int sx_raw[];
-    const int g = blockIdx.y;
-    if (g >= *n_groups) return;
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     const GT* gsrc = GridOf<TG>::src();
     for (int i = tid; i < GridOf<TG>::N; i += 256) sgrid[i] = gsrc[i];
-    const uint8_t* blob = (const uint8_t*) grp_ptr[g];
     const int nb = (int) (L.n_embd / F::qk), xb = (int) (L.n_embd / 32), hb = (int) (L.n_ff / 32);
-    const int e0 = grp_start[g], e1 = grp_start[g + 1];
     const int r0 = blockIdx.x * 32;
     const block_q8_1* sx = (const block_q8_1*) sx_raw;
-    auto wrow = [&](int i) -> const uint8_t* {   // i < 32: gate row r0 + i, else up row r0 + i - 32
-        return blob + (i < 32 ? (size_t) 0 : L.up_off) + (size_t) (r0 + (i & 31)) * L.gu_row;
-    };
-    for (int c0 = e0; c0 < e1; c0 += LDS_NT) {
-        const int cn = min(LDS_NT, e1 - c0);
-        __syncthreads();
-        for (int j = 0; j < cn; ++j) {
-            const int* src = (const int*) (xq + (size_t) ent_tok[c0 + j] * xb);
-            for (int i = tid; i < xb * 9; i += 256) sx_raw[j * xb * 9 + i] = src[i];
-        }
-        __syncthreads();
-        for (int p = 0; p < 4; ++p) {
-            const int i0 = p * 16 + warp, i1 = i0 + 8;
-            const uint8_t* w0 = wrow(i0);
-            const uint8_t* w1 = wrow(i1);
-            auto pass = [&](auto ntc) {
-                constexpr int NTC = decltype(ntc)::value;
-                float s0[NTC], s1[NTC];
-#pragma unroll
-                for (int j = 0; j < NTC; ++j) { s0[j] = 0.0f; s1[j] = 0.0f; }
-                for (int k = lane; k < nb * F::ipb; k += 32) {
-                    const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
-#pragma unroll
-                    for (int j = 0; j < NTC; ++j) {
-                        const block_q8_1* xk = sx + (size_t) j * xb + kbx * (F::qk / 32);
-                        const float a = DotG<TG, 1>::f(w0, xk, kbx, iqs, sgrid);
-                        const float b = DotG<TG, 1>::f(w1, xk, kbx, iqs, sgrid);
-                        s0[j] += a;
-                        s1[j] += b;
+    // Visit every group even when the launch has fewer block rows than groups.
+    const int ng = *n_groups;
+    for (int g = blockIdx.y; g < ng; g += gridDim.y) {
+        const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        auto wrow = [&](int i) -> const uint8_t* {   // i < 32: gate row r0 + i, else up row r0 + i - 32
+            return blob + (i < 32 ? (size_t) 0 : L.up_off) + (size_t) (r0 + (i & 31)) * L.gu_row;
+        };
+        for (int c0 = e0; c0 < e1; c0 += LDS_NT) {
+            const int cn = min(LDS_NT, e1 - c0);
+            __syncthreads();
+            for (int j = 0; j < cn; ++j) {
+                const int* src = (const int*) (xq + (size_t) ent_tok[c0 + j] * xb);
+                for (int i = tid; i < xb * 9; i += 256) sx_raw[j * xb * 9 + i] = src[i];
+            }
+            __syncthreads();
+            for (int p = 0; p < 4; ++p) {
+                const int i0 = p * 16 + warp, i1 = i0 + 8;
+                const uint8_t* w0 = wrow(i0);
+                const uint8_t* w1 = wrow(i1);
+                auto pass = [&](auto ntc) {
+                    constexpr int NTC = decltype(ntc)::value;
+                    float s0[NTC], s1[NTC];
+    #pragma unroll
+                    for (int j = 0; j < NTC; ++j) { s0[j] = 0.0f; s1[j] = 0.0f; }
+                    for (int k = lane; k < nb * F::ipb; k += 32) {
+                        const int kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+    #pragma unroll
+                        for (int j = 0; j < NTC; ++j) {
+                            const block_q8_1* xk = sx + (size_t) j * xb + kbx * (F::qk / 32);
+                            const float a = DotG<TG, 1>::f(w0, xk, kbx, iqs, sgrid);
+                            const float b = DotG<TG, 1>::f(w1, xk, kbx, iqs, sgrid);
+                            s0[j] += a;
+                            s1[j] += b;
+                        }
                     }
+    #pragma unroll
+                    for (int j = 0; j < NTC; ++j) {
+                        const float a = warp_sum(s0[j]), b = warp_sum(s1[j]);
+                        if (lane == 0) { res[j][i0] = a; res[j][i1] = b; }
+                    }
+                };
+                switch (cn) {
+                    case 1: pass(std::integral_constant<int, 1>{}); break;
+                    case 2: pass(std::integral_constant<int, 2>{}); break;
+                    case 3: pass(std::integral_constant<int, 3>{}); break;
+                    default: pass(std::integral_constant<int, 4>{}); break;
                 }
-#pragma unroll
-                for (int j = 0; j < NTC; ++j) {
-                    const float a = warp_sum(s0[j]), b = warp_sum(s1[j]);
-                    if (lane == 0) { res[j][i0] = a; res[j][i1] = b; }
+            }
+            __syncthreads();
+            if (warp < cn) {   // swiglu_entries_kernel + quantize_q8_1_kernel, one block of 32 h values per entry
+                const float gg = res[warp][lane], uu = res[warp][32 + lane];
+                const float xi = (gg / (1.0f + __expf(-gg))) * uu;
+                float amax = fabsf(xi), sum = xi;
+    #pragma unroll
+                for (int o = 16; o > 0; o >>= 1) {
+                    amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+                    sum += __shfl_xor_sync(0xffffffffu, sum, o);
                 }
-            };
-            switch (cn) {
-                case 1: pass(std::integral_constant<int, 1>{}); break;
-                case 2: pass(std::integral_constant<int, 2>{}); break;
-                case 3: pass(std::integral_constant<int, 3>{}); break;
-                default: pass(std::integral_constant<int, 4>{}); break;
+                const float d = q8_1_finite(amax / 127.0f);   // #606, as q8_1_store: finite blocks bit for bit
+                const int8_t q = q8_1_quant(xi, d, amax);
+                block_q8_1* y = hq + (size_t) (c0 + warp) * hb + blockIdx.x;
+                y->qs[lane] = q;
+                if (lane == 0) y->ds = q8_1_ds(d, sum);
             }
-        }
-        __syncthreads();
-        if (warp < cn) {   // swiglu_entries_kernel + quantize_q8_1_kernel, one block of 32 h values per entry
-            const float gg = res[warp][lane], uu = res[warp][32 + lane];
-            const float xi = (gg / (1.0f + __expf(-gg))) * uu;
-            float amax = fabsf(xi), sum = xi;
-#pragma unroll
-            for (int o = 16; o > 0; o >>= 1) {
-                amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
-                sum += __shfl_xor_sync(0xffffffffu, sum, o);
-            }
-            const float d = q8_1_finite(amax / 127.0f);   // #606, as q8_1_store: finite blocks bit for bit
-            const int8_t q = q8_1_quant(xi, d, amax);
-            block_q8_1* y = hq + (size_t) (c0 + warp) * hb + blockIdx.x;
-            y->qs[lane] = q;
-            if (lane == 0) y->ds = q8_1_ds(d, sum);
         }
     }
 }
