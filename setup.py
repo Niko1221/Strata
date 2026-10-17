@@ -1706,10 +1706,8 @@ def whole_shard(s: Path) -> bool:
     sys.path.insert(0, str(ROOT / "tools"))
     from gguf_reader import GGUFFile
     try:
-        g = GGUFFile(s)
-        return s.stat().st_size >= g.data_start + max((t.offset + (t.expected_bytes() or 0) for t in g.tensors),
-                                                     default=0)
-    except (OSError, ValueError, struct.error):
+        return s.stat().st_size >= GGUFFile(s).data_end()
+    except (OSError, ValueError):
         return False
 
 
@@ -1967,15 +1965,18 @@ def check_shards(shards):
     renamed by hand, a download finished by an older setup) otherwise passes as a model file and the engine
     fails much later, at the first tensor that runs past the end."""
     sys.path.insert(0, str(ROOT / "tools"))
-    from gguf_reader import GGUFFile
+    from gguf_reader import GGUFFile, UnsupportedTensorSize
     for s in shards:
         if not s.exists():
             fail(f"missing {s}")
         try:
             g = GGUFFile(s)
-        except (ValueError, struct.error) as e:
+            need = g.data_end()
+        except UnsupportedTensorSize as e:
+            fail(f"cannot verify {s.name} ({e})",
+                 "keep this file; update the GGUF reader or verify it with a tool that supports this tensor type")
+        except ValueError as e:
             fail(f"{s.name} is not a whole GGUF shard ({e})", "delete it and run setup again")
-        need = g.data_start + max((t.offset + (t.expected_bytes() or 0) for t in g.tensors), default=0)
         have = s.stat().st_size
         if not g.tensors:
             # #2346: a metadata-only shard (Unsloth's UD-Q5_K_XL 00001, 10,946,618 bytes) ends at its header: the

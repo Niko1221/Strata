@@ -10,6 +10,7 @@ no ggml dependency)"). It parses the header only; tensor data is never read.
 from __future__ import annotations
 
 import dataclasses
+import os
 import pathlib
 import struct
 from typing import Any
@@ -38,6 +39,8 @@ GGUF_META = {
 # This is what makes a per-tensor byte count checkable, and it is the contract the kernels share.
 BLOCK_GEOMETRY: dict[str, tuple[int, int]] = {
     "F32": (1, 4), "F16": (1, 2), "BF16": (1, 2), "F64": (1, 8),
+    "I8": (1, 1), "I16": (1, 2), "I32": (1, 4), "I64": (1, 8),
+    "TQ1_0": (256, 54), "TQ2_0": (256, 66),
     "Q4_0": (32, 18), "Q4_1": (32, 20), "Q5_0": (32, 22), "Q5_1": (32, 24),
     "Q8_0": (32, 34), "Q8_1": (32, 36),
     "Q2_K": (256, 84), "Q3_K": (256, 110), "Q4_K": (256, 144), "Q5_K": (256, 176),
@@ -73,6 +76,14 @@ class TensorInfo:
         return self.elements // block_elems * block_bytes
 
 
+class UnsupportedTensorSize(ValueError):
+    """A readable tensor directory whose complete payload size is not known to this reader."""
+
+
+_META_FMT = {"u8": "B", "i8": "b", "u16": "H", "i16": "h", "u32": "I", "i32": "i",
+             "f32": "f", "bool": "?", "u64": "Q", "i64": "q", "f64": "d"}
+
+
 class GGUFFile:
     def __init__(self, path: pathlib.Path):
         self.path = pathlib.Path(path)
@@ -81,55 +92,102 @@ class GGUFFile:
         self.version = 0
         self.alignment = 32
         with self.path.open("rb") as fh:
-            self._parse(fh)
+            self._size = os.fstat(fh.fileno()).st_size
+            self._pos = 0
+            try:
+                self._parse(fh)
+            except ValueError as e:
+                raise ValueError(f"{self.path.name}: {e}") from None
         self.data_start = self._data_start
 
+    def data_end(self) -> int:
+        """Return the required file extent; unknown tensor sizes cannot establish completeness."""
+        # Alignment locates tensor data. A metadata-only file ends at its parsed header.
+        end = self._pos
+        unknown = []
+        for tensor in self.tensors:
+            size = tensor.expected_bytes()
+            if tensor.type_name in BLOCK_GEOMETRY and size is None:
+                raise ValueError(f"tensor {tensor.name} has an invalid element count for {tensor.type_name}")
+            if size is None:
+                unknown.append(tensor)
+            end = max(end, self.data_start + tensor.offset + (size or 0))
+        # Known extents remain binding even if another tensor has an unknown type.
+        if unknown:
+            if end > self._size:
+                raise ValueError(f"tensor directory requires at least {end:,} bytes, file has {self._size:,}")
+            tensor = unknown[0]
+            raise UnsupportedTensorSize(f"cannot verify tensor {tensor.name}: unsupported type {tensor.type_name}")
+        return end
+
     # ------------------------------------------------------------------ internals
+    def _read(self, fh, n: int) -> bytes:
+        left = self._size - self._pos
+        if n < 0 or n > left:
+            raise ValueError(f"header ends early: {n:,} bytes needed at offset {self._pos:,}, {left:,} left")
+        raw = fh.read(n)
+        self._pos += len(raw)
+        if len(raw) != n:
+            raise ValueError(f"header ends early at offset {self._pos:,}")
+        return raw
+
+    def _unpack(self, fh, fmt: str) -> tuple:
+        return struct.unpack(fmt, self._read(fh, struct.calcsize(fmt)))
+
+    def _count(self, fh, count: int, min_bytes: int, what: str) -> int:
+        if count * min_bytes > self._size - self._pos:
+            raise ValueError(f"{count:,} {what} cannot fit in the {self._size - self._pos:,} bytes left")
+        return count
+
     def _parse(self, fh) -> None:
-        magic = struct.unpack("<I", fh.read(4))[0]
+        (magic,) = self._unpack(fh, "<I")
         if magic != GGUF_MAGIC:
-            raise ValueError(f"{self.path.name}: not a GGUF file (magic {magic:#x})")
-        self.version, n_tensors, n_kv = struct.unpack("<IQQ", fh.read(20))
+            raise ValueError(f"not a GGUF file (magic {magic:#x})")
+        self.version, n_tensors, n_kv = self._unpack(fh, "<IQQ")
         if self.version != 3:
-            raise ValueError(f"{self.path.name}: GGUF v{self.version}, this reader handles v3")
-        for _ in range(n_kv):
+            raise ValueError(f"GGUF v{self.version}, this reader handles v3")
+        for _ in range(self._count(fh, n_kv, 12, "metadata entries")):      # key length (8) + value type (4)
             key = self._str(fh)
             self.metadata[key] = self._value(fh)
-        for _ in range(n_tensors):
+        for _ in range(self._count(fh, n_tensors, 24, "tensors")):           # name length, n_dims, type, offset
             name = self._str(fh)
-            (n_dims,) = struct.unpack("<I", fh.read(4))
-            shape = list(struct.unpack(f"<{n_dims}Q", fh.read(8 * n_dims)))
-            type_id, offset = struct.unpack("<IQ", fh.read(12))
+            (n_dims,) = self._unpack(fh, "<I")
+            shape = list(self._unpack(fh, f"<{self._count(fh, n_dims, 8, 'dimensions')}Q"))
+            type_id, offset = self._unpack(fh, "<IQ")
             self.tensors.append(TensorInfo(name, shape, type_id,
                                            GGML_TYPES.get(type_id, f"type{type_id}"), offset))
         align = self.metadata.get("general.alignment")
-        if isinstance(align, int) and align:
+        if align is not None:
+            if type(align) is not int or align <= 0 or align & (align - 1):
+                raise ValueError("general.alignment must be a positive power of two")
             self.alignment = align
-        pos = fh.tell()
+        pos = self._pos
         self._data_start = (pos + self.alignment - 1) // self.alignment * self.alignment
 
     def _str(self, fh) -> str:
-        (n,) = struct.unpack("<Q", fh.read(8))
-        return fh.read(n).decode("utf-8", "replace")
+        (n,) = self._unpack(fh, "<Q")
+        return self._read(fh, n).decode("utf-8", "replace")
+
+    def _meta_type(self, t: int) -> tuple[str, int | None]:
+        if t not in GGUF_META:
+            raise ValueError(f"unknown metadata value type {t}")
+        return GGUF_META[t]
 
     def _value(self, fh):
-        (t,) = struct.unpack("<I", fh.read(4))
-        name, size = GGUF_META[t]
+        (t,) = self._unpack(fh, "<I")
+        name, size = self._meta_type(t)
         if name == "string":
             return self._str(fh)
         if name == "array":
-            (et,) = struct.unpack("<I", fh.read(4))
-            (count,) = struct.unpack("<Q", fh.read(8))
-            ename, esize = GGUF_META[et]
+            et, count = self._unpack(fh, "<IQ")
+            ename, esize = self._meta_type(et)
+            if ename == "array":
+                raise ValueError("nested metadata arrays are not supported")
             if ename == "string":
-                return [self._str(fh) for _ in range(count)]
-            fmt = {"u8": "B", "i8": "b", "u16": "H", "i16": "h", "u32": "I", "i32": "i",
-                   "f32": "f", "bool": "?", "u64": "Q", "i64": "q", "f64": "d"}[ename]
-            raw = fh.read(esize * count)
-            return list(struct.unpack(f"<{count}{fmt}", raw))
-        fmt = {"u8": "B", "i8": "b", "u16": "H", "i16": "h", "u32": "I", "i32": "i",
-               "f32": "f", "bool": "?", "u64": "Q", "i64": "q", "f64": "d"}[name]
-        return struct.unpack(f"<{fmt}", fh.read(size))[0]
+                return [self._str(fh) for _ in range(self._count(fh, count, 8, "array strings"))]
+            self._count(fh, count, esize, "array elements")
+            return list(self._unpack(fh, f"<{count}{_META_FMT[ename]}"))
+        return self._unpack(fh, f"<{_META_FMT[name]}")[0]
 
     # ------------------------------------------------------------------ helpers
     def by_type(self) -> dict[str, int]:
