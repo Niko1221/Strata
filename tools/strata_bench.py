@@ -481,15 +481,26 @@ def cpu_name() -> str | None:
 
 
 def gpu_info_local() -> dict:
-    out = run_cmd(["nvidia-smi", "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"])
+    out = run_cmd(["nvidia-smi", "--query-gpu=name,memory.total,driver_version,power.limit,power.draw,pcie.link.gen.current,pcie.link.width.current,pstate,temperature.gpu",
+                   "--format=csv,noheader,nounits"])
     gpus = []
     for line in out.splitlines():
         p = [x.strip() for x in line.split(",")]
         if len(p) >= 3:
-            gpus.append({"name": p[0], "vram_mib": int(float(p[1])) if p[1].replace(".", "").isdigit() else None, "driver": p[2]})
+            g = {"name": p[0], "vram_mib": int(float(p[1])) if p[1].replace(".", "").isdigit() else None, "driver": p[2]}
+            if len(p) >= 9:
+                g.update({"power_limit_w": p[3], "power_draw_w": p[4], "pcie": f"gen{p[5]} x{p[6]}",
+                          "pstate": p[7], "temp_c": p[8]})
+            gpus.append(g)
+    if not gpus:
+        out = run_cmd(["nvidia-smi", "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"])
+        for line in out.splitlines():
+            p = [x.strip() for x in line.split(",")]
+            if len(p) >= 3:
+                gpus.append({"name": p[0], "vram_mib": int(float(p[1])) if p[1].replace(".", "").isdigit() else None, "driver": p[2]})
     info = {"gpus": gpus}
     head = run_cmd(["nvidia-smi"])
-    m = re.search(r"CUDA Version:\s*([\d.]+)", head)
+    m = re.search(r"CUDA(?: UMD)? Version:\s*([\d.]+)", head)
     if m:
         info["cuda"] = m.group(1)
     if not gpus:
@@ -512,6 +523,37 @@ def gpu_info_local() -> dict:
         except Exception:   # noqa: BLE001 - a report without the card's name is still a report
             pass
     return info
+
+
+def storage_info() -> str | None:
+    if os.name == "nt":
+        out = run_cmd(["powershell", "-NoProfile", "-Command",
+                       "Get-PhysicalDisk | Select-Object -First 4 FriendlyName,MediaType,BusType | "
+                       "ForEach-Object { $_.FriendlyName + ' ' + $_.MediaType + '/' + $_.BusType }"])
+        names = [x.strip() for x in out.splitlines() if x.strip() and "FriendlyName" not in x]
+        return "; ".join(names) or None
+    if sys.platform == "darwin":
+        out = run_cmd(["system_profiler", "SPNVMeDataType", "SPSerialATADataType"])
+        names = re.findall(r"Model:\s*(.+)", out)
+        if names:
+            return "; ".join(n.strip() for n in names)
+        return None
+    out = run_cmd(["lsblk", "-d", "-o", "NAME,MODEL,TRAN", "-n", "-e", "7"])   # -e 7: skip loop devices (snap mounts)
+    if out.strip():
+        return "; ".join(x.strip() for x in out.splitlines() if x.strip()) or None
+    return None
+
+
+def engine_build(cfg: dict | None) -> dict | None:
+    """BUILD.json next to the engine exe: the toolkit/archs it was compiled with, unlike nvidia-smi's driver ceiling."""
+    exe = (cfg or {}).get("exe")
+    if not exe:
+        return None
+    try:
+        b = json.loads((Path(exe).parent / "BUILD.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return {k: b[k] for k in ("version", "source", "cuda", "rocm", "archs", "ptx", "portable") if b.get(k) is not None} or None
 
 
 QUANT = re.compile(r"(?i)(?:^|[-_.])((?:UD-)?(?:IQ\d_[A-Z]+|Q\d_[A-Z0-9_]+|Q\d_K(?:_[A-Z]+)?|IQ\d_?[A-Z]*|BF16|F16|Q\d))(?=[-_.]|$)")
@@ -632,9 +674,12 @@ def collect_machine(base: str, key: str, cfg: dict | None, gpu_arg: str | None =
     n_ctx = n_ctx or (props.get("default_generation_settings") or {}).get("n_ctx")
     return {
         "gpu": gpu_names, "gpu_vram_mib": vram_mib, "gpu_driver": (used[0].get("driver") if used else local.get("rocm_driver")),
-        "cuda": local.get("cuda"), "cpu": static.get("cpu_name") or cpu_name(), "cpu_cores": static.get("cores"),
+        "gpu_detail": [{k: v for k, v in g.items() if k not in ("name", "vram_mib", "driver")} for g in used] or None,
+        "cuda": local.get("cuda"), "engine_build": engine_build(cfg),
+        "cpu": static.get("cpu_name") or cpu_name(), "cpu_cores": static.get("cores"),
+        "storage": storage_info(),
         "cpu_threads": static.get("threads") or os.cpu_count(), "ram_gib": total_ram_gib(),
-        "os": f"{platform.system()} {platform.release()} ({platform.version()})" if os.name == "nt" else f"{platform.system()} {platform.release()}",
+        "os": f"{platform.system()} {'11' if int(platform.version().split('.')[-1] or 0) >= 22000 else platform.release()} ({platform.version()})" if os.name == "nt" else f"{platform.system()} {platform.release()}",
         "python": platform.python_version(),
         "strata_version": project_version(), "strata_commit": git_commit(),
         "engine_version": (eng.get("version") or status.get("engine") or str(props.get("build_info", "")).replace("Strata ", "") or None),
@@ -816,11 +861,16 @@ def render_readme(res: dict) -> str:
          "## Hardware and software", "",
          f"- GPU and VRAM: {gpu}, {vram}",
          f"- CPU: {mc.get('cpu') or 'not read'} ({mc.get('cpu_cores') or '?'} cores, {mc.get('cpu_threads') or '?'} threads); "
-         f"installed RAM: {mc.get('ram_gib') or '?'} GiB; storage: not measured",
-         f"- OS: {mc.get('os')}; GPU driver: {mc.get('gpu_driver') or 'not read'}; CUDA: {mc.get('cuda') or 'not read'}",
+         f"installed RAM: {mc.get('ram_gib') or '?'} GiB; storage: {mc.get('storage') or 'not read'}",
+         f"- OS: {mc.get('os')}; GPU driver: {mc.get('gpu_driver') or 'not read'}; "
+         f"CUDA (driver supports up to): {mc.get('cuda') or 'not read'}"
+         + (f"; engine built for CUDA {(mc.get('engine_build') or {}).get('cuda')}" if (mc.get('engine_build') or {}).get('cuda') else ""),
          f"- Strata: project {mc.get('strata_version') or '?'}, commit {mc.get('strata_commit') or 'not a git checkout'}; "
-         f"engine {mc.get('engine_version') or 'not read'}",
-         "- Background workloads and power limits: not recorded", "",
+         f"engine {mc.get('engine_version') or 'not read'}"]
+    for g in (mc.get("gpu_detail") or []):
+        if g:
+            L.append("- GPU detail (after the run, near idle): " + ", ".join(f"{k}={v}" for k, v in g.items() if v is not None))
+    L += ["- Background workloads: not recorded (GPU power limit/draw read above)", "",
          "## Model and configuration", "",
          f"- Model and quantization: {model}",
          f"- Context: {mc.get('context') or 'not read'} tokens; parallel slots: {mc.get('parallel_slots') or 1}",
@@ -869,7 +919,7 @@ def render_readme(res: dict) -> str:
     L += ["", "Per-request data: `results.json`. Engine log lines from the start: `engine-log-excerpt.txt` (when this run started the server).", "",
           "## Correctness and limitations", "",
           "Not measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. "
-          "Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; background load and power limits are not recorded. "
+          "Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; background load is not recorded. "
           f"Total time of the suite: {res['elapsed_s']:.0f} s.", ""]
     return "\n".join(L)
 
