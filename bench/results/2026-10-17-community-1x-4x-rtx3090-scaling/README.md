@@ -27,7 +27,7 @@ From 1 to 4 GPUs, median chat decode improved 1.89x and 32K prompt processing im
 ## Hardware and software
 
 - Bare-metal ASRock Rack ROMED8-2T host
-- 4× NVIDIA GeForce RTX 3090 24 GiB, each on a PCIe 4.0 ×16 link and limited to 220 W
+- 4× ASUS TUF Gaming GeForce RTX 3090 OC 24 GiB (`TUF-RTX3090-O24G-GAMING`), each on a PCIe 4.0 ×16 link and limited to 220 W
 - AMD EPYC 7702, 1 socket, 64 cores / 128 threads, 1.50–3.35 GHz, AVX2
 - 256 GB installed / 247.3 GiB usable: 8× 32 GB Micron dual-rank DDR4-2666 ECC RDIMMs, all eight memory channels populated
 - Model files on a local WD_BLACK SN7100 1 TB NVMe; storage throughput was not separately measured
