@@ -1,0 +1,844 @@
+area	kind	name	file:line	how
+gpu-cpu-kernels	function	gfx_arch_is	include/strata/kernels/gfx_arch.hpp:16	string compare on gcnArchName
+gpu-cpu-kernels	function	gfx_arch_is_gfx11_wmma	include/strata/kernels/gfx_arch.hpp:23	gfx11 WMMA arch check
+gpu-cpu-kernels	function	gfx_arch_is_gfx12_wmma	include/strata/kernels/gfx_arch.hpp:30	gfx12 WMMA arch check
+gpu-cpu-kernels	function	gfx_arch_is_gfx12	include/strata/kernels/gfx_arch.hpp:36	true for gfx1200 or gfx1201
+gpu-cpu-kernels	function	gfx1151 check	include/strata/kernels/gfx_arch.hpp:33	Strix Halo arch check
+gpu-cpu-kernels	behavior	gfx12 default switches	src/core/arch_defaults.cpp:14-31	on gfx12 sets GDN_HEAD=1 GDN_PP=2 GDN_CONVL2=1 GDN_NOY=1 CVEC_FUSE=1 unless STRATA_GFX12_DEFAULTS=0; decode half measured slower on R9700
+gpu-cpu-kernels	function	apply_arch_defaults call	src/program/generate.cpp:2252	called before switches are first read; user settings kept
+gpu-cpu-kernels	behavior	gfx12 prefill 16K chunk	src/program/generate.cpp:2256-2273	bare --prefill auto on gfx12 Linux HIP raises chunk and auto_max to 16384; needs prefill_auto_cap==0 (src/program/generate.cpp:2257); off with STRATA_GFX12_DEFAULTS=0; a layer split takes 8192 back unless STRATA_SPLIT_CHUNK16K=1 (src/program/generate.cpp:546 field, env read src/program/generate.cpp:6621)
+gpu-cpu-kernels	function	dev_class	src/kernels/cuda/native_mmvq.cu:1270	1=gfx12 2=sm_86; q8_0_rows1 just below
+gpu-cpu-kernels	behavior	MMVQ rows on gfx1201	src/kernels/cuda/native_mmvq.cu:1266	one row per block when n_in<=4096 and n_out>=4096 (83-86% of 644 GB/s) else two rows; sm_86 one row for every n_out>=2048 (src/kernels/cuda/native_mmvq.cu:1268)
+gpu-cpu-kernels	env	STRATA_NO_MMVQ_ROWS2	src/kernels/cuda/native_mmvq.cu:1297	1=one row everywhere 0=two rows
+gpu-cpu-kernels	env	STRATA_MMVQ_WAVE	src/kernels/cuda/native_mmvq.cu:1623	MMVQ knob
+gpu-cpu-kernels	env	STRATA_Q8_PACKED	src/kernels/cuda/native_mmvq.cu:1992	packed Q8 path
+gpu-cpu-kernels	env	STRATA_Q6_PACKED	src/kernels/cuda/native_mmvq.cu:2027	packed Q6 path
+gpu-cpu-kernels	env	STRATA_MMVQ_IL_ROWS	src/kernels/cuda/native_mmvq.cu:2678	interleaved MMVQ rows
+gpu-cpu-kernels	behavior	NVFP4 block format	src/kernels/cuda/iq_kernels.cu:570-600	64 values = 4 sub-blocks of 16 with UE4M3 scale each; E2M1 split-half like Q4_0; software decode NaN->0
+gpu-cpu-kernels	kernel	NVFP4 Fmt<40>	src/kernels/cuda/iq_kernels.cu:655	dp4a dot vs q8_1 activations (w4a8)
+gpu-cpu-kernels	kernel	NVFP4 Split<40>	src/kernels/cuda/iq_kernels.cu:1007	split trait TD 40=NVFP4 42=Q2_0
+gpu-cpu-kernels	kernel	NVFP4 sub-warp K=20	src/kernels/cuda/iq_kernels.cu:1120	path for n_ff=640
+gpu-cpu-kernels	kernel	NVFP4 sub-warp K=20 b	src/kernels/cuda/iq_kernels.cu:1167	path for n_ff=640
+gpu-cpu-kernels	behavior	NVFP4 per-expert global scale	src/kernels/cuda/iq_kernels.cu:1348-1352	blob tail FP32 s_gate/s_up/s_down applied to FP32 outputs; s_down on down output
+gpu-cpu-kernels	behavior	NVFP4 scale apply sites	src/kernels/cuda/iq_kernels.cu:1392	global scale application (comment src/kernels/cuda/iq_kernels.cu:1391, code `const float sc = L.tail_off ? ...` src/kernels/cuda/iq_kernels.cu:1392)
+gpu-cpu-kernels	behavior	NVFP4 scale apply sites b	src/kernels/cuda/iq_kernels.cu:1432	global scale application (code src/kernels/cuda/iq_kernels.cu:1432)
+gpu-cpu-kernels	function	nvfp4_mode	include/strata/prefill/moe_mmq.hpp:23-27	STRATA_PREFILL_NVFP4 w4a8 = default on ALL GPUs incl. Blackwell (int8 MMQ); w4a4 = opt-in Blackwell FP4xFP4; fp16 = dequant + FP16 GEMM reference; any other value exit(1) (src/prefill/moe_mmq.cu:188-196)
+gpu-cpu-kernels	env	STRATA_NO_NVFP4_512	src/kernels/cpu/native_expert.cpp:206	pick AVX2 instead of AVX512 NVFP4
+gpu-cpu-kernels	env	STRATA_NO_NVFP4_256	src/kernels/cpu/native_expert.cpp:213	CPU NVFP4 ISA pick
+gpu-cpu-kernels	env	STRATA_NVFP4_PREFETCH	src/kernels/cpu/nvfp4_avx2.cpp:51	CPU NVFP4 prefetch (also src/kernels/cpu/nvfp4_avx512.cpp:52)
+gpu-cpu-kernels	env	STRATA_FORCE_ISA	src/kernels/cpu/expert_layout.cpp:29	force CPU ISA
+gpu-cpu-kernels	env	STRATA_FORCE_AVX2	src/kernels/cpu/expert_layout.cpp:43	force AVX2
+gpu-cpu-kernels	kernel	RDNA4 WMMA prompt attention	src/kernels/cuda/qsa_prompt_attn.cu:1131-1199	__builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12; int8 KV only; S6 comment src/kernels/cuda/qsa_prompt_attn.cu:1131-1140, layout doc src/kernels/cuda/qsa_prompt_attn.cu:1136, intrinsic wrapper src/kernels/cuda/qsa_prompt_attn.cu:1181, kernel prompt_attn_wmma_kernel src/kernels/cuda/qsa_prompt_attn.cu:1199
+gpu-cpu-kernels	function	hip_wmma_usable	src/kernels/cuda/qsa_prompt_attn.cu:1404	needs STRATA_HIP_WMMA=1 and gfx12/gfx11; last bits differ
+gpu-cpu-kernels	env	STRATA_HIP_WMMA	src/kernels/cuda/qsa_prompt_attn.cu:1406	opt-in RDNA WMMA prompt attention
+gpu-cpu-kernels	kernel	QSA select WMMA scorer	src/kernels/cuda/qsa_select.cu:288-330	BF16 WMMA scorer gfx11/12
+gpu-cpu-kernels	function	sel_gfx12_device	src/kernels/cuda/qsa_select.cu:447	despite the name: true for gfx1200/gfx1201 AND gfx11 WMMA parts (src/kernels/cuda/qsa_select.cu:453-455)
+gpu-cpu-kernels	env	STRATA_SELECT_WMMA	src/kernels/cuda/qsa_select.cu:1129	opt-in; selects slightly differently
+gpu-cpu-kernels	const	kRegMinBlocks	src/kernels/cuda/qsa_select.cu:1333	7168 tuned on gfx1201
+gpu-cpu-kernels	kernel	router AMD bit-identical variant	src/kernels/cuda/router_top10.cu:267	measured on gfx1201
+gpu-cpu-kernels	env	STRATA_HIP_ROUTER_FAST	src/kernels/cuda/router_top10.cu:429	gfx906 builds only (#if STRATA_HIP_GFX906, src/kernels/cuda/router_top10.cu:426): opt-in for the wave32 S6 router; on RDNA the S6 router is already the default
+gpu-cpu-kernels	env	STRATA_HIP_ROUTER_OLD	src/kernels/cuda/router_top10.cu:431	RDNA (non-gfx906) builds: opt-out back to the old one-wavefront router
+gpu-cpu-kernels	env	STRATA_ROUTER_BLOCK	src/kernels/cuda/router_top10.cu:462	router block size
+gpu-cpu-kernels	env	STRATA_GDN_SPLIT / STRATA_GDN_COMMIT_SPLIT	src/kernels/cuda/verify_kernels.cu:1024-1094	verify-time GDN split
+gpu-cpu-kernels	env	STRATA_ROPE_TABLE	src/kernels/cuda/native_rope.cu:154	rope table
+gpu-cpu-kernels	env	STRATA_NO_NORM_ROPE	src/kernels/cuda/native_rope.cu:177	disable fused norm+rope
+gpu-cpu-kernels	env	STRATA_NORM_ROPE	src/kernels/cuda/native_rope.cu:180	fused norm+rope; opt-in on AMD until rope_parity check 6 passes
+gpu-cpu-kernels	env	STRATA_ARGMAX_MULTI	src/kernels/cuda/sampler.cu:1256	multi argmax
+gpu-cpu-kernels	env	STRATA_MULTI_BLOCK_ARGMAX	src/kernels/cuda/verify_kernels.cu:930	verify argmax
+gpu-cpu-kernels	behavior	strata_kernels library	CMakeLists.txt:348	STATIC lib of .cu sources
+gpu-cpu-kernels	behavior	gfx906 HIP compile	CMakeLists.txt:59	same .cu compiled as HIP via compat layer; separate from STRATA_ENABLE_HIP, the wave32 RDNA backend (CMakeLists.txt:62)
+gpu-cpu-kernels	env	STRATA_TSUM	src/kernels/cuda/native_mmvq.cu:1160	tree-sum (also src/kernels/cuda/iq_kernels.cu:3657 src/kernels/cuda/fused_gr.cu:1907)
+gpu-cpu-kernels	env	STRATA_EXPERT_V2	src/kernels/cuda/iq_kernels.cu:3654	expert kernel v2
+gpu-cpu-kernels	env	STRATA_EXPERT_V2K	src/kernels/cuda/iq_kernels.cu:3672	expert kernel v2k
+gpu-cpu-kernels	env	STRATA_EXP_MODE	src/kernels/cuda/iq_kernels.cu:3593	expert mode
+gpu-cpu-kernels	env	STRATA_IQ_STAGE_GRID	src/kernels/cuda/iq_kernels.cu:2137	stage grid
+gpu-cpu-kernels	env	STRATA_IQ_STAGE_GRID_MMVQ	src/kernels/cuda/iq_kernels.cu:2144	stage grid MMVQ
+gpu-cpu-kernels	env	STRATA_DEQUANT_WIDE	src/kernels/cuda/dequant_bf16.cu:269	wide dequant
+gpu-cpu-kernels	env	STRATA_S2_SWIGLU_Q8	src/kernels/cuda/s2_expert_grouped.cu:1157	S2 swiglu q8
+gpu-cpu-kernels	env	STRATA_OLD_GROUPED	src/kernels/cuda/s2_expert_grouped.cu:529	old grouped expert
+gpu-cpu-kernels	env	STRATA_FUSED_SWIGLU_Q81	src/kernels/cuda/shared_expert.cu:207	shared expert fused swiglu
+gpu-cpu-kernels	env	STRATA_DEC_BATCH	src/kernels/cuda/shared_expert.cu:246	decode batch
+gpu-cpu-kernels	env	STRATA_PROMPT_ATTN_Q4	src/kernels/cuda/qsa_prompt_attn.cu:1500	q4 prompt attn
+gpu-cpu-kernels	env	STRATA_PROMPT_ATTN_V1	src/kernels/cuda/qsa_prompt_attn.cu:1517	v1 prompt attn
+gpu-cpu-kernels	env	STRATA_PA_FAST	src/kernels/cuda/qsa_prompt_attn.cu:1433	fast prompt attn
+gpu-cpu-kernels	env	STRATA_DF_PDL	src/kernels/cuda/verify_kernels.cu:1460	PDL toggle, opt-in (default off); read again at src/kernels/cuda/verify_kernels.cu:1502 as mode, default 1
+gpu-cpu-kernels	gotcha	no .hip files	src/kernels/cuda/	AMD runs CUDA .cu via HIP; specialization by __gfx1201__ macros and runtime gcnArchName
+gpu-cpu-kernels	gotcha	default decode not matrix cores	src/kernels/cuda/native_mmvq.cu	R9700 default decode is dp4a MMVQ; WMMA paths opt-in and not bit-identical
+gpu-cpu-kernels	gotcha	RDNA4 L2 mapped store	src/kernels/cuda/elementwise.cu:206-212	plain store to mapped pinned memory sits in L2 until sync; volatile store alone is NOT enough on RDNA4 (#697): HIP adds __threadfence_system() after it (#697 src/kernels/cuda/elementwise.cu:212, fence src/kernels/cuda/elementwise.cu:213)
+gpu-cpu-kernels	gotcha	wall_clock64 100 MHz	src/kernels/cuda/verify_kernels.cu:1402	assumed on gfx10.3/11/12
+gpu-cpu-kernels	gotcha	s2_gemv_fast not fast	src/kernels/cuda/s2_gemv_fast.cu	header says levers measured negative/neutral
+gpu-cpu-kernels	gotcha	RDNA4 prompt attn int8 only	src/kernels/qsa_prompt_attn_parity.cpp:327	FP16-KV and Q4_0-KV runs skipped on AMD (#if !__HIP_PLATFORM_AMD__ src/kernels/qsa_prompt_attn_parity.cpp:326-330); Q4_0 prompt-attn parity untested on HIP
+gpu-cpu-kernels	kernel	route_prior	src/kernels/cuda/route_prior.cu	STRATA_ROUTE_PRIOR opt-in changes output
+gpu-cpu-kernels	kernel	s26_tsum permlanex16	src/kernels/cuda/s26_tsum.cuh	tree-sum; permlanex16/DPP on AMD gfx10+
+engine-core	function	model_family_from_arch	include/strata/artifact/model_family.hpp:21	qwen4exp->Qwen4Exp qwen35moe->Qwen35Moe
+engine-core	function	model_family_runs	include/strata/artifact/model_family.hpp:54	true only for Qwen4Exp
+engine-core	function	GgufFile	include/strata/artifact/gguf_reader.hpp:351	header-only GGUF v3 reader mmap MAP_PRIVATE at include/strata/artifact/gguf_reader.hpp:415
+engine-core	function	GgufModel	include/strata/artifact/gguf_reader.hpp:519	multi-shard; meta include/strata/artifact/gguf_reader.hpp:540 find include/strata/artifact/gguf_reader.hpp:542 in_bounds include/strata/artifact/gguf_reader.hpp:549
+engine-core	function	Cursor	include/strata/artifact/gguf_reader.hpp:248	bounds-checked reader
+engine-core	function	read_geometry	include/strata/artifact/gguf_reader.hpp:631	ModelGeometry from GGUF
+engine-core	function	geometry_from_gguf	include/strata/core/family_layout.hpp:31	fills from arch keys; Qwen35Moe branch include/strata/core/family_layout.hpp:63
+engine-core	function	check_gguf_layout	include/strata/core/family_layout.hpp:240	layout table check; layout_table_complete include/strata/core/family_layout.hpp:237 only Qwen35Moe
+engine-core	function	WeightTable::load	src/core/weights.cpp:174	dense pack dir -> VRAM arena
+engine-core	const	WeightKind	include/strata/core/weights.hpp:41	Verbatim/Bf16InF32/F32/F16InF32
+engine-core	function	check_all	src/core/layout.cpp:149	shape checks -> check_layer src/core/layout.cpp:141 -> check_one src/core/layout.cpp:45
+engine-core	function	DeviceArena	src/core/device.cu:320	one cudaMalloc per region; alloc src/core/device.cu:354 bump, never frees
+engine-core	function	device_info	src/core/device.cu:249	device facts; gpu_arch_problem src/core/device.cu:217; mem_get_info src/core/device.cu:184
+engine-core	function	PinnedArena	src/core/pinned.cu:400	host expert arena; reserve src/core/pinned.cu:91 hugepages/THP/shared
+engine-core	function	load_experts	src/core/pinned.cu:655	parallel loaders; direct src/core/pinned.cu:662 ranges src/core/pinned.cu:806/:812; FNV-1a src/core/pinned.cu:332
+engine-core	function	ExpertSource	include/strata/core/expert_source.hpp:160	blob/prefetch/release contract
+engine-core	function	FileExpertSource	include/strata/core/expert_source.hpp:527	mmap model file + prefetch threads
+engine-core	function	ArenaExpertSource	include/strata/core/expert_source.hpp:922	pinned arena source
+engine-core	function	ExpertDispatch	include/strata/core/expert_source.hpp:339	dispatch struct
+engine-core	function	RouterLookahead	include/strata/core/expert_source.hpp:247	run next layer router early to warm pages
+engine-core	function	ExpertCache::open	src/core/expert_cache.cpp:469	VRAM cache; open_sized src/core/expert_cache.cpp:561; open_segmented src/core/expert_cache.cpp:295 CUDA VMM only
+engine-core	function	fill_slot	src/core/expert_cache.cpp:670	fill variants src/core/expert_cache.cpp:692 src/core/expert_cache.cpp:723
+engine-core	function	shrink/grow	src/core/expert_cache.cpp:382	give VRAM to elastic KV (src/core/expert_cache.cpp:416)
+engine-core	function	GraphRegistry::record	src/core/graph.cpp:104	per-layer graph capture; find src/core/graph.cpp:128 launch src/core/graph.cpp:133
+engine-core	function	session_token	src/core/session.cpp:802	one token decode entry
+engine-core	function	session_capture	src/core/session.cpp:204	capture; capture_token src/core/session.cpp:850; run_token src/core/session.cpp:924
+engine-core	function	session_loop	src/core/session.cpp:589	replays graph per layer, polls doorbell s.db, calls PoolFn CPU experts (PoolFn impl = expert_pool_dispatch include/strata/core/expert_source.hpp:491, wired via drive_pool src/program/generate.cpp:997/:5940)
+engine-core	function	session_zero	src/core/session.cpp:148	init; release src/core/session.cpp:132
+engine-core	function	Verifier	include/strata/core/verify.hpp:78	init include/strata/core/verify.hpp:99 run include/strata/core/verify.hpp:104 commit include/strata/core/verify.hpp:180 copy_logits include/strata/core/verify.hpp:106
+engine-core	function	Verifier pipelined	include/strata/core/verify.hpp:266	pl_launch; pl_finish include/strata/core/verify.hpp:277; pl_commit_async include/strata/core/verify.hpp:280
+engine-core	function	MtpDrafter::load	src/core/mtp.cpp:249	bind src/core/mtp.cpp:659; captures src/core/mtp.cpp:1247/:1265/:1315; kv_restore src/core/mtp.cpp:1343
+engine-core	function	NativeHead::load	src/core/native_head.cpp:27	LM head; run src/core/native_head.cpp:83
+engine-core	function	NativeEmbed::load	src/core/native_head.cpp:120	embedding; gather_dev src/core/native_head.cpp:205
+engine-core	function	VmmRange::reserve	src/core/vmm.cpp:90	elastic KV; map_one src/core/vmm.cpp:117 unmap src/core/vmm.cpp:143; HIP stubs src/core/vmm.cpp:154-167 (vmm_available false)
+engine-core	function	PeerExperts	include/strata/core/peer_experts.hpp:35	second GPU tier
+engine-core	function	RemoteExperts	include/strata/core/remote_experts.hpp:20	remote tier; RemotePrefillSource include/strata/core/remote_experts.hpp:113
+engine-core	const	ModelGeometry defaults	include/strata/core/geometry.hpp:24-60	n_embd 2560, 48 layers, QSA every 4th, vocab 248320, 512 experts top-10, n_ff 640, head_dim 256, heads 24/2
+engine-core	env	STRATA_ARENA_PIN_GIB	include/strata/core/pinned.hpp:27	arena pin size
+engine-core	env	STRATA_ARENA_THP	src/core/pinned.cu:297	transparent huge pages
+engine-core	env	STRATA_ARENA_LOCK	src/core/pinned.cu:460	mlock arena
+engine-core	env	STRATA_ARENA_MMAP	include/strata/core/expert_source.hpp:981	mmap arena
+engine-core	env	STRATA_FETCH_THREADS	include/strata/core/expert_source.hpp:650	fetch threads
+engine-core	env	STRATA_IO_PREFETCH	include/strata/core/expert_source.hpp:726	IO prefetch
+engine-core	env	STRATA_IO_PREFETCH_DEPTH	include/strata/core/expert_source.hpp:263	lookahead depth 1-4
+engine-core	env	STRATA_IO_STATS	include/strata/core/expert_source.hpp:739	IO stats
+engine-core	macro	STRATA_EC_NO_VMM	src/core/expert_cache.cpp:7	compile-time macro, not env: auto-defined under STRATA_USE_HIP / STRATA_HIP_GFX906 / STRATA_GPU_METAL (src/core/expert_cache.cpp:6-7), so no VMM cache on HIP
+engine-core	env	STRATA_FS_SLOTS	include/strata/core/foresight_swap.hpp:2	opt-in swap tier
+engine-core	macro	STRATA_HIP_ARCHS	include/strata/core/device.hpp:33	CMake build define set by cmake/hip_backend.cmake, not a runtime env
+engine-core	env	STRATA_GFX12_DEFAULTS	src/core/native_dense.cpp:49	gfx12 defaults
+engine-core	env	STRATA_GFX1151_DEFAULTS	include/strata/core/arch_defaults.hpp:10	gfx1151 defaults
+engine-core	env	STRATA_KV_RING_OFF / STRATA_KV_MAIN_OFF	src/core/layer.cpp:639	KV ring switches
+engine-core	env	STRATA_DBG_NAN	src/core/verify.cpp:2478	NaN debug
+engine-core	env	STRATA_LOGPOS	include/strata/core/verify.hpp:286	log positions
+engine-core	env	STRATA_MEMORY_LIMIT_MIB	include/strata/core/conversation_memory.hpp:17	memory limit
+engine-core	gotcha	no safetensors	src/core	weights from GGUF/pack only; HF NVFP4 needs conversion
+engine-core	gotcha	NVFP4 GGUF type	include/strata/artifact/gguf_reader.hpp:113	name NVFP4; case 40 at include/strata/artifact/gguf_reader.hpp:216: 64 values 4 UE4M3 + 32 B E2M1
+engine-core	gotcha	qwen35moe refused	include/strata/artifact/model_family.hpp:54	refused only by the core qwen4exp path; main() hands qwen35moe to the separate engine (include/strata/qwen35/engine.hpp:1-3, src/qwen35/q36_engine.cu)
+engine-core	gotcha	VMM cache CUDA-only	src/core/expert_cache.cpp:4-5	segmented VMM cache not on HIP (STRATA_EC_NO_VMM src/core/expert_cache.cpp:6-7); elastic KV is OFF on HIP: vmm_available() returns false (src/core/vmm.cpp:154-157)
+engine-core	gotcha	metal coupling	src/core/session.cpp:143	forward-declares window_reset from metal
+engine-core	gotcha	include/strata/artifact/gguf_reader.hpp generated	include/strata/artifact/gguf_reader.hpp	header says generated by scripts/split_artifact.py, but that script is absent at 296b59d2; src/artifact/gguf_reader.cpp is its twin
+prefill	function	Prefill::run	src/prefill/prefill.cpp:4338	Metal -> prompt_run src/prefill/prefill.cpp:4342; else run_impl src/prefill/prefill.cpp:2087 then drain_pipeline src/prefill/prefill.cpp:4317
+prefill	behavior	serve call site read_part	src/program/generate.cpp:11581	sp.run(ids+a0,b0-a0,a0,e); also src/program/generate.cpp:11585
+prefill	env	STRATA_BATCH_YIELD_CHUNKS	src/program/generate.cpp:11576	default 8 chunks per piece so BYIELD/BSTOP can preempt
+prefill	flag	--short-read	src/program/generate.cpp:663	default 64 (decl src/program/generate.cpp:663, parse src/program/generate.cpp:2131, help src/program/generate.cpp:818-819); short prompts via decode windows
+prefill	behavior	chunk loop	src/prefill/prefill.cpp:2178	for c0 += m.T; hand_in_ src/prefill/prefill.cpp:2189; QSA step records src/prefill/prefill.cpp:2300; layer loop src/prefill/prefill.cpp:2538
+prefill	flag	--prefill parse	src/program/generate.cpp:2041-2066	CHUNK/auto/auto:N
+prefill	const	prefill_auto_max	src/program/generate.cpp:541	8192 default
+prefill	const	kStepChunks	src/program/generate.cpp:7615	6144..512 step-down with 512 MiB headroom (gfx1201 hipBLAS hang quote 7618-7619, kHeadroom src/program/generate.cpp:7620)
+prefill	function	Prefill::bytes_needed	src/prefill/prefill.cpp:1868	buffer need for chunk
+prefill	const	owned prompt price	src/program/generate.cpp:3741	160 + chunk*680/1024 MiB (also src/program/generate.cpp:5101; STRATA_OWNED_PRICE=exact src/program/generate.cpp:5100)
+prefill	function	Prefill::init	include/strata/prefill/prefill.hpp:70	called src/program/generate.cpp:7602/7610
+prefill	function	carve	src/prefill/prefill.cpp:1242	max(gdn,qsa,moe set bytes): gdn_set_bytes src/prefill/prefill.cpp:979 qsa_set_bytes src/prefill/prefill.cpp:986 moe_set_bytes src/prefill/prefill.cpp:1060; std::max in carve src/prefill/prefill.cpp:1268
+prefill	function	relayout	src/prefill/prefill.cpp:1343	buffers inside borrowed cache slots
+prefill	behavior	expert streaming	src/prefill/prefill.cpp:115-320	stream-all ring or STAGE ring
+prefill	const	stream_all_min	src/prefill/prefill.cpp:164	1024 tokens; below changed Q2_0 output (src/prefill/prefill.cpp:160)
+prefill	function	ring_slots	src/prefill/prefill.cpp:292	ring size in slots
+prefill	const	STAGE	src/prefill/prefill.cpp:122	8-slot staging ring
+prefill	function	ring_bytes	src/prefill/prefill.cpp:263	1024 fused or 384 x Q2_0 blob; quartered if pinned share <0.9
+prefill	function	ring_budget_slots	src/prefill/prefill.cpp:286	divide by pack max blob; cap 512/1024
+prefill	behavior	HIP WMMA ring 96	src/prefill/prefill.cpp:295-301	STRATA_HIP_WMMA=1 -> 96 slots only when T >= stream_all_min, else STAGE 8 (src/prefill/prefill.cpp:301) (R9700 4K 2426->2483 tok/s)
+prefill	behavior	CPU share	src/prefill/prefill.cpp:172-215	idle decode pool computes rare experts; arm_cpu_share src/prefill/prefill.cpp:1960
+prefill	gotcha	CPU share off on HIP	src/prefill/prefill.cpp:182	only CUDA single-GPU no batch; arm_cpu_share compiled out under STRATA_USE_HIP/GFX906 (src/prefill/prefill.cpp:1961), env cannot enable it
+prefill	behavior	GDN prefill state	src/prefill/prefill.cpp:2680-2705	state updated in place, carries to decode
+prefill	env	STRATA_GDN_KEYHEAD	src/prefill/kernels.cu:697	kh vs cols_pipe recurrence; kh needs CUDA sm_80+ cp.async (src/prefill/kernels.cu:565, src/prefill/kernels.cu:689), so HIP/R9700 always runs gdn_rec_cols_pipe_kernel
+prefill	behavior	KV append	src/prefill/prefill.cpp:2762-2776	kv_append / kv_append_q4 at p0
+prefill	behavior	KV streaming stage	src/prefill/prefill.cpp:870-911	stage whole layer KV in borrowed slots; src/prefill/prefill.cpp:1199
+prefill	env	STRATA_KV_PREFETCH	src/prefill/prefill.cpp:2101	default off; prefetch next layer prefix (src/prefill/prefill.cpp:2309-2322)
+prefill	function	draft_kv	include/strata/prefill/prefill.hpp:55	MTP prompt K/V; impl 1381-1555; declines STRATA_MTP_BATCH=0, hybrid KV, non-paged/non-ring KV, other device; a ring is accepted unless STRATA_MTP_BATCH_RING=0 (src/prefill/prefill.cpp:1396-1403; hpp:51 comment stale)
+prefill	function	set_stage	include/strata/prefill/prefill.hpp:161	layer-split chain
+prefill	function	set_stage_helper	src/prefill/prefill.cpp:1582	helper GPU share; bind src/prefill/prefill.cpp:1624
+prefill	function	set_peer	src/prefill/prefill.cpp:1687	peer device path
+prefill	function	on_chunk	include/strata/prefill/prefill.hpp:141	called src/prefill/prefill.cpp:4223; last rows to src/program/generate.cpp
+prefill	function	make_plan	include/strata/plan/plan.hpp:129	VRAM plan; throws DoesNotClose
+prefill	tool	strata-plan	src/plan/plan_main.cpp:13-73	default free VRAM 12e9 RTX 5070 (src/plan/plan_main.cpp:15), ctx 20480 (src/plan/plan_main.cpp:14); --pool just overwrites free_vram (src/plan/plan_main.cpp:40-43) so dense+embd are still subtracted
+prefill	const	MMQ_GROUP	src/prefill/prefill.cpp:1000	16 experts per launch; MmqPlan src/prefill/prefill.cpp:1005 MoeBufs src/prefill/prefill.cpp:1051
+prefill	const	hardcoded shape	src/prefill/prefill.cpp:117-119	N=2560 HC=4 LR=320 K=10 NE=512 C=10240 ZV=6144 HV=48 (consts src/prefill/prefill.cpp:118-119); all match Qwen3.8-Flash-Next config.json incl. hc_count/hc_lowrank src/prefill/prefill.cpp:16-17; guard src/prefill/prefill.cpp:1094
+prefill	gotcha	gfx12 native only	src/prefill/prefill.cpp:244-246	fused::enabled() false on gfx12
+prefill	gotcha	plan/ is memory planner	src/plan/plan_main.cpp	no execution plan; no graph capture in prefill (decode IS graph-captured: 48 layer graphs, src/program/generate.cpp:7)
+prefill	gotcha	plan --state overcommit	src/plan/plan_main.cpp:47-49	used to default 0 and overcommit 117.7 MB (help src/plan/plan_main.cpp:47-49; fix defaults from Geometry{} src/plan/plan_main.cpp:56-58)
+prefill	gotcha	GDN partial state on cancel	src/prefill/prefill.cpp:2113-2117	KvDrain only drains DMA; not restored, see gdn_state_on_cancel
+prefill	env	STRATA_PREFILL_STREAM_AHEAD	src/prefill/prefill.cpp:127	stream ahead
+prefill	env	STRATA_TEST_PAGEABLE	src/prefill/prefill.cpp:138	test pageable
+prefill	env	STRATA_STAGER_SLEEP	src/prefill/prefill.cpp:147	stager sleep
+prefill	env	STRATA_PREFILL_STREAM_MIN	src/prefill/prefill.cpp:165	stream-all threshold
+prefill	env	STRATA_PREFILL_CPU_SHARE	src/prefill/prefill.cpp:186	CPU share
+prefill	env	STRATA_PREFILL_CPU_SHARE_MAX	src/prefill/prefill.cpp:203	CPU share max
+prefill	env	STRATA_EMB_REUSE_ACCOUNT	src/prefill/prefill.cpp:279	embedding reuse
+prefill	env	STRATA_RING_BYTES	src/prefill/prefill.cpp:283	ring bytes
+prefill	env	STRATA_PREFILL_RING	src/prefill/prefill.cpp:293	ring slots
+prefill	env	STRATA_HIP_WMMA (prefill)	src/prefill/prefill.cpp:298	ring 96
+prefill	env	STRATA_PREFILL_BF16X2	src/prefill/prefill.cpp:325	bf16x2
+prefill	env	STRATA_PF_SWITCH_MIN_T	src/prefill/prefill.cpp:335	switch min T
+prefill	env	STRATA_HC_UPMIX	src/prefill/prefill.cpp:339	HC upmix
+prefill	env	STRATA_PF_HCDOWN	src/prefill/prefill.cpp:349	HC down
+prefill	env	STRATA_HCD_EXACT	src/prefill/prefill.cpp:357	exact HCD
+prefill	env	STRATA_CVEC_FUSE	src/prefill/prefill.cpp:362	cvec fuse
+prefill	env	STRATA_PF_PAD / STRATA_PF_GEMM	src/prefill/prefill.cpp:370	pad/gemm
+prefill	env	STRATA_GR_UNFUSED	src/prefill/prefill.cpp:379	unfused GR
+prefill	env	STRATA_STAGER_RING	src/prefill/prefill.cpp:453	stager ring
+prefill	env	STRATA_AUX_STAGER	src/prefill/prefill.cpp:473	aux stager
+prefill	env	STRATA_KV_STAGE_OWN	src/prefill/prefill.cpp:894	own KV stage alloc
+prefill	env	STRATA_PREFILL_MMQ	src/prefill/prefill.cpp:1016	MMQ
+prefill	env	STRATA_STAGER_THREADS	src/prefill/prefill.cpp:1133	stager threads (SSD src/prefill/prefill.cpp:1145 BATCH src/prefill/prefill.cpp:1157)
+prefill	env	STRATA_GROUP_COPY	src/prefill/prefill.cpp:1169	group copy
+prefill	env	STRATA_MTP_BATCH	src/prefill/prefill.cpp:1391	MTP batch (_RING src/prefill/prefill.cpp:1396 _F16 src/prefill/prefill.cpp:1432)
+prefill	env	STRATA_PREFILL_HELP	src/prefill/prefill.cpp:1561	helper share (_FRAC src/prefill/prefill.cpp:1573)
+prefill	env	STRATA_PF_PEER_*	src/prefill/prefill.cpp:1692-1788	peer knobs
+prefill	env	STRATA_PREFILL_TIMING	src/prefill/prefill.cpp:2012	timing
+prefill	env	STRATA_PLE_BATCH	src/prefill/prefill.cpp:2154	PLE batch
+prefill	env	STRATA_TRACE (prefill)	src/prefill/prefill.cpp:2180	trace
+prefill	env	STRATA_PREFILL_ISSUER	src/prefill/prefill.cpp:2460	issuer
+prefill	env	STRATA_PF_STEP_SYNC	src/prefill/prefill.cpp:2527	step sync
+prefill	env	STRATA_KV_HOST_DMA	src/prefill/prefill.cpp:2748	host DMA KV
+prefill	env	STRATA_INDEXER_PER_TOKEN	src/prefill/prefill.cpp:2798	indexer per token
+prefill	env	STRATA_SELECT_OLD	src/prefill/prefill.cpp:2820	old select
+prefill	env	STRATA_SEL_OVERLAP	src/prefill/prefill.cpp:2831	select overlap
+prefill	env	STRATA_PROMPT_ATTN_OLD	src/prefill/prefill.cpp:2921	old prompt attn
+prefill	env	STRATA_PREFILL_GROUP_GATHER	src/prefill/prefill.cpp:3831	group gather
+prefill	env	STRATA_PREFILL_DUMP_R	src/prefill/prefill.cpp:4180	dump (_ALL src/prefill/prefill.cpp:4193)
+prefill	env	STRATA_STATE_HASH_GDN (prefill)	src/prefill/prefill.cpp:4300	state hash
+prefill	env	STRATA_PREFILL_AUTO_MAX	src/program/generate.cpp:2045	auto max
+prefill	flag	--peer-prefill-rows	src/program/generate.cpp:2199	peer prefill rows (help text src/program/generate.cpp:894)
+prefill	env	STRATA_DRAFT_TIMING	src/prefill/prefill.cpp:1463	debug timing of draft_kv pass
+prefill	env	STRATA_HC_UPMIX_CHECK	src/prefill/prefill.cpp:2643	HC upmix check count
+prefill	env	STRATA_IDX_FP16_CHECK	src/prefill/prefill.cpp:2853	indexer FP16 check
+prefill	env	STRATA_QSA_DUMP_LAST	src/prefill/prefill.cpp:2900	QSA dump last N (default 4096)
+prefill	env	STRATA_DBG_FORCE_SLOW_LAYER	src/prefill/prefill.cpp:3047	debug force slow layer
+prefill	env	STRATA_DUMP_MOE_INPUT / STRATA_DUMP_MOE_LAYER	src/prefill/prefill.cpp:3363	dump MoE input (layer src/prefill/prefill.cpp:3365)
+prefill	env	STRATA_CVEC_FUSE_CHECK	src/prefill/prefill.cpp:4103	cvec fuse check count
+prefill	env	STRATA_DBG_NAN (prefill)	src/prefill/prefill.cpp:4058	NaN debug (also src/prefill/prefill.cpp:4232 state dump)
+moe-experts	behavior	staged ids download	src/prefill/prefill.cpp:3133	d2h_sync once per layer for small chunks
+moe-experts	function	stream_all	src/prefill/prefill.cpp:2341	every non-resident expert of every layer; skips host_res/peer src/prefill/prefill.cpp:2395
+moe-experts	behavior	usage increment (decode + verify windows)	src/core/expert_source.cpp:3717-3719	only increment site; Prefill::run_impl never feeds it, but verify-window prompt reads (parts <= --short-read 64, src/program/generate.cpp:663 src/program/generate.cpp:11226-11231 src/program/generate.cpp:11783 -> drive_pool_multi src/program/generate.cpp:1032) do
+moe-experts	behavior	in_prompt_read	src/program/generate.cpp:9851	pauses adaptive tier during prompts (src/program/generate.cpp:11640 src/program/generate.cpp:9993 src/program/generate.cpp:10031)
+moe-experts	function	read_expert_profile	src/core/expert_cache.cpp:72	profile I/O; called src/program/generate.cpp:3455/3659
+moe-experts	behavior	profile fill	src/program/generate.cpp:5493	fill_slot_blocking of top pairs (R4.2e block src/program/generate.cpp:5455)
+moe-experts	function	ExpertCache::admit	include/strata/core/expert_cache.hpp:145	compulsory miss, never evicts
+moe-experts	flag	--expert-cache-per-layer	include/strata/core/expert_cache.hpp:170-171	slots/n_layers; global gave 2.97% hits
+moe-experts	behavior	usage alloc condition	src/program/generate.cpp:8666	adapt_every>0 and adapt_swaps>0 and not all resident
+moe-experts	function	adapt	src/program/generate.cpp:8832	candidate usage>=2.0 vs victim; gain>=min_gain; cap adapt_swaps
+moe-experts	function	apply_pending	src/program/generate.cpp:8806	publish host_res=slot, release RAM copy, re-upload residency
+moe-experts	const	adapt_decay	src/program/generate.cpp:8987	usage *= 0.7
+moe-experts	behavior	adapt async	src/program/generate.cpp:8990-9300	--adapt-async 1; JobThread src/program/generate.cpp:1408
+moe-experts	function	ExpertCache::replace	include/strata/core/expert_cache.hpp:148	same-layer swaps only
+moe-experts	function	expert_pool_dispatch_multi	src/core/expert_source.cpp:3690	hit kind 0, PCIe kind 1 last pcie_num/256 of misses, CPU -1
+moe-experts	behavior	GPU plan before CPU	src/core/expert_source.cpp:3720	GpuPlanSink published first
+moe-experts	const	pcie_mode	include/strata/core/expert_source.hpp:330	0 DMA, 1 kernel reads mapped arena, 2 copy kernel in graph
+moe-experts	flag	--no-hit-poke	src/program/generate.cpp:2200	hit poke on by default (17 vs 9190 of 10562 layers)
+moe-experts	env	STRATA_ADAPT_OVERLAP	src/program/generate.cpp:1389	adapt copies land during next window
+moe-experts	env	STRATA_ADAPT_LAG	src/program/generate.cpp:1379	adapt lag
+moe-experts	env	STRATA_ADAPT_NOWAIT	src/program/generate.cpp:1373	adapt nowait
+moe-experts	behavior	shared expert deferred	src/prefill/prefill.cpp:3019-3021	overlap routed-only uploads
+moe-experts	function	Stager	src/prefill/prefill.cpp:424	host copies for transient blobs
+moe-experts	behavior	prefill CPU share HIP off	src/prefill/prefill.cpp:178-182	auto on CUDA single-GPU
+moe-experts	behavior	mmap experts.bin	src/core/expert_source.cpp:974	FileExpertSource; GGUF shards src/core/expert_source.cpp:1173
+moe-experts	behavior	madvise WILLNEED	src/core/expert_source.cpp:2173-2185	pread IO threads warm pages
+moe-experts	behavior	MADV_DONTNEED resident	src/core/expert_source.cpp:2847	release VRAM-resident pages; also src/core/expert_source.cpp:3143
+moe-experts	flag	--resident-experts	src/program/generate.cpp:2209	compact RAM copy; hpp:552
+moe-experts	function	exchange_cache_complement	include/strata/core/expert_cache.hpp:137	adaptive swap exchange
+moe-experts	behavior	expert-cache auto sizing	src/program/generate.cpp:5085-5200	free minus reserve 700 minus prompt buffers minus pipeline MiB
+moe-experts	function	probe_pcie_h2d_gbps	src/program/generate.cpp:1662	4 x 256 MiB pinned H2D, fastest
+moe-experts	function	pcie_frac_for_gbps	src/program/generate.cpp:1725	base x min(1, gbps/20)
+moe-experts	const	pcie base	src/program/generate.cpp:2861	0.25 NVFP4 (gu_type 40), 0.55 native, 0.2 Q2_0
+moe-experts	function	PcieAuto	src/program/generate.cpp:1736	f=link/(link+1.85 pool_rate), 0.10-0.60; CUDA single-GPU only
+moe-experts	flag	--expert-cache	src/program/generate.cpp:2025	N or auto(-1)
+moe-experts	flag	--expert-profile	src/program/generate.cpp:2201	profile path
+moe-experts	flag	--pcie-frac	src/program/generate.cpp:2091	PCIe share
+moe-experts	flag	--pcie-mode	src/program/generate.cpp:2102	auto/dma/kernel/direct
+moe-experts	const	adapt_swaps default	src/program/generate.cpp:628	96
+moe-experts	gotcha	HIP adaptive copies block	src/program/generate.cpp:169	ROCclr staging can block the host
+moe-experts	gotcha	RX 6900 XT hang	src/program/generate.cpp:186	MMQ + adaptive swaps hung (#884)
+moe-experts	gotcha	GPU vs CPU rounding	src/program/generate.cpp:5441	replies differ slightly with cache on
+moe-experts	const	candidate threshold	src/program/generate.cpp:8845	u >= 2.0 hardcoded
+moe-experts	const	PcieAuto kPoolFactor	src/program/generate.cpp:1736	1.85
+moe-experts	function	PinnedRing	include/strata/core/pinned_ring.hpp:27	prefill staging ring
+moe-experts	function	GpuPlanSink	include/strata/core/expert_source.hpp:312	GPU plan sink
+server	function	make_handler	serve/server.py:4993	HTTP routing; do_GET serve/server.py:5249 do_POST serve/server.py:5415 _post serve/server.py:5421
+server	behavior	/v1/chat/completions	serve/server.py:5518	-> _openai
+server	behavior	/v1/messages	serve/server.py:5520	-> _anthropic
+server	behavior	/v1/responses	serve/server.py:5507	stateless; /v1/responses/<id> 404
+server	behavior	/v1/vram	serve/server.py:5494	VRAM command
+server	function	Server	serve/server.py:6096	ThreadingHTTPServer; serve() serve/server.py:6360
+server	function	host_allowed	serve/server.py:6283	host check; key_matches serve/server.py:6324 api_key_of serve/server.py:6307 origin_allowed serve/server.py:6340
+server	function	openai_to_messages	serve/frontend.py:521	request normalize; anthropic serve/frontend.py:590
+server	function	input_messages	serve/responses.py:128	Responses input
+server	function	_stable_tool_order	serve/frontend.py:449	fixed tool order LRU 64 (serve/frontend.py:446) for cache hits
+server	function	effort_kwargs	serve/frontend.py:138	reasoning effort -> template kwargs
+server	function	render_prompt	serve/server.py:3772	encode_prompt serve/server.py:3790 prepare serve/server.py:3848
+server	function	ChatTemplate	serve/frontend.py:40	render serve/frontend.py:57
+server	behavior	literal tag masking	serve/frontend.py:253	LITERAL_TAGS; mark serve/frontend.py:332 unmark serve/frontend.py:365
+server	function	Service.fifo	serve/server.py:3042	single engine turn lock
+server	const	QUEUE_BEAT_S	serve/server.py:214	10 s SSE keep-alive
+server	function	Service.run	serve/server.py:4065	_run serve/server.py:4076 parser/detok/stops
+server	function	StrataEngine	serve/server.py:738	spawn strata binary
+server	function	engine_args	serve/server.py:2573	args; parallel_args serve/server.py:2609; child_env serve/server.py:2788; hip_env_guard serve/server.py:2816
+server	function	generate	serve/server.py:1854	writes GEN line, reads T/PP/RESUME/DONE
+server	function	generate_batched	serve/server.py:1477	BGEN/BT/BDONE/BADM/BSTOP
+server	behavior	engine protocol doc	src/program/generate.cpp:6515-6530	native side protocol comment
+server	behavior	engine command loop	src/program/generate.cpp:10322-10636	BSTOP src/program/generate.cpp:10328 VRAM src/program/generate.cpp:10334 BGEN src/program/generate.cpp:10349 SAVE/RESTORE src/program/generate.cpp:10412 GEN src/program/generate.cpp:10635
+server	function	resolve_prefix	serve/server.py:3946	strata_prefix -> pin=N
+server	function	pick_slot	serve/server.py:1807	longest held prefix; SLOT_PREFIX_MIN 512 serve/server.py:1805
+server	function	Router (replicas)	serve/replicas.py:122	64-token block hash (serve/replicas.py:32), LOAD_TOKENS 3000 (serve/replicas.py:33)
+server	function	OutputParser	serve/frontend.py:873	feed serve/frontend.py:1161 finish serve/frontend.py:1383
+server	function	parse_tool_call	serve/frontend.py:837	Qwen XML function/parameter
+server	function	prepare_format	serve/structured.py:83	JSON mode prompt + validate serve/structured.py:192
+server	function	Detokenizer	serve/server.py:2897	incremental; StopMatcher serve/server.py:2948
+server	function	slot_action	serve/server.py:3111	SAVE/RESTORE via session_file serve/server.py:2029
+server	const	CTX_SLACK	serve/server.py:216	8
+server	const	ENGINE_SILENCE_S	serve/server.py:224	300; PP_FLOOR_TOK_S 50 PP_SLACK 3 (serve/server.py:231-233)
+server	env	STRATA_ENGINE_STALL_S	serve/server.py:256	90
+server	env	STRATA_ENGINE_READY_S	serve/server.py:268	900
+server	env	STRATA_SYCL_BIN	serve/server.py:2490	SYCL binary
+server	env	STRATA_MAX_BODY_MIB	serve/server.py:4979	max body
+server	env	STRATA_ALLOWED_HOSTS	serve/server.py:6824	allowed hosts
+server	gotcha	nonfinite 503	serve/server.py	DONE nonfinite (#879): engine drops all caches
+server	gotcha	greedy comment	src/program/generate.cpp:6530	stale comment: engine honors per-request sampling keys (src/program/generate.cpp:10642-10644, req_sp src/program/generate.cpp:11660-11672); greedy only if temperature absent/<=0; no seed -> steady_clock, not reproducible
+server	const	IM_END	serve/server.py:72	Qwen ChatML markers; IMAGE_PAD serve/server.py:73
+server	flag	server --engine	serve/server.py:6625	mock or strata, default mock; main serve/server.py:6623
+model-spec-ngram-platform	gotcha	qwen35 not Flash-Next	src/qwen35/q36_engine.cu:1-18	separate strata-q36 for Qwen3.6-35B-A3B GGUF
+model-spec-ngram-platform	function	is_qsa_layer	include/strata/core/geometry.hpp:75	layer % interval == interval-1; interval 4 at include/strata/core/geometry.hpp:26
+model-spec-ngram-platform	behavior	36 GDN / 12 QSA check	src/core/layout.cpp:153-161	Flash-Next split check
+model-spec-ngram-platform	function	Engine::forward (q36)	src/qwen35/q36_engine.cu:1511	embed, rms, layer, head
+model-spec-ngram-platform	behavior	q36 fused GDN avoided	src/qwen35/q36_engine.cu:1363-1367	1-ulp FMA diffs break MTP exactness
+model-spec-ngram-platform	function	spec_step (q36)	src/qwen35/q36_engine.cu:1831	MTP draft + verify
+model-spec-ngram-platform	function	Controller::choose	src/spec/controller.cpp:36	MTP vs lookup by tokens/ms; CostModel::step_ms src/spec/controller.cpp:8
+model-spec-ngram-platform	const	spec priors	src/spec/controller.cpp:19-24	MTP 0.86 (flyweight's measurement src/spec/controller.cpp:21); lookup 0.35/0.6/0.8/0.92 (offline replay src/spec/controller.cpp:22); RTX 5070 curves are src/spec/draft_policy.cpp:10
+model-spec-ngram-platform	function	DraftPolicy::choose	src/spec/draft_policy.cpp:60	chain src/spec/draft_policy.cpp:117
+model-spec-ngram-platform	function	SuffixDrafter::propose	src/spec/suffix_drafter.cpp:64	trigram key_at src/spec/suffix_drafter.cpp:33 = fmix64(a*golden ^ fmix64(b+c1) ^ c<<1)|1 (murmur3 fmix64 mix src/spec/suffix_drafter.cpp:9); linear-probe find_slot src/spec/suffix_drafter.cpp:38-49; token re-check src/spec/suffix_drafter.cpp:77; min match max(3,arg) src/spec/suffix_drafter.cpp:19; propose_after src/spec/suffix_drafter.cpp:88
+model-spec-ngram-platform	function	propose_from_sources	src/spec/draft_source.cpp:13	longest match across sources
+model-spec-ngram-platform	function	PleReader::issue	src/ngram/ple_reader.cpp:422	async 4 KiB SSD reads; collect src/ngram/ple_reader.cpp:485; rows = per_layer_token_embd (layer-1 PLE, include/strata/core/layer.hpp:543), n-gram-hashed, 90 B IQ4_NL or 160 B FP8 (include/strata/ngram/ple_reader.hpp:3); not spec n-gram drafting
+model-spec-ngram-platform	function	DirectFile::submit (POSIX)	src/platform/direct_file.cpp:336	wait src/platform/direct_file.cpp:355
+model-spec-ngram-platform	function	lock_resident (POSIX)	src/platform/memory.cpp:164	mlock
+model-spec-ngram-platform	env	STRATA_IO_THREADS	src/platform/direct_file.cpp:64	default 16 Linux (src/platform/direct_file.cpp:319) / 4 Win (src/platform/direct_file.cpp:187)
+model-spec-ngram-platform	env	STRATA_READ_AHEAD	src/platform/memory.cpp:207	read-ahead toggle
+model-spec-ngram-platform	const	q36 EOS ids	src/qwen35/q36_engine.cu:2194	248044 248046
+model-spec-ngram-platform	gotcha	PLE never called = gate C1 fail	include/strata/core/layer.hpp:545	PleRun.table null -> block_layer_pre silently skips PLE; critical for Flash-Next logits
+generate-program	function	main	src/program/generate.cpp:1799	one function to 14182
+generate-program	behavior	family switch	src/program/generate.cpp:1866-1882	qwen35moe -> strata::qwen35::run
+generate-program	behavior	argv parse	src/program/generate.cpp:1886-2247	unknown flag exit 2 (src/program/generate.cpp:2240-2245)
+generate-program	behavior	HIP arch defaults	src/program/generate.cpp:2248-2255	apply_arch_defaults(gcnArchName)
+generate-program	behavior	gfx906 wave64 guard	src/program/generate.cpp:2276-2290	refuses wave32 on gfx906 build
+generate-program	behavior	spec config	src/program/generate.cpp:2564-2577	suffix drafter widens spec +2; cap 8
+generate-program	behavior	ISA guard	src/program/generate.cpp:2757-2800	needs AVX2; Q2_0 CPU experts need AVX-512 VNNI+VBMI (src/program/generate.cpp:2898)
+generate-program	behavior	geometry resolve	src/program/generate.cpp:2908-2930	flag > file keys > defaults
+generate-program	behavior	dense weights	src/program/generate.cpp:3044-3090	--keep-canonical; STRATA_STAGE_TRIM src/program/generate.cpp:3074
+generate-program	behavior	layer-split cost model	src/program/generate.cpp:3704-4330	miss ~190 ms per unit
+generate-program	behavior	session_init	src/program/generate.cpp:4414	CUDA0; stages src/program/generate.cpp:4447
+generate-program	behavior	MtpDrafter	src/program/generate.cpp:4607	head before cache src/program/generate.cpp:4657
+generate-program	behavior	ExpertPool	src/program/generate.cpp:5050	CPU pool construct
+generate-program	behavior	startability probe	src/program/generate.cpp:5622-5760	exact fit on live free VRAM
+generate-program	behavior	token graph	src/program/generate.cpp:6379-6490	whole token one graph TokenGraph src/program/generate.cpp:6399
+generate-program	gotcha	HIP no cudaStreamLegacy	src/program/generate.cpp:6409	residency uploads sync stream 0 (#550)
+generate-program	function	equal_chunk	src/program/generate.cpp:6580-6597	STRATA_PREFILL_EQUAL
+generate-program	const	kAutoLendPct	src/program/generate.cpp:6598-6611	90 or 85
+generate-program	function	auto_ceiling	src/program/generate.cpp:6612-6660	split caps gfx12 to 8192; #2090 RAM check
+generate-program	function	plan_lend	src/program/generate.cpp:6677-6752	largest chunk leaving stream ring full; kRingMin 16 src/program/generate.cpp:6707
+generate-program	const	kAutoChunks	src/program/generate.cpp:6682	32768..256
+generate-program	behavior	elastic KV	src/program/generate.cpp:6754-6958	kvg_ensure/trim
+generate-program	gotcha	2x R9700 split 8192 faster	src/program/generate.cpp:6619	pp32k +14% vs 16384 in a split
+generate-program	env	STRATA_HIP_ADAPT_KERNEL_COPY	src/program/generate.cpp:193	kernel copy instead of ROCclr staging
+generate-program	env	STRATA_ARENA_MMAP (gen)	src/program/generate.cpp:1826	ROCclr userptr bloat workaround (src/program/generate.cpp:1821-1828)
+generate-program	env	CUDA_MODULE_LOADING	src/program/generate.cpp:1832	set eager
+generate-program	env	STRATA_GFX12_CHUNK	src/program/generate.cpp:2262	verified; also src/program/generate.cpp:6636
+generate-program	env	STRATA_GFX12_DEFAULTS (gen)	src/program/generate.cpp:2263	verified
+generate-program	env	STRATA_HIP_WMMA (gen)	src/program/generate.cpp:4755	startup hint only (gfx12 + --kv int8, unset): ~30% faster prompts, output bits change; enables nothing here
+generate-program	env	STRATA_KV_ROT	src/program/generate.cpp:2554	Hadamard INT8 KV opt-in
+generate-program	env	STRATA_HOST_CORE	src/program/generate.cpp:2296	host core
+generate-program	env	STRATA_AUX_CPUS	src/program/generate.cpp:2303	aux cpus
+generate-program	env	STRATA_MEMORY_LIMIT_MIB (gen)	src/program/generate.cpp:2314	memory limit
+generate-program	env	STRATA_KV_GROW	src/program/generate.cpp:4394	kv grow
+generate-program	env	STRATA_OWNED_PRICE	src/program/generate.cpp:5100	exact price
+generate-program	env	STRATA_FILL_AHEAD	src/program/generate.cpp:5472	profile fill ahead
+generate-program	env	STRATA_PCIE_FRAC_DEFAULT	src/program/generate.cpp:2863	old default
+generate-program	env	STRATA_PCIE_AUTO_SPLIT	src/program/generate.cpp:1624	HIP split share opt-in
+generate-program	env	STRATA_PREFILL_LEND_PCT	src/program/generate.cpp:6608	lend pct (also 3904 5634)
+generate-program	env	STRATA_SPLIT_CHUNK16K	src/program/generate.cpp:6621	keep 16K on split
+generate-program	env	STRATA_PROMPT_DIRECT	src/program/generate.cpp:7177	direct prompt reads
+generate-program	env	STRATA_LOOKAHEAD	src/program/generate.cpp:5813	router lookahead
+generate-program	env	STRATA_PIPELINE_DEBUG	src/program/generate.cpp:267	pipeline debug
+generate-program	flag	--max-new	src/program/generate.cpp:1914	16 (src/program/generate.cpp:340)
+generate-program	flag	--max-context	src/program/generate.cpp:1915	4096 (src/program/generate.cpp:341)
+generate-program	flag	--greedy	src/program/generate.cpp:1925	true
+generate-program	flag	--top-k	src/program/generate.cpp:1927	20
+generate-program	flag	--top-p	src/program/generate.cpp:1928	0.95
+generate-program	flag	--vram-reserve-mib	src/program/generate.cpp:2038	700
+generate-program	flag	--prefill	src/program/generate.cpp:2041	N/auto[:max]
+generate-program	flag	--no-prefill-borrow	src/program/generate.cpp:2069	no slot loan
+generate-program	flag	--vram-elastic	src/program/generate.cpp:2070	refused on HIP
+generate-program	flag	--spec	src/program/generate.cpp:2074	0; Metal 2
+generate-program	flag	--batch	src/program/generate.cpp:2075	batch slots
+generate-program	flag	--mtp	src/program/generate.cpp:2089	MTP drafter
+generate-program	flag	--adapt-every	src/program/generate.cpp:2092	4
+generate-program	flag	--adapt-decay	src/program/generate.cpp:2093	0.7
+generate-program	flag	--adapt-min-gain	src/program/generate.cpp:2094	1.5
+generate-program	flag	--adapt-async	src/program/generate.cpp:2095	0
+generate-program	flag	--layer-split	src/program/generate.cpp:2099	layer split
+generate-program	flag	--serve	src/program/generate.cpp:2103	engine mode
+generate-program	flag	--prompt-cache	src/program/generate.cpp:2106	6
+generate-program	flag	--adapt-swaps	src/program/generate.cpp:2192	96
+generate-program	flag	--expert-cache-per-layer	src/program/generate.cpp:2194	per-layer slots
+generate-program	flag	--resident-experts	src/program/generate.cpp:2209	RAM resident mode
+generate-program	flag	--stats	src/program/generate.cpp:2230	report
+generate-program	flag	--no-token-graph	src/program/generate.cpp:2233	disable token graph
+generate-program	flag	--no-fused-gdn	src/program/generate.cpp:2237	A/B off switch
+generate-program	const	kVerifyMaxT	src/program/generate.cpp:2569	8 (also src/program/generate.cpp:2574 src/program/generate.cpp:4517)
+generate-program	env	CUDA_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES (set)	src/program/generate.cpp:1850-1862	set by --gpu (parse src/program/generate.cpp:1847); HIP builds set HIP_VISIBLE_DEVICES (src/program/generate.cpp:1852); also CUDA_DEVICE_ORDER=PCI_BUS_ID (src/program/generate.cpp:1858/:1861)
+generate-program	env	STRATA_STARTUP_UNBUFFERED (name only)	src/program/generate.cpp:4863	string match on an error message, not a getenv here (VGEN1 called it a read)
+generate-program	behavior	serve preconditions	src/program/generate.cpp:7231-7237	needs --spec>=2 and --prefill else exit 2; graphed hit path also needs fillable --expert-cache + --expert-profile src/program/generate.cpp:7232-7235
+generate-program	behavior	MTP optional	src/program/generate.cpp:7243	use_mtp = !o.mtp.empty()
+generate-program	function	share_default_ok	src/program/generate.cpp:7204	H11 CPU share gate
+generate-program	function	init_prompt_paths	src/program/generate.cpp:7589	0 ok 1 fail 2 no fit
+generate-program	const	kHeadroom	src/program/generate.cpp:7620	512 MiB verified; gfx1201 hipBLAS hang note 7618
+generate-program	function	stage_ver	src/program/generate.cpp:7791	per-stage verifier; stage_ver_p src/program/generate.cpp:7805
+generate-program	behavior	session identity backend	src/program/generate.cpp:8182	records hip/cuda; CUDA session not valid on HIP
+generate-program	function	park_current_body	src/program/generate.cpp:8217	park conversation
+generate-program	behavior	nonfinite guard	src/program/generate.cpp:8403	nonfinite_hit sets nan_flush
+generate-program	function	checkpoint_at	src/program/generate.cpp:8438	checkpoint at length
+generate-program	behavior	PP lines	src/program/generate.cpp:8540	sp.on_chunk prints PP
+generate-program	behavior	tail-skip default	src/program/generate.cpp:8618-8660	on CUDA and HIP gfx1200/1201; off NVFP4; off batch/peer
+generate-program	env	STRATA_ROUTE_TAIL_SKIP	src/program/generate.cpp:8624	0 off; 7 opt-in NVFP4
+generate-program	env	STRATA_TAIL_SKIP_MAX_CACHED	src/program/generate.cpp:8636	percent of experts cached at/above which tail-skip default is withdrawn; 90, 60 on HIP layer split (#1884 src/program/generate.cpp:8626-8639)
+generate-program	behavior	pcie_num	src/program/generate.cpp:8615	round(pcie_frac*256)
+generate-program	function	pcie_auto_step	src/program/generate.cpp:8680	PCIe auto share
+generate-program	function	adapt_tick	src/program/generate.cpp:9253	async tier tick; adapt_quiesce src/program/generate.cpp:9386
+generate-program	function	save_profile	src/program/generate.cpp:9416	periodic at src/program/generate.cpp:10367
+generate-program	behavior	stdin reader thread	src/program/generate.cpp:9483	raw read(0); STOP sets atomic
+generate-program	env	STRATA_WATCHDOG_S	src/program/generate.cpp:9617	60; 0 off
+generate-program	env	STRATA_WATCHDOG_IO_S	src/program/generate.cpp:9621	10x
+generate-program	function	vram_command	src/program/generate.cpp:9714	between requests
+generate-program	function	batch_step	src/program/generate.cpp:9951	BDONE src/program/generate.cpp:10065
+generate-program	function	pump	src/program/generate.cpp:10196	pipelined groups
+generate-program	behavior	serve command loop	src/program/generate.cpp:10315	main serve loop
+generate-program	const	kVramSafeMib	src/program/generate.cpp:1289	512 Linux (src/program/generate.cpp:1293) 1024 Windows (src/program/generate.cpp:1291)
+generate-program	behavior	disk sessions	src/program/generate.cpp:10412-10634	SAVE/RESTORE
+generate-program	behavior	GEN parse	src/program/generate.cpp:10635-10740	keys src/program/generate.cpp:10683-10699
+generate-program	behavior	logit_bias batch refused	src/program/generate.cpp:10716-10718	under --batch
+generate-program	behavior	nan_flush cache drop	src/program/generate.cpp:10895	read from 0
+generate-program	behavior	prompt cache match	src/program/generate.cpp:10925	longest live/checkpoint prefix
+generate-program	behavior	parked conversations	src/program/generate.cpp:10982-11011	best/take/validate
+generate-program	behavior	RESUME line	src/program/generate.cpp:11214	reused token count
+generate-program	function	read_windows	src/program/generate.cpp:11349	prompt read; pl src/program/generate.cpp:11263
+generate-program	env	STRATA_BATCH_DECODE_SHARE	src/program/generate.cpp:11560	batch decode share
+generate-program	env	STRATA_CACHE_MESSAGE_BOUNDARY	src/program/generate.cpp:11734	message checkpoint
+generate-program	behavior	decode pipeline	src/program/generate.cpp:11949-12201	PW ring with parity
+generate-program	behavior	T output	src/program/generate.cpp:12420	also src/program/generate.cpp:12713
+generate-program	env	STRATA_STATE_HASH	src/program/generate.cpp:12809	state hash debug; GDN src/program/generate.cpp:12847
+generate-program	behavior	DONE line	src/program/generate.cpp:12936	15 fixed fields generated prompt prompt_ms decode_ms finish drafts_acc drafts_off reused hits lookups ram_blobs file_blobs file_MB prompt_read offloaded; +5 with --lookup-chain; doc src/program/generate.cpp:12924-12930
+generate-program	behavior	plain token loop	src/program/generate.cpp:13284	non-serve generate
+generate-program	behavior	plain spec	src/program/generate.cpp:13506-13995	verify window accept to first mismatch
+generate-program	behavior	stats	src/program/generate.cpp:14080	--stats report
+generate-program	env	STRATA_DECODE_TIMING	src/program/generate.cpp:11884	decode timing
+generate-program	env	STRATA_PREFILL_HELPER_SOURCE	src/program/generate.cpp:7254	RemotePrefillSource
+generate-program	behavior	READY line	src/program/generate.cpp:9671	READY <max_context> stop; startup handshake, honours STOP
+generate-program	behavior	YIELDED line	src/program/generate.cpp:12935	YIELDED <slot> <tokens> just before DONE when a prompt read yields
+generate-program	behavior	BADM line	src/program/generate.cpp:12984	BADM <slot> <0|1> --batch admission after GEN-from-BGEN (src/program/generate.cpp:12944)
+generate-program	env	STRATA_BATCH_MTP_SERIAL	src/program/generate.cpp:4488	read in src/program/generate.cpp (not the header; include/strata/program/batch_groups.hpp:29 only has the field)
+tools-and-scripts	tool	tools/nvfp4_convert.py	tools/nvfp4_convert.py:97-102	llama.cpp converter --outtype q8_0 + qwen4exp policy; BF16_SUFFIXES tools/nvfp4_convert.py:44-51; F16 ple_conv1d tools/nvfp4_convert.py:52; PLE drop tools/nvfp4_convert.py:71-78
+tools-and-scripts	gotcha	nvfp4_convert needs llama.cpp	tools/nvfp4_convert.py:34	third_party/llama.cpp absent until setup (upstream Strata vendors only third_party/ggml; tools/nvfp4_verify.py:26 also needs it)
+tools-and-scripts	tool	tools/nvfp4_verify.py	tools/nvfp4_verify.py:35-43	modelopt_dequant = E2M1 x E4M3 x weight_scale_2
+tools-and-scripts	const	ModelOpt nibble order	tools/nvfp4_verify.py:38-41	elem 2j low nibble 2j+1 high
+tools-and-scripts	const	E2M1 LUT	tools/nvfp4_verify.py:32	E2M1 values
+tools-and-scripts	const	GGUF NVFP4 split-half order	src/kernels/cpu/nvfp4_avx2.cpp:3-4	sub-block s: elem j low nibble of qs[8s+j], elem j+8 high; block_nvfp4 third_party/ggml/ggml-common.h:221-227
+tools-and-scripts	const	kvalues_fp4 doubled	third_party/ggml/ggml-common.h:1124-1128	E2M1 x2 ints; scale decode carries x0.5 (ue4m3_to_f32_half src/kernels/cuda/iq_kernels.cu:573)
+tools-and-scripts	tool	tools/nvfp4_verify_gguf.py	tools/nvfp4_verify_gguf.py:43-70	bitwise expert compare; scale==weight_scale_2 tools/nvfp4_verify_gguf.py:67
+tools-and-scripts	tool	tools/iq_pack.py	tools/iq_pack.py:430-475	expert_layout; NVFP4_TAIL tools/iq_pack.py:204; tail tools/iq_pack.py:455-464; index tools/iq_pack.py:470-473; blobs NOT 64-aligned (blob+=16 tools/iq_pack.py:464, offset+=blob*n_expert tools/iq_pack.py:472; ALIGN 64 dense only)
+tools-and-scripts	const	NVFP4 GGUF block	tools/gguf_reader.py:47	64 elems 36 B; type id 40 tools/gguf_reader.py:27
+tools-and-scripts	tool	tools/strata_pack.py	tools/strata_pack.py:220	Q2_0 canonical build; verify tools/strata_pack.py:366
+tools-and-scripts	const	Q2_0 blob size	tools/pack_layer.py:40-49	1,382,400 B per expert
+tools-and-scripts	tool	tools/pack_index.py	tools/pack_index.py:99	manifest -> index.txt
+tools-and-scripts	tool	tools/ple_fp8_pack.py	tools/ple_fp8_pack.py:44	FP8 PLE n-gram table as I8 GGUF (name per_layer_token_embd.weight tools/ple_fp8_pack.py:9)
+tools-and-scripts	tool	tools/embd_bf16_pack.py	tools/embd_bf16_pack.py:38	BF16 token_embd GGUF
+tools-and-scripts	tool	tools/strata_tokenizer.py	tools/strata_tokenizer.py:67	BPE 248,320 tokens; extract tools/strata_tokenizer.py:307
+tools-and-scripts	tool	tools/canonical_xcheck.py	tools/canonical_xcheck.py:58-504	bit-exact round trip per type
+tools-and-scripts	tool	tools/quant_quality.py	tools/quant_quality.py:103	teacher-forced top-1/KL; compare tools/quant_quality.py:284
+tools-and-scripts	gotcha	ref/load.py lacks NVFP4	ref/load.py:35-38	GEOM has no NVFP4
+tools-and-scripts	tool	tools/hip/tune_hipblaslt.cpp	tools/hip/tune_hipblaslt.cpp	gfx1201 tables 100202 and 100500
+artifacts-platform-misc	behavior	gguf CLI check	src/artifact/gguf_reader.cpp:52-54	tensor size gap check
+artifacts-platform-misc	behavior	planner hardcoded geometry	include/strata/plan/plan.hpp:23-30	48 layers 12 attn 2 KV heads hd 256
+artifacts-platform-misc	behavior	Linux pinning	src/platform/memory.cpp:164-188	mlock; raise ulimit -l
+artifacts-platform-misc	gotcha	shared memory budget stub	src/platform/memory.cpp:190-194	Linux always false
+artifacts-platform-misc	behavior	WILLNEED hints	src/platform/memory.cpp:213-232	128 KiB steps
+artifacts-platform-misc	behavior	DirectFile Linux	src/platform/direct_file.cpp:313	O_DIRECT; 16 threads src/platform/direct_file.cpp:319; pinned src/platform/direct_file.cpp:320
+artifacts-platform-misc	gotcha	DirectFile alignment	src/platform/direct_file.cpp:337-338	unaligned request rejected
+artifacts-platform-misc	behavior	SSD keep-alive	include/strata/ngram/ple_reader.hpp:75-80	anti NVMe power stall
+artifacts-platform-misc	const	hip default arch	cmake/hip_backend.cmake:5	gfx1100 verified
+artifacts-platform-misc	const	hip validated archs	cmake/hip_backend.cmake:13	gfx1100 gfx1201 verified
+artifacts-platform-misc	behavior	hip force-include	cmake/hip_backend.cmake:104-112	hip_compat/cuda_runtime.h into every TU
+artifacts-platform-misc	behavior	all .cu as HIP	cmake/hip_backend.cmake:115-121	HIP language
+artifacts-platform-misc	gotcha	no WMMA define for gfx1201	cmake/hip_backend.cmake:96-98	STRATA_WMMA_GFX11 only gfx11 and gates only src/prefill/wmma_gemm.cu; gfx12 WMMA paths need no macro (qsa_prompt_attn, qsa_select, src/prefill/moe_fused_iq.cu:710)
+artifacts-platform-misc	behavior	hipBLASLt optional	cmake/hip_backend.cmake:75-80	STRATA_HIPBLASLT_AVAILABLE
+artifacts-platform-misc	behavior	cudaMallocHost wrapper	include/strata/hip_compat/cuda_runtime.h:83	strata::hip_compat::malloc_host
+artifacts-platform-misc	behavior	cudaMemGetInfo wrapper	include/strata/hip_compat/cuda_runtime.h:92	Windows-only hip_compat mem_get_info; Linux = plain hipMemGetInfo (include/strata/hip_compat/cuda_runtime.h:94)
+artifacts-platform-misc	behavior	cudaHostAlloc map	include/strata/hip_compat/cuda_runtime.h:65-74	always hipHostMalloc (include/strata/hip_compat/cuda_runtime.h:65); only flag macros gated by HIP_VERSION_MAJOR<7 (include/strata/hip_compat/cuda_runtime.h:66-74)
+artifacts-platform-misc	gotcha	two hip_compat trees	include/strata/platform/hip_compat/strata_hip.h	gfx906 path (enabled by STRATA_HIP_GFX906 CMakeLists.txt:64, not STRATA_ENABLE_HIP) vs include/strata/hip_compat RDNA
+build-system	behavior	SYCL early return	CMakeLists.txt:14-22	STRATA_ENABLE_SYCL
+build-system	behavior	backend exclusion	CMakeLists.txt:58-96	CUDA/HIP/gfx906 one only
+build-system	flag	STRATA_PREFILL_MMQ	CMakeLists.txt:72	OFF; setup HIP turns ON
+build-system	flag	STRATA_MMQ_KQUANTS	CMakeLists.txt:79	ON
+build-system	flag	STRATA_NATIVE_EXPERTS	CMakeLists.txt:107	ON
+build-system	flag	CMAKE_CUDA_ARCHITECTURES	CMakeLists.txt:161-162	120 default
+build-system	behavior	HIP MMQ block	CMakeLists.txt:1535-1579	DENSE_MMQ / PREFILL_FUSED defs
+build-system	behavior	NVFP4 parity tests	CMakeLists.txt:1526-1617	split: CUDA NVFP4 ~1526-1534; HIP MMQ block 1535-1579; CPU nvfp4_avx512_parity 1608; CUDA NVFP4 decode 1612+
+build-system	const	LLAMA_CPP_COMMIT	setup.py:167-168	3cf03257
+build-system	behavior	STRATA_GGML_DIR	CMakeLists.txt:1262-1304	external llama.cpp or fetch
+build-system	gotcha	HIP -O0 pitfall	cmake/hip_backend.cmake:46-56	empty CMAKE_HIP_FLAGS_<CONFIG>
+build-system	gotcha	NVFP4 nvidia_only	setup.py	MODELS metadata
+build-system	behavior	setup HIP cmake defs	setup.py:3002-3006	detected archs + PREFILL_MMQ=ON (setup.py:3003)
+build-system	const	ROCM_VERSION_DEFAULT	setup.py:2086	7.10.0a20251120 (code, not comment); ROCM_FAMILY_PINS setup.py:2087-2089; STRATA_ROCM_VERSION override setup.py:2090
+intel-sycl-backend	function	q_of	sycl/include/strata/sycl_queue.hpp:12	null stream -> in-order queue
+intel-sycl-backend	function	big_fill_zero	sycl/include/strata/sycl_queue.hpp:21	256 MiB chunks
+intel-sycl-backend	function	host_malloc_polled	sycl/include/strata/sycl_queue.hpp:63	uncached host USM
+intel-sycl-backend	function	arena_alias_check	sycl/include/strata/sycl_queue.hpp:168	xe 2 MiB aliasing
+intel-sycl-backend	function	sys_load/sys_store	sycl/include/strata/sycl_doorbell.hpp:56	uncached doorbell (sycl/include/strata/sycl_doorbell.hpp:77)
+intel-sycl-backend	const	spin_max	sycl/include/strata/sycl_doorbell.hpp:146-149	20000 xe; Battlemage w/o sysfs driver 2000000 if spin_long_drafts_flag else 20000; else 2000000
+intel-sycl-backend	function	make_copy_engine_queue	sycl/src/core/copy_queue.cpp:73	L0 copy engine
+intel-sycl-backend	flag	--stream-experts	sycl/src/program/generate.cpp:1976	GgufExpertSource
+intel-sycl-backend	function	gdn_xe_launch	sycl/include/strata/prefill/gdn_xe.hpp:92	Xe GDN variant
+intel-sycl-backend	gotcha	NVFP4 CUDA-only in SYCL	sycl/src/prefill/kernels.dp.cpp:2966	no NVFP4 on Intel
+intel-sycl-backend	env	STRATA_COPY_ENGINE	sycl/src/core/copy_queue.cpp:74	0 off 1 force
+intel-sycl-backend	env	STRATA_VERIFY_NO_HOST	sycl/src/program/generate.cpp:4961	device verify
+apple-metal-backend	function	require_fit	metal/src/mtl_rt.mm:159	threadgroup fit check (silent skip bug #2323)
+apple-metal-backend	function	Window	metal/src/engine/window.cpp:115	decode/prompt engine; layer metal/src/engine/window.cpp:657 run metal/src/engine/window.cpp:950
+apple-metal-backend	function	window_init	metal/src/engine/window.cpp:2474	C ABI; run metal/src/engine/window.cpp:2491 commit metal/src/engine/window.cpp:2508
+apple-metal-backend	function	ExpertStream::at_layer	metal/src/engine/stream.cpp:614	SSD expert arena fill after router
+apple-metal-backend	function	footprint_cap	metal/src/engine/arena_budget.h:80-90	arena budgets
+apple-metal-backend	gotcha	no NVFP4 on Metal	metal/src/engine/stubs_144.cpp:39-52	stubs CPU NVFP4
+apple-metal-backend	env	STRATA_METAL_STREAM	metal/src/engine/stream.cpp:34	force/auto stream
+apple-metal-backend	behavior	unified_memory branch	src/core/expert_cache.cpp:33-46	ExpertCache unified memory path
+tests-bench-docs	gotcha	hit_rate definition	docs/DETAILS.md:309-312	VRAM share; PCIe excluded from misses
+tests-bench-docs	gotcha	oversized cache slow	docs/DETAILS.md:631-639	91.4% hit 13.7/14.7 tok/s vs 94.1 with 4,130 MiB free; RTX 4080 Super community box (docs/DETAILS.md:629), not RDNA4
+tests-bench-docs	behavior	R9700 maintainer validation	docs/AMD_HIP.md:294	Coder IQ1_M 4K 982/45.5 16K 1402/48.3
+tests-bench-docs	behavior	R9700 WMMA opt-in	docs/AMD_HIP.md:339-349	4K 1784->2427 16K 1797->2700
+tests-bench-docs	behavior	STRATA_PF_FUSED R9700	docs/AMD_HIP.md:363-364	4K time -19%
+tests-bench-docs	gotcha	fused default conflict	docs/DETAILS.md:2028	says on by default on gfx12 vs AMD_HIP opt-in
+tests-bench-docs	gotcha	NVFP4 HIP gap	docs/NVFP4.md:189-190	decode portable; MMQ/W4A8 CUDA-only
+tests-bench-docs	gotcha	HIP greedy nondeterminism	docs/AMD_HIP.md:370-371	~1/10 starts differ
+tests-bench-docs	gotcha	RDNA4 long ctx not validated	docs/AMD_HIP.md:372	beyond 16K
+tests-bench-docs	behavior	ctest on R9700	docs/AMD_HIP.md:281-284	42/45 pass
+tests-bench-docs	behavior	community R9700 Linux	bench/results/2026-10-08-community-r9700-linux/README.md:85-88	IQ3_S 633-768 prefill 88-102 decode
+tests-bench-docs	behavior	community R9700 Windows	bench/results/2026-10-03-community-r9700-windows/README.md:10-13	IQ2_XS 856-1232 prefill 87-100 decode; medians +-10-15% across sessions (bench/results/2026-10-03-community-r9700-windows/README.md:15-20)
+tests-bench-docs	behavior	NVFP4 vs IQ2_XS	docs/NVFP4.md:50-52	5090 decode 114-116 vs 132-139
+tests-bench-docs	behavior	hipBLASLt family test	tests/prefill/tuning_header_arch_family_test.cpp	gfx1200 and gfx1201 same family
+tests-bench-docs	behavior	hip handoff test	tests/hip/handoff.cpp	gfx1201 needs volatile ring store
+tests-bench-docs	behavior	hip router_fast test	tests/hip/router_fast.cpp	bitwise 65,536 rows
+tests-bench-docs	behavior	hip mapped_alias	tests/hip/mapped_alias.cpp	hipHostGetDevicePointer alias (#325)
+speculative-decoding	function	SuffixDrafter::propose	src/spec/suffix_drafter.cpp:64	longest trigram-anchored suffix match, continuation copy
+speculative-decoding	function	SuffixDrafter::propose_after	src/spec/suffix_drafter.cpp:88	temp-append pending drafts, propose, truncate
+speculative-decoding	gotcha	table full stops indexing	src/spec/suffix_drafter.cpp:48	find_slot returns nullptr (src/spec/suffix_drafter.cpp:48), append skips (src/spec/suffix_drafter.cpp:57)
+speculative-decoding	const	WAYS=4	include/strata/spec/suffix_drafter.hpp:21	positions per trigram
+speculative-decoding	function	DraftPolicy::choose	src/spec/draft_policy.cpp:60	lookup vs MTP by E/cost with margin 0.03
+speculative-decoding	function	DraftPolicy::chain	src/spec/draft_policy.cpp:117	lookup-chain length after MTP window; probes when p_mtp*c>=0.6 (src/spec/draft_policy.cpp:134)
+speculative-decoding	const	kShape	src/spec/draft_policy.cpp:12	RTX5070 cost prior shape by window
+speculative-decoding	const	kStaleRounds=300	src/spec/draft_policy.cpp:23	re-probe stale sizes
+speculative-decoding	const	kMaxT=8	include/strata/spec/draft_policy.hpp:24	max verify window
+speculative-decoding	function	propose_from_sources	src/spec/draft_source.cpp:13	longest match >= min wins across sources
+speculative-decoding	gotcha	Controller unused	src/spec/controller.cpp:36	no Controller/CostModel use outside src/spec; metal/src/engine/stubs.cpp:112 only includes the header
+speculative-decoding	flag	--spec	src/program/generate.cpp:2074	verify window, default 0 (Metal 2)
+speculative-decoding	flag	--suffix-draft	src/program/generate.cpp:2134	min match, default 3
+speculative-decoding	flag	--mtp-max-t	src/program/generate.cpp:2135	MTP window cap
+speculative-decoding	flag	--lookup-chain	src/program/generate.cpp:2136	0..7 chained lookup; rewrite src/program/generate.cpp:2572-2575 needs spec>=2, sets mtp_max_t=spec if 0
+speculative-decoding	flag	--lookup-chain-min	src/program/generate.cpp:2137	>=3
+speculative-decoding	behavior	spec rewrite +2	src/program/generate.cpp:2569	suffix on, spec>=2, mtp_max_t 0 (src/program/generate.cpp:2567): mtp_max_t=spec (src/program/generate.cpp:2568), spec=min(spec+2,8); setup --spec 4 -> window 6
+speculative-decoding	behavior	lookup first-token gate	src/program/generate.cpp:12154	pick_lookup needs pl_sbuf[0]==MTP first; serve paths src/program/generate.cpp:12578/:13765 gate only when MTP on
+speculative-decoding	env	STRATA_LOOKUP_CHAIN_FIXED	src/program/generate.cpp:11875	no policy gate
+speculative-decoding	env	STRATA_SPEC_DEPTH	src/program/generate.cpp:13110	depth accept stats
+speculative-decoding	env	STRATA_MTP_BATCH	src/prefill/prefill.cpp:1391	0 disables batched MTP drafter
+speculative-decoding	kernel	spec_verify_parity	CMakeLists.txt:920	GPU verifier of probabilistic draft acceptance (STRATA_SPEC_PROB) vs host ref (CMakeLists.txt:919)
+speculative-decoding	env	STRATA_SPEC_PROB	src/program/generate.cpp:12654	probabilistic (rejection-sampling) draft acceptance; src/core/verify.cpp:2447, src/core/mtp.cpp:598, include/strata/core/spec_prob.hpp; verification not greedy-only
+speculative-decoding	flag	--mtp-q4	src/program/generate.cpp:2146	all/proj/head
+hip-amd-tools	tool	tune_hipblaslt	tools/hip/tune_hipblaslt.cpp:402	CMake target CMakeLists.txt:618; benches hipBLASLt algos vs hipblasGemmEx, writes table
+hip-amd-tools	flag	--workspace-mib	tools/hip/tune_hipblaslt.cpp:218	workspace MiB, default 32 (tools/hip/tune_hipblaslt.cpp:51)
+hip-amd-tools	flag	--shape	tools/hip/tune_hipblaslt.cpp:222	T,N,K adds f16+bf16 with ldy=N
+hip-amd-tools	flag	--case	tools/hip/tune_hipblaslt.cpp:223	dtype,T,N,K,ldy
+hip-amd-tools	flag	--shapes-file	tools/hip/tune_hipblaslt.cpp:224	regex JSON objects dtype,N,K,ldy × tokens
+hip-amd-tools	flag	--tokens	tools/hip/tune_hipblaslt.cpp:225	T buckets, default 4096,8192 (tools/hip/tune_hipblaslt.cpp:53)
+hip-amd-tools	flag	--tuning-out	tools/hip/tune_hipblaslt.cpp:226	write STRATA_HIPBLASLT_TUNING_V1 table
+hip-amd-tools	const	WARMUPS/REPS/MAX_ALGOS	tools/hip/tune_hipblaslt.cpp:67	2/3/16
+hip-amd-tools	const	REL_L2_TOL/MAX_ABS_TOL	tools/hip/tune_hipblaslt.cpp:70	1e-4 / 1e-2 accuracy gate vs hipblasGemmEx
+hip-amd-tools	const	PADDING_CANARY	tools/hip/tune_hipblaslt.cpp:72	123456.25f; any write into ldy padding rejects algo
+hip-amd-tools	behavior	default shapes	tools/hip/tune_hipblaslt.cpp:232	(10240,2560),(320,10240),(2560,320) f16+bf16 T=8192
+hip-amd-tools	behavior	table row format	tools/hip/tune_hipblaslt.cpp:398	dtype N K ldy T solution_id
+hip-amd-tools	kernel	gfx1201 table 100500	tools/hip/gfx1201-hipblaslt-100500.txt:2	R9700, 32 rows, T 4096/8192
+hip-amd-tools	kernel	gfx1201 table 100202	tools/hip/gfx1201-hipblaslt-100202.txt:2	R9700, 24 rows
+hip-amd-tools	kernel	gfx1200 table 100202	tools/hip/gfx1200-hipblaslt-100202.txt:2	RDNA4 sibling, T buckets 37,48,256,512,2560,4096 (no 8192)
+hip-amd-tools	env	STRATA_HIPBLASLT_TUNING	src/prefill/gemm.cu:187	path to table (create_hipblaslt_state src/prefill/gemm.cu:186); unset = hipBLASEx
+hip-amd-tools	behavior	header family gate	src/prefill/hipblaslt_tuning.hpp:57	gfx1200/1201 interchangeable (src/prefill/hipblaslt_tuning.hpp:57-66); version exact (src/prefill/hipblaslt_tuning.hpp:67-70)
+hip-amd-tools	behavior	version mismatch logged	src/prefill/gemm.cu:215	stderr "prefill gemm: hipBLASLt version mismatch ...; using hipBLASEx" (not silent)
+hip-amd-tools	env	STRATA_HIPBLASLT_VERBOSE	src/prefill/gemm.cu:142	summary launches/fallbacks; check fallbacks=0
+hip-amd-tools	gotcha	setup exact arch lookup	setup.py:2952	setup only picks {arch}-hipblaslt-{ver}.txt
+hip-amd-tools	env	STRATA_HIPBLASLT_TUNING set by setup	setup.py:6742	auto when table matches
+hip-amd-tools	tool	bench_prefill	tools/hip/bench_prefill.py:19	fresh/followup prefill probe vs running server
+hip-amd-tools	env	STRATA_API_KEY	tools/hip/bench_prefill.py:35	Bearer auth
+hip-amd-tools	behavior	timing regex	tools/hip/bench_prefill.py:15	parses engine log completion line
+hip-amd-tools	gotcha	fresh must not reuse	tools/hip/bench_prefill.py:55	restart server between arms
+hip-amd-tools	tool	tools/hip/build_windows.bat	tools/hip/build_windows.bat:1	Windows HIP build + zip
+hip-amd-tools	env	STRATA_HIP_ARCHS	tools/hip/build_windows.bat:21	default includes gfx1200;gfx1201
+hip-amd-tools	env	STRATA_ROCM_VERSION	tools/hip/build_windows.bat:22	10.2.0a20260930
+hip-amd-tools	flag	cmake HIP flags	tools/hip/build_windows.bat:69	ENABLE_HIP, PREFILL_MMQ, NATIVE_EXPERTS, PORTABLE
+hip-amd-tools	tool	package_windows	tools/hip/package_windows.py:68	zip exes+ROCm DLLs+libs+kpack+BUILD.json
+hip-amd-tools	const	hipblaslt_version encoding	tools/hip/package_windows.py:156	MAJOR*100000+MINOR*100+PATCH
+hip-amd-tools	function	dll_closure	tools/hip/dll_closure.py:83	recursive PE import closure within dir
+hip-amd-tools	gotcha	#461 System32 HIP fallback	tools/hip/dll_closure.py:5	missing deps -> hipErrorInvalidDeviceFunction
+hip-amd-tools	behavior	T bucket choice	src/prefill/hipblaslt_tuning.hpp:110	exact dtype/N/K/ldy, nearest t_bucket, tie→smaller; T unclamped (src/prefill/gemm.cu:234); 16384→8192 row on gfx1201-100500
+hip-amd-tools	behavior	Lt per-T revalidation	src/prefill/gemm.cu:251	getAlgosFromIndex+matmulIsAlgoSupported(src/prefill/gemm.cu:264) for real T; fail→hipBLASEx, cached src/prefill/gemm.cu:228
+hip-amd-tools	env	STRATA_HIPBLASLT_VERBOSE per-shape	src/prefill/gemm.cu:233	per-shape Lt solution/fallback lines (src/prefill/gemm.cu:237/:255/:267/:277); summary is row src/prefill/gemm.cu:142
+hip-amd-tools	doc	table recipe	docs/AMD_HIP.md:541	--case rows from existing table via awk; --tuning-out
+hip-amd-tools	behavior	N=1 shared gate GEMM	src/prefill/prefill.cpp:3015	bf16 T×1×2560
+hip-amd-tools	behavior	N=48 ssm_alpha/beta	src/prefill/prefill.cpp:2694	ldy=2*HV=96
+hip-amd-tools	behavior	N=4 hc inject GEMM	src/prefill/prefill.cpp:2668	bf16 T×4×10240, ne1==HC check src/prefill/prefill.cpp:2630
+hip-amd-tools	behavior	N=128 indexer k_proj	src/prefill/prefill.cpp:2721	idx_raw T*128 (src/prefill/prefill.cpp:1281); q_proj is N=512
+qwen35-engine	tool	strata-q36ref	CMakeLists.txt:628	reference exe for qwen35moe, fp32 one token at a time; links strata_kernels+strata_warnings (CMakeLists.txt:630)
+qwen35-engine	tool	strata_qwen35	CMakeLists.txt:634	static lib from src/qwen35/q36_engine.cu, linked into strata
+qwen35-engine	tool	strata-q36	src/qwen35/q36_main.cpp:5	thin main -> strata::qwen35::run
+qwen35-engine	behavior	family switch	src/program/generate.cpp:1866	arch qwen35moe in --native/--model GGUF -> qwen35::run (src/program/generate.cpp:1879); reads first shard only, read error falls through (src/program/generate.cpp:1874-1878)
+qwen35-engine	const	STRATA_Q36_CPU_POOL	CMakeLists.txt:640	defined with STRATA_NATIVE_EXPERTS; enables hybrid CPU pool
+qwen35-engine	behavior	forward spec	src/qwen35/q36ref.cu:9	full qwen35moe forward formulas in comment
+qwen35-engine	behavior	layer kind	src/qwen35/q36ref.cu:12	GDN l%4!=3, attention l%4==3 via is_qsa_layer (include/strata/core/geometry.hpp:75); interval = GGUF full_attention_interval
+qwen35-engine	kernel	k_conv	src/qwen35/q36ref.cu:200	causal 4-tap conv + SiLU, ref
+qwen35-engine	kernel	k_gdn	src/qwen35/q36ref.cu:212	gated delta rule step, ref fp32
+qwen35-engine	kernel	k_gated_norm	src/qwen35/q36ref.cu:250	rms(o)*w*silu(z) per V head
+qwen35-engine	kernel	k_attn_prep(ref)	src/qwen35/q36ref.cu:260	q/k rms-norm, NEOX rope n_rot, KV append, gate split
+qwen35-engine	kernel	k_attn(ref)	src/qwen35/q36ref.cu:294	softmax attention GQA times sigmoid(gate)
+qwen35-engine	kernel	k_moe_sum	src/qwen35/q36ref.cu:339	routed weighted sum + sigmoid-gated shared expert
+qwen35-engine	kernel	k_act_q8	src/qwen35/q36ref.cu:371	llama.cpp q8_1 activation rounding emulation; used only with --kernels plain (default strata path quantises via native_quantize_q8_1 src/qwen35/q36ref.cu:408)
+qwen35-engine	function	router host	src/qwen35/q36ref.cu:663	fallback only (not default): softmax all, top-k, renorm, low-id tiebreak (src/qwen35/q36ref.cu:671); default --kernels strata uses native_router_topk (src/qwen35/q36ref.cu:657)
+qwen35-engine	flag	--kernels	src/qwen35/q36ref.cu:748	strata (default) or plain
+qwen35-engine	flag	--act	src/qwen35/q36ref.cu:754	q8 (default) or f32; no effect under default --kernels strata
+qwen35-engine	flag	--dump-layers	src/qwen35/q36ref.cu:745	f32 [pos][layer][N] hidden dumps
+qwen35-engine	flag	--dump-full-logits	src/qwen35/q36ref.cu:753	f32 [step][vocab] for KL
+qwen35-engine	flag	--force	src/qwen35/q36ref.cu:747	teacher-forced continuation
+qwen35-engine	const	ref defaults	src/qwen35/q36ref.cu:446	top_k 8 eps 1e-6 rope 1e7 n_rot 64
+qwen35-engine	behavior	gguf meta keys	src/qwen35/q36_engine.cu:872	qwen35moe.attention.layer_norm_rms_epsilon, rope.freq_base, rope.dimension_count
+qwen35-engine	gotcha	shape guard	src/qwen35/q36_engine.cu:868	head 256, state 128, conv 4, <=512 experts, top_k<=15
+qwen35-engine	gotcha	family only	src/qwen35/q36_engine.cu:861	refuses non-qwen35moe files
+qwen35-engine	function	load	src/qwen35/q36_engine.cu:856	tensors to device, experts repacked [gate|up|down]
+qwen35-engine	function	upload_f32	src/qwen35/q36_engine.cu:831	F32/BF16/F16/Q8_0 vectors widened to f32
+qwen35-engine	kernel	k_gdn_ab	src/qwen35/q36_engine.cu:176	alpha/beta warp-per-row with epilogues, T<=8
+qwen35-engine	kernel	k_attn_part	src/qwen35/q36_engine.cu:276	split-K decode attention per 256-cell chunk
+qwen35-engine	kernel	k_attn_merge	src/qwen35/q36_engine.cu:312	LSE merge of chunks times sigmoid(gate)
+qwen35-engine	kernel	k_group	src/qwen35/q36_engine.cu:333	device grouping of routed entries per expert
+qwen35-engine	kernel	k_route_scatter	src/qwen35/q36_engine.cu:450	sort entries by expert for MMQ
+qwen35-engine	kernel	k_moe_out	src/qwen35/q36_engine.cu:148	combine + shared gate + residual + next rms
+qwen35-engine	kernel	k_sgemm_nt	src/qwen35/q36_engine.cu:507	f32 split-K GEMM for router/alpha/beta prompts
+qwen35-engine	kernel	k_conv_seq	src/qwen35/q36_engine.cu:567	GDN conv+SiLU+L2 for T tokens one launch
+qwen35-engine	kernel	k_gdn_seq	src/qwen35/q36_engine.cu:601	GDN step+gated norm T tokens, decode/verify
+qwen35-engine	kernel	k_gdn_seq_cols	src/qwen35/q36_engine.cu:663	column-split GDN for prompts
+qwen35-engine	kernel	k_gdn_norm	src/qwen35/q36_engine.cu:710	SiLU-gated RMS norm after cols kernel
+qwen35-engine	kernel	k_argmax	src/qwen35/q36_engine.cu:462	two-stage greedy argmax low-id ties
+qwen35-engine	function	Engine::layer	src/qwen35/q36_engine.cu:1338	one layer for T rows: GDN or attn, then MoE
+qwen35-engine	function	Engine::forward	src/qwen35/q36_engine.cu:1511	embed, layers, head
+qwen35-engine	function	forward_mtp	src/qwen35/q36_engine.cu:1540	MTP block eh_proj over [enorm e | hnorm h]
+qwen35-engine	function	commit	src/qwen35/q36_engine.cu:1555	replay kept verify rows into GDN state
+qwen35-engine	function	spec_step	src/qwen35/q36_engine.cu:1831	MTP drafts + verify window
+qwen35-engine	function	process	src/qwen35/q36_engine.cu:1783	1 token via graph, else chunks of tmax
+qwen35-engine	function	place_experts	src/qwen35/q36_engine.cu:1934	all-VRAM or hybrid slots + CPU pool
+qwen35-engine	function	rebalance	src/qwen35/q36_engine.cu:1702	slot swaps by halved routing counts
+qwen35-engine	function	serve	src/qwen35/q36_engine.cu:2197	READY/GEN/PP/T/DONE/STOP protocol
+qwen35-engine	function	run	src/qwen35/q36_engine.cu:2346	entry: argv, env, load, init, place, warmup, mode
+qwen35-engine	gotcha	no fused single-token GDN	src/qwen35/q36_engine.cu:1361	1-ulp FMA diff would break MTP exactness
+qwen35-engine	gotcha	state no rewind	src/qwen35/q36_engine.cu:2273	reuse only when prompt extends live tokens
+qwen35-engine	gotcha	cuBLAS prompt attention	src/qwen35/q36_engine.cu:1400	FP16 strided-batched GEMMs; HIP maps to hipBLAS via include/strata/hip_compat/cublas_v2.h:57
+qwen35-engine	gotcha	CUDA graphs	src/qwen35/q36_engine.cu:1767	decode/verify/MTP captured graphs
+qwen35-engine	gotcha	warp32 shuffles	src/qwen35/q36_engine.cu:190	__shfl_xor_sync full mask; assumes wave32 (gfx1201 wave32; HIP build exists, runtime not tested)
+qwen35-engine	gotcha	hybrid no graph	src/qwen35/q36_engine.cu:2029	hybrid main layers disable decode graph
+qwen35-engine	behavior	chunk auto	src/qwen35/q36_engine.cu:2424	512 if experts fit else 2048
+qwen35-engine	const	kGemmT	src/qwen35/q36_engine.cu:1314	T>8 uses GEMM path, else MMVQ
+qwen35-engine	const	kVerify	src/qwen35/q36_engine.cu:1054	verify window max 8
+qwen35-engine	const	kChunkCells	src/qwen35/q36_engine.cu:77	attention split-K 256 cells
+qwen35-engine	const	EOS	src/qwen35/q36_engine.cu:2194	248044, 248046
+qwen35-engine	const	VRAM reserve	src/qwen35/q36_engine.cu:1949	768 MiB
+qwen35-engine	env	CUDA_MODULE_LOADING	src/qwen35/q36_engine.cu:2405	EAGER default
+qwen35-engine	env	STRATA_Q8_PACKED	src/qwen35/q36_engine.cu:2406	default 1 packed Q8_0 copies (non-Windows only); read via K::native_q8_0_packed_enabled (eng:910)
+qwen35-engine	env	STRATA_MMQ_KQ	src/qwen35/q36_engine.cu:2407	default 1 K-quant MMQ; no effect when MMQ not built (STRATA_PREFILL_MMQ OFF)
+qwen35-engine	env	STRATA_Q36_NO_MMQ	src/qwen35/q36_engine.cu:1168	disable MMQ prompt experts (MMQ::built() false unless STRATA_PREFILL_MMQ)
+qwen35-engine	env	STRATA_Q36_BLAS_F32	src/qwen35/q36_engine.cu:1288	BLAS SGEMM for f32 projections
+qwen35-engine	env	STRATA_Q36_STREAM_ALL	src/qwen35/q36_engine.cu:1583	stream whole layer from host
+qwen35-engine	env	STRATA_Q36_FIXED_SLOTS	src/qwen35/q36_engine.cu:1703	no rebalance
+qwen35-engine	env	STRATA_Q36_NO_MTP_CPU	src/qwen35/q36_engine.cu:1961	MTP experts not on CPU
+qwen35-engine	env	STRATA_Q36_KEEP_PACKED	src/qwen35/q36_engine.cu:1964	keep packed copies
+qwen35-engine	env	STRATA_Q36_PLACE_DEBUG	src/qwen35/q36_engine.cu:2439	log chunk rule
+qwen35-engine	flag	--mtp	src/qwen35/q36_engine.cu:2377	N drafts 0..7
+qwen35-engine	flag	--max-context	src/qwen35/q36_engine.cu:2367	default 32768
+qwen35-engine	flag	--chunk	src/qwen35/q36_engine.cu:2368	auto or 1..4096
+qwen35-engine	flag	--expert-vram	src/qwen35/q36_engine.cu:2384	GiB budget for experts
+qwen35-engine	flag	--expert-slots	src/qwen35/q36_engine.cu:2386	slots per layer
+qwen35-engine	flag	--hybrid-rows	src/qwen35/q36_engine.cu:2387	default 128
+qwen35-engine	flag	--serve	src/qwen35/q36_engine.cu:2366	serve protocol
+qwen35-engine	flag	--bench-pp	src/qwen35/q36_engine.cu:2373	llama-bench style prompt bench
+qwen35-engine	gotcha	MMQ off on HIP by default	src/prefill/prefill.cpp:61	MMQ::built() false without STRATA_PREFILL_MMQ (CMakeLists.txt:72 OFF); q36 prompt experts use native grouped kernels
+qwen35-engine	behavior	q36 HIP cuBLAS shim	include/strata/hip_compat/cublas_v2.h:55	cublasSgemm/GemmStridedBatchedEx -> hipBLAS; build uses this tree (cmake/hip_backend.cmake:85)
+qwen35-engine	gotcha	stale not-run comments	CMakeLists.txt:627	says engine does not run qwen35moe yet; stale (src/program/generate.cpp:1879 runs it); also tools/strata_inspect.py:32
+qwen35-engine	gotcha	q36ref not Flash-Next oracle	src/qwen35/q36ref.cu:483	GGUF qwen35moe only; no HC, indexer, PLE, n-gram, NVFP4; template only
+bench-results	tool	bench.sh	bench.sh:7	wraps .venv python tools/strata_bench.py
+bench-results	function	results.json writer	tools/strata_bench.py:912	writes results.json
+bench-results	behavior	R9700 best prefill 1231.7 tok/s 128K	bench/results/2026-10-03-community-r9700-windows/README.md:12	IQ2_XS Win 0.1.38
+bench-results	behavior	R9700 best decode 99.8 tok/s 4K	bench/results/2026-10-03-community-r9700-windows/README.md:10	IQ2_XS Win 0.1.38
+bench-results	env	STRATA_HIPBLASLT_TUNING	bench/results/2026-10-03-community-r9700-windows/strata-iq2_xs.json:42	gfx1201-hipblaslt-100500 table (full Windows path)
+bench-results	env	STRATA_HIP_WMMA	bench/results/2026-10-03-community-r9700-windows/README.md:236	4K 1784->2427 per docs/AMD_HIP.md:339 (opt-in docs/AMD_HIP.md:337); not used in this run
+bench-results	gotcha	session variance	bench/results/2026-10-03-community-r9700-windows/README.md:17	±10-15%
+bench-results	env	STRATA_PLE_BATCH=0	bench/results/2026-10-03-community-r9700-windows/README.md:243	stall workaround (#541), -12.8% at bench/results/2026-10-03-community-r9700-windows/README.md:245
+bench-results	behavior	RX9070XT IQ3_S	bench/results/2026-10-02-community-rx9070xt-windows/README.md:52	decode 45.2 pf32K 601.5 (row bench/results/2026-10-02-community-rx9070xt-windows/README.md:54); hit 84.6% at bench/results/2026-10-02-community-rx9070xt-windows/README.md:52
+bench-results	behavior	7900XTX 128K prefill	bench/results/2026-10-04-community-rx7900xtx-hipblaslt-100500/README.md:75	1687 tok/s
+bench-results	gotcha	no NVFP4 results	bench/results/2026-10-02-community-rtx-5090-iq3s/README.md	only text mention in entries 1..1043
+bench-results	behavior	R9700 Linux best decode 101.9 tok/s @1K IQ3_S	bench/results/2026-10-08-community-r9700-linux/README.md:85	engine log, 256 tok, 0.1.40.3
+bench-results	behavior	R9700 Linux best prompt 768.1 tok/s @4K IQ3_S	bench/results/2026-10-08-community-r9700-linux/README.md:86	median of 3
+bench-results	behavior	R9700 Linux 131,072-tok 718.4/87.6	bench/results/2026-10-08-community-r9700-linux/README.md:88	prompt/decode (labelled 128K; input 131,072 tok)
+bench-results	env	STRATA_HIP_WMMA=0 + ROCBLAS_USE_HIPBLASLT=0	bench/results/2026-10-08-community-r9700-linux/README.md:70	Tensile path; hipBLASLt numeric failures (bench/results/2026-10-08-community-r9700-linux/README.md:71-72)
+bench-results	gotcha	R9700 build not upstream	bench/results/2026-10-08-community-r9700-linux/README.md:13	frozen 0.1.40.3 d5ea713
+bench-results	behavior	#1107 grouped gather TTFT -16%	bench/results/2026-10-08-community-r9700-linux/README.md:106	512 new tok after 32K; 2,048/4,096 rows regress −0.32%/−0.30% (bench/results/2026-10-08-community-r9700-linux/README.md:108-109); 256 row noisy (bench/results/2026-10-08-community-r9700-linux/README.md:105)
+bench-results	tool	harness	bench/results/2026-10-08-community-r9700-linux/harness/bench_engine.py:1	native-protocol bench client (docstring bench/results/2026-10-08-community-r9700-linux/harness/bench_engine.py:2)
+bench-results	behavior	RX 9070 gfx1201 IQ3_XXS	bench/results/2026-10-10-community-rx-9070/README.md:110	832.9 prompt @130K, 57.9 decode
+bench-results	env	STRATA_HIPBLASLT_TUNING gfx1201-100500	bench/results/2026-10-10-community-rx-9070/README.md:62	32 rows
+bench-results	behavior	RX 9060 XT gfx1200	bench/results/2026-10-10-community-rx-9060-xt/README.md:59	IQ2_XS (bench/results/2026-10-10-community-rx-9060-xt/README.md:51), 879.4 prompt @8K prefill 8192
+bench-results	behavior	gfx1151 fast 128K	bench/results/2026-10-09-community-gfx1151-ud-iq4xs-0.1.41/README.md:60	1108.6/47.5
+bench-results	const	gfx1150 hipBLASLt table	bench/results/2026-10-07-community-gfx1150/README.md:5	tools/hip/gfx1150-hipblaslt-100401.txt, 1.5-1.7x prompt
+bench-results	behavior	4x7900XT opt-ins	bench/results/2026-10-09-community-4x-rx-7900-xt/README.md:97	4307 prompt @128K; opt-ins 2.7x/2.2x/1.8x prompt (bench/results/2026-10-09-community-4x-rx-7900-xt/README.md:105)
+bench-results	gotcha	NVFP4 only in other (NInfer) model	bench/results/2026-10-09-community-rtx5090-9800x3d-swift-1m/data/overlap-prototype-manifest.json:148-149	NInfer Qwen3.8-27B, NVFP4 weights AND KV; not Strata
+bench-results	gotcha	NVFP4 prompt filler	bench/results/2026-10-06-llamacpp-0.6.0/prompt-4k.txt:111	text, not measurement
+bench-results	gotcha	RX9070 128K label overflow	bench/results/2026-10-10-community-rx-9070/README.md:131	131428 tok rejected
+ci-and-repo-root	gotcha	no workflows	.github/	[ci] 6 files = 5 templates + .github/FUNDING.yml, no .github/workflows; no automated build/test, no HIP job
+ci-and-repo-root	behavior	pr template	.github/pull_request_template.md:1-12	[ci] Title/Issue, Summary, What changed, Extra Notes
+ci-and-repo-root	behavior	bug form	.github/ISSUE_TEMPLATE/bug_report.yml:11-32	[ci] requires what happened + version/GPU/OS; optional strata-<model>.log
+ci-and-repo-root	behavior	opt-in features	AGENTS.md:30	[agents] new feature opt-in, default path byte-identical to last release
+ci-and-repo-root	behavior	build all backends	AGENTS.md:31	[agents] build CUDA, HIP, SYCL for any touched file before review
+ci-and-repo-root	behavior	measured defaults	AGENTS.md:32	[agents] change defaults only with measured speedup + hardware
+ci-and-repo-root	tool	setup tests	AGENTS.md:20-21	[agents] python tools/test_setup_<name>.py, no GPU needed
+ci-and-repo-root	gotcha	api key	AGENTS.md:11-12	[agents] never expose beyond 127.0.0.1 without --api-key
+ci-and-repo-root	env	STRATA_UV	setup.sh:18	[root] 1 = use uv venv (also auto on NixOS); needs uv on PATH (setup.sh:19)
+ci-and-repo-root	behavior	venv repair	setup.sh:11-13	[root] rm -rf .venv if pip missing; second rm -rf .venv if venv creation fails (setup.sh:66)
+ci-and-repo-root	behavior	pacman install	setup.sh:51-52	[root] Arch python install via sudo pacman
+ci-and-repo-root	behavior	exec setup	setup.sh:69	[root] exec .venv/bin/python setup.py args
+ci-and-repo-root	behavior	history rewrite	update.sh:17-36	[root] no merge-base -> backup branch + checkout -B origin/main; on failure git branch -D backup (update.sh:41); UPDATE.bat UPDATE.bat:20-62, checkout UPDATE.bat:52, branch -D UPDATE.bat:54
+ci-and-repo-root	flag	--update	setup.py:5772-5774	[root] update engine/packages/settings without start
+ci-and-repo-root	tool	chat.py	chat.py:22-32	[root] SSE client to /v1/chat/completions with reasoning_effort
+ci-and-repo-root	flag	--think	chat.py:39	[root] none/low/medium/high default medium
+ci-and-repo-root	tool	bench	bench.sh:7	[root] .venv python tools/strata_bench.py
+ci-and-repo-root	env	STRATA_EXECV	setup.py:5002-5006	[root] os.execv server (PID 1) instead of child
+ci-and-repo-root	const	CUDA_ARCHITECTURES	Dockerfile:59	[docker] 75;80;86;89;120
+ci-and-repo-root	const	base image	Dockerfile:42	[docker] nvidia/cuda:13.0.0-devel-ubuntu24.04
+ci-and-repo-root	behavior	BUILD.json	Dockerfile:98-103	[docker] engine metadata so setup reuses image engine
+ci-and-repo-root	env	MODEL	docker-entrypoint.sh:21	[docker] default IQ2_XS
+ci-and-repo-root	env	LOW_RAM	docker-entrypoint.sh:31	[docker] default auto, always passed
+ci-and-repo-root	gotcha	AVX2	docker-entrypoint.sh:12-17	[docker] warn only; non-AVX2 crash exit 132
+ci-and-repo-root	gotcha	CUDA 13.2 sm_120	flake.nix:18	[nix] 13.2.0/13.2.1 miscompile sm_120; pinned 13.0
+ci-and-repo-root	const	nixpkgs rev	flake.lock:9	[nix] 6510408d147d8c5e6d76043e899e9251756f6a75
+ci-and-repo-root	const	cmake/ninja pins	requirements.txt:12-13	[deps] cmake 4.4.3, ninja 1.13.2
+ci-and-repo-root	env	STRATA_API_KEY	SECURITY.md:25	[sec] gates /v1/* state endpoints and POST
+ci-and-repo-root	behavior	host/origin check	SECURITY.md:29-37	[sec] since 0.1.38 without api key
+ci-and-repo-root	const	ROCM gfx1201 index	setup.py:2076	[amd] rocm.nightlies.amd.com/v2/gfx120X-all/
+ci-and-repo-root	const	ROCM_VERSION_DEFAULT	setup.py:2086	[amd] 7.10.0a20251120; soft pin, rocm_pick fallback setup.py:2136-2150
+ci-and-repo-root	env	STRATA_ROCM_VERSION	setup.py:2090	[amd] force exact ROCm wheel version
+ci-and-repo-root	const	ROCM_SYSTEM_MIN	setup.py:2092	[amd] system ROCm <7.0 ignored
+ci-and-repo-root	const	R9700 pci ids	setup.py:2540	[amd] 0x7550/0x7551 -> gfx1201; Windows only (_WIN_AMD_DID, setup.py:2526)
+ci-and-repo-root	behavior	RDNA4 defaults	setup.py:196	[amd] v0.1.43 gfx1200/1201: route tail skip, PCIe share, 16K chunks, fused IQ3
+ci-and-repo-root	function	amd_gpus (Linux KFD)	setup.py:2423-2469	[amd] Linux GPU detect via /sys/class/kfd topology gfx_target_version, no ROCm needed
+ci-and-repo-root	behavior	system ROCm preferred	setup.py:2883-2886	[amd] ROCM_PATH or /opt/rocm with hipcc+libhipblas+dev, >=7.0, beats TheRock wheels
+ci-and-repo-root	behavior	hipBLASLt table exact match	setup.py:2933-2961	[amd] tools/hip table used only on exact hipBLASLt version, else plain hipBLAS
+ci-and-repo-root	behavior	/dev/kfd access	setup.py:2326-2337	[amd] needs render/video group rw
+ci-and-repo-root	behavior	update HIP rebuild	setup.py:3631-3644	[amd] only if engine/BUILD.json backend=hip and src hash changed or stale; error → warn, keep old engine
+ci-and-repo-root	behavior	update no config	setup.py:4830-4833	[amd] no strata-*.json → "No model is installed", no engine step
+ci-and-repo-root	gotcha	rocm lib-family glob	setup.py:2923-2928	[amd] glob _rocm_sdk_libraries_* misses ROCm 10.x plain _rocm_sdk_libraries → lib dirs = root/lib only (static)
+ci-and-repo-root	const	flake.lock version	flake.lock:26	[nix] version 7; single input nixpkgs (ref nixos-unstable)
+plan-vision-imagegen	tool	strata-plan	src/plan/plan_main.cpp:1	CLI prints VRAM plan or DoesNotClose (exit 1); pure arithmetic, not used by src/program/generate.cpp
+plan-vision-imagegen	flag	--max-context	src/plan/plan_main.cpp:27	default 20480 (line 14)
+plan-vision-imagegen	flag	--vram	src/plan/plan_main.cpp:29	default 12e9 (line 15)
+plan-vision-imagegen	flag	--dense/--embd/--workspace/--state/--pool	src/plan/plan_main.cpp:31	costs overrides; --pool overwrites free_vram
+plan-vision-imagegen	behavior	state default from geometry	src/plan/plan_main.cpp:58	117,669,888 B when --state absent
+plan-vision-imagegen	behavior	pool = vram-dense-embd	src/plan/plan_main.cpp:61	SILENT fallback to 5.943e9 if dense+embd >= vram (line 66); no refusal
+plan-vision-imagegen	const	expert_blob	include/strata/plan/plan.hpp:63	1,382,400 B = Q2_0 2.25 bpw pack (include/strata/kernels/cpu/expert.hpp:41-49), NOT NVFP4 (~2x)
+plan-vision-imagegen	function	state_bytes	include/strata/plan/plan.hpp:83	36*(128*48*128*4+3*10240*4)
+plan-vision-imagegen	function	kv_bytes_per_token	include/strata/plan/plan.hpp:91	12*(1024+32+32)=13,056 B
+plan-vision-imagegen	const	vram_pool_bytes	include/strata/plan/plan.hpp:125	5,943,000,000 table constant
+plan-vision-imagegen	function	make_plan	include/strata/plan/plan.hpp:129	slots=(pool-kv-fixed)/blob; throws if no fit; remainder counted used (include/strata/plan/plan.hpp:146)
+plan-vision-imagegen	gotcha	dense double subtract	include/strata/plan/plan.hpp:138	plan_main already removed dense/embd from pool
+plan-vision-imagegen	gotcha	dram_experts mislabel	include/strata/plan/plan.hpp:136	prints dense+embd as expert arena
+plan-vision-imagegen	behavior	device_main uses planner	src/core/device_main.cpp:87	make_plan(20480, Geometry{}, Costs{}): state 0 + 5.943e9 pool, FITS check meaningless
+plan-vision-imagegen	behavior	real expert-cache sizing	src/program/generate.cpp:5151	slots=(free_b-reserve)/expert_layout().max_blob (block 5085-5200); no include/strata/plan/plan.hpp
+plan-vision-imagegen	tool	strata-vision	tools/vision/strata_vision.cpp:1	mtmd encoder, READY/ENC/QUIT protocol
+plan-vision-imagegen	flag	--mmproj/--model/--gpu/--threads/--max-tokens/--min-tokens/--flash-attn	tools/vision/strata_vision.cpp:69	CLI
+plan-vision-imagegen	env	CUDA_VISIBLE_DEVICES=-1	tools/vision/strata_vision.cpp:94	set on CPU mode to save VRAM
+plan-vision-imagegen	env	STRATA_READ_AHEAD	tools/vision/strata_vision.cpp:105	0 disables fadvise read-ahead
+plan-vision-imagegen	behavior	FA off on AVX-512 CPU	tools/vision/strata_vision.cpp:129	unless --flash-attn given; native build only (portable forces AVX-512 off)
+plan-vision-imagegen	behavior	GPU warm-up 2048x2048	tools/vision/strata_vision.cpp:163	reserve buffers before engine sizes cache; CPU skips (tools/vision/strata_vision.cpp:158-160)
+plan-vision-imagegen	const	SVE1 header	tools/vision/strata_vision.cpp:220	int32 magic,n,nx,ny,n_embd + floats; non-rectangular grid error tools/vision/strata_vision.cpp:215
+plan-vision-imagegen	behavior	GENI SVE1 read	src/program/generate.cpp:10758	checks magic, grid, n_embd
+plan-vision-imagegen	const	kImagePad	src/program/generate.cpp:9686	248056 image token; M-RoPE t=p,h=p+y,w=p+x
+plan-vision-imagegen	flag	STRATA_VISION_CUDA	tools/vision/CMakeLists.txt:16	OFF default; no HIP option
+plan-vision-imagegen	flag	STRATA_PORTABLE	tools/vision/CMakeLists.txt:17	ON default AVX2 baseline; forces GGML_AVX512* OFF (tools/vision/CMakeLists.txt:39-42)
+plan-vision-imagegen	tool	tools/image/install.py	tools/image/install.py:1	build sd-cli, download, write images config (tools/image/install.py:92-95)
+plan-vision-imagegen	function	image backend/quant choice	tools/image/install.py:69	setup.image_backend_choice -> QI.pick_quant (setup.py:3195); build via build_image_engine (setup.py:73)
+plan-vision-imagegen	flag	--gpu-policy	tools/image/install.py:52	auto|keep|shrink|unload
+plan-vision-imagegen	flag	--native	tools/image/install.py:54	experimental native DiT, default off
+plan-vision-imagegen	const	SD_CPP_COMMIT	tools/image/qimage.py:24	2988060a pinned sd.cpp
+plan-vision-imagegen	function	pick_quant	tools/image/qimage.py:65	<=8 Q4_K_M, <=12 Q6_K, else Q8_0
+plan-vision-imagegen	function	pick_backend	tools/image/qimage.py:88	AMD discrete Linux -> hip
+plan-vision-imagegen	function	cmake_defs hip	tools/image/qimage.py:124	SD_HIPBLAS, GPU_TARGETS=gfx
+plan-vision-imagegen	tool	tools/image/sdcpp_native/apply.py	tools/image/sdcpp_native/apply.py:63	patch native runner into sd.cpp
+plan-vision-imagegen	kernel	k_attn_wmma gfx12	tools/image/sdcpp_native/qi21-native.cu:272	HIP RDNA3||RDNA4 gate tools/image/sdcpp_native/qi21-native.cu:277; QI_WMMA gfx12 builtin macro tools/image/sdcpp_native/qi21-native.cu:246
+plan-vision-imagegen	kernel	k_attn_mma	tools/image/sdcpp_native/qi21-native.cu:418	NVIDIA sm_80+ only (#if !GGML_USE_HIP tools/image/sdcpp_native/qi21-native.cu:374); not built for HIP
+plan-vision-imagegen	kernel	qi21 kernel set	tools/image/sdcpp_native/qi21-native.cu:41	9 kernels: res_ln_mod4 tools/image/sdcpp_native/qi21-native.cu:41 tanh tools/image/sdcpp_native/qi21-native.cu:80 res_ln_mod tools/image/sdcpp_native/qi21-native.cu:86 qkv_post tools/image/sdcpp_native/qi21-native.cu:115 qkv_post_w tools/image/sdcpp_native/qi21-native.cu:163 swiglu tools/image/sdcpp_native/qi21-native.cu:191 attn_causal tools/image/sdcpp_native/qi21-native.cu:201 attn_wmma tools/image/sdcpp_native/qi21-native.cu:272 attn_mma tools/image/sdcpp_native/qi21-native.cu:418
+plan-vision-imagegen	env	STRATA_QI_GFX12_ATTN	tools/image/sdcpp_native/qi21-native.cu:558	starts with '1' enables WMMA attn on RDNA4; unset = off; unmeasured
+plan-vision-imagegen	env	STRATA_QI_OLD_QKV	tools/image/sdcpp_native/qi21-native.cu:601	old qkv path (k_qkv_post block-per-head)
+plan-vision-imagegen	const	DiT dims	tools/image/sdcpp_native/qwen_image_2_1_native.hpp:50	C4096 D128 H32 F12288
+plan-vision-imagegen	env	STRATA_QI_TIMING/QSPLIT/EXACT_ATTN/NO_QKV_FUSE/FAST_LN	tools/image/sdcpp_native/qwen_image_2_1_native.hpp:84	runner toggles
+plan-vision-imagegen	env	STRATA_QI_FAST_LN	tools/image/sdcpp_native/qwen_image_2_1_native.hpp:88	effective default OFF (init true at tools/image/sdcpp_native/qwen_image_2_1_native.hpp:59 overwritten by getenv)
+plan-vision-imagegen	env	STRATA_QI_GGML_ATTN	tools/image/sdcpp_native/qwen_image_2_1_native.hpp:470	keep ggml attention
+prefill	behavior	gdn_state_on_cancel	src/prefill/prefill.cpp:2179,2690-2701; src/program/generate.cpp:11139,11782-11784,12791-12807	GDN+conv updated in place, no snapshot; cancelled/failed read discards live session unless pp_exact (between windows/parts); resume from checkpoint/slot/0
+engine-core	function	conversation_checkpoint_save	src/core/conversation_state.cpp:165	running state only (gdn rec+conv, ple, idx tail/dead/block_pos); no K/V
+engine-core	function	conversation_checkpoint_restore	src/core/conversation_state.cpp:187	running state back; dead->idx_pooled patch src/core/conversation_state.cpp:207-210; ple_prev from ids src/core/conversation_state.cpp:212-214
+engine-core	function	conversation_snapshot_save	src/core/conversation_state.cpp:270	SavedConversation = live ckpt + checkpoints + K/V per owned QSA layer + draft
+engine-core	function	conversation_snapshot_restore	src/core/conversation_state.cpp:369	validate, K/V first, then checkpoint_restore; transfer fail is fatal
+engine-core	function	conversation_kv_save	src/core/conversation_snapshot.cpp:147	one layer K/V + scales + pooled rows image
+engine-core	behavior	ConversationCache	include/strata/core/conversation_cache.hpp:191	parked images; best include/strata/core/conversation_cache.hpp:240 take include/strata/core/conversation_cache.hpp:257 retain include/strata/core/conversation_cache.hpp:220 put include/strata/core/conversation_cache.hpp:339 pinned never evicted
+generate-program	behavior	checkpoint rewind	src/program/generate.cpp:11162-11194	!from_live: checkpoint_restore (no main K/V) + mtp.kv_restore src/program/generate.cpp:11197; resume==0 session_zero src/program/generate.cpp:11153-11161
+speculative-decoding	flag	--mtp-hnorm	src/program/generate.cpp:2138	pooled|stream; stream = per-HC-stream RMS (src/core/mtp.cpp:906, src/prefill/prefill.cpp:1516)
+speculative-decoding	flag	--mtp-draft-vocab	src/program/generate.cpp:2153	draft-head subset file, default <rt_dir>/draft_vocab.bin (include/strata/core/mtp.hpp:211)
+speculative-decoding	behavior	mtp_first_ok	src/program/generate.cpp:3500	drafter on first stage only if mtp+spec>=2, subset file exists and STRATA_MTP_FULL_HEAD!=1
+speculative-decoding	function	SuffixDrafter::key_at	src/spec/suffix_drafter.cpp:33	trigram hash via murmur3 fmix64 mix() src/spec/suffix_drafter.cpp:9, |1 so 0 = empty
+speculative-decoding	gotcha	extra_draft_sources empty	src/spec/draft_source.cpp:8	never populated in tree; only reset/append loops src/program/generate.cpp:959
+speculative-decoding	gotcha	lookup-chain MTP requirement differs	src/program/generate.cpp:13777	serve path needs use_mtp; generate path src/program/generate.cpp:12585 does not
+generate-program	behavior	--native preset pins	src/program/generate.cpp:2610-2612	--native forces native_bf16/_extra/ple_key/moe_combine/gdn/router/qsa/qsa_indexer/rope/ple_postops (not flash_attn_short); head/dense default to preset shards (src/program/generate.cpp:2613-2626)
+plan-vision-imagegen	function	apply_native_runner	setup.py:3117	importlib-loads tools/image/sdcpp_native/apply.py, calls apply(src); also tools/test_qimage.py:178-190 direct
+plan-vision-imagegen	behavior	native runner patched on cuda/hip build	setup.py:3141	NATIVE_BACKENDS=(cuda,hip) tools/image/qimage.py:170; each stamp-mismatch rebuild (stamp has native_hash)
+plan-vision-imagegen	const	SD_GGML_COMMIT	tools/image/qimage.py:25	d25b121c leejet/ggml; hip.h:219 __GFX12__ -> RDNA4 (clang defines for gfx1201)
+plan-vision-imagegen	function	build_image_engine	setup.py:3127	stamp-gated cmake build of sd-cli into engine-image/; callers setup.py:3218, tools/image/install.py:73
+plan-vision-imagegen	function	image_backend_choice	setup.py:3188	backend+quant pick; higher --image-quant warned, kept (see plan-vision-imagegen row 'image backend/quant choice' tools/image/install.py:69)
+plan-vision-imagegen	function	resolve_policy	serve/images.py:329	auto: uma/fits keep, elastic shrink, else unload
+plan-vision-imagegen	function	_make_room/_give_back	serve/images.py:410	shrink via eng.vram; unload saves session, restores after (serve/images.py:442, serve/images.py:457)
+moe-experts	function	Verifier::record_window	src/core/verify.cpp:861	records verify window; post lambda src/core/verify.cpp:1594 per layer/group
+moe-experts	call	PCIe-share grouped launch	src/core/verify.cpp:1655	grouped() over p_ptr2 with kPcieGroupRows block rows (comment src/core/verify.cpp:1653)
+moe-experts	constant	kPcieGroupRows	include/strata/core/verify.hpp:519	=4 PCIe groups side by side
+moe-experts	env	STRATA_DISJOINT_ADAPT	src/program/generate.cpp:5786	opt-in; helper_holds src/program/generate.cpp:5787 filters promotion candidates src/program/generate.cpp:8845/:9105/:13638
+moe-experts	function	RemoteExperts::holds	include/strata/core/remote_experts.hpp:43	cache_.slot_of(l,e)>=0 live check
+moe-experts	doc	docs/DISJOINT_EXPERT_CACHE.md	docs/DISJOINT_EXPERT_CACHE.md:15	opt-in helper/primary dedup (#731, needs #854)
+moe-experts	lambda	helper_holds (plan)	src/core/expert_source.cpp:3731	always-on; helper-held experts not plan misses/PCIe share
+bench-results	behavior	XTX+6800XT helper final decode 97.0 median	bench/results/2026-10-07-community-xtx-6800xt-1m-helper/README.md:77	15 workers spec8, 8192 tok, n3; control 82.5/83.9 bench/results/2026-10-07-community-xtx-6800xt-1m-helper/README.md:74
+bench-results	behavior	XTX+6800XT 1M cold PP 591.7, depth decode 39.2	bench/results/2026-10-07-community-xtx-6800xt-1m-helper/README.md:89	1048064 input; bench/results/2026-10-07-community-xtx-6800xt-1m-helper/README.md:92 decode
+bench-results	gotcha	xtx helper 100 TG gate failed; bench/results/2026-10-06-q8-prefill8192-rtxpro/measurements.json missing	bench/results/2026-10-07-community-xtx-6800xt-1m-helper/README.md:81	README:111 cites a file absent from the folder
+bench-results	const	xtx helper source commits	bench/results/2026-10-07-community-xtx-6800xt-1m-helper/source-layout.json:4	native 96c35a0e on e8ca9afd (README:43-44); baseline 477b5f7b bench/results/2026-10-07-community-xtx-6800xt-1m-helper/source-layout.json:14; ggml 3cf03257 bench/results/2026-10-07-community-xtx-6800xt-1m-helper/source-layout.json:29
+bench-results	const	strata_bench results.json SCHEMA=1	tools/strata_bench.py:999-1004	SCHEMA tools/strata_bench.py:55; schema,tool,date,params,elapsed_s,machine,results; no packet uses it
+bench-results	const	bench-output json (r9700 client)	bench/results/2026-10-03-community-r9700-windows/bench-output-240k.json:1	started..finished, speed[] rows; ab-* add tag
+bench-results	const	r9700-linux measured commits	bench/results/2026-10-08-community-r9700-linux/source-layout.json:2-4	base d5ea7133, baseline 9fd910f4, candidate 269a140b
+bench-results	gotcha	no shared bench JSON schema	bench/results/2026-10-05-community-2x-p40/results.json:1	17 results.json / 13 runs*.json shapes
+bench-results	const	strata_commit key in json	bench/results/2026-10-03-community-rtx4090-iq3s-140k-code/runs.json:22	other keys source_commit/strata_revision/commit; revision/model_revision/mtp_revision = HF model, ggml_commit = GGML
+qwen35-engine	gotcha	gfx906 shim gap	include/strata/platform/hip_compat/cublas_v2.h:15	gfx906 shim lacks Sgemm/GemmStridedBatchedEx used by q36_engine; hipBLAS 0.x branch of hip_compat/cublas_v2.h:5-41 also lacks them
+artifacts-platform-misc	function	gguf mmap	include/strata/artifact/gguf_reader.hpp:415	PROT_READ MAP_PRIVATE; Win MapViewOfFile include/strata/artifact/gguf_reader.hpp:400
+artifacts-platform-misc	function	arena reserve	src/core/pinned.cu:241	hugetlb 2MB anon, fallback 4KB/THP src/core/pinned.cu:266, shared file src/core/pinned.cu:222; Win VirtualAlloc src/core/pinned.cu:127/:144
+artifacts-platform-misc	function	arena hostRegister	src/core/pinned.cu:423	PORTABLE|MAPPED whole arena; capped/sliced src/core/pinned.cu:443 src/core/pinned.cu:549 src/core/pinned.cu:605
+artifacts-platform-misc	function	complement register	src/core/expert_source.cpp:2992	resident-cpu-experts RAM complement MAPPED|PORTABLE (src/core/expert_source.cpp:3031)
+artifacts-platform-misc	function	pin_blobs	src/program/generate.cpp:222	HIP Linux only, merged 4KiB ranges READONLY|PORTABLE; unpin src/program/generate.cpp:236
+artifacts-platform-misc	const	hostRegister map	include/strata/hip_compat/cuda_runtime.h:76	cudaHostRegister->hipHostRegister on HIP (gfx906: include/strata/platform/hip_compat/strata_hip.h:126)
+qwen35-engine	behavior	q36 expert host arena	src/qwen35/q36_engine.cu:2047	cudaHostAlloc arena, pageable fallback; separate from ArenaExpertSource

@@ -1,0 +1,42 @@
+STRATA-MAP
+==========
+
+What this is
+------------
+A map of the Strata inference engine (the original upstream copy in
+upstream Strata). It tells you where things live in that code,
+like flags, settings, kernels and quirks, with file and line numbers, so you
+don't have to dig through the repo yourself.
+
+Quick start
+-----------
+1. Double-click view-amd.html (AMD only) or view-all.html (everything).
+   They open in your web browser, but internet is not required to use them.
+2. Start with the README page shown first. It explains the engine in plain
+   English, and sections 3-7 have diagrams.
+3. Click any doc link to jump to that topic.
+4. To find something specific, type in the search box at the top left.
+   It searches the big table and highlights the matches.
+
+The files
+---------
+view-amd.html     Browser viewer, trimmed to what matters for AMD GPUs.
+view-all.html     Browser viewer with everything, every platform plus all check logs.
+README-amd.md   Plain-English overview, AMD version.
+README.md         Plain-English overview, full version.
+index-amd.tsv   Lookup table, AMD version (730 rows).
+index.tsv         Lookup table, full (847 rows). Opens in any spreadsheet.
+*.md              One detail page per area of the engine.
+AGENTS.md         Instructions for AI agents using this map.
+
+Reading the table
+-----------------
+Each row is: area, kind, name, file:line, how.
+"file:line" is the file and line in upstream Strata, e.g. src/prefill/gemm.cu:234.
+
+Still unknown
+-------------
+Two things can only be answered by actually running Strata:
+ - whether the gfx1201 hipBLASLt tuning table works at 16384-token prompt chunks
+ - whether other Qwen3.5-family model files load
+Everything else in the map has been checked against the code.
