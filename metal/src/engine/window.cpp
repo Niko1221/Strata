@@ -592,10 +592,20 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         std::vector<std::string> names;
         for (const auto& kv : f_.tensors) {
             const gguf::Tensor& x = kv.second;
+<<<<<<< /tmp/stage/o_window.cpp
             // BF16 (when the Q8_0 read is on) and, whatever the setting, the Gyro file's Q6_K / IQ4_NL ones: the decode window's
             // hyper-connection kernels read BF16 or Q8_0 only
             const bool conv = (x.type == ref::BF16 && hc_q8_) || x.type == ref::Q6_K || x.type == ref::IQ4_NL;
             if (!conv || x.name.find("hc_") == std::string::npos || x.name.find("_norm") != std::string::npos) continue;
+||||||| /tmp/stage/b_window.cpp
+            if (x.type != ref::BF16 || x.name.find("hc_") == std::string::npos || x.name.find("_norm") != std::string::npos) continue;
+=======
+            // BF16 (the original packs), Q8_0 (Unsloth's) and F32 (inject rows) are read by the file's own kernels;
+            // every other quantized format (Q6_K, IQ3_S, IQ4_NL, ... the uncensored fine-tunes' files) is quantized
+            // once to Q8_0 here, the same treatment the BF16 ones get.
+            if (x.type == ref::Q8_0 || x.type == ref::F32 ||
+                x.name.find("hc_") == std::string::npos || x.name.find("_norm") != std::string::npos) continue;
+>>>>>>> /tmp/stage/t_window.cpp
             uint64_t ne = 1;
             for (uint64_t d : x.shape) ne *= d;
             q8off_[x.name] = tot;
@@ -620,11 +630,17 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
                         if (!st_->read(raw.data(), x.bytes, x.offset)) { std::fprintf(stderr, "strata metal: read failed\n"); std::exit(6); }
                         src = raw.data();
                     }
+<<<<<<< /tmp/stage/o_window.cpp
                     ref::dequant(x.type, src, tmp.data(), ne);
                     // a Q6_K / IQ4_NL matrix (Gyro) goes through BF16 first: the form the pack gives the CUDA engine
                     // (tools/iq_pack.py --compat-bf16), so the Q8_0 copy below is made from the same numbers
                     if (x.type != ref::BF16)
                         for (uint64_t i = 0; i < ne; ++i) tmp[i] = ref::bf16_to_f32(ref::f32_to_bf16(tmp[i]));
+||||||| /tmp/stage/b_window.cpp
+                    ref::dequant(ref::BF16, src, tmp.data(), ne);
+=======
+                    ref::dequant(x.type, src, tmp.data(), ne);
+>>>>>>> /tmp/stage/t_window.cpp
                     ref::quantize_q8_0(tmp.data(), ne, Q8_.as<uint8_t>() + q8off_[names[i]]);
                 }
             });
