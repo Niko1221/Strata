@@ -52,8 +52,9 @@ start is 24x slower: [Running it at startup](DETAILS.md#running-it-at-startup-ta
 ./setup.sh
 ```
 
-The same questions, the same automatic install (it uses `sudo apt` for Python and, only if it has to compile, for
-the build tools), and the same start: `http://127.0.0.1:8080`. Later runs of `./setup.sh` (or `./run-<model>.sh`)
+The same questions, the same automatic install (it uses `sudo apt`/`dnf` for Python and installs the build tools on
+Ubuntu/Debian or Fedora 44 x86_64 if it has to compile), and the same start: `http://127.0.0.1:8080`. Later runs of
+`./setup.sh` (or `./run-<model>.sh`)
 start the model directly; `./setup.sh --setup` installs another model or changes the settings. Other distributions,
 WSL and compiling: [details](DETAILS.md#linux).
 
