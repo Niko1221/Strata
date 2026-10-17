@@ -190,6 +190,16 @@ class ToSycl(unittest.TestCase):
         c = m.to_sycl(self.cfg(m, ["--expert-profile", shipped]), m.ROOT / "build-sycl" / "strata", 64.0, {}, 8.0, "i915")
         self.assertTrue(c["args"][c["args"].index("--expert-profile") + 1].endswith("expert-profile.bin"))   # the CPU computes the misses there
 
+    def test_alchemist_on_xe_relaxes_the_allocation_limit_and_the_others_do_not(self):
+        m = self.mod()
+        alch = sorted(m.ALCHEMIST_IDS)[0]
+        c = m.to_sycl(self.cfg(m), m.ROOT / "build-sycl" / "strata", 32.0, {}, 16.0, "xe", devid=alch)
+        self.assertEqual(c.get("env", {}).get("UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS"), "1")
+        c = m.to_sycl(self.cfg(m), m.ROOT / "build-sycl-aot" / "strata", 64.0, {}, 32.0, "xe")   # a B-series card
+        self.assertNotIn("UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS", c.get("env", {}))
+        c = m.to_sycl(self.cfg(m), m.ROOT / "build-sycl" / "strata", 64.0, {}, 8.0, "i915")      # an A750 on i915
+        self.assertNotIn("UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS", c.get("env", {}))
+
     def test_an_explicit_reserve_is_kept_on_both_drivers(self):
         m = self.mod()
         for vram, drv in ((32.0, "xe"), (8.0, "i915")):
