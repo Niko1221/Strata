@@ -59,6 +59,8 @@ void fused_gr_read(const FusedGrArgs& a, void* stream);
 /// reference rounding) of `n_blocks * 32` bf16 values on the device.
 /// The inverse for a path with no Q8 kernel: bf16 (round to nearest even) of d * q for `n_blocks` Q8_0 blocks.
 void fused_gr_dequant_q8_0(const uint8_t* q8, uint16_t* bf16, int64_t n_blocks, void* stream);
+void fused_gr_dequant_q8_0_pair(const uint8_t* q8_0, uint16_t* bf16_0, const uint8_t* q8_1, uint16_t* bf16_1,
+                                int64_t n_blocks, void* stream);
 void fused_gr_quantize_q8_0(const uint16_t* bf16, uint8_t* out, int64_t n_blocks, void* stream);
 
 /// Plan v0.3 P6: the same read for up to 8 tokens that share the weights (a verify window): the weights are read
