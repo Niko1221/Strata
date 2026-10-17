@@ -43,7 +43,7 @@ void ep_push(const int32_t* ids, int n_ids, const uint8_t* xq, size_t xq_bytes, 
         for (size_t i = lid; i < words; i += WG) d[i] = s[i];
         // every work-item's stores into the peer before the flag
         sycl::atomic_fence(sycl::memory_order::release, sycl::memory_scope::system);
-        sycl::group_barrier(it.get_group());
+        sycl::group_barrier(it.get_group(), sycl::memory_scope::system);
         if (lid == 0) sys_store(peer_flag, *ctr);
     });
 }
@@ -77,7 +77,7 @@ void ep_send_rows(float* peer_rows, const float* rows, const int32_t* ids, const
             for (int64_t i = it.get_local_id(0); i < row / 4; i += WG) d[i] = s[i];
         }
         sycl::atomic_fence(sycl::memory_order::release, sycl::memory_scope::system);
-        sycl::group_barrier(it.get_group());
+        sycl::group_barrier(it.get_group(), sycl::memory_scope::system);
         if (it.get_local_id(0) == 0 && sys_rmw(*done).fetch_add(1u) == (uint32_t) n - 1) {
             *done = 0;   // every group has counted itself: the next call starts from zero
             sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::system);
