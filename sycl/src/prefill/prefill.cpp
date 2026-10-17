@@ -234,6 +234,18 @@ inline int stage_slots() { return strata::prefill::xmx::mode() == 2 ? STAGE + st
 constexpr int DQ = 2;              // dequantized-expert ring (FP16 gate/up + down)
 // A770 port: STRATA_PF_XMX=1 dequantizes a whole group of experts, then one grouped XMX launch per product
 inline int dq_slots() { return strata::prefill::xmx::mode() == 1 ? strata::prefill::xmx::kMaxGroup : DQ; }
+// Queries per qsa_decode_attn_batch launch in the prompt's QSA attention (the FP32 kernel; every query's work-groups are
+// its own, so the batch changes no bit).  Alchemist: 128 - qsa_prompt_attn_parity QPA_OLD_ONLY=1, 8K context, 2,048
+// queries, A770: 32 56.0 ms, 64 52.1, 128 50.9, 256 50.3, 512 49.9, the same output hash; its scratch (~0.8 MB a query)
+// shares the prompt region with the MoE half's larger one.  STRATA_PF_ATTN_BATCH overrides; other devices keep 32.
+inline int64_t pf_attn_batch() {
+    static const int64_t v = [] {
+        if (const char* e = std::getenv("STRATA_PF_ATTN_BATCH")) return std::max<int64_t>(1, (int64_t) std::atoll(e));
+        return strata::intel_gpu_gen(strata::q_of(nullptr)->get_device()) == strata::IntelGpuGen::Alchemist ? (int64_t) 128
+                                                                                                          : (int64_t) 32;
+    }();
+    return v;
+}
 // The BF16-weight projections (hyper-connection, SSM alpha/beta, indexer, router, shared gate, PLE key/value) take
 // BF16 activations here and FP32 ones in decode. STRATA_PREFILL_BF16X2=1 adds each activation's BF16 remainder as a
 // second GEMM (Y = W.hi + W.lo, ~16 mantissa bits): a router that picks its top 10 from the same x decode would.
@@ -671,7 +683,7 @@ struct Prefill::Impl {
     float* sel_scores = nullptr;          // [sel_batch, max_blocks]
     int64_t sel_batch = 256, max_blocks = 0;
     float* attn_scratch = nullptr;
-    int64_t attn_batch = 32, cap = 0;
+    int64_t attn_batch = 32, cap = 0;   // set from pf_attn_batch() at init
     // MoE
     float *logits = nullptr, *w = nullptr, *GU = nullptr, *Dm = nullptr, *sgate = nullptr, *sup = nullptr,
           *shared = nullptr, *sg = nullptr;
@@ -1173,6 +1185,7 @@ bool Prefill::carve(size_t T, void* alloc) {
     strata::kernels::QsaShapes s = core::qsa_shapes(g);
     m.cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
     m.max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
+    m.attn_batch = pf_attn_batch();
     {
         // one region for the attention half's and the MoE half's scratch (see gdn_set_bytes)
         const bool fz = fused_layout(T, m.src != nullptr);
@@ -1893,7 +1906,7 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
     strata::kernels::QsaShapes s = core::qsa_shapes(g);
     const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
     const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
-    o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
+    o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, pf_attn_batch(), s),
                                        moe_set_bytes(T, g.n_expert, fused_layout(T, src))}), ok);
     for (int i = 0; i < dq_slots(); ++i) { o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok); }
     if (mmq_plan().any) {

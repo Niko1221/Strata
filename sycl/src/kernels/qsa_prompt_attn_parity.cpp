@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <random>
 #include <vector>
 
@@ -225,7 +226,7 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     const int32_t* d_steps = up(steps);
     const float* d_q = up(q);
     float *d_old = nullptr, *d_new = nullptr, *scratch = nullptr;
-    const int64_t batch = 32;
+    const int64_t batch = [] { const char* v = std::getenv("QPA_BATCH"); return v ? (int64_t) std::atoll(v) : (int64_t) 32; }();
     ck(DPCT_CHECK_ERROR(d_old = (float *)sycl::malloc_device(
                             nq * NH * HD * 4, dpct::get_in_order_queue())),
        "malloc");
@@ -248,6 +249,27 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
             std::exit(2);
         }
     };
+    // QPA_OLD_ONLY=1: only the FP32 kernel - its output hash and time (bitwise A/B of its variants, e.g. STRATA_ATTN_LANECELL,
+    // where the tensor-core / XMX kernel refuses the device)
+    if (const char* oo = std::getenv("QPA_OLD_ONLY"); oo && oo[0] == '1') {
+        old_run();
+        dpct::get_current_device().queues_wait_and_throw();
+        std::vector<float> oo_out((size_t) (nq * NH * HD));
+        dpct::get_in_order_queue().memcpy(oo_out.data(), d_old, oo_out.size() * 4).wait();
+        uint64_t hh = 1469598103934665603ull;
+        for (float x : oo_out) { uint32_t u; std::memcpy(&u, &x, 4); hh = (hh ^ u) * 1099511628211ull; }
+        std::vector<double> ms;
+        for (int r = 0; r < 5; ++r) {
+            const auto t0 = std::chrono::steady_clock::now();
+            old_run();
+            dpct::get_current_device().queues_wait_and_throw();
+            ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        }
+        std::sort(ms.begin(), ms.end());
+        std::printf("OLDHASH %016llx  FP32 kernel ctx %lld, %lld queries: median %.2f ms (min %.2f)\n", (unsigned long long) hh,
+                    (long long) ctx, (long long) nq, ms[2], ms[0]);
+        return 0;
+    }
     old_run();
     new_run();
     ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
@@ -265,6 +287,11 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         uint64_t hh = 1469598103934665603ull;
         for (float x : nw) { uint32_t u; std::memcpy(&u, &x, 4); hh = (hh ^ u) * 1099511628211ull; }
         std::printf("NEWHASH %016llx\n", (unsigned long long) hh);
+    }
+    {   // and of the FP32 kernel's (qsa_decode_attn_batch: STRATA_ATTN_LANECELL and other bitwise variants of it)
+        uint64_t hh = 1469598103934665603ull;
+        for (float x : o) { uint32_t u; std::memcpy(&u, &x, 4); hh = (hh ^ u) * 1099511628211ull; }
+        std::printf("OLDHASH %016llx\n", (unsigned long long) hh);
     }
     // 1. FP64 reference on a sample of queries
     double err_old = 0, err_new = 0, ref_scale = 0;
