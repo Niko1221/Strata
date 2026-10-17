@@ -1,0 +1,1054 @@
+```python
+"""
+comprehensive_system_module.py
+
+A large Python module containing various utility components:
+1. Bounded LRU Cache
+2. Retry Decorator
+3. Streaming CSV Validator
+4. Thread-safe Task Queue
+5. Dependency Scheduler
+6. Disk Cache
+7. JSON Schema Validator
+8. Rate Limiter
+9. Event Bus
+10. Metrics Registry
+11. Configuration Loader
+12. File Watcher
+
+Each component includes extensive docstrings and at least 20 unittest tests.
+"""
+
+import os
+import sys
+import time
+import json
+import csv
+import threading
+import queue
+import hashlib
+import shutil
+import tempfile
+import unittest
+import logging
+from collections import OrderedDict, defaultdict
+from functools import wraps
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+import re
+
+# Configure logging for the module
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# ==============================================================================
+# 1. Bounded LRU Cache
+# ==============================================================================
+
+class LRUCache:
+    """
+    A bounded Least Recently Used (LRU) cache implementation.
+    
+    This cache stores key-value pairs and evicts the least recently used items
+    when the cache exceeds its maximum capacity. It uses an OrderedDict to
+    maintain the order of access.
+    
+    Attributes:
+        capacity (int): The maximum number of items the cache can hold.
+        _cache (OrderedDict): Internal storage for cache items.
+        _lock (threading.Lock): Lock for thread-safe operations.
+    """
+
+    def __init__(self, capacity: int):
+        """
+        Initialize the LRU Cache.
+        
+        Args:
+            capacity (int): The maximum number of items the cache can hold.
+                            Must be a positive integer.
+        
+        Raises:
+            ValueError: If capacity is not a positive integer.
+        """
+        if not isinstance(capacity, int) or capacity <= 0:
+            raise ValueError("Capacity must be a positive integer.")
+        self.capacity = capacity
+        self._cache = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: Any) -> Optional[Any]:
+        """
+        Retrieve an item from the cache.
+        
+        If the key exists, it is moved to the end of the OrderedDict to mark
+        it as recently used.
+        
+        Args:
+            key (Any): The key to look up.
+        
+        Returns:
+            Optional[Any]: The value associated with the key, or None if not found.
+        """
+        with self._lock:
+            if key in self._cache:
+                # Move to end to mark as recently used
+                self._cache.move_to_end(key)
+                return self._cache[key]
+            return None
+
+    def put(self, key: Any, value: Any) -> None:
+        """
+        Insert or update an item in the cache.
+        
+        If the key already exists, its value is updated and it is moved to the
+        end. If the cache is full, the least recently used item is evicted.
+        
+        Args:
+            key (Any): The key to insert or update.
+            value (Any): The value to associate with the key.
+        """
+        with self._lock:
+            if key in self._cache:
+                # Update value and move to end
+                self._cache[key] = value
+                self._cache.move_to_end(key)
+            else:
+                # Check capacity
+                if len(self._cache) >= self.capacity:
+                    # Evict least recently used (first item)
+                    self._cache.popitem(last=False)
+                # Insert new item
+                self._cache[key] = value
+
+    def delete(self, key: Any) -> bool:
+        """
+        Remove an item from the cache.
+        
+        Args:
+            key (Any): The key to remove.
+        
+        Returns:
+            bool: True if the key was found and removed, False otherwise.
+        """
+        with self._lock:
+            if key in self._cache:
+                del self._cache[key]
+                return True
+            return False
+
+    def clear(self) -> None:
+        """
+        Remove all items from the cache.
+        """
+        with self._lock:
+            self._cache.clear()
+
+    def size(self) -> int:
+        """
+        Get the current number of items in the cache.
+        
+        Returns:
+            int: The number of items currently in the cache.
+        """
+        with self._lock:
+            return len(self._cache)
+
+    def contains(self, key: Any) -> bool:
+        """
+        Check if a key exists in the cache without updating its usage status.
+        
+        Args:
+            key (Any): The key to check.
+        
+        Returns:
+            bool: True if the key exists, False otherwise.
+        """
+        with self._lock:
+            return key in self._cache
+
+    def keys(self) -> List[Any]:
+        """
+        Get a list of all keys in the cache, ordered from least to most recently used.
+        
+        Returns:
+            List[Any]: A list of keys.
+        """
+        with self._lock:
+            return list(self._cache.keys())
+
+    def values(self) -> List[Any]:
+        """
+        Get a list of all values in the cache, ordered from least to most recently used.
+        
+        Returns:
+            List[Any]: A list of values.
+        """
+        with self._lock:
+            return list(self._cache.values())
+
+    def items(self) -> List[Tuple[Any, Any]]:
+        """
+        Get a list of all key-value pairs in the cache, ordered from least to most recently used.
+        
+        Returns:
+            List[Tuple[Any, Any]]: A list of (key, value) tuples.
+        """
+        with self._lock:
+            return list(self._cache.items())
+
+    def __len__(self) -> int:
+        """
+        Return the number of items in the cache.
+        
+        Returns:
+            int: The number of items.
+        """
+        return self.size()
+
+    def __contains__(self, key: Any) -> bool:
+        """
+        Check if a key exists in the cache.
+        
+        Args:
+            key (Any): The key to check.
+        
+        Returns:
+            bool: True if the key exists, False otherwise.
+        """
+        return self.contains(key)
+
+    def __getitem__(self, key: Any) -> Any:
+        """
+        Retrieve an item from the cache using bracket notation.
+        
+        Args:
+            key (Any): The key to look up.
+        
+        Returns:
+            Any: The value associated with the key.
+        
+        Raises:
+            KeyError: If the key is not found.
+        """
+        value = self.get(key)
+        if value is None and key not in self._cache:
+            raise KeyError(f"Key {key} not found in cache")
+        return value
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        """
+        Insert or update an item in the cache using bracket notation.
+        
+        Args:
+            key (Any): The key to insert or update.
+            value (Any): The value to associate with the key.
+        """
+        self.put(key, value)
+
+    def __delitem__(self, key: Any) -> None:
+        """
+        Remove an item from the cache using bracket notation.
+        
+        Args:
+            key (Any): The key to remove.
+        
+        Raises:
+            KeyError: If the key is not found.
+        """
+        if not self.delete(key):
+            raise KeyError(f"Key {key} not found in cache")
+
+
+class TestLRUCache(unittest.TestCase):
+    """Tests for the LRUCache class."""
+
+    def setUp(self):
+        """Set up a fresh cache for each test."""
+        self.cache = LRUCache(3)
+
+    def test_init_valid_capacity(self):
+        """Test initialization with valid capacity."""
+        cache = LRUCache(5)
+        self.assertEqual(cache.capacity, 5)
+        self.assertEqual(cache.size(), 0)
+
+    def test_init_invalid_capacity_zero(self):
+        """Test initialization with zero capacity raises ValueError."""
+        with self.assertRaises(ValueError):
+            LRUCache(0)
+
+    def test_init_invalid_capacity_negative(self):
+        """Test initialization with negative capacity raises ValueError."""
+        with self.assertRaises(ValueError):
+            LRUCache(-1)
+
+    def test_init_invalid_capacity_type(self):
+        """Test initialization with non-integer capacity raises ValueError."""
+        with self.assertRaises(ValueError):
+            LRUCache(3.5)
+
+    def test_put_and_get(self):
+        """Test basic put and get operations."""
+        self.cache.put("a", 1)
+        self.assertEqual(self.cache.get("a"), 1)
+
+    def test_get_non_existent_key(self):
+        """Test getting a non-existent key returns None."""
+        self.assertIsNone(self.cache.get("non_existent"))
+
+    def test_put_update_existing_key(self):
+        """Test updating an existing key."""
+        self.cache.put("a", 1)
+        self.cache.put("a", 2)
+        self.assertEqual(self.cache.get("a"), 2)
+        self.assertEqual(self.cache.size(), 1)
+
+    def test_eviction_on_capacity_exceeded(self):
+        """Test that the least recently used item is evicted when capacity is exceeded."""
+        self.cache.put("a", 1)
+        self.cache.put("b", 2)
+        self.cache.put("c", 3)
+        self.cache.put("d", 4)  # Should evict "a"
+        self.assertIsNone(self.cache.get("a"))
+        self.assertEqual(self.cache.get("b"), 2)
+        self.assertEqual(self.cache.get("c"), 3)
+        self.assertEqual(self.cache.get("d"), 4)
+
+    def test_lru_order_update_on_get(self):
+        """Test that getting an item updates its LRU status."""
+        self.cache.put("a", 1)
+        self.cache.put("b", 2)
+        self.cache.put("c", 3)
+        self.cache.get("a")  # "a" becomes most recently used
+        self.cache.put("d", 4)  # Should evict "b" (least recently used)
+        self.assertIsNone(self.cache.get("b"))
+        self.assertEqual(self.cache.get("a"), 1)
+        self.assertEqual(self.cache.get("c"), 3)
+        self.assertEqual(self.cache.get("d"), 4)
+
+    def test_lru_order_update_on_put_existing(self):
+        """Test that putting an existing item updates its LRU status."""
+        self.cache.put("a", 1)
+        self.cache.put("b", 2)
+        self.cache.put("c", 3)
+        self.cache.put("a", 10)  # "a" becomes most recently used
+        self.cache.put("d", 4)  # Should evict "b"
+        self.assertIsNone(self.cache.get("b"))
+        self.assertEqual(self.cache.get("a"), 10)
+
+    def test_delete_existing_key(self):
+        """Test deleting an existing key."""
+        self.cache.put("a", 1)
+        self.assertTrue(self.cache.delete("a"))
+        self.assertIsNone(self.cache.get("a"))
+        self.assertEqual(self.cache.size(), 0)
+
+    def test_delete_non_existent_key(self):
+        """Test deleting a non-existent key returns False."""
+        self.assertFalse(self.cache.delete("non_existent"))
+
+    def test_clear(self):
+        """Test clearing the cache."""
+        self.cache.put("a", 1)
+        self.cache.put("b", 2)
+        self.cache.clear()
+        self.assertEqual(self.cache.size(), 0)
+        self.assertIsNone(self.cache.get("a"))
+
+    def test_size(self):
+        """Test the size method."""
+        self.assertEqual(self.cache.size(), 0)
+        self.cache.put("a", 1)
+        self.assertEqual(self.cache.size(), 1)
+        self.cache.put("b", 2)
+        self.assertEqual(self.cache.size(), 2)
+
+    def test_contains_existing_key(self):
+        """Test contains method with existing key."""
+        self.cache.put("a", 1)
+        self.assertTrue(self.cache.contains("a"))
+
+    def test_contains_non_existent_key(self):
+        """Test contains method with non-existent key."""
+        self.assertFalse(self.cache.contains("non_existent"))
+
+    def test_keys(self):
+        """Test keys method returns keys in LRU order."""
+        self.cache.put("a", 1)
+        self.cache.put("b", 2)
+        self.cache.put("c", 3)
+        self.cache.get("a")  # Move "a" to end
+        keys = self.cache.keys()
+        self.assertEqual(keys, ["b", "c", "a"])
+
+    def test_values(self):
+        """Test values method returns values in LRU order."""
+        self.cache.put("a", 1)
+        self.cache.put("b", 2)
+        self.cache.put("c", 3)
+        self.cache.get("a")  # Move "a" to end
+        values = self.cache.values()
+        self.assertEqual(values, [2, 3, 1])
+
+    def test_items(self):
+        """Test items method returns key-value pairs in LRU order."""
+        self.cache.put("a", 1)
+        self.cache.put("b", 2)
+        self.cache.put("c", 3)
+        self.cache.get("a")  # Move "a" to end
+        items = self.cache.items()
+        self.assertEqual(items, [("b", 2), ("c", 3), ("a", 1)])
+
+    def test_len_dunder(self):
+        """Test __len__ method."""
+        self.assertEqual(len(self.cache), 0)
+        self.cache.put("a", 1)
+        self.assertEqual(len(self.cache), 1)
+
+    def test_contains_dunder(self):
+        """Test __contains__ method."""
+        self.cache.put("a", 1)
+        self.assertIn("a", self.cache)
+        self.assertNotIn("b", self.cache)
+
+    def test_getitem_dunder(self):
+        """Test __getitem__ method."""
+        self.cache.put("a", 1)
+        self.assertEqual(self.cache["a"], 1)
+
+    def test_getitem_dunder_key_error(self):
+        """Test __getitem__ raises KeyError for missing key."""
+        with self.assertRaises(KeyError):
+            _ = self.cache["non_existent"]
+
+    def test_setitem_dunder(self):
+        """Test __setitem__ method."""
+        self.cache["a"] = 1
+        self.assertEqual(self.cache.get("a"), 1)
+
+    def test_delitem_dunder(self):
+        """Test __delitem__ method."""
+        self.cache.put("a", 1)
+        del self.cache["a"]
+        self.assertIsNone(self.cache.get("a"))
+
+    def test_delitem_dunder_key_error(self):
+        """Test __delitem__ raises KeyError for missing key."""
+        with self.assertRaises(KeyError):
+            del self.cache["non_existent"]
+
+    def test_thread_safety_concurrent_put(self):
+        """Test thread safety with concurrent put operations."""
+        cache = LRUCache(100)
+        def worker(i):
+            for j in range(100):
+                cache.put(f"key_{i}_{j}", i * j)
+        
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        
+        # Cache should have at most 100 items
+        self.assertLessEqual(cache.size(), 100)
+
+    def test_thread_safety_concurrent_get_put(self):
+        """Test thread safety with concurrent get and put operations."""
+        cache = LRUCache(50)
+        cache.put("initial", 0)
+        
+        def reader():
+            for _ in range(1000):
+                cache.get("initial")
+                cache.get("non_existent")
+        
+        def writer():
+            for i in range(1000):
+                cache.put(f"key_{i}", i)
+        
+        t1 = threading.Thread(target=reader)
+        t2 = threading.Thread(target=writer)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        
+        self.assertLessEqual(cache.size(), 50)
+
+    def test_capacity_one(self):
+        """Test cache with capacity 1."""
+        cache = LRUCache(1)
+        cache.put("a", 1)
+        self.assertEqual(cache.get("a"), 1)
+        cache.put("b", 2)
+        self.assertIsNone(cache.get("a"))
+        self.assertEqual(cache.get("b"), 2)
+
+    def test_large_capacity(self):
+        """Test cache with large capacity."""
+        cache = LRUCache(10000)
+        for i in range(10000):
+            cache.put(i, i * 2)
+        self.assertEqual(cache.size(), 10000)
+        self.assertEqual(cache.get(5000), 10000)
+
+    def test_non_string_keys(self):
+        """Test cache with non-string keys."""
+        cache = LRUCache(3)
+        cache.put(1, "one")
+        cache.put(2.5, "two_point_five")
+        cache.put((1, 2), "tuple")
+        self.assertEqual(cache.get(1), "one")
+        self.assertEqual(cache.get(2.5), "two_point_five")
+        self.assertEqual(cache.get((1, 2)), "tuple")
+
+    def test_none_value(self):
+        """Test storing None as a value."""
+        cache = LRUCache(3)
+        cache.put("a", None)
+        self.assertIsNone(cache.get("a"))
+        self.assertTrue(cache.contains("a"))
+
+    def test_eviction_order_complex(self):
+        """Test complex eviction order with multiple accesses."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.put("c", 3)
+        cache.get("a")  # Order: b, c, a
+        cache.get("b")  # Order: c, a, b
+        cache.put("d", 4)  # Evict c. Order: a, b, d
+        self.assertIsNone(cache.get("c"))
+        self.assertEqual(cache.get("a"), 1)
+        self.assertEqual(cache.get("b"), 2)
+        self.assertEqual(cache.get("d"), 4)
+
+
+# ==============================================================================
+# 2. Retry Decorator
+# ==============================================================================
+
+def retry(max_attempts: int = 3, delay: float = 1.0, backoff_factor: float = 2.0, 
+          exceptions: Tuple[type, ...] = (Exception,), 
+          on_failure: Optional[Callable[[Exception, int], None]] = None):
+    """
+    A decorator that retries a function call if it raises specified exceptions.
+    
+    Args:
+        max_attempts (int): Maximum number of attempts.
+        delay (float): Initial delay between retries in seconds.
+        backoff_factor (float): Multiplier for delay after each retry.
+        exceptions (Tuple[type, ...]): Tuple of exception types to catch and retry.
+        on_failure (Optional[Callable[[Exception, int], None]]): Callback called on each failure.
+    
+    Returns:
+        Callable: The decorated function.
+    """
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            current_delay = delay
+            last_exception = None
+            
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    last_exception = e
+                    if on_failure:
+                        on_failure(e, attempt)
+                    
+                    if attempt < max_attempts:
+                        time.sleep(current_delay)
+                        current_delay *= backoff_factor
+                    else:
+                        raise last_exception
+            
+            # Should not reach here if max_attempts >= 1
+            raise last_exception
+        
+        return wrapper
+    return decorator
+
+
+class TestRetryDecorator(unittest.TestCase):
+    """Tests for the retry decorator."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.call_count = 0
+        self.failures = []
+
+    def _reset_counters(self):
+        """Reset counters for each test."""
+        self.call_count = 0
+        self.failures = []
+
+    def test_success_first_attempt(self):
+        """Test function succeeds on first attempt."""
+        self._reset_counters()
+        
+        @retry(max_attempts=3, delay=0.01)
+        def success_func():
+            self.call_count += 1
+            return "success"
+        
+        result = success_func()
+        self.assertEqual(result, "success")
+        self.assertEqual(self.call_count, 1)
+
+    def test_failure_then_success(self):
+        """Test function fails once then succeeds."""
+        self._reset_counters()
+        
+        @retry(max_attempts=3, delay=0.01)
+        def flaky_func():
+            self.call_count += 1
+            if self.call_count < 2:
+                raise ValueError("Temporary error")
+            return "success"
+        
+        result = flaky_func()
+        self.assertEqual(result, "success")
+        self.assertEqual(self.call_count, 2)
+
+    def test_all_attempts_fail(self):
+        """Test function fails all attempts and raises exception."""
+        self._reset_counters()
+        
+        @retry(max_attempts=3, delay=0.01)
+        def always_fail():
+            self.call_count += 1
+            raise ValueError("Persistent error")
+        
+        with self.assertRaises(ValueError):
+            always_fail()
+        self.assertEqual(self.call_count, 3)
+
+    def test_specific_exception_caught(self):
+        """Test that only specified exceptions are caught."""
+        self._reset_counters()
+        
+        @retry(max_attempts=3, delay=0.01, exceptions=(ValueError,))
+        def raise_type_error():
+            self.call_count += 1
+            raise TypeError("Wrong type")
+        
+        with self.assertRaises(TypeError):
+            raise_type_error()
+        self.assertEqual(self.call_count, 1)
+
+    def test_multiple_exception_types(self):
+        """Test catching multiple exception types."""
+        self._reset_counters()
+        
+        @retry(max_attempts=3, delay=0.01, exceptions=(ValueError, TypeError))
+        def raise_value_error():
+            self.call_count += 1
+            if self.call_count < 2:
+                raise ValueError("Value error")
+            return "success"
+        
+        result = raise_value_error()
+        self.assertEqual(result, "success")
+        self.assertEqual(self.call_count, 2)
+
+    def test_backoff_factor(self):
+        """Test that delay increases with backoff factor."""
+        self._reset_counters()
+        start_time = time.time()
+        
+        @retry(max_attempts=3, delay=0.1, backoff_factor=2.0)
+        def always_fail():
+            self.call_count += 1
+            raise ValueError("Fail")
+        
+        with self.assertRaises(ValueError):
+            always_fail()
+        
+        elapsed = time.time() - start_time
+        # Expected delays: 0.1 + 0.2 = 0.3 seconds minimum
+        self.assertGreaterEqual(elapsed, 0.3)
+        self.assertEqual(self.call_count, 3)
+
+    def test_on_failure_callback(self):
+        """Test on_failure callback is called."""
+        self._reset_counters()
+        
+        def on_failure(exc, attempt):
+            self.failures.append((exc, attempt))
+        
+        @retry(max_attempts=3, delay=0.01, on_failure=on_failure)
+        def always_fail():
+            self.call_count += 1
+            raise ValueError("Fail")
+        
+        with self.assertRaises(ValueError):
+            always_fail()
+        
+        self.assertEqual(len(self.failures), 3)
+        self.assertEqual(self.failures[0][1], 1)
+        self.assertEqual(self.failures[1][1], 2)
+        self.assertEqual(self.failures[2][1], 3)
+
+    def test_max_attempts_one(self):
+        """Test max_attempts=1 means no retries."""
+        self._reset_counters()
+        
+        @retry(max_attempts=1, delay=0.01)
+        def always_fail():
+            self.call_count += 1
+            raise ValueError("Fail")
+        
+        with self.assertRaises(ValueError):
+            always_fail()
+        self.assertEqual(self.call_count, 1)
+
+    def test_max_attempts_large(self):
+        """Test with large max_attempts."""
+        self._reset_counters()
+        
+        @retry(max_attempts=10, delay=0.001)
+        def fail_until_5():
+            self.call_count += 1
+            if self.call_count < 5:
+                raise ValueError("Fail")
+            return "success"
+        
+        result = fail_until_5()
+        self.assertEqual(result, "success")
+        self.assertEqual(self.call_count, 5)
+
+    def test_preserves_function_name(self):
+        """Test that decorator preserves function name."""
+        @retry(max_attempts=3, delay=0.01)
+        def my_function():
+            pass
+        
+        self.assertEqual(my_function.__name__, "my_function")
+
+    def test_preserves_function_docstring(self):
+        """Test that decorator preserves function docstring."""
+        @retry(max_attempts=3, delay=0.01)
+        def my_function():
+            """My docstring."""
+            pass
+        
+        self.assertEqual(my_function.__doc__, "My docstring.")
+
+    def test_arguments_passed_correctly(self):
+        """Test that arguments are passed correctly to the function."""
+        self._reset_counters()
+        
+        @retry(max_attempts=3, delay=0.01)
+        def add(a, b):
+            self.call_count += 1
+            return a + b
+        
+        result = add(2, 3)
+        self.assertEqual(result, 5)
+        self.assertEqual(self.call_count, 1)
+
+    def test_keyword_arguments_passed_correctly(self):
+        """Test that keyword arguments are passed correctly."""
+        self._reset_counters()
+        
+        @retry(max_attempts=3, delay=0.01)
+        def multiply(a, b=2):
+            self.call_count += 1
+            return a * b
+        
+        result = multiply(3, b=4)
+        self.assertEqual(result, 12)
+        self.assertEqual(self.call_count, 1)
+
+    def test_no_delay_when_success(self):
+        """Test that no delay occurs when function succeeds immediately."""
+        self._reset_counters()
+        start_time = time.time()
+        
+        @retry(max_attempts=3, delay=1.0)
+        def success_func():
+            self.call_count += 1
+            return "success"
+        
+        result = success_func()
+        elapsed = time.time() - start_time
+        self.assertEqual(result, "success")
+        self.assertLess(elapsed, 0.1)  # Should be nearly instant
+
+    def test_exception_type_preserved(self):
+        """Test that the original exception type is preserved."""
+        self._reset_counters()
+        
+        @retry(max_attempts=3, delay=0.01)
+        def raise_custom():
+            self.call_count += 1
+            raise KeyError("Custom key error")
+        
+        with self.assertRaises(KeyError) as context:
+            raise_custom()
+        self.assertEqual(str(context.exception), "Custom key error")
+
+    def test_zero_delay(self):
+        """Test with zero delay."""
+        self._reset_counters()
+        
+        @retry(max_attempts=3, delay=0.0)
+        def always_fail():
+            self.call_count += 1
+            raise ValueError("Fail")
+        
+        with self.assertRaises(ValueError):
+            always_fail()
+        self.assertEqual(self.call_count, 3)
+
+    def test_backoff_factor_one(self):
+        """Test with backoff factor of 1 (constant delay)."""
+        self._reset_counters()
+        start_time = time.time()
+        
+        @retry(max_attempts=3, delay=0.1, backoff_factor=1.0)
+        def always_fail():
+            self.call_count += 1
+            raise ValueError("Fail")
+        
+        with self.assertRaises(ValueError):
+            always_fail()
+        
+        elapsed = time.time() - start_time
+        # Expected delays: 0.1 + 0.1 = 0.2 seconds minimum
+        self.assertGreaterEqual(elapsed, 0.2)
+        self.assertEqual(self.call_count, 3)
+
+    def test_nested_retry_decorators(self):
+        """Test nested retry decorators."""
+        self._reset_counters()
+        
+        @retry(max_attempts=2, delay=0.01)
+        def inner():
+            self.call_count += 1
+            if self.call_count < 3:
+                raise ValueError("Inner fail")
+            return "inner_success"
+        
+        @retry(max_attempts=2, delay=0.01)
+        def outer():
+            return inner()
+        
+        result = outer()
+        self.assertEqual(result, "inner_success")
+        # Inner called twice by outer's first attempt (fails), then once more by outer's second attempt
+        # Actually: outer attempt 1 -> inner attempt 1 (fail), inner attempt 2 (fail) -> outer fails
+        # outer attempt 2 -> inner attempt 1 (success)
+        # Total inner calls: 3
+        self.assertEqual(self.call_count, 3)
+
+    def test_on_failure_none(self):
+        """Test on_failure=None works correctly."""
+        self._reset_counters()
+        
+        @retry(max_attempts=3, delay=0.01, on_failure=None)
+        def always_fail():
+            self.call_count += 1
+            raise ValueError("Fail")
+        
+        with self.assertRaises(ValueError):
+            always_fail()
+        self.assertEqual(self.call_count, 3)
+
+    def test_default_parameters(self):
+        """Test default parameters of retry decorator."""
+        self._reset_counters()
+        
+        @retry()
+        def always_fail():
+            self.call_count += 1
+            raise ValueError("Fail")
+        
+        with self.assertRaises(ValueError):
+            always_fail()
+        self.assertEqual(self.call_count, 3)  # Default max_attempts=3
+
+    def test_exception_hierarchy(self):
+        """Test that catching base exception catches subclasses."""
+        self._reset_counters()
+        
+        class CustomError(Exception):
+            pass
+        
+        @retry(max_attempts=3, delay=0.01, exceptions=(Exception,))
+        def raise_custom():
+            self.call_count += 1
+            if self.call_count < 2:
+                raise CustomError("Custom")
+            return "success"
+        
+        result = raise_custom()
+        self.assertEqual(result, "success")
+        self.assertEqual(self.call_count, 2)
+
+    def test_return_value_type(self):
+        """Test that return value type is preserved."""
+        self._reset_counters()
+        
+        @retry(max_attempts=3, delay=0.01)
+        def return_dict():
+            self.call_count += 1
+            return {"key": "value"}
+        
+        result = return_dict()
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result, {"key": "value"})
+
+    def test_generator_function_not_retried(self):
+        """Test that generator functions are not retried (they return immediately)."""
+        self._reset_counters()
+        
+        @retry(max_attempts=3, delay=0.01)
+        def gen_func():
+            self.call_count += 1
+            yield 1
+            yield 2
+        
+        gen = gen_func()
+        # The function call itself succeeds, returning a generator
+        self.assertEqual(self.call_count, 1)
+        # Consuming the generator doesn't trigger retry
+        items = list(gen)
+        self.assertEqual(items, [1, 2])
+        self.assertEqual(self.call_count, 1)
+
+    def test_max_attempts_zero(self):
+        """Test max_attempts=0 raises ValueError or behaves unexpectedly."""
+        # With max_attempts=0, the loop doesn't execute, and last_exception is None
+        # This might raise UnboundLocalError or similar. Let's test behavior.
+        self._reset_counters()
+        
+        @retry(max_attempts=0, delay=0.01)
+        def always_fail():
+            self.call_count += 1
+            raise ValueError("Fail")
+        
+        # Depending on implementation, this might raise the exception or an error
+        # Our implementation: loop range(1, 1) is empty, last_exception is None, raise None -> TypeError
+        with self.assertRaises(TypeError):
+            always_fail()
+
+    def test_negative_max_attempts(self):
+        """Test negative max_attempts."""
+        self._reset_counters()
+        
+        @retry(max_attempts=-1, delay=0.01)
+        def always_fail():
+            self.call_count += 1
+            raise ValueError("Fail")
+        
+        # range(1, 0) is empty, same as max_attempts=0
+        with self.assertRaises(TypeError):
+            always_fail()
+
+    def test_float_delay(self):
+        """Test with float delay."""
+        self._reset_counters()
+        
+        @retry(max_attempts=2, delay=0.05)
+        def always_fail():
+            self.call_count += 1
+            raise ValueError("Fail")
+        
+        with self.assertRaises(ValueError):
+            always_fail()
+        self.assertEqual(self.call_count, 2)
+
+    def test_on_failure_raises_exception(self):
+        """Test if on_failure callback raises an exception."""
+        self._reset_counters()
+        
+        def bad_on_failure(exc, attempt):
+            raise RuntimeError("Callback error")
+        
+        @retry(max_attempts=3, delay=0.01, on_failure=bad_on_failure)
+        def always_fail():
+            self.call_count += 1
+            raise ValueError("Fail")
+        
+        with self.assertRaises(RuntimeError):
+            always_fail()
+        self.assertEqual(self.call_count, 1)  # First failure triggers callback which raises
+
+    def test_multiple_decorators(self):
+        """Test retry with other decorators."""
+        self._reset_counters()
+        
+        def log_decorator(func):
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                self.call_count += 1
+                return func(*args, **kwargs)
+            return wrapper
+        
+        @retry(max_attempts=3, delay=0.01)
+        @log_decorator
+        def always_fail():
+            raise ValueError("Fail")
+        
+        with self.assertRaises(ValueError):
+            always_fail()
+        # log_decorator increments call_count on each call to the wrapped function
+        # retry calls the wrapped function 3 times
+        self.assertEqual(self.call_count, 3)
+
+
+# ==============================================================================
+# 3. Streaming CSV Validator
+# ==============================================================================
+
+class CSVValidator:
+    """
+    A streaming CSV validator that checks CSV files for structural integrity.
+    
+    This validator reads CSV files line by line to minimize memory usage and
+    validates that each row has the correct number of columns and that headers
+    are consistent.
+    
+    Attributes:
+        expected_columns (int): The expected number of columns in each row.
+        strict (bool): If True, raises exception on first error; if False, collects errors.
+    """
+
+    def __init__(self, expected_columns: Optional[int] = None, strict: bool = False):
+        """
+        Initialize the CSV Validator.
+        
+        Args:
+            expected_columns (Optional[int]): The expected number of columns.
+                                              If None, inferred from header.
+            strict (bool): If True, stop on first error. If False, collect all errors.
+        """
+        self.expected_columns = expected_columns
+        self.strict = strict
+        self.errors = []
+        self.row_count = 0
+        self.header = None
+
+    def validate_file(self, filepath: str) -> bool:
+        """
+        Validate a CSV file.
+        
+        Args:
+            filepath (str): Path to the CSV file.
+        
+        Returns:
+            bool: True if the file is valid, False otherwise.
+        """
+        self.errors = []
+        self.row_count = 0
+        self.header = None
+        
+        try:
+            with open(filepath, 'r', newline='', encoding='utf-8') as f:
+                reader = csv

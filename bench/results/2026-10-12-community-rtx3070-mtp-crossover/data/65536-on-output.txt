@@ -1,0 +1,1020 @@
+```python
+"""
+comprehensive_system_module.py
+
+A comprehensive Python module containing various utility components including:
+- Bounded LRU Cache
+- Retry Decorator
+- Streaming CSV Validator
+- Thread-safe Task Queue
+- Dependency Scheduler
+- Disk Cache
+- JSON Schema Validator
+- Rate Limiter
+- Event Bus
+- Metrics Registry
+- Configuration Loader
+- File Watcher
+
+Each component includes extensive docstrings and at least 20 unittest tests.
+"""
+
+import os
+import sys
+import time
+import json
+import csv
+import threading
+import queue
+import hashlib
+import shutil
+import tempfile
+import unittest
+import functools
+import collections
+import re
+import glob
+import logging
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Iterator, Generator
+from collections import OrderedDict, defaultdict
+from concurrent.futures import ThreadPoolExecutor, Future
+from datetime import datetime, timedelta
+from pathlib import Path
+from dataclasses import dataclass, field
+from enum import Enum, auto
+import inspect
+
+# Configure logging for the module
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ==============================================================================
+# 1. Bounded LRU Cache
+# ==============================================================================
+
+class LRUCache:
+    """
+    A thread-safe, bounded Least Recently Used (LRU) cache implementation.
+    
+    This cache evicts the least recently used items when the capacity is exceeded.
+    It uses an OrderedDict to maintain the order of access and a lock for thread safety.
+    
+    Attributes:
+        capacity (int): The maximum number of items the cache can hold.
+        _cache (OrderedDict): The internal storage for cache items.
+        _lock (threading.Lock): A lock to ensure thread-safe operations.
+    """
+    
+    def __init__(self, capacity: int):
+        """
+        Initialize the LRU Cache with a given capacity.
+        
+        Args:
+            capacity (int): The maximum number of items to store in the cache.
+            
+        Raises:
+            ValueError: If capacity is less than or equal to 0.
+        """
+        if capacity <= 0:
+            raise ValueError("Capacity must be greater than 0")
+        self.capacity = capacity
+        self._cache = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: Any) -> Optional[Any]:
+        """
+        Retrieve an item from the cache.
+        
+        If the key exists, it is moved to the end of the OrderedDict to mark it as recently used.
+        
+        Args:
+            key (Any): The key to look up.
+            
+        Returns:
+            Optional[Any]: The value associated with the key, or None if not found.
+        """
+        with self._lock:
+            if key in self._cache:
+                # Move to end to mark as recently used
+                self._cache.move_to_end(key)
+                return self._cache[key]
+            return None
+
+    def put(self, key: Any, value: Any) -> None:
+        """
+        Insert or update an item in the cache.
+        
+        If the key already exists, its value is updated and it is moved to the end.
+        If the cache is full, the least recently used item is evicted.
+        
+        Args:
+            key (Any): The key to insert or update.
+            value (Any): The value to associate with the key.
+        """
+        with self._lock:
+            if key in self._cache:
+                # Update value and move to end
+                self._cache[key] = value
+                self._cache.move_to_end(key)
+            else:
+                # Check capacity
+                if len(self._cache) >= self.capacity:
+                    # Evict least recently used (first item)
+                    self._cache.popitem(last=False)
+                # Insert new item
+                self._cache[key] = value
+
+    def delete(self, key: Any) -> bool:
+        """
+        Remove an item from the cache.
+        
+        Args:
+            key (Any): The key to remove.
+            
+        Returns:
+            bool: True if the key was found and removed, False otherwise.
+        """
+        with self._lock:
+            if key in self._cache:
+                del self._cache[key]
+                return True
+            return False
+
+    def clear(self) -> None:
+        """
+        Remove all items from the cache.
+        """
+        with self._lock:
+            self._cache.clear()
+
+    def size(self) -> int:
+        """
+        Get the current number of items in the cache.
+        
+        Returns:
+            int: The number of items currently stored.
+        """
+        with self._lock:
+            return len(self._cache)
+
+    def keys(self) -> List[Any]:
+        """
+        Get a list of all keys in the cache, ordered from least recently used to most recently used.
+        
+        Returns:
+            List[Any]: A list of keys.
+        """
+        with self._lock:
+            return list(self._cache.keys())
+
+    def values(self) -> List[Any]:
+        """
+        Get a list of all values in the cache, ordered from least recently used to most recently used.
+        
+        Returns:
+            List[Any]: A list of values.
+        """
+        with self._lock:
+            return list(self._cache.values())
+
+    def items(self) -> List[Tuple[Any, Any]]:
+        """
+        Get a list of all key-value pairs in the cache, ordered from least recently used to most recently used.
+        
+        Returns:
+            List[Tuple[Any, Any]]: A list of (key, value) tuples.
+        """
+        with self._lock:
+            return list(self._cache.items())
+
+    def __contains__(self, key: Any) -> bool:
+        """
+        Check if a key exists in the cache.
+        
+        Args:
+            key (Any): The key to check.
+            
+        Returns:
+            bool: True if the key exists, False otherwise.
+        """
+        with self._lock:
+            return key in self._cache
+
+    def __len__(self) -> int:
+        """
+        Return the number of items in the cache.
+        
+        Returns:
+            int: The number of items.
+        """
+        return self.size()
+
+    def __repr__(self) -> str:
+        """
+        Return a string representation of the cache.
+        
+        Returns:
+            str: A string showing the cache contents.
+        """
+        with self._lock:
+            return f"LRUCache(capacity={self.capacity}, items={list(self._cache.items())})"
+
+
+class TestLRUCache(unittest.TestCase):
+    """
+    Unit tests for the LRUCache class.
+    """
+
+    def setUp(self):
+        """Set up a fresh cache for each test."""
+        self.cache = LRUCache(3)
+
+    def test_init_valid_capacity(self):
+        """Test initialization with valid capacity."""
+        cache = LRUCache(5)
+        self.assertEqual(cache.capacity, 5)
+        self.assertEqual(cache.size(), 0)
+
+    def test_init_invalid_capacity_zero(self):
+        """Test initialization with zero capacity raises ValueError."""
+        with self.assertRaises(ValueError):
+            LRUCache(0)
+
+    def test_init_invalid_capacity_negative(self):
+        """Test initialization with negative capacity raises ValueError."""
+        with self.assertRaises(ValueError):
+            LRUCache(-1)
+
+    def test_put_and_get(self):
+        """Test basic put and get operations."""
+        self.cache.put("a", 1)
+        self.assertEqual(self.cache.get("a"), 1)
+
+    def test_get_non_existent_key(self):
+        """Test getting a non-existent key returns None."""
+        self.assertIsNone(self.cache.get("missing"))
+
+    def test_put_update_existing_key(self):
+        """Test updating an existing key updates the value."""
+        self.cache.put("a", 1)
+        self.cache.put("a", 2)
+        self.assertEqual(self.cache.get("a"), 2)
+        self.assertEqual(self.cache.size(), 1)
+
+    def test_eviction_on_capacity_exceeded(self):
+        """Test that the least recently used item is evicted when capacity is exceeded."""
+        self.cache.put("a", 1)
+        self.cache.put("b", 2)
+        self.cache.put("c", 3)
+        # Cache is full. Adding 'd' should evict 'a' (LRU)
+        self.cache.put("d", 4)
+        
+        self.assertIsNone(self.cache.get("a"))
+        self.assertEqual(self.cache.get("b"), 2)
+        self.assertEqual(self.cache.get("c"), 3)
+        self.assertEqual(self.cache.get("d"), 4)
+        self.assertEqual(self.cache.size(), 3)
+
+    def test_lru_order_update_on_get(self):
+        """Test that getting an item updates its position in LRU order."""
+        self.cache.put("a", 1)
+        self.cache.put("b", 2)
+        self.cache.put("c", 3)
+        
+        # Access 'a' to make it recently used
+        self.cache.get("a")
+        
+        # Add 'd', should evict 'b' (now LRU)
+        self.cache.put("d", 4)
+        
+        self.assertIsNotNone(self.cache.get("a"))
+        self.assertIsNone(self.cache.get("b"))
+        self.assertEqual(self.cache.get("c"), 3)
+        self.assertEqual(self.cache.get("d"), 4)
+
+    def test_lru_order_update_on_put(self):
+        """Test that putting an existing item updates its position in LRU order."""
+        self.cache.put("a", 1)
+        self.cache.put("b", 2)
+        self.cache.put("c", 3)
+        
+        # Update 'a' to make it recently used
+        self.cache.put("a", 10)
+        
+        # Add 'd', should evict 'b' (now LRU)
+        self.cache.put("d", 4)
+        
+        self.assertEqual(self.cache.get("a"), 10)
+        self.assertIsNone(self.cache.get("b"))
+        self.assertEqual(self.cache.get("c"), 3)
+        self.assertEqual(self.cache.get("d"), 4)
+
+    def test_delete_existing_key(self):
+        """Test deleting an existing key."""
+        self.cache.put("a", 1)
+        self.assertTrue(self.cache.delete("a"))
+        self.assertIsNone(self.cache.get("a"))
+        self.assertEqual(self.cache.size(), 0)
+
+    def test_delete_non_existent_key(self):
+        """Test deleting a non-existent key returns False."""
+        self.assertFalse(self.cache.delete("missing"))
+
+    def test_clear(self):
+        """Test clearing the cache."""
+        self.cache.put("a", 1)
+        self.cache.put("b", 2)
+        self.cache.clear()
+        self.assertEqual(self.cache.size(), 0)
+        self.assertIsNone(self.cache.get("a"))
+
+    def test_size(self):
+        """Test the size method."""
+        self.assertEqual(self.cache.size(), 0)
+        self.cache.put("a", 1)
+        self.assertEqual(self.cache.size(), 1)
+        self.cache.put("b", 2)
+        self.assertEqual(self.cache.size(), 2)
+
+    def test_keys(self):
+        """Test the keys method returns keys in LRU order."""
+        self.cache.put("a", 1)
+        self.cache.put("b", 2)
+        self.cache.put("c", 3)
+        self.cache.get("a") # Move 'a' to end
+        
+        keys = self.cache.keys()
+        self.assertEqual(keys, ["b", "c", "a"])
+
+    def test_values(self):
+        """Test the values method returns values in LRU order."""
+        self.cache.put("a", 1)
+        self.cache.put("b", 2)
+        self.cache.put("c", 3)
+        self.cache.get("a") # Move 'a' to end
+        
+        values = self.cache.values()
+        self.assertEqual(values, [2, 3, 1])
+
+    def test_items(self):
+        """Test the items method returns key-value pairs in LRU order."""
+        self.cache.put("a", 1)
+        self.cache.put("b", 2)
+        self.cache.put("c", 3)
+        self.cache.get("a") # Move 'a' to end
+        
+        items = self.cache.items()
+        self.assertEqual(items, [("b", 2), ("c", 3), ("a", 1)])
+
+    def test_contains(self):
+        """Test the __contains__ method."""
+        self.cache.put("a", 1)
+        self.assertIn("a", self.cache)
+        self.assertNotIn("b", self.cache)
+
+    def test_len(self):
+        """Test the __len__ method."""
+        self.assertEqual(len(self.cache), 0)
+        self.cache.put("a", 1)
+        self.assertEqual(len(self.cache), 1)
+
+    def test_repr(self):
+        """Test the __repr__ method."""
+        self.cache.put("a", 1)
+        repr_str = repr(self.cache)
+        self.assertIn("LRUCache", repr_str)
+        self.assertIn("capacity=3", repr_str)
+        self.assertIn("items=[('a', 1)]", repr_str)
+
+    def test_thread_safety_concurrent_put(self):
+        """Test thread safety with concurrent put operations."""
+        cache = LRUCache(100)
+        errors = []
+        
+        def worker(thread_id):
+            try:
+                for i in range(100):
+                    cache.put(f"key_{thread_id}_{i}", i)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+            
+        self.assertEqual(len(errors), 0)
+        # Size should be at most 100 due to capacity
+        self.assertLessEqual(cache.size(), 100)
+
+    def test_thread_safety_concurrent_get_put(self):
+        """Test thread safety with concurrent get and put operations."""
+        cache = LRUCache(50)
+        errors = []
+        
+        def writer():
+            try:
+                for i in range(1000):
+                    cache.put(f"key_{i}", i)
+            except Exception as e:
+                errors.append(e)
+
+        def reader():
+            try:
+                for i in range(1000):
+                    cache.get(f"key_{i}")
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=writer)
+        t2 = threading.Thread(target=reader)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        
+        self.assertEqual(len(errors), 0)
+
+    def test_capacity_one(self):
+        """Test cache with capacity 1."""
+        cache = LRUCache(1)
+        cache.put("a", 1)
+        self.assertEqual(cache.get("a"), 1)
+        cache.put("b", 2)
+        self.assertIsNone(cache.get("a"))
+        self.assertEqual(cache.get("b"), 2)
+
+    def test_large_capacity(self):
+        """Test cache with large capacity."""
+        cache = LRUCache(10000)
+        for i in range(10000):
+            cache.put(i, i)
+        self.assertEqual(cache.size(), 10000)
+        self.assertEqual(cache.get(0), 0)
+        self.assertEqual(cache.get(9999), 9999)
+
+    def test_non_string_keys(self):
+        """Test cache with non-string keys (integers, tuples)."""
+        cache = LRUCache(3)
+        cache.put(1, "one")
+        cache.put((1, 2), "tuple")
+        self.assertEqual(cache.get(1), "one")
+        self.assertEqual(cache.get((1, 2)), "tuple")
+
+    def test_none_value(self):
+        """Test storing None as a value."""
+        cache = LRUCache(3)
+        cache.put("a", None)
+        self.assertIsNone(cache.get("a"))
+        self.assertIn("a", cache) # Key exists even if value is None
+
+    def test_eviction_order_complex(self):
+        """Test complex eviction order scenarios."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.put("c", 3)
+        cache.get("a") # a is MRU, b is LRU
+        cache.put("d", 4) # evicts b
+        cache.get("c") # c is MRU, a is LRU
+        cache.put("e", 5) # evicts a
+        
+        self.assertIsNone(cache.get("b"))
+        self.assertIsNone(cache.get("a"))
+        self.assertEqual(cache.get("c"), 3)
+        self.assertEqual(cache.get("d"), 4)
+        self.assertEqual(cache.get("e"), 5)
+
+    def test_multiple_updates_same_key(self):
+        """Test multiple updates to the same key."""
+        cache = LRUCache(3)
+        for i in range(10):
+            cache.put("key", i)
+        self.assertEqual(cache.get("key"), 9)
+        self.assertEqual(cache.size(), 1)
+
+    def test_delete_and_reinsert(self):
+        """Test deleting a key and reinserting it."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.delete("a")
+        cache.put("a", 2)
+        self.assertEqual(cache.get("a"), 2)
+
+    def test_clear_then_put(self):
+        """Test putting items after clearing."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.clear()
+        cache.put("b", 2)
+        self.assertEqual(cache.get("b"), 2)
+        self.assertIsNone(cache.get("a"))
+
+    def test_keys_empty_cache(self):
+        """Test keys method on empty cache."""
+        self.assertEqual(self.cache.keys(), [])
+
+    def test_values_empty_cache(self):
+        """Test values method on empty cache."""
+        self.assertEqual(self.cache.values(), [])
+
+    def test_items_empty_cache(self):
+        """Test items method on empty cache."""
+        self.assertEqual(self.cache.items(), [])
+
+    def test_get_does_not_add_key(self):
+        """Test that getting a non-existent key does not add it to the cache."""
+        self.cache.get("nonexistent")
+        self.assertEqual(self.cache.size(), 0)
+
+    def test_put_evicts_correct_item_after_get(self):
+        """Test that eviction respects the most recent access."""
+        cache = LRUCache(2)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.get("a") # a is now MRU, b is LRU
+        cache.put("c", 3) # Should evict b
+        
+        self.assertEqual(cache.get("a"), 1)
+        self.assertIsNone(cache.get("b"))
+        self.assertEqual(cache.get("c"), 3)
+
+    def test_put_evicts_correct_item_after_put_update(self):
+        """Test that eviction respects the most recent update."""
+        cache = LRUCache(2)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.put("a", 10) # a is now MRU, b is LRU
+        cache.put("c", 3) # Should evict b
+        
+        self.assertEqual(cache.get("a"), 10)
+        self.assertIsNone(cache.get("b"))
+        self.assertEqual(cache.get("c"), 3)
+
+    def test_concurrent_delete(self):
+        """Test concurrent delete operations."""
+        cache = LRUCache(100)
+        for i in range(100):
+            cache.put(i, i)
+        
+        errors = []
+        def deleter(start, end):
+            try:
+                for i in range(start, end):
+                    cache.delete(i)
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=deleter, args=(0, 50))
+        t2 = threading.Thread(target=deleter, args=(50, 100))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        
+        self.assertEqual(len(errors), 0)
+        self.assertEqual(cache.size(), 0)
+
+    def test_concurrent_clear(self):
+        """Test concurrent clear operations."""
+        cache = LRUCache(100)
+        for i in range(100):
+            cache.put(i, i)
+        
+        errors = []
+        def clearer():
+            try:
+                cache.clear()
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=clearer) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+            
+        self.assertEqual(len(errors), 0)
+        self.assertEqual(cache.size(), 0)
+
+    def test_mixed_operations_thread_safety(self):
+        """Test mixed operations (get, put, delete) for thread safety."""
+        cache = LRUCache(50)
+        errors = []
+        
+        def worker(thread_id):
+            try:
+                for i in range(100):
+                    key = f"key_{thread_id}_{i}"
+                    cache.put(key, i)
+                    cache.get(key)
+                    if i % 10 == 0:
+                        cache.delete(key)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+            
+        self.assertEqual(len(errors), 0)
+
+    def test_capacity_boundary(self):
+        """Test behavior exactly at capacity boundary."""
+        cache = LRUCache(2)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        # Cache is full, no eviction yet
+        self.assertEqual(cache.size(), 2)
+        # Next put causes eviction
+        cache.put("c", 3)
+        self.assertEqual(cache.size(), 2)
+        self.assertIsNone(cache.get("a"))
+
+    def test_get_updates_order_for_eviction(self):
+        """Test that get updates the order for future evictions."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.put("c", 3)
+        
+        # Access 'a'
+        cache.get("a")
+        
+        # Add 'd', should evict 'b'
+        cache.put("d", 4)
+        
+        # Add 'e', should evict 'c'
+        cache.put("e", 5)
+        
+        self.assertEqual(cache.get("a"), 1)
+        self.assertIsNone(cache.get("b"))
+        self.assertIsNone(cache.get("c"))
+        self.assertEqual(cache.get("d"), 4)
+        self.assertEqual(cache.get("e"), 5)
+
+    def test_put_updates_order_for_eviction(self):
+        """Test that put updates the order for future evictions."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.put("c", 3)
+        
+        # Update 'a'
+        cache.put("a", 10)
+        
+        # Add 'd', should evict 'b'
+        cache.put("d", 4)
+        
+        # Add 'e', should evict 'c'
+        cache.put("e", 5)
+        
+        self.assertEqual(cache.get("a"), 10)
+        self.assertIsNone(cache.get("b"))
+        self.assertIsNone(cache.get("c"))
+        self.assertEqual(cache.get("d"), 4)
+        self.assertEqual(cache.get("e"), 5)
+
+    def test_delete_middle_item(self):
+        """Test deleting an item from the middle of the LRU list."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.put("c", 3)
+        
+        cache.delete("b")
+        
+        self.assertEqual(cache.size(), 2)
+        self.assertEqual(cache.get("a"), 1)
+        self.assertIsNone(cache.get("b"))
+        self.assertEqual(cache.get("c"), 3)
+        
+        # Add 'd', should not evict anything since size < capacity
+        cache.put("d", 4)
+        self.assertEqual(cache.size(), 3)
+        self.assertEqual(cache.get("d"), 4)
+
+    def test_delete_lru_item(self):
+        """Test deleting the least recently used item."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.put("c", 3)
+        
+        cache.delete("a") # 'a' is LRU
+        
+        self.assertEqual(cache.size(), 2)
+        self.assertIsNone(cache.get("a"))
+        self.assertEqual(cache.get("b"), 2)
+        self.assertEqual(cache.get("c"), 3)
+
+    def test_delete_mru_item(self):
+        """Test deleting the most recently used item."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.put("c", 3)
+        
+        cache.delete("c") # 'c' is MRU
+        
+        self.assertEqual(cache.size(), 2)
+        self.assertEqual(cache.get("a"), 1)
+        self.assertEqual(cache.get("b"), 2)
+        self.assertIsNone(cache.get("c"))
+
+    def test_reinsert_after_delete(self):
+        """Test reinserting a key after deletion."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.delete("a")
+        cache.put("a", 2)
+        self.assertEqual(cache.get("a"), 2)
+        self.assertEqual(cache.size(), 1)
+
+    def test_capacity_1000(self):
+        """Test cache with capacity 1000."""
+        cache = LRUCache(1000)
+        for i in range(1000):
+            cache.put(i, i)
+        self.assertEqual(cache.size(), 1000)
+        cache.put(1000, 1000) # Evicts 0
+        self.assertIsNone(cache.get(0))
+        self.assertEqual(cache.get(1000), 1000)
+
+    def test_string_keys_with_spaces(self):
+        """Test keys with spaces."""
+        cache = LRUCache(3)
+        cache.put("key with space", 1)
+        self.assertEqual(cache.get("key with space"), 1)
+
+    def test_unicode_keys(self):
+        """Test unicode keys."""
+        cache = LRUCache(3)
+        cache.put("café", 1)
+        self.assertEqual(cache.get("café"), 1)
+
+    def test_boolean_keys(self):
+        """Test boolean keys."""
+        cache = LRUCache(3)
+        cache.put(True, 1)
+        cache.put(False, 0)
+        self.assertEqual(cache.get(True), 1)
+        self.assertEqual(cache.get(False), 0)
+
+    def test_float_keys(self):
+        """Test float keys."""
+        cache = LRUCache(3)
+        cache.put(3.14, "pi")
+        self.assertEqual(cache.get(3.14), "pi")
+
+    def test_nested_dict_values(self):
+        """Test storing nested dictionaries as values."""
+        cache = LRUCache(3)
+        data = {"a": {"b": 1}}
+        cache.put("key", data)
+        self.assertEqual(cache.get("key"), data)
+
+    def test_list_values(self):
+        """Test storing lists as values."""
+        cache = LRUCache(3)
+        data = [1, 2, 3]
+        cache.put("key", data)
+        self.assertEqual(cache.get("key"), data)
+
+    def test_tuple_values(self):
+        """Test storing tuples as values."""
+        cache = LRUCache(3)
+        data = (1, 2, 3)
+        cache.put("key", data)
+        self.assertEqual(cache.get("key"), data)
+
+    def test_set_values(self):
+        """Test storing sets as values."""
+        cache = LRUCache(3)
+        data = {1, 2, 3}
+        cache.put("key", data)
+        self.assertEqual(cache.get("key"), data)
+
+    def test_object_values(self):
+        """Test storing custom objects as values."""
+        class MyObj:
+            def __init__(self, val):
+                self.val = val
+            def __eq__(self, other):
+                return isinstance(other, MyObj) and self.val == other.val
+
+        cache = LRUCache(3)
+        obj = MyObj(10)
+        cache.put("key", obj)
+        self.assertEqual(cache.get("key"), obj)
+
+    def test_get_returns_same_object(self):
+        """Test that get returns the same object instance."""
+        cache = LRUCache(3)
+        obj = [1, 2, 3]
+        cache.put("key", obj)
+        retrieved = cache.get("key")
+        self.assertIs(obj, retrieved)
+
+    def test_put_replaces_object(self):
+        """Test that put replaces the object instance."""
+        cache = LRUCache(3)
+        obj1 = [1, 2, 3]
+        obj2 = [4, 5, 6]
+        cache.put("key", obj1)
+        cache.put("key", obj2)
+        retrieved = cache.get("key")
+        self.assertIs(obj2, retrieved)
+        self.assertIsNot(obj1, retrieved)
+
+    def test_clear_does_not_affect_capacity(self):
+        """Test that clear does not change the capacity."""
+        cache = LRUCache(5)
+        cache.put("a", 1)
+        cache.clear()
+        self.assertEqual(cache.capacity, 5)
+
+    def test_multiple_clears(self):
+        """Test calling clear multiple times."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.clear()
+        cache.clear()
+        self.assertEqual(cache.size(), 0)
+
+    def test_delete_after_clear(self):
+        """Test deleting after clear."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.clear()
+        self.assertFalse(cache.delete("a"))
+
+    def test_get_after_clear(self):
+        """Test getting after clear."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.clear()
+        self.assertIsNone(cache.get("a"))
+
+    def test_put_after_clear(self):
+        """Test putting after clear."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.clear()
+        cache.put("b", 2)
+        self.assertEqual(cache.get("b"), 2)
+
+    def test_keys_after_clear(self):
+        """Test keys after clear."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.clear()
+        self.assertEqual(cache.keys(), [])
+
+    def test_values_after_clear(self):
+        """Test values after clear."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.clear()
+        self.assertEqual(cache.values(), [])
+
+    def test_items_after_clear(self):
+        """Test items after clear."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.clear()
+        self.assertEqual(cache.items(), [])
+
+    def test_len_after_clear(self):
+        """Test len after clear."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.clear()
+        self.assertEqual(len(cache), 0)
+
+    def test_contains_after_clear(self):
+        """Test contains after clear."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.clear()
+        self.assertNotIn("a", cache)
+
+    def test_repr_after_clear(self):
+        """Test repr after clear."""
+        cache = LRUCache(3)
+        cache.put("a", 1)
+        cache.clear()
+        repr_str = repr(cache)
+        self.assertIn("items=[]", repr_str)
+
+    def test_concurrent_get_same_key(self):
+        """Test concurrent gets of the same key."""
+        cache = LRUCache(10)
+        cache.put("key", "value")
+        results = []
+        errors = []
+        
+        def getter():
+            try:
+                val = cache.get("key")
+                results.append(val)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=getter) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+            
+        self.assertEqual(len(errors), 0)
+        self.assertTrue(all(r == "value" for r in results))
+
+    def test_concurrent_put_same_key(self):
+        """Test concurrent puts of the same key."""
+        cache = LRUCache(10)
+        errors = []
+        
+        def setter(val):
+            try:
+                cache.put("key", val)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=setter, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+            
+        self.assertEqual(len(errors), 0)
+        # The final value should be one of the values set
+        self.assertIn(cache.get("key"), range(10))
+
+    def test_concurrent_delete_same_key(self):
+        """Test concurrent deletes of the same key."""
+        cache = LRUCache(10)
+        cache.put("key", "value")
+        errors = []
+        
+        def deleter():
+            try:
+                cache.delete("key")
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=deleter) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+            
+        self.assertEqual(len(errors), 0)
+        self.assertIsNone(cache.get("key"))
+
+    def test_concurrent_mixed_ops_same_key(self):
+        """Test concurrent mixed operations on the same key."""
+        cache = LRUCache(10)
+        errors = []
+        
+        def worker(op_type, val):
+            try:
+                if op_type == "put":
+                    cache.put("key", val)
+                elif op_type == "get":
+                    cache.get("key")
+                elif op_type == "delete":
+                    cache.delete("key")
+            except Exception as e:
+                errors.append(e)
+
+        threads = []
+        for i in range(30):
+            op = ["put", "get", "delete"][i % 3]
+            threads.append(threading.Thread(target=worker, args=(op, i)))
+        
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+            
+        self.assertEqual(len(errors), 0)
+
+    def test_capacity_1_eviction(self):
+        """Test eviction with capacity 1."""
+        cache = LRUCache(1)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        self.assertIsNone(cache.get("a"))
+        self.assertEqual(cache.get("b"), 2)
+
+    def test_capacity_1_update(self):
+        """Test update with capacity 1."""
+        cache = LRUCache(1)
+        cache.put("a", 1)
+        cache.put("a", 2)
+        self.assertEqual(cache.get("a"), 2)
+        self.assertEqual(cache.size(),

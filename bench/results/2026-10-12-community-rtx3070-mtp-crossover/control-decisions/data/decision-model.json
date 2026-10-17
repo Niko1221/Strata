@@ -1,0 +1,290 @@
+{
+  "assumptions": "Warm engine; fresh uncached input. Long-output decode rates held constant at measured 1000-token averages. Capacity changes, cached turns and output quality are not qualified.",
+  "max_context": 133120,
+  "rows": [
+    {
+      "input_tokens": 49152,
+      "output_tokens": 1000,
+      "off_seconds": 95.2642176829977,
+      "on_seconds": 158.09399856301025,
+      "seconds_saved_using_mtp_off": 62.82978088001255,
+      "prefill_penalty_seconds": 71.602,
+      "decode_seconds_saved_using_mtp_on": 8.771900000000002,
+      "projected_break_even_tokens": 8162.655753029559,
+      "minimum_projected_profitable_integer_output": 8163,
+      "break_even_fraction_of_input": 0.16606965643370683,
+      "tested_output_capacity": 83968,
+      "projected_break_even_fits": true,
+      "decisions": [
+        {
+          "output_tokens": 10,
+          "basis": "recorded arrival prefix",
+          "mtp_on_savings_seconds": -71.60087866801769,
+          "fits_tested_context": true,
+          "mode": "off",
+          "projected_off_seconds": null,
+          "projected_on_seconds": null
+        },
+        {
+          "output_tokens": 100,
+          "basis": "recorded arrival prefix",
+          "mtp_on_savings_seconds": -71.07344933401328,
+          "fits_tested_context": true,
+          "mode": "off",
+          "projected_off_seconds": null,
+          "projected_on_seconds": null
+        },
+        {
+          "output_tokens": 1000,
+          "basis": "recorded arrival prefix",
+          "mtp_on_savings_seconds": -62.82937038701493,
+          "fits_tested_context": true,
+          "mode": "off",
+          "projected_off_seconds": null,
+          "projected_on_seconds": null
+        },
+        {
+          "output_tokens": 10000,
+          "basis": "constant-rate extrapolation",
+          "mtp_on_savings_seconds": 16.11700000000002,
+          "fits_tested_context": true,
+          "mode": "on candidate",
+          "projected_off_seconds": 346.6626,
+          "projected_on_seconds": 330.5456
+        },
+        {
+          "output_tokens": 100000,
+          "basis": "constant-rate extrapolation",
+          "mtp_on_savings_seconds": 805.5880000000003,
+          "fits_tested_context": false,
+          "mode": "outside tested capacity",
+          "projected_off_seconds": 2860.7676,
+          "projected_on_seconds": 2055.1796
+        }
+      ],
+      "repeated_uncached_1000_calls": [
+        {
+          "calls": 10,
+          "seconds_saved_using_mtp_off": 628.2978088001255
+        },
+        {
+          "calls": 100,
+          "seconds_saved_using_mtp_off": 6282.978088001255
+        }
+      ]
+    },
+    {
+      "input_tokens": 65536,
+      "output_tokens": 1000,
+      "off_seconds": 118.14904975600075,
+      "on_seconds": 207.87757439806592,
+      "seconds_saved_using_mtp_off": 89.72852464206517,
+      "prefill_penalty_seconds": 98.72379999999998,
+      "decode_seconds_saved_using_mtp_on": 8.994400000000002,
+      "projected_break_even_tokens": 10976.140709774965,
+      "minimum_projected_profitable_integer_output": 10977,
+      "break_even_fraction_of_input": 0.16748261581077523,
+      "tested_output_capacity": 67584,
+      "projected_break_even_fits": true,
+      "decisions": [
+        {
+          "output_tokens": 10,
+          "basis": "recorded arrival prefix",
+          "mtp_on_savings_seconds": -98.68577130802441,
+          "fits_tested_context": true,
+          "mode": "off",
+          "projected_off_seconds": null,
+          "projected_on_seconds": null
+        },
+        {
+          "output_tokens": 100,
+          "basis": "recorded arrival prefix",
+          "mtp_on_savings_seconds": -98.17480761115439,
+          "fits_tested_context": true,
+          "mode": "off",
+          "projected_off_seconds": null,
+          "projected_on_seconds": null
+        },
+        {
+          "output_tokens": 1000,
+          "basis": "recorded arrival prefix",
+          "mtp_on_savings_seconds": -89.72837308607996,
+          "fits_tested_context": true,
+          "mode": "off",
+          "projected_off_seconds": null,
+          "projected_on_seconds": null
+        },
+        {
+          "output_tokens": 10000,
+          "basis": "constant-rate extrapolation",
+          "mtp_on_savings_seconds": -8.779799999999952,
+          "fits_tested_context": true,
+          "mode": "off",
+          "projected_off_seconds": 372.06809999999996,
+          "projected_on_seconds": 380.8479
+        },
+        {
+          "output_tokens": 100000,
+          "basis": "constant-rate extrapolation",
+          "mtp_on_savings_seconds": 800.7162000000003,
+          "fits_tested_context": false,
+          "mode": "outside tested capacity",
+          "projected_off_seconds": 2911.4181,
+          "projected_on_seconds": 2110.7018999999996
+        }
+      ],
+      "repeated_uncached_1000_calls": [
+        {
+          "calls": 10,
+          "seconds_saved_using_mtp_off": 897.2852464206517
+        },
+        {
+          "calls": 100,
+          "seconds_saved_using_mtp_off": 8972.852464206517
+        }
+      ]
+    },
+    {
+      "input_tokens": 98304,
+      "output_tokens": 1000,
+      "off_seconds": 163.99311683501583,
+      "on_seconds": 305.2667356180027,
+      "seconds_saved_using_mtp_off": 141.2736187829869,
+      "prefill_penalty_seconds": 150.68330000000003,
+      "decode_seconds_saved_using_mtp_on": 9.411000000000003,
+      "projected_break_even_tokens": 16011.401551376048,
+      "minimum_projected_profitable_integer_output": 16012,
+      "break_even_fraction_of_input": 0.16287639924495492,
+      "tested_output_capacity": 34816,
+      "projected_break_even_fits": true,
+      "decisions": [
+        {
+          "output_tokens": 10,
+          "basis": "recorded arrival prefix",
+          "mtp_on_savings_seconds": -150.6350656800205,
+          "fits_tested_context": true,
+          "mode": "off",
+          "projected_off_seconds": null,
+          "projected_on_seconds": null
+        },
+        {
+          "output_tokens": 100,
+          "basis": "recorded arrival prefix",
+          "mtp_on_savings_seconds": -150.00535628793295,
+          "fits_tested_context": true,
+          "mode": "off",
+          "projected_off_seconds": null,
+          "projected_on_seconds": null
+        },
+        {
+          "output_tokens": 1000,
+          "basis": "recorded arrival prefix",
+          "mtp_on_savings_seconds": -141.2733615890611,
+          "fits_tested_context": true,
+          "mode": "off",
+          "projected_off_seconds": null,
+          "projected_on_seconds": null
+        },
+        {
+          "output_tokens": 10000,
+          "basis": "constant-rate extrapolation",
+          "mtp_on_savings_seconds": -56.5733,
+          "fits_tested_context": true,
+          "mode": "off",
+          "projected_off_seconds": 419.79560000000004,
+          "projected_on_seconds": 476.36890000000005
+        },
+        {
+          "output_tokens": 100000,
+          "basis": "constant-rate extrapolation",
+          "mtp_on_savings_seconds": 790.4167000000002,
+          "fits_tested_context": false,
+          "mode": "outside tested capacity",
+          "projected_off_seconds": 2978.0366000000004,
+          "projected_on_seconds": 2187.6199
+        }
+      ],
+      "repeated_uncached_1000_calls": [
+        {
+          "calls": 10,
+          "seconds_saved_using_mtp_off": 1412.7361878298689
+        },
+        {
+          "calls": 100,
+          "seconds_saved_using_mtp_off": 14127.361878298689
+        }
+      ]
+    },
+    {
+      "input_tokens": 131072,
+      "output_tokens": 1000,
+      "off_seconds": 212.69902284105774,
+      "on_seconds": 405.41283507004846,
+      "seconds_saved_using_mtp_off": 192.71381222899072,
+      "prefill_penalty_seconds": 201.9175,
+      "decode_seconds_saved_using_mtp_on": 9.2035,
+      "projected_break_even_tokens": 21939.207910034227,
+      "minimum_projected_profitable_integer_output": 21940,
+      "break_even_fraction_of_input": 0.16738287284877187,
+      "tested_output_capacity": 2048,
+      "projected_break_even_fits": false,
+      "decisions": [
+        {
+          "output_tokens": 10,
+          "basis": "recorded arrival prefix",
+          "mtp_on_savings_seconds": -201.87015375192277,
+          "fits_tested_context": true,
+          "mode": "off",
+          "projected_off_seconds": null,
+          "projected_on_seconds": null
+        },
+        {
+          "output_tokens": 100,
+          "basis": "recorded arrival prefix",
+          "mtp_on_savings_seconds": -201.3193533839658,
+          "fits_tested_context": true,
+          "mode": "off",
+          "projected_off_seconds": null,
+          "projected_on_seconds": null
+        },
+        {
+          "output_tokens": 1000,
+          "basis": "recorded arrival prefix",
+          "mtp_on_savings_seconds": -192.7137070900062,
+          "fits_tested_context": true,
+          "mode": "off",
+          "projected_off_seconds": null,
+          "projected_on_seconds": null
+        },
+        {
+          "output_tokens": 10000,
+          "basis": "constant-rate extrapolation",
+          "mtp_on_savings_seconds": -109.8825,
+          "fits_tested_context": false,
+          "mode": "outside tested capacity",
+          "projected_off_seconds": 472.81629999999996,
+          "projected_on_seconds": 582.6988
+        },
+        {
+          "output_tokens": 100000,
+          "basis": "constant-rate extrapolation",
+          "mtp_on_savings_seconds": 718.4325,
+          "fits_tested_context": false,
+          "mode": "outside tested capacity",
+          "projected_off_seconds": 3074.2753,
+          "projected_on_seconds": 2355.8428
+        }
+      ],
+      "repeated_uncached_1000_calls": [
+        {
+          "calls": 10,
+          "seconds_saved_using_mtp_off": 1927.1381222899072
+        },
+        {
+          "calls": 100,
+          "seconds_saved_using_mtp_off": 19271.381222899072
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+# Preserve raw generated text and source-code prompts for hash validation.
+data/*-output.txt -text -whitespace
+data/prompt-*.txt -text -whitespace

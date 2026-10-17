@@ -1,0 +1,2 @@
+# Preserve generated output exactly, including whitespace, for hash validation.
+data/*-output.txt -text -whitespace

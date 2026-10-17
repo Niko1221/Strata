@@ -1,0 +1,125 @@
+```python
+"""
+A comprehensive module implementing five core utility components:
+1. Bounded Thread-Safe LRU Cache
+2. Retry Decorator with Exponential Backoff
+3. Streaming CSV Validator
+4. Dependency Scheduler
+5. Token-Bucket Rate Limiter
+
+Each component includes detailed docstrings, input validation, robust error handling,
+and comprehensive unit tests.
+"""
+
+import threading
+import time
+import functools
+import csv
+import io
+import heapq
+import collections
+import unittest
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union, Iterator
+from dataclasses import dataclass, field
+from enum import Enum
+
+
+# ============================================================================
+# 1. Bounded Thread-Safe LRU Cache
+# ============================================================================
+
+class LRUCache:
+    """
+    A thread-safe, bounded Least Recently Used (LRU) cache.
+    
+    This cache evicts the least recently used items when the capacity is exceeded.
+    All operations are thread-safe using a reentrant lock.
+    
+    Attributes:
+        capacity (int): Maximum number of items the cache can hold.
+        _cache (dict): Internal dictionary mapping keys to values.
+        _order (collections.OrderedDict): Tracks access order for LRU eviction.
+        _lock (threading.RLock): Reentrant lock for thread safety.
+        _hits (int): Number of cache hits.
+        _misses (int): Number of cache misses.
+    
+    Example:
+        >>> cache = LRUCache(capacity=2)
+        >>> cache.put('a', 1)
+        >>> cache.put('b', 2)
+        >>> cache.get('a')
+        1
+        >>> cache.put('c', 3)  # Evicts 'b' (least recently used)
+        >>> cache.get('b') is None
+        True
+    """
+    
+    def __init__(self, capacity: int):
+        """
+        Initialize the LRU cache with a given capacity.
+        
+        Args:
+            capacity (int): Maximum number of items the cache can hold. Must be positive.
+        
+        Raises:
+            ValueError: If capacity is not a positive integer.
+            TypeError: If capacity is not an integer.
+        """
+        if not isinstance(capacity, int):
+            raise TypeError(f"capacity must be an integer, got {type(capacity).__name__}")
+        if capacity <= 0:
+            raise ValueError(f"capacity must be a positive integer, got {capacity}")
+        
+        self.capacity = capacity
+        self._cache: Dict[Any, Any] = {}
+        self._order: collections.OrderedDict = collections.OrderedDict()
+        self._lock = threading.RLock()
+        self._hits = 0
+        self._misses = 0
+    
+    def get(self, key: Any, default: Any = None) -> Any:
+        """
+        Retrieve a value from the cache.
+        
+        If the key exists, it is moved to the end (most recently used) and returned.
+        If the key does not exist, the default value is returned and a miss is recorded.
+        
+        Args:
+            key (Any): The key to look up.
+            default (Any): Value to return if key is not found. Defaults to None.
+        
+        Returns:
+            Any: The cached value if found, otherwise the default value.
+        """
+        with self._lock:
+            if key in self._cache:
+                self._hits += 1
+                # Move to end (most recently used)
+                self._order.move_to_end(key)
+                return self._cache[key]
+            else:
+                self._misses += 1
+                return default
+    
+    def put(self, key: Any, value: Any) -> None:
+        """
+        Insert or update a key-value pair in the cache.
+        
+        If the key already exists, its value is updated and it is moved to the end.
+        If the cache is at capacity, the least recently used item is evicted.
+        
+        Args:
+            key (Any): The key to insert or update.
+            value (Any): The value to associate with the key.
+        """
+        with self._lock:
+            if key in self._cache:
+                # Update existing key
+                self._cache[key] = value
+                self._order.move_to_end(key)
+            else:
+                # Insert new key
+                if len(self._cache) >= self.capacity:
+                    # Evict least recently used
+                    lru_key, _ = self._order.popitem(last=False)
+                   

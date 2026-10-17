@@ -1,0 +1,126 @@
+```python
+"""
+A comprehensive module implementing five core utility components:
+1. Bounded Thread-Safe LRU Cache
+2. Retry Decorator with Exponential Backoff
+3. Streaming CSV Validator
+4. Dependency Scheduler
+5. Token-Bucket Rate Limiter
+
+Each component includes detailed docstrings, input validation, robust error handling,
+and is accompanied by at least 20 fully implemented unittest tests.
+"""
+
+import threading
+import time
+import functools
+import csv
+import io
+import heapq
+import collections
+import unittest
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Iterator, Set
+from dataclasses import dataclass, field
+from enum import Enum
+
+
+# =============================================================================
+# 1. Bounded Thread-Safe LRU Cache
+# =============================================================================
+
+class LRUCache:
+    """
+    A thread-safe, bounded Least Recently Used (LRU) cache.
+
+    This cache evicts the least recently used items when the capacity is exceeded.
+    All operations (get, put, delete, clear) are thread-safe using a reentrant lock.
+
+    Attributes:
+        capacity (int): The maximum number of items the cache can hold.
+        _cache (dict): Internal storage mapping keys to values.
+        _order (collections.OrderedDict): Maintains the order of access for LRU eviction.
+        _lock (threading.RLock): Reentrant lock for thread safety.
+    """
+
+    def __init__(self, capacity: int):
+        """
+        Initialize the LRU Cache.
+
+        Args:
+            capacity (int): The maximum number of items the cache can hold. Must be positive.
+
+        Raises:
+            ValueError: If capacity is not a positive integer.
+            TypeError: If capacity is not an integer.
+        """
+        if not isinstance(capacity, int):
+            raise TypeError(f"Capacity must be an integer, got {type(capacity).__name__}")
+        if capacity <= 0:
+            raise ValueError(f"Capacity must be a positive integer, got {capacity}")
+
+        self.capacity = capacity
+        self._cache: Dict[Any, Any] = {}
+        self._order: collections.OrderedDict = collections.OrderedDict()
+        self._lock = threading.RLock()
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        """
+        Retrieve an item from the cache.
+
+        If the key exists, it is moved to the end of the order (marked as recently used).
+        If the key does not exist, the default value is returned.
+
+        Args:
+            key (Any): The key to look up.
+            default (Any): The value to return if the key is not found. Defaults to None.
+
+        Returns:
+            Any: The cached value if found, otherwise the default value.
+        """
+        with self._lock:
+            if key in self._cache:
+                # Move to end to mark as recently used
+                self._order.move_to_end(key)
+                return self._cache[key]
+            return default
+
+    def put(self, key: Any, value: Any) -> None:
+        """
+        Insert or update an item in the cache.
+
+        If the key already exists, its value is updated and it is moved to the end.
+        If the key does not exist, it is inserted. If the cache exceeds capacity,
+        the least recently used item is evicted.
+
+        Args:
+            key (Any): The key to insert or update.
+            value (Any): The value to associate with the key.
+        """
+        with self._lock:
+            if key in self._cache:
+                # Update value and move to end
+                self._cache[key] = value
+                self._order.move_to_end(key)
+            else:
+                # Insert new item
+                self._cache[key] = value
+                self._order[key] = None  # Value in order dict is irrelevant, just for key tracking
+
+                # Check capacity and evict if necessary
+                if len(self._cache) > self.capacity:
+                    # Pop the first item (least recently used)
+                    lru_key, _ = self._order.popitem(last=False)
+                    del self._cache[lru_key]
+
+    def delete(self, key: Any) -> bool:
+        """
+        Remove an item from the cache.
+
+        Args:
+            key (Any): The key to remove.
+
+        Returns:
+            bool: True if the key was found and removed, False otherwise.
+        """
+        with self._lock:
+            if key in self._cache:
