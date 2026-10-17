@@ -1,6 +1,6 @@
 <h1 align="center">Strata</h1>
 
-[English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · **Deutsch** · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
+[English](README.md) · [简体中文](README.zh-CN.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · **Deutsch** · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
 <p align="center"><b>Ein KI-Modell mit 125 Milliarden Parametern auf deinem eigenen Gaming-PC</b><br>
 NVIDIA- oder AMD-Grafikkarte (ab 12 GB) · Windows oder Linux · kostenlos und Open Source</p>
