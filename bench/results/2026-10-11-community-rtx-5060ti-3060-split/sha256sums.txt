@@ -1,0 +1,5 @@
+# sha256sum of the model artifacts and pinned expert profile used by every run
+# measured on 2026-10-12 on the bench host (sha256sum -t)
+4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3  Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
+316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113  Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf
+8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf  data/expert-profile.bin
