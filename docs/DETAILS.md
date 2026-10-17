@@ -1153,6 +1153,34 @@ INT8, Q4_0 and identity-layout K8V4 snapshots are supported; the K8V4 draft ring
 remains INT8, as in upstream. Windows/HIP and multi-GPU runtime coverage must be
 reported separately from Linux/CUDA evidence.
 
+**On disk (`--conversation-cache-disk-mib N`, opt-in).** The parked conversations become session files instead of
+host-RAM copies: N MiB is the whole budget across the files, and while it is on, `--conversation-cache-mib` is
+ignored (the engine says so). A park streams what the save endpoint writes - running state, the deepest checkpoint,
+every layer's K/V including the draft - to a new file in `--conversation-cache-dir` (default: a `conversation_cache`
+folder next to the pack), after which RAM keeps only the token and checkpoint index; the budget counts the file. A
+parked write needs disk room for the whole file plus `--session-min-free-mib`, with an 8 GiB floor, and the host RAM
+admission gate can refuse the write's peak too - then the park is skipped like the other skip-park paths and the
+conversation is simply not parked. The request switch
+restores through the same bounded read and RAM admission as `RESTORE`: reading a conversation back costs a transient
+host-RAM spike of roughly the file's size, and a read that fails in the file itself (parse, checksum, read errors)
+drops the entry and its file and reads the prompt from scratch; a RAM refusal (the admission gate inside the read,
+or a failed allocation) and a limits preflight refusal drop the entry and keep the file for the next start's scan, and
+a snapshot bigger than the whole budget skips the park without writing it. The files carry the same model and
+configuration identity as the session files below. At startup
+the folder is scanned: matching files are indexed oldest-first, so a returning client resumes from its file; files
+from another model or configuration, or unused for `--conversation-cache-days` (default 7), are removed, and `0`
+empties the folder at start (the scan runs only when the disk cache is on). Survivors over the budget are
+evicted oldest-first and their files go with them, so the
+log line `folder ...: N conversation(s) kept from earlier runs` counts what survived. A pinned shared prefix (`pin=N`,
+above) is runtime-only: a restored conversation comes back un-pinned, and the next request pins it again. On QUIT the
+live conversation is parked before the engine exits, so the current chat is there next start; the server gives the
+engine 20 s after
+QUIT before terminating it, so a park that needs longer is simply lost - the file is written under a temporary name
+and renamed once complete, so nothing corrupt is left, and the conversation reads from scratch next start. Images
+are matched by their keys as in RAM mode. With `--layer-split` the disk cache turns off and says so (one file per
+stage is not what this folder cache is); RAM parking continues under `--conversation-cache-mib`. `--batch` and the
+save/restore endpoints are unchanged.
+
 The web page's Monitor tab has a **Conversation cache** card (0.1.39, #596): the parked conversations against the
 slots and the RAM budget, how many were parked, restored and evicted, and the last switch (read from the engine's
 log), and for every setup how many prompt tokens the cache gave back - in the last request and since the start.
@@ -1281,8 +1309,9 @@ rather than permission to continue with partial state. Indexer spare keys and th
 moving spare row are preserved, including checkpoint rewinds.
 The engine log reports parking, restoration, bytes, evictions, individual snapshot
 sizes and K/V bytes reused during capture. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables
-retention for diagnostic comparisons. Parked snapshots are not
-persisted across restarts; the session files below are.
+retention for diagnostic comparisons. Parked snapshots are not persisted across restarts; the session files below
+are - and with `--conversation-cache-disk-mib` a parked snapshot is one of those session files, so it persists too
+(the live conversation is parked on a clean exit).
 
 **Session files (disk).** The conversation the engine holds can be saved to a file and restored later, also after a
 restart of the same engine version, so a long prompt is not read again. The server exposes the save and restore
