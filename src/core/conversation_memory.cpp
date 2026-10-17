@@ -17,6 +17,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <cerrno>
+#include <sys/mman.h>
 #endif
 
 namespace strata::core {
@@ -289,6 +292,38 @@ std::optional<HostMemoryReading> sample_host_memory() {
 #else
     return {};
 #endif
+}
+
+AllocationProbe conversation_memory_probe(size_t bytes) {
+    AllocationProbe out;
+    if (!bytes) return out;   // nothing was asked for: the probe has nothing to report
+    out.probed = true;
+#if defined(_WIN32)
+    void* p = VirtualAlloc(nullptr, bytes, MEM_RESERVE, PAGE_NOACCESS);
+    if (!p) { out.error = GetLastError(); return out; }
+    out.reserved = true;
+    // A failed commit leaves the reservation owned by us; release it before reporting, so repeated refusals
+    // do not each keep `bytes` of address space.
+    if (!VirtualAlloc(p, bytes, MEM_COMMIT, PAGE_READWRITE)) {
+        out.error = GetLastError();
+        VirtualFree(p, 0, MEM_RELEASE);
+        return out;
+    }
+    out.committed = true;
+    VirtualFree(p, 0, MEM_RELEASE);
+#else
+    void* p = mmap(nullptr, bytes, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) { out.error = errno; return out; }
+    out.reserved = true;
+    if (mprotect(p, bytes, PROT_READ | PROT_WRITE) != 0) {
+        out.error = errno;
+        munmap(p, bytes);
+        return out;
+    }
+    out.committed = true;
+    munmap(p, bytes);
+#endif
+    return out;
 }
 
 std::optional<uint64_t> available_host_bytes() {

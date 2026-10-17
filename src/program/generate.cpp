@@ -1200,7 +1200,24 @@ struct GpuStage {
 // cgroup limits above the engine and --memory-limit-mib; see strata/core/conversation_memory.hpp)
 static std::string ram_note(const std::optional<strata::core::HostMemoryReading>& mem) {
     if (!mem) return "RAM telemetry unavailable";
-    return std::to_string(mem->available >> 20) + " MiB available, source " + strata::core::memory_source_name(mem->source);
+    std::string out = std::to_string(mem->available >> 20) + " MiB available, source " +
+                      strata::core::memory_source_name(mem->source);
+#if defined(_WIN32)
+    // The Windows guard takes the smaller of free physical RAM and free commit (RAM plus page file); which one it
+    // took decides whether raising the page file or closing something helps. The process' own commit tells the rest:
+    // a pinned arena and, under WDDM, the driver's device allocations are charged against the same limit.
+    MEMORYSTATUSEX ms{};
+    ms.dwLength = sizeof ms;
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    if (GlobalMemoryStatusEx(&ms))
+        out += "; physical RAM has " + std::to_string(ms.ullAvailPhys >> 20) +
+               " MiB free, the system commit (RAM plus page file) has " + std::to_string(ms.ullAvailPageFile >> 20) + " MiB free";
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof pmc))
+        out += "; this process commits " + std::to_string(pmc.PagefileUsage >> 20) + " MiB (" +
+               std::to_string(pmc.PeakPagefileUsage >> 20) + " peak), working set " +
+               std::to_string(pmc.WorkingSetSize >> 20) + " MiB";
+#endif
+    return out;
 }
 
 // ---- issue #31: what the watchdog prints before it stops a stalled engine
@@ -8954,44 +8971,55 @@ int main(int argc, char** argv) {
             // capacity and directories, and put() charges that same true size -
             // a capped figure would under-evict and overfill the budget.
             if (!conversations.make_room(estimate, held)) {
+                // The K/V this park took was not used. Handing it back is what lets the next park of the same
+                // conversation reuse it; dropping it makes that park copy the whole conversation again.
+                reuse.stages = std::move(stage_reuse);
+                conversations.put_reuse(std::move(reuse));
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
                              estimate >> 20);
                 return true;
             }
+            // Hoisted above the try: the refusal lines report what was asked for, and a catch handler cannot
+            // see locals of the block it guards. Arithmetic on values already computed above.
+            const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
+            const size_t retained = reuse.bytes() + stage_retained;
+            const size_t additional = estimate > retained ? estimate - retained : 0;
             const auto t0 = Clock::now();
             try {
-                const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
-                const size_t retained = reuse.bytes() + stage_retained;
-                const size_t additional = estimate > retained ? estimate - retained : 0;
                 // The physical-RAM gate: the incoming snapshot has to fit beside the floor.  make_room()
                 // above only balanced the cache's own budget, so a full cache leaves this one short even
                 // though every parked conversation could give its RAM back - and refusing here throws
                 // away the whole prompt read that produced this snapshot (measured: 270k tokens, 96 s).
-                // Evict the least recently active parked conversations until it fits, or until none are
-                // left.  Each ConversationBuffer is a list of 16 MiB segments, each segment its own
-                // allocation, so an evicted entry is back with the kernel before the next check reads
-                // /proc/meminfo; no waiting is needed.  slots() bounds the loop, and the two lines
-                // below say what it did either way.  The reading is the guard's (MemAvailable, the cgroup
-                // limits above the engine, --memory-limit-mib); `mem` keeps the last one for the refusal line.
-                size_t evicted = 0;
+                // Each ConversationBuffer is a list of 16 MiB segments, each segment its own allocation, so an
+                // evicted entry is back with the kernel before the next reading; no waiting is needed. The
+                // reading is the guard's (MemAvailable, the cgroup limits above the engine, --memory-limit-mib);
+                // `mem` keeps the last one for the refusal line. The stopping rules live in
+                // evict_for_admission() so they can be tested against the real cache without a model.
                 std::optional<strata::core::HostMemoryReading> mem;
-                auto admit = [&] {
-                    mem = strata::core::sample_host_memory();
-                    return strata::core::conversation_memory_admit(
-                        mem ? std::optional<uint64_t>(mem->available) : std::nullopt, additional, floor);
-                };
-                while (!admit() && conversations.size() > 0 && evicted < conversations.slots() &&
-                       conversations.evict_oldest())
-                    ++evicted;
-                if (!admit()) {
-                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked)\n",
+                const auto round = strata::core::evict_for_admission(
+                    conversations, additional, floor, [&]() -> std::optional<uint64_t> {
+                        mem = strata::core::sample_host_memory();
+                        return mem ? std::optional<uint64_t>(mem->available) : std::nullopt;
+                    });
+                if (!round.admitted) {
+                    std::string why;
+                    if (additional == 0)
+                        why = "; no new bytes were requested, so evicting parked conversations could not change the answer";
+                    else if (round.stalled)
+                        why = "; freeing parked conversations did not return memory to the OS, so it stopped";
+                    else if (round.hopeless)
+                        why = "; freeing every parked byte that could be freed (" + std::to_string(round.freeable >> 20) +
+                              " MiB) could not have fitted it";
+                    else if (round.short_by)
+                        why = "; the conversations still parked would leave it short by " + std::to_string(round.short_by >> 20) + " MiB";
+                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (memory admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked%s)\n",
                                  additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
-                                 evicted, conversations.size());
+                                 round.evicted, conversations.size(), why.c_str());
                     return true;
                 }
-                if (evicted)
+                if (round.evicted)
                     std::fprintf(stderr, "strata serve: conversation cache: evicted %zu parked conversation%s to admit this snapshot (%zu MiB plus %lld MiB floor)\n",
-                                 evicted, evicted == 1 ? "" : "s", additional >> 20,
+                                 round.evicted, round.evicted == 1 ? "" : "s", additional >> 20,
                                  (long long) o.conversation_cache_min_free_mib);
                 strata::core::SavedConversation image;
                 size_t reused_bytes = 0;
@@ -9021,10 +9049,21 @@ int main(int argc, char** argv) {
                              stored ? "parked" : "skipped", live.size(),
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes(), conversations.evictions(), snapshot_bytes, reused_bytes);
-            } catch (const std::bad_alloc&) {
+            } catch (const std::bad_alloc& e) {
                 // The active state has not been touched. Continue with normal
                 // prompt processing rather than killing a serving process.
-                std::fprintf(stderr, "strata serve: conversation cache: allocation failed; skip parking\n");
+                // The bare "allocation failed; skip parking" named no region and no cause, so a refusal could not
+                // be attributed to one. This region is the capture, after the admission passed.
+                // Ask for the size again: one that commits now was refused by the moment, not by the machine;
+                // one that reserves but will not commit says the commit limit is the cause.
+                const strata::core::AllocationProbe probe = strata::core::conversation_memory_probe(additional);
+                std::string why = strata::core::conversation_memory_probe_text(probe);
+                if (probe.error) why += ", error " + std::to_string(probe.error);
+                std::fprintf(stderr, "strata serve: conversation cache: allocation failed at the capture (%zu of %zu MiB was new); skip parking: %s (%s)\n",
+                             additional >> 20, estimate >> 20, e.what(), why.c_str());
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "strata serve: conversation cache: skip parking after the capture (not an allocation: %s)\n",
+                             e.what());
             }
             return true;
         };
@@ -9032,8 +9071,16 @@ int main(int argc, char** argv) {
         // ending the server
         auto park_current = [&](size_t held) -> bool {
             try { return park_current_body(held); }
-            catch (const std::bad_alloc&) {
-                std::fprintf(stderr, "strata serve: conversation cache: allocation failed; skip parking\n");
+            catch (const std::bad_alloc& e) {
+                // This handler also covers the checkpoint split and the stage byte estimates, which run before any
+                // admission - the region no admission gate can explain, and the only one left that can still produce
+                // the unattributed line. Say which region it was.
+                std::fprintf(stderr, "strata serve: conversation cache: skip parking after the checkpoint split (bad_alloc: %s)\n",
+                             e.what());
+                return true;
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "strata serve: conversation cache: skip parking after the checkpoint split (not an allocation: %s)\n",
+                             e.what());
                 return true;
             }
         };

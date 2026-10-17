@@ -1,4 +1,5 @@
 #include "strata/core/conversation_cache.hpp"
+#include "strata/core/conversation_memory.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -557,6 +558,282 @@ int main() {
         p2.checkpoints.back().gdn.resize(64, 1);
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
+    }
+    {
+        // What an admission may count as "the cache can pay for it" must be exactly what evict_oldest() can
+        // free. bytes() also counts the retained K/V and any entry holding a pinned shared prefix, and an
+        // admission bounded by that spends conversations that cannot help and still refuses.
+        ConversationCache cache(1ull << 30, 4);
+        auto with_pin = [](bool pin, std::initializer_list<int32_t> ids) {
+            SavedConversation s = image(ids);
+            ConversationCheckpoint c;
+            c.ids = ids;
+            c.pinned = pin;
+            c.gdn.resize(64, 1);
+            s.checkpoints = {c};
+            return s;
+        };
+        check(cache.put(with_pin(false, {1, 2, 3})), "park an evictable conversation");
+        const size_t loose = cache.bytes();
+        check(cache.put(with_pin(true, {9, 8, 7})) && cache.size() == 2, "park a second, pinned one");
+        check(cache.evictable_bytes() == loose && cache.bytes() > loose,
+              "only the unpinned entry counts as freeable");
+        check(cache.evict_oldest() && cache.evictable_bytes() == 0,
+              "evicting the freeable entry leaves nothing freeable, the pinned one stays");
+        check(cache.size() == 1 && cache.bytes() > 0, "the pinned entry is still parked and still charged");
+
+        // A park took a candidate and then refused on its own budget: handing it back is what lets the next
+        // park reuse it instead of copying the whole conversation again.
+        ConversationKv kv;
+        kv.k.resize(1 << 12, 3);
+        ConversationKvReuse candidate;
+        candidate.kv = {kv};
+        candidate.captured_tokens = candidate.unchanged_tokens = 4096;
+        const size_t candidate_bytes = candidate.bytes();
+        cache.put_reuse(std::move(candidate));
+        check(cache.retained_bytes() == candidate_bytes && cache.bytes() >= candidate_bytes,
+              "an unused candidate is handed back and charged against the cache");
+        ConversationKvReuse again;
+        again.kv = {kv, kv};
+        again.captured_tokens = again.unchanged_tokens = 4096;
+        const size_t again_bytes = again.bytes();
+        cache.put_reuse(std::move(again));
+        check(cache.retained_bytes() == again_bytes,
+              "a newer candidate replaces the one held, as with retain()");
+        ConversationKvReuse taken = cache.take_reuse();
+        check(taken.kv.size() == 2 && cache.retained_bytes() == 0, "taking it leaves nothing retained");
+        cache.put_reuse(std::move(taken));
+        check(cache.retained_bytes() == again_bytes, "taking and handing back round-trips");
+        ConversationKvReuse empty;
+        cache.put_reuse(std::move(empty));
+        check(cache.retained_bytes() == again_bytes, "an empty candidate is not stored, the held one stays");
+        ConversationCache tight(candidate_bytes / 2, 2);
+        ConversationKvReuse too_big;
+        too_big.kv = {kv};
+        too_big.captured_tokens = too_big.unchanged_tokens = 4096;
+        tight.put_reuse(std::move(too_big));
+        check(tight.retained_bytes() == 0, "a candidate over the budget is not retained (as with retain())");
+    }
+    {
+        // The eviction round the parking path runs, against the real cache. Upstream bounded it by the entry
+        // count, so it spent parked conversations that could not pay for the snapshot and refused with an empty
+        // cache. The freeable-bytes bound is what the cases below separate.
+        auto park = [](ConversationCache& c, size_t payload) {
+            SavedConversation s;
+            s.live.ids.resize(payload / 16);
+            s.live.gdn.resize(payload, 3);
+            return c.put(std::move(s));
+        };
+        const uint64_t floor = 16u << 20;
+        const size_t need = 8u << 20;
+
+        ConversationCache cache(1u << 30, 4);
+        check(park(cache, 8u << 20) && park(cache, 8u << 20) && park(cache, 8u << 20),
+              "three evictable conversations park");
+        check(cache.size() == 3 && cache.evictable_bytes() > need, "they are all freeable");
+
+        // The same state through upstream v0.1.42's loop (`git show v0.1.42:src/program/generate.cpp` 7801):
+        // bounded by size()/slots(), it calls evict_oldest() unconditionally, so it drops every conversation and
+        // still refuses. That is the "evicted 3, 0 still parked" line in the report this fix came from.
+        {
+            // Nothing retained here on purpose: the upstream loop reads neither the retained K/V nor
+            // evictable_bytes(), and evict_oldest() never touches reuse_, so a retained candidate would change
+            // nothing about what that loop does. The retained-K/V cases are the ones above.
+            ConversationCache upstream(1u << 30, 4);
+            check(park(upstream, 8u << 20) && park(upstream, 8u << 20) && park(upstream, 8u << 20),
+                  "the same three conversations park in the copy the old loop is run against");
+            uint64_t reading = 20u << 20;
+            size_t spent = 0;
+            while (!conversation_memory_admit(reading, need, floor) && upstream.size() > 0 &&
+                   spent < upstream.slots() && upstream.evict_oldest())
+                ++spent;
+            check(spent == 3 && upstream.size() == 0 &&
+                  !conversation_memory_admit(reading, need, floor),
+                  "the old loop emptied the cache and still refused; the new one keeps two and says why");
+        }
+
+        // A reading that never changes: dropping a conversation returned nothing, so one is enough.
+        uint64_t available = 20u << 20;
+        size_t flat_samples = 0;
+        auto flat = [&]() -> std::optional<uint64_t> { ++flat_samples; return available; };
+        EvictionRound stalled = evict_for_admission(cache, need, floor, flat);
+        check(stalled.evicted == 1 && stalled.stalled && !stalled.admitted,
+              "a flat reading stops the round after the first eviction");
+        check(flat_samples == 2, "the round asked the machine twice, not once per entry");
+        check(cache.size() == 2 && cache.evictions() == 1, "only one entry was dropped, the rest stays parked");
+
+        // A request larger than everything the cache could ever give: nothing is spent to find that out. The
+        // retained K/V makes bytes() larger than the freeable total, which is the confusion the bound fixes.
+        ConversationKv kv;
+        kv.k.resize(2u << 20, 5);
+        ConversationKvReuse held;
+        held.kv = {kv};
+        held.captured_tokens = held.unchanged_tokens = 4096;
+        cache.put_reuse(std::move(held));
+        check(cache.bytes() > cache.evictable_bytes(), "retained K/V is charged but is not freeable");
+        const size_t before = cache.size();
+        EvictionRound hopeless = evict_for_admission(cache, 512u << 20, floor, flat);
+        check(hopeless.hopeless && !hopeless.admitted && hopeless.evicted == 0,
+              "a request above the freeable total is refused without evicting");
+        check(hopeless.freeable == cache.evictable_bytes() && hopeless.freeable != cache.bytes(),
+              "the refusal reports what could be freed, not what is charged");
+        check(cache.size() == before && flat_samples == 3,
+              "a refused park evicted nothing and asked the machine once");
+
+        // Evictions that do return memory are accepted, and the round stops at the first reading that fits.
+        ConversationCache pays(1u << 30, 4);
+        check(park(pays, 8u << 20) && park(pays, 8u << 20), "two conversations park");
+        uint64_t room = 12u << 20;   // below the floor, so the first reading refuses
+        size_t pay_samples = 0;
+        auto returning = [&]() -> std::optional<uint64_t> {
+            ++pay_samples;
+            const uint64_t reported = room;
+            room += 20u << 20;       // a dropped conversation gives its bytes back
+            return reported;
+        };
+        EvictionRound paid = evict_for_admission(pays, need, floor, returning);
+        check(paid.admitted && paid.evicted == 1 && !paid.stalled && !paid.hopeless,
+              "an eviction that returns memory admits the park");
+        check(paid.evicted == 1 && pays.size() == 1 && pay_samples == 2,
+              "one entry was enough and the round stopped there");
+
+        // A park that reuses all of its K/V asks for no new bytes: the reading still decides, and no parked
+        // conversation is what the floor is asking for.
+        ConversationCache reuse_only(1u << 30, 4);
+        check(park(reuse_only, 8u << 20), "a conversation parks");
+        size_t reuse_samples = 0;
+        EvictionRound none = evict_for_admission(reuse_only, 0, floor, [&]() -> std::optional<uint64_t> {
+            ++reuse_samples;
+            return floor - 1;
+        });
+        check(!none.admitted && none.evicted == 0 && reuse_samples == 1,
+              "with nothing new requested the round does not touch the cache");
+        check(reuse_only.size() == 1, "the parked conversation is still there for the next request");
+        EvictionRound enough = evict_for_admission(reuse_only, 0, floor, []() -> std::optional<uint64_t> {
+            return 64u << 20;
+        });
+        check(enough.admitted && enough.evicted == 0, "the same park is admitted once the floor is free");
+
+        // Every reading better than the last, and still short at the end: that is the arm that reports how far
+        // short, not a stall and not a hopeless request.
+        ConversationCache drains(1u << 30, 4);
+        check(park(drains, 8u << 20) && park(drains, 8u << 20), "two conversations park");
+        uint64_t trickle = 10u << 20, last = 0;
+        auto better = [&]() -> std::optional<uint64_t> {
+            last = trickle;
+            trickle += 2u << 20;              // each drop helps, never enough
+            return last;
+        };
+        EvictionRound short_round = evict_for_admission(drains, need, floor, better);
+        check(!short_round.admitted && !short_round.stalled && !short_round.hopeless &&
+              short_round.evicted == 2 && drains.size() == 0,
+              "improving readings are spent to the last entry without being called a stall");
+        check(short_round.short_by == need + floor - last,
+              "the refusal reports how far the last reading fell short");
+
+        // The move out of generate.cpp must not change what the loop decides. Run the loop as upstream still has it
+        // (git show v0.1.43:src/program/generate.cpp 7915-7930) and the helper over the same states: a fresh cache
+        // and a fresh reading program for each, so the two cannot share mutable state. Pinned to a tag, not to a
+        // local commit: a branch-local SHA stops naming this blob as soon as the branch is rebased.
+        auto before_move = [](ConversationCache& c, const size_t additional, const uint64_t floor,
+                             auto&& sample) {
+            size_t evicted = 0;
+            std::optional<uint64_t> mem;
+            auto admit = [&] { mem = sample(); return conversation_memory_admit(mem, additional, floor); };
+            const bool hopeless = additional != 0 && additional > c.evictable_bytes();
+            const size_t freeable = c.evictable_bytes();
+            uint64_t best = 0, short_by = 0;
+            bool stalled = false;
+            if (!hopeless && additional != 0) {
+                while (!admit()) {
+                    if (evicted != 0 && mem && *mem <= best) { stalled = true; break; }
+                    if (mem) short_by = additional + floor - *mem;
+                    const size_t evictable_now = c.evictable_bytes();
+                    if (evictable_now == 0 || additional > evictable_now || !c.evict_oldest()) break;
+                    ++evicted;
+                    if (mem) best = *mem;
+                }
+            }
+            // One reading more decides what the old code printed, exactly as its trailing `if (!admit())` did.
+            return std::tuple<bool, size_t, bool, uint64_t, size_t>{
+                admit(), evicted, stalled, short_by, freeable};
+        };
+        // A reading program, so both loops are shown the same numbers; each side gets its own copy.
+        struct Program { uint64_t first, step; bool unknown; };
+        auto readings = [](Program p) {
+            return [state = p]() mutable -> std::optional<uint64_t> {
+                if (state.unknown) return std::nullopt;
+                const uint64_t reported = state.first;
+                state.first += state.step;
+                return reported;
+            };
+        };
+        struct Case { const char* what; size_t entries; size_t additional; Program program; bool short_by_shared; };
+        const Case cases[] = {
+            {"flat reading, three entries", 3, need, {20u << 20, 0, false}, true},
+            {"improving, never fits", 2, need, {10u << 20, 2u << 20, false}, true},
+            {"improving, fits after one", 2, need, {12u << 20, 20u << 20, false}, true},
+            {"worse after the first", 2, need, {20u << 20, 0 - (4u << 20), false}, true},
+            {"request above the whole cache", 2, 512u << 20, {20u << 20, 0, false}, false},
+            {"empty cache, short reading", 0, need, {20u << 20, 0, false}, false},
+            {"roomy reading", 3, need, {64u << 20, 0, false}, true},
+            {"one entry, a byte needed", 1, 1, {20u << 20, 0, false}, true},
+            {"nothing new requested, short reading", 3, 0, {10u << 20, 0, false}, false},
+            {"nothing new requested, roomy", 3, 0, {64u << 20, 0, false}, true},
+            {"no telemetry at all", 3, need, {0, 0, true}, true},
+            {"no telemetry, nothing new", 3, 0, {0, 0, true}, true},
+        };
+        for (const Case& c : cases) {
+            ConversationCache left(1u << 30, 4), right(1u << 30, 4);
+            bool parked = true;
+            for (size_t i = 0; i < c.entries; ++i) parked = park(left, 8u << 20) && park(right, 8u << 20);
+            if (!parked) { check(false, "every conversation in the equivalence table parks"); continue; }
+            const auto [admitted, evicted, stalled, short_by, freeable] =
+                before_move(left, c.additional, floor, readings(c.program));
+            const EvictionRound moved = evict_for_admission(right, c.additional, floor, readings(c.program));
+            check(admitted == moved.admitted && evicted == moved.evicted && stalled == moved.stalled &&
+                  left.size() == right.size(),
+                  (std::string("the moved loop decides the same as before: ") + c.what).c_str());
+            // A refusal's freeable total is the entry snapshot of both rounds. An admitted round returns before
+            // the helper takes it, so there is nothing to compare there - no refusal line is printed for it.
+            if (!moved.admitted)
+                check(freeable == moved.freeable,
+                      (std::string("a refusal reports the same freeable total: ") + c.what).c_str());
+            if (c.short_by_shared)
+                check(short_by == moved.short_by,
+                      (std::string("the same shortfall is reported: ") + c.what).c_str());
+            else
+                check(short_by == 0 && moved.short_by != 0,
+                      (std::string("only the helper reports a shortfall here: ") + c.what).c_str());
+        }
+        // A pinned shared prefix is charged in bytes() but is not evict_oldest() material. A request larger than
+        // what can be spent is refused with the unpinned entries intact, and a request that only the pinned
+        // entries could cover is refused without spending the one entry that could pay for part of it.
+        {
+            ConversationCache mixed(1u << 30, 4);
+            auto with_pin = [&](bool pin, std::initializer_list<int32_t> ids) {
+                SavedConversation s = image(ids);
+                ConversationCheckpoint c;
+                c.ids = ids;
+                c.pinned = pin;
+                c.gdn.resize(8u << 20, 1);
+                s.checkpoints = {c};
+                return s;
+            };
+            check(mixed.put(with_pin(false, {1, 2})) && mixed.put(with_pin(true, {3, 4})),
+                  "an evictable conversation and a pinned one park");
+            const size_t freeable = mixed.evictable_bytes(), charged = mixed.bytes();
+            check(charged > freeable, "the pinned entry is charged but cannot be spent");
+            const size_t before = mixed.size();
+            EvictionRound round = evict_for_admission(mixed, charged, floor,
+                                                      []() -> std::optional<uint64_t> { return 1u << 20; });
+            check(round.hopeless && !round.admitted && round.evicted == 0 && mixed.size() == before,
+                  "a request only the pinned entry could cover spends nothing, including the one that could pay");
+            round = evict_for_admission(mixed, freeable, floor, []() -> std::optional<uint64_t> { return 1u << 20; });
+            check(!round.admitted && round.evicted == 1 && mixed.size() == 1 &&
+                  mixed.evictable_bytes() == 0 && mixed.bytes() > 0,
+                  "a request the freeable entries can just cover spends only the unpinned one, the pin stays");
+        }
     }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }

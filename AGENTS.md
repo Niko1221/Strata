@@ -34,3 +34,43 @@ offers the same steps as tools.
   [docs/COMMUNITY_BENCHMARKS.md](docs/COMMUNITY_BENCHMARKS.md), compare against a same-day run of the build you are
   testing, and say what you did not test.
 - Open test requests and the hardware that is wanted are listed in [docs/TEST_REQUESTS.md](docs/TEST_REQUESTS.md).
+
+## Escalating hard reasoning
+
+Reason locally when the answer follows from the code or a test. Hand it to a stronger
+model through the user when it does not: an architectural choice between competing
+designs, two failed attempts at one problem, a blocker the available evidence cannot
+settle, analysis across several subsystems, uncertainty about a consequential decision,
+or a destructive change needing review.
+
+Two distinct failed approaches are the budget; a third speculative cycle is not
+attempted. Routine edits, searches, and anything a few tool calls settle do not escalate.
+
+When it triggers, stop: no more edits or retries, do not report the task complete,
+leave the tree as it is, and say what was already changed. Then produce the
+`ESCALATION REQUIRED` block from the `escalate` skill - objective, current state, exact
+problem, real evidence with `file:line`, attempts made, and what is being asked - with a
+copy-ready prompt, and wait for the answer.
+
+Real error text, real paths, real numbers; never an invented result. No secrets or
+credentials in the prompt. On the answer, check its APIs, paths and commands against
+this repository before applying it, continue from the current state without repeating
+finished investigation, and escalate again only for a genuinely new blocker.
+
+## Parking on Windows (local finding, 0.1.42, rebased onto 0.1.43)
+The engine on this PC runs out of the system commit limit, not physical RAM: the locked expert
+arena and the WDDM device allocations are charged against commit. `conversation_memory.cpp`
+admits on `min(ullAvailPhys, ullAvailPageFile)`; that is the number to read. When parking is
+refused, `LOCAL-PARKING-PATCH-0.1.43.md` lists what the local tree changes on top of upstream
+and why, and the refusal lines now print both resources and the process' own commit.
+Upstream 0.1.43 did not fix any of it: its park path still carries the `slots()`-bounded loop
+(`v0.1.43` `src/program/generate.cpp` 7915-7930) and the unattributed failure line. The patch
+rebases onto it with no conflicts. Never pin a test or doc reference to a branch-local SHA -
+after a rebase it names nothing; cite a tag blob instead.
+The parking tests are behind `STRATA_BUILD_CONVERSATION_TESTS=ON`; `STRATA_BUILD_TESTS=ON` alone
+configures with no test targets, which reads as a clean build with nothing tested.
+Build notes for this machine: the old `build_cuda`/`build_tests` caches are configured for a
+different path and cannot be re-rooted - configure fresh with
+`-DFETCHCONTENT_SOURCE_DIR_STRATA_LLAMACPP=.../_deps/strata_llamacpp-src` to avoid a re-download.
+Any `cl` or `cmake --build` of this tree needs `vcvars64.bat` called in the same shell first; without it MSVC
+finds no standard headers and reports `C1083: Cannot open include file: 'algorithm'`, which is not a code error.
