@@ -1,0 +1,42 @@
+[
+  {
+    "block": 1,
+    "arm": "DUAL-BASE",
+    "error_lines": []
+  },
+  {
+    "block": 1,
+    "arm": "SINGLE-BASE",
+    "error_lines": []
+  },
+  {
+    "block": 1,
+    "arm": "SINGLE-TUNED",
+    "error_lines": []
+  },
+  {
+    "block": 1,
+    "arm": "DUAL-TUNED",
+    "error_lines": []
+  },
+  {
+    "block": 2,
+    "arm": "DUAL-TUNED",
+    "error_lines": []
+  },
+  {
+    "block": 2,
+    "arm": "SINGLE-TUNED",
+    "error_lines": []
+  },
+  {
+    "block": 2,
+    "arm": "SINGLE-BASE",
+    "error_lines": []
+  },
+  {
+    "block": 2,
+    "arm": "DUAL-BASE",
+    "error_lines": []
+  }
+]

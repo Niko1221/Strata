@@ -1,0 +1,14 @@
+{
+  "command": [
+    "journalctl",
+    "-k",
+    "-b",
+    "--no-pager",
+    "--since",
+    "2026-10-14T17:11:52.436144+00:00",
+    "--grep=NVRM|Xid|oom|Out of memory"
+  ],
+  "returncode": 1,
+  "stdout": "-- No entries --\n",
+  "stderr": ""
+}

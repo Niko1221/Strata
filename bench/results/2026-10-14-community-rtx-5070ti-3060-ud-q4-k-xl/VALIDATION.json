@@ -1,0 +1,33 @@
+{
+  "prepared_date": "2026-10-15",
+  "measurement_date": "2026-10-14",
+  "offline_helper_checks": [
+    "All three exported Python helpers compile without importing GPU runtimes",
+    "Both reproduction helpers expose working CLI help",
+    "All four configuration templates render with spaced absolute paths and refuse output overwrite",
+    "Mocked workload preserves smoke calls, fixed nonce, official runs=3/long, nine ordered 128-token calibration probes; no real API request or GPU run"
+  ],
+  "helper_validation": "PASS",
+  "additional_gpu_measurements": false,
+  "network_used_for_validation": false,
+  "data_validation_command": "python3 verify.py",
+  "exported_data_validation": "PASS: 360 request records, CSV consistency, median/range/weighted rates, comparisons, report throughput table, raw telemetry memory/swap/disk counters, probe hashes, safety/OC, relative links, privacy patterns and package checksums",
+  "pr_preparation": {
+    "lossless_telemetry_gzip": true,
+    "original_measurement_data_unchanged": true,
+    "data_dictionary_added": true,
+    "related_discussion": "Niko1221/Strata#2393",
+    "planner_pr_not_tested": "Niko1221/Strata#2385",
+    "csv_newlines": "LF; parsed records unchanged"
+  },
+  "hardware_annotation_update": {
+    "reported_on": "2026-10-15",
+    "measurement_date": "2026-10-14",
+    "memory_setting": "DDR4-2800",
+    "memory_transfer_rate_mt_s": 2800,
+    "cpu_clock_ghz": 4.7,
+    "source": "Owner confirmed benchmark-time settings after measurement",
+    "independently_sampled_during_benchmark": false,
+    "memory_timings": "not recorded"
+  }
+}

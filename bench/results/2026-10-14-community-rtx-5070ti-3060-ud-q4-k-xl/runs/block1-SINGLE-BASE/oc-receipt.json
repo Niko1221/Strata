@@ -1,0 +1,6 @@
+{
+  "before_hash": "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b",
+  "after_hash": "df79b6a0f22417fe45eec2adfeac6677d549cb9f9cb8b92194519860d36a733b",
+  "before_device_limits": "index, name, pci.bus_id, power.limit [W], power.default_limit [W], clocks.max.sm [MHz], clocks.max.memory [MHz]\n0, NVIDIA GeForce RTX 5070 Ti, 00000000:01:00.0, 330.00, 300.00, 3090, 16501\n1, NVIDIA GeForce RTX 3060, 00000000:02:00.0, 187.00, 170.00, 2197, 8501\n",
+  "after_device_limits": "index, name, pci.bus_id, power.limit [W], power.default_limit [W], clocks.max.sm [MHz], clocks.max.memory [MHz]\n0, NVIDIA GeForce RTX 5070 Ti, 00000000:01:00.0, 330.00, 300.00, 3090, 16501\n1, NVIDIA GeForce RTX 3060, 00000000:02:00.0, 187.00, 170.00, 2197, 8501\n"
+}

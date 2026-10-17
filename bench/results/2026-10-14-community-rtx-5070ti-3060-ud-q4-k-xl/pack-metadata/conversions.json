@@ -1,0 +1,4625 @@
+{
+  "schema": 1,
+  "tool": "tools/iq_pack.py",
+  "compat_bf16": true,
+  "source_shards": [
+    {
+      "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+      "size": 10946624
+    },
+    {
+      "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "size": 49859583136
+    },
+    {
+      "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "size": 49376141504
+    },
+    {
+      "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "size": 12087983520
+    }
+  ],
+  "tensors": [
+    {
+      "name": "output_hc_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001922607421875,
+      "source_sha256": "4af3192e837760ac348062a9d59bb706326aaa1c868cdc7ae4217afdc106de50"
+    },
+    {
+      "name": "output_hc_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0069580078125,
+      "source_sha256": "51a9db1ef827f17dc5b9d6a6a4c603cd79e4051916b4b941450db2ab3f1b363e"
+    },
+    {
+      "name": "blk.0.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c367d894cf8ce1f3681d71f4b6fbb4c419cbae8c41fb2593232b40bd49bd7455"
+    },
+    {
+      "name": "blk.0.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ba7149360e4a67d47eeaaf89846e7f6313568a91aa169b8e7bde36f2934d04ab"
+    },
+    {
+      "name": "blk.0.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000957489013671875,
+      "source_sha256": "d32cc0355b9e76d09486940b7738dc1f40f302fac5e64da5bc9725dab8c131a3"
+    },
+    {
+      "name": "blk.0.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "6b720fdc6cd7bdbcf8408b9c26a78c42cf0d605ec9931e1baec010e772f8758b"
+    },
+    {
+      "name": "blk.0.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0054931640625,
+      "source_sha256": "0c4e6b67f422051842c2c63b6137570cb0a743b1478c8968547b696b6d930dbf"
+    },
+    {
+      "name": "blk.0.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001941680908203125,
+      "source_sha256": "0ee59c212a7e55f78d4b523ecec1e23deccfc0d1b4101e625dd95eab0ec02292"
+    },
+    {
+      "name": "blk.0.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "b9c3979957151e15a196e04685f9261db33d51bf8c79dc3ece3e651ed66ed2e0"
+    },
+    {
+      "name": "blk.0.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00775146484375,
+      "source_sha256": "da4122603eb260bff3388db04373ef9e5ba7207ebede1fe710d8d49fa5549630"
+    },
+    {
+      "name": "blk.0.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3177daafc8955dbf7cd57c31bc376cd8e3af530bae8a339e870cb990cc888bdb"
+    },
+    {
+      "name": "blk.0.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9d8237ffbd8a955f0c77cebca4250a18027e1292257f72b9444716371d2756ff"
+    },
+    {
+      "name": "blk.1.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "8a9a3697015e8f9158539be07d9d250c9c54c70a0d3b943bfb93bd157208781d"
+    },
+    {
+      "name": "blk.1.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "6d89a6fdddd7e2e0b5754cd2c30c6500ec5eca45603e2ad3edde3c5643065392"
+    },
+    {
+      "name": "blk.1.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001918792724609375,
+      "source_sha256": "cb077e9e8a7e97185b5e9e911d0d6f98ab2d917ec1d9d9baa5a491023d720f4f"
+    },
+    {
+      "name": "blk.1.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "b612d3a79579e1eaedf8c2a877b3486cef7ffda0ee21f101f043004aa96a7e72"
+    },
+    {
+      "name": "blk.1.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003753662109375,
+      "source_sha256": "2326b039f9da6d39ed3ea4e82b578d738269f5fcc533f1f1adffa9e6e50cbc98"
+    },
+    {
+      "name": "blk.1.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00327301025390625,
+      "source_sha256": "046a7b2ce3dcee2671c217f0bffadce916dc279a9fa8950104973dad2671f9ae"
+    },
+    {
+      "name": "blk.1.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9c996d5870f8743b0a0f7752ef085e0281799f50d370049fdd3d0de7c8c65068"
+    },
+    {
+      "name": "blk.1.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.007232666015625,
+      "source_sha256": "a8ac3fa000aed62d52bae8ebc27f1db52f864be12d02fc44955f07c149cd83fb"
+    },
+    {
+      "name": "blk.1.ple_conv1d.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "F16",
+      "exact": false,
+      "max_abs_err": 2.9802322387695312e-08,
+      "method": "f32->f16 by the loader (index kind 3, round-to-nearest-even)",
+      "source_sha256": "9cb65a17c7f84a13fe0fc5ae7cd93f9d1b7a8cbabe230af279d7d04aca82025b"
+    },
+    {
+      "name": "blk.1.ple_value.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00024366378784179688,
+      "source_sha256": "513b9ee0dcb5cad48fdb20b51554ebe8872e708514b16e006074e9fc0076fbfc"
+    },
+    {
+      "name": "blk.1.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "2c0992e56939f0a1416d80ed9fe6ab797d568b7ba395e7cd80365ee18f247c6d"
+    },
+    {
+      "name": "blk.1.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "76fe48c3c840d74cd13f8562823d3edc4c632953f99b7cb9f6c7d7e1e235865c"
+    },
+    {
+      "name": "blk.2.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "328a0ad6a00c2519e8c4aa20175a41208d8a64844cae4c8658112514721ce773"
+    },
+    {
+      "name": "blk.2.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "120c7c51cbc0b4911b3b24881fd1a2f0588768afaf51e75e724ccbb158d57d7d"
+    },
+    {
+      "name": "blk.2.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001926422119140625,
+      "source_sha256": "ff73265e10e9691519aeed896f1ab7520cb182e3bdd43110ac07b99b640f504d"
+    },
+    {
+      "name": "blk.2.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "b3ae04c91b882a316da121403e7464092131d564b0719da6ad0b2701ca137d12"
+    },
+    {
+      "name": "blk.2.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0077972412109375,
+      "source_sha256": "23d9c2f67507deeb13266109e5e0ed4b1b2551016f12bb25d9e1f55fd6df7d2c"
+    },
+    {
+      "name": "blk.2.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001922607421875,
+      "source_sha256": "c9a8d368071cba75bf043fd4c600d2c760a8247ba2bc6ad5762bcdd10cf17274"
+    },
+    {
+      "name": "blk.2.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "1a3e510b9556a75b428585b8b5570a076039c72e87d18196e1fc9a34b8d09e7d"
+    },
+    {
+      "name": "blk.2.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.007568359375,
+      "source_sha256": "81f470b3e395ec1c3596b8f9245fc2e435da0de2f56df64041f3ec535d649481"
+    },
+    {
+      "name": "blk.2.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "4d5f3fa3f41ab677c5281b4128aff3d8b8d7db1de6433c467ae43bb2ba258a79"
+    },
+    {
+      "name": "blk.2.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "bb70d6fd4e2de026af7fa29d8850ee0e84e9649ef1ca5333a0ce862ca5c7ce37"
+    },
+    {
+      "name": "blk.3.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "880c73a68a24fa98a5628552e8c3dd558ab21b58635ae24c48cfde7be11ae0cb"
+    },
+    {
+      "name": "blk.3.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f08977ab1ace5bcb930937da4f44d68ee6b7416d8e6cb889d5c5986818fb3c16"
+    },
+    {
+      "name": "blk.3.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001941680908203125,
+      "source_sha256": "93fc419b82035020fc6c3f180438dbdcbbc3170eef1d1ff5d16a5a46ae51919c"
+    },
+    {
+      "name": "blk.3.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "7e20d6bbc16b501264684b72956a1b7a016ec7bbbc48c1bc5ad936c70fc27d9b"
+    },
+    {
+      "name": "blk.3.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0037689208984375,
+      "source_sha256": "4d6f084ec58390dd8b865b2ed484d42574357889a907e59c4a374ac7e0e17df8"
+    },
+    {
+      "name": "blk.3.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00185394287109375,
+      "source_sha256": "2b0cf916e6ff4b055132b008bd9b051583e056bdeddfc3dbdfc392d433413c69"
+    },
+    {
+      "name": "blk.3.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "1760a37b99c05793d633516cade510057b5a4beb02b21fce1bcd71c1c79a9f35"
+    },
+    {
+      "name": "blk.3.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.007659912109375,
+      "source_sha256": "99f100534ab496fa7c9b005534e50cf2ae2d500dd30a2350d27d557b52fd05b5"
+    },
+    {
+      "name": "blk.4.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "967c080ede08952579636fe925b024b93bd808478eeecea558cea087ace7792c"
+    },
+    {
+      "name": "blk.4.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "4f849640958a68921c05101a152661ff0cfa55fc4db3ab73c189573aaed19e89"
+    },
+    {
+      "name": "blk.4.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001903533935546875,
+      "source_sha256": "49fcacdf03155320e3e731e06d4a97e0ed5bba3a047e8af1bbd77446ba593841"
+    },
+    {
+      "name": "blk.4.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "54e77a579ccdc7eeb0d6a6c38ef2c988b8a39dae328a0f34fcfdc1a0955b6144"
+    },
+    {
+      "name": "blk.4.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001918792724609375,
+      "source_sha256": "3887c0476370accb640c61a518c41df9f8b046c3ead7d8a847e96de4e0552054"
+    },
+    {
+      "name": "blk.4.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "2a73b0d265f892fbed6261f09ccc3753a87102196d5ab2d54614d6364240f660"
+    },
+    {
+      "name": "blk.4.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f1027b69da6fbd66d8c3bc2b8c6c1b880720237e9c4727f8b05ab2a3fa0afe52"
+    },
+    {
+      "name": "blk.4.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.014404296875,
+      "source_sha256": "376d7bb97211ad32552b4d0129ace87b1780500b995181b55c615051b50de82a"
+    },
+    {
+      "name": "blk.4.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "7a010194ac3ceedf77b1d4a446f3866bc0c8a4af153f875d8846c2595069cb74"
+    },
+    {
+      "name": "blk.4.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "e198d2d4cc118e6fee2acd7027a3c1d94f121c34e58c969e66e6eb3661aa2407"
+    },
+    {
+      "name": "blk.5.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "dab49e8b36d29fb1e4415d611ba79264dcfa8edc468ce642d3e613a9e7f077f1"
+    },
+    {
+      "name": "blk.5.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "2acf19f73f5a12ee7608018f615ce70051e3ba36ccd8d49dddc19dcabc0c1425"
+    },
+    {
+      "name": "blk.5.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001949310302734375,
+      "source_sha256": "63dc88fe5bbd6896bb3487269bfa6e2fb5bed8e811624533247c61b3bf1dd4c5"
+    },
+    {
+      "name": "blk.5.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f3f242b79e37c1bfc57f571c0ad58b1dd696929589c8ab886f2960938b74a5a6"
+    },
+    {
+      "name": "blk.5.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00775146484375,
+      "source_sha256": "88556ef61c974c78b87d314ccafcab0c5b0f6d7d4ad3c40756309d19793f3842"
+    },
+    {
+      "name": "blk.5.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00194549560546875,
+      "source_sha256": "e0921433cf7b33806d16293c9ccfc899c7838851d8f996aa2f2379ef575e1569"
+    },
+    {
+      "name": "blk.5.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "69440c8f41bca5d04ec1f1f8cb44722e75d0188e71c1fe56e82b41d68e0036d7"
+    },
+    {
+      "name": "blk.5.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00628662109375,
+      "source_sha256": "5b3884b79c4cd2d564b06d7ddce8a683e2609b778167529ace932524fe33ef18"
+    },
+    {
+      "name": "blk.5.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "a3a271f5f2d4f94740412fefa6f6150f355a4e0d462b83bf0ab7944e1e6bb866"
+    },
+    {
+      "name": "blk.5.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "882a940a916eec61411465274f8d242f7cb2d44643420a00bbeb0c345af79b93"
+    },
+    {
+      "name": "blk.6.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "0c6b90fe5c130d66e44249c2a8e224a0932869d1174f177ffcf15abe615c0971"
+    },
+    {
+      "name": "blk.6.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f4ed3abc5478def5364acf3c620fa1df17af3352bce911cd1e2d6c288bcc9101"
+    },
+    {
+      "name": "blk.6.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001739501953125,
+      "source_sha256": "fd520396151582808802d3828ca3d43286c78af4056f51351c326c1bef302c8a"
+    },
+    {
+      "name": "blk.6.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "bf52efb059b859114e1accbca71ec8a9aa4f5352db2bc05a7f660230c19e8a8e"
+    },
+    {
+      "name": "blk.6.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00388336181640625,
+      "source_sha256": "a2181325931e5bf6223c154409381305f2331a034222c04840e971ced8435f23"
+    },
+    {
+      "name": "blk.6.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "7ff5059975651b1b273d80e76efaa88f9d5cf7f5d0272ac57cb5bf157fbb4edb"
+    },
+    {
+      "name": "blk.6.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "260e641d4e566f7d952c2a270abed89ad101d70e9a8b6f738b42bac9deb2e5ce"
+    },
+    {
+      "name": "blk.6.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003753662109375,
+      "source_sha256": "40640d30f8af92e39f1c4e01e57f761bbca4aa1812c272e7b533726e3e110e35"
+    },
+    {
+      "name": "blk.6.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "bdf8bff57c08f502b1bf4f8f06a358d4f27c57635ec309f1359aa73460d6b495"
+    },
+    {
+      "name": "blk.6.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "d786d718489f77c4e3e4b8374f95c1c209ee379a290f4a34b1294c4dd9e6a3ea"
+    },
+    {
+      "name": "blk.7.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "7c00e53df09bb569ccd5b6b24474ffc5b45cbcfa2944ead1833b6065ecfe70c7"
+    },
+    {
+      "name": "blk.7.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "99133adeca1b136abcdb70a040f050135643af33564dbd75d9416cba69975700"
+    },
+    {
+      "name": "blk.7.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001953125,
+      "source_sha256": "db3fbfd71779130670c32868f7144c889114fc0cd4c67b078045adfb1591fb81"
+    },
+    {
+      "name": "blk.7.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "b57b6d0557bce84f560f57616e2b36aa63e0b714990d722545864f592585446e"
+    },
+    {
+      "name": "blk.7.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038604736328125,
+      "source_sha256": "0c1e431252ab41f7bf347e2581277bbe2d01741cd6fa869c1b617541f67ce470"
+    },
+    {
+      "name": "blk.7.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001514434814453125,
+      "source_sha256": "dd43c1b3e8ec9de2bae8ac6b753eb80964c5b7c59874352f8a77704b67518b69"
+    },
+    {
+      "name": "blk.7.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "d70a266548cc4c5262a8deedac3148219bc8f28fcaefc0beb23b2ba37adf02b8"
+    },
+    {
+      "name": "blk.7.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "313b9ebcba136d177382dc04fb3724d5530e349fc83e8448a53628cfa3d34cf3"
+    },
+    {
+      "name": "blk.8.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "89fb654d54b48e15775205a83a0376758be1f3d74dba4f430aae1c08323679c4"
+    },
+    {
+      "name": "blk.8.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "86c8e24cc18a8b8e8ee36d1f1746fbba2d866eed00a8febd6ae27a0c7944bec9"
+    },
+    {
+      "name": "blk.8.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00180816650390625,
+      "source_sha256": "c7c2b5f59c9fa055f88566e1431fb55506c3bbbafbc11b3a10a2a891f4edbd6f"
+    },
+    {
+      "name": "blk.8.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "32f52b688c9fcd8155de68933f9f0b20774f17a1acfd8c7fe8cd31021afe43d6"
+    },
+    {
+      "name": "blk.8.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "83e87da8a7c7ec0053fbc2a5fe3f5b51a8a2d4341138446761fd9ea044e11fe5"
+    },
+    {
+      "name": "blk.8.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00138092041015625,
+      "source_sha256": "ca03be99cc0d21a7bf1ca2734d4d451e4da03981cb12217c30bc2718724a8acc"
+    },
+    {
+      "name": "blk.8.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "699b036ecd1a6fa06fc0a338408a4dbbd2baa6ad629768736ed462853deb1571"
+    },
+    {
+      "name": "blk.8.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.007110595703125,
+      "source_sha256": "1156705cf5b02332c324917c9176b0ae9a8d06069c72e2f7fc0e0a38cd7c5d41"
+    },
+    {
+      "name": "blk.8.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9754a32438996624305cdca309ff9abb526a6191c5d390e0acb4abab86a802c9"
+    },
+    {
+      "name": "blk.8.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "b0d7b0cb7c4c0403ead1135c545e16e2de3ed74ea73ca708c8c5db1c3d0ac958"
+    },
+    {
+      "name": "blk.9.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "aae1df9912ca2d567b1da8fcb9ac4a28768b6b2d82c1fd83bc41be23f7a43557"
+    },
+    {
+      "name": "blk.9.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "25a455f965e31dbf4bef31308d3fa112109ba5afb532d8e685ed2f498cd9aca0"
+    },
+    {
+      "name": "blk.9.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "6050343cbbf2f8410769b2875e9f02cee78aa287b0d9c6de5df65b8d04b6a6fa"
+    },
+    {
+      "name": "blk.9.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "cb81010341c6a8eaec2a4f6daf4d2149a8468e722fcbad9e42e46f2c672faa14"
+    },
+    {
+      "name": "blk.9.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0037994384765625,
+      "source_sha256": "97dc89de4a89fa57381c548b159c2ba6fade2a1ecdd5d42d91cef00699284770"
+    },
+    {
+      "name": "blk.9.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "9bceb227f43c570a384371a7ea99b4d3b40770f8bd7daa5f08d5b7c933808b75"
+    },
+    {
+      "name": "blk.9.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "0415f668a42e92c0732e285b76e45deee23bfc3f762829f4f5fdf5ea463f73a4"
+    },
+    {
+      "name": "blk.9.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0076904296875,
+      "source_sha256": "aabab5a0fb6d6ddbacff01f1083a970e79289972a46b61909b8b1f8b9002a0e4"
+    },
+    {
+      "name": "blk.9.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "92edf870411f43a7f0973d2fddf464b6854d96793c3e79020f29c8971fc0b2a0"
+    },
+    {
+      "name": "blk.9.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9979a4e838bd36a17cef77fbd0871a34d3358f3f688ac4aaacde0a0c32860cf6"
+    },
+    {
+      "name": "blk.10.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "54d25f01e50dab4f9ee9443c7e4f72e70561d5ef3273a5ba8d9c0e27ba8eb824"
+    },
+    {
+      "name": "blk.10.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "13fe97fbf28bd8f180731998263d3dbb652762fe4ee08c61e00c4333e68dc1f0"
+    },
+    {
+      "name": "blk.10.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "fb261c29db9b741dcb0eba099ad0b8d1327cc7427085dd5b20f344f1e6796e73"
+    },
+    {
+      "name": "blk.10.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c53aa942aca8364c8a25f1a99adae6dbe36bfdae6340f1d726098f5f3d0c2d29"
+    },
+    {
+      "name": "blk.10.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "e078d5aac536d9606334a7e8f8852ef793a2bb4e9ee16dd3da9c4eadc62b3ead"
+    },
+    {
+      "name": "blk.10.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0013885498046875,
+      "source_sha256": "6680493b76959b99dd8ab66a18eeda018d500bb6c97e0bd616939b4d82291342"
+    },
+    {
+      "name": "blk.10.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c5c4b9afed7544fcf88edb5365318f96372c3e7768d3886f129e7d9ac6b89261"
+    },
+    {
+      "name": "blk.10.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "a7b2e1f68e2e37c54f37b168624be08a168a01dfcd4d9c88bedf07eb4ae8dcbf"
+    },
+    {
+      "name": "blk.10.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "cd2d58701fdf61d91ce653e41f3a793f97142a4c538f85bc0321d50c67c062f6"
+    },
+    {
+      "name": "blk.10.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ed664dd8f783761673dd987d21b7a5b8395ca53bad1ef296c4718a7952a6eaef"
+    },
+    {
+      "name": "blk.11.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3109af1ffb739f1232cf7cd129966f2b48050a4eaddca47525dd029e4ebabf79"
+    },
+    {
+      "name": "blk.11.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "73fa6859aaf64ccdb46481635c3801bd2d2a271bcffd0c66c8e3181b127da3cd"
+    },
+    {
+      "name": "blk.11.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "d6202abc753c4113ec8ece001ffd733bdceae1acdcf76b638b972198ade087be"
+    },
+    {
+      "name": "blk.11.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "4b59d2b56d14c4918b56b8acd3c273f9a70124a9cc3cc214f82a9a4f35ab394f"
+    },
+    {
+      "name": "blk.11.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "9f68eed467592e552f23701e17ed01c4a415c6cc753e25206cdc5631c12236bf"
+    },
+    {
+      "name": "blk.11.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "f1cc88b8fbca8683fa2fcea2920c2facb5aef8506f403fc979d66bd592bd3f06"
+    },
+    {
+      "name": "blk.11.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "6df2c2695f812abfb3d9357deba1deb9c8c654a5ee8c74e52db82651048d12a9"
+    },
+    {
+      "name": "blk.11.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00389862060546875,
+      "source_sha256": "3838a23d4a8dee17c5cb18d9c035c13e07634b86b18ca1654344830fc8f6e2dc"
+    },
+    {
+      "name": "blk.12.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "07420ccb970584be352fb60ca9464df0e6d60162fe9e18b47bade68ab4778dd9"
+    },
+    {
+      "name": "blk.12.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "50db07e633dd8ea6d33f64128c26ae7a59513e3d8398b91b67697f9189f0e171"
+    },
+    {
+      "name": "blk.12.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00189208984375,
+      "source_sha256": "5438f3a398bed151b96b5462cf18eb34358b9ba15aa327f0cac24bdaa43fc50a"
+    },
+    {
+      "name": "blk.12.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "214f8464c702c59432fec64ed5a0d00f767385a86d2eb4dd7f7cea08cbb877fa"
+    },
+    {
+      "name": "blk.12.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "659ec5c7d7ec25b1a3f3f5527e5fd397b101bbf37c1898bc0299717750ae779b"
+    },
+    {
+      "name": "blk.12.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "b063806a16a93b547b3f7b133306dcfab53d96440b2b40ee0df82e465b553377"
+    },
+    {
+      "name": "blk.12.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "6c2e74044323697aff211f2e0c73f130036b6d04f48b850f325ad2457d015d42"
+    },
+    {
+      "name": "blk.12.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0052490234375,
+      "source_sha256": "1c027ae53a733224936ea2a1f81a85e3373ea65e6c02f6723c653a21c456b037"
+    },
+    {
+      "name": "blk.12.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "e87bd66721f02cd87920af79fd549f34c30ea1064bb6a1ac804c9d13e10aa743"
+    },
+    {
+      "name": "blk.12.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3aff8b752b820c07208fba89b854553aaa778c9fe92398ac3606f37f6cfd0e45"
+    },
+    {
+      "name": "blk.13.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3318fe2bb45892fb1d7666b56ee17b878ddf5cd5cf2cda1e33b0b3f8f489d9e3"
+    },
+    {
+      "name": "blk.13.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "396bedc87a395161d75c949b5f340dff7f4f629c20c705f7ae8c5b84da00abe0"
+    },
+    {
+      "name": "blk.13.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "145613bc45cb36058ca380111a05cc3103dfcc3a7f2ca435c786b81c1dfc0d9c"
+    },
+    {
+      "name": "blk.13.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "dd1405238a69afeb5415aa55cd6ea2e936658b816d8c188ea4f2c2dbcdbaeb47"
+    },
+    {
+      "name": "blk.13.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "5f8aef43b3577693fa6392726bd4d44796de4b8f8ac91482c863ebd01c7f5aee"
+    },
+    {
+      "name": "blk.13.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0018310546875,
+      "source_sha256": "7ed24a2047053128c7e2db72cd11c7be589b806e23b125300eee63d3524c02bb"
+    },
+    {
+      "name": "blk.13.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "a1b190b860928544e87b8a769f17b661df42d44481f4b9bd01907c2d6a62db93"
+    },
+    {
+      "name": "blk.13.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "d07017628b0b609069ef33f220f6b8322b6813e400a4b72fc34a9fc7c83776ae"
+    },
+    {
+      "name": "blk.13.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "8b43cb8e4a584310ae93375b6e98e08b6b598da1f143eb9eb1b3a4873cd3d0e1"
+    },
+    {
+      "name": "blk.13.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "1ffbacafabba10588d2c076f3a70ceff43c5603a1bc4a523bd0674e2b6069bb8"
+    },
+    {
+      "name": "blk.14.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "deaa130f8595b72ddbb80a97b238eb49b9a08b812b325fbf88699e1a8837c2d2"
+    },
+    {
+      "name": "blk.14.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c85dde82b78c9b9e1aae1da65ddcccd71e1c95144912fb22b86346f169736fe3"
+    },
+    {
+      "name": "blk.14.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00168609619140625,
+      "source_sha256": "b3ccae68933de5382b2d5af2201dc071d9f60c99a5470dbf5ccf1567274e6cf1"
+    },
+    {
+      "name": "blk.14.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "b3d30c10085aad29b14ed93ff647aadec8fa45f066fff8be5c9d19e35e5d45ba"
+    },
+    {
+      "name": "blk.14.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "a4dcad57a927b67dcfe7eac73c9f22d72ff846d190fa8a0a86a887279b56d4d2"
+    },
+    {
+      "name": "blk.14.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001934051513671875,
+      "source_sha256": "84ca4fea0db2c8dd7a9a8f2f7b732a8e053ddeda7fdf4035ab6269d30d40d2e4"
+    },
+    {
+      "name": "blk.14.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "940f55370b33f89f28132cbe7b1dcb04ee2edbfd4d5fa02a3c0c5cfa64564582"
+    },
+    {
+      "name": "blk.14.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00750732421875,
+      "source_sha256": "9882638718a2b6afcf21b7dda70112339426a31156898f37bd2b03f13a252205"
+    },
+    {
+      "name": "blk.14.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "1caa7a3e783a729a3565e7350228027c76e633b405b90619e881ccce110a5ddd"
+    },
+    {
+      "name": "blk.14.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c0d88ee7c591221343e14c453c31ea77f8ea980be67ad3bca2833eeb9a1842e2"
+    },
+    {
+      "name": "blk.15.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "edc5f198f82a38b1637a4ffaf070e8c500283cf09d9776ab5610f195667a676d"
+    },
+    {
+      "name": "blk.15.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "03fc18e692a41666f3b0cd76b6c2509e28f500ea24bb5fc5b3707491bda1f052"
+    },
+    {
+      "name": "blk.15.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "0ece3c540b403cbc1c67443b869755695372251a8e512bf4681f36148843c24f"
+    },
+    {
+      "name": "blk.15.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3ce6f8b4d6b6e7860a27994de14c1140acf053bdeab9204bbd75255d32fdf8d4"
+    },
+    {
+      "name": "blk.15.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00386810302734375,
+      "source_sha256": "05bebced7e24269e2b9a0f7fe3fc4c472bba614a09266706fa3cd0167b75780f"
+    },
+    {
+      "name": "blk.15.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "e315b89c80fb2f589270238f91cd2d00ae1c826d0af4c994a9e9f642eea52f48"
+    },
+    {
+      "name": "blk.15.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f92c2212c8370aa1b933d8e15554fb155c92bae176d1a7f1b7cbe62cfdbf2d9c"
+    },
+    {
+      "name": "blk.15.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.013702392578125,
+      "source_sha256": "f67474837a975bcf9beee84add0e0cd0c26c539a265b41ccff3a4b7775a72739"
+    },
+    {
+      "name": "blk.16.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c2fbf232fa97ea0cf23ed42c086bcccbb7a93c353ecc5c18fdcd041aa52b0717"
+    },
+    {
+      "name": "blk.16.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "2f88f43e8e35c8456ac51d9a7f8f640252b76974e455e152aebe819888393459"
+    },
+    {
+      "name": "blk.16.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009918212890625,
+      "source_sha256": "62718f2542745bf1fb3f07c058e97725ffc49611d8fb98a636fb722cb4157f95"
+    },
+    {
+      "name": "blk.16.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "6cab0dba51361fae0eb98c7cec82ea4a68dd504907fa88d7a28b936620e12445"
+    },
+    {
+      "name": "blk.16.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "7d13c7292f060fa83657ef8337d7771186d1e09febb091a7f06eefde8cdc15d2"
+    },
+    {
+      "name": "blk.16.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "dc1e58480a8b45345eb29c180ac5ec4426672f2d002bda27d312a8a51527e790"
+    },
+    {
+      "name": "blk.16.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "4822989586dc57b989a1571805c6ceacb3cec517a06350a6d1b2a606beccbe06"
+    },
+    {
+      "name": "blk.16.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.010498046875,
+      "source_sha256": "ca2743de2549bd6332278c1ac04948c9e56bfac9b6e8edfd3f625d3f154954f5"
+    },
+    {
+      "name": "blk.16.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "62014ebb301041e8a6cedd5e2d2dd4a1f7565b67ebcc6c6c5890724dda3ef28f"
+    },
+    {
+      "name": "blk.16.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "7c7fa5818cfce205e6ef616c3216370b99b85a45c6ed265270593d64458402cd"
+    },
+    {
+      "name": "blk.17.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3cc2c69b95c4272493855fe5a72b67714c6d4e7e3319cb65efe6bf036a1a222c"
+    },
+    {
+      "name": "blk.17.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3153f6a2c1029f9acdac6d2daaaecd20177c21ed92e09cd2617119ef5132cf0e"
+    },
+    {
+      "name": "blk.17.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "6c27ed0b36c21a00fac79e2865a24b90ddd4a8bf5c8ef8c8e5937f807191b219"
+    },
+    {
+      "name": "blk.17.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "7b2d5463ddc043d6e7339a682404c6de27151344af6cd915113ca1bfae11d350"
+    },
+    {
+      "name": "blk.17.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00390625,
+      "source_sha256": "f4974395cd4952f494382516a16c053ed73134d268fa33a0ef3cdc9b3767f2b8"
+    },
+    {
+      "name": "blk.17.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "0d99b2e1219fcfaa7697122a71f626cb9e73b8345177bb8867dd0c9c369fe014"
+    },
+    {
+      "name": "blk.17.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "0f648d2f33a22c3dd811c425590ad91abef7eeb5b38b6d6d85a58142ee92ce2d"
+    },
+    {
+      "name": "blk.17.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "0a93a7ccfef1f50827d1270beeeab2d0aa6bdc70784aa52caca987885144c601"
+    },
+    {
+      "name": "blk.17.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "35d9ea029ce79a5736fc3b866a8aac675b0d80525f4fb143459a07ff8ab887e7"
+    },
+    {
+      "name": "blk.17.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "d314ee23977335b30fd63c50228d38b5a19867bcf784ed2b5830cc302ec519e8"
+    },
+    {
+      "name": "blk.18.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "8205da910e2b49109516c6cfcbd33e541f7a44256cdb020b7751d3f5f2f81d7b"
+    },
+    {
+      "name": "blk.18.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "445552436483b9110e37f298ed86e3faa67f60bf54836e6db8957b1ad81d353f"
+    },
+    {
+      "name": "blk.18.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "5495732e0cf34700fe9bedbe7ed471b4fa08a4598c860a44fe05acd9b4d50059"
+    },
+    {
+      "name": "blk.18.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "d5b730d7d9510356b517ff48a3916acc88e02c14cd1bfd807897bd4c0f79535f"
+    },
+    {
+      "name": "blk.18.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00386810302734375,
+      "source_sha256": "d3d0037ce4234bc76839eeca4dcc50878598a3c97adeac204e3cc7e54d28d7d2"
+    },
+    {
+      "name": "blk.18.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00179290771484375,
+      "source_sha256": "3c54d04775dface37c8fadc4948f61f919a25d156770435d60fa14383898e39b"
+    },
+    {
+      "name": "blk.18.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "142a433c10044f6f77e21ecfb7517dbdc03e4991712039b4cbd70bd9c109d84a"
+    },
+    {
+      "name": "blk.18.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.007080078125,
+      "source_sha256": "9085f9002f01e96d1cd517d3404ca1849fa3caa7eedb553199a7c89291a9e697"
+    },
+    {
+      "name": "blk.18.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "8a6bf8e0bf0d55464cc8fe69a13665aebab1cfb1f9864942c790aa518c7f1681"
+    },
+    {
+      "name": "blk.18.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "6b5be660f656253538030b8ca578d12a2ecb95b5cc7c340e51b7997318dada27"
+    },
+    {
+      "name": "blk.19.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3baee2f57cbc7258bed5aff9f45ac171f2ae40d17ea1fca01d8b9c004682fc46"
+    },
+    {
+      "name": "blk.19.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c150301bdf2bba65501177d43a1479b77bed4fcc13e46cbe1785cab3731c8001"
+    },
+    {
+      "name": "blk.19.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001922607421875,
+      "source_sha256": "9a531dacea7525ca0556ac797ec2e4bfd305b559ae877e33ff1aef4ebeefd0fc"
+    },
+    {
+      "name": "blk.19.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "a8e23f753828772be0da9f65b22cdddff940c644fe582ee4e88fe09879b28864"
+    },
+    {
+      "name": "blk.19.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "467b14ddf402765d7d98a992b2aa1ce7cd0e8dd2feaf146626f73a7e5256c694"
+    },
+    {
+      "name": "blk.19.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019073486328125,
+      "source_sha256": "d98bedd25dd9031e7b6c1639785e3681fd3a16d0b891ea5c23e8544bac95e834"
+    },
+    {
+      "name": "blk.19.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f9452bf83ca4b8d964a0d319d5bf1a40596a3cdd920debab18ae0b7442705676"
+    },
+    {
+      "name": "blk.19.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00531005859375,
+      "source_sha256": "83a17d341163227b2fdcc98e5d2c277f9955501ea7fd1073554be9e5d58c84e8"
+    },
+    {
+      "name": "blk.20.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "7866e7247ccd27084c273a906c502dd2ac5a6b449ea758798d636e45f9343e52"
+    },
+    {
+      "name": "blk.20.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "1a615ec226a76718ccf4f7e6b849470aa61f679ea744719ddeca02daa2a5b428"
+    },
+    {
+      "name": "blk.20.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00096893310546875,
+      "source_sha256": "6f27e063b45f5415422f8528b6fee56b80f0e98e1225f11057a0dc9c3eeb1ac6"
+    },
+    {
+      "name": "blk.20.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "bb10d68bd1830afe1cdb586e3ca659693486c72b843642fb4d63cddb5b830bb1"
+    },
+    {
+      "name": "blk.20.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00388336181640625,
+      "source_sha256": "555a9f874e813609a67d21aff5628ce57d9364722b1bee13883a496956cc7c06"
+    },
+    {
+      "name": "blk.20.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00180816650390625,
+      "source_sha256": "c7ae9e83d23e51a7b966ce6d1b80fbe8ab73326cf59d7f168ecf278adaaba101"
+    },
+    {
+      "name": "blk.20.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ebe5fd5298297cc2982f12b10067420c919e0e2b0920bb0e406e3f1c72deec2d"
+    },
+    {
+      "name": "blk.20.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.009613037109375,
+      "source_sha256": "8abf1912edc348cb515fa67716574d7399a4513734b030feb66796b81f505e16"
+    },
+    {
+      "name": "blk.20.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "dcde5e6a75c4009d7777636d9ef65263862aec2c3a6385121af0b43bfc432f51"
+    },
+    {
+      "name": "blk.20.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "bee99f23ad8063daf5a83ee49842ff0e30b9b6d7d9c1d0173483f7fd35c75b2a"
+    },
+    {
+      "name": "blk.21.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f627d357faffb16f7acfa000f2d4b2f9c03bf1395f7f48567d636a31b7cfe12d"
+    },
+    {
+      "name": "blk.21.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "faca04a1246edc1c0aedc13fab0455bea4ecae54f934e1739da984b4bf9f1c8e"
+    },
+    {
+      "name": "blk.21.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001129150390625,
+      "source_sha256": "94fa65f407065abe6227933bf6727ab624af2caa50189da566bba8ece539112f"
+    },
+    {
+      "name": "blk.21.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c27694911f4fb531774a72cd2b6aeb32a85a1a5dcc08ff741b2048fff24ae50f"
+    },
+    {
+      "name": "blk.21.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00377655029296875,
+      "source_sha256": "175e79222417edba09a25a7b3b34474792338727e7abbe3a2027ea4372454ab9"
+    },
+    {
+      "name": "blk.21.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "35c89e56a7797ed0f15eb4226c6b0d555dad357055b8479e083f701cf85a45ba"
+    },
+    {
+      "name": "blk.21.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "1ea7ca22b8072340695e9405b9c3ea63949d24286e7501057a0420bbfda7850c"
+    },
+    {
+      "name": "blk.21.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00389862060546875,
+      "source_sha256": "9ba8672c5b4e4f63ece0ac0ac4a8bb7065e70d4275988954ec92e3416aa26504"
+    },
+    {
+      "name": "blk.21.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "bbb660c5ff0ab71d4c0d9657aedee3c879a1d9351394488cdccade6b1ef666ae"
+    },
+    {
+      "name": "blk.21.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "43fd5b1a66fd4f941d2bfa3f1f509004b1615ca2bbff130a112c7423ac518036"
+    },
+    {
+      "name": "blk.22.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "29c953059493e5fbd3a6cfe5dccf915aa54156dce065426d63ae5ce4546c71da"
+    },
+    {
+      "name": "blk.22.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "6e77b7916c4a915a28da82a9235608315ca48662927845a4c6c8ca6d2730ea50"
+    },
+    {
+      "name": "blk.22.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00179290771484375,
+      "source_sha256": "cff0702d1fcb519760a3a3a1f8cafa2436dd02f36ee55c1c978d1929f0df3f3e"
+    },
+    {
+      "name": "blk.22.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3bab34a85778735988f257db807c3e6b7d4b8e9392bb6853ce393ba5c96e6ea1"
+    },
+    {
+      "name": "blk.22.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00389862060546875,
+      "source_sha256": "577c851e4a765c1fe1866013539ba0fdf11b171d1686839ebf22ef96dbfaf780"
+    },
+    {
+      "name": "blk.22.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "a91189d283d8f613ff5c23037b621eff03eb8e75e57d82b55f7f857031271c17"
+    },
+    {
+      "name": "blk.22.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "1a59673f28601ff85687ed6a9dfca5676ca9398444d6f4d7facb7a3e2fe7abf7"
+    },
+    {
+      "name": "blk.22.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "706cefaf942c2df2cbc577257d3eeff132e744dec0fc53fe4de1130e9c5e6395"
+    },
+    {
+      "name": "blk.22.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ba255c102010ba1bbebd3f78847c9ff60add535a6cde3d4a4e85fac5096da26d"
+    },
+    {
+      "name": "blk.22.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "15ef6d5813117562310be1be5b94e2a3a6cf79456144cbbb9153d6dd5152826b"
+    },
+    {
+      "name": "blk.23.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ca6bba0e86872e947fafc7511eff7fa965dfd5bf7899edc0255b7c2e542ec337"
+    },
+    {
+      "name": "blk.23.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "53d664b3b439842ebd72bf01ab0f0dfa59ce34ac22e931a5299a9f2f3e22eb7b"
+    },
+    {
+      "name": "blk.23.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "d01a0f1d31dd40a9081e7b0c9a8c47a62d1af5b8fcfe5d502c02e190d74a7ef0"
+    },
+    {
+      "name": "blk.23.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "fa932e0eecbbdf74ae7f45f0cd104a9d2451f6e2f36df59ec337df9b501874d1"
+    },
+    {
+      "name": "blk.23.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00376129150390625,
+      "source_sha256": "2d711889e81f190ab22338e0dd32bd6afbb642f18d8793d3f8b7f70821563cc4"
+    },
+    {
+      "name": "blk.23.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00170135498046875,
+      "source_sha256": "2a8ec75f7d736efa598adf867c63121e20a6760c1817842322fd3e763b717dd9"
+    },
+    {
+      "name": "blk.23.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c1499ee551ce571f461ccd49ed5adc255fc4fdd947c045c169292068c4a60417"
+    },
+    {
+      "name": "blk.23.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "78ea68d687aca7fd7e3f24307a6d35c2ac6e23a92334fa974ba5fd5291a7caf5"
+    },
+    {
+      "name": "blk.24.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "11d6f121b5440343ee5fc3566628305006486971699290d213507fcc88a35eb8"
+    },
+    {
+      "name": "blk.24.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "034a42b34cdd2edf2e12c95f483ecb45401755285591da4488b7621403cb2834"
+    },
+    {
+      "name": "blk.24.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0014801025390625,
+      "source_sha256": "5aedf63b6b170ad063ec3ba80b4881ff7c54cec3c6f8699bc4c8172980822e9c"
+    },
+    {
+      "name": "blk.24.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "340bbddeee76b7fb2a62ef36bfb341cde369a84f1b9f8541806adf67a739aed2"
+    },
+    {
+      "name": "blk.24.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "6b67f1ba7162f0e2f3dafffcf70d695daa0a7539e2825ad8db0f0f815f00aa5a"
+    },
+    {
+      "name": "blk.24.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001445770263671875,
+      "source_sha256": "b119b10bda7c24d5e284cdf396ea77fa0444a088a3f1bc5fb28d870583311768"
+    },
+    {
+      "name": "blk.24.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "a92ebd871c097186d4823db9f3561997fd6adc360ec894faf043d00802da13bf"
+    },
+    {
+      "name": "blk.24.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.007568359375,
+      "source_sha256": "016a99539c30708be1e9e4260c168289d0cba5fc41e4d9509858a883160f0ca7"
+    },
+    {
+      "name": "blk.24.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "2d8bb36803e8f10b55cc076c14585fa38fdfc24765777f6cbb69190cd29c2b8d"
+    },
+    {
+      "name": "blk.24.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9b1c6150ad8ef5369bd1f4dee321c8e7d6ef21cc621145fef5877d8921738432"
+    },
+    {
+      "name": "blk.25.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "bb6c2fa232774323ace584c9808e8d785f33b2fc5ae85410cdb67a89f3619428"
+    },
+    {
+      "name": "blk.25.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c73b8e940049876d5d446917a930698cfa787e9be039bc43b6b38ea3d2e7c4f4"
+    },
+    {
+      "name": "blk.25.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001476287841796875,
+      "source_sha256": "f2df23fd233e58cda1107c5f0507eab014b6b49998b3a2f79d357c3f52ebb35d"
+    },
+    {
+      "name": "blk.25.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3d73afe7c062cb7ec2abaf5ea0447f258d7082cb00257ae81aaa2b03b738ddee"
+    },
+    {
+      "name": "blk.25.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00383758544921875,
+      "source_sha256": "fef23d2c1b5f6e7696c15d3052e208b5d8ff39bc4c0bca12e9a42cf91c04635c"
+    },
+    {
+      "name": "blk.25.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "c126755c0a68fe24d31008931b484b7e5f73353f0d0158575cc78d608eb71bc4"
+    },
+    {
+      "name": "blk.25.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "99fa67a7d5e87d17743393340318dd6623944dffa7e81aaea715b82ee8dc6fd0"
+    },
+    {
+      "name": "blk.25.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.007537841796875,
+      "source_sha256": "5a619a1bac914d5346a987ace28de2f61f1bc7d612ae0ff5e32bc45d3295719b"
+    },
+    {
+      "name": "blk.25.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ebeb560b1bf7d2785afa5755ed6caf6235b044c3ef81d0d169342935f079cffa"
+    },
+    {
+      "name": "blk.25.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "dd60a59af7dfa52994e35c9aa8064edd75c3dc00abd4210a3d167af8cc4bc6aa"
+    },
+    {
+      "name": "blk.26.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f7446624811b28156c1f4ddbd8c9588955e3817c96fc278c3eced096e54e69c4"
+    },
+    {
+      "name": "blk.26.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "595651b2916fbde5b0e927e98403f1e0da4602554c3c93730af182549a502fe3"
+    },
+    {
+      "name": "blk.26.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001953125,
+      "source_sha256": "3679ac71674d50110182fd718da0da61e9bdff2280787c5f417c4fe87d459188"
+    },
+    {
+      "name": "blk.26.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "839b12a4a7efbc4a857b762e3f2b27c71ff5c5b5fa10537b3c138800895c03d5"
+    },
+    {
+      "name": "blk.26.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "f24bb1b446af06e853b9f95fa0aa23e875e613fe37ceeef4daa0d313d23d9fc1"
+    },
+    {
+      "name": "blk.26.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "f4c53bcf791dcfc06adaaabb0eac8c6aa7014038d841ea246068aae896c57986"
+    },
+    {
+      "name": "blk.26.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "947dcb4bc7b33a0dd60bc0060952d9fa3bed6b72b50c675dc775fc1ab518d0fc"
+    },
+    {
+      "name": "blk.26.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "98581254ddfe34394004add8acea90ff6ee59454d1ee72c6ca3ef734df6946fd"
+    },
+    {
+      "name": "blk.26.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "e191e5e209163fab7f0a2cd85f780f1b3f98ade79fd9172e865b1d4451641763"
+    },
+    {
+      "name": "blk.26.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "af435f16f41bff069e3b79735da4ee34ce32dcef47779cdebec186542d95f8b2"
+    },
+    {
+      "name": "blk.27.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "eabc0ea858ee7d48a8705a93ddeb6881a252c73a7f7a0c4178c8cb8337926def"
+    },
+    {
+      "name": "blk.27.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c7bd95715823d4c0d670bca93b4c3ad8542ed2b9b280cca795b0d36ad931d37f"
+    },
+    {
+      "name": "blk.27.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0017242431640625,
+      "source_sha256": "0879b58d08f179cd4908d5520da4b6644d02f88991dd6b33ad87633a096a5b11"
+    },
+    {
+      "name": "blk.27.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f37c030ce893beba94b38d354c8a50a5e5f7e55744a0113d82a6a93bc7bf46cf"
+    },
+    {
+      "name": "blk.27.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "8d0a2722d2721dc1d0425965e76f812f6661f059a2a7aa54effa8b39639be958"
+    },
+    {
+      "name": "blk.27.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "e54839b701080788c69ed9d032de7c912e50190b6e5f94459c0c4426ea07d7c8"
+    },
+    {
+      "name": "blk.27.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c99fb280c11a7757a60da46bdd2a4006837a9ef98b03fb49da80bc3e674439b2"
+    },
+    {
+      "name": "blk.27.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "3d1031f183c992e5ae220fab6ec82dab4e56435a57d3f2a0032afa34980ff2e1"
+    },
+    {
+      "name": "blk.28.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "2ccde72d6959b9bbca76f7e0dbb7ef201be0fb63356148ad8d1a4253a06a303f"
+    },
+    {
+      "name": "blk.28.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "d7f71a69170b943d44fed8f9388d31c52be289412fda2e848602723462b9fb6a"
+    },
+    {
+      "name": "blk.28.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0012969970703125,
+      "source_sha256": "1329a4027665f5848b398a7adb7739e78963994529b30eab51e89c76177c50b7"
+    },
+    {
+      "name": "blk.28.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "e58ea39f3f11788130ed98aa5fc588b8a12e6a8df7226443b40c01487f706f9d"
+    },
+    {
+      "name": "blk.28.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00380706787109375,
+      "source_sha256": "ccf61e49a233bc7da23fd30e614b839975bbca0223b592d339a3843ce7643022"
+    },
+    {
+      "name": "blk.28.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "a972e16c9fdea61b741a13569903a9fe37fd059e9562532a0fb47091eed22004"
+    },
+    {
+      "name": "blk.28.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "63ea331f265589d7af20248c47aecc85eac7509912ed1af107f0dbf99ab288d3"
+    },
+    {
+      "name": "blk.28.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.006866455078125,
+      "source_sha256": "020f9dd5bf51618ec2be85967a67611c20d56c3cce2c6661ac4457c88ad533d9"
+    },
+    {
+      "name": "blk.28.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "b04e14c63b040e2cce683ea80db9158ac15292aaa64681e644b41559c844d7a0"
+    },
+    {
+      "name": "blk.28.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "51b79d216f6389e82fb5bf20bbd94b919dff606924e634a11cb574c512d4cb45"
+    },
+    {
+      "name": "blk.29.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9c8bb9e21b311d4c3bb4ca3e9083eca659237e6823cc53fcf40332b888dacad4"
+    },
+    {
+      "name": "blk.29.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "fc7d31ecca7c51d316ad25271479823e43af04bb0b22c3757b2434163bfe67c3"
+    },
+    {
+      "name": "blk.29.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "b0035adfffba3f7adfc05d2928f3899f8156c9166a7bab5916c639e2e6f51153"
+    },
+    {
+      "name": "blk.29.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "53b7b8b5d9585cdc314877d1a00490641d4cd746f11256d071ffcf4b44b9d99f"
+    },
+    {
+      "name": "blk.29.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "aaca710559ff13c8be1e88aa136ec2280927774e7c5e7b03b0c59da917d1dc79"
+    },
+    {
+      "name": "blk.29.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "a99a1a942b5ec287be7833a6611ec3fc9012fc9f2cd92c26ef6ad3754ea27ffd"
+    },
+    {
+      "name": "blk.29.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "5cb148e9f20f726a9a3b8dcdca191bd288bb31653fcf61be36a7b1de699516d6"
+    },
+    {
+      "name": "blk.29.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "c07f1b3a81a44242e173e96b0b7aa98e86b6ae2a534d72f057d5deffe86bf31f"
+    },
+    {
+      "name": "blk.29.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "b840e02e6f0e9bc36c622c94fa0013d4ad4e1a59df36f4a243a6548f07141b83"
+    },
+    {
+      "name": "blk.29.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "a95c68f50fb05746dd49bfaecc5a529f22bac5fc9e337e0e8eb841820874a2e8"
+    },
+    {
+      "name": "blk.30.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "19170ad4bb2d0ba78cfa3c3664eacab25f8aa3288d8d1c36a4014bf4a7c3b0cf"
+    },
+    {
+      "name": "blk.30.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "e41521a323cd859da59b53623e6e6590ac119135194dbfee9f9dfabc15940ee8"
+    },
+    {
+      "name": "blk.30.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00164794921875,
+      "source_sha256": "eddd366dbe0f4f9c1eb4a0f82fea445117f39a34434491440f8d3fa2ffdc1f66"
+    },
+    {
+      "name": "blk.30.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "4329ce1e7d886cc59269b52888b392f1e13c32a2e9bf7d8d800a67ec8ccb9beb"
+    },
+    {
+      "name": "blk.30.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0037384033203125,
+      "source_sha256": "a8b2be757c4e8b43ee9c9a09576abbfffbee6605b390b53cbd5494f8be9dcc52"
+    },
+    {
+      "name": "blk.30.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "e568ccb1855f715f62ff297d71da9d5cacadeb18792fa574ef851867fe8f2401"
+    },
+    {
+      "name": "blk.30.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "561c365ea63df3aab4376a401005082976dd6f4737efbe3a23347162e284725b"
+    },
+    {
+      "name": "blk.30.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00762939453125,
+      "source_sha256": "2be769b45add1521e607cb3e22a48c05b8584de9b18fc20a9c380eabf79b2d76"
+    },
+    {
+      "name": "blk.30.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "80c8d8d711db606e78542baae4678788eb0667ddc31a41b565773e0eb2567500"
+    },
+    {
+      "name": "blk.30.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "77e3f43267767abce37aa5d2d4f47321230a5d316633d9c22f44e0b4e9bf0003"
+    },
+    {
+      "name": "blk.31.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "6f2c6ef01102b0d1b454303d764763fff9d7a4059e715270b50665e65bae8693"
+    },
+    {
+      "name": "blk.31.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "be41b9a987c46e050e246ce782639afcf628453cb5164e33fa704a2b167fb78b"
+    },
+    {
+      "name": "blk.31.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "7aa9107e1b6b96b7671e0ce1c0ed1002361d0b8a27a476fbbe0c02dc75f46ebf"
+    },
+    {
+      "name": "blk.31.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "d5db2da4a0b708916aba9f8444f93aaee02b72d080ce4fe1110d6b10030fb619"
+    },
+    {
+      "name": "blk.31.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0037841796875,
+      "source_sha256": "959bbe93e1e4be0d886b0c30d24d4902a1d03ed5d05b170b3ac8e6b00e75b539"
+    },
+    {
+      "name": "blk.31.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "1cb4ff4a1da9cc8d5fc1689fa7efb9a4c45987e673b73e259a89d2a35dcefe0b"
+    },
+    {
+      "name": "blk.31.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "300dddc22c1a0611c14741fe6a2f87d2ca913b13f3b7f9224c7e8cd3c350335c"
+    },
+    {
+      "name": "blk.31.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0135498046875,
+      "source_sha256": "5582d275b818c77d99783aa60e69e5c9ff86c38145c43a928103053c48d90c8a"
+    },
+    {
+      "name": "blk.32.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "315f83c46ab2d985c284a16096af9685c878a3a8883eb52f2291fff02105181b"
+    },
+    {
+      "name": "blk.32.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ed9fa0395b55580fb5ed22f818d7216367fba4132419678982c2b3e345a5406b"
+    },
+    {
+      "name": "blk.32.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "dbbdc0272f17d5d795792165e0b7ff860ac22bacfa176edefc8cb755a11057c7"
+    },
+    {
+      "name": "blk.32.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "a1739d86703988f801f25cb357c0037c5dae3c82bc5add8288f3a69ef20cc4f2"
+    },
+    {
+      "name": "blk.32.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "6aea1ba2163da5fe79891840f62e23abfc5b07963daa68af78cc7bee19f17872"
+    },
+    {
+      "name": "blk.32.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "92891fdb02464bd928f36884ce2afba30b5b7d48755faf9124d39b1c8c7e1a73"
+    },
+    {
+      "name": "blk.32.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "790d62510ab11a04677f358aebd872ded7b5695cc5581e8722b347a61680988b"
+    },
+    {
+      "name": "blk.32.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0128173828125,
+      "source_sha256": "0637854d251632c0cb01c9279fd1e9d26506768817fdd84c8534a02f2df89029"
+    },
+    {
+      "name": "blk.32.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "41a3341d8e400aeb6c07bedc53c35b4d3044d16956619b8d437c2d635ec03bde"
+    },
+    {
+      "name": "blk.32.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "235b7b2162e80acae4e679af90f7bb1fb092729cb9de17c72d8f6c5f3a99f73a"
+    },
+    {
+      "name": "blk.33.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "870b9a3d349215b4ec842a2e75a34068b239efa4614d5a67fcf34946f14f2a0f"
+    },
+    {
+      "name": "blk.33.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "1440558fcf786f61d41eac9ee6d30ac5d5248199f1ec74b215c8bdb5591f29b8"
+    },
+    {
+      "name": "blk.33.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001934051513671875,
+      "source_sha256": "fec801c36a92a1c090f7978d06ea690138f2ed4989036e6d3b838502e2bfbdc0"
+    },
+    {
+      "name": "blk.33.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "dfac1d49bd6eb78bcfc7811c228fc441058cb48f8d303ea2cb870a7eac8fadcb"
+    },
+    {
+      "name": "blk.33.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "1bed9851f9001f91257486e789ba39e121cdbb840efe35bc1299a2b1db805dc5"
+    },
+    {
+      "name": "blk.33.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "9e256dbf82fcdf2ce92617b6cd20a26be4b00abd0a67b0e065129c4b25694740"
+    },
+    {
+      "name": "blk.33.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f3167ff9b804ac7e1ea741d4dd90cac9dc2523f087a0a5b88c3ff68ecd5b3533"
+    },
+    {
+      "name": "blk.33.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "2d9a0604107553c848aa846b0209e00adc34593e859790b56fb2028bea23270f"
+    },
+    {
+      "name": "blk.33.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "227bfc709eaf82c2e8b3b983914392d2a4f0c511cec7b701836d8c7d458fe3b2"
+    },
+    {
+      "name": "blk.33.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "0138a498830f93f132e550681c214811cc1d807cb9328988f750a1307ad5b864"
+    },
+    {
+      "name": "blk.34.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9b8980e4cf70a10c249b9b1c17c28ce7415e0bb1343fc8a2fdcfc909df04219b"
+    },
+    {
+      "name": "blk.34.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "be8e0eeb5eaf803042f7ee8806bffcf64f184ed4b2cbc3e924ffbf7cc00e75ff"
+    },
+    {
+      "name": "blk.34.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "ec6c81a3a9b90617866f5e519dbc74ec8486fcb0935e8bb901e327d1f40cf9ad"
+    },
+    {
+      "name": "blk.34.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "8428f1bc1addb557edf808374dd349f75bcfa6781fbec5b9d3ce894dc377fa77"
+    },
+    {
+      "name": "blk.34.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00389862060546875,
+      "source_sha256": "8cc6968be81a25f4f1eec3d25bdd71ff9ce0ba858435881038a8fbe5bd662117"
+    },
+    {
+      "name": "blk.34.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001800537109375,
+      "source_sha256": "dabe634a0ab77b4b689fa9d8a8a5a471f3c9abd13ee2b563e4b780c10f5ec7a1"
+    },
+    {
+      "name": "blk.34.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "4f6f63109ceb4cbf697fc1451745c43f73a0a8f65e00ea43307a28bf37b721a8"
+    },
+    {
+      "name": "blk.34.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.005126953125,
+      "source_sha256": "b27026decd3dc83b4179c6eb39cd751a6a4ca166be0e34baa5c5c6d1b8d4a538"
+    },
+    {
+      "name": "blk.34.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9950a0668032ac5a8f831a64308361b3dd696eb1150f615001dce14d675913f2"
+    },
+    {
+      "name": "blk.34.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "06e1be813222916d095ff0ad931adb6772156b7b367218142b29510c987213a4"
+    },
+    {
+      "name": "blk.35.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f0501f22b8a80105d48d423715b60ef1af8f9d60e3f7f58765c7725364b02ec4"
+    },
+    {
+      "name": "blk.35.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "d46bb890c81b2ade98fbbd98e5d36269a62e7f124d597cf6e205f08046f95fb3"
+    },
+    {
+      "name": "blk.35.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001922607421875,
+      "source_sha256": "664b3e8905aaa633d1b172a9e5a94f84e740a43c1f44bdfd6927c790f6a0465c"
+    },
+    {
+      "name": "blk.35.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9f56d5adedda110d1dfbd510198f680e1aed6890e3ab348bc453bc145a046382"
+    },
+    {
+      "name": "blk.35.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00389862060546875,
+      "source_sha256": "b2e28dda2cd53c1e60f4dd51642c947719bba8715d7e807b2e97cef62ccd6b93"
+    },
+    {
+      "name": "blk.35.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "d77c587c640e09292301bc28697a9e712566381625b70aae7032ed163f3266f3"
+    },
+    {
+      "name": "blk.35.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "562c9fec4dbc1acf2838ec18451964c83f30684d4792e4118bb3be58b53668f1"
+    },
+    {
+      "name": "blk.35.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.004150390625,
+      "source_sha256": "1ff2498501fefc0563074883dc31a66270372d772b3eb0be64f29d6a8ab5d325"
+    },
+    {
+      "name": "blk.36.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "8d09fd32489aeabe98674fa0531da75b223d8caaf9d5da56658cf133119726ae"
+    },
+    {
+      "name": "blk.36.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "fb1b6c0d7a2b21d6b64f824ee254be6896a19c22b26c540281415ae71edc721e"
+    },
+    {
+      "name": "blk.36.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00096893310546875,
+      "source_sha256": "abd3b445fb1c29ef7349c73c833c89144ef1b829a7525b61509e17010f3eb840"
+    },
+    {
+      "name": "blk.36.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "839c52a9ebd55aa98ea2bfeeec521a092623be34162263e09ac4c993a29df050"
+    },
+    {
+      "name": "blk.36.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00380706787109375,
+      "source_sha256": "708eb49039ff563eef8a8198fb6160cde5c704a06f2350fce4f6e48c03cdb889"
+    },
+    {
+      "name": "blk.36.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00189208984375,
+      "source_sha256": "4c719c27fbaba00fdea55d6b8adc72a3ed580615526867d861852c7efb2246ee"
+    },
+    {
+      "name": "blk.36.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9d7f3592f2f342935bd35c9e91a543970ba4ba28da33139777b9a43bd81d8fa4"
+    },
+    {
+      "name": "blk.36.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00592041015625,
+      "source_sha256": "796b3fec9cd68a30096721550c81ceb8f041ba87ff15eff2af95c9555fe82a59"
+    },
+    {
+      "name": "blk.36.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f0d12486867799d6b955e608846584ace3b977755dce33076b9a81aadba20b16"
+    },
+    {
+      "name": "blk.36.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "dd6aac40f8a4ab0341c85f1bf56c80f8493d1d1edf0f4a445c8cf9c2f65221fb"
+    },
+    {
+      "name": "blk.37.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f389d67631ee333924b449b88b0637adfd20b513c84e25e7a25ff823eec4f861"
+    },
+    {
+      "name": "blk.37.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "4c71d2a74ee2ec9664e0b89a96d75c68f58c7262b965441302abaf0dc0892ccc"
+    },
+    {
+      "name": "blk.37.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "5d1122d07305cca1c74b96e439544df083cc09d39b6db30b2d64fe3395b13941"
+    },
+    {
+      "name": "blk.37.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "bf4b628ac99d312ba9aa9348367fe17c07d3b441f094b44b0e87f9d8763d8b62"
+    },
+    {
+      "name": "blk.37.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00390625,
+      "source_sha256": "5ba7ecfc206117881d0148560b251eabf0796f52a9742a564fcfbf567e4045c6"
+    },
+    {
+      "name": "blk.37.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0012664794921875,
+      "source_sha256": "acc58f2e3c7cf329863c83042a4b1222844a4120a4bddd958ba29fce2a32d910"
+    },
+    {
+      "name": "blk.37.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "fce0134dd34102b1ba819635197aad94a8a507609cf12e9ff1e79c2776a973fc"
+    },
+    {
+      "name": "blk.37.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "a9c564e2ea76f5e745d47582a0b5303b20514ed82c90d14178c6de0d00beeb9c"
+    },
+    {
+      "name": "blk.37.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "dfec685c75b67d4d3d4d9f21af5be7ff2fef53164c9c59a6fb916ffcf10c2d9a"
+    },
+    {
+      "name": "blk.37.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "e7985a8029d7e3d1d86701943b9b31d3d0f1cb741580ac9607be1aad71e2afeb"
+    },
+    {
+      "name": "blk.38.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "73fae9404d3306a32fb2ec9918547de872000f305965ea3e623873170fe53480"
+    },
+    {
+      "name": "blk.38.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "e2b970b875d6b35c9a9c2c0cea586cd176c52c1e4e7c88089ad0170293344d04"
+    },
+    {
+      "name": "blk.38.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00174713134765625,
+      "source_sha256": "ca97bc8df5467a716193aab8bf315be700051fcc8f8fb9287bea94e59d1b8802"
+    },
+    {
+      "name": "blk.38.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "313adb3b759ab75836eb738b538aeff520c63f3185fdd4671043c2da6cf50e74"
+    },
+    {
+      "name": "blk.38.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003753662109375,
+      "source_sha256": "f8c5aaf49349b9003d4cc06a76fee5705c009034226e9fd7586e9ff37c838e48"
+    },
+    {
+      "name": "blk.38.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "c95603017fc99c8dbef72b44ffe0b3b68a803a91e19306f57290f22f83739c25"
+    },
+    {
+      "name": "blk.38.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "93edf66fd6f00eae36a9af11054bf142f3000216ee5d948fed29d8832daa21e0"
+    },
+    {
+      "name": "blk.38.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "6d8aab4794e9eb09578b46004bde50cdc27dfaeb8214fa1239299829e3cc5ed0"
+    },
+    {
+      "name": "blk.38.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "5e331f90162a131768f845d3e267eeb38bdfaff5c987552874144ab09184f25c"
+    },
+    {
+      "name": "blk.38.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "5c1a87d9a96ec534e7c505b3dac6d8bc0bd9a03b13ea2166eb93f4e44390fd23"
+    },
+    {
+      "name": "blk.39.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "389bd10f8b685d8673478fe95648d62391498aedd68e197d71e454087fa82e64"
+    },
+    {
+      "name": "blk.39.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "674a0579a8fd5793db47f07645cf64a695baeb034f6bb5989c6cd44d8d78e7ce"
+    },
+    {
+      "name": "blk.39.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0018310546875,
+      "source_sha256": "c6e1a8d81baaa32fedb806e35a6a55c7a70d1063d6f7614ade2fa4d4d0d6e571"
+    },
+    {
+      "name": "blk.39.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "da636c3fde22fcd641cd636084ae511f18021a60853efaf66625a6d4b2dc8409"
+    },
+    {
+      "name": "blk.39.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00347900390625,
+      "source_sha256": "e2538ba08a72a9c99cd2ebaa56198b6809f9bf3e0ae86dad684e7cdf0e165c7f"
+    },
+    {
+      "name": "blk.39.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00183868408203125,
+      "source_sha256": "e9089ef0217a8e0d71bf1eea53d9408030a40e31b381a1010080ec9d9b6c705f"
+    },
+    {
+      "name": "blk.39.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "359a7b4e2f6a8408742f9a0574dd49698700b9b8cb7c7f2c9b6b4c60e601fbec"
+    },
+    {
+      "name": "blk.39.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "5dd4471e1afffd0a5108a418d04f0c1642a14ae2cc2e07dfabb1dab88099e1df"
+    },
+    {
+      "name": "blk.40.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "8a253cdb2bcd4b9ba26bc92397857b925a532949dcf276b5f726b684e41a5e26"
+    },
+    {
+      "name": "blk.40.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "86af0864bf82acc282b50bd1099767f3e54c32378b42f006e5741369818c4955"
+    },
+    {
+      "name": "blk.40.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001953125,
+      "source_sha256": "459eac2333d5a2446fbf0f93b2f904a13b4242334562c99316b2760fbc135ddf"
+    },
+    {
+      "name": "blk.40.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "7dc0b8a93a0428842702bbcb33f3f7820b997fe85aa44702becd38e91a5af797"
+    },
+    {
+      "name": "blk.40.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0018310546875,
+      "source_sha256": "16a0401c20ca4129be0dd348fbd781292e13350b5d81dd2e07194912ed77273e"
+    },
+    {
+      "name": "blk.40.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00103759765625,
+      "source_sha256": "59ebc03369a2d5c4e540f2f6e34d7cdca512a818aa2cee21ae3eec51d60f567d"
+    },
+    {
+      "name": "blk.40.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "867e5582406ce9d254e39126b3a08555ab19e7f7d28470b52ab24fcb7d13799a"
+    },
+    {
+      "name": "blk.40.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "21334ff33fabe370bf58ffa21bed3ebac54eb9d3eb07b2ef86b1b684965fabd2"
+    },
+    {
+      "name": "blk.40.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "b0099c9489e301bd68f056cf25bec1d702b4d3a1fbc2869703398efee33d0995"
+    },
+    {
+      "name": "blk.40.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "15710bd2a09a50119585cd8c8fcea56ecd950c9095c9957274c21ab9e89a5c6b"
+    },
+    {
+      "name": "blk.41.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "28a66e4c454dcd68c319779f85bc4f7cf9f100134d5b2616cb85a33d9438c7b4"
+    },
+    {
+      "name": "blk.41.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "b673baa1fd30224e410275ae4fef9a7f208555757e81bf3e8256009604eb5d7c"
+    },
+    {
+      "name": "blk.41.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00194549560546875,
+      "source_sha256": "e82b901008d15197d14b28f72615edfdff309ee029118751ba1ccd93ebb1fd23"
+    },
+    {
+      "name": "blk.41.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "532004b25478074dbf83a68c14c82303bea605bee0fe0888145cdcbe9491f475"
+    },
+    {
+      "name": "blk.41.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001903533935546875,
+      "source_sha256": "5ab602c012a38e28ae7e4583d6e6d0b71a8df642cffe778e761760d2b45335a9"
+    },
+    {
+      "name": "blk.41.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "5cba1c3d7ed99d976c0b91645286fdfb82716d1f7b331711804d804beb31a7cf"
+    },
+    {
+      "name": "blk.41.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9a95185d64b4b2f42791a52cb93ecc820294e070ff04e29ca4204de5f369406a"
+    },
+    {
+      "name": "blk.41.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "42fecf56ca74449b199615f840594aa8b50404ea5671c764cb3c7158e8009172"
+    },
+    {
+      "name": "blk.41.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "1c7c9a053770f5fcb7693b9a0fb181f3c6baf0bbe0e9f37934a56a539a4ecbbc"
+    },
+    {
+      "name": "blk.41.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "306fb48890005fb717ba116c43dbc2b920be87937348a8cbe4c51d62cb378dd8"
+    },
+    {
+      "name": "blk.42.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9863d053c3550b1c2d67958654e28e5d84defb0ed9b5108b923323416f30e8c5"
+    },
+    {
+      "name": "blk.42.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "267ca40021d88232ea196de48e2194bf4ea7999c39c99139a9488a8d13437379"
+    },
+    {
+      "name": "blk.42.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001934051513671875,
+      "source_sha256": "b07f1595937e48a8053cce4b65306f32a66d7c4867a47ee821988d2ee5a3c0ea"
+    },
+    {
+      "name": "blk.42.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "079bb5a3e4163241c9ea6d9ad47176daa9908c1942bfad8cf37e676be54939d0"
+    },
+    {
+      "name": "blk.42.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001926422119140625,
+      "source_sha256": "1501ed7f149e80f3c4149ec579c7ac73b10e1ea03ccb76f5ae76d1ada2af12a0"
+    },
+    {
+      "name": "blk.42.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "2e4c62b59fe6cf8fa0afc67975632d3ac4f1909668176665907a61845f6e7d8c"
+    },
+    {
+      "name": "blk.42.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "1383482e4c363a3ab8726fe6238c263290640eed882060f649470b3d8fe5b8ab"
+    },
+    {
+      "name": "blk.42.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.005767822265625,
+      "source_sha256": "ae8ad9bad6ffdafd424950b17fc61679625d239dd9592b316d25b5c9aac09351"
+    },
+    {
+      "name": "blk.42.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "fbcdd6fba40e4c21c0661766798e33620e6feb9089d9de1f9717ac23a2fb7701"
+    },
+    {
+      "name": "blk.42.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "5e216bf3c4e3e7bdf608fdfa538ed24763f2db4a0e30c23f428d0f9f9550cb04"
+    },
+    {
+      "name": "blk.43.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "52333fbc1174f2deeb2ed764c264c16aeb2961f72346cdaedfe4a252ed7f42a0"
+    },
+    {
+      "name": "blk.43.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ef51b4785be4051e196b6809963a8808f004037fd13aec66d26a47bc1777aafe"
+    },
+    {
+      "name": "blk.43.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001800537109375,
+      "source_sha256": "030851dd2a1f1b1442ca75785a685864d674bbdc85fdc49b63c09689ada3e591"
+    },
+    {
+      "name": "blk.43.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "bf3c97cd1aa02bcf129c68e31d6c191485f28f5b792c09e62b279df782cb77af"
+    },
+    {
+      "name": "blk.43.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00238037109375,
+      "source_sha256": "b60877454ed8e47daacfd4d7cb04211b97fcf6f353e66f5fda31c038ffcac2ba"
+    },
+    {
+      "name": "blk.43.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "5e35a80888013899e844c011261c35e3896e59e9a5ac63521afdd98cbe45f9b2"
+    },
+    {
+      "name": "blk.43.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c7e5a713d542e58aecacdf5680440e685686a879604d168fc768ffeccf321f87"
+    },
+    {
+      "name": "blk.43.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "96173d655e7c3419b1ea83f8cc1c833bf525b2de393651f79bd5f9fe98205725"
+    },
+    {
+      "name": "blk.44.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "05e6e0281f4e82523ae1c9303d196651ef9685c449681c8264faca6ac3dbab27"
+    },
+    {
+      "name": "blk.44.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "65fd59ba4f3ba03200f7b6c01ba877442e1a417bf9b1fcfa72cd8f18ba4ac46e"
+    },
+    {
+      "name": "blk.44.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "ec78d68694085579b94030663e9532a5915e8fe243cc100105a25e60a6b027a2"
+    },
+    {
+      "name": "blk.44.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "5c88d64ac39a4fe3c657390db8f043f7bc7f873b61f5e365bf98760166a442f2"
+    },
+    {
+      "name": "blk.44.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0036468505859375,
+      "source_sha256": "d08e7fa8b067c989b54e77f7d8ecc01d832ed78f07e34a3213a4f54e69b53ed3"
+    },
+    {
+      "name": "blk.44.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "94971146c922df625ed3e39c15987cf38bbb8f6c3547766eac4b8a9e114caf1f"
+    },
+    {
+      "name": "blk.44.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "06c673c73e1892af91dbd6436534379bc76592a8e7d480dac6287f926af867d0"
+    },
+    {
+      "name": "blk.44.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00389862060546875,
+      "source_sha256": "04bd3185d747fbdeb58c6179d2e479b65f1b2ccdeed83e58568b5d9a364f4e87"
+    },
+    {
+      "name": "blk.44.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "890f96b253d09615ee60b3a818353a6eb51cd8591307036dc4d9dc0306179d0a"
+    },
+    {
+      "name": "blk.44.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "a3f2cc2055d11773a2f776e7f7434842dbfd6b08a6d2c3944b9942bcbca48b4c"
+    },
+    {
+      "name": "blk.45.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "716e86907b98006efcd8f5fe429a1a534486a2805233f0ed0898a2fe21443e12"
+    },
+    {
+      "name": "blk.45.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "e97868f76058d3d1896c0191cf5789ab16b0fad7ff4252ad00872444d9933e7a"
+    },
+    {
+      "name": "blk.45.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0016632080078125,
+      "source_sha256": "0eabf381dd6c0610759968c256b287c21b9303a1c69a8a2f2d668d54d4cb03c9"
+    },
+    {
+      "name": "blk.45.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ddc89755d431cedf9fec9eb9b21c93a0d4758956c118e93ab1eaba1eacfa05cc"
+    },
+    {
+      "name": "blk.45.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001926422119140625,
+      "source_sha256": "ed6d5b91920ee171cc9401b63aca70ec941c931f6a2f665c02eb5aaf64d14462"
+    },
+    {
+      "name": "blk.45.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00096893310546875,
+      "source_sha256": "0b1952a2e5534fadf39609870dc0f26d808fd331266f430f9b87866a35d3000f"
+    },
+    {
+      "name": "blk.45.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ac5c78cc702f28b862212b02b06b5fbd927d987c6607cadeb5acb4f182b33fe2"
+    },
+    {
+      "name": "blk.45.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.01385498046875,
+      "source_sha256": "d17838b3a553269356d7a26e114f97abc8a5bd1fce293625376f48485325f6b6"
+    },
+    {
+      "name": "blk.45.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c5e9b05a4e49a2ab5c96fa7c658a118ced07d09cdb6b4c4db81fc06d69962943"
+    },
+    {
+      "name": "blk.45.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "7aca7fe54a63ab696433a5edfd3cb767895c5e7c726e2a787e2eefdc2002ebce"
+    },
+    {
+      "name": "blk.46.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "6647c66ac7ade9cd0b2997660c35a70c1f7de9ff94060e5686ca9c4decb2064e"
+    },
+    {
+      "name": "blk.46.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "aa649ff658521daa1478f1141bb2f57f9cb0f2b4d0f099dc2c61aa834ee161c3"
+    },
+    {
+      "name": "blk.46.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001739501953125,
+      "source_sha256": "3c33f861e7a04145ff40a93a8676d9604c4cbdb3b7d10c0249612712947727f4"
+    },
+    {
+      "name": "blk.46.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c8be826168c2b0bed1f584ae2491d0564b18a43d8202c6d3208375ae862738d4"
+    },
+    {
+      "name": "blk.46.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0077972412109375,
+      "source_sha256": "3f29f772022768b4d85302e225e43de4dbc30832d11e063a8b521d1733ad28e4"
+    },
+    {
+      "name": "blk.46.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "98e8fd7363642d63775c3d9d191340eb9c9e3324871d3fc8ab6719ff679f126e"
+    },
+    {
+      "name": "blk.46.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "e2570ffc654b35fffbbdef959041454c9decca19063d6d895ef9c739f399822f"
+    },
+    {
+      "name": "blk.46.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0072174072265625,
+      "source_sha256": "6b92a7f7a4d899eb0bf5eb9ea540f7dcb4b55d40ce516057f4dd9109b41f147b"
+    },
+    {
+      "name": "blk.46.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "b6a71c40f9d284d6e01d167487b201de4b48085223593ef4d6314a422469eb7b"
+    },
+    {
+      "name": "blk.46.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "180fcc3bf4c3464702d6bdac9f937b8be7f51cde73c69fd2a7d356d0ed110e07"
+    },
+    {
+      "name": "blk.47.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "418104d20e8c36a0ad9f0ac27f922b663e3bedc4c998fe4471547734e8e0d454"
+    },
+    {
+      "name": "blk.47.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "59159ff58823cccd76fc9a148d9e6248e163dac5be09d38f64be4d2b832602eb"
+    },
+    {
+      "name": "blk.47.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0018157958984375,
+      "source_sha256": "0ed5839c3a22965ff157154c74d8543fb6f1891a416cdfeaf1e92fafba98a4f1"
+    },
+    {
+      "name": "blk.47.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ff8e7f980c9481cdbc9c27b63ad62a743b3d38129613976a6e4e3dadd3aea5fd"
+    },
+    {
+      "name": "blk.47.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00653076171875,
+      "source_sha256": "62df167cd9e4e4f8cb4dd28f796c06e3310a06faef5934635613ef1efe1b27a1"
+    },
+    {
+      "name": "blk.47.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001495361328125,
+      "source_sha256": "d891bb6dd71adde2f62f1bfc61e4b43e3abe2faf9d957ac9131f0052ea29d992"
+    },
+    {
+      "name": "blk.47.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "85c61bf15c4c11e306e359b951ec0b95eea4aa3e4fddc2c777ab8529e8c783b0"
+    },
+    {
+      "name": "blk.47.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003570556640625,
+      "source_sha256": "8fbba7e2ce53642de82de628dfd812ed1a6342b24d2abdf643f4f8efbff89149"
+    }
+  ]
+}
