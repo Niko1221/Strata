@@ -19,6 +19,9 @@
 #include <cstdlib>
 #include <utility>
 #include <cstring>
+#if defined(_WIN32)
+#include <windows.h>   // GlobalMemoryStatusEx: the Windows UMA free path below
+#endif
 
 namespace strata::core {
 
@@ -28,7 +31,7 @@ namespace strata::core {
 size_t device_free_bytes() {
     size_t free_b = 0, total_b = 0;
     cudaMemGetInfo(&free_b, &total_b);
-#if defined(__linux__) && !defined(STRATA_HIP_GFX906)   // (the gfx906 compat layer has no cudaDevAttrIntegrated; that GPU is discrete)
+#if !defined(STRATA_HIP_GFX906)   // (the gfx906 compat layer has no cudaDevAttrIntegrated; that GPU is discrete)
     // per device: a box can mix an integrated GPU (an APU) with a discrete one, and the answer is the CURRENT device's
     static std::atomic<int> uma_cache[64];   // 0 unknown, 1 integrated (unified memory), 2 discrete
     bool unified_memory = false;
@@ -44,26 +47,40 @@ size_t device_free_bytes() {
         }
     }
     if (unified_memory) {
+        // STRATA_UMA_HEADROOM_GIB: a whole number of GiB, 0..1024; anything else keeps the default 6 (said once)
+        static const long gib = [] {
+            const char* h = std::getenv("STRATA_UMA_HEADROOM_GIB");
+            if (h == nullptr) return 6L;
+            char* end = nullptr;
+            const long v = std::strtol(h, &end, 10);
+            if (end != h && *end == '\0' && v >= 0 && v <= 1024) return v;
+            std::fprintf(stderr, "strata: STRATA_UMA_HEADROOM_GIB=%s is not a whole number of GiB (0-1024): using 6\n", h);
+            return 6L;
+        }();
+        const unsigned long long head = (unsigned long long) gib << 30;
+#if defined(__linux__)
         if (FILE* m = std::fopen("/proc/meminfo", "r")) {
             char line[256];
             unsigned long long kb = 0;
             while (std::fgets(line, sizeof line, m))
                 if (std::sscanf(line, "MemAvailable: %llu kB", &kb) == 1) break;
             std::fclose(m);
-            // STRATA_UMA_HEADROOM_GIB: a whole number of GiB, 0..1024; anything else keeps the default 6 (said once)
-            static const long gib = [] {
-                const char* h = std::getenv("STRATA_UMA_HEADROOM_GIB");
-                if (h == nullptr) return 6L;
-                char* end = nullptr;
-                const long v = std::strtol(h, &end, 10);
-                if (end != h && *end == '\0' && v >= 0 && v <= 1024) return v;
-                std::fprintf(stderr, "strata: STRATA_UMA_HEADROOM_GIB=%s is not a whole number of GiB (0-1024): using 6\n", h);
-                return 6L;
-            }();
-            const unsigned long long head = (unsigned long long) gib << 30;
             const unsigned long long avail = kb << 10;
             if (avail > head && avail - head > free_b) free_b = (size_t) (avail - head);
         }
+#elif defined(_WIN32)
+        // Windows APU (Strix Halo et al): hipMemGetInfo reports only the free space of the BIOS's dedicated
+        // carve-out - often well under 2 GiB once the desktop has taken its share - while the driver backs GPU
+        // allocations with the shared GTT pool drawn from the same RAM, and every cache slot is also charged to
+        // the system commit.  Count what the OS can actually give back (the same idea as the Linux MemAvailable
+        // path above; commit, not phys, is what runs out first, and the cache-open retry handles that one).
+        MEMORYSTATUSEX ms{};
+        ms.dwLength = sizeof ms;
+        if (GlobalMemoryStatusEx(&ms)) {
+            const unsigned long long avail = ms.ullAvailPhys;
+            if (avail > head && avail - head > free_b) free_b = (size_t) (avail - head);
+        }
+#endif
     }
 #endif
     return free_b;
