@@ -34,6 +34,7 @@
 #include "q8_1_il.cuh"
 #endif
 #include "strata/kernels/pdl.hpp"
+#include "strata/kernels/grid_pad.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -790,6 +791,7 @@ __global__ void native_small_mmvq_kernel(const Weight* __restrict__ w,
     constexpr int BLOCKS_PER_ITER = 2 * WARPS * WARP / Qi;
     const int tid = WARP * int(threadIdx.y) + int(threadIdx.x);
     const int row0 = ROWS * int(blockIdx.x);
+    if (row0 >= n_out) return;   // grid_pad's empty blocks
     const int blocks_per_row = n_in / 32;
     float tmp[ROWS] = {};
     for (int kbx = tid / (Qi / 2); kbx < blocks_per_row; kbx += BLOCKS_PER_ITER) {
@@ -1180,6 +1182,7 @@ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w
         if (bxi >= n_out / ROWS) { bxi -= n_out / ROWS; w = w2; y = y2; }
     }
     const int row0 = ROWS * bxi;
+    if (row0 >= n_out) return;                         // grid_pad's empty blocks (PAIR: past the second matrix)
     const int blocks_per_row = n_in / F::DIV;
     const int x_stride = n_in / Q8K;                   // Q8_1 blocks per activation column
     float tmp[NCOLS][ROWS] = {};
@@ -1477,7 +1480,7 @@ void launch_multi_n(const void* weights, const void* x_q8_1, float* y, int n_in,
     if (!g_multi_exact) {
         constexpr int NW = NCOLS <= 4 ? 4 : 2;
         const unsigned blocks = unsigned((std::size_t(n_out) + 1) / 2);
-        launch_pdl(native_mmvq_multi_kernel<F, NCOLS, NW, 2, false, false>, dim3(blocks), dim3(WARP, NW), 0, s, w, x, y, n_in, n_out,
+        launch_pdl(native_mmvq_multi_kernel<F, NCOLS, NW, 2, false, false>, dim3(grid_pad(blocks, WARP * NW)), dim3(WARP, NW), 0, s, w, x, y, n_in, n_out,
                    (const typename F::Block*) nullptr, (float*) nullptr);
         return;
     }
@@ -1492,14 +1495,15 @@ void launch_multi_n(const void* weights, const void* x_q8_1, float* y, int n_in,
         return v != nullptr && v[0] != '\0' && v[0] != '0';
     }();
     if ((rows1 || q8_0_rows1<F>(n_in, n_out)) && n_in / F::DIV >= F::BPI) {
-        if (s26_tsum_on()) launch_pdl(native_mmvq_multi_kernel<F, NCOLS, WARPS, 1, true, false>, dim3(unsigned(n_out)), threads, 0, s, w, x, y, n_in, n_out, no_w2, no_y2);
-        else launch_pdl(native_mmvq_multi_kernel<F, NCOLS, WARPS, 1, false, false>, dim3(unsigned(n_out)), threads, 0, s, w, x, y, n_in, n_out, no_w2, no_y2);
+        const dim3 grid(grid_pad(unsigned(n_out), WARP * WARPS));
+        if (s26_tsum_on()) launch_pdl(native_mmvq_multi_kernel<F, NCOLS, WARPS, 1, true, false>, grid, threads, 0, s, w, x, y, n_in, n_out, no_w2, no_y2);
+        else launch_pdl(native_mmvq_multi_kernel<F, NCOLS, WARPS, 1, false, false>, grid, threads, 0, s, w, x, y, n_in, n_out, no_w2, no_y2);
         return;
     }
     constexpr int ROWS = 2;
-    const unsigned blocks = unsigned((std::size_t(n_out) + ROWS - 1) / ROWS);
-    if (s26_tsum_on()) launch_pdl(native_mmvq_multi_kernel<F, NCOLS, WARPS, ROWS, true, false>, dim3(blocks), threads, 0, s, w, x, y, n_in, n_out, no_w2, no_y2);
-    else launch_pdl(native_mmvq_multi_kernel<F, NCOLS, WARPS, ROWS, false, false>, dim3(blocks), threads, 0, s, w, x, y, n_in, n_out, no_w2, no_y2);
+    const dim3 grid(grid_pad(unsigned((std::size_t(n_out) + ROWS - 1) / ROWS), WARP * WARPS));
+    if (s26_tsum_on()) launch_pdl(native_mmvq_multi_kernel<F, NCOLS, WARPS, ROWS, true, false>, grid, threads, 0, s, w, x, y, n_in, n_out, no_w2, no_y2);
+    else launch_pdl(native_mmvq_multi_kernel<F, NCOLS, WARPS, ROWS, false, false>, grid, threads, 0, s, w, x, y, n_in, n_out, no_w2, no_y2);
 }
 
 template<typename F>
@@ -1899,9 +1903,9 @@ void small_mmvq(const void* weights, const void* x_q8_1, float* y,
     const dim3 threads(WARP, WARPS);
     if (n_in / 32 < 2 * WARPS * WARP / Qi) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
-        native_small_mmvq_kernel<Weight, Qi, true><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out);
+        native_small_mmvq_kernel<Weight, Qi, true><<<grid_pad(blocks, WARP * WARPS), threads, 0, s>>>(w, x, y, n_in, n_out);
     } else {
-        native_small_mmvq_kernel<Weight, Qi, false><<<unsigned(n_out), threads, 0, s>>>(w, x, y, n_in, n_out);
+        native_small_mmvq_kernel<Weight, Qi, false><<<grid_pad(unsigned(n_out), WARP * WARPS), threads, 0, s>>>(w, x, y, n_in, n_out);
     }
     launch_check();
 }
@@ -2734,10 +2738,11 @@ void q8_0_pair_launch(const Q80Block* w1, const Q80Block* w2, const Q81Block* x,
                       cudaStream_t s) {
     using F = SmallTraits<Q80Block, 8>;
     const dim3 threads(WARP, WARPS);
+    const unsigned grid = grid_pad(unsigned(2 * n_out), WARP * WARPS);
     if (s26_tsum_on())
-        native_mmvq_multi_kernel<F, NCOLS, WARPS, 1, true, true><<<unsigned(2 * n_out), threads, 0, s>>>(w1, x, y1, n_in, n_out, w2, y2);
+        native_mmvq_multi_kernel<F, NCOLS, WARPS, 1, true, true><<<grid, threads, 0, s>>>(w1, x, y1, n_in, n_out, w2, y2);
     else
-        native_mmvq_multi_kernel<F, NCOLS, WARPS, 1, false, true><<<unsigned(2 * n_out), threads, 0, s>>>(w1, x, y1, n_in, n_out, w2, y2);
+        native_mmvq_multi_kernel<F, NCOLS, WARPS, 1, false, true><<<grid, threads, 0, s>>>(w1, x, y1, n_in, n_out, w2, y2);
 }
 
 bool native_mmvq_pair(int ggml_type, const void* w1, const void* w2, const void* x_q8_1, float* y1, float* y2,
