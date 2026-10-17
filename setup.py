@@ -42,6 +42,7 @@ import argparse
 import ctypes
 import glob
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -158,7 +159,7 @@ def ms_meta(repo: str, path: str):
                                         timeout=60) as r:
                 files = json.loads(r.read())["Data"]["Files"]
             _ms_files[repo] = {f["Path"]: (int(f.get("Size") or 0), (f.get("Sha256") or "").lower()) for f in files}
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError):
             return None
     return _ms_files[repo].get(path)
 
@@ -1609,6 +1610,25 @@ def drop_archive(z: Path) -> None:
     z.with_name(z.name + ".done").unlink(missing_ok=True)
 
 
+def answer_total(r, start: int) -> int:
+    """Validate a resumed response and return its whole-file length, or 0 if unknown."""
+    length = r.headers.get("Content-Length", "")
+    if r.status == 206:
+        match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", r.headers.get("Content-Range", ""))
+        if not match:
+            raise OSError("partial response has no valid Content-Range")
+        first, last = int(match[1]), int(match[2])
+        total = int(match[3]) if match[3] != "*" else 0
+        if first != start or last < first or (total and last >= total):
+            raise OSError("partial response does not match the requested range")
+        if length.isdigit() and int(length) != last - first + 1:
+            raise OSError("Content-Length disagrees with Content-Range")
+        return total
+    if r.status != 200:
+        raise OSError(f"unexpected download status {r.status}")
+    return int(length) if length.isdigit() else 0
+
+
 def download(url, dst: Path, what=None):
     """Resumable HTTP(S) download with a progress line; `file://` and plain paths are copied (tests, mirrors).
     A finished file gets a <name>.done mark, so a later run skips it without asking the server."""
@@ -1657,41 +1677,76 @@ def download(url, dst: Path, what=None):
         mark(dst)
         ok(f"{what or dst.name} already downloaded")
         return
+    meta = ms_meta(*ms) if ms is not None else None
+    if not total and meta is not None and meta[0]:
+        total = meta[0]                                # #1915: ModelScope's HEAD has no length; its file list does
     have = part.stat().st_size if part.exists() else 0
+    whole = False                  # a complete response without a positive whole-file length
     for attempt in range(30):
         if total and have >= total:                    # stopped after the last byte, before the rename: nothing to
             break                                      # ask for (a range past the end is a 416, retried 30 times)
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "strata-setup", "Range": f"bytes={have}-"})
             with urllib.request.urlopen(req, timeout=60) as r, open(part, "ab" if have else "wb") as f:
-                if have and r.status != 206:                     # the server ignored the range: start over
+                start = 0 if r.status == 200 else have
+                response_total = answer_total(r, start)
+                if total and response_total and total != response_total:
+                    raise OSError("response length changed; refusing to append inconsistent data")
+                if have and r.status == 200:                     # validate before replacing partial bytes
                     f.seek(0)
                     f.truncate()
                     have = 0
+                total = total or response_total
                 last = 0.0
-                while True:
-                    b = r.read(8 << 20)
-                    if not b:
-                        break
-                    f.write(b)
-                    have += len(b)
-                    if time.time() - last > 2:
-                        last = time.time()
-                        size = f"{have / 1e9:6.2f} / {total / 1e9:.2f} GB ({100 * have / total:.0f}%)" if total \
-                            else f"{have / 1e6:7.1f} MB"
-                        print(f"\r  {what or dst.name}: {size}   ", end="", flush=True)
+                try:
+                    while True:
+                        b = r.read(8 << 20)
+                        if not b:
+                            break
+                        f.write(b)
+                        have += len(b)
+                        if time.time() - last > 2:
+                            last = time.time()
+                            size = f"{have / 1e9:6.2f} / {total / 1e9:.2f} GB ({100 * have / total:.0f}%)" if total \
+                                else f"{have / 1e6:7.1f} MB"
+                            print(f"\r  {what or dst.name}: {size}   ", end="", flush=True)
+                except http.client.IncompleteRead as e:  # a chunked answer cut before its last chunk: keep what came
+                    f.write(e.partial)
+                    have += len(e.partial)
+                    raise OSError(f"the server sent {have:,} bytes and stopped") from e
+                whole = r.status == 200 and (bool(getattr(r, "chunked", False))
+                                             or r.headers.get("Content-Length") == "0")
             print()
-            if not total or have >= total:
+            if total and have >= total:
                 break
-        except OSError as e:
+            if not total:                                # completion without a known length is checked below
+                break
+        except urllib.error.HTTPError as e:
+            with e:
+                match = re.fullmatch(r"bytes \*/(\d+)", e.headers.get("Content-Range", ""))
+                if e.code == 416 and match:
+                    size = int(match[1])
+                    if have == size and (not total or total == size):
+                        part.touch(exist_ok=True)
+                        total = size
+                        whole = True
+                        break
+                    fail(f"cannot resume {dst.name}: {have:,} local bytes, server reports {size:,}",
+                         "the .part file is kept; check that the URL still refers to the same file")
             print()
             warn(f"download interrupted ({e}); retrying in 10 s ...")
             time.sleep(10)
-    if total and part.stat().st_size != total:
-        fail(f"could not finish downloading {dst.name}: {part.stat().st_size:,} bytes on disk, the server says {total:,}",
+        except (OSError, http.client.HTTPException) as e:
+            print()
+            warn(f"download interrupted ({e}); retrying in 10 s ...")
+            time.sleep(10)
+    if not total and not whole:
+        fail(f"cannot confirm the complete length of {dst.name}",
+             "the .part file is kept; use a source that provides a file length or complete chunked response")
+    if total and (not part.exists() or part.stat().st_size != total):
+        fail(f"could not finish downloading {dst.name}: {have:,} bytes on disk, the server says {total:,}",
              "check your internet connection and run it again (the download resumes where it stopped)")
     part.replace(dst)
-    meta = ms_meta(*ms) if ms is not None else None
     if meta is not None and meta[1]:
         verify_sha256(dst, meta[0], meta[1])           # ModelScope's published hash; kept in the finish mark
     else:
