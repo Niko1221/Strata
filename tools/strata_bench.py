@@ -561,7 +561,10 @@ def detect_quant(view: dict) -> str | None:
 
 def project_version() -> str | None:
     try:
-        m = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text())
+        # utf-8-sig: the file ships with a UTF-8 BOM, and with no encoding= the read goes through the OS code page
+        # instead - on a Chinese or Japanese Windows (GBK / cp932) that BOM is not a valid sequence there and the
+        # bench died before its first measurement (#2792).  The other repo files in this file are read the same way.
+        m = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8-sig"))
         return m.group(1) if m else None
     except OSError:
         return None

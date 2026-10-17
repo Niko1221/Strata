@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -338,6 +339,38 @@ class ReportTests(unittest.TestCase):
 
     def test_no_server_is_an_error_not_a_crash(self):
         self.assertEqual(B.main(["--url", "http://127.0.0.1:9", "--quiet"]), 2)
+
+
+class RepoFileEncodingTests(unittest.TestCase):
+    """#2792: the bench reads this install's own CMakeLists.txt for its version, and CMakeLists.txt ships with a
+    UTF-8 BOM.  With no encoding= the read goes through the OS code page instead, and on a Chinese or Japanese
+    Windows (GBK / cp932) the BOM's third byte is not a valid sequence there, so the read threw and BENCH died
+    before its first measurement.  The bench must not care which code page the machine happens to run."""
+
+    def test_project_version_does_not_read_through_the_os_code_page(self):
+        seen = {}
+        real = Path.read_text
+
+        def spy(self, *a, **k):
+            seen.update(k)
+            return real(self, *a, **k)
+
+        with mock.patch.object(Path, "read_text", spy):
+            B.project_version()
+        enc = str(seen.get("encoding", "")).lower().replace("_", "-")
+        self.assertTrue(enc.startswith("utf-8"), f"read CMakeLists.txt with encoding={enc!r}: the OS code page decides")
+
+    def test_the_bom_is_what_the_read_has_to_survive(self):
+        # Why it is not a non-issue anywhere else: the file really is undecodable as GBK (0xbf is not a valid
+        # sequence there), which is the failure the encoding= above avoids.  cp1252 would instead decode the BOM
+        # to mojibake and say nothing, which is why this only ever bit those two locales.
+        with self.assertRaises(UnicodeDecodeError):
+            (B.ROOT / "CMakeLists.txt").read_bytes().decode("gbk")
+        self.assertRegex(B.project_version() or "", r"^\d+\.\d+")
+
+    def test_the_version_reads_the_same_as_a_strict_utf8_decode(self):
+        text = (B.ROOT / "CMakeLists.txt").read_text(encoding="utf-8-sig")
+        self.assertEqual(B.project_version(), re.search(r"project\(strata VERSION ([\d.]+)", text).group(1))
 
 
 if __name__ == "__main__":
