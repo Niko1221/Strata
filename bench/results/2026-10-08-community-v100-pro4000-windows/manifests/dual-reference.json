@@ -1,0 +1,120 @@
+{
+  "label": "dual-reference",
+  "frontend_source_commit": "1735d6471df29b42c26170efaac1f1446a58640f",
+  "pack": "<DATA_ROOT>\\packs\\iq2_xs",
+  "config": {
+    "exe": "<STRATA_ROOT>\\engine-cuda12\\strata.exe",
+    "cwd": "<STRATA_ROOT>",
+    "args": [
+      "--pack",
+      "<DATA_ROOT>\\packs\\iq2_xs",
+      "--native",
+      "<DATA_ROOT>\\models\\IQ2_XS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+      "--ple-gguf",
+      "<DATA_ROOT>\\models\\IQ2_XS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+      "--expert-profile",
+      "<STRATA_ROOT>\\data\\expert-profile.bin",
+      "--expert-cache",
+      "auto",
+      "--prefill",
+      "auto",
+      "--spec",
+      "4",
+      "--spec-min-p",
+      "0.5",
+      "--mtp",
+      "<DATA_ROOT>\\mtp\\rt",
+      "--max-context",
+      "262144",
+      "--kv",
+      "int8",
+      "--kv-resident",
+      "32768",
+      "--vision",
+      "--vram-reserve-mib",
+      "700"
+    ],
+    "gpu": [
+      1,
+      2
+    ],
+    "layer_split": "auto",
+    "split_skip_if_fits": false,
+    "tokenizer": "<DATA_ROOT>\\packs\\iq2_xs\\tokenizer",
+    "log": "<OPS_ROOT>\\experiments\\heterogeneous-20261008\\dual-reference-detailed\\engine.log",
+    "model_name": "qwen3.8-flash-next-iq2_xs",
+    "parallel": 1,
+    "vision": {
+      "exe": "<STRATA_ROOT>\\engine-cuda12\\strata-vision.exe",
+      "mmproj": "<DATA_ROOT>\\models\\mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+      "model": "<DATA_ROOT>\\models\\IQ2_XS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+      "gpu": true,
+      "max_tokens": 1024,
+      "threads": 16,
+      "cuda_device": "<GPU_V1_UUID>"
+    },
+    "env": {
+      "CUDA_VISIBLE_DEVICES": "<GPU_V1_UUID>,<GPU_V2_UUID>",
+      "CUDA_DEVICE_ORDER": "PCI_BUS_ID"
+    }
+  },
+  "engine_executable": {
+    "path": "<STRATA_ROOT>\\engine-cuda12\\strata.exe",
+    "sha256": "cae9524813a5404f3dd1e40ae1b0354a8b2323ce4875ef7650c27636f10bdac0",
+    "size_bytes": 221992960
+  },
+  "engine_provenance": {
+    "path": "<STRATA_ROOT>\\engine-cuda12\\BUILD.json",
+    "sha256": "eff332fcdfe92ba4411196f5db7f6a402182bb9ffead87e3468f1a75c4ebcf9c",
+    "version": "0.1.40",
+    "commit": null,
+    "fingerprint": null,
+    "toolchain": {
+      "cuda": "12.9",
+      "archs": [
+        60,
+        61,
+        70,
+        75,
+        80,
+        86,
+        89
+      ],
+      "ptx": true,
+      "portable": true
+    },
+    "repository": null,
+    "llama_cpp_commit": null,
+    "executable_hash_verified": false,
+    "recorded_executable_sha256": null
+  },
+  "engine_reported_version": "0.1.40",
+  "targets": [
+    4096,
+    32768,
+    128000,
+    258000
+  ],
+  "runs": 3,
+  "max_tokens": 256,
+  "model": "qwen3.8-flash-next-iq2_xs",
+  "server_model": "qwen3.8-flash-next-iq2_xs",
+  "max_context": 262144,
+  "hardware_static": {
+    "gpu_name": "Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB",
+    "gpu_count": 2,
+    "cpu_name": "AMD EPYC 7A23 48-Core Processor",
+    "cores": 48,
+    "threads": 96,
+    "psutil": true
+  },
+  "tokenizer_sha256": {
+    "vocab.json": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4",
+    "merges.txt": "080cf95432173729d160346b7882bd2a644b07f7a3813a3eb73f4e66787bfde9",
+    "token_type.json": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b",
+    "chat_template.jinja": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+  },
+  "script_sha256": "17516fb948f5e7e1d476194edb194c59ef4684fcbf9d6c2439dd6ab2bbed5217",
+  "method": "Serial warm-engine trials; default adaptive expert state retained; zero prompt reuse required",
+  "disk_counter_note": "file_mb is the decode file tier, possibly OS-cached; disk_read_mb is system-wide physical I/O"
+}

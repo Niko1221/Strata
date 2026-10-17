@@ -1,0 +1,1283 @@
+{
+  "dual-reference": {
+    "engine": {
+      "model": "qwen3.8-flash-next-iq2_xs",
+      "max_context": 262144,
+      "images": true,
+      "version": "0.1.40",
+      "context": 262144,
+      "kv": "int8",
+      "kv_resident": 32768,
+      "expert_slots": 14876,
+      "expert_cache_mib": 20409,
+      "expert_slots_primary": 7561,
+      "expert_cache_primary_mib": 10155,
+      "spec": 6,
+      "mtp_max": 4,
+      "lookup": 3,
+      "vram_free_mib": 510,
+      "cvec": 0,
+      "arena_mib": 33812,
+      "pool_workers": 47,
+      "pcie_frac": "0.18",
+      "spec_min_p": "0.50",
+      "conversation_cache_mib": 0,
+      "conversation_cache_slots": 4,
+      "conversation_cache_min_free_mib": 2560,
+      "tail_role_token": -1,
+      "vram_elastic": 0,
+      "engine": "0.1.40"
+    },
+    "layer_layout": "strata serve: layer split: layers 0-22 (CUDA0), 23-47 (CUDA1), one hand-off per window",
+    "startup_seconds": 29.3657808303833,
+    "outcome": {
+      "success": true,
+      "quality_exit_code": 1,
+      "protected_files_unchanged": true,
+      "resource_alarms": []
+    },
+    "resources_text": {
+      "samples": 597,
+      "ram_used_gib": {
+        "min": 50.960391998291016,
+        "median": 51.92573547363281,
+        "max": 52.63998794555664
+      },
+      "ram_available_gib": {
+        "min": 11.219429016113281,
+        "median": 11.93368148803711,
+        "max": 12.899024963378906
+      },
+      "gpus": {
+        "0": {
+          "memory.used": {
+            "min": 885.0,
+            "median": 898.0,
+            "max": 915.0
+          },
+          "memory.free": {
+            "min": 23157.0,
+            "median": 23174.0,
+            "max": 23187.0
+          },
+          "utilization.gpu": {
+            "min": 1.0,
+            "median": 10.0,
+            "max": 19.0
+          },
+          "temperature.gpu": {
+            "min": 44.0,
+            "median": 45.0,
+            "max": 45.0
+          },
+          "clocks.current.sm": {
+            "min": 682.0,
+            "median": 922.0,
+            "max": 1155.0
+          },
+          "clocks.current.memory": {
+            "min": 405.0,
+            "median": 405.0,
+            "max": 405.0
+          },
+          "power.draw": {
+            "min": 14.46,
+            "median": 16.38,
+            "max": 17.58
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 0
+          }
+        },
+        "1": {
+          "memory.used": {
+            "min": 15868.0,
+            "median": 15868.0,
+            "max": 15868.0
+          },
+          "memory.free": {
+            "min": 375.0,
+            "median": 375.0,
+            "max": 375.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 99.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 40.0,
+            "median": 56.0,
+            "max": 63.0
+          },
+          "clocks.current.sm": {
+            "min": 1312.0,
+            "median": 1530.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 57.81,
+            "median": 214.99,
+            "max": 332.51
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 69
+          }
+        },
+        "2": {
+          "memory.used": {
+            "min": 15882.0,
+            "median": 15882.0,
+            "max": 15882.0
+          },
+          "memory.free": {
+            "min": 361.0,
+            "median": 361.0,
+            "max": 361.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 100.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 47.0,
+            "median": 74.0,
+            "max": 77.0
+          },
+          "clocks.current.sm": {
+            "min": 555.0,
+            "median": 1447.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 61.0,
+            "median": 206.53,
+            "max": 338.76
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 109,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 55
+          }
+        }
+      }
+    },
+    "resources_entire_trial": {
+      "samples": 757,
+      "ram_used_gib": {
+        "min": 11.249675750732422,
+        "median": 51.872215270996094,
+        "max": 52.63998794555664
+      },
+      "ram_available_gib": {
+        "min": 11.219429016113281,
+        "median": 11.987201690673828,
+        "max": 52.6097412109375
+      },
+      "gpus": {
+        "0": {
+          "memory.used": {
+            "min": 885.0,
+            "median": 898.0,
+            "max": 915.0
+          },
+          "memory.free": {
+            "min": 23157.0,
+            "median": 23174.0,
+            "max": 23187.0
+          },
+          "utilization.gpu": {
+            "min": 1.0,
+            "median": 10.0,
+            "max": 19.0
+          },
+          "temperature.gpu": {
+            "min": 44.0,
+            "median": 45.0,
+            "max": 45.0
+          },
+          "clocks.current.sm": {
+            "min": 240.0,
+            "median": 922.0,
+            "max": 1155.0
+          },
+          "clocks.current.memory": {
+            "min": 405.0,
+            "median": 405.0,
+            "max": 405.0
+          },
+          "power.draw": {
+            "min": 12.75,
+            "median": 16.4,
+            "max": 17.58
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 1
+          }
+        },
+        "1": {
+          "memory.used": {
+            "min": 10.0,
+            "median": 15868.0,
+            "max": 15874.0
+          },
+          "memory.free": {
+            "min": 369.0,
+            "median": 375.0,
+            "max": 16233.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 98.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 38.0,
+            "median": 56.0,
+            "max": 63.0
+          },
+          "clocks.current.sm": {
+            "min": 135.0,
+            "median": 1530.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 40.91,
+            "median": 172.6,
+            "max": 332.51
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 69
+          }
+        },
+        "2": {
+          "memory.used": {
+            "min": 10.0,
+            "median": 15882.0,
+            "max": 15884.0
+          },
+          "memory.free": {
+            "min": 359.0,
+            "median": 361.0,
+            "max": 16233.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 99.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 45.0,
+            "median": 73.0,
+            "max": 77.0
+          },
+          "clocks.current.sm": {
+            "min": 135.0,
+            "median": 1462.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 43.81,
+            "median": 188.79,
+            "max": 338.76
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 109,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 55
+          }
+        }
+      }
+    }
+  },
+  "tri-first": {
+    "engine": {
+      "model": "qwen3.8-flash-next-iq2_xs",
+      "max_context": 262144,
+      "images": true,
+      "version": "0.1.40",
+      "context": 262144,
+      "kv": "int8",
+      "kv_resident": 32768,
+      "expert_slots": 24310,
+      "expert_cache_mib": 33454,
+      "expert_slots_primary": 12022,
+      "expert_cache_primary_mib": 16217,
+      "spec": 6,
+      "mtp_max": 4,
+      "lookup": 3,
+      "vram_free_mib": 2812,
+      "cvec": 0,
+      "arena_mib": 33812,
+      "pool_workers": 47,
+      "pcie_frac": "0.55",
+      "spec_min_p": "0.50",
+      "conversation_cache_mib": 0,
+      "conversation_cache_slots": 4,
+      "conversation_cache_min_free_mib": 2560,
+      "tail_role_token": -1,
+      "vram_elastic": 0,
+      "engine": "0.1.40"
+    },
+    "layer_layout": "strata serve: layer split: layers 0-23 (CUDA0), 24-34 (CUDA1), 35-47 (CUDA2), one hand-off per window",
+    "startup_seconds": 36.478904485702515,
+    "outcome": {
+      "success": true,
+      "quality_exit_code": 0,
+      "needle_exit_code": 0,
+      "protected_files_unchanged": true,
+      "resource_alarms": []
+    },
+    "resources_text": {
+      "samples": 357,
+      "ram_used_gib": {
+        "min": 53.229732513427734,
+        "median": 54.17597198486328,
+        "max": 54.9464111328125
+      },
+      "ram_available_gib": {
+        "min": 8.913005828857422,
+        "median": 9.68344497680664,
+        "max": 10.629684448242188
+      },
+      "gpus": {
+        "0": {
+          "memory.used": {
+            "min": 21212.0,
+            "median": 21220.0,
+            "max": 21294.0
+          },
+          "memory.free": {
+            "min": 2778.0,
+            "median": 2852.0,
+            "max": 2860.0
+          },
+          "utilization.gpu": {
+            "min": 1.0,
+            "median": 97.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 51.0,
+            "median": 77.0,
+            "max": 86.0
+          },
+          "clocks.current.sm": {
+            "min": 502.0,
+            "median": 2130.0,
+            "max": 2647.0
+          },
+          "clocks.current.memory": {
+            "min": 405.0,
+            "median": 13365.0,
+            "max": 13365.0
+          },
+          "power.draw": {
+            "min": 14.97,
+            "median": 134.44,
+            "max": 147.91
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 225
+          }
+        },
+        "1": {
+          "memory.used": {
+            "min": 13253.0,
+            "median": 13253.0,
+            "max": 13253.0
+          },
+          "memory.free": {
+            "min": 2990.0,
+            "median": 2990.0,
+            "max": 2990.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 65.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 50.0,
+            "median": 57.0,
+            "max": 62.0
+          },
+          "clocks.current.sm": {
+            "min": 1312.0,
+            "median": 1530.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 62.54,
+            "median": 114.21,
+            "max": 325.9
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 44
+          }
+        },
+        "2": {
+          "memory.used": {
+            "min": 14824.0,
+            "median": 14832.0,
+            "max": 14832.0
+          },
+          "memory.free": {
+            "min": 1411.0,
+            "median": 1411.0,
+            "max": 1419.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 99.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 64.0,
+            "median": 74.0,
+            "max": 76.0
+          },
+          "clocks.current.sm": {
+            "min": 495.0,
+            "median": 1417.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 72.72,
+            "median": 202.7,
+            "max": 337.01
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 47,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 52
+          }
+        }
+      }
+    },
+    "resources_entire_trial": {
+      "samples": 800,
+      "ram_used_gib": {
+        "min": 11.58657455444336,
+        "median": 54.13670539855957,
+        "max": 54.9464111328125
+      },
+      "ram_available_gib": {
+        "min": 8.913005828857422,
+        "median": 9.722711563110352,
+        "max": 52.27284240722656
+      },
+      "gpus": {
+        "0": {
+          "memory.used": {
+            "min": 828.0,
+            "median": 21220.0,
+            "max": 21294.0
+          },
+          "memory.free": {
+            "min": 2778.0,
+            "median": 2852.0,
+            "max": 23244.0
+          },
+          "utilization.gpu": {
+            "min": 1.0,
+            "median": 91.5,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 45.0,
+            "median": 77.0,
+            "max": 87.0
+          },
+          "clocks.current.sm": {
+            "min": 502.0,
+            "median": 2115.0,
+            "max": 2647.0
+          },
+          "clocks.current.memory": {
+            "min": 405.0,
+            "median": 13365.0,
+            "max": 13365.0
+          },
+          "power.draw": {
+            "min": 14.97,
+            "median": 115.13,
+            "max": 148.14
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 435
+          }
+        },
+        "1": {
+          "memory.used": {
+            "min": 10.0,
+            "median": 13253.0,
+            "max": 13259.0
+          },
+          "memory.free": {
+            "min": 2984.0,
+            "median": 2990.0,
+            "max": 16233.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 21.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 50.0,
+            "median": 57.0,
+            "max": 63.0
+          },
+          "clocks.current.sm": {
+            "min": 1312.0,
+            "median": 1530.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 62.5,
+            "median": 83.56,
+            "max": 325.9
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 92
+          }
+        },
+        "2": {
+          "memory.used": {
+            "min": 10.0,
+            "median": 14832.0,
+            "max": 14834.0
+          },
+          "memory.free": {
+            "min": 1409.0,
+            "median": 1411.0,
+            "max": 16233.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 99.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 64.0,
+            "median": 74.0,
+            "max": 78.0
+          },
+          "clocks.current.sm": {
+            "min": 495.0,
+            "median": 1402.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 72.72,
+            "median": 176.63,
+            "max": 342.91
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 112,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 76
+          }
+        }
+      }
+    }
+  },
+  "tri-last": {
+    "engine": {
+      "model": "qwen3.8-flash-next-iq2_xs",
+      "max_context": 262144,
+      "images": true,
+      "version": "0.1.40",
+      "context": 262144,
+      "kv": "int8",
+      "kv_resident": 32768,
+      "expert_slots": 24159,
+      "expert_cache_mib": 33228,
+      "expert_slots_primary": 5632,
+      "expert_cache_primary_mib": 7550,
+      "spec": 6,
+      "mtp_max": 4,
+      "lookup": 3,
+      "vram_free_mib": 3339,
+      "cvec": 0,
+      "arena_mib": 33812,
+      "pool_workers": 47,
+      "pcie_frac": "0.18",
+      "spec_min_p": "0.50",
+      "conversation_cache_mib": 0,
+      "conversation_cache_slots": 4,
+      "conversation_cache_min_free_mib": 2560,
+      "tail_role_token": -1,
+      "vram_elastic": 0,
+      "engine": "0.1.40"
+    },
+    "layer_layout": "strata serve: layer split: layers 0-10 (CUDA0), 11-24 (CUDA1), 25-47 (CUDA2), one hand-off per window",
+    "startup_seconds": 36.87702536582947,
+    "outcome": {
+      "success": true,
+      "quality_exit_code": 0,
+      "protected_files_unchanged": true,
+      "resource_alarms": []
+    },
+    "resources_text": {
+      "samples": 347,
+      "ram_used_gib": {
+        "min": 53.226234436035156,
+        "median": 54.117103576660156,
+        "max": 54.89117431640625
+      },
+      "ram_available_gib": {
+        "min": 8.968242645263672,
+        "median": 9.742313385009766,
+        "max": 10.633182525634766
+      },
+      "gpus": {
+        "0": {
+          "memory.used": {
+            "min": 22211.0,
+            "median": 22223.0,
+            "max": 22233.0
+          },
+          "memory.free": {
+            "min": 1839.0,
+            "median": 1849.0,
+            "max": 1861.0
+          },
+          "utilization.gpu": {
+            "min": 1.0,
+            "median": 98.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 54.0,
+            "median": 78.0,
+            "max": 85.0
+          },
+          "clocks.current.sm": {
+            "min": 555.0,
+            "median": 2107.0,
+            "max": 2647.0
+          },
+          "clocks.current.memory": {
+            "min": 405.0,
+            "median": 13365.0,
+            "max": 13365.0
+          },
+          "power.draw": {
+            "min": 15.93,
+            "median": 127.15,
+            "max": 147.74
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 226
+          }
+        },
+        "1": {
+          "memory.used": {
+            "min": 13020.0,
+            "median": 13020.0,
+            "max": 13020.0
+          },
+          "memory.free": {
+            "min": 3224.0,
+            "median": 3224.0,
+            "max": 3224.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 77.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 52.0,
+            "median": 57.0,
+            "max": 62.0
+          },
+          "clocks.current.sm": {
+            "min": 1312.0,
+            "median": 1530.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 63.95,
+            "median": 123.05,
+            "max": 322.78
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 33
+          }
+        },
+        "2": {
+          "memory.used": {
+            "min": 13837.0,
+            "median": 13837.0,
+            "max": 13837.0
+          },
+          "memory.free": {
+            "min": 2406.0,
+            "median": 2406.0,
+            "max": 2406.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 99.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 66.0,
+            "median": 74.0,
+            "max": 77.0
+          },
+          "clocks.current.sm": {
+            "min": 427.0,
+            "median": 1395.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 74.02,
+            "median": 205.7,
+            "max": 340.01
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 66,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 35
+          }
+        }
+      }
+    },
+    "resources_entire_trial": {
+      "samples": 506,
+      "ram_used_gib": {
+        "min": 11.669189453125,
+        "median": 54.063920974731445,
+        "max": 54.89117431640625
+      },
+      "ram_available_gib": {
+        "min": 8.968242645263672,
+        "median": 9.795495986938477,
+        "max": 52.19022750854492
+      },
+      "gpus": {
+        "0": {
+          "memory.used": {
+            "min": 824.0,
+            "median": 22223.0,
+            "max": 22233.0
+          },
+          "memory.free": {
+            "min": 1839.0,
+            "median": 1849.0,
+            "max": 23248.0
+          },
+          "utilization.gpu": {
+            "min": 1.0,
+            "median": 47.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 52.0,
+            "median": 75.0,
+            "max": 85.0
+          },
+          "clocks.current.sm": {
+            "min": 555.0,
+            "median": 2115.0,
+            "max": 2647.0
+          },
+          "clocks.current.memory": {
+            "min": 405.0,
+            "median": 13365.0,
+            "max": 13365.0
+          },
+          "power.draw": {
+            "min": 12.99,
+            "median": 106.4,
+            "max": 147.74
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 234
+          }
+        },
+        "1": {
+          "memory.used": {
+            "min": 10.0,
+            "median": 13020.0,
+            "max": 13030.0
+          },
+          "memory.free": {
+            "min": 3214.0,
+            "median": 3224.0,
+            "max": 16233.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 21.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 52.0,
+            "median": 56.0,
+            "max": 62.0
+          },
+          "clocks.current.sm": {
+            "min": 1312.0,
+            "median": 1530.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 63.47,
+            "median": 82.68,
+            "max": 322.78
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 34
+          }
+        },
+        "2": {
+          "memory.used": {
+            "min": 10.0,
+            "median": 13837.0,
+            "max": 13841.0
+          },
+          "memory.free": {
+            "min": 2402.0,
+            "median": 2406.0,
+            "max": 16233.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 97.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 66.0,
+            "median": 73.0,
+            "max": 77.0
+          },
+          "clocks.current.sm": {
+            "min": 427.0,
+            "median": 1402.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 74.02,
+            "median": 145.58999999999997,
+            "max": 340.01
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 66,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 35
+          }
+        }
+      }
+    }
+  },
+  "dual-vision-pro": {
+    "engine": {
+      "model": "qwen3.8-flash-next-iq2_xs",
+      "max_context": 262144,
+      "images": true,
+      "version": "0.1.40",
+      "context": 262144,
+      "kv": "int8",
+      "kv_resident": 32768,
+      "expert_slots": 15960,
+      "expert_cache_mib": 21896,
+      "expert_slots_primary": 8590,
+      "expert_cache_primary_mib": 11577,
+      "spec": 6,
+      "mtp_max": 4,
+      "lookup": 3,
+      "vram_free_mib": 510,
+      "cvec": 0,
+      "arena_mib": 33812,
+      "pool_workers": 47,
+      "pcie_frac": "0.18",
+      "spec_min_p": "0.50",
+      "conversation_cache_mib": 0,
+      "conversation_cache_slots": 4,
+      "conversation_cache_min_free_mib": 2560,
+      "tail_role_token": -1,
+      "vram_elastic": 0,
+      "engine": "0.1.40"
+    },
+    "layer_layout": "strata serve: layer split: layers 0-23 (CUDA0), 24-47 (CUDA1), one hand-off per window",
+    "startup_seconds": 29.894503593444824,
+    "outcome": {
+      "success": true,
+      "quality_exit_code": 1,
+      "protected_files_unchanged": true,
+      "resource_alarms": []
+    },
+    "resources_text": {
+      "samples": 565,
+      "ram_used_gib": {
+        "min": 51.010154724121094,
+        "median": 52.02391052246094,
+        "max": 52.920780181884766
+      },
+      "ram_available_gib": {
+        "min": 10.938636779785156,
+        "median": 11.835506439208984,
+        "max": 12.849262237548828
+      },
+      "gpus": {
+        "0": {
+          "memory.used": {
+            "min": 2139.0,
+            "median": 2151.0,
+            "max": 2217.0
+          },
+          "memory.free": {
+            "min": 21855.0,
+            "median": 21921.0,
+            "max": 21933.0
+          },
+          "utilization.gpu": {
+            "min": 2.0,
+            "median": 3.0,
+            "max": 15.0
+          },
+          "temperature.gpu": {
+            "min": 41.0,
+            "median": 42.0,
+            "max": 50.0
+          },
+          "clocks.current.sm": {
+            "min": 487.0,
+            "median": 615.0,
+            "max": 2167.0
+          },
+          "clocks.current.memory": {
+            "min": 405.0,
+            "median": 405.0,
+            "max": 13365.0
+          },
+          "power.draw": {
+            "min": 11.26,
+            "median": 11.97,
+            "max": 31.85
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 0
+          }
+        },
+        "1": {
+          "memory.used": {
+            "min": 15874.0,
+            "median": 15874.0,
+            "max": 15874.0
+          },
+          "memory.free": {
+            "min": 369.0,
+            "median": 369.0,
+            "max": 369.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 99.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 51.0,
+            "median": 62.0,
+            "max": 65.0
+          },
+          "clocks.current.sm": {
+            "min": 1312.0,
+            "median": 1522.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 65.15,
+            "median": 247.22,
+            "max": 338.67
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 138
+          }
+        },
+        "2": {
+          "memory.used": {
+            "min": 15900.0,
+            "median": 15902.0,
+            "max": 15902.0
+          },
+          "memory.free": {
+            "min": 341.0,
+            "median": 341.0,
+            "max": 343.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 100.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 64.0,
+            "median": 75.0,
+            "max": 78.0
+          },
+          "clocks.current.sm": {
+            "min": 457.0,
+            "median": 1342.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 72.1,
+            "median": 200.56,
+            "max": 335.61
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 111,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 49
+          }
+        }
+      }
+    },
+    "resources_entire_trial": {
+      "samples": 735,
+      "ram_used_gib": {
+        "min": 11.556278228759766,
+        "median": 51.9957275390625,
+        "max": 52.920780181884766
+      },
+      "ram_available_gib": {
+        "min": 10.938636779785156,
+        "median": 11.863689422607422,
+        "max": 52.303138732910156
+      },
+      "gpus": {
+        "0": {
+          "memory.used": {
+            "min": 824.0,
+            "median": 2151.0,
+            "max": 2217.0
+          },
+          "memory.free": {
+            "min": 21855.0,
+            "median": 21921.0,
+            "max": 23248.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 3.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 41.0,
+            "median": 43.0,
+            "max": 58.0
+          },
+          "clocks.current.sm": {
+            "min": 465.0,
+            "median": 615.0,
+            "max": 2482.0
+          },
+          "clocks.current.memory": {
+            "min": 405.0,
+            "median": 405.0,
+            "max": 13365.0
+          },
+          "power.draw": {
+            "min": 11.26,
+            "median": 12.01,
+            "max": 112.23
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 1
+          }
+        },
+        "1": {
+          "memory.used": {
+            "min": 10.0,
+            "median": 15874.0,
+            "max": 15874.0
+          },
+          "memory.free": {
+            "min": 369.0,
+            "median": 369.0,
+            "max": 16233.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 99.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 51.0,
+            "median": 60.0,
+            "max": 65.0
+          },
+          "clocks.current.sm": {
+            "min": 1312.0,
+            "median": 1530.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 62.5,
+            "median": 219.25,
+            "max": 338.67
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 0,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 138
+          }
+        },
+        "2": {
+          "memory.used": {
+            "min": 10.0,
+            "median": 15902.0,
+            "max": 15904.0
+          },
+          "memory.free": {
+            "min": 339.0,
+            "median": 341.0,
+            "max": 16233.0
+          },
+          "utilization.gpu": {
+            "min": 0.0,
+            "median": 99.0,
+            "max": 100.0
+          },
+          "temperature.gpu": {
+            "min": 64.0,
+            "median": 74.0,
+            "max": 78.0
+          },
+          "clocks.current.sm": {
+            "min": 457.0,
+            "median": 1402.0,
+            "max": 1530.0
+          },
+          "clocks.current.memory": {
+            "min": 877.0,
+            "median": 877.0,
+            "max": 877.0
+          },
+          "power.draw": {
+            "min": 72.1,
+            "median": 182.01,
+            "max": 335.61
+          },
+          "throttle_active_samples": {
+            "clocks_event_reasons.sw_thermal_slowdown": 111,
+            "clocks_event_reasons.hw_thermal_slowdown": 0,
+            "clocks_event_reasons.sw_power_cap": 49
+          }
+        }
+      }
+    }
+  }
+}
