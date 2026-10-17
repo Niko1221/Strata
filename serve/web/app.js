@@ -681,7 +681,12 @@ function updateAssistant(el, m, streaming) {
     el.querySelector(".think-title").textContent = thinkingNow ? "Thinking…" :
       m.thinkSecs != null ? `Thought for ${fmt(m.thinkSecs, 1)} s` : "Thoughts";
     const body = el.querySelector(".thinking");
-    if (det.open || thinkingNow) body.textContent = m.reasoning;
+    if (det.open || thinkingNow) {
+      const top = body.scrollTop, left = body.scrollLeft;
+      if (body.textContent !== m.reasoning) body.textContent = m.reasoning;
+      body.scrollTop = top;
+      body.scrollLeft = left;
+    }
     else body.dataset.pending = "1";
     // open while it streams (if wanted), closed once the answer starts - unless the user toggled it themselves
     if (thinkingNow && settings.show && !det.dataset.touched && !det.open) { det._auto = true; det.open = true; }
@@ -694,7 +699,19 @@ function updateAssistant(el, m, streaming) {
   } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
     bubble.innerHTML = m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
   } else {
-    bubble.innerHTML = answerHtml(m);
+    const html = answerHtml(m);
+    // Streaming replaces nested scroll containers (code/tool output). Keep their reading positions.
+    if (bubble._answerHtml !== html) {
+      const positions = Array.from(bubble.querySelectorAll("pre"), (node) => [node.scrollTop, node.scrollLeft]);
+      const top = bubble.scrollTop, left = bubble.scrollLeft;
+      bubble.innerHTML = html;
+      bubble._answerHtml = html;
+      bubble.querySelectorAll("pre").forEach((node, i) => {
+        if (positions[i]) [node.scrollTop, node.scrollLeft] = positions[i];
+      });
+      bubble.scrollTop = top;
+      bubble.scrollLeft = left;
+    }
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
@@ -811,7 +828,12 @@ async function send() {
   if (settings.mcp !== false && mcpInfo.tools > 0) body.strata_mcp = true;   // this server may run MCP tools for it
 
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
-  const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
+  const paint = () => {
+    frame = 0;
+    const follow = nearBottom(), top = $("chat-scroll").scrollTop;
+    updateAssistant(el, m, true);
+    if (follow) scrollDown(true); else $("chat-scroll").scrollTop = top;
+  };
   try {
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
                                                    signal: controller.signal});
@@ -876,9 +898,10 @@ async function send() {
   busy = null;
   setBusy(false);
   if (frame) cancelAnimationFrame(frame);
+  const follow = nearBottom(), top = $("chat-scroll").scrollTop;
   updateAssistant(el, m, false);
   saveChat();
-  scrollDown();
+  if (follow) scrollDown(true); else $("chat-scroll").scrollTop = top;
 }
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
