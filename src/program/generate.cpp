@@ -150,6 +150,33 @@ bool under_wddm() {
 #endif
 }
 
+// #1727 (--keep-awake, opt-in): Windows counts a CPU-bound server as idle - the display and the system
+// sleep timers keep running through a whole prompt read, and an S3 sleep kills the running request (the
+// arena itself survives in RAM).  SetThreadExecutionState is the only way a process tells Windows it is
+// busy; ES_CONTINUOUS makes the request last until it is changed again (or the process exits), and
+// ES_DISPLAY_REQUIRED also holds the display - the flag's value 2 arm.  A no-op elsewhere.
+void keep_awake_apply(int mode) {
+#ifdef _WIN32
+    if (mode <= 0) return;
+    const EXECUTION_STATE st = ES_CONTINUOUS | ES_SYSTEM_REQUIRED |
+                               (mode >= 2 ? ES_DISPLAY_REQUIRED : (EXECUTION_STATE) 0);
+    const EXECUTION_STATE got = SetThreadExecutionState(st);
+    std::fprintf(stderr, "strata generate: --keep-awake: SetThreadExecutionState(0x%lx) -> 0x%lx (error %lu)\n",
+                 (unsigned long) st, (unsigned long) got, (unsigned long) GetLastError());
+    if (got == 0)
+        std::fprintf(stderr, "strata generate: --keep-awake: the request was NOT accepted\n");
+#else
+    (void) mode;
+#endif
+}
+
+// the off half: the system timer counts again, and a display that was held goes dark on its own timeout
+void keep_awake_clear() {
+#ifdef _WIN32
+    SetThreadExecutionState(ES_CONTINUOUS);
+#endif
+}
+
 // #620 #486: " (N MiB of M MiB VRAM free on this GPU)" for an allocation's failure message (clears the error first)
 std::string vram_free_note() {
     (void) cudaGetLastError();
@@ -623,6 +650,9 @@ struct Options {
     bool split_skip_if_fits = false;
     /// Plan v0.3 P8: stay resident and take requests on stdin (see the --serve block in main).
     bool serve = false;
+    /// #1727 (opt-in): 0 = off (default), 1 = keep the system awake while the engine runs, 2 = while a request
+    /// runs and, on Windows, hold the display too.  Only the flag's presence changes anything.
+    int keep_awake = 0;
     /// The vision path: keep a per-cell (t, h, w) rotary position table so --serve can take GENI requests.
     bool vision = false;
     int adapt_swaps = 96;
@@ -797,6 +827,9 @@ void usage() {
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
                  "                       default 512), so the command `VRAM <reserve_mib>` (the server's POST /v1/vram) can\n"
                  "                       give VRAM back to other programs between requests and take it back later\n"
+                 "  --keep-awake N       --serve (#1727, opt-in, Windows): 0 = off (default), 1 = hold the system awake\n"
+                 "                       while the engine runs, 2 = only while a request runs (and hold the display too).\n"
+                 "                       Without it Windows counts the engine as idle and an S3 sleep kills the request\n"
                  "  --batch N / --slots N  --serve (opt-in): up to N requests decode together in batch slots (2..8\n"
                  "                       normally; --batch-mtp waves more through eight-row windows),\n"
                  "                       each slot with its own session (VRAM like the main one); docs/BATCHING.md\n"
@@ -2101,6 +2134,7 @@ int main(int argc, char** argv) {
         else if (a == "--split-skip-if-fits") o.split_skip_if_fits = true;
         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
         else if (a == "--serve") o.serve = true;
+        else if (a == "--keep-awake") o.keep_awake = std::max(0, std::min(2, std::atoi(next("--keep-awake"))));
         else if (a == "--vision") o.vision = true;
         else if (a == "--session-save-reclaim") o.session_save_reclaim = true;
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
@@ -2705,6 +2739,10 @@ int main(int argc, char** argv) {
     }
     if (o.expert_cache_remote_placement != "stripe" && o.expert_cache_remote_placement != "layer") {
         std::fprintf(stderr, "strata generate: --expert-cache-remote-placement must be stripe or layer\n");
+        return 2;
+    }
+    if (o.keep_awake > 0 && !o.serve) {
+        std::fprintf(stderr, "strata generate: --keep-awake is for --serve\n");
         return 2;
     }
     if (o.remote_expert_opt && !o.serve) {
@@ -9668,6 +9706,10 @@ int main(int argc, char** argv) {
                     }
                 }).detach();
         }
+        if (o.keep_awake == 1) keep_awake_apply(1);   // #1727: for the life of this process
+        if (o.keep_awake > 0)
+            std::fprintf(stderr, "strata serve: keep-awake %s (#1727)\n",
+                         o.keep_awake == 1 ? "held while the engine runs" : "held while a request runs (display too)");
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
         std::string line;
@@ -10368,17 +10410,21 @@ int main(int argc, char** argv) {
             if (line == "QUIT") break;
             // the watchdog watches a request from here until this iteration ends, whichever way it ends
             struct BusyScope {
-                BusyScope() {
+                explicit BusyScope(int keep_awake) {
                     strata::core::progress().allow_until_ms.store(0);
                     strata::core::progress().busy.store(true);
                     strata::core::progress_at("request");
+                    if (keep_awake == 2) keep_awake_apply(2);   // #1727: request start
+                    keep_awake_ = keep_awake;
                 }
                 ~BusyScope() {
                     strata::core::progress().busy.store(false);
                     strata::core::progress().allow_until_ms.store(0);
                     strata::core::progress_at("idle");
+                    if (keep_awake_ == 2) keep_awake_clear();   // request end, STOP, or an ERR before any work
                 }
-            } busy_scope;
+                int keep_awake_;
+            } busy_scope(o.keep_awake);
             {   // #2065: said, never changed - the free VRAM now (the verify windows' captures and the batch layouts
                 // eat into what startup reported), once per 128 MiB lower it gets
                 size_t vf_b = 0, vt_b = 0;

@@ -538,6 +538,14 @@ slowly, the engine prints a hint under its `loaded ... GiB at ...` line naming t
 
 **Large pages need a new logon (#1412).** Granting "Lock pages in memory" (`secpol.msc`, User Rights Assignment) to the account that runs the engine takes effect at the next logon: Windows puts the privilege in the access token when the session starts, so log off and on (or reboot) after granting it. Until then the startup log still says the large pages were refused. `tools\windows\enable_large_pages.ps1` (run as Administrator) grants it to the current account with `secedit`.
 
+**The box sleeps through a request (`--keep-awake`, #1727, opt-in).** Windows counts a CPU-bound server as idle: nothing in the engine asked the system to stay up, so a long prompt read can run straight into the display and sleep timers, and an S3 sleep kills the running request (the expert arena survives in RAM). The engine flag `--keep-awake N` (an argument in the config's `args`, off by default) calls `SetThreadExecutionState`:
+
+- `0` - off (default; the flag's absence changes nothing),
+- `1` - hold the system awake for as long as the engine runs (armed at `READY`),
+- `2` - hold it only while a request runs (request start to `DONE`/`STOP`/`ERR`), and hold the display too.
+
+Measured on an RTX 3080 Ti 12 GB + Ryzen 9 5900X + 64 GB DDR4 (Windows 11, engine built from this commit, `--keep-awake 1`): with the AC sleep timer at **60 s**, the engine's start block shows `--keep-awake: SetThreadExecutionState(0x80000001) -> 0x80000000 (error 0)`, `powercfg /requests` lists the engine under SYSTEM, and the machine stayed up **4.5+ minutes** with the timer at 60 s and its uptime never reset - while the same machine slept inside a minute with the flag off. Not tested: the `2` arm's display hold, and machines whose sleep state is S0 low-power idle rather than S3.
+
 ### Chat in the terminal (optional)
 
 ```
