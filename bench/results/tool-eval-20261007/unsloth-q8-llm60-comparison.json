@@ -1,0 +1,36 @@
+{
+  "historical_report": "unsloth-q8-standard.json",
+  "current_report": "unsloth-q8-llm60-standard.json",
+  "historical_points": 123,
+  "current_points": 121,
+  "changed_scenarios": [
+    {
+      "scenario_id": "TC-48",
+      "old_points": 2,
+      "new_points": 0,
+      "old_status": "pass",
+      "new_status": "fail",
+      "old_summary": "Sent email to Alice with Bob CC'd \u2014 correctly merged additive context.",
+      "new_summary": "Did not send any emails."
+    },
+    {
+      "scenario_id": "TC-51",
+      "old_points": 1,
+      "new_points": 2,
+      "old_status": "partial",
+      "new_status": "pass",
+      "old_summary": "Started planning but missing: event creation, notification.",
+      "new_summary": "Autonomously decomposed goal: contacts \u2192 event \u2192 notify."
+    },
+    {
+      "scenario_id": "TC-62",
+      "old_points": 2,
+      "new_points": 1,
+      "old_status": "pass",
+      "new_status": "partial",
+      "old_summary": "Completed 5-turn chain: corrected data \u2192 competitor \u2192 CFO email with optimistic tone.",
+      "new_summary": "Sent CFO email but missed contact resolution, corrected data, competitor, or optimistic revision."
+    }
+  ],
+  "limitation": "Single runs on different hardware/runtime/loading. Does not isolate causes or establish variance."
+}

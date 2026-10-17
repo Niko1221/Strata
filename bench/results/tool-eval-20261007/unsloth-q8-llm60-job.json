@@ -1,0 +1,56 @@
+{
+  "label": "unsloth-q8-llm60-main",
+  "wait_files": [
+    "/benchmark/BENCH_READY",
+    "/benchmark/ENGINE_READY"
+  ],
+  "python": "/user/src/Strata/.venv/bin/python",
+  "source_revision": "d5ea7133741e67743c0e886bb426c0ce8d69cf6c",
+  "model": "/models/qwen38-flash-next-unsloth-gguf/Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf",
+  "pack": "/benchmark/packs/unsloth-q8-llm60-main",
+  "config": {
+    "exe": "/benchmark/strata/build/strata",
+    "cwd": "/benchmark/strata",
+    "tokenizer": "/benchmark/packs/unsloth-q8-llm60-main/tokenizer",
+    "gpu": 0,
+    "model_name": "unsloth-q8-llm60-main",
+    "lib_dirs": [
+      "/usr/local/cuda-13.2/lib64"
+    ],
+    "args": [
+      "--pack",
+      "/benchmark/packs/unsloth-q8-llm60-main",
+      "--native",
+      "/models/qwen38-flash-next-unsloth-gguf/Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf",
+      "--ple-gguf",
+      "/models/qwen38-flash-next-unsloth-gguf/Q8_0/Qwen3.8-Flash-Next-Q8_0-00003-of-00006.gguf",
+      "--expert-profile",
+      "/benchmark/strata/data/expert-profile.bin",
+      "--expert-cache",
+      "auto",
+      "--prefill",
+      "8192",
+      "--spec",
+      "2",
+      "--suffix-draft",
+      "0",
+      "--max-context",
+      "32768",
+      "--kv",
+      "fp16",
+      "--stats",
+      "--mmap-experts"
+    ]
+  },
+  "stages": [
+    "short",
+    "standard"
+  ],
+  "note": "Same pinned engine/settings as ISTA/Swift. mmap-experts required because Q8 expert arena exceeds host RAM. PLE remains default direct SSD I/O. Small Q8 projections require compat-bf16 pack conversion; original GGUFs and routed experts unchanged.",
+  "pack_args": [
+    "--compat-bf16"
+  ],
+  "env": {
+    "STRATA_GGUF_PY": "/benchmark/ggml-src/gguf-py"
+  }
+}

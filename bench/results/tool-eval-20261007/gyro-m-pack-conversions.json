@@ -1,0 +1,4613 @@
+{
+  "schema": 1,
+  "tool": "tools/iq_pack.py",
+  "compat_bf16": true,
+  "source_shards": [
+    {
+      "name": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "size": 91965774272
+    }
+  ],
+  "tensors": [
+    {
+      "name": "output_hc_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001922607421875,
+      "source_sha256": "4af3192e837760ac348062a9d59bb706326aaa1c868cdc7ae4217afdc106de50"
+    },
+    {
+      "name": "output_hc_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0069580078125,
+      "source_sha256": "51a9db1ef827f17dc5b9d6a6a4c603cd79e4051916b4b941450db2ab3f1b363e"
+    },
+    {
+      "name": "blk.0.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c367d894cf8ce1f3681d71f4b6fbb4c419cbae8c41fb2593232b40bd49bd7455"
+    },
+    {
+      "name": "blk.0.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ba7149360e4a67d47eeaaf89846e7f6313568a91aa169b8e7bde36f2934d04ab"
+    },
+    {
+      "name": "blk.0.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000957489013671875,
+      "source_sha256": "d32cc0355b9e76d09486940b7738dc1f40f302fac5e64da5bc9725dab8c131a3"
+    },
+    {
+      "name": "blk.0.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000209808349609375,
+      "source_sha256": "06082bf9a177f5300e6175ae89f0799ea251202c1b3d353fcb8bbdd459565456"
+    },
+    {
+      "name": "blk.0.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0054931640625,
+      "source_sha256": "0c4e6b67f422051842c2c63b6137570cb0a743b1478c8968547b696b6d930dbf"
+    },
+    {
+      "name": "blk.0.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001941680908203125,
+      "source_sha256": "0ee59c212a7e55f78d4b523ecec1e23deccfc0d1b4101e625dd95eab0ec02292"
+    },
+    {
+      "name": "blk.0.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048160552978515625,
+      "source_sha256": "00713664221781c80f831657455f1aca9aa1336e96d6ff10ce4a33d69cf090d1"
+    },
+    {
+      "name": "blk.0.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00775146484375,
+      "source_sha256": "da4122603eb260bff3388db04373ef9e5ba7207ebede1fe710d8d49fa5549630"
+    },
+    {
+      "name": "blk.0.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000240325927734375,
+      "source_sha256": "8d94dcc6c31ad573e982aa962ad2a5a3091e5a46c2b75d7c4f72f6ff257212bd"
+    },
+    {
+      "name": "blk.0.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00019979476928710938,
+      "source_sha256": "b13e473a09ca525ce69ba61c030181caf023e3b236d4d98709c93f074930cec0"
+    },
+    {
+      "name": "blk.1.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "8a9a3697015e8f9158539be07d9d250c9c54c70a0d3b943bfb93bd157208781d"
+    },
+    {
+      "name": "blk.1.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "6d89a6fdddd7e2e0b5754cd2c30c6500ec5eca45603e2ad3edde3c5643065392"
+    },
+    {
+      "name": "blk.1.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001918792724609375,
+      "source_sha256": "cb077e9e8a7e97185b5e9e911d0d6f98ab2d917ec1d9d9baa5a491023d720f4f"
+    },
+    {
+      "name": "blk.1.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048542022705078125,
+      "source_sha256": "b65aafe81b7a237b05a4fb876d448230663f6779118591d017ce1a2baa1eeb0d"
+    },
+    {
+      "name": "blk.1.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003753662109375,
+      "source_sha256": "2326b039f9da6d39ed3ea4e82b578d738269f5fcc533f1f1adffa9e6e50cbc98"
+    },
+    {
+      "name": "blk.1.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00327301025390625,
+      "source_sha256": "046a7b2ce3dcee2671c217f0bffadce916dc279a9fa8950104973dad2671f9ae"
+    },
+    {
+      "name": "blk.1.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000484466552734375,
+      "source_sha256": "67a8852e33f36f62af147c067110d00ce816ea60463c72f0548e88f70f201997"
+    },
+    {
+      "name": "blk.1.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.007232666015625,
+      "source_sha256": "a8ac3fa000aed62d52bae8ebc27f1db52f864be12d02fc44955f07c149cd83fb"
+    },
+    {
+      "name": "blk.1.ple_conv1d.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "F16",
+      "exact": false,
+      "max_abs_err": 2.9802322387695312e-08,
+      "method": "f32->f16 by the loader (index kind 3, round-to-nearest-even)",
+      "source_sha256": "9cb65a17c7f84a13fe0fc5ae7cd93f9d1b7a8cbabe230af279d7d04aca82025b"
+    },
+    {
+      "name": "blk.1.ple_value.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00024366378784179688,
+      "source_sha256": "513b9ee0dcb5cad48fdb20b51554ebe8872e708514b16e006074e9fc0076fbfc"
+    },
+    {
+      "name": "blk.1.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000484466552734375,
+      "source_sha256": "48ee6705b93b0e5a70e1499b19d975a41c1e71b10c63fa0cdb50237f1e50d1b2"
+    },
+    {
+      "name": "blk.1.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000469207763671875,
+      "source_sha256": "21e494b95d051e666f271115443470ba84020624d3c33a56dd02600cc2c4820b"
+    },
+    {
+      "name": "blk.2.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "328a0ad6a00c2519e8c4aa20175a41208d8a64844cae4c8658112514721ce773"
+    },
+    {
+      "name": "blk.2.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "120c7c51cbc0b4911b3b24881fd1a2f0588768afaf51e75e724ccbb158d57d7d"
+    },
+    {
+      "name": "blk.2.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001926422119140625,
+      "source_sha256": "ff73265e10e9691519aeed896f1ab7520cb182e3bdd43110ac07b99b640f504d"
+    },
+    {
+      "name": "blk.2.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004558563232421875,
+      "source_sha256": "ffc875f2bc03c09435469ff8fa757c418cfe4b8fa9a37c93388c765951217dd7"
+    },
+    {
+      "name": "blk.2.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0077972412109375,
+      "source_sha256": "23d9c2f67507deeb13266109e5e0ed4b1b2551016f12bb25d9e1f55fd6df7d2c"
+    },
+    {
+      "name": "blk.2.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001922607421875,
+      "source_sha256": "c9a8d368071cba75bf043fd4c600d2c760a8247ba2bc6ad5762bcdd10cf17274"
+    },
+    {
+      "name": "blk.2.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00045490264892578125,
+      "source_sha256": "a8b4119f0434993c17f406dbb726d9f0f92cc66ae6efb71668e403ef9cb01a01"
+    },
+    {
+      "name": "blk.2.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.007568359375,
+      "source_sha256": "81f470b3e395ec1c3596b8f9245fc2e435da0de2f56df64041f3ec535d649481"
+    },
+    {
+      "name": "blk.2.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048160552978515625,
+      "source_sha256": "7b80aed387e2d1336f29ccb7cbd05af37c228586893dbbaef193bdbe7f1dc9b9"
+    },
+    {
+      "name": "blk.2.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004711151123046875,
+      "source_sha256": "3f8c82585b3500fc70feb21774495ab571e5c036dabc3bc0def09c2ac4ed872c"
+    },
+    {
+      "name": "blk.3.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "880c73a68a24fa98a5628552e8c3dd558ab21b58635ae24c48cfde7be11ae0cb"
+    },
+    {
+      "name": "blk.3.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f08977ab1ace5bcb930937da4f44d68ee6b7416d8e6cb889d5c5986818fb3c16"
+    },
+    {
+      "name": "blk.3.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001941680908203125,
+      "source_sha256": "93fc419b82035020fc6c3f180438dbdcbbc3170eef1d1ff5d16a5a46ae51919c"
+    },
+    {
+      "name": "blk.3.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000484466552734375,
+      "source_sha256": "37e168aeadc753bdebd57e9acafb771b151c10c306c52b75d1ef2a85c2eaf067"
+    },
+    {
+      "name": "blk.3.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0037689208984375,
+      "source_sha256": "4d6f084ec58390dd8b865b2ed484d42574357889a907e59c4a374ac7e0e17df8"
+    },
+    {
+      "name": "blk.3.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00185394287109375,
+      "source_sha256": "2b0cf916e6ff4b055132b008bd9b051583e056bdeddfc3dbdfc392d433413c69"
+    },
+    {
+      "name": "blk.3.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000423431396484375,
+      "source_sha256": "87f51ec9c017bcd7f245ca980cb4269c7bbea4384f160f0f25d894690398be3e"
+    },
+    {
+      "name": "blk.3.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.007659912109375,
+      "source_sha256": "99f100534ab496fa7c9b005534e50cf2ae2d500dd30a2350d27d557b52fd05b5"
+    },
+    {
+      "name": "blk.4.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "967c080ede08952579636fe925b024b93bd808478eeecea558cea087ace7792c"
+    },
+    {
+      "name": "blk.4.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "4f849640958a68921c05101a152661ff0cfa55fc4db3ab73c189573aaed19e89"
+    },
+    {
+      "name": "blk.4.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001903533935546875,
+      "source_sha256": "49fcacdf03155320e3e731e06d4a97e0ed5bba3a047e8af1bbd77446ba593841"
+    },
+    {
+      "name": "blk.4.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0007648468017578125,
+      "source_sha256": "2417796b214c630198c33a0f61f1eeb09e68072e56c3846d2e2075441e1dbab2"
+    },
+    {
+      "name": "blk.4.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001918792724609375,
+      "source_sha256": "3887c0476370accb640c61a518c41df9f8b046c3ead7d8a847e96de4e0552054"
+    },
+    {
+      "name": "blk.4.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "2a73b0d265f892fbed6261f09ccc3753a87102196d5ab2d54614d6364240f660"
+    },
+    {
+      "name": "blk.4.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004291534423828125,
+      "source_sha256": "9b736237fa7b53bc8b2d7a9fb6e27b1c3833ae9c8c8e1eb59572776b07ac282f"
+    },
+    {
+      "name": "blk.4.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.014404296875,
+      "source_sha256": "376d7bb97211ad32552b4d0129ace87b1780500b995181b55c615051b50de82a"
+    },
+    {
+      "name": "blk.4.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00043487548828125,
+      "source_sha256": "639ea4c50c78a6f43293956f403fcf757394fe42f68f949d7a4590f62c252e3f"
+    },
+    {
+      "name": "blk.4.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00042819976806640625,
+      "source_sha256": "fb2db66b99895f7f07088cd2422254f75ae400c4b3591a45894b69d7fc4d71dd"
+    },
+    {
+      "name": "blk.5.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "dab49e8b36d29fb1e4415d611ba79264dcfa8edc468ce642d3e613a9e7f077f1"
+    },
+    {
+      "name": "blk.5.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "2acf19f73f5a12ee7608018f615ce70051e3ba36ccd8d49dddc19dcabc0c1425"
+    },
+    {
+      "name": "blk.5.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001949310302734375,
+      "source_sha256": "63dc88fe5bbd6896bb3487269bfa6e2fb5bed8e811624533247c61b3bf1dd4c5"
+    },
+    {
+      "name": "blk.5.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000476837158203125,
+      "source_sha256": "29d9f0ef0b4bb110361a1d11d273010689e8a5d95e19fa6c5aa880185569a361"
+    },
+    {
+      "name": "blk.5.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00775146484375,
+      "source_sha256": "88556ef61c974c78b87d314ccafcab0c5b0f6d7d4ad3c40756309d19793f3842"
+    },
+    {
+      "name": "blk.5.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00194549560546875,
+      "source_sha256": "e0921433cf7b33806d16293c9ccfc899c7838851d8f996aa2f2379ef575e1569"
+    },
+    {
+      "name": "blk.5.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0002422332763671875,
+      "source_sha256": "cdf1879bdf66b2bc9eee8f17a3e64e49fcd5e880780935d8c3d9d414dbf7cb2e"
+    },
+    {
+      "name": "blk.5.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00628662109375,
+      "source_sha256": "5b3884b79c4cd2d564b06d7ddce8a683e2609b778167529ace932524fe33ef18"
+    },
+    {
+      "name": "blk.5.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00035858154296875,
+      "source_sha256": "0611e592f397468de6915e93781cf8f2d02b858816870f608b45c3cfd0685dbc"
+    },
+    {
+      "name": "blk.5.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000476837158203125,
+      "source_sha256": "db4ecd955cca7fc695e223ee85a1f1ccdeabdcb786d397cd9192c0a9cb1bddc5"
+    },
+    {
+      "name": "blk.6.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "0c6b90fe5c130d66e44249c2a8e224a0932869d1174f177ffcf15abe615c0971"
+    },
+    {
+      "name": "blk.6.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f4ed3abc5478def5364acf3c620fa1df17af3352bce911cd1e2d6c288bcc9101"
+    },
+    {
+      "name": "blk.6.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001739501953125,
+      "source_sha256": "fd520396151582808802d3828ca3d43286c78af4056f51351c326c1bef302c8a"
+    },
+    {
+      "name": "blk.6.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048828125,
+      "source_sha256": "28a66657c6314a647659bee6dc6723b26e0a67a87f3473edbac3bf7931080d2d"
+    },
+    {
+      "name": "blk.6.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00388336181640625,
+      "source_sha256": "a2181325931e5bf6223c154409381305f2331a034222c04840e971ced8435f23"
+    },
+    {
+      "name": "blk.6.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "7ff5059975651b1b273d80e76efaa88f9d5cf7f5d0272ac57cb5bf157fbb4edb"
+    },
+    {
+      "name": "blk.6.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00023746490478515625,
+      "source_sha256": "acd2b3e2b0d44f2af5bc7faf02447f35992e3bb93e8c4f9c4e270043869f98f8"
+    },
+    {
+      "name": "blk.6.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003753662109375,
+      "source_sha256": "40640d30f8af92e39f1c4e01e57f761bbca4aa1812c272e7b533726e3e110e35"
+    },
+    {
+      "name": "blk.6.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000469207763671875,
+      "source_sha256": "6ce6b9f23798634f5ae20ce855d03222874d78fb3a31179add560e0ef865040b"
+    },
+    {
+      "name": "blk.6.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000457763671875,
+      "source_sha256": "4268b64ed278ad45c6f2c1c1e5b8a5edb69774ac0b426dfd14b179561d482d49"
+    },
+    {
+      "name": "blk.7.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "7c00e53df09bb569ccd5b6b24474ffc5b45cbcfa2944ead1833b6065ecfe70c7"
+    },
+    {
+      "name": "blk.7.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "99133adeca1b136abcdb70a040f050135643af33564dbd75d9416cba69975700"
+    },
+    {
+      "name": "blk.7.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001953125,
+      "source_sha256": "db3fbfd71779130670c32868f7144c889114fc0cd4c67b078045adfb1591fb81"
+    },
+    {
+      "name": "blk.7.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004825592041015625,
+      "source_sha256": "2e833e0acc43071b006bc11ac0d1c8ade73935769a4fc9ca8b1c095dfbc41fc8"
+    },
+    {
+      "name": "blk.7.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038604736328125,
+      "source_sha256": "0c1e431252ab41f7bf347e2581277bbe2d01741cd6fa869c1b617541f67ce470"
+    },
+    {
+      "name": "blk.7.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001514434814453125,
+      "source_sha256": "dd43c1b3e8ec9de2bae8ac6b753eb80964c5b7c59874352f8a77704b67518b69"
+    },
+    {
+      "name": "blk.7.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00045013427734375,
+      "source_sha256": "7f17b716212d104d908e219ef160898f483aab56edecab7e492604789c9f3562"
+    },
+    {
+      "name": "blk.7.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "313b9ebcba136d177382dc04fb3724d5530e349fc83e8448a53628cfa3d34cf3"
+    },
+    {
+      "name": "blk.8.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "89fb654d54b48e15775205a83a0376758be1f3d74dba4f430aae1c08323679c4"
+    },
+    {
+      "name": "blk.8.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "86c8e24cc18a8b8e8ee36d1f1746fbba2d866eed00a8febd6ae27a0c7944bec9"
+    },
+    {
+      "name": "blk.8.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00180816650390625,
+      "source_sha256": "c7c2b5f59c9fa055f88566e1431fb55506c3bbbafbc11b3a10a2a891f4edbd6f"
+    },
+    {
+      "name": "blk.8.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00046539306640625,
+      "source_sha256": "f118872cc6a8dbaa08aa4b7223f44b22fbffd14636e39b8e5c63b6e51b998060"
+    },
+    {
+      "name": "blk.8.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "83e87da8a7c7ec0053fbc2a5fe3f5b51a8a2d4341138446761fd9ea044e11fe5"
+    },
+    {
+      "name": "blk.8.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00138092041015625,
+      "source_sha256": "ca03be99cc0d21a7bf1ca2734d4d451e4da03981cb12217c30bc2718724a8acc"
+    },
+    {
+      "name": "blk.8.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00045490264892578125,
+      "source_sha256": "e1bd3442e57eefc1c9f1e7bd76a6772b094119bccaabf1ba3ce70a623b9724cb"
+    },
+    {
+      "name": "blk.8.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.007110595703125,
+      "source_sha256": "1156705cf5b02332c324917c9176b0ae9a8d06069c72e2f7fc0e0a38cd7c5d41"
+    },
+    {
+      "name": "blk.8.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004863739013671875,
+      "source_sha256": "391c475452189b434dd5ef115268e465c42839ef0053d347a32bd5a7367c173a"
+    },
+    {
+      "name": "blk.8.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004711151123046875,
+      "source_sha256": "ecee878f05f00720d761cb8c90de0475f3ba4707ed101bf3294a55ad0bc6566f"
+    },
+    {
+      "name": "blk.9.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "aae1df9912ca2d567b1da8fcb9ac4a28768b6b2d82c1fd83bc41be23f7a43557"
+    },
+    {
+      "name": "blk.9.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "25a455f965e31dbf4bef31308d3fa112109ba5afb532d8e685ed2f498cd9aca0"
+    },
+    {
+      "name": "blk.9.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "6050343cbbf2f8410769b2875e9f02cee78aa287b0d9c6de5df65b8d04b6a6fa"
+    },
+    {
+      "name": "blk.9.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004863739013671875,
+      "source_sha256": "372d1ea927e4b3852a5ff9496b32a6ecd26a39139a19b52bd742f3589b607633"
+    },
+    {
+      "name": "blk.9.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0037994384765625,
+      "source_sha256": "97dc89de4a89fa57381c548b159c2ba6fade2a1ecdd5d42d91cef00699284770"
+    },
+    {
+      "name": "blk.9.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "9bceb227f43c570a384371a7ea99b4d3b40770f8bd7daa5f08d5b7c933808b75"
+    },
+    {
+      "name": "blk.9.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004863739013671875,
+      "source_sha256": "bc2e28589b36fa007b92200684bc23c9b0877b8ea7b0360a075ee89d3ca63e3c"
+    },
+    {
+      "name": "blk.9.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0076904296875,
+      "source_sha256": "aabab5a0fb6d6ddbacff01f1083a970e79289972a46b61909b8b1f8b9002a0e4"
+    },
+    {
+      "name": "blk.9.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0003566741943359375,
+      "source_sha256": "a97236e41a778faa088693b4c8647aaecf6dd2b2947cc92eed4e1cc7fd45e6d9"
+    },
+    {
+      "name": "blk.9.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00045013427734375,
+      "source_sha256": "cf480b85a88967d11814262bdf371ae1e37381f324b47e361630fa5925e1d764"
+    },
+    {
+      "name": "blk.10.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "54d25f01e50dab4f9ee9443c7e4f72e70561d5ef3273a5ba8d9c0e27ba8eb824"
+    },
+    {
+      "name": "blk.10.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "13fe97fbf28bd8f180731998263d3dbb652762fe4ee08c61e00c4333e68dc1f0"
+    },
+    {
+      "name": "blk.10.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "fb261c29db9b741dcb0eba099ad0b8d1327cc7427085dd5b20f344f1e6796e73"
+    },
+    {
+      "name": "blk.10.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048732757568359375,
+      "source_sha256": "abbeb951bcd8a9555f3a0cd8cd5480723865c5b6834b74c4fc665538554a1a5d"
+    },
+    {
+      "name": "blk.10.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "e078d5aac536d9606334a7e8f8852ef793a2bb4e9ee16dd3da9c4eadc62b3ead"
+    },
+    {
+      "name": "blk.10.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0013885498046875,
+      "source_sha256": "6680493b76959b99dd8ab66a18eeda018d500bb6c97e0bd616939b4d82291342"
+    },
+    {
+      "name": "blk.10.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009441375732421875,
+      "source_sha256": "0a2173056350879f26bb62835b9fd0d4f640d120aad57dcedd5cbb5156965374"
+    },
+    {
+      "name": "blk.10.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "a7b2e1f68e2e37c54f37b168624be08a168a01dfcd4d9c88bedf07eb4ae8dcbf"
+    },
+    {
+      "name": "blk.10.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000423431396484375,
+      "source_sha256": "98d563e7de3f510714cb94772a6e7453c5536c671f61bf471030685dc170826e"
+    },
+    {
+      "name": "blk.10.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004673004150390625,
+      "source_sha256": "3a9dc2fb9c39017bcd2f35b1437524de6beebeaa6ef8b1f07097f2a63d7ce513"
+    },
+    {
+      "name": "blk.11.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3109af1ffb739f1232cf7cd129966f2b48050a4eaddca47525dd029e4ebabf79"
+    },
+    {
+      "name": "blk.11.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "73fa6859aaf64ccdb46481635c3801bd2d2a271bcffd0c66c8e3181b127da3cd"
+    },
+    {
+      "name": "blk.11.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "d6202abc753c4113ec8ece001ffd733bdceae1acdcf76b638b972198ade087be"
+    },
+    {
+      "name": "blk.11.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004863739013671875,
+      "source_sha256": "af669d3a95c87e84289615cfe11bcbea1ac5bece31fd64e4b36f9fe137a748c5"
+    },
+    {
+      "name": "blk.11.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "9f68eed467592e552f23701e17ed01c4a415c6cc753e25206cdc5631c12236bf"
+    },
+    {
+      "name": "blk.11.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "f1cc88b8fbca8683fa2fcea2920c2facb5aef8506f403fc979d66bd592bd3f06"
+    },
+    {
+      "name": "blk.11.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000720977783203125,
+      "source_sha256": "43438c02a093ad9c1572ed2d6f31861b79811088a22b862c675a8ae6e71dde94"
+    },
+    {
+      "name": "blk.11.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00389862060546875,
+      "source_sha256": "3838a23d4a8dee17c5cb18d9c035c13e07634b86b18ca1654344830fc8f6e2dc"
+    },
+    {
+      "name": "blk.12.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "07420ccb970584be352fb60ca9464df0e6d60162fe9e18b47bade68ab4778dd9"
+    },
+    {
+      "name": "blk.12.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "50db07e633dd8ea6d33f64128c26ae7a59513e3d8398b91b67697f9189f0e171"
+    },
+    {
+      "name": "blk.12.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00189208984375,
+      "source_sha256": "5438f3a398bed151b96b5462cf18eb34358b9ba15aa327f0cac24bdaa43fc50a"
+    },
+    {
+      "name": "blk.12.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004863739013671875,
+      "source_sha256": "dc7c9a8b245cddc2ef7b27b5884a4059e502f080849b6ad6694217632d797afa"
+    },
+    {
+      "name": "blk.12.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "659ec5c7d7ec25b1a3f3f5527e5fd397b101bbf37c1898bc0299717750ae779b"
+    },
+    {
+      "name": "blk.12.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "b063806a16a93b547b3f7b133306dcfab53d96440b2b40ee0df82e465b553377"
+    },
+    {
+      "name": "blk.12.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000484466552734375,
+      "source_sha256": "3bb8ad2d7cafef1afba6f8fdeb57abcf3546f72295c3f1979bb1d6f7a9c62456"
+    },
+    {
+      "name": "blk.12.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0052490234375,
+      "source_sha256": "1c027ae53a733224936ea2a1f81a85e3373ea65e6c02f6723c653a21c456b037"
+    },
+    {
+      "name": "blk.12.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000244140625,
+      "source_sha256": "b6381b53f52e8d5cd6ac1692a5606af36c02ea8605dad602d8ecc0f6f1098794"
+    },
+    {
+      "name": "blk.12.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000385284423828125,
+      "source_sha256": "caa42a0c0914e74e28248a5895d3dc9b3b0a905ac5dc816e3edd1d48d1532622"
+    },
+    {
+      "name": "blk.13.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3318fe2bb45892fb1d7666b56ee17b878ddf5cd5cf2cda1e33b0b3f8f489d9e3"
+    },
+    {
+      "name": "blk.13.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "396bedc87a395161d75c949b5f340dff7f4f629c20c705f7ae8c5b84da00abe0"
+    },
+    {
+      "name": "blk.13.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "145613bc45cb36058ca380111a05cc3103dfcc3a7f2ca435c786b81c1dfc0d9c"
+    },
+    {
+      "name": "blk.13.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048828125,
+      "source_sha256": "c9f35df549dc1bd35d532bf9aaeaf6cc546f9b27a39b8199208e4645a2db16f7"
+    },
+    {
+      "name": "blk.13.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "5f8aef43b3577693fa6392726bd4d44796de4b8f8ac91482c863ebd01c7f5aee"
+    },
+    {
+      "name": "blk.13.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0018310546875,
+      "source_sha256": "7ed24a2047053128c7e2db72cd11c7be589b806e23b125300eee63d3524c02bb"
+    },
+    {
+      "name": "blk.13.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00044155120849609375,
+      "source_sha256": "aed61644291c909ba9f34d77ad81128f2c8beed59937764a73af818aa3013436"
+    },
+    {
+      "name": "blk.13.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "d07017628b0b609069ef33f220f6b8322b6813e400a4b72fc34a9fc7c83776ae"
+    },
+    {
+      "name": "blk.13.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00035190582275390625,
+      "source_sha256": "2d4eb6ee08cf7462da02365dde0de85e75e035062cdf743364ae9cad63cb4ce7"
+    },
+    {
+      "name": "blk.13.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000263214111328125,
+      "source_sha256": "60eb763e8e1afaa60d0fb7a1663dfa3a6d1b3e5a68683e0851f044d42a5a5860"
+    },
+    {
+      "name": "blk.14.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "deaa130f8595b72ddbb80a97b238eb49b9a08b812b325fbf88699e1a8837c2d2"
+    },
+    {
+      "name": "blk.14.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c85dde82b78c9b9e1aae1da65ddcccd71e1c95144912fb22b86346f169736fe3"
+    },
+    {
+      "name": "blk.14.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00168609619140625,
+      "source_sha256": "b3ccae68933de5382b2d5af2201dc071d9f60c99a5470dbf5ccf1567274e6cf1"
+    },
+    {
+      "name": "blk.14.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004367828369140625,
+      "source_sha256": "185943f56d57c5717bf738c81591bda6963dd17c25fc2623404b33530ae8ef2c"
+    },
+    {
+      "name": "blk.14.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "a4dcad57a927b67dcfe7eac73c9f22d72ff846d190fa8a0a86a887279b56d4d2"
+    },
+    {
+      "name": "blk.14.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001934051513671875,
+      "source_sha256": "84ca4fea0db2c8dd7a9a8f2f7b732a8e053ddeda7fdf4035ab6269d30d40d2e4"
+    },
+    {
+      "name": "blk.14.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000286102294921875,
+      "source_sha256": "03365d6affb95df110d3ad0556f08549eba2af45c203600a5fac19ffe8044696"
+    },
+    {
+      "name": "blk.14.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00750732421875,
+      "source_sha256": "9882638718a2b6afcf21b7dda70112339426a31156898f37bd2b03f13a252205"
+    },
+    {
+      "name": "blk.14.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00024127960205078125,
+      "source_sha256": "47d2e6fe8cf2f61a4bfad69c90797a9a07ef381402a773f272d9c7f7bea63a42"
+    },
+    {
+      "name": "blk.14.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000457763671875,
+      "source_sha256": "a1320f2355798440f04270ee18be71e75e539f65b6dc3578317ddd99ff03e02e"
+    },
+    {
+      "name": "blk.15.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "edc5f198f82a38b1637a4ffaf070e8c500283cf09d9776ab5610f195667a676d"
+    },
+    {
+      "name": "blk.15.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "03fc18e692a41666f3b0cd76b6c2509e28f500ea24bb5fc5b3707491bda1f052"
+    },
+    {
+      "name": "blk.15.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "0ece3c540b403cbc1c67443b869755695372251a8e512bf4681f36148843c24f"
+    },
+    {
+      "name": "blk.15.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048351287841796875,
+      "source_sha256": "2e057c1b703c76bb80259314249270cb2e9fa9c213fc5fc182b15e15345b1af1"
+    },
+    {
+      "name": "blk.15.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00386810302734375,
+      "source_sha256": "05bebced7e24269e2b9a0f7fe3fc4c472bba614a09266706fa3cd0167b75780f"
+    },
+    {
+      "name": "blk.15.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "e315b89c80fb2f589270238f91cd2d00ae1c826d0af4c994a9e9f642eea52f48"
+    },
+    {
+      "name": "blk.15.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004291534423828125,
+      "source_sha256": "4df83309e342c279db3c49e380af4054d439fec13e2ab2ee881f1c1d45df49c6"
+    },
+    {
+      "name": "blk.15.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.013702392578125,
+      "source_sha256": "f67474837a975bcf9beee84add0e0cd0c26c539a265b41ccff3a4b7775a72739"
+    },
+    {
+      "name": "blk.16.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c2fbf232fa97ea0cf23ed42c086bcccbb7a93c353ecc5c18fdcd041aa52b0717"
+    },
+    {
+      "name": "blk.16.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "2f88f43e8e35c8456ac51d9a7f8f640252b76974e455e152aebe819888393459"
+    },
+    {
+      "name": "blk.16.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009918212890625,
+      "source_sha256": "62718f2542745bf1fb3f07c058e97725ffc49611d8fb98a636fb722cb4157f95"
+    },
+    {
+      "name": "blk.16.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048160552978515625,
+      "source_sha256": "4df398d56410b250a135e5ea8890dc5830c16393137899501d826448a4b715b1"
+    },
+    {
+      "name": "blk.16.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "7d13c7292f060fa83657ef8337d7771186d1e09febb091a7f06eefde8cdc15d2"
+    },
+    {
+      "name": "blk.16.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "dc1e58480a8b45345eb29c180ac5ec4426672f2d002bda27d312a8a51527e790"
+    },
+    {
+      "name": "blk.16.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00046539306640625,
+      "source_sha256": "dc57d6885c321d9b88b0255dc4ba54f54214a5cc147eeb571ed08cf578293da4"
+    },
+    {
+      "name": "blk.16.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.010498046875,
+      "source_sha256": "ca2743de2549bd6332278c1ac04948c9e56bfac9b6e8edfd3f625d3f154954f5"
+    },
+    {
+      "name": "blk.16.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00029850006103515625,
+      "source_sha256": "43eccbd76e848f01aaf73a863de774d6df5ddbcb53d33436d1ababe79f608a25"
+    },
+    {
+      "name": "blk.16.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00037288665771484375,
+      "source_sha256": "41e23f70755380507db3ea4e267df0e763ef0028c0df522807fbee0832019834"
+    },
+    {
+      "name": "blk.17.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3cc2c69b95c4272493855fe5a72b67714c6d4e7e3319cb65efe6bf036a1a222c"
+    },
+    {
+      "name": "blk.17.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3153f6a2c1029f9acdac6d2daaaecd20177c21ed92e09cd2617119ef5132cf0e"
+    },
+    {
+      "name": "blk.17.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "6c27ed0b36c21a00fac79e2865a24b90ddd4a8bf5c8ef8c8e5937f807191b219"
+    },
+    {
+      "name": "blk.17.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004863739013671875,
+      "source_sha256": "b494db790612c0685bf61bc36b092e271e0e9dd5727c0ef52ecf80b2fa611c75"
+    },
+    {
+      "name": "blk.17.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00390625,
+      "source_sha256": "f4974395cd4952f494382516a16c053ed73134d268fa33a0ef3cdc9b3767f2b8"
+    },
+    {
+      "name": "blk.17.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "0d99b2e1219fcfaa7697122a71f626cb9e73b8345177bb8867dd0c9c369fe014"
+    },
+    {
+      "name": "blk.17.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00031185150146484375,
+      "source_sha256": "3b1701bf5052351d70f93359629f29e3f83812101e967c7bddf7cf101dd39e5c"
+    },
+    {
+      "name": "blk.17.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "0a93a7ccfef1f50827d1270beeeab2d0aa6bdc70784aa52caca987885144c601"
+    },
+    {
+      "name": "blk.17.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0003681182861328125,
+      "source_sha256": "8b4c169bf2681c6a17dbd4cdf324309cde9a55b25ee54c92053552647ba5d9a5"
+    },
+    {
+      "name": "blk.17.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000396728515625,
+      "source_sha256": "9c6a9f515980b20c8fb0cadbfce3ed30410880049692f0a2d31da9fac693def8"
+    },
+    {
+      "name": "blk.18.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "8205da910e2b49109516c6cfcbd33e541f7a44256cdb020b7751d3f5f2f81d7b"
+    },
+    {
+      "name": "blk.18.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "445552436483b9110e37f298ed86e3faa67f60bf54836e6db8957b1ad81d353f"
+    },
+    {
+      "name": "blk.18.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "5495732e0cf34700fe9bedbe7ed471b4fa08a4598c860a44fe05acd9b4d50059"
+    },
+    {
+      "name": "blk.18.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000484466552734375,
+      "source_sha256": "9203fb8b112e8940b5b630824c749c2cf28a25f175eb9aab0e770b2855d5c4a3"
+    },
+    {
+      "name": "blk.18.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00386810302734375,
+      "source_sha256": "d3d0037ce4234bc76839eeca4dcc50878598a3c97adeac204e3cc7e54d28d7d2"
+    },
+    {
+      "name": "blk.18.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00179290771484375,
+      "source_sha256": "3c54d04775dface37c8fadc4948f61f919a25d156770435d60fa14383898e39b"
+    },
+    {
+      "name": "blk.18.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000484466552734375,
+      "source_sha256": "f73994fc96c02aa89fb00f731762d087bc4c3710dfe0c47a40c91eb3a40f7df0"
+    },
+    {
+      "name": "blk.18.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.007080078125,
+      "source_sha256": "9085f9002f01e96d1cd517d3404ca1849fa3caa7eedb553199a7c89291a9e697"
+    },
+    {
+      "name": "blk.18.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004024505615234375,
+      "source_sha256": "4ed3dd0bae2fdb9e8f6d257f79fc99975ad17b7f2b479721e8def30c4ac99f36"
+    },
+    {
+      "name": "blk.18.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00046443939208984375,
+      "source_sha256": "9ef3e890ce3861f3eaccb7a32b264b4e08f7c3e3a4a46649017e4ad5e8eb8e51"
+    },
+    {
+      "name": "blk.19.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "3baee2f57cbc7258bed5aff9f45ac171f2ae40d17ea1fca01d8b9c004682fc46"
+    },
+    {
+      "name": "blk.19.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c150301bdf2bba65501177d43a1479b77bed4fcc13e46cbe1785cab3731c8001"
+    },
+    {
+      "name": "blk.19.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001922607421875,
+      "source_sha256": "9a531dacea7525ca0556ac797ec2e4bfd305b559ae877e33ff1aef4ebeefd0fc"
+    },
+    {
+      "name": "blk.19.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004558563232421875,
+      "source_sha256": "df4b74b869e1fa5851c365758bc6526ea68387f37f64c3f10b399d2f703c26ec"
+    },
+    {
+      "name": "blk.19.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "467b14ddf402765d7d98a992b2aa1ce7cd0e8dd2feaf146626f73a7e5256c694"
+    },
+    {
+      "name": "blk.19.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019073486328125,
+      "source_sha256": "d98bedd25dd9031e7b6c1639785e3681fd3a16d0b891ea5c23e8544bac95e834"
+    },
+    {
+      "name": "blk.19.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000457763671875,
+      "source_sha256": "3f4d4584543b32edcee8122f265474b696b9121be8fa3562fb6f3f59ead2bead"
+    },
+    {
+      "name": "blk.19.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00531005859375,
+      "source_sha256": "83a17d341163227b2fdcc98e5d2c277f9955501ea7fd1073554be9e5d58c84e8"
+    },
+    {
+      "name": "blk.20.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "7866e7247ccd27084c273a906c502dd2ac5a6b449ea758798d636e45f9343e52"
+    },
+    {
+      "name": "blk.20.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "1a615ec226a76718ccf4f7e6b849470aa61f679ea744719ddeca02daa2a5b428"
+    },
+    {
+      "name": "blk.20.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00096893310546875,
+      "source_sha256": "6f27e063b45f5415422f8528b6fee56b80f0e98e1225f11057a0dc9c3eeb1ac6"
+    },
+    {
+      "name": "blk.20.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0003871917724609375,
+      "source_sha256": "99ab42d2a1efffad27fc0aeb3a3f6ccbb35bf6a537c4c79a02d0e689878beeb7"
+    },
+    {
+      "name": "blk.20.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00388336181640625,
+      "source_sha256": "555a9f874e813609a67d21aff5628ce57d9364722b1bee13883a496956cc7c06"
+    },
+    {
+      "name": "blk.20.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00180816650390625,
+      "source_sha256": "c7ae9e83d23e51a7b966ce6d1b80fbe8ab73326cf59d7f168ecf278adaaba101"
+    },
+    {
+      "name": "blk.20.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00023317337036132812,
+      "source_sha256": "f2974c140c0b552f9ec612beed5704ae1a14fbe64f4df67350cbadda28dc8cdf"
+    },
+    {
+      "name": "blk.20.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.009613037109375,
+      "source_sha256": "8abf1912edc348cb515fa67716574d7399a4513734b030feb66796b81f505e16"
+    },
+    {
+      "name": "blk.20.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004863739013671875,
+      "source_sha256": "acf577e6d0afd064d0a4800bf797540e92f9b55e8f0f4845aadf68aa70f5db27"
+    },
+    {
+      "name": "blk.20.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000476837158203125,
+      "source_sha256": "cc0a7690638f633f2222dd41e7b8e74e3723cdb370c3f74b1d4045ccb5ead58b"
+    },
+    {
+      "name": "blk.21.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f627d357faffb16f7acfa000f2d4b2f9c03bf1395f7f48567d636a31b7cfe12d"
+    },
+    {
+      "name": "blk.21.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "faca04a1246edc1c0aedc13fab0455bea4ecae54f934e1739da984b4bf9f1c8e"
+    },
+    {
+      "name": "blk.21.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001129150390625,
+      "source_sha256": "94fa65f407065abe6227933bf6727ab624af2caa50189da566bba8ece539112f"
+    },
+    {
+      "name": "blk.21.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00036525726318359375,
+      "source_sha256": "1c50f39bf27f445f289d002f3250492e89ae0a57bbb4802ea8dd3d1be6977708"
+    },
+    {
+      "name": "blk.21.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00377655029296875,
+      "source_sha256": "175e79222417edba09a25a7b3b34474792338727e7abbe3a2027ea4372454ab9"
+    },
+    {
+      "name": "blk.21.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "35c89e56a7797ed0f15eb4226c6b0d555dad357055b8479e083f701cf85a45ba"
+    },
+    {
+      "name": "blk.21.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00023984909057617188,
+      "source_sha256": "df43ed6e15bbff2e9e00d36ccb9479800c30bfbcce94f71b436f49395af63e38"
+    },
+    {
+      "name": "blk.21.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00389862060546875,
+      "source_sha256": "9ba8672c5b4e4f63ece0ac0ac4a8bb7065e70d4275988954ec92e3416aa26504"
+    },
+    {
+      "name": "blk.21.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004863739013671875,
+      "source_sha256": "5d8d4cafbc47cd584a4be8e1bfaf24ac2aec8fd80e31b53d7150b9a6735c3ebb"
+    },
+    {
+      "name": "blk.21.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0003814697265625,
+      "source_sha256": "5126a7947a8b716d4d33c39c17fb45e99c97ed58851fa0cb4866e8c21261b83f"
+    },
+    {
+      "name": "blk.22.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "29c953059493e5fbd3a6cfe5dccf915aa54156dce065426d63ae5ce4546c71da"
+    },
+    {
+      "name": "blk.22.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "6e77b7916c4a915a28da82a9235608315ca48662927845a4c6c8ca6d2730ea50"
+    },
+    {
+      "name": "blk.22.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00179290771484375,
+      "source_sha256": "cff0702d1fcb519760a3a3a1f8cafa2436dd02f36ee55c1c978d1929f0df3f3e"
+    },
+    {
+      "name": "blk.22.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004730224609375,
+      "source_sha256": "95cf8591faf5cba3ad352dcf82bc708a86759bb005aff34ec81978914fa92bff"
+    },
+    {
+      "name": "blk.22.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00389862060546875,
+      "source_sha256": "577c851e4a765c1fe1866013539ba0fdf11b171d1686839ebf22ef96dbfaf780"
+    },
+    {
+      "name": "blk.22.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "a91189d283d8f613ff5c23037b621eff03eb8e75e57d82b55f7f857031271c17"
+    },
+    {
+      "name": "blk.22.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00024366378784179688,
+      "source_sha256": "0bee15f42eca892397c0eacf8ad72a8bb630bcc18c4a2942b11c4a94ca7f727a"
+    },
+    {
+      "name": "blk.22.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "706cefaf942c2df2cbc577257d3eeff132e744dec0fc53fe4de1130e9c5e6395"
+    },
+    {
+      "name": "blk.22.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000484466552734375,
+      "source_sha256": "168e8ea717a1afdc3d02e11b5b521c9571d369e2c2f5d0866fccb5f5a58c0a40"
+    },
+    {
+      "name": "blk.22.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00040721893310546875,
+      "source_sha256": "7406087726547012a5129cb74dbc091bfcbfd50ae6ba1fa698dc885ce6856df6"
+    },
+    {
+      "name": "blk.23.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ca6bba0e86872e947fafc7511eff7fa965dfd5bf7899edc0255b7c2e542ec337"
+    },
+    {
+      "name": "blk.23.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "53d664b3b439842ebd72bf01ab0f0dfa59ce34ac22e931a5299a9f2f3e22eb7b"
+    },
+    {
+      "name": "blk.23.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "d01a0f1d31dd40a9081e7b0c9a8c47a62d1af5b8fcfe5d502c02e190d74a7ef0"
+    },
+    {
+      "name": "blk.23.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00047206878662109375,
+      "source_sha256": "519d72ef9ed0d7ca9abdc8ac5cf2f9fecb6920e6aee45c77083c68cdfd156da7"
+    },
+    {
+      "name": "blk.23.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00376129150390625,
+      "source_sha256": "2d711889e81f190ab22338e0dd32bd6afbb642f18d8793d3f8b7f70821563cc4"
+    },
+    {
+      "name": "blk.23.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00170135498046875,
+      "source_sha256": "2a8ec75f7d736efa598adf867c63121e20a6760c1817842322fd3e763b717dd9"
+    },
+    {
+      "name": "blk.23.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00024318695068359375,
+      "source_sha256": "20bb64ee64e50a2a42575d6af8ae2c7413e5039f03db38f42787547cf8f9177d"
+    },
+    {
+      "name": "blk.23.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "78ea68d687aca7fd7e3f24307a6d35c2ac6e23a92334fa974ba5fd5291a7caf5"
+    },
+    {
+      "name": "blk.24.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "11d6f121b5440343ee5fc3566628305006486971699290d213507fcc88a35eb8"
+    },
+    {
+      "name": "blk.24.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "034a42b34cdd2edf2e12c95f483ecb45401755285591da4488b7621403cb2834"
+    },
+    {
+      "name": "blk.24.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0014801025390625,
+      "source_sha256": "5aedf63b6b170ad063ec3ba80b4881ff7c54cec3c6f8699bc4c8172980822e9c"
+    },
+    {
+      "name": "blk.24.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048732757568359375,
+      "source_sha256": "a20b4a0d02745be20411963aa318cfe5bba3fbc5e8f49046e3494d71bee2d69a"
+    },
+    {
+      "name": "blk.24.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "6b67f1ba7162f0e2f3dafffcf70d695daa0a7539e2825ad8db0f0f815f00aa5a"
+    },
+    {
+      "name": "blk.24.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001445770263671875,
+      "source_sha256": "b119b10bda7c24d5e284cdf396ea77fa0444a088a3f1bc5fb28d870583311768"
+    },
+    {
+      "name": "blk.24.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048065185546875,
+      "source_sha256": "b6681d159f299b5add63ac8d81f21fabe55b1fda7b30c61bee15eccdb84762c1"
+    },
+    {
+      "name": "blk.24.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.007568359375,
+      "source_sha256": "016a99539c30708be1e9e4260c168289d0cba5fc41e4d9509858a883160f0ca7"
+    },
+    {
+      "name": "blk.24.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048828125,
+      "source_sha256": "7aeb812ac6be0bc72f835950287487b9e17deff5cea220bcd7af0481a7ad7b83"
+    },
+    {
+      "name": "blk.24.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00033092498779296875,
+      "source_sha256": "b483897560d7f6bcab12faceb96cd7a5d06f0b1a114e9033d9f9be549a61994f"
+    },
+    {
+      "name": "blk.25.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "bb6c2fa232774323ace584c9808e8d785f33b2fc5ae85410cdb67a89f3619428"
+    },
+    {
+      "name": "blk.25.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c73b8e940049876d5d446917a930698cfa787e9be039bc43b6b38ea3d2e7c4f4"
+    },
+    {
+      "name": "blk.25.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001476287841796875,
+      "source_sha256": "f2df23fd233e58cda1107c5f0507eab014b6b49998b3a2f79d357c3f52ebb35d"
+    },
+    {
+      "name": "blk.25.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004863739013671875,
+      "source_sha256": "1912e3cd18181a38ac544b99f06708d7a1a1313bba93ec5f3d59a7336a4dfc85"
+    },
+    {
+      "name": "blk.25.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00383758544921875,
+      "source_sha256": "fef23d2c1b5f6e7696c15d3052e208b5d8ff39bc4c0bca12e9a42cf91c04635c"
+    },
+    {
+      "name": "blk.25.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "c126755c0a68fe24d31008931b484b7e5f73353f0d0158575cc78d608eb71bc4"
+    },
+    {
+      "name": "blk.25.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048542022705078125,
+      "source_sha256": "4f84a73f00032e21364bac4e220a12395a73deb0ddc1328fb3df55d043d1213b"
+    },
+    {
+      "name": "blk.25.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.007537841796875,
+      "source_sha256": "5a619a1bac914d5346a987ace28de2f61f1bc7d612ae0ff5e32bc45d3295719b"
+    },
+    {
+      "name": "blk.25.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004787445068359375,
+      "source_sha256": "30780497f6ae40e731eff1eab57543f360f39faf78c76e834ff85f74cebc4acc"
+    },
+    {
+      "name": "blk.25.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000415802001953125,
+      "source_sha256": "5fcaec049c10d58bffa78ecbf56a598a9dd64922c64c9ba3233bcf5ca1de4ba3"
+    },
+    {
+      "name": "blk.26.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f7446624811b28156c1f4ddbd8c9588955e3817c96fc278c3eced096e54e69c4"
+    },
+    {
+      "name": "blk.26.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "595651b2916fbde5b0e927e98403f1e0da4602554c3c93730af182549a502fe3"
+    },
+    {
+      "name": "blk.26.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001953125,
+      "source_sha256": "3679ac71674d50110182fd718da0da61e9bdff2280787c5f417c4fe87d459188"
+    },
+    {
+      "name": "blk.26.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000484466552734375,
+      "source_sha256": "26c77b6fd07b82af642ed0e3e88ca5c4c2cf60bce1c947f29f971ae7ba5a6d88"
+    },
+    {
+      "name": "blk.26.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "f24bb1b446af06e853b9f95fa0aa23e875e613fe37ceeef4daa0d313d23d9fc1"
+    },
+    {
+      "name": "blk.26.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "f4c53bcf791dcfc06adaaabb0eac8c6aa7014038d841ea246068aae896c57986"
+    },
+    {
+      "name": "blk.26.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004863739013671875,
+      "source_sha256": "5963c9e896d2a0b7ebec7c9b554d25999a706359c9dc8c6028d07b9ea024abe3"
+    },
+    {
+      "name": "blk.26.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "98581254ddfe34394004add8acea90ff6ee59454d1ee72c6ca3ef734df6946fd"
+    },
+    {
+      "name": "blk.26.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004558563232421875,
+      "source_sha256": "eb4a411eeb3acfef28001d738084d9fb2ba8682d04c9714b0bfa4675127a3c52"
+    },
+    {
+      "name": "blk.26.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004711151123046875,
+      "source_sha256": "afce8b58a99837ffc9fc553a1c3af9b6186fd603110f5d751123756bee89c286"
+    },
+    {
+      "name": "blk.27.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "eabc0ea858ee7d48a8705a93ddeb6881a252c73a7f7a0c4178c8cb8337926def"
+    },
+    {
+      "name": "blk.27.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "c7bd95715823d4c0d670bca93b4c3ad8542ed2b9b280cca795b0d36ad931d37f"
+    },
+    {
+      "name": "blk.27.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0017242431640625,
+      "source_sha256": "0879b58d08f179cd4908d5520da4b6644d02f88991dd6b33ad87633a096a5b11"
+    },
+    {
+      "name": "blk.27.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000568389892578125,
+      "source_sha256": "a167fd75ee82883cfc67f2a44ad1a3dda2166e77dd5cd37adf4b8ec759bd2fe1"
+    },
+    {
+      "name": "blk.27.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "8d0a2722d2721dc1d0425965e76f812f6661f059a2a7aa54effa8b39639be958"
+    },
+    {
+      "name": "blk.27.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "e54839b701080788c69ed9d032de7c912e50190b6e5f94459c0c4426ea07d7c8"
+    },
+    {
+      "name": "blk.27.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00070953369140625,
+      "source_sha256": "43c0da6ee58eea666815086c3d94fc4e3a2ece0130f66728d0b33a72ee4e164a"
+    },
+    {
+      "name": "blk.27.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "3d1031f183c992e5ae220fab6ec82dab4e56435a57d3f2a0032afa34980ff2e1"
+    },
+    {
+      "name": "blk.28.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "2ccde72d6959b9bbca76f7e0dbb7ef201be0fb63356148ad8d1a4253a06a303f"
+    },
+    {
+      "name": "blk.28.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "d7f71a69170b943d44fed8f9388d31c52be289412fda2e848602723462b9fb6a"
+    },
+    {
+      "name": "blk.28.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0012969970703125,
+      "source_sha256": "1329a4027665f5848b398a7adb7739e78963994529b30eab51e89c76177c50b7"
+    },
+    {
+      "name": "blk.28.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004863739013671875,
+      "source_sha256": "dbd06d6b906eb68d14b22d240363611c06ec606763063de64ef911fea9414803"
+    },
+    {
+      "name": "blk.28.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00380706787109375,
+      "source_sha256": "ccf61e49a233bc7da23fd30e614b839975bbca0223b592d339a3843ce7643022"
+    },
+    {
+      "name": "blk.28.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "a972e16c9fdea61b741a13569903a9fe37fd059e9562532a0fb47091eed22004"
+    },
+    {
+      "name": "blk.28.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048732757568359375,
+      "source_sha256": "a9ae04ecabdb5374cee64041d2c1a9809f114e9cd4bfca6f42914410331bc050"
+    },
+    {
+      "name": "blk.28.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.006866455078125,
+      "source_sha256": "020f9dd5bf51618ec2be85967a67611c20d56c3cce2c6661ac4457c88ad533d9"
+    },
+    {
+      "name": "blk.28.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004634857177734375,
+      "source_sha256": "43f349b79b1053721987480e0395535960789049b91a5d77931ee4abe216d928"
+    },
+    {
+      "name": "blk.28.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00041961669921875,
+      "source_sha256": "e730e3b7a4ea6f20ff9043edd4a6e6fc3eeb28c8a67b778aaa790dd2532f9bd9"
+    },
+    {
+      "name": "blk.29.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9c8bb9e21b311d4c3bb4ca3e9083eca659237e6823cc53fcf40332b888dacad4"
+    },
+    {
+      "name": "blk.29.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "fc7d31ecca7c51d316ad25271479823e43af04bb0b22c3757b2434163bfe67c3"
+    },
+    {
+      "name": "blk.29.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "b0035adfffba3f7adfc05d2928f3899f8156c9166a7bab5916c639e2e6f51153"
+    },
+    {
+      "name": "blk.29.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048828125,
+      "source_sha256": "406e51329fb2efde724bfcc2576bc5c6575ec12caba4401ac917ff46bb1ec368"
+    },
+    {
+      "name": "blk.29.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "aaca710559ff13c8be1e88aa136ec2280927774e7c5e7b03b0c59da917d1dc79"
+    },
+    {
+      "name": "blk.29.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "a99a1a942b5ec287be7833a6611ec3fc9012fc9f2cd92c26ef6ad3754ea27ffd"
+    },
+    {
+      "name": "blk.29.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000904083251953125,
+      "source_sha256": "148c39de1f1cab0924209d0b9606efad4ecdebb5f998d4def616a104e522b19e"
+    },
+    {
+      "name": "blk.29.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "c07f1b3a81a44242e173e96b0b7aa98e86b6ae2a534d72f057d5deffe86bf31f"
+    },
+    {
+      "name": "blk.29.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00045680999755859375,
+      "source_sha256": "1eb2daca3ec0888622b693f1881e1429ea3704e597e19149ba7bce5e3ac82621"
+    },
+    {
+      "name": "blk.29.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004444122314453125,
+      "source_sha256": "1e3efc83610a4eb88bd7f91e72f9955a7658c6a45b0a95dcd93a028996eb0d0b"
+    },
+    {
+      "name": "blk.30.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "19170ad4bb2d0ba78cfa3c3664eacab25f8aa3288d8d1c36a4014bf4a7c3b0cf"
+    },
+    {
+      "name": "blk.30.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "e41521a323cd859da59b53623e6e6590ac119135194dbfee9f9dfabc15940ee8"
+    },
+    {
+      "name": "blk.30.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00164794921875,
+      "source_sha256": "eddd366dbe0f4f9c1eb4a0f82fea445117f39a34434491440f8d3fa2ffdc1f66"
+    },
+    {
+      "name": "blk.30.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000457763671875,
+      "source_sha256": "8198a247f614dfc06a0d19f6c5991af3c86f008a3bb60f855f95b2e46760ee52"
+    },
+    {
+      "name": "blk.30.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0037384033203125,
+      "source_sha256": "a8b2be757c4e8b43ee9c9a09576abbfffbee6605b390b53cbd5494f8be9dcc52"
+    },
+    {
+      "name": "blk.30.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "e568ccb1855f715f62ff297d71da9d5cacadeb18792fa574ef851867fe8f2401"
+    },
+    {
+      "name": "blk.30.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000415802001953125,
+      "source_sha256": "f446f4a30488880ee01070eb75acfb3cdb83fa35122da1788030e68cb058971e"
+    },
+    {
+      "name": "blk.30.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00762939453125,
+      "source_sha256": "2be769b45add1521e607cb3e22a48c05b8584de9b18fc20a9c380eabf79b2d76"
+    },
+    {
+      "name": "blk.30.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00026798248291015625,
+      "source_sha256": "e15494c2a26132022ca1cf6b02e164ab3615215fd5bc90c51ff7dc0d2a16ce43"
+    },
+    {
+      "name": "blk.30.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0008106231689453125,
+      "source_sha256": "de52e78824f855813aa9e04441fafefdbc817f0521d47357929c3b45fb1290ff"
+    },
+    {
+      "name": "blk.31.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "6f2c6ef01102b0d1b454303d764763fff9d7a4059e715270b50665e65bae8693"
+    },
+    {
+      "name": "blk.31.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "be41b9a987c46e050e246ce782639afcf628453cb5164e33fa704a2b167fb78b"
+    },
+    {
+      "name": "blk.31.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "7aa9107e1b6b96b7671e0ce1c0ed1002361d0b8a27a476fbbe0c02dc75f46ebf"
+    },
+    {
+      "name": "blk.31.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004863739013671875,
+      "source_sha256": "7bff7554702a52c942b56cb2213d8048037742a83f4c925d23293cd2e7b82237"
+    },
+    {
+      "name": "blk.31.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0037841796875,
+      "source_sha256": "959bbe93e1e4be0d886b0c30d24d4902a1d03ed5d05b170b3ac8e6b00e75b539"
+    },
+    {
+      "name": "blk.31.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "1cb4ff4a1da9cc8d5fc1689fa7efb9a4c45987e673b73e259a89d2a35dcefe0b"
+    },
+    {
+      "name": "blk.31.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000484466552734375,
+      "source_sha256": "7135f015006696032b328c43b29711d88e131398c095b8307a4fabe8ba4b1b07"
+    },
+    {
+      "name": "blk.31.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0135498046875,
+      "source_sha256": "5582d275b818c77d99783aa60e69e5c9ff86c38145c43a928103053c48d90c8a"
+    },
+    {
+      "name": "blk.32.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "315f83c46ab2d985c284a16096af9685c878a3a8883eb52f2291fff02105181b"
+    },
+    {
+      "name": "blk.32.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ed9fa0395b55580fb5ed22f818d7216367fba4132419678982c2b3e345a5406b"
+    },
+    {
+      "name": "blk.32.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "dbbdc0272f17d5d795792165e0b7ff860ac22bacfa176edefc8cb755a11057c7"
+    },
+    {
+      "name": "blk.32.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000484466552734375,
+      "source_sha256": "0ef0f8af3b499a5b63ee3608e12a2db13096f52979b63e81bf51605b84a929e6"
+    },
+    {
+      "name": "blk.32.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "6aea1ba2163da5fe79891840f62e23abfc5b07963daa68af78cc7bee19f17872"
+    },
+    {
+      "name": "blk.32.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "92891fdb02464bd928f36884ce2afba30b5b7d48755faf9124d39b1c8c7e1a73"
+    },
+    {
+      "name": "blk.32.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000476837158203125,
+      "source_sha256": "3990877b6279bd04ea1e70e83a0215f095fbf9032a1d3393b6845a55769ae71b"
+    },
+    {
+      "name": "blk.32.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0128173828125,
+      "source_sha256": "0637854d251632c0cb01c9279fd1e9d26506768817fdd84c8534a02f2df89029"
+    },
+    {
+      "name": "blk.32.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004215240478515625,
+      "source_sha256": "7c2b8c300d32d86b1b0c750d374c84e1afbdf0301a16574415adafcc7cadd19c"
+    },
+    {
+      "name": "blk.32.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004730224609375,
+      "source_sha256": "646447d49d3c1b8de41c677da3123579fdf4371551bd7b03af22c43480a657f2"
+    },
+    {
+      "name": "blk.33.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "870b9a3d349215b4ec842a2e75a34068b239efa4614d5a67fcf34946f14f2a0f"
+    },
+    {
+      "name": "blk.33.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "1440558fcf786f61d41eac9ee6d30ac5d5248199f1ec74b215c8bdb5591f29b8"
+    },
+    {
+      "name": "blk.33.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001934051513671875,
+      "source_sha256": "fec801c36a92a1c090f7978d06ea690138f2ed4989036e6d3b838502e2bfbdc0"
+    },
+    {
+      "name": "blk.33.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048732757568359375,
+      "source_sha256": "4b1613856bfe4e75b6e164eafa499bacede3b90a703fdf639c99368a1c1742ae"
+    },
+    {
+      "name": "blk.33.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "1bed9851f9001f91257486e789ba39e121cdbb840efe35bc1299a2b1db805dc5"
+    },
+    {
+      "name": "blk.33.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "9e256dbf82fcdf2ce92617b6cd20a26be4b00abd0a67b0e065129c4b25694740"
+    },
+    {
+      "name": "blk.33.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000469207763671875,
+      "source_sha256": "f7b33e0ec0483cb704fce3a91ca77aa2e907436398ce31a27fa4cff4bc0c698d"
+    },
+    {
+      "name": "blk.33.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "2d9a0604107553c848aa846b0209e00adc34593e859790b56fb2028bea23270f"
+    },
+    {
+      "name": "blk.33.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0003986358642578125,
+      "source_sha256": "11283eff5c5e6b06967bf19f93c495cd0c9d5e488f8848741b62f3150e673820"
+    },
+    {
+      "name": "blk.33.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0003490447998046875,
+      "source_sha256": "9133ea535260a91ed046ea7cc25e7f054f6e8d7b80a8f575279327b2b7cd9241"
+    },
+    {
+      "name": "blk.34.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9b8980e4cf70a10c249b9b1c17c28ce7415e0bb1343fc8a2fdcfc909df04219b"
+    },
+    {
+      "name": "blk.34.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "be8e0eeb5eaf803042f7ee8806bffcf64f184ed4b2cbc3e924ffbf7cc00e75ff"
+    },
+    {
+      "name": "blk.34.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "ec6c81a3a9b90617866f5e519dbc74ec8486fcb0935e8bb901e327d1f40cf9ad"
+    },
+    {
+      "name": "blk.34.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048542022705078125,
+      "source_sha256": "4450f2380ace20ffdfe15895c621ba8bd30baf5b0e0dba15b661c9e0049acb54"
+    },
+    {
+      "name": "blk.34.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00389862060546875,
+      "source_sha256": "8cc6968be81a25f4f1eec3d25bdd71ff9ce0ba858435881038a8fbe5bd662117"
+    },
+    {
+      "name": "blk.34.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001800537109375,
+      "source_sha256": "dabe634a0ab77b4b689fa9d8a8a5a471f3c9abd13ee2b563e4b780c10f5ec7a1"
+    },
+    {
+      "name": "blk.34.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009517669677734375,
+      "source_sha256": "b5896089ce891b596ff45b36f54a2cca34f8a21bc8958811750b766fd88ea042"
+    },
+    {
+      "name": "blk.34.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.005126953125,
+      "source_sha256": "b27026decd3dc83b4179c6eb39cd751a6a4ca166be0e34baa5c5c6d1b8d4a538"
+    },
+    {
+      "name": "blk.34.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00096893310546875,
+      "source_sha256": "54e23e863f5c8742914af7b006d8ad6d9ee154b13b71711d72d412480e573627"
+    },
+    {
+      "name": "blk.34.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048065185546875,
+      "source_sha256": "e4ec10076c3d40be145eb33ba4fc9a53c7f85d8fdd5763264e9d219097bea33b"
+    },
+    {
+      "name": "blk.35.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f0501f22b8a80105d48d423715b60ef1af8f9d60e3f7f58765c7725364b02ec4"
+    },
+    {
+      "name": "blk.35.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "d46bb890c81b2ade98fbbd98e5d36269a62e7f124d597cf6e205f08046f95fb3"
+    },
+    {
+      "name": "blk.35.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001922607421875,
+      "source_sha256": "664b3e8905aaa633d1b172a9e5a94f84e740a43c1f44bdfd6927c790f6a0465c"
+    },
+    {
+      "name": "blk.35.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000484466552734375,
+      "source_sha256": "6128f5445cf2613eaa4ea6d5443727f956e346b92ec493e60cb0cb2400528293"
+    },
+    {
+      "name": "blk.35.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00389862060546875,
+      "source_sha256": "b2e28dda2cd53c1e60f4dd51642c947719bba8715d7e807b2e97cef62ccd6b93"
+    },
+    {
+      "name": "blk.35.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "d77c587c640e09292301bc28697a9e712566381625b70aae7032ed163f3266f3"
+    },
+    {
+      "name": "blk.35.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048065185546875,
+      "source_sha256": "5cd6363a3cfa206301ab9cef8de8c9f91406f8cfbea9034c09c84d51cc04b65a"
+    },
+    {
+      "name": "blk.35.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.004150390625,
+      "source_sha256": "1ff2498501fefc0563074883dc31a66270372d772b3eb0be64f29d6a8ab5d325"
+    },
+    {
+      "name": "blk.36.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "8d09fd32489aeabe98674fa0531da75b223d8caaf9d5da56658cf133119726ae"
+    },
+    {
+      "name": "blk.36.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "fb1b6c0d7a2b21d6b64f824ee254be6896a19c22b26c540281415ae71edc721e"
+    },
+    {
+      "name": "blk.36.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00096893310546875,
+      "source_sha256": "abd3b445fb1c29ef7349c73c833c89144ef1b829a7525b61509e17010f3eb840"
+    },
+    {
+      "name": "blk.36.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004825592041015625,
+      "source_sha256": "c1be3481bc0158a46f7d5529580810398a28494d4429a33582bc5aaeb4e42a67"
+    },
+    {
+      "name": "blk.36.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00380706787109375,
+      "source_sha256": "708eb49039ff563eef8a8198fb6160cde5c704a06f2350fce4f6e48c03cdb889"
+    },
+    {
+      "name": "blk.36.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00189208984375,
+      "source_sha256": "4c719c27fbaba00fdea55d6b8adc72a3ed580615526867d861852c7efb2246ee"
+    },
+    {
+      "name": "blk.36.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000354766845703125,
+      "source_sha256": "3bc81df1712439aac91c0cbde6298021c498706d0f3c6f473315c7fdc8ccbab9"
+    },
+    {
+      "name": "blk.36.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00592041015625,
+      "source_sha256": "796b3fec9cd68a30096721550c81ceb8f041ba87ff15eff2af95c9555fe82a59"
+    },
+    {
+      "name": "blk.36.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00046634674072265625,
+      "source_sha256": "bbe7b6530ebdee670afaaece4ac9792e199ab04f6c8d0ca22e268123012d11c0"
+    },
+    {
+      "name": "blk.36.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000690460205078125,
+      "source_sha256": "2140031707d5f1e473afcc3c0d108fc96c54460206a2cc13c1e331c763edaa20"
+    },
+    {
+      "name": "blk.37.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "f389d67631ee333924b449b88b0637adfd20b513c84e25e7a25ff823eec4f861"
+    },
+    {
+      "name": "blk.37.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "4c71d2a74ee2ec9664e0b89a96d75c68f58c7262b965441302abaf0dc0892ccc"
+    },
+    {
+      "name": "blk.37.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "5d1122d07305cca1c74b96e439544df083cc09d39b6db30b2d64fe3395b13941"
+    },
+    {
+      "name": "blk.37.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000457763671875,
+      "source_sha256": "90de08d063441f8066a40f497ffe91d7c55c0f34d0af3d939f8355badeb55ebb"
+    },
+    {
+      "name": "blk.37.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00390625,
+      "source_sha256": "5ba7ecfc206117881d0148560b251eabf0796f52a9742a564fcfbf567e4045c6"
+    },
+    {
+      "name": "blk.37.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0012664794921875,
+      "source_sha256": "acc58f2e3c7cf329863c83042a4b1222844a4120a4bddd958ba29fce2a32d910"
+    },
+    {
+      "name": "blk.37.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0003795623779296875,
+      "source_sha256": "8eccbe39112beef1af8f7b6180b2c9e6f574741802e747e207330492c3d43e66"
+    },
+    {
+      "name": "blk.37.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "a9c564e2ea76f5e745d47582a0b5303b20514ed82c90d14178c6de0d00beeb9c"
+    },
+    {
+      "name": "blk.37.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004787445068359375,
+      "source_sha256": "adfcc69c72d3d8137ba7c639b32ee600504ccd0cb2a8fefd551f1bdaebf372ba"
+    },
+    {
+      "name": "blk.37.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00045013427734375,
+      "source_sha256": "c48363e08f432c8a2ec273964857ef1a8948c0ca9d847c1150d607e92d9198b8"
+    },
+    {
+      "name": "blk.38.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "73fae9404d3306a32fb2ec9918547de872000f305965ea3e623873170fe53480"
+    },
+    {
+      "name": "blk.38.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "e2b970b875d6b35c9a9c2c0cea586cd176c52c1e4e7c88089ad0170293344d04"
+    },
+    {
+      "name": "blk.38.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00174713134765625,
+      "source_sha256": "ca97bc8df5467a716193aab8bf315be700051fcc8f8fb9287bea94e59d1b8802"
+    },
+    {
+      "name": "blk.38.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048065185546875,
+      "source_sha256": "05def1c8c255eb8443099463bc5c446c4c6f5819b230526bddc495620098f077"
+    },
+    {
+      "name": "blk.38.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003753662109375,
+      "source_sha256": "f8c5aaf49349b9003d4cc06a76fee5705c009034226e9fd7586e9ff37c838e48"
+    },
+    {
+      "name": "blk.38.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009746551513671875,
+      "source_sha256": "c95603017fc99c8dbef72b44ffe0b3b68a803a91e19306f57290f22f83739c25"
+    },
+    {
+      "name": "blk.38.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00046539306640625,
+      "source_sha256": "030eef2efdbd8915bf4dbf387473bebca8d4a3f37daeab64da91319aae9d5467"
+    },
+    {
+      "name": "blk.38.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003875732421875,
+      "source_sha256": "6d8aab4794e9eb09578b46004bde50cdc27dfaeb8214fa1239299829e3cc5ed0"
+    },
+    {
+      "name": "blk.38.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00041961669921875,
+      "source_sha256": "1f5f346f1d777cbdf0e50f704d5ef189521412004e2f89994e8b67d51a0c3fdc"
+    },
+    {
+      "name": "blk.38.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004711151123046875,
+      "source_sha256": "bc5c0c1bd7d5e31b91968b608225a4640f7671db4c5d88d19ee1db5480a0e990"
+    },
+    {
+      "name": "blk.39.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "389bd10f8b685d8673478fe95648d62391498aedd68e197d71e454087fa82e64"
+    },
+    {
+      "name": "blk.39.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "674a0579a8fd5793db47f07645cf64a695baeb034f6bb5989c6cd44d8d78e7ce"
+    },
+    {
+      "name": "blk.39.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0018310546875,
+      "source_sha256": "c6e1a8d81baaa32fedb806e35a6a55c7a70d1063d6f7614ade2fa4d4d0d6e571"
+    },
+    {
+      "name": "blk.39.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00024175643920898438,
+      "source_sha256": "4bdf5939eb9e409cdf7b3cd9973159a7b52869ceec0ae3123f4a0b4df3cc9f6f"
+    },
+    {
+      "name": "blk.39.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00347900390625,
+      "source_sha256": "e2538ba08a72a9c99cd2ebaa56198b6809f9bf3e0ae86dad684e7cdf0e165c7f"
+    },
+    {
+      "name": "blk.39.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00183868408203125,
+      "source_sha256": "e9089ef0217a8e0d71bf1eea53d9408030a40e31b381a1010080ec9d9b6c705f"
+    },
+    {
+      "name": "blk.39.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004634857177734375,
+      "source_sha256": "a90cb4f17e869aa10042090df5705e1477d4382bbde64d978b1ebecb29c951ba"
+    },
+    {
+      "name": "blk.39.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "5dd4471e1afffd0a5108a418d04f0c1642a14ae2cc2e07dfabb1dab88099e1df"
+    },
+    {
+      "name": "blk.40.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "8a253cdb2bcd4b9ba26bc92397857b925a532949dcf276b5f726b684e41a5e26"
+    },
+    {
+      "name": "blk.40.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "86af0864bf82acc282b50bd1099767f3e54c32378b42f006e5741369818c4955"
+    },
+    {
+      "name": "blk.40.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001953125,
+      "source_sha256": "459eac2333d5a2446fbf0f93b2f904a13b4242334562c99316b2760fbc135ddf"
+    },
+    {
+      "name": "blk.40.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004863739013671875,
+      "source_sha256": "981c01b5be10d329be548b05c341946bcf7ee52ee93f0b8425077315963de227"
+    },
+    {
+      "name": "blk.40.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0018310546875,
+      "source_sha256": "16a0401c20ca4129be0dd348fbd781292e13350b5d81dd2e07194912ed77273e"
+    },
+    {
+      "name": "blk.40.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00103759765625,
+      "source_sha256": "59ebc03369a2d5c4e540f2f6e34d7cdca512a818aa2cee21ae3eec51d60f567d"
+    },
+    {
+      "name": "blk.40.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004711151123046875,
+      "source_sha256": "39ad71be955386a2460a756917399d11f092f4a0997d3bbcfeaeff36e5dd7522"
+    },
+    {
+      "name": "blk.40.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "21334ff33fabe370bf58ffa21bed3ebac54eb9d3eb07b2ef86b1b684965fabd2"
+    },
+    {
+      "name": "blk.40.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000469207763671875,
+      "source_sha256": "c268a578f4039c4def6872066d8096acddcb80421bb70d279467b3ffa5ef28c7"
+    },
+    {
+      "name": "blk.40.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00024318695068359375,
+      "source_sha256": "2c91f836bccd8591548fd669e9b94e68894c3ede1e4ae7a83149cca970961d8f"
+    },
+    {
+      "name": "blk.41.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "28a66e4c454dcd68c319779f85bc4f7cf9f100134d5b2616cb85a33d9438c7b4"
+    },
+    {
+      "name": "blk.41.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "b673baa1fd30224e410275ae4fef9a7f208555757e81bf3e8256009604eb5d7c"
+    },
+    {
+      "name": "blk.41.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00194549560546875,
+      "source_sha256": "e82b901008d15197d14b28f72615edfdff309ee029118751ba1ccd93ebb1fd23"
+    },
+    {
+      "name": "blk.41.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004863739013671875,
+      "source_sha256": "68826472a8a0c12eea0fa2f9056c1dcd4e931cf69ef55305e7bcc4f848ff2ef8"
+    },
+    {
+      "name": "blk.41.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001903533935546875,
+      "source_sha256": "5ab602c012a38e28ae7e4583d6e6d0b71a8df642cffe778e761760d2b45335a9"
+    },
+    {
+      "name": "blk.41.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "5cba1c3d7ed99d976c0b91645286fdfb82716d1f7b331711804d804beb31a7cf"
+    },
+    {
+      "name": "blk.41.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000484466552734375,
+      "source_sha256": "e2263611ea384dec506c882e71df39f570f2a463b81af18679bfeb9e99fc71e3"
+    },
+    {
+      "name": "blk.41.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "42fecf56ca74449b199615f840594aa8b50404ea5671c764cb3c7158e8009172"
+    },
+    {
+      "name": "blk.41.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0007534027099609375,
+      "source_sha256": "b18fb3262c6400655a5b4e013cc0651026ccb65a0469218aa96a38001f39cb06"
+    },
+    {
+      "name": "blk.41.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004520416259765625,
+      "source_sha256": "0b8dc8af2009dcc669e2ca2d24d5cb46af41078a0a6b86e2344306873d810d6a"
+    },
+    {
+      "name": "blk.42.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "9863d053c3550b1c2d67958654e28e5d84defb0ed9b5108b923323416f30e8c5"
+    },
+    {
+      "name": "blk.42.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "267ca40021d88232ea196de48e2194bf4ea7999c39c99139a9488a8d13437379"
+    },
+    {
+      "name": "blk.42.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001934051513671875,
+      "source_sha256": "b07f1595937e48a8053cce4b65306f32a66d7c4867a47ee821988d2ee5a3c0ea"
+    },
+    {
+      "name": "blk.42.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000392913818359375,
+      "source_sha256": "63e8babf6580af9984d63647249825545c49beccede6611e206502e98d347adf"
+    },
+    {
+      "name": "blk.42.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001926422119140625,
+      "source_sha256": "1501ed7f149e80f3c4149ec579c7ac73b10e1ea03ccb76f5ae76d1ada2af12a0"
+    },
+    {
+      "name": "blk.42.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "2e4c62b59fe6cf8fa0afc67975632d3ac4f1909668176665907a61845f6e7d8c"
+    },
+    {
+      "name": "blk.42.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000244140625,
+      "source_sha256": "3cac4bc9c9fcca719885c5afaa60224d5e737e350765dd525676a7714a333374"
+    },
+    {
+      "name": "blk.42.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.005767822265625,
+      "source_sha256": "ae8ad9bad6ffdafd424950b17fc61679625d239dd9592b316d25b5c9aac09351"
+    },
+    {
+      "name": "blk.42.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00043487548828125,
+      "source_sha256": "84482ba94da9c83c2b3d2a93c8538c29f3a207d58e491303f2547f64be643066"
+    },
+    {
+      "name": "blk.42.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000240325927734375,
+      "source_sha256": "1b3edb962f2cd27d5e1cebd7479de322d03f0de2f24c940c4b16da5ef65676b0"
+    },
+    {
+      "name": "blk.43.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "52333fbc1174f2deeb2ed764c264c16aeb2961f72346cdaedfe4a252ed7f42a0"
+    },
+    {
+      "name": "blk.43.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "ef51b4785be4051e196b6809963a8808f004037fd13aec66d26a47bc1777aafe"
+    },
+    {
+      "name": "blk.43.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001800537109375,
+      "source_sha256": "030851dd2a1f1b1442ca75785a685864d674bbdc85fdc49b63c09689ada3e591"
+    },
+    {
+      "name": "blk.43.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00092315673828125,
+      "source_sha256": "82e7c5fb6b845b8498d423095b84fbc6db19481f1de79a08b6461a4035136327"
+    },
+    {
+      "name": "blk.43.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00238037109375,
+      "source_sha256": "b60877454ed8e47daacfd4d7cb04211b97fcf6f353e66f5fda31c038ffcac2ba"
+    },
+    {
+      "name": "blk.43.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009765625,
+      "source_sha256": "5e35a80888013899e844c011261c35e3896e59e9a5ac63521afdd98cbe45f9b2"
+    },
+    {
+      "name": "blk.43.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000484466552734375,
+      "source_sha256": "605058a74c911f9cc844672bc910bff0b58e22b6af5c52a645ae23a24acd66eb"
+    },
+    {
+      "name": "blk.43.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0038909912109375,
+      "source_sha256": "96173d655e7c3419b1ea83f8cc1c833bf525b2de393651f79bd5f9fe98205725"
+    },
+    {
+      "name": "blk.44.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "05e6e0281f4e82523ae1c9303d196651ef9685c449681c8264faca6ac3dbab27"
+    },
+    {
+      "name": "blk.44.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "65fd59ba4f3ba03200f7b6c01ba877442e1a417bf9b1fcfa72cd8f18ba4ac46e"
+    },
+    {
+      "name": "blk.44.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0019378662109375,
+      "source_sha256": "ec78d68694085579b94030663e9532a5915e8fe243cc100105a25e60a6b027a2"
+    },
+    {
+      "name": "blk.44.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000240325927734375,
+      "source_sha256": "b43fe29ae50309ae2052d03f4e95524882ec73e23cfae2497858b1e2a1ec30a6"
+    },
+    {
+      "name": "blk.44.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0036468505859375,
+      "source_sha256": "d08e7fa8b067c989b54e77f7d8ecc01d832ed78f07e34a3213a4f54e69b53ed3"
+    },
+    {
+      "name": "blk.44.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "94971146c922df625ed3e39c15987cf38bbb8f6c3547766eac4b8a9e114caf1f"
+    },
+    {
+      "name": "blk.44.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004730224609375,
+      "source_sha256": "d94d99d15d99aec3d6158805122d2ab2496167ff87b3c9d47aeef7cf3cde11c6"
+    },
+    {
+      "name": "blk.44.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00389862060546875,
+      "source_sha256": "04bd3185d747fbdeb58c6179d2e479b65f1b2ccdeed83e58568b5d9a364f4e87"
+    },
+    {
+      "name": "blk.44.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048065185546875,
+      "source_sha256": "a9d43bf0af030ae9038d5f63a3cc686033eff95c18e57138c088b69c9d5924c5"
+    },
+    {
+      "name": "blk.44.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009403228759765625,
+      "source_sha256": "19e3ed7bdc486ac7b0cd2350590a026acb4651ef43e11d4eaa364f1744cbe257"
+    },
+    {
+      "name": "blk.45.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "716e86907b98006efcd8f5fe429a1a534486a2805233f0ed0898a2fe21443e12"
+    },
+    {
+      "name": "blk.45.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "e97868f76058d3d1896c0191cf5789ab16b0fad7ff4252ad00872444d9933e7a"
+    },
+    {
+      "name": "blk.45.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0016632080078125,
+      "source_sha256": "0eabf381dd6c0610759968c256b287c21b9303a1c69a8a2f2d668d54d4cb03c9"
+    },
+    {
+      "name": "blk.45.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00037860870361328125,
+      "source_sha256": "78f3f6c7f28bbef0661a2d4661a29821435a24a74c4651e6cdb809831859745c"
+    },
+    {
+      "name": "blk.45.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001926422119140625,
+      "source_sha256": "ed6d5b91920ee171cc9401b63aca70ec941c931f6a2f665c02eb5aaf64d14462"
+    },
+    {
+      "name": "blk.45.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00096893310546875,
+      "source_sha256": "0b1952a2e5534fadf39609870dc0f26d808fd331266f430f9b87866a35d3000f"
+    },
+    {
+      "name": "blk.45.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0009098052978515625,
+      "source_sha256": "5f9b96f1643812b4a96ae376b46b263dbfc4409a4ca05089dcd228788c0997b8"
+    },
+    {
+      "name": "blk.45.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.01385498046875,
+      "source_sha256": "d17838b3a553269356d7a26e114f97abc8a5bd1fce293625376f48485325f6b6"
+    },
+    {
+      "name": "blk.45.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000446319580078125,
+      "source_sha256": "309a24a1200a992bee206db6d354feeec078d7576949e8f92ea2bc72d435f580"
+    },
+    {
+      "name": "blk.45.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00042724609375,
+      "source_sha256": "ebc5a37d7d0e0e4a52d324bf65fcdfe805470da2c7b657e25b7ba7f2a2eb4048"
+    },
+    {
+      "name": "blk.46.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "6647c66ac7ade9cd0b2997660c35a70c1f7de9ff94060e5686ca9c4decb2064e"
+    },
+    {
+      "name": "blk.46.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "aa649ff658521daa1478f1141bb2f57f9cb0f2b4d0f099dc2c61aa834ee161c3"
+    },
+    {
+      "name": "blk.46.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001739501953125,
+      "source_sha256": "3c33f861e7a04145ff40a93a8676d9604c4cbdb3b7d10c0249612712947727f4"
+    },
+    {
+      "name": "blk.46.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048542022705078125,
+      "source_sha256": "99eba2e1ded03a05c4f672e3c0284b3bab2663fc81f47cb9b7788ff144eec03a"
+    },
+    {
+      "name": "blk.46.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0077972412109375,
+      "source_sha256": "3f29f772022768b4d85302e225e43de4dbc30832d11e063a8b521d1733ad28e4"
+    },
+    {
+      "name": "blk.46.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.000972747802734375,
+      "source_sha256": "98e8fd7363642d63775c3d9d191340eb9c9e3324871d3fc8ab6719ff679f126e"
+    },
+    {
+      "name": "blk.46.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00090789794921875,
+      "source_sha256": "24cbe2d1510aa9944f06454fa314f1189464654fac61f5f62e2b89662790bf23"
+    },
+    {
+      "name": "blk.46.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0072174072265625,
+      "source_sha256": "6b92a7f7a4d899eb0bf5eb9ea540f7dcb4b55d40ce516057f4dd9109b41f147b"
+    },
+    {
+      "name": "blk.46.ssm_alpha.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0004787445068359375,
+      "source_sha256": "09c877741b0a0b87ec4e66a59f991fe336ef98005a3ca88213cc19f985eb46bb"
+    },
+    {
+      "name": "blk.46.ssm_beta.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048828125,
+      "source_sha256": "3288f7f1867bdab116147038c45eade1f2393e5e439961eb38e2ff5f8041f49f"
+    },
+    {
+      "name": "blk.47.ffn_gate_inp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "418104d20e8c36a0ad9f0ac27f922b663e3bedc4c998fe4471547734e8e0d454"
+    },
+    {
+      "name": "blk.47.ffn_gate_inp_shexp.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "F32",
+      "dst_type": "BF16",
+      "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+      "exact": true,
+      "max_abs_err": 0.0,
+      "source_sha256": "59159ff58823cccd76fc9a148d9e6248e163dac5be09d38f64be4d2b832602eb"
+    },
+    {
+      "name": "blk.47.hc_attn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0018157958984375,
+      "source_sha256": "0ed5839c3a22965ff157154c74d8543fb6f1891a416cdfeaf1e92fafba98a4f1"
+    },
+    {
+      "name": "blk.47.hc_attn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00048732757568359375,
+      "source_sha256": "1648b6fb85b1b72c750dcf7a974d16697edbbd26ec5b694e57b0c32e6b7e103c"
+    },
+    {
+      "name": "blk.47.hc_attn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.00653076171875,
+      "source_sha256": "62df167cd9e4e4f8cb4dd28f796c06e3310a06faef5934635613ef1efe1b27a1"
+    },
+    {
+      "name": "blk.47.hc_ffn_down.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.001495361328125,
+      "source_sha256": "d891bb6dd71adde2f62f1bfc61e4b43e3abe2faf9d957ac9131f0052ea29d992"
+    },
+    {
+      "name": "blk.47.hc_ffn_inject.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.0008563995361328125,
+      "source_sha256": "64107b595a7c0983e9e30243c5e9ac47d6129a9eb5c90ad94c601e24b46b47aa"
+    },
+    {
+      "name": "blk.47.hc_ffn_up.weight",
+      "shard": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf",
+      "src_type": "Q8_0",
+      "dst_type": "BF16",
+      "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+      "exact": false,
+      "max_abs_err": 0.003570556640625,
+      "source_sha256": "8fbba7e2ce53642de82de628dfd812ed1a6342b24d2abdf643f4f8efbff89149"
+    }
+  ]
+}

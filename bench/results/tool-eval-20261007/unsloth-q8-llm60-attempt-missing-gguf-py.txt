@@ -1,0 +1,3 @@
+model shards: Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf, Qwen3.8-Flash-Next-Q8_0-00002-of-00006.gguf, Qwen3.8-Flash-Next-Q8_0-00003-of-00006.gguf, Qwen3.8-Flash-Next-Q8_0-00004-of-00006.gguf, Qwen3.8-Flash-Next-Q8_0-00005-of-00006.gguf, Qwen3.8-Flash-Next-Q8_0-00006-of-00006.gguf
+2 layer(s) have their gate/up/down in different shards: native_experts.txt v4, per-role shard column for 17, 35
+llama.cpp's gguf-py was not found: run setup.py (it clones llama.cpp into third_party/), or set STRATA_GGUF_PY

@@ -1,0 +1,1 @@
+{"time": 1791417971.2075622, "build": {"strata": "434e136f73a7da2bfd11cde3bb0aa0acaf1328c6", "ggml": "dc255f2a4b6e4211b555b0c05260b2523281f314", "time": 1791417809.2777975}, "command": ["ctest", "--test-dir", "/home/dflanag3/fleet-tool-eval-20261007/strata-gyro/build", "--output-on-failure", "--no-tests=error", "-R", "^native_expert_parity_(hadamard_)?(tqk6_tqk7|tq2_t_tq2_t)$"]}

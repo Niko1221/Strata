@@ -1,0 +1,10 @@
+{
+  "bench": "c8a30ff5c1fb132e395bc2d8e4bd549ef1294abd",
+  "source_revision": "434e136f73a7da2bfd11cde3bb0aa0acaf1328c6",
+  "engine_sha256": "a677cb17c0826ca55fff6f28ddef40a089ec627b36fdc3d11debe7f3d985738b",
+  "started": 1791427262.9175239,
+  "hardware": "RTX PRO 6000 Blackwell 96 GB; Ryzen 9 7950X; 124 GiB RAM",
+  "engine_build": {},
+  "publication_note": "Local paths and hostname replaced; unedited receipts retained privately.",
+  "patch": "gyro-no-mtp-backport.patch"
+}

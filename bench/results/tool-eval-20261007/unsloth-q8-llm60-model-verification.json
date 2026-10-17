@@ -1,0 +1,32 @@
+[
+  {
+    "file": "Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf",
+    "size": 10946624,
+    "sha256": "2dabcbb53ca537a7947bc7d20414fd464eeaf4d66d43021b5b2556cc87544ad2"
+  },
+  {
+    "file": "Qwen3.8-Flash-Next-Q8_0-00002-of-00006.gguf",
+    "size": 682434912,
+    "sha256": "494ca4ed3dbf97bc28da88af3890b8877b9032f909812d00c0526a9ca5e91d2e"
+  },
+  {
+    "file": "Qwen3.8-Flash-Next-Q8_0-00003-of-00006.gguf",
+    "size": 54400261312,
+    "sha256": "34efd79a80a1ce540a517a5d56171924b66ce1c38b04c904f17ad6d8ef17cf20"
+  },
+  {
+    "file": "Qwen3.8-Flash-Next-Q8_0-00004-of-00006.gguf",
+    "size": 49446841216,
+    "sha256": "bfa634025fabbd2658bf7694bc80b90e571699c768723f844c934c7ef06c691a"
+  },
+  {
+    "file": "Qwen3.8-Flash-Next-Q8_0-00005-of-00006.gguf",
+    "size": 49668930400,
+    "sha256": "232a8f14cc0fa4262e7efe8593774b136fe40909e39c7a020342ddaa27259a97"
+  },
+  {
+    "file": "Qwen3.8-Flash-Next-Q8_0-00006-of-00006.gguf",
+    "size": 34015618784,
+    "sha256": "538a93bca918064983409a41187ad4c68640f9aced6f29564da8f551bf86d7a5"
+  }
+]

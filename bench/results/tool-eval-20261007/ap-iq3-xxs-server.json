@@ -1,0 +1,37 @@
+{
+  "exe": "/benchmark/strata/build-ap-q6/strata",
+  "cwd": "/benchmark/strata",
+  "tokenizer": "/benchmark/packs/ap-iq3-xxs-llm60-main/tokenizer",
+  "gpu": 0,
+  "model_name": "ap-iq3-xxs-llm60-main",
+  "lib_dirs": [
+    "/usr/local/cuda-13.2/lib64"
+  ],
+  "args": [
+    "--pack",
+    "/benchmark/packs/ap-iq3-xxs-llm60-main",
+    "--native",
+    "/models/huggingface/agentionai/Qwen3.8-Flash-Next-AP-GGUF/AP-IQ3_XXS/Qwen3.8-Flash-Next-AP-IQ3_XXS.gguf",
+    "--ple-gguf",
+    "/models/huggingface/agentionai/Qwen3.8-Flash-Next-AP-GGUF/AP-IQ3_XXS/Qwen3.8-Flash-Next-AP-IQ3_XXS.gguf",
+    "--expert-profile",
+    "/benchmark/strata/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "8192",
+    "--spec",
+    "2",
+    "--suffix-draft",
+    "0",
+    "--max-context",
+    "32768",
+    "--kv",
+    "fp16",
+    "--stats"
+  ],
+  "log": "/benchmark/results/ap-iq3-xxs-llm60-main/engine.log",
+  "host": "127.0.0.1",
+  "port": 18190,
+  "open_browser": false
+}

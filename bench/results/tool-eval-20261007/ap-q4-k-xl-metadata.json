@@ -1,0 +1,16 @@
+{
+  "bench": "c8a30ff5c1fb132e395bc2d8e4bd549ef1294abd",
+  "source_revision": "d5ea7133741e67743c0e886bb426c0ce8d69cf6c",
+  "engine_sha256": "45aaa8a2d35eaafbda3873631fabdb4c219082a59e2ea2a284dc8c33d1a0a982",
+  "started": 1791428749.3480115,
+  "hardware": "RTX PRO 6000 Blackwell 96 GB; Ryzen 9 7950X; 124 GiB RAM",
+  "engine_build": {
+    "source_revision": "d5ea7133741e67743c0e886bb426c0ce8d69cf6c",
+    "build_options": {
+      "STRATA_Q6K_EXPERTS": "ON"
+    },
+    "reason": "AP token_embd.weight is Q6_K; baseline build excludes its dequantizer",
+    "time": 1791428737.7998426
+  },
+  "publication_note": "Local paths and hostname replaced; unedited receipts retained privately."
+}
