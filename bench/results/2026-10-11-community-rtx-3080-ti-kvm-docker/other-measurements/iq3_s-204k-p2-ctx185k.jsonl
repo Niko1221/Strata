@@ -1,0 +1,2 @@
+{"label": "IQ3_S-204k-p2", "mode": "ctx", "run": 1, "target_tokens": 185000, "prompt_tokens": 174001, "cache_n": 0, "prompt_n": 174001, "prefill_tps": 1516.5, "predicted_n": 278, "decode_tps": 47.9, "ttft_s": 114.95, "wall_s": 120.73, "finish": "stop", "error": null}
+{"label": "IQ3_S-204k-p2", "mode": "ctx", "run": 2, "target_tokens": 185000, "prompt_tokens": 174002, "cache_n": 0, "prompt_n": 174002, "prefill_tps": 1533.0, "predicted_n": 288, "decode_tps": 45.2, "ttft_s": 113.66, "wall_s": 120.0, "finish": "stop", "error": null}

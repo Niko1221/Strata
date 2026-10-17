@@ -1,0 +1,9 @@
+{"label": "IQ3_S", "mode": "reason", "effort": "none", "q": 1, "correct": true, "got": "155", "think_chars": 0, "completion_tokens": 391, "wall_s": 4.48, "decode_tps": 103.5, "finish": "stop"}
+{"label": "IQ3_S", "mode": "reason", "effort": "none", "q": 2, "correct": true, "got": "403", "think_chars": 0, "completion_tokens": 199, "wall_s": 2.21, "decode_tps": 111.9, "finish": "stop"}
+{"label": "IQ3_S", "mode": "reason", "effort": "none", "q": 3, "correct": true, "got": "62", "think_chars": 0, "completion_tokens": 281, "wall_s": 2.96, "decode_tps": 111.7, "finish": "stop"}
+{"label": "IQ3_S", "mode": "reason", "effort": "none", "q": 4, "correct": true, "got": "14", "think_chars": 0, "completion_tokens": 481, "wall_s": 4.8, "decode_tps": 111.7, "finish": "stop"}
+{"label": "IQ3_S", "mode": "reason", "effort": "none", "q": 5, "correct": true, "got": "24", "think_chars": 0, "completion_tokens": 401, "wall_s": 4.36, "decode_tps": 102.8, "finish": "stop"}
+{"label": "IQ3_S", "mode": "reason", "effort": "none", "q": 6, "correct": true, "got": "9", "think_chars": 0, "completion_tokens": 265, "wall_s": 2.86, "decode_tps": 110.9, "finish": "stop"}
+{"label": "IQ3_S", "mode": "reason", "effort": "none", "q": 7, "correct": true, "got": "101", "think_chars": 0, "completion_tokens": 363, "wall_s": 3.62, "decode_tps": 114.3, "finish": "stop"}
+{"label": "IQ3_S", "mode": "reason", "effort": "none", "q": 8, "correct": true, "got": "32", "think_chars": 0, "completion_tokens": 807, "wall_s": 7.29, "decode_tps": 118.4, "finish": "stop"}
+{"label": "IQ3_S", "mode": "reason", "effort": "none", "total": {"correct": 8, "completion_tokens": 3188, "think_chars": 0, "wall_s": 32.58}, "n": 8}

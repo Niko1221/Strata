@@ -1,0 +1,14 @@
+{
+ "source": "local",
+ "version": "0.1.42",
+ "archs": [
+  86
+ ],
+ "vision": "gpu",
+ "cuda_dirs": [
+  "/usr/local/cuda/bin",
+  "/usr/local/cuda/lib64"
+ ],
+ "src": "1e0c97588848ea0f",
+ "vision_src": "1fb2b3fb797ec402"
+}

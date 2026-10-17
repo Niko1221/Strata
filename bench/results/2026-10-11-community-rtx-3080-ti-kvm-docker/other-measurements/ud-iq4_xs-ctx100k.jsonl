@@ -1,0 +1,2 @@
+{"label": "UD-IQ4_XS", "mode": "ctx", "run": 1, "target_tokens": 100000, "prompt_tokens": 96453, "cache_n": 0, "prompt_n": 96453, "prefill_tps": 1818.0, "predicted_n": 289, "decode_tps": 39.4, "ttft_s": 53.17, "wall_s": 60.48, "finish": "stop", "error": null}
+{"label": "UD-IQ4_XS", "mode": "ctx", "run": 2, "target_tokens": 100000, "prompt_tokens": 96453, "cache_n": 0, "prompt_n": 96453, "prefill_tps": 1800.7, "predicted_n": 305, "decode_tps": 40.6, "ttft_s": 53.67, "wall_s": 61.14, "finish": "stop", "error": null}

@@ -1,0 +1,3 @@
+{"label": "UD-IQ4_XS", "mode": "ctx", "run": 1, "target_tokens": 30000, "prompt_tokens": 29123, "cache_n": 0, "prompt_n": 29123, "prefill_tps": 1586.5, "predicted_n": 64, "decode_tps": 48.0, "ttft_s": 18.41, "wall_s": 19.71, "finish": "length", "error": null}
+{"label": "UD-IQ4_XS", "mode": "ctx", "run": 2, "target_tokens": 30000, "prompt_tokens": 29121, "cache_n": 0, "prompt_n": 29121, "prefill_tps": 1763.3, "predicted_n": 64, "decode_tps": 48.1, "ttft_s": 16.56, "wall_s": 17.87, "finish": "length", "error": null}
+{"label": "UD-IQ4_XS", "mode": "ctx", "run": 3, "target_tokens": 30000, "prompt_tokens": 29124, "cache_n": 0, "prompt_n": 29124, "prefill_tps": 1753.3, "predicted_n": 64, "decode_tps": 56.4, "ttft_s": 16.65, "wall_s": 17.77, "finish": "length", "error": null}
