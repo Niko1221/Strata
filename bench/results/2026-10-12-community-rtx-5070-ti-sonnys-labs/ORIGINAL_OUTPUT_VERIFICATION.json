@@ -1,0 +1,45 @@
+{
+  "source_commit": "7695859aa13afb248bdb4d36f9b2e95707db079d",
+  "files": [
+    {
+      "path": "iq2_xs-standard-32k/README.md",
+      "sha256": "256285511885f18615bd67cfe9736aa3641326238e691bc8676cce8a316182b5",
+      "upstream_output_unmodified": true
+    },
+    {
+      "path": "iq2_xs-standard-32k/results.json",
+      "sha256": "9de0e940419311afaa2af290b27106c52f14ca13ba109170a0dd5b4271881dfe",
+      "upstream_output_unmodified": true
+    },
+    {
+      "path": "iq2_xs-optional-64k/README.md",
+      "sha256": "7b8a4d125ad230af0d864da41a3c343ff7f601d75e102fe3333e803dad38b0bf",
+      "upstream_output_unmodified": true
+    },
+    {
+      "path": "iq2_xs-optional-64k/results.json",
+      "sha256": "f09e2ab7720b63f3774939792b04903236fbceebf80273934a5dd1fe15e3aaf5",
+      "upstream_output_unmodified": true
+    },
+    {
+      "path": "iq3_xxs-standard-32k/README.md",
+      "sha256": "e6de54268d7931405306ca2666aacf88812aa5bc9b5ccb6aaaf8e21a9c4648f5",
+      "upstream_output_unmodified": true
+    },
+    {
+      "path": "iq3_xxs-standard-32k/results.json",
+      "sha256": "326b55f9113090f14d6353b92142d7857ad22996e0ee4158947b598c4794197e",
+      "upstream_output_unmodified": true
+    },
+    {
+      "path": "iq3_xxs-optional-64k/README.md",
+      "sha256": "31252ea245c5b24999d8306b78c10ca5bd46ee2b11772743e13760295d9d6763",
+      "upstream_output_unmodified": true
+    },
+    {
+      "path": "iq3_xxs-optional-64k/results.json",
+      "sha256": "611578683f3c1c45063943943b720d4a2fa025e14e4f73e3e922eaf85cf5c740",
+      "upstream_output_unmodified": true
+    }
+  ]
+}
