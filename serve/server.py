@@ -6633,7 +6633,13 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
     repeat_last_n), seed.  The request's own fields
     always win - an explicit temperature=0 still means greedy, a field set to null falls back to the default.
     A bad value refuses to start the server (a typo'd config should not quietly change sampling); unknown keys
-    are named at startup and ignored."""
+    are named at startup and ignored.  A block that is not a set of numbers at all (a name, a list) refuses to start
+    the same way, instead of leaving a traceback where a message belongs."""
+    block = cfg.get("sampling")
+    if block is not None and not isinstance(block, dict):
+        raise SystemExit(f'[strata] config "sampling"={block!r}: expected a set of numbers such as '
+                         '{"temperature": 1.0, "top_p": 0.95}, or no "sampling" key at all (requests then get the '
+                         "model card's sampling, 0.1.45)")
     out = {}
     block = dict(cfg.get("sampling") or {})
     for alias, canon in SAMPLING_ALIASES.items():      # #1819: llama.cpp's names for the same two fields
@@ -6690,6 +6696,33 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
         else:
             print(f"[strata] config sampling.{key}={value!r}: unknown key, ignored", flush=True)
     return out
+
+
+def sampling_config_lines(cfg: dict, defaults: dict | None = None) -> list[str]:
+    """#1129: the line a start prints about the run config's "sampling" block - the numbers a request that sends none
+    of its own gets, and which of Qwen's two sets they are when they are one of them - or, with no block, that such
+    a request gets the model card's sampling instead (0.1.45, #2685).  `defaults`: the block as
+    sampling_defaults_from_config read it (it is checked there, so a bad value stops
+    the start with its own message); read from `cfg` when not given.  A set is named only when the block, as the file
+    writes it, is exactly one of Qwen's two: a block with a key set to null or a key the server does not know is the
+    user's own numbers - setup keeps such a block as theirs, so its `Settings (...)` line and this one agree."""
+    if defaults is None:
+        defaults = sampling_defaults_from_config(cfg)
+    if not defaults:                                       # no block, or one whose every value is null or unknown
+        arch = cfg.get("arch") or "qwen4exp"
+        card = model_card_sampling(arch, True)
+        if not card:                                       # a family with no card: the engine's greedy default
+            return ['[strata] sampling: no "sampling" block in the config and no card for this model - requests that '
+                    "send none decode greedy (setup's --thinking / --instruct, or the About tab's Model settings, "
+                    "set numbers for all clients)"]
+        return ['[strata] sampling: no "sampling" block in the config - requests that send none get the model '
+                f"card's (thinking {runconfig.sampling_summary(card)}; not thinking "
+                f"{runconfig.sampling_summary(model_card_sampling(arch, False))}); greedy only when asked "
+                "(temperature 0).  setup's --thinking / --instruct, or the About tab's Model settings, set numbers "
+                "for all clients"]
+    name = runconfig.preset_of(cfg.get("sampling"))
+    return [f"[strata] sampling defaults from the config: {runconfig.sampling_summary(defaults)}"
+            + (f" (Qwen's {name} preset)" if name else "")]
 
 
 def start_replicas(cfg: dict, groups: list[list[int]], exe: str, effort_end: list[str], lazy: bool):
@@ -6879,10 +6912,9 @@ def main() -> int:
             ap.error("--engine strata needs --config")
         vision = None
         env = child_env(cfg)
-        sampling_defaults = sampling_defaults_from_config(cfg)
-        if sampling_defaults:
-            pretty = ", ".join(f"{k}={v}" for k, v in sampling_defaults.items())
-            print(f"[strata] sampling defaults from the config: {pretty}", flush=True)
+        sampling_defaults = sampling_defaults_from_config(cfg)   # the checks: a bad value stops the start here
+        for line in sampling_config_lines(cfg, sampling_defaults):   # #1129: what a request that sends none gets
+            print(line, flush=True)
         lazy = a.lazy or cfg.get("lazy_load") is True
         if cfg.get("vision"):
             elastic = cfg["vision"].get("elastic") is True and cfg.get("vram_elastic") is True

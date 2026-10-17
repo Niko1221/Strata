@@ -1371,14 +1371,33 @@ is not reproducible run to run - for seed-reproducible output add `--adapt-every
 engine arguments. The run config's optional `sampling` block sets the defaults for requests that leave the fields out
 (`"sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 20}`); a request's own fields always win. **With no
 block at all (0.1.45) a request without sampling keys gets the sampling the model card recommends**, picked by the
-request's thinking state: Qwen3.8-Flash-Next (and Gyro) thinking temperature 1.0, top_p 0.95, top_k 20; not thinking temperature 0.7,
-top_p 0.8, top_k 20, presence_penalty 1.5. Qwen3.6-35B-A3B thinking 1.0 / 0.95 / 20 with presence_penalty 1.5, not thinking
-0.7 / 0.8 / 20 with 1.5 (min_p 0 and repetition_penalty 1 are "off"). Order of precedence: the request, the web page's shared Chat settings,
-the config's `sampling` block, the card. Greedy is only for who asks for it: `temperature: 0` in the request, or `"sampling": {"temperature": 0}` in the config
-(before 0.1.45 a config without a block ran greedy, and greedy decoding is what makes small local models loop; #2685). The web page sends no sampling of its own until you change its Sampling settings (it showed and sent 0.6 before); an old stored 0.6 with the default top_p and top_k counts as not set. The penalties (`presence_penalty`, `frequency_penalty`,
+request's thinking state: Qwen3.8-Flash-Next (and Gyro) thinking temperature 1.0, top_p 0.95, top_k 20; not thinking
+temperature 0.7, top_p 0.8, top_k 20, presence_penalty 1.5. Qwen3.6-35B-A3B thinking 1.0 / 0.95 / 20 with
+presence_penalty 1.5, not thinking 0.7 / 0.8 / 20 with 1.5 (min_p 0 and repetition_penalty 1 are "off"). Order of
+precedence: the request, the web page's shared Chat settings, the config's `sampling` block, the card. Greedy is only
+for who asks for it: `temperature: 0` in the request, or `"sampling": {"temperature": 0}` in the config (before
+0.1.45 a config without a block ran greedy, and greedy decoding is what makes small local models loop; #2685). The
+web page sends no sampling of its own until you change its Sampling settings (it showed and sent 0.6 before); an old
+stored 0.6 with the default top_p and top_k counts as not set. Writing that config block stays opt-in (#1129): setup
+adds the card's thinking set only when `START-HERE.bat --thinking` names it - `temperature=1.0, top_p=0.95, top_k=20,
+min_p=0.0, presence_penalty=0.0, repetition_penalty=1.0` - or its set for direct answers when `--instruct` names it
+(Linux: `./setup.sh --thinking` / `--instruct`): `temperature=0.7, top_p=0.80, top_k=20, min_p=0.0,
+presence_penalty=1.5, repetition_penalty=1.0`. A run that names no flag - new install or setup again later -
+writes no block and the card's defaults above apply; numbers written by hand stay as they are, and a start
+that picks a preset keeps the file it replaced as `strata-<model>.json.bak`, the way a setup run does. The Intel
+path keeps that choice: `sycl/setup_intel.py` rewrites the config for its container paths, and the block setup
+wrote for this run wins over the earlier config's; an Intel start saves what it names (`--thinking` / `--instruct`
+among them) before its own run script starts the server. A `sampling` that is not a set of numbers at all - a
+name, a list, a bare value - stops the start with a message naming it instead of a traceback; a setup run that
+names a flag replaces such a block and says what it replaced, and a run that names no flag says it left it there.
+A start names what it uses: setup's `Settings (...)` line and the
+server's `sampling ...` start line list the numbers and say which preset the block holds, or that requests get the
+card's sampling. The penalties (`presence_penalty`, `frequency_penalty`,
 `repetition_penalty`, with `penalty_last_n` capping how many recent tokens they count over, default 64 when any
 penalty is set; llama.cpp's names `repeat_penalty` and `repeat_last_n` work too, in the config's `sampling` block and in a request, #1819) ride the same path; they count the tokens the request has consumed, so a repetition penalty
-suppresses what the model itself just said, not the prompt alone. Since engine 0.1.19 they apply to every token
+suppresses what the model itself just said, not the prompt alone; in batch windows (`"parallel": N`) no penalty is
+applied at all yet (docs/BATCHING.md, "Limits (for now)") - an `--instruct` block's `presence_penalty=1.5` does
+nothing inside a batch. Since engine 0.1.19 they apply to every token
 the speculative decoding checks at once, exactly as if it decoded one token at a time (before, only the first of
 each batch got them). That makes requests with penalties 1-11% slower than in 0.1.18: the draft layer guesses
 without penalties, so more of its guesses are now rejected. Requests without penalties are unchanged. `top_k` keeps at most 64 candidates: `0` ("off") or anything above 64 uses all 64.
