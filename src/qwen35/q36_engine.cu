@@ -1153,6 +1153,25 @@ void expert_blob(const Layer& L, int64_t e, uint8_t* dst) {
     std::memcpy(dst + L.L.down_off, L.src_d + (size_t) e * L.src_dsz, L.src_dsz);
 }
 
+/// How many threads copy the routed experts (STRATA_Q36_PARALLEL_PLACE): 0/unset = the serial
+/// path (one thread, the load's hot loop); N = N threads.  The chunks are disjoint and the
+/// bytes are identical either way, so this only changes load time, never the placed experts.
+static int parallel_place_threads() {
+    const char* e = std::getenv("STRATA_Q36_PARALLEL_PLACE");
+    if (e == nullptr) return 0;
+    const int n = std::atoi(e);
+    return n > 0 ? (std::min)(n, 128) : 0;
+}
+
+/// Copy experts [e0, e1) of layer L into the host arena and zero each slot's tail padding.
+/// The ranges are disjoint, so several threads can run this at once (the load's hot loop).
+void place_expert_range(const Layer& L, int64_t e0, int64_t e1, size_t written) {
+    for (int64_t e = e0; e < e1; ++e) {
+        expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
+        std::memset(L.hblobs + (size_t) e * L.stride + written, 0, L.stride - written);
+    }
+}
+
 // ------------------------------------------------------------------------------------------------ the engine
 float* dalloc(size_t n) {
     float* p = nullptr;
@@ -2246,6 +2265,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     for (Layer* L : all)
         if (!mtp_only || L == &m.mtp) host += L->stride * (size_t) ne + kMmqTail;
     uint8_t* arena = nullptr;
+    const auto t_alloc = Clock::now();
     bool pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
     if (!pinned) {
         (void) cudaGetLastError();
@@ -2255,6 +2275,9 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
             return false;
         }
     }
+    double alloc_ms = ms_since(t_alloc), copy_ms = 0;
+    const int p_threads = parallel_place_threads();
+    const int copy_threads = p_threads > 1 ? (int) std::min<int64_t>((int64_t) p_threads, ne) : 1;
     size_t off = 0;
     E.hy.resize(all.size());
     for (size_t li = 0; li < all.size(); ++li) {
@@ -2277,10 +2300,19 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         // on an NVFP4 layout, its 16-byte scale tail - so only that is cleared, not all 18.75 GiB that is about to
         // be overwritten.
         const size_t written = L.L.down_off + L.src_dsz;
-        for (int64_t e = 0; e < ne; ++e) {
-            expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
-            std::memset(L.hblobs + (size_t) e * L.stride + written, 0, L.stride - written);
+        const auto t_copy = Clock::now();
+        if (copy_threads <= 1) {
+            place_expert_range(L, 0, ne, written);
+        } else {
+            std::vector<std::thread> th;
+            th.reserve((size_t) copy_threads);
+            for (int i = 0; i < copy_threads; ++i) {
+                const int64_t e0 = (int64_t) ne * i / copy_threads, e1 = (int64_t) ne * (i + 1) / copy_threads;
+                th.emplace_back([&L, e0, e1, written] { place_expert_range(L, e0, e1, written); });
+            }
+            for (auto& t : th) t.join();
         }
+        copy_ms += ms_since(t_copy);
         std::memset(L.hblobs + (size_t) ne * L.stride, 0, kMmqTail);
         L.n_slots = S;
         if (S > 0) {
@@ -2340,9 +2372,11 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     else
     std::fprintf(stderr, "strata-q36: hybrid experts: %d of %lld per layer in VRAM (%.2f GiB), all %.2f GiB in %s host "
                  "memory, the rest of a batch of <= %d rows on %d CPU threads, bigger prompt chunks streamed (%.2f GiB "
-                 "staging); %.1f s\n", S, (long long) ne, (double) S * per_slot / (1 << 30), (double) host / (1 << 30),
+                 "staging); %.1f s (arena alloc %.1f s, expert copy %.1f s, %d copy thread%s)\n",
+                 S, (long long) ne, (double) S * per_slot / (1 << 30), (double) host / (1 << 30),
                  pinned ? "pinned" : "pageable", E.hybrid_t, E.pool->workers() + (E.pool->host_works() ? 1 : 0),
-                 (double) staging / (1 << 30), ms_since(t0) / 1000.0);
+                 (double) staging / (1 << 30), ms_since(t0) / 1000.0, alloc_ms / 1000.0, copy_ms / 1000.0,
+                 copy_threads, copy_threads == 1 ? "" : "s");
     return true;
 #endif
 }
