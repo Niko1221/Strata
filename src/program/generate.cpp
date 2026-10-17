@@ -75,6 +75,9 @@
 #include "strata/program/split_ring.hpp"
 #include "strata/program/draft_kv_plan.hpp"
 #include "strata/program/message_boundary.hpp"
+#include "strata/program/suffix_reuse.hpp"
+#include "strata/program/kv_splice_apply.hpp"          // Phase 2 Task 2: kernel-level helper + SpliceStatus enum
+#include "strata/program/kv_splice_apply_session.hpp" // Phase 2 Task 2: SessionState wrapper for apply_splice
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/draft_source.hpp"
 #include "strata/spec/suffix_drafter.hpp"
@@ -729,11 +732,37 @@ struct Options {
     bool session_save_reclaim = false;
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
     int64_t prompt_cache_every = 16384;
+    /// FW-1: --prompt-cache-dense-tail N - dense checkpoint cadence in the last N tokens
+    /// (sparse max(every, 8192) head; 0 = off = today's uniform cadence).  Needs every > 0.
+    int64_t prompt_cache_dense_tail = 0;
+    /// FW-2b: --prompt-cache-state-every N - fine-cadence STATE-only checkpoints
+    /// (gdn/ple/tails/dead/block_pos, no K/V; ~100-150ms each).  They shrink the
+    /// fail-close gap when an edit lands deeper than every periodic anchor.  A side
+    /// pool (never LRU-evicts the deep periodic anchors).  0 = off = today.
+    int64_t prompt_cache_state_every = 0;
     bool prompt_cache_tail = false;   // optional extra checkpoint at an existing near-tail chunk boundary
     bool prompt_cache_spread = false;   ///< --prompt-cache-spread: keep checkpoints spread back from the end, not the latest
     /// --serve: a prompt read from token 0 is also checkpointed at its first turn boundary - the end of the system
     /// prompt, which every chat of the same client shares - when that is at least N tokens (0 = never)
     int64_t prompt_cache_root = 2048;
+    /// --cache-suffix-reuse N (--serve; opt-in, default 0 = off): when a prompt repeats an
+    /// earlier one with a change in the middle, keep the cached text before the change: the
+    /// unchanged tail's K rows are rotated in place to their new positions (V is untouched -
+    /// position-free), gdn/ple recurrence replays from `replay_from = edit_pos` (Task 5), and
+    /// prompt-cache checkpoints past the edit position are invalidated.  The splice runs for any
+    /// N > 0 and works with every --kv format (fp16, int8, int8+STRATA_KV_ROT, k8v4, q4_0);
+    /// kv-resident and layer-split refuse (`SPLICE_UNSUPPORTED` - falls through to re-read).  When 0 (default), today's `limit_reuse(first_dirty)` behaviour byte-identical -
+    /// the predicate `suffix_reuse_should_invalidate` returns false and the hook is a no-op
+    /// (verifier: `suffix_reuse_off_parity_test` byte-equals today's accounting).  Requires
+    /// --prompt-cache >= 2.  Refuses (falls back to re-read): --kv-resident, --layer-split.
+    /// BOUNDED PESSIMIZATION (r2 F1): a coincidental role-header suffix (k <= 4 tokens of
+    /// trailing role header that happens to match) DOES narrow `resume` to that header's position
+    /// and forces the next request to re-prefill the conversation body.  This is a known bounded
+    /// loss - on `--serve` chat with `tail_role_token < 0` (default; the role header pinned just
+    /// inside <|im_start|>), the header's length is bounded by the role token's piece length
+    /// (typically 3-4 tokens), so the regex matches are rare and the cost is small.  No new knob;
+    /// the runtime narrows on any genuine common suffix even if the tail looks incidental.
+    int64_t cache_suffix_reuse = 0;
     /// --serve: the token that opens a chat turn (<|im_start|>).  The last one in a prompt is where the chat's
     /// history ends and the new assistant turn begins, which is the checkpoint the next request can reuse.
     int64_t turn_token = 248045;
@@ -866,10 +895,21 @@ void usage() {
                  "  --shared-late        A/B: shared expert after the CPU pool (default: overlapped with it)\n"
                  "  --keep-canonical     A/B: also load canonical copies of natively served tensors (more VRAM)\n"
                  "  --vision             --serve takes images too (GENI requests; embeddings from strata-vision)\n"
-                 "  --prompt-cache N     --serve: keep N conversation checkpoints between requests (default 6, ~118 MB\n"
-                 "                       of RAM each; 0 = read every prompt from the start)\n"
-                 "  --conversation-cache-mib N  --serve: RAM budget for parked conversations (default 0 = off)\n"
-                 "  --conversation-cache-slots N  --serve: at most N parked conversations (default 4)\n"
+                 "  --prompt-cache N     --serve: keep N checkpoints of recent prompts for reuse (default 6, ~118 MB\n"
+                 "                       of RAM each; 0 = no reuse - every prompt is read in full)\n"
+                 "  --cache-suffix-reuse N  --serve, opt-in (default 0 = off): when a prompt repeats an earlier\n"
+                 "                       one with a change in the middle, reuse the cached text BEFORE the\n"
+                 "                       change instead of re-reading it (rotate the kept K rows to their new\n"
+                 "                       positions; V rows are position-free).  Works with every --kv format\n"
+                 "                       (fp16, int8, int8+STRATA_KV_ROT, k8v4, q4_0).  Measured on RTX 3090,\n"
+                 "                       IQ3_XXS 5.7k-token prompt, mid-prompt edit: 89%% of the prompt reused,\n"
+                 "                       3.4 s prefill vs 45.2 s from cold.  Needs periodic checkpoints: use\n"
+                 "                       --prefill N with --prompt-cache-every N.  N caps\n"
+                 "                       the edit size the splice will handle.  Off or refused configs fall\n"
+                 "                       back to re-reading - answers stay correct either way.\n"
+                 "  --conversation-cache-mib N  --serve: RAM (MiB) for keeping finished conversations cached, so the\n"
+                 "                       next message in the same chat can reuse them (default 0 = off)\n"
+                 "  --conversation-cache-slots N  --serve: how many finished conversations to keep cached (default 4)\n"
                  "  --conversation-cache-min-free-mib N  --serve: RAM floor (under MemAvailable, the cgroup limits and\n"
                  "                       --memory-limit-mib) when parking, saving or restoring a session (default 2560)\n"
                  "  --memory-limit-mib N  --serve: the total RAM (MiB) this engine's container or cgroup may use, when\n"
@@ -897,12 +937,23 @@ void usage() {
                  "                       with the GPUs overlapped - 1 = the prompt's short reads, 2 = decode as well\n"
                  "                       (stage 0 runs the next window while stage 1 verifies this one); docs/MULTI_GPU.md\n"
                  "  --trim-stage-weights an explicit --layer-split: each GPU loads only its own layers' dense weights\n"
-                 "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
+                 "  --prompt-cache-every N  --serve: also save a checkpoint every N new prompt tokens (default 16384;\n"
+                 "                       0 = off).  Smaller N puts a reusable point closer to a mid-text\n"
+                 "                       edit - pair with --prefill N when using --cache-suffix-reuse\n"
                  "  --prompt-cache-tail  --serve, single GPU: one extra checkpoint near the prompt's end, at an existing\n"
+                 "                       chunk boundary (default off; requires --prompt-cache and --prompt-cache-every > 0)\n"
+                 "  --prompt-cache-dense-tail N  --serve: save checkpoints sparsely while reading the prompt, then\n"
+                 "                       every --prompt-cache-every tokens within the last N tokens only.\n"
+                 "                       Cheap cold read + reusable points near the end, where mid-text edits\n"
+                 "                       usually happen.  0 = off (uniform cadence); needs --prompt-cache-every > 0\n"
                  "                       chunk boundary (default off; requires --prompt-cache and --prompt-cache-every > 0)\n"
                  "  --prompt-cache-spread  --serve: keep the checkpoints spread back from the conversation's end (dense\n"
                  "                       near it, thinner further back) instead of the most recently used: a client that\n"
                  "                       rewrites its history N tokens back reads about N again, not the whole conversation\n"
+                 "  --prompt-cache-state-every N  --serve: also save lightweight state-only checkpoints every N\n"
+                 "                       prompt tokens (the running state, no K/V copy - cheap).  An edit deeper than\n"
+                 "                       every regular checkpoint restores from the nearest one of these instead of\n"
+                 "                       re-reading the whole gap.  0 = off\n"
                  "  --turn-token ID      --serve: the token that opens a chat turn (default 248045, <|im_start|>)\n"
                  "  --tail-role-token ID --serve: a turn of this role right before the last turn is left out of\n"
                  "                       the conversation checkpoint (a trailing effort turn; default -1 = off)\n"
@@ -1658,6 +1709,7 @@ private:
 // just the checkpoints that are prefixes of the tokens the session holds now.
 using ImgKey = strata::core::ConversationImageKey;
 using ConvCheckpoint = strata::core::ConversationCheckpoint;
+namespace suffix = strata::program::suffix_reuse;     // --cache-suffix-reuse (plans/2026-10-11_130800-strata-suffix-reuse.md)
 
 uint64_t fnv1a(const void* data, size_t n, uint64_t h = 1469598103934665603ull) {
     const uint8_t* p = (const uint8_t*) data;
@@ -2493,6 +2545,7 @@ int main(int argc, char** argv) {
         else if (a == "--vision") o.vision = true;
         else if (a == "--session-save-reclaim") o.session_save_reclaim = true;
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
+        else if (a == "--cache-suffix-reuse") o.cache_suffix_reuse = std::max(0LL, std::atoll(next("--cache-suffix-reuse")));
         else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
                  a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-min-tokens" ||
                  a == "--conversation-cache-park-gain" ||
@@ -2518,6 +2571,8 @@ int main(int argc, char** argv) {
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
         else if (a == "--prompt-cache-spread") o.prompt_cache_spread = true;
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
+        else if (a == "--prompt-cache-state-every") o.prompt_cache_state_every = std::max(0LL, std::atoll(next("--prompt-cache-state-every")));
+        else if (a == "--prompt-cache-dense-tail") o.prompt_cache_dense_tail = std::max(0LL, std::atoll(next("--prompt-cache-dense-tail")));
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
         else if (a == "--tail-role-token") o.tail_role_token = std::atoll(next("--tail-role-token"));
@@ -2747,6 +2802,21 @@ int main(int argc, char** argv) {
         return n > 0 ? n : 0;
     }();
     strata::core::set_primary_device(primary_device);
+    // --cache-suffix-reuse guards (A1.3 fail-closed pattern: fprintf + return 2).  Splice for v1 is
+    // fp16-only, no kv-resident, no layer-split; kv-resident > 0 / int8 / q4_0 / k8v4 / layer-split
+    // are all rejected at STARTUP.  prompt_cache >= 2 is the existing constraint from the plan (D2);
+    // the splice needs at least one prefix checkpoint and one edit-beyond checkpoint to be useful.
+    // The shared predicate (in suffix_reuse.hpp so the test suite exercises the SAME code) returns
+    // the reason; we print and return 2 on a non-empty reason.
+    {
+        const std::string reason = suffix::validate_suffix_reuse_options(
+            o.cache_suffix_reuse, o.prompt_cache, o.kv, o.kv_resident, !o.layer_split.empty(),
+            o.prompt_cache_every, o.prompt_cache_dense_tail);
+        if (!reason.empty()) {
+            std::fprintf(stderr, "strata generate: %s\n", reason.c_str());
+            return 2;
+        }
+    }
     // parking with --layer-split saves every stage (SavedConversation::stage_images)
     // Layer split (multi-GPU): the later stages run layers [K_i, K_i+1) on their own GPUs (--split-device, default
     // the next visible ones); "auto" places the K from each GPU's free VRAM once the weights are in (below).  KV
@@ -8781,6 +8851,13 @@ int main(int argc, char** argv) {
         // --prefill-pipe: the plan of the prompt segment being read (read_part sets it around its runs), for the
         // checkpoints taken inside it
         ConvCheckpoint::PromptPlan seg_plan;
+        // FW-2b: fine-cadence state-only checkpoints.  A SIDE pool: the periodic `checks`
+        // list is LRU-capped at o.prompt_cache, and fine checkpoints there would evict the
+        // deep anchors the splice mounts.  Each entry is state only (checkpoint_save copies
+        // gdn/ple/tails/dead/block_pos - no K/V; T19 measured ~100-150ms per save), so the
+        // pool is capped by bytes, not count.  Cleared together with checks on every reset.
+        std::vector<ConvCheckpoint> state_checks;
+        int64_t state_next = INT64_MAX;   // the fine-cadence ladder (INT64_MAX = off)
         bool cvec_cached = true;   // the control vector's state the live session and the checkpoints were read with
         // without --mtp the conversation cache stays on: a parked image carries the draft layer's K/V only when there is one
         // (the snapshots accept a null draft)
@@ -9038,6 +9115,7 @@ int main(int argc, char** argv) {
             }
         };
         int64_t pp_total = 0, pp_from = 0, pp_next_check = 0;
+        int64_t pp_last_check = 0;   // FW-1: position of the last periodic checkpoint (dense-tail cadence)
         bool pp_tail_saved = false;
         // #471: the position the prompt pass has read up to (a chunk's or a window's end): what a request cancelled
         // mid-read reports as read, instead of the whole prompt
@@ -9176,17 +9254,26 @@ int main(int argc, char** argv) {
                 }
             } else {
                 Clock::time_point t0 = Clock::now();
-                auto lap = [&](double& acc) {   // (STRATA_TRACE only)
-                    if (!ckpt_trace) return;
+                auto lap = [&](double& acc) {   // (accumulates unconditionally: the FW-2a probe below reads it without STRATA_TRACE)
                     const Clock::time_point t1 = Clock::now();
                     acc += std::chrono::duration<double, std::milli>(t1 - t0).count();
                     t0 = t1;
                 };
                 double sync_ms = 0.0, save_ms = 0.0;
-                if (!gpu_sync_ok()) return false;
+                const bool sync_ok = gpu_sync_ok();
                 lap(sync_ms);
-                if (!checkpoint_save(c, ss, g)) return false;
+                const bool save_ok = sync_ok && checkpoint_save(c, ss, g);
                 lap(save_ms);
+                // FW-2a probe (T19): decompose the ~8s/boundary cost.  sync_ms = the
+                // device synchronize (pipeline drain); save_ms = the state+K/V copy.
+                // boundary_total - (sync+save) = the pipeline piece restart.  Decides the
+                // FW-2b checkpoint cadence: cheap save -> state-only ckpts at 256-tok; cheap
+                // sync -> cadence free; neither -> reuse dense-tail pieces only.
+                if (o.cache_suffix_reuse > 0)
+                    std::fprintf(stderr, "[SFX-DBG] ckpt-at: L=%lld sync_ms=%.1f save_ms=%.1f%s%s\n",
+                                 (long long) L, sync_ms, save_ms,
+                                 sync_ok ? "" : " SYNC_FAIL", save_ok ? "" : " SAVE_FAIL");
+                if (!sync_ok || !save_ok) return false;
                 for (auto& st : stages) {   // a layer split's later stages: their sessions' part
                     const strata::core::OnDevice on(st->dev);
                     ConvCheckpoint part;
@@ -9299,6 +9386,22 @@ int main(int argc, char** argv) {
             strata::core::progress_at("reading the prompt (batched), done up to token", done);
             strata::core::progress_beat();
             std::fflush(stdout);
+            // FW-1: with --prompt-cache-dense-tail N the cadence is position-dependent
+            // (sparse head, dense tail, never skipping the zone - dense_tail_next_check).
+            // With it OFF (0) the gate below is byte-identical to the original
+            // `done >= pp_next_check` / `pp_next_check = done + every` pair: pp_next_check
+            // starts at 0 so the FIRST chunk always checkpoints, exactly as before.
+            // FW-2a FIX (2026-10-13, T21): the gate now compares against the per-request
+            // pp_next_check for BOTH branches.  The dense-tail branch recomputed its
+            // threshold from pp_last_check, which persists ACROSS requests: after a long
+            // cold read (A: 5665) a warm resumed read (B: from 2598) waited for
+            // 5665+1024=6689 - past the prompt - and never took a periodic anchor
+            // (measured dt-steady8: B captured only turn@5670 + tail@5697; 3622/4646
+            // piece boundaries passed with no checkpoint).  pp_next_check IS initialized
+            // per request at the resume site (dense_tail_next_check(resume, n, ...)) and
+            // advanced at each capture below - the gate just has to read it.  Cost of the
+            // fix: one ~150ms checkpoint save per boundary that already exists (T19:
+            // sync 0.0ms, save ~100-150ms); the read's piece structure is unchanged.
             const bool periodic_checkpoint = o.prompt_cache_every > 0 && done >= pp_next_check;
             // Keep the prefill's existing chunk geometry. One extra near-tail checkpoint
             // can serve a branch whose shared prefix ends before the final cached state.
@@ -9322,8 +9425,51 @@ int main(int argc, char** argv) {
                     saved = checkpoint_at(done, nullptr, tail_checkpoint && !periodic_checkpoint);
                 }
                 if (!saved) { e = "saving a conversation checkpoint failed" + ckpt_why; return false; }
-                if (periodic_checkpoint) pp_next_check = done + o.prompt_cache_every;
+                if (periodic_checkpoint) {
+                    pp_last_check = done;
+                    if (o.prompt_cache_dense_tail > 0)
+                        pp_next_check = suffix::dense_tail_next_check(done, pp_total,
+                                                                      o.prompt_cache_every,
+                                                                      o.prompt_cache_dense_tail);
+                    else
+                        pp_next_check = done + o.prompt_cache_every;   // original cadence
+                }
                 if (tail_checkpoint) pp_tail_saved = true;
+            }
+            // FW-2b: the fine-cadence state-only capture.  state_cadence_next clamps to
+            // n, and `done < n` in the gate below, so a capture never lands at the live
+            // conversation's end.  A state checkpoint is ~100-150ms (T19: sync 0.0ms,
+            // save only) - at 256-token cadence that is ~0.6s per 1k fresh tokens, the
+            // price of a <=256-token fail-close gap instead of up to `every`.
+            if (o.prompt_cache_state_every > 0 && done >= state_next && done < pp_total) {
+                ConvCheckpoint sc;
+                sc.ids.assign(cur.begin(), cur.begin() + done);
+                sc.imgs = imgs_below(req_imgs, done);
+                if (gpu_sync_ok() && checkpoint_save(sc, ss, g)) {
+                    sc.used = ++check_clock;
+                    state_checks.push_back(std::move(sc));
+                    // byte cap, not count: state blobs are ~20-25 MiB per 1k conversation
+                    // tokens (measured: pool=2 at 5.7k under a 256 MiB cap), so the cap,
+                    // not the cadence, sets the anchor depth the pool covers.  2 GiB keeps
+                    // ~10 anchors at needle scale - the head region periodic cadence goes
+                    // sparse (max(every, 8192)) and the state pool is what keeps deep
+                    // anchors there.  Host RAM only (checkpoint_save copies to host vectors).
+                    int64_t state_bytes = 0;
+                    for (const ConvCheckpoint& k : state_checks) state_bytes += (int64_t) k.bytes();
+                    while (!state_checks.empty() && state_bytes > 2048 << 20) {
+                        state_bytes -= (int64_t) state_checks.front().bytes();
+                        state_checks.erase(state_checks.begin());   // oldest first
+                    }
+                    state_next = suffix::state_cadence_next(done, pp_total, o.prompt_cache_state_every);
+                    if (o.cache_suffix_reuse > 0)
+                        std::fprintf(stderr, "[SFX-DBG] state-ckpt: L=%lld pool=%zu\n",
+                                     (long long) done, state_checks.size());
+                } else {
+                    // fail-open on the SIDE pool only: a failed state capture must not
+                    // fail the request (the periodic anchors are untouched).  Retry at
+                    // the next boundary.
+                    state_next = suffix::state_cadence_next(done, pp_total, o.prompt_cache_state_every);
+                }
             }
             return true;
         };
@@ -11887,6 +12033,7 @@ int main(int argc, char** argv) {
                 const size_t n_checks = checks.size();
                 live_ok = false;
                 checks.clear();
+                state_checks.clear();   // FW-2b: the side pool dies with the session state it describes
                 tail_ckpt_len = -1;
                 const size_t n_parked = conversations.clear();
                 size_t n_slots = 0, n_running = 0;
@@ -11917,6 +12064,17 @@ int main(int argc, char** argv) {
             bool from_live = false;
             if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
+                // [SFX-DBG] probe: the session-local strict search has no visibility - log every
+                // candidate (live + each checkpoint) and its starts_with verdict so a shallow
+                // mount can be attributed to the candidate set, not the search.
+                if (o.cache_suffix_reuse > 0) {
+                    std::fprintf(stderr, "[SFX-DBG] local-search: live_ok=%d live_len=%zu n=%lld checks=%zu:",
+                                 live_ok ? 1 : 0, live.size(), (long long) cur.size(), checks.size());
+                    for (const ConvCheckpoint& c : checks)
+                        std::fprintf(stderr, " %lld/%d", (long long) c.ids.size(),
+                                     starts_with(c.ids, c.imgs) ? 1 : 0);
+                    std::fprintf(stderr, "\n");
+                }
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() > resume && starts_with(c.ids, c.imgs)) {
                         resume = (int64_t) c.ids.size();
@@ -11942,6 +12100,145 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
+            // --cache-suffix-reuse: on a re-edited prompt whose OLD cache is reachable from the request,
+            // compute the splice plan (longest common tail), invalidate every checkpoint whose length
+            // surpasses the edit position, and route the unchanged tail into a rotation-of-K / V-as-is
+            // splice.  With replay unimplemented (Task 7 deferral per A1.5), the splice path falls
+            // through to today's re-read at --cache-suffix-reuse 0 - no stub, just routing; this
+            // header's `replay_from` field is the deferred handoff.
+            // Plan ref: plans/2026-10-11_130800-strata-suffix-reuse.md D1 / Task 4 / Task 7.
+            // --cache-suffix-reuse (FINDING 1+4): the fire predicate and the invalidation live in
+            // suffix_reuse.hpp so the parity test exercises THE SAME function the runtime does.
+            // v1 scope (per FINDING 4):
+            //   (a) plan against the RESUME checkpoint's tokens (not checks.front()).
+            //   (b) checkpoint invalidation actually erases from `checks` (FINDING 5 also fixed).
+            //   (c) resume narrowing to plan.edit_pos when plan.edit_pos < resume - a real
+            //       divergence from the mounted checkpoint - is the safe, byte-equal-to-today
+            //       semantic for the common case (continuation: edit_pos == resume, no narrowing;
+            //       mid-prompt edit: edit_pos < resume, narrow to the edit point so today's
+            //       re-read picks up from there).  The KV splice itself is NOT wired; the doc-
+            //       comment at `SpliceHookOutcome` (suffix_reuse.hpp) and the help text both say
+            //       so.  flag absent or 0 -> byte-identical to today's behaviour.
+            // The splice hook's narrowing decision is captured here so the restore search
+            // (the `else if (!from_live)` branch below) and the chunk loop's read_from
+            // can do the right thing when the splice fired and narrowed `resume` to
+            // `plan_edit_pos`.  See `narrowed_resume_target` in suffix_reuse.hpp for the
+            // gap-read / replay path's pure decision.
+            //
+            // When the splice hook DID NOT fire or DID NOT narrow (the common case:
+            // pure continuation - plan.edit_pos == resume - or flag off), `splice_narrowed`
+            // is false and every site below sees today's byte-identical behaviour.
+            bool splice_narrowed = false;
+            int64_t splice_narrowed_resume = resume;
+            // Phase 3b: the partial-prefix mount's restore anchor.  When the parked cache
+            // returned a partial match and the partial helper fired, this is set to the
+            // anchor C's length L.  The splice-narrowed branch below uses it for the
+            // checkpoint restore (so `checkpoint_restore(*c, ...)` finds the anchor at L,
+            // not a non-existent checkpoint at P).  The strict splice hook leaves it at 0
+            // and the existing `narrowed_resume_target` path takes over.
+            int64_t splice_restore_anchor_length = 0;
+            const bool sfx_strict_fire = suffix::suffix_reuse_should_invalidate(
+                o.cache_suffix_reuse, from_live, resume, !checks.empty(), (int64_t) cur.size());
+            if (o.cache_suffix_reuse > 0)
+                std::fprintf(stderr, "[SFX-DBG] strict-hook: flag=%lld from_live=%d resume=%lld checks=%zu cur=%lld -> fire=%d\n",
+                             (long long) o.cache_suffix_reuse, from_live ? 1 : 0, (long long) resume,
+                             checks.size(), (long long) cur.size(), sfx_strict_fire ? 1 : 0);
+            if (sfx_strict_fire) {
+                // the resume checkpoint is the latest checkpoint whose ids are a prefix of cur
+                // (the deepest match); `resume` is its length.  We pull its tokens and pass them
+                // to the helper so the plan is computed against the mounted checkpoint - the
+                // shortest checkpoint (checks.front()) is the WRONG side of the plan and would
+                // always yield edit_pos=0 on a pure continuation, pessimising the common case.
+                // (the predicate above filtered `from_live=true`, so the search below is the live
+                // case study: there is always a resume checkpoint whose ids are a prefix of cur.)
+                const ConvCheckpoint* resume_ck = nullptr;
+                for (const ConvCheckpoint& c : checks)
+                    if ((int64_t) c.ids.size() == resume) { resume_ck = &c; break; }
+                std::vector<int32_t> resume_tokens;
+                if (resume_ck) resume_tokens.assign(resume_ck->ids.begin(), resume_ck->ids.end());
+                const std::vector<int32_t> cur_tokens(cur.begin(), cur.end());
+                const suffix::SuffixHookOutcome outcome = suffix::suffix_reuse_apply_invalidation(
+                    o.cache_suffix_reuse, from_live, resume,
+                    [&]() {
+                        std::vector<suffix::CheckpointLength> chain;
+                        chain.reserve(checks.size());
+                        for (size_t i = 0; i < checks.size(); ++i)
+                            chain.push_back({(int64_t) checks[i].ids.size(), i});
+                        return chain;
+                    }(),
+                    resume_tokens, cur_tokens);
+                if (outcome.fired) {
+                    // Erase the matching entries from `checks` using the helper's `index` field.
+                    // The helper does NOT own the live `checks` array, only a snapshot of
+                    // (length,index) pairs; we walk the snapshot and erase from the live vector
+                    // by the carry-valid `index`, then shrink in-place.  Plan ref: A2.4.
+                    {
+                        std::vector<bool> keep(checks.size(), false);
+                        for (const suffix::CheckpointLength& cl : outcome.chain)
+                            if (cl.index < keep.size()) keep[cl.index] = true;
+                        std::vector<size_t> drop_indices;
+                        for (size_t i = 0; i < keep.size(); ++i)
+                            if (!keep[i]) drop_indices.push_back(i);
+                        // erase from the back so indices stay valid
+                        for (auto it = drop_indices.rbegin(); it != drop_indices.rend(); ++it)
+                            if (*it < checks.size()) checks.erase(checks.begin() + (ptrdiff_t) *it);
+                    }
+                    // Resume narrowing: a real divergence (plan.edit_pos < resume) is the splice
+                    // hook's narrowing decision.  For a pure continuation plan.edit_pos == resume
+                    // (the resume checkpoint IS a prefix of cur, common suffix is the whole
+                    // checkpoint) and the comparison fails - resume UNCHANGED.  For a mid-prompt
+                    // edit, plan.edit_pos < resume and the engine re-reads from there.  Today's
+                    // re-read path is replaced on the splice path by `apply_splice` (below), which
+                    // rotates the cached K rows of the tail in-place; V is untouched; positions
+                    // are re-derived per prefill step.  This is the F4(a) verification target:
+                    // edit-at-E yields resume <= E.
+                    //
+                    // Phase 2 Task 5: `replay_from == plan_edit_pos == outcome.replay_from` from
+                    // the outcome, and `resume = read_from = plan_edit_pos` after this narrowing.
+                    // The chunk-loop's `a0` (generate.cpp:9809) is set to `read_from`, which becomes
+                    // `pos0` for `Prefill::run(ids+a0, n, a0, err)` (generate.cpp:9637); pos0
+                    // reaches the prefill unchanged, and the linear-state (GDN/PLE recurrence +
+                    // indexer tails) replay is sealed by the checkpoint_restore at line 9285
+                    // which restores gdn/ple/tails/dead/block_pos from the resume snapshot.
+                    if (outcome.plan_edit_pos < resume) {
+                        splice_narrowed = true;
+                        splice_narrowed_resume = outcome.plan_edit_pos;
+                        resume = outcome.plan_edit_pos;
+                    }
+                    // Phase 2 Task 2: apply the splice (host-loop rotation of K rows in the QSA
+                    // k_pool, V untouched).  Gated `old_suffix_len > 0` so a pure continuation
+                    // (plan.old_suffix_len == 0) does no rotation.  The runtime guard inside
+                    // `apply_splice` logs SPLICE_UNSUPPORTED for kv != fp16 / kv_resident / layer
+                    // split and returns without touching K, matching the startup guard from
+                    // Task 4.  When the splice is unsupported we ALSO log REPLAY_NOT_AVAILABLE
+                    // (Task 5 NEW-5: the linear-state replay path falls back to today's prefill
+                    // in those same cases - no snapshot present, kv != fp16, layer split - and
+                    // `read_from == resume` (narrowed) below reuses the existing prefill path,
+                    // which the brief says MUST remain intact).
+                    if (outcome.old_suffix_len > 0) {
+                        const strata::program::suffix_reuse::SpliceStatus sstatus =
+                            suffix::apply_splice(outcome, ss, g, nullptr);
+                        std::fprintf(stderr, "[SFX-DBG] apply_splice(strict): status=%d old_suffix_len=%lld\n",
+                                     (int) sstatus, (long long) outcome.old_suffix_len);
+                        if (sstatus != strata::program::suffix_reuse::SpliceStatus::Rotated &&
+                            sstatus != strata::program::suffix_reuse::SpliceStatus::NoOp) {
+                            const char* reason =
+                                (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedFormat)
+                                    ? "head_dim is not 256 in a rotated (kv_rot or q4) store, or an unhandled pool layout (fp16, int8, k8v4, q4_0 and int8+kv_rot are supported)"
+                                    : (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedResident)
+                                      ? "kv_resident > 0 (ring-layout splice is future work)"
+                                      : (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedSplit)
+                                        ? "layer split active (per-stage splice is future work)"
+                                        : "no applicable snapshot / reasons unstated";
+                            std::fprintf(stderr,
+                                "[strata] suffix-reuse: REPLAY_NOT_AVAILABLE: %s.  "
+                                "Falling through to today's re-read path; the linear-state "
+                                "replay (GDN recurrence + PLE history) will be re-read instead "
+                                "of spliced (P2 Task 5).\n", reason);
+                        }
+                    }
+                }
+            }
             // --batch: an idle slot that holds the start of this prompt (the conversation it served last) is a
             // source too - its sessions are copied back below, so only the new part is read.  STRATA_SLOT_CKPT_MOVE: an
             // active slot's checkpoints too (its windows write its cells from p on, so the ones below a checkpoint still
@@ -12009,7 +12306,23 @@ int main(int argc, char** argv) {
                                  k + 1, (long long) (k < now.size() ? now[k].start : -1));
                 }
             }
-            const auto parked = conversations.best(ids, req_imgs, want_cvec);
+                        // Phase 3b: flag-gated partial-prefix match.  At flag <= 0, best_with_partial is
+            // byte-identical to best() (same loop, same conversation_prefix, same tie-break).
+            // At flag > 0 with no strict match, falls back to the longest LCP p (0 < p < L)
+            // and surfaces (p, L) as Match{tokens=p, partial=true, checkpoint_length=L} so the
+            // partial-mount branch below can find the anchor C in the restored parked image
+            // and run the partial helper.  The session-local live+checks search above stays
+            // strict-only (the live/checks K/V arena is one branch of history; partial-mounting
+            // it requires a warm-up of [0, P) to re-derive the GDN running state, which is a
+            // follow-up - the CLM bench's mid-file edits hit the parked cache path).
+            const auto parked = conversations.best_with_partial(
+                o.cache_suffix_reuse, ids, req_imgs, want_cvec);
+            if (o.cache_suffix_reuse > 0)
+                std::fprintf(stderr, "[SFX-DBG] parked-search: flag=%lld entries=%zu match{tokens=%lld partial=%d ckpt_len=%lld live=%d} resume=%lld slot_tokens=%lld\n",
+                             (long long) o.cache_suffix_reuse, conversations.size(),
+                             (long long) parked.tokens, parked.partial ? 1 : 0,
+                             (long long) parked.checkpoint_length, parked.live ? 1 : 0,
+                             (long long) resume, (long long) slot_tokens);
             std::optional<strata::core::SavedConversation> incoming;
             // A checkpoint inside ANOTHER parked conversation (a sibling subagent's system prompt and tools, say) is
             // borrowed: its K/V up to there and the checkpoint come over, and that conversation stays parked for its
@@ -12113,10 +12426,12 @@ int main(int argc, char** argv) {
                     live.clear();
                     live_imgs.clear();
                     checks.clear();
+                    state_checks.clear();   // FW-2b
                     resume = 0;
                     from_live = false;
                 } else {
                     checks.clear();   // the main session's checkpoints were of the conversation it held before
+                    state_checks.clear();   // FW-2b: same conversation, same fate
                     // a read that gave way, the same request again (into its own slot): on with it - its segments and
                     // checkpoints as if it had not stopped
                     if (slot_ck == nullptr && bs[(size_t) slot_source].partial && admit_slot == slot_source) {
@@ -12248,9 +12563,124 @@ int main(int argc, char** argv) {
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes());
             }
+            // Phase 3b: partial-prefix mount.  When the parked cache returned a partial match
+            // (flag-gated, the strict mount failed), we have a checkpoint C of length L whose
+            // first P tokens match the new prompt's first P tokens (the LCP) and diverge at P
+            // (a mid-file edit past P).  The runtime:
+            //   1. mounted the parked image (line 9217-9284), restoring the K/V arena and the
+            //      running state at length L (the parked image's `live.ids.size()`).
+            //   2. set `resume = parked.tokens` (= P, the LCP) and `from_live = parked.live`.
+            //   3. now runs the partial helper to compute the splice plan (LCP-based narrow_pos
+            //      = P, suffix-based edit_pos for the K rotation in [P, L)).
+            // The helper's outcome drives the same downstream path as the strict splice hook:
+            // chain erase, splice_narrowed, apply_splice, resume narrowing.  The
+            // `restore_anchor_length` (= L) is surfaced on the `NarrowedResumeTarget` so the
+            // splice-narrowed branch below restores the anchor C (not the P-depth resume) and
+            // the chunk loop reads from P.
+            //
+            // The K/V cells for [0, P) are valid (the restore gave us the parked image's K/V
+            // for [0, L); we use [0, P)).  The K/V cells for [P, L) are stale (the mid-file
+            // edit changed the prompt at P) but the prefill overwrites them.  The K rotation
+            // in [P, L) (when old_suffix_len > 0) is wasted by the prefill but harmless - the
+            // gap-read [P, n) is the actual saving.  With old_suffix_len == 0 (no common tail
+            // from the back), apply_splice is gated out and the prefill is the only path.
+            if (o.cache_suffix_reuse > 0)
+                std::fprintf(stderr, "[SFX-DBG] partial-branch: incoming=%d parked.partial=%d parked.tokens=%lld resume=%lld cur=%lld -> enter=%d\n",
+                             incoming.has_value() ? 1 : 0, parked.partial ? 1 : 0, (long long) parked.tokens,
+                             (long long) resume, (long long) cur.size(),
+                             (incoming && parked.partial && o.cache_suffix_reuse > 0 && resume > 0 &&
+                              resume < (int64_t) cur.size()) ? 1 : 0);
+            if (incoming && parked.partial && o.cache_suffix_reuse > 0 && resume > 0 && resume < (int64_t) cur.size()) {
+                // Find the partial-mount checkpoint C by parked.checkpoint_length (= L).
+                const std::vector<int32_t>* ck_tokens = nullptr;
+                if (parked.live && (int64_t) live.size() == parked.checkpoint_length) {
+                    ck_tokens = &live;
+                } else {
+                    for (const auto& c : checks) {
+                        if ((int64_t) c.ids.size() == parked.checkpoint_length) {
+                            ck_tokens = &c.ids;
+                            break;
+                        }
+                    }
+                }
+                if (ck_tokens != nullptr && (int64_t) ck_tokens->size() == parked.checkpoint_length) {
+                    // Build the chain from the post-restore `checks`.
+                    std::vector<suffix::CheckpointLength> chain;
+                    chain.reserve(checks.size());
+                    for (size_t i = 0; i < checks.size(); ++i)
+                        chain.push_back({(int64_t) checks[i].ids.size(), i});
+                    const std::vector<int32_t> cur_tokens(cur.begin(), cur.end());
+                    const suffix::SuffixHookOutcome outcome = suffix::suffix_reuse_partial_apply(
+                        *ck_tokens, cur_tokens, parked.checkpoint_length, parked.tokens, chain);
+                    std::fprintf(stderr, "[SFX-DBG] partial-outcome: fired=%d plan_edit_pos=%lld old_suffix_len=%lld restore_anchor=%lld k_rot_start=%lld\n",
+                                 outcome.fired ? 1 : 0, (long long) outcome.plan_edit_pos,
+                                 (long long) outcome.old_suffix_len, (long long) outcome.restore_anchor_length,
+                                 (long long) outcome.k_rotation_start);
+                    if (outcome.fired) {
+                        // Erase chain entries using the helper's index field (same pattern as
+                        // the strict splice hook at line 9042-9056).
+                        std::vector<bool> keep(checks.size(), false);
+                        for (const auto& cl : outcome.chain)
+                            if (cl.index < keep.size()) keep[cl.index] = true;
+                        std::vector<size_t> drop_indices;
+                        for (size_t i = 0; i < keep.size(); ++i)
+                            if (!keep[i]) drop_indices.push_back(i);
+                        for (auto it = drop_indices.rbegin(); it != drop_indices.rend(); ++it)
+                            if (*it < checks.size()) checks.erase(checks.begin() + (ptrdiff_t) *it);
+                        // Splice-narrowed: the chunk loop reads from outcome.plan_edit_pos (= P).
+                        // For the partial case, outcome.plan_edit_pos == resume == P (verified by
+                        // the helper), so the narrowing predicate `plan_edit_pos < resume` is
+                        // false.  We set splice_narrowed = true unconditionally for the partial
+                        // case so wire_splice_read_from returns t.read_from (= P) instead of
+                        // resume (= L, the restore anchor).  The splice-narrowed_resume stays
+                        // at P so the NarrowedResumeTarget carries the correct read_from.
+                        splice_narrowed = true;
+                        splice_narrowed_resume = outcome.plan_edit_pos;
+                        if (outcome.plan_edit_pos < resume) {
+                            resume = outcome.plan_edit_pos;
+                        }
+                        // Apply the K rotation if the plan has a non-trivial tail.  Same gating
+                        // as the strict splice hook at line 9089.
+                        if (outcome.old_suffix_len > 0) {
+                            const strata::program::suffix_reuse::SpliceStatus sstatus =
+                                suffix::apply_splice(outcome, ss, g, nullptr);
+                            std::fprintf(stderr, "[SFX-DBG] apply_splice(partial): status=%d old_suffix_len=%lld\n",
+                                         (int) sstatus, (long long) outcome.old_suffix_len);
+                            if (sstatus != strata::program::suffix_reuse::SpliceStatus::Rotated &&
+                                sstatus != strata::program::suffix_reuse::SpliceStatus::NoOp) {
+                                const char* reason =
+                                    (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedFormat)
+                                        ? "head_dim is not 256 in a rotated (kv_rot or q4) store, or an unhandled pool layout (fp16, int8, k8v4, q4_0 and int8+kv_rot are supported)"
+                                        : (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedResident)
+                                          ? "kv_resident > 0 (ring-layout splice is future work)"
+                                          : (sstatus == strata::program::suffix_reuse::SpliceStatus::UnsupportedSplit)
+                                            ? "layer split active (per-stage splice is future work)"
+                                            : "no applicable snapshot / reasons unstated";
+                                std::fprintf(stderr,
+                                    "[strata] suffix-reuse: REPLAY_NOT_AVAILABLE (partial mount): %s.  "
+                                    "Falling through to the re-read path; the [P, n) prefill recomputes K+V.\\n", reason);
+                            }
+                        }
+                        // Surface the restore anchor for the splice-narrowed branch below.
+                        splice_restore_anchor_length = outcome.restore_anchor_length;
+                        std::fprintf(stderr,
+                            "strata serve: partial-prefix mount: L=%lld P=%lld (splice_narrowed=%d, k_rotation_start=%lld, old_suffix_len=%lld)\\n",
+                            (long long) outcome.restore_anchor_length, (long long) outcome.plan_edit_pos,
+                            splice_narrowed ? 1 : 0, (long long) outcome.k_rotation_start,
+                            (long long) outcome.old_suffix_len);
+                    }
+                }
+            }
+            // [SFX-FIX 2026-10-12] incoming.reset() moved BELOW the Phase 3b partial-mount
+            // branch: that branch reads `incoming` (must be set) for its restore-anchor search.
+            // Resetting above it made the partial branch dead code (incoming always empty), so
+            // live edit turns never partial-mounted. RAII: a `return 1` between the old and new
+            // reset sites destroys the optional anyway - no leak.
+            incoming.reset(); // Running-state/checkpoint copies are no longer needed.
             if (want_cvec != cvec_cached) {
                 live_ok = false;
                 checks.clear();
+                state_checks.clear();   // FW-2b
                 cvec_cached = want_cvec;
             }
             if (strata::kernels::cvec().loaded()) strata::kernels::cvec_set_enabled(want_cvec);
@@ -12263,6 +12693,13 @@ int main(int argc, char** argv) {
                 ckpt_pool.erase_if(checks, off_path);
             else
                 checks.erase(std::remove_if(checks.begin(), checks.end(), off_path), checks.end());
+            // FW-2b: the side pool follows the same validity rule as checks - a state
+            // checkpoint is only a mount candidate while it is a prefix of THIS prompt.
+            // (state-only entries carry no K/V, but their running state describes exactly
+            // the tokens [0, L); restoring one for a non-prefix would corrupt the recurrence.)
+            state_checks.erase(std::remove_if(state_checks.begin(), state_checks.end(), [&](const ConvCheckpoint& c) {
+                             return (int64_t) c.ids.size() > resume || !starts_with(c.ids, c.imgs);
+                         }), state_checks.end());
             live_ok = false;   // until this request has finished, the session is in between
             // the elastic K/V: the outgoing session is parked and this request rewrites every cell from `resume` on,
             // so cells past this prompt's are no longer anyone's - far more than it needs go back to the cache
@@ -12277,6 +12714,14 @@ int main(int argc, char** argv) {
                 }
             }
             int64_t reread_to = -1;   // STRATA_CKPT_REREAD only: read [0, reread_to) again instead of restoring
+            // Phase 3a T10: hoisted next to reread_to so the read_from site BELOW the
+            // checkpoint-restore if/else chain (this function's depth) can see it.  The
+            // splice-narrowed branch inside `else if (!from_live)` assigns it; when the
+            // hook did not narrow (pure continuation, append, flag off) it stays at its
+            // default {0,0} and `wire_splice_read_from` ignores it.  (Declared inside the
+            // else-if in 7137d4c - a scope error the tests-only CPU tree cannot catch
+            // because it never compiles generate.cpp; only the CUDA engine target does.)
+            suffix::NarrowedResumeTarget splice_target{};
             if (resume == 0) {
                 strata::core::session_zero(ss, g, nullptr, main_cs);
                 cudaStreamSynchronize(main_stream);
@@ -12286,7 +12731,108 @@ int main(int argc, char** argv) {
                     cudaStreamSynchronize(st->stream);
                 }
                 checks.clear();
-            } else if (!from_live) {
+            } else if (!from_live || splice_restore_anchor_length > 0) {
+                // T17 (2026-10-13): the partial mount with a LIVE anchor (parked.live = true)
+                // sets from_live = true, which previously routed past this branch entirely -
+                // the session sat at the stale state@L (wrong for the edited history; the v3
+                // semantic probe answered "160" for an edited 161-row ledger) and the restore
+                // search then failed for lack of a checkpoint at P.  A partial mount with
+                // splice_restore_anchor_length > 0 ALWAYS routes through narrowed_resume_target:
+                // restore the deepest checkpoint <= P (state consistent with the shared
+                // prefix), the arena K/V covers [ckpt, P) (identical tokens by the LCP), and
+                // the chunk loop reads [P, n) via wire_splice_read_from.  Strict mounts
+                // (anchor == 0, from_live as before) keep today's byte-identical behaviour.
+                // The splice hook may have narrowed `resume` to `plan_edit_pos` (e.g. 3239)
+                // while erasing the exact-length checkpoint the restore search wants (e.g.
+                // 3240).  Without the helper below, the loop's `c == nullptr` path errors
+                // with "ERR restoring a conversation checkpoint failed" and the engine
+                // returns 1, which the upstream serve loop turns into a 400.  The helper
+                // (suffix_reuse.hpp: `narrowed_resume_target`) maps (narrowed_resume,
+                // checks) -> (restore_length, read_from): the deepest surviving
+                // checkpoint is restored through, the [restore, narrowed) gap is re-read
+                // by the chunk loop, and when no candidate exists the request falls back
+                // to a fresh prefill from 0 (no error).  See the gap-read / replay path
+                // phase 2 was designed for.  When the splice hook did NOT narrow
+                // (splice_narrowed == false: pure continuation, append, flag off), the
+                // helper is a no-op and `resume` keeps its value - byte-identical to today.
+                // Phase 3a T10: when the splice hook fired and narrowed resume, the chunk loop's
+                // read start is `t.read_from` (the splice-narrowed resume = the edit pos E), NOT
+                // `resume` (the restored anchor C).  The pre-3a wiring at line 9394 used
+                // `reread_to > 0 ? 0 : resume`, which discarded `t.read_from` and re-read [C, n) -
+                // the rotated region [C, E) AND the gap [E, n) the splice's gap-read was supposed
+                // to handle.  The gap-read IS the splice's saved work.  `t` is hoisted to a
+                // (splice_target is hoisted above the if/else chain, next to reread_to)
+                if (splice_narrowed) {
+                    std::vector<int64_t> chain_lengths;
+                    chain_lengths.reserve(checks.size());
+                    for (const ConvCheckpoint& c : checks) chain_lengths.push_back((int64_t) c.ids.size());
+                    // FW-2b: the two-pool pick - the fine-cadence state-only pool competes
+                    // with the periodic anchors; the deepest <= P across both wins.
+                    std::vector<int64_t> state_lengths;
+                    state_lengths.reserve(state_checks.size());
+                    for (const ConvCheckpoint& c : state_checks) state_lengths.push_back((int64_t) c.ids.size());
+                    // [SFX-FIX 2026-10-12 v3] The anchor-restore variant (restore the parked
+                    // image's end state at L, read [P, n)) produced WRONG ANSWERS: the parked
+                    // image's running state (GDN/PLE recurrence) summarizes the OLD sequence
+                    // through L, so prefilling [P, n) on top of state@L corrupts every new
+                    // token (semantic probe: edited 161-row ledger answered "160").  The parked
+                    // image's ARENA K/V for [ckpt, P) is still valid for the new prompt (those
+                    // tokens are identical by the LCP), so the correct route is the same as the
+                    // strict path: restore the deepest SURVIVING checkpoint <= P (its running
+                    // state is consistent with the shared prefix), let the arena cover
+                    // [ckpt, P), and read [P, n).  Both cases now take narrowed_resume_target.
+                    if (splice_restore_anchor_length > 0)
+                        std::fprintf(stderr, "[SFX-DBG] anchor(v3): partial mount routed through narrowed_resume_target (state@L is stale; restoring deepest checkpoint <= P=%lld)\n",
+                                     (long long) splice_narrowed_resume);
+                    {
+                        splice_target = suffix::narrowed_resume_target_state(
+                            splice_narrowed_resume, chain_lengths, state_lengths);
+                        // T18 (2026-10-13): replay-gated gap read.  dt-steady5 proved reading
+                        // [P, n) on state@checkpoint loses the gap [ckpt, P) from the GDN/PLE
+                        // recurrence (C under-counted the ledger; gap 826 tokens).  Fail-closed
+                        // default: read from the checkpoint (byte-equal to strict semantics);
+                        // STRATA_SFX_REPLAY=1 (FW-2 day) restores the gap-read [P, n).
+                        static const bool sfx_replay_on =
+                            std::getenv("STRATA_SFX_REPLAY") != nullptr;
+                        if (splice_restore_anchor_length > 0)
+                            splice_target.read_from = suffix::partial_gap_read_from(
+                                sfx_replay_on, splice_narrowed_resume, chain_lengths);
+                        // Resume becomes the restore length (the deepest surviving checkpoint at
+                        // or below the splice-narrowed resume, or 0 when none survives - in
+                        // which case this is a fresh prefill from 0, no error).  The chunk
+                        // loop's read_from is `splice_target.read_from` (= the edit pos E)
+                        // via `wire_splice_read_from` below: the prefill processes [E, n) only,
+                        // the [C, E) gap is covered by the anchor restore (no re-read), and
+                        // the splice's K rotation in `apply_splice` covers [E, n) in cache
+                        // (the prefill recomputes K+V for [E, n) - the rotation is redundant
+                        // but the gap-read is the real saving).
+                        resume = splice_target.restore_length;
+                    }
+                    if (resume == 0) {
+                        // No checkpoint survives at/below the narrowed resume (the splice
+                        // hook's erase removed them all): fresh prefill from 0 - the same
+                        // reset the resume==0 branch performs above.  Degrade to today's
+                        // full re-read; never fabricate checkpoint state, never error.
+                        strata::core::session_zero(ss, g, nullptr, main_cs);
+                        cudaStreamSynchronize(main_stream);
+                        for (auto& st : stages) {
+                            const strata::core::OnDevice on(st->dev);
+                            strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
+                            cudaStreamSynchronize(st->stream);
+                        }
+                        checks.clear();
+                    }
+                }
+                // [SFX-FIX 2026-10-12 v2] Phase 3b partial mount: the parked-conversation
+                // restore above already placed the session (K/V + running state) at the anchor
+                // L (= splice_restore_anchor_length).  The remove_if at the checks-erase then
+                // dropped every checkpoint longer than P - including any at L - so the restore
+                // search below would find c==nullptr and fail the request ("ERR restoring a
+                // conversation checkpoint failed").  The anchor case skips the search: the state
+                // is already at L, and the chunk loop reads [P, n) via wire_splice_read_from.
+                if (splice_restore_anchor_length > 0)
+                    std::fprintf(stderr, "[SFX-DBG] anchor-restore(v3): narrowed_resume_target picked the checkpoint; search+restore below is REQUIRED now\n");
+                if (resume > 0) {
                 ConvCheckpoint* c = nullptr;
                 for (ConvCheckpoint& k : checks) if ((int64_t) k.ids.size() == resume) c = &k;
                 bool lent = false;   // STRATA_SLOT_CKPT_MOVE: the one a slot keeps (found above)
@@ -12295,6 +12841,12 @@ int main(int argc, char** argv) {
                         if ((int64_t) k.ids.size() == resume && starts_with(k.ids, k.imgs)) { c = &k; lent = true; }
                 if (!lent) lent_slot = -1;
                 if (c != nullptr) c->used = ++check_clock;   // mounting through it is the use LRU counts
+                // FW-2b: the pick may have come from the side pool.  Same restore call
+                // (checkpoint_restore replays gdn/ple/tails/dead/block_pos into the session;
+                // the arena K/V below the pick is unchanged by it, so a state-only entry
+                // restores exactly like a periodic one).
+                if (c == nullptr)
+                    for (ConvCheckpoint& k : state_checks) if ((int64_t) k.ids.size() == resume) c = &k;
                 static const bool reread = std::getenv("STRATA_CKPT_REREAD") != nullptr;
                 if (reread && c != nullptr) {
                     // THE CHECK OF THE CHECKPOINT: instead of restoring it, read its tokens again from position 0 in
@@ -12360,20 +12912,44 @@ int main(int argc, char** argv) {
                         }
                         break;
                     }
+            }
+            // Phase 3a T10: when the splice hook fired and narrowed resume, the chunk loop's
+            // read start is `t.read_from` (the splice-narrowed resume = the edit pos E), NOT
+            // `resume` (the restored anchor C).  The pre-3a inline `reread_to > 0 ? 0 : resume`
+            // discarded `t.read_from` and re-read [anchor, n) - the rotated region [C, E) AND
+            // the gap [E, n) the splice's gap-read was supposed to handle.  The gap-read IS
+            // the splice's saved work; the helper below wires it.  Flag-off (splice_narrowed
+            // false) is byte-identical to today.  STRATA_CKPT_REREAD (reread_to > 0) rebuilds
+            // the whole prefill from 0 as today.  See wire_splice_read_from in suffix_reuse.hpp.
+            const int64_t read_from = suffix::wire_splice_read_from(
+                splice_narrowed, splice_target, resume, reread_to);
+            std::fprintf(stderr, "[SFX-DBG] read-path: resume=%lld read_from=%lld n=%lld splice_narrowed=%d anchor=%lld\n",
+                         (long long) resume, (long long) read_from, (long long) n,
+                         splice_narrowed ? 1 : 0, (long long) splice_restore_anchor_length);
             // KV streaming: the drafter's ring may hold cells past `resume` from a longer turn; the main layers'
-            // host copies and slots are always current (every writer writes both), so they need nothing
-            if (use_mtp && resume > 0 && reread_to <= 0) mtp.kv_restore(resume);
+            // host copies and slots are always current (every writer writes both), so they need nothing.
+            // Phase 3a T10: when splice_narrowed, the drafter's prefill starts at `read_from` (= E);
+            // restore the drafter's KV up to the same point so its [0, E) context is consistent with
+            // the main session's anchor restore.  The legacy path (no splice) uses `resume`.
+            if (use_mtp && resume > 0 && reread_to <= 0) mtp.kv_restore(read_from);
             tr("request", n, geni ? 1 : 0);
             req_times = ReqTimes{};
             if (use_mtp) mtp.set_prompt_len(n);
-            const int64_t read_from = reread_to > 0 ? 0 : resume;
             conversations.limit_reuse(read_from);
             pp_total = n;
             pp_from = read_from;
             pp_reached = read_from;
             pp_exact = true;   // a restore, a checkpoint mount or a zeroed session: the state is exactly at read_from
             pp_t0 = r0;
-            pp_next_check = reread_to > 0 || !req_ckpt ? INT64_MAX : resume + o.prompt_cache_every;   // ckpt=0: none
+            pp_next_check = reread_to > 0 || !req_ckpt ? INT64_MAX :
+                (o.prompt_cache_dense_tail > 0
+                     ? suffix::dense_tail_next_check(resume, n, o.prompt_cache_every, o.prompt_cache_dense_tail)
+                     : resume + o.prompt_cache_every);   // ckpt=0: none
+            // FW-2b: the fine-cadence state ladder starts at the resume position too -
+            // same per-request rule as pp_next_check (T21's lesson: a cross-request
+            // carryover starves warm reads of their anchors).
+            state_next = reread_to > 0 || !req_ckpt ? INT64_MAX :
+                suffix::state_cadence_next(resume, n, o.prompt_cache_state_every);
             pp_tail_saved = reread_to > 0 || !req_ckpt;   // ckpt=0 (#861): no tail checkpoint either
             {
                 std::lock_guard<std::mutex> lk(part_mu);
@@ -13179,9 +13755,19 @@ int main(int argc, char** argv) {
                     }
                 }
                 int64_t piece = piece_now();
-                if (piece <= 0) return run(a0, b0);
+                if (piece <= 0 && o.prompt_cache_dense_tail <= 0) return run(a0, b0);   // FW-1: dense-tail cadence falls through to the chunk loop below
                 for (int64_t q = a0; q < b0;) {
-                    const int64_t r = std::min(b0, q + piece);
+                    // FW-1 dynamic sizing: with --prompt-cache-dense-tail the pieces are
+                    // laid out so chunk boundaries land at dense-tail cadence (big head
+                    // chunk ending exactly at the zone start, `every`-sized zone chunks).
+                    // Checkpoints only fire at boundaries (the periodic block runs per
+                    // chunk), so the boundaries ARE the anchors.  Off: the original piece
+                    // arithmetic, byte-identical.
+                    const int64_t step = o.prompt_cache_dense_tail > 0
+                        ? suffix::dense_tail_chunk_size(q, n, piece > 0 ? piece : (b0 - a0),
+                                                        o.prompt_cache_every, o.prompt_cache_dense_tail)
+                        : piece;
+                    const int64_t r = std::min(b0, q + std::max<int64_t>(step, 1));
                     const auto tq = Clock::now();
                     if (!run(q, r)) return false;
                     const double piece_ms = std::chrono::duration<double, std::milli>(Clock::now() - tq).count();
