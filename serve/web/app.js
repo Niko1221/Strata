@@ -293,10 +293,10 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   spark("sp-temp", h.gpu_temp, 90);
   setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
-  const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
-  setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
+  const cur = hw.gpu_pcie_gen, gen = hw.gpu_pcie_gen_max || cur;   // show the CURRENT generation; max is capability only
+  setMetric("pcie", (cur || gen) ? `Gen${cur || gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
             hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
-            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
+            (cur && gen && cur < gen ? ` · below its Gen${gen} capability` : ""));
   spark("sp-pcie", h.gpu_pcie_rx_mb);
   setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
   spark("sp-cpu", h.cpu, 100);
