@@ -11,6 +11,13 @@ cmake_minimum_required(VERSION 3.24)
 project(strata VERSION 0.1.45 LANGUAGES CXX)
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
 # own project that takes the unported sources from src/; with this on, nothing below is configured.
+option(STRATA_ENABLE_DFLASH2 "Experimental DFlash2 runtime; requires a compatible trained artifact" OFF)
+if(STRATA_ENABLE_DFLASH2)
+  if(STRATA_ENABLE_SYCL)
+    message(FATAL_ERROR "DFlash2 has no SYCL runtime yet")
+  endif()
+  add_compile_definitions(STRATA_ENABLE_DFLASH2=1)
+endif()
 option(STRATA_ENABLE_SYCL "EXPERIMENTAL: build the Intel Arc (SYCL) engine from sycl/ - docs/INTEL_ARC.md" OFF)
 if(STRATA_ENABLE_SYCL)
   if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
@@ -401,6 +408,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/ngram.cpp
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
+  if(STRATA_ENABLE_DFLASH2)
+    target_sources(strata_kernels PRIVATE src/kernels/cuda/dflash2.cu)
+  endif()
   target_link_libraries(strata_kernels PUBLIC strata_core strata_artifact)
   # Exact gfx1100 prompt scorer (PR1825 method port): optional standalone test,
   # also available where the published source omits tests/.
@@ -552,6 +562,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
     src/core/remote_expert_opt.cu
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
+    src/core/dflash.cpp src/core/dflash_runtime.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/arch_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -1027,6 +1038,40 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(gr_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME gr_parity COMMAND gr_parity --selftest)
 
+  if(STRATA_ENABLE_DFLASH2)
+    add_executable(dflash2_parity src/kernels/dflash2_parity.cpp)
+    target_link_libraries(dflash2_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_test(NAME dflash2_parity COMMAND dflash2_parity)
+    set_tests_properties(dflash2_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+  endif()
+
+  # DFlash tap packing: padded planes, 1..8 rows, BF16 and F32 sources.
+  add_executable(dflash_taps_test src/kernels/dflash_taps_test.cpp)
+  target_include_directories(dflash_taps_test PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(dflash_taps_test PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME dflash_taps_test COMMAND dflash_taps_test)
+  set_tests_properties(dflash_taps_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+  add_executable(dflash_head_bf16_test tests/core/dflash_head_bf16_test.cpp)
+  target_include_directories(dflash_head_bf16_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/core)
+  target_link_libraries(dflash_head_bf16_test PRIVATE strata_engine)
+  add_test(NAME dflash_head_bf16_test COMMAND dflash_head_bf16_test)
+  set_tests_properties(dflash_head_bf16_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+  # the DFlash drafter's full-head (256-dim) NeoX RoPE against a host reference (docs/DFLASH.md)
+  add_executable(dflash_rope_parity src/kernels/dflash_rope_parity.cpp)
+  target_include_directories(dflash_rope_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(dflash_rope_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME dflash_rope_parity COMMAND dflash_rope_parity)
+  set_tests_properties(dflash_rope_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+  # the DFlash drafter's OWNED K/V state: pools inside the caller's arena, append/readback exact,
+  # elastic non-membership, five independent layers (docs/DFLASH.md)
+  add_executable(dflash_owned_kv_test tests/core/dflash_owned_kv_test.cpp)
+  target_link_libraries(dflash_owned_kv_test PRIVATE strata_engine)
+  add_test(NAME dflash_owned_kv_test COMMAND dflash_owned_kv_test)
+  set_tests_properties(dflash_owned_kv_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
   add_executable(gdn_parity src/kernels/gdn_parity.cpp)
   target_include_directories(gdn_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(gdn_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
@@ -1319,6 +1364,14 @@ if(STRATA_BUILD_TESTS)
   add_executable(draft_policy_test src/spec/draft_policy_test.cpp)
   target_link_libraries(draft_policy_test PRIVATE strata_spec)
   add_test(NAME draft_policy_test COMMAND draft_policy_test)
+  add_executable(dflash_policy_test src/spec/dflash_policy_test.cpp)
+  target_link_libraries(dflash_policy_test PRIVATE strata_spec)
+  add_test(NAME dflash_policy_test COMMAND dflash_policy_test)
+  # the DFlash artifact contract: GGUF metadata, naming families, refusals (host-only, no GPU)
+  add_executable(dflash_load_test src/core/dflash_load_test.cpp src/core/dflash.cpp)
+  target_include_directories(dflash_load_test PRIVATE include ${CMAKE_CURRENT_SOURCE_DIR}/tests/core
+    ${CUDAToolkit_INCLUDE_DIRS})   # dflash.hpp pulls session.hpp -> cuda_runtime.h (host-only runner)
+  add_test(NAME dflash_load_test COMMAND dflash_load_test)
 endif()
 if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(message_boundary_test src/program/message_boundary_test.cpp)
