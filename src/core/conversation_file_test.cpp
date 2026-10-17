@@ -769,6 +769,86 @@ int main() {
     }
 #endif
 
+    {   // meta read: identity, tokens, checkpoint metadata, skipping
+        const fs::path mdir = fs::temp_directory_path() / "strata_meta_test";
+        fs::remove_all(mdir);
+        fs::create_directories(mdir);
+        const SessionFileIdentity mid{0x1122334455667788ull, 0x99aabbcc00112233ull};
+        SavedConversation s;
+        for (auto& v : s.geometry) v = 1;
+        s.layer_lo = 0; s.layer_hi = 8; s.cvec = true;
+        s.live.ids = {1, 2, 3, 4}; s.live.gdn.assign(64, 7);
+        ConversationCheckpoint c; c.ids = {1, 2}; c.gdn.assign(16, 9); c.used = 5;
+        s.checkpoints.push_back(c);
+        // one K/V layer so the skip path has something big to pass over
+        ConversationKv kv; kv.format = 1; kv.cells = 8; kv.heads = 1; kv.head_dim = 2;
+        kv.page_size = 1; kv.pooled_rows = 0; kv.idx_dim = 0;
+        kv.k.resize(4096, 3); kv.v.resize(4096, 4);
+        s.kv.push_back(std::move(kv));
+        size_t mwritten = 0; std::string merr;
+        check(session_file_write((mdir / "conv-a.sess").string(), s, mid, mwritten, merr), "meta test file writes");
+        SessionFileMeta m;
+        check(session_file_read_meta((mdir / "conv-a.sess").string(), mid, m, merr, 1024, 8), "meta read accepts");
+        check(m.ids == std::vector<int32_t>({1, 2, 3, 4}), "meta read returns live tokens");
+        check(m.geometry == s.geometry && m.layer_lo == 0 && m.layer_hi == 8 && m.cvec, "meta read carries the geometry");
+        check(m.checkpoints.size() == 1 && m.checkpoints[0].ids == std::vector<int32_t>({1, 2}) &&
+              m.checkpoints[0].used == 5, "meta read returns the checkpoint chain");
+        check(m.checkpoints[0].gdn.empty() && m.checkpoints[0].tails.empty() && m.checkpoints[0].imgs.empty(),
+              "meta read carries no state");
+        SessionFileMeta bad;
+        const SessionFileIdentity other{1, 2};
+        check(!session_file_read_meta((mdir / "conv-a.sess").string(), other, bad, merr, 1024, 8),
+              "meta read refuses a foreign identity");
+        check(bad.ids.empty(), "a refused meta read leaves the output empty");
+        // fail-closed bounds of the seek-skip: live's gdn count patched past the payload (the meta read
+        // must refuse it, not seek or skip out of the file), and a truncated file must fail the header
+        auto all = slurp(mdir / "conv-a.sess");
+        auto corrupt = all;
+        // payload at 64: 21 u64 (geometry, layer_lo, layer_hi, cvec), live's ids count + 4 ids, imgs count, then gdn's
+        const uint64_t huge = 1ull << 40;
+        std::memcpy(corrupt.data() + 64 + 21 * 8 + 8 + 4 * 4 + 8, &huge, 8);
+        spit(mdir / "conv-b.sess", corrupt);
+        check(!session_file_read_meta((mdir / "conv-b.sess").string(), mid, bad, merr, 1024, 8),
+              "meta read refuses a state-array count past the payload end");
+        const std::vector<char> cut(all.begin(), all.end() - 1);
+        spit(mdir / "conv-c.sess", cut);
+        check(!session_file_read_meta((mdir / "conv-c.sess").string(), mid, bad, merr, 1024, 8),
+              "meta read refuses a truncated file");
+        fs::remove_all(mdir);
+    }
+    {   // folder index: prunes foreign, stale and stray files; survivors oldest-first
+        const fs::path idir = fs::temp_directory_path() / "strata_index_test";
+        fs::remove_all(idir);
+        fs::create_directories(idir);
+        const SessionFileIdentity iid{0x1122334455667788ull, 0x99aabbcc00112233ull};
+        SavedConversation s;
+        for (auto& v : s.geometry) v = 1;
+        s.layer_lo = 0; s.layer_hi = 8; s.cvec = true;
+        s.live.ids = {1, 2, 3};
+        size_t iwritten = 0; std::string ierr;
+        const fs::path oldp = idir / "conv-old.sess", newp = idir / "conv-new.sess", forp = idir / "conv-foreign.sess";
+        const SessionFileIdentity foreign{7, 8};
+        check(session_file_write(oldp.string(), s, iid, iwritten, ierr) &&
+              session_file_write(newp.string(), s, iid, iwritten, ierr) &&
+              session_file_write(forp.string(), s, foreign, iwritten, ierr), "index test files write");
+        // explicit mtimes: old is ten days past, new is now
+        const fs::file_time_type now = fs::file_time_type::clock::now();
+        fs::last_write_time(oldp, now - std::chrono::days(10));
+        fs::last_write_time(newp, now - std::chrono::days(1));
+        spit(idir / "stray.txt", std::vector<char>(3, 'x'));
+        std::vector<CachedConversationFile> found;
+        check(conversation_cache_index(idir, "conv-", iid, 7.0, 1024, 8, found, ierr), "index runs");
+        check(found.size() == 1, "index keeps only this model's fresh conv-*.sess");
+        check(found.size() == 1 && found[0].path == newp.string() && found[0].bytes == fs::file_size(newp) &&
+              found[0].meta.ids == std::vector<int32_t>({1, 2, 3}), "index carries the survivor's meta and size");
+        check(!fs::exists(idir / "stray.txt") && !fs::exists(forp) && !fs::exists(oldp),
+              "index removes stray and foreign files");
+        std::vector<CachedConversationFile> none;
+        check(conversation_cache_index(idir, "conv-", iid, 0.0, 1024, 8, none, ierr) && none.empty() &&
+              !fs::exists(newp), "index with 0 days empties the folder");
+        fs::remove_all(idir);
+    }
+
     fs::remove_all(dir);
     std::printf("conversation_file_test: %d checks passed\n", checks);
     return 0;

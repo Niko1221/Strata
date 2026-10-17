@@ -2,6 +2,8 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <string>
 #include <vector>
 
 using namespace strata::core;
@@ -557,6 +559,73 @@ int main() {
         p2.checkpoints.back().gdn.resize(64, 1);
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
+    }
+    {   // disk mode: budget counts file bytes, eviction removes entries (caller deletes files via at())
+        ConversationCache c(1000, 2);
+        c.enable_disk();
+        SavedConversation a = image({1, 2, 3});           // the file's existing slim builder (RAM payload irrelevant here)
+        a.live.gdn.clear();
+        check(c.put_disk(std::move(a), "/tmp/a.sess", 600), "disk put accepts under budget");
+        SavedConversation b = image({4, 5}); b.live.gdn.clear();
+        check(c.put_disk(std::move(b), "/tmp/b.sess", 300), "second disk entry");
+        SavedConversation d = image({6}); d.live.gdn.clear();
+        check(c.put_disk(std::move(d), "/tmp/d.sess", 300), "disk budget evicts oldest (600+300+300 > 1000)");
+        check(c.size() == 2 && c.bytes() == 600, "bytes counts disk sizes, oldest first evicted");
+        check(c.at(0).disk_path == "/tmp/b.sess", "survivors keep their paths");
+        check(c.best(std::vector<int32_t>{4, 5, 9}, {}, true).tokens == 2, "matching works on the slim index");
+        c.remove_at(1);
+        check(c.size() == 1 && c.bytes() == 300, "remove_at erases and unbudgets");
+        SavedConversation over = image({9}); over.live.gdn.clear();
+        check(!c.put_disk(std::move(over), "/tmp/over.sess", 1500) && c.size() == 1 && c.bytes() == 300,
+              "one disk entry bigger than the whole budget is refused, survivors untouched");
+        ConversationCache r(1000, 2);                     // RAM mode unchanged
+        check(r.put(image({1, 2, 3})), "RAM mode still works");
+    }
+    {   // the unlink rule with real files: evict_oldest, drop_superseded and clear DELETE the entries' files
+        namespace fs = std::filesystem;
+        const fs::path dir = fs::temp_directory_path() / "strata_conv_cache_unlink_test";
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir);
+        auto real_file = [&](const char* n) {
+            const fs::path p = dir / n;
+            std::FILE* h = std::fopen(p.string().c_str(), "w");
+            std::fputs("x", h);
+            std::fclose(h);
+            return p.string();
+        };
+        const std::string pa = real_file("a.sess"), pb = real_file("b.sess"), pd = real_file("d.sess"),
+                        pe = real_file("e.sess");
+        ConversationCache c(1000, 3);
+        c.enable_disk();
+        SavedConversation a = image({1, 2, 3}); a.live.gdn.clear();
+        SavedConversation b = image({4, 5}); b.live.gdn.clear();
+        SavedConversation d = image({6}); d.live.gdn.clear();
+        SavedConversation e = image({7, 8}); e.live.gdn.clear();
+        e.checkpoints.push_back(ConversationCheckpoint{});
+        e.checkpoints.back().ids = {4, 5};
+        check(c.put_disk(std::move(a), pa, 600) && c.put_disk(std::move(b), pb, 300), "two real files parked");
+        check(c.put_disk(std::move(d), pd, 300), "the third evicts the oldest (600+300+300 > 1000)");
+        check(!fs::exists(pa) && fs::exists(pb) && fs::exists(pd), "evicting unlinks the victim's file, not the survivors'");
+        check(c.put_disk(std::move(e), pe, 100), "fourth entry, superseded shape");
+        std::vector<ConversationCheckpoint> held_by_new_chain;
+        ConversationCheckpoint cp; cp.ids = {4, 5};
+        held_by_new_chain.push_back(cp);
+        check(c.drop_superseded({9}, {}, held_by_new_chain, true) == 1, "the superseded entry drops");
+        check(!fs::exists(pe) && fs::exists(pb) && fs::exists(pd), "drop_superseded unlinks the dropped entry's file");
+        c.clear();
+        check(c.size() == 0 && !fs::exists(pb) && !fs::exists(pd), "clear unlinks every parked file");
+        fs::remove_all(dir, ec);
+    }
+    {   // meta_only copy keeps matching working without state
+        SavedConversation s = image({1, 2, 3});
+        s.checkpoints.push_back(ConversationCheckpoint{});
+        s.checkpoints.back().ids = {1, 2};
+        s.checkpoints.back().gdn.assign(64, 7);
+        SavedConversation slim = conversation_meta_only(s);
+        check(slim.live.ids == s.live.ids && slim.checkpoints.back().ids == std::vector<int32_t>({1, 2})
+              && slim.checkpoints.back().gdn.empty() && slim.kv.empty() && slim.live.gdn.empty(),
+              "meta_only keeps ids/imgs, drops state and K/V");
     }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }
