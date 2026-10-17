@@ -4408,7 +4408,7 @@ class Service:
                                 if budget and parser.state == "reasoning":
                                     thought += 1
                                     # at a clean point: no tag held back, no character split across tokens
-                                    if thought >= budget and not parser.buf and not detok.pending():
+                                    if thought >= budget and parser.can_close_reasoning() and not detok.pending():
                                         wrap = True
                                         break
                                 if force:
@@ -4500,7 +4500,7 @@ class Service:
                                     n += 1
                                     raw_ids.append(t)
                                     thinking_n += parser.state in ("reasoning", "rcall")
-                                    evs = cut(parser.feed(detok.push(t)))
+                                    evs = cut(parser.feed(detok.push(t), protocol=True))
                                     self._note(n, evs, st, rate)
                                     for ev in evs:
                                         yield "event", ev
@@ -4530,7 +4530,7 @@ class Service:
                             n += 1
                             raw_ids.append(t)
                             thinking_n += parser.state in ("reasoning", "rcall")
-                            evs = cut(parser.feed(detok.push(t)))
+                            evs = cut(parser.feed(detok.push(t), protocol=wrap))
                             self._note(n, evs, st, rate)
                             for ev in evs:
                                 yield "event", ev
@@ -4618,6 +4618,11 @@ class Service:
                                       "strata-<model>.json for every request) leaves room to answer", flush=True)
                             if os.environ.get("STRATA_DEBUG") and raw_ids:
                                 print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
+                                held = len(parser.buf)
+                                if parser._think_quote is not None:
+                                    held += sum(map(len, parser._think_quote.held))
+                                print(f"[strata] raw token tail: {raw_ids[-32:]} stop_ids={sorted(self.stop_ids)} "
+                                      f"parser={parser.state} held={held} engine_finish={last.get('finish')!r}", flush=True)
                         st["busy"] = False
                         st.pop("tail", None)                     # #212: the answer's end is not kept once it is done
                         st.pop("tool", None)

@@ -22,6 +22,7 @@ import re
 import threading
 import uuid
 from collections import OrderedDict
+from copy import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -875,6 +876,141 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
 RCALL_MAX = 32768        # the most of a `<tool_call>` inside the reasoning that is held while waiting for its end (#804)
 
 
+class _CodeContext:
+    """Incremental Markdown context shared by think-close and tool-call decisions.
+
+    Keep delimiter runs and a bounded fence-line candidate, rather than rescanning or retaining the
+    current line. A pending backtick run is resolved by the next non-backtick (including a protocol tag).
+    """
+
+    def __init__(self):
+        self.fence, self.inline = None, 0
+        self.run, self.escaped, self.slashes = 0, False, 0
+        self.last = ""
+        self._new_line()
+
+    def _new_line(self):
+        self.blank = True
+        self.indent, self.marker, self.width, self.phase = 0, "", 0, "indent"
+        self.info_ok, self.close_ok = True, True
+        self.line_inline = self.inline
+
+    def _inline_after_run(self):
+        if self.run:
+            if self.inline == self.run:
+                return 0
+            if not self.inline:
+                # A backslash escapes only the first tick; the rest can open a code span.
+                return self.run - int(self.escaped)
+        return self.inline
+
+    def code(self):
+        return self.fence, self._inline_after_run() if not self.fence else 0
+
+    def opener_ok(self):
+        return self.blank and not any(self.code())
+
+    def _candidate(self, char):
+        if self.phase == "indent":
+            if char == " " and self.indent < 3:
+                self.indent += 1
+                return
+            if char in "`~":
+                self.marker, self.width, self.phase = char, 1, "run"
+                return
+            self.phase = "invalid"
+        elif self.phase == "run":
+            if char == self.marker:
+                self.width += 1
+                return
+            self.phase = "tail"
+        if self.phase == "tail":
+            self.info_ok &= self.marker != "`" or char != "`"
+            self.close_ok &= char in " \t\r"
+
+    def feed(self, text):
+        if text:
+            self.last = text[-1]
+        for char in text:
+            if char != "\n":
+                self._candidate(char)
+                self.blank &= char.isspace()
+            if not self.fence:
+                if char == "`":
+                    if not self.run:
+                        self.escaped = bool(self.slashes % 2)
+                    self.run += 1
+                    self.slashes = 0
+                    continue
+                self.inline = self._inline_after_run()
+                self.run = 0
+                self.slashes = self.slashes + 1 if char == "\\" and not self.inline else 0
+            if char == "\n":
+                if self.fence:
+                    marker, width = self.fence
+                    if self.marker == marker and self.width >= width and self.close_ok and self.phase != "invalid":
+                        self.fence, self.inline = None, 0
+                elif not self.line_inline and self.width >= 3 and self.info_ok and self.phase != "invalid":
+                    self.fence, self.inline = (self.marker, self.width), 0
+                elif self.blank:
+                    self.inline = 0
+                self.run, self.slashes = 0, 0
+                self._new_line()
+
+
+class _ThinkQuote:
+    """An undecided think-close inside code: scan each following character once for the matching code end.
+
+    A closed code span/fence makes it a quote. A paragraph break ends an unmatched inline span; at the end
+    of generation an unmatched fence/span cannot hide the protocol close and the final answer behind it.
+    """
+
+    def __init__(self, fence, inline):
+        self.fence, self.inline = fence, inline
+        self.seen, self.run, self.decision = 0, 0, None
+        self.held = []
+        self.nonspace = True                     # the marker is on the current line
+        self.line = ["x"]                        # a fence cannot close on that marker's line
+        self.closer = (re.compile(r" {0,3}" + re.escape(fence[0]) + "{" + str(fence[1]) + r",}[ \t]*")
+                       if fence else None)
+
+    def push(self, text: str, final: bool) -> int | None:
+        """Characters through the code end; -1 for a protocol close; None while still undecided."""
+        if self.decision is not None:
+            return self.decision
+        for i, char in enumerate(text):
+            if self.fence:
+                if char == "\n":
+                    if self.closer.fullmatch("".join(self.line).removesuffix("\r")):
+                        self.decision = self.seen + i + 1
+                        return self.decision
+                    self.line = []
+                else:
+                    self.line.append(char)
+            else:
+                if char == "`":
+                    self.run += 1
+                    self.nonspace = True
+                    continue
+                if self.run == self.inline:
+                    self.decision = self.seen + i     # the following character may start another protocol tag
+                    return self.decision
+                self.run = 0
+                if char == "\n":
+                    if not self.nonspace:
+                        self.decision = -1
+                        return self.decision
+                    self.nonspace = False
+                elif char not in " \t\r":
+                    self.nonspace = True
+        self.seen += len(text)
+        if final:
+            closed = self.closer.fullmatch("".join(self.line).removesuffix("\r")) if self.fence else self.run == self.inline
+            self.decision = self.seen if closed else -1
+            return self.decision
+        return None
+
+
 class OutputParser:
     """Incremental parser of the model's text. Feed deltas; get events. A tag split across deltas is held back
     until it is complete, so clients never see `<tool_` or `</thi`."""
@@ -896,7 +1032,7 @@ class OutputParser:
         self.pending: list[list] = []
         self.rescued = 0             # calls delivered from the reasoning
         self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
-        self.fence, self.line, self.ticks = "", "", 0
+        self._code, self._think_quote = _CodeContext(), None
         # recover (opt-in, the config's "tool_call_recovery"): a declared tool's call written next to the template's
         # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
         # start of a line outside code, or a second call in the same <tool_call> (which otherwise merges into one).
@@ -907,11 +1043,12 @@ class OutputParser:
 
     def _ok_at(self, p: int) -> bool:
         """self.buf[p] would open a call: at the start of a line, outside a code fence and inline code."""
-        snap = (self.fence, self.line, self.ticks)
-        self._track(self.buf[:p])
-        ok = self._opener_ok()
-        self.fence, self.line, self.ticks = snap
-        return ok
+        return self._code_at(p).opener_ok()
+
+    def _code_at(self, p: int):
+        context = copy(self._code)
+        context.feed(self.buf[:p])
+        return context
 
     def _follower(self, after: str) -> str:
         """recover: what a `<tool_call>` followed (after whitespace) by `after` opens: "call" (`<function=`), "param"
@@ -953,75 +1090,18 @@ class OutputParser:
             p = self.buf.find(FUNC_START, p + 1)
         return -1, False
 
-    @property
-    def line(self) -> str:
-        """Materialize the current line only for a decision, newline, or state snapshot."""
-        if self._line_blocks is not None:
-            self._line_blocks.extend(self._line_parts)
-            self._line_parts = ["".join(self._line_blocks)]
-            self._line_blocks = None
-        elif len(self._line_parts) > 1:
-            self._line_parts = ["".join(self._line_parts)]
-        return self._line_parts[0] if self._line_parts else ""
-
-    @line.setter
-    def line(self, text: str):
-        self._line_parts = [text] if text else []
-        self._line_blocks = None
-
     def _track(self, text: str) -> str:
-        """Follow the reasoning text that has gone out: the open code fence, the current line, and the backticks of
-        the current paragraph.  Returns the text."""
-        # Most token fragments stay on the current line. Fence and paragraph
-        # bookkeeping happens only when a newline completes that line.
-        if "\n" not in text:
-            if text:
-                self._line_parts.append(text)
-                if len(self._line_parts) == 64:
-                    # Release small fragment objects in bounded groups. Completed
-                    # blocks are never recopied until the full line is requested.
-                    if self._line_blocks is None:
-                        self._line_blocks = []
-                    self._line_blocks.append("".join(self._line_parts))
-                    self._line_parts.clear()
-            return text
-        parts = text.split("\n")
-        for k, part in enumerate(parts):
-            if k < len(parts) - 1:
-                line = self.line + part if self._line_parts or self._line_blocks else part
-                self._line_parts.clear()
-                self._line_blocks = None
-                s = line.lstrip()
-                if self.fence:
-                    if s.startswith(self.fence * 3):
-                        self.fence = ""
-                elif s[:3] in ("```", "~~~") and (s[0] * 3) not in s[3:]:
-                    self.fence = s[0]
-                elif not s:
-                    self.ticks = 0
-                else:
-                    self.ticks += line.count("`")
-            else:
-                if part:
-                    self._line_parts.append(part)
+        """Track emitted text once for both protocol guards."""
+        self._code.feed(text)
         return text
 
     def _opener_ok(self) -> bool:
-        """The reasoning text so far puts a `<tool_call>` at the start of a line, outside a code fence and outside
-        inline code."""
-        return not self.fence and not self.line.strip() and self.ticks % 2 == 0
-
-    def _in_code(self) -> bool:
-        """The text so far leaves the next character inside a code fence or inline code."""
-        return bool(self.fence) or (self.ticks + self.line.count("`")) % 2 == 1
+        return self._code.opener_ok()
 
     def _quoted_think_end(self, i: int) -> bool | None:
-        """#537: the `</think>` at self.buf[i] is the model quoting the tag while it thinks, not the end of the
-        thinking: written right after a quote or backtick and followed by anything but a line break, as in `</think>`
-        or "</think>...".  The end of the thinking is followed by a line break.  None while the character after the
-        tag has not arrived."""
-        before = self.buf[i - 1] if i else self.line[-1:]
-        if before not in ('"', "'", "`"):
+        """Keep upstream's ordinary-quote rule; Markdown quotes use the code context."""
+        before = self.buf[i - 1] if i else self._code.last
+        if before not in ('"', "'"):
             return False
         after = self.buf[i + len(THINK_END):]
         if not after:
@@ -1187,9 +1267,28 @@ class OutputParser:
                 start = text.find(tag[0], start + 1)
         return best
 
-    def feed(self, delta: str) -> list[Event]:
-        self.buf += delta
+    def can_close_reasoning(self) -> bool:
+        """A server-owned boundary may end pending code lookahead, but not a partial protocol tag."""
+        return self.state == "reasoning" and (not self.buf or self._think_quote is not None)
+
+    def feed(self, delta: str, *, _final: bool = False, protocol: bool = False,
+             _literal_tail: bool = False) -> list[Event]:
+        # The server knows that its budget/retry injection is a real boundary. Flush the model's
+        # pending quote as reasoning before reading it; Markdown cannot override that information.
         out: list[Event] = []
+        if protocol and self._think_quote is not None:
+            text = self.buf + "".join(self._think_quote.held)
+            self.buf, self._think_quote = "", None
+            if text:
+                out.append(Event("reasoning", self._track(text)))
+        if self._think_quote is not None:
+            self._think_quote.held.append(delta)
+            if self._think_quote.push(delta, _final) is None:
+                return out
+            self.buf += "".join(self._think_quote.held)
+            self._think_quote.held = []
+        else:
+            self.buf += delta
         while True:
             if self.state == "rcall":
                 # #804: a `<tool_call>` inside the reasoning, with tools declared.  It is held whole (never streamed
@@ -1260,7 +1359,7 @@ class OutputParser:
                         out.append(Event("reasoning", self._track(self.buf[:len(self.buf) - keep])))
                         self.buf = self.buf[len(self.buf) - keep:]
                     return out
-                quoted = self._quoted_think_end(i)
+                quoted = False if protocol else self._quoted_think_end(i)
                 if quoted is None:                   # held like a partial tag until the character after it is here
                     if i:
                         out.append(Event("reasoning", self._track(self.buf[:i])))
@@ -1272,9 +1371,25 @@ class OutputParser:
                     continue
                 if i:
                     out.append(Event("reasoning", self._track(self.buf[:i])))
-                self.buf = self.buf[i + len(THINK_END):]
+                    self.buf = self.buf[i:]
+                if self._think_quote is None and not protocol:
+                    fence, inline = self._code.code()
+                    if fence or inline:
+                        self._think_quote = _ThinkQuote(fence, inline)
+                        self._think_quote.push(self.buf[len(THINK_END):], _final)
+                if self._think_quote is not None:
+                    end = self._think_quote.push("", _final)
+                    if end is None:
+                        return out
+                    self._think_quote = None
+                    if end >= 0:
+                        end += len(THINK_END)
+                        out.append(Event("reasoning", self._track(self.buf[:end])))
+                        self.buf = self.buf[end:]
+                        continue
+                self.buf = self.buf[len(THINK_END):]
                 self.state, self.lead = "content", True
-                self.fence, self.line, self.ticks = "", "", 0     # the answer's own text starts here
+                self._code = _CodeContext()
             elif self.state == "content":
                 if self.lead:                                   # newlines right after </think> or a call
                     stripped = self.buf.lstrip("\n")
@@ -1282,6 +1397,13 @@ class OutputParser:
                         self.buf = ""
                         return out
                     self.buf, self.lead = stripped, False
+                if _literal_tail:
+                    # A forced cut can expose text behind an undecided think-close, but cannot
+                    # turn the held quote into tool actions (#1058). Already streamed calls are
+                    # unaffected: this path is only used while settling quote lookahead at EOF.
+                    out.append(Event("content", self._track(self.buf)))
+                    self.buf = ""
+                    return out
                 i = self.buf.find(CALL_START)
                 b, decided = self._bare_opener() if self.recover and self.schemas else (-1, False)
                 if b >= 0 and (i < 0 or b < i):
@@ -1315,10 +1437,7 @@ class OutputParser:
                     return out
                 # #1058: an opener inside a code fence or inline code is text (a quoted example), never a call.  The
                 # text before it decides, so streamed and whole outputs agree.  Mid-sentence openers still count.
-                snap = (self.fence, self.line, self.ticks)
-                self._track(self.buf[:i])
-                in_code = self._in_code()
-                self.fence, self.line, self.ticks = snap
+                in_code = any(self._code_at(i).code())
                 if in_code:
                     out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                     self.buf = self.buf[i + len(CALL_START):]
@@ -1415,6 +1534,8 @@ class OutputParser:
         how the turn ended: calls waiting from the reasoning become real calls only on a natural stop (None = stop);
         a turn cut by max tokens (or cancelled, or failed) keeps them as reasoning text (#1058)."""
         out = []
+        if self._think_quote is not None:
+            out = self.feed("", _final=True, _literal_tail=reason not in (None, "stop"))
         if self.pending:
             out += self._release(reason in (None, "stop") and self.state == "reasoning" and not self.buf)
         if self.state == "call" and self.bare and function_end(self.buf) >= 0:
