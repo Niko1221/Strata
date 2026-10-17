@@ -1923,8 +1923,9 @@ class StrataEngine:
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         """Yields token ids, and None as a heartbeat every 10 s while the engine is quiet (reading a long prompt):
-        the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
-        has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
+        the HTTP layer turns it into an SSE keep-alive frame (an empty chunk / a ping event), which keeps clients'
+        watchdogs calm and notices a client that has gone.  A consumer that stops early (or `cancel`) makes the
+        engine STOP, so it does not run to max_new."""
         if not self.alive():
             raise EngineDied("the engine is unavailable; this request was not sent")
         bias_api.validate_request(sampling or {}, self, None)
@@ -4862,7 +4863,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     cid, created = "chatcmpl-" + uuid.uuid4().hex[:24], int(time.time())
     model = svc.model_for(req)
     # llama.cpp's flag, and its default: a client that wants prompt progress asks for it, and nothing changes for one
-    # that does not.  Strata already sends a keep-alive comment on every PP line, so this only fills that line in.
+    # that does not.  Strata already sends a keep-alive frame on every PP line, so this only fills that line in.
     want_progress = bool(req.get("return_progress"))
 
     def chunk(delta, finish=None):
@@ -4876,7 +4877,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel, force=force):
         if kind == "ping":
             # a PP line: the prompt is being read and there is nothing to say yet.  It used to be only the SSE comment;
-            # now it carries the progress when the client asked, and stays the comment when there is nothing to report.
+            # now it carries the progress when the client asked, and stays an empty keep-alive frame when it does not.
             pp = prompt_progress(svc) if want_progress else None
             yield None if pp is None else {**chunk({}), "prompt_progress": pp}
         elif kind == "mcp":
@@ -5968,11 +5969,22 @@ def make_handler(svc: Service):
             if not req.get("stream"):
                 return self._json(200, openai_collect(chunks))
             self._sse()
+            keep = None                                      # the last real chunk: keep-alives reuse its id/model
             try:
                 for c in chunks:
                     if c is None:
-                        self.wfile.write(b": keep-alive\n\n")      # an SSE comment: clients ignore it
+                        # A real, empty chunk - not the SSE comment this used to send.  Clients such as OpenCode
+                        # only reset their "no data" read timeout on frames, not on comments, so a long prompt
+                        # read through a silent prefill would time out and be retried from scratch.
+                        if keep is None:
+                            keep = {"id": "chatcmpl-" + uuid.uuid4().hex[:24],
+                                    "object": "chat.completion.chunk", "created": int(time.time()),
+                                    "model": svc.model_for(req)}
+                        self.wfile.write(b"data: " + json.dumps(
+                            {**keep, "choices": [{"index": 0, "delta": {}, "finish_reason": None}]},
+                            ensure_ascii=False).encode() + b"\n\n")
                     else:
+                        keep = c
                         self.wfile.write(b"data: " + json.dumps(c, ensure_ascii=False).encode() + b"\n\n")
                     self.wfile.flush()
                 self.wfile.write(b"data: [DONE]\n\n")
@@ -6194,7 +6206,9 @@ def make_handler(svc: Service):
             try:
                 for item in events:
                     if item is None:
-                        self.wfile.write(b": keep-alive\n\n")
+                        # A real ping event, not an SSE comment: clients reset their idle timeout on events, so a
+                        # long prompt read would otherwise time out (see the chat writer for the same fix).
+                        self.wfile.write(b"event: ping\ndata: {\"type\": \"ping\"}\n\n")
                     else:
                         name, e = item
                         self.wfile.write(f"event: {name}\n".encode() + b"data: " +
