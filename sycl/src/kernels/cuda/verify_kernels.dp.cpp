@@ -3,6 +3,7 @@
 // The per-token arithmetic of every kernel here is transcribed from its single-token original (fused_gdn.cu,
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
 #define DPCT_PROFILING_ENABLED
+#include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <sycl/sycl.hpp>
 #include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
@@ -1711,6 +1712,42 @@ void gdn_conv_commit(float* history, const float* qkv, int channels, const int32
     check("gdn_conv_commit");
 }
 
+template <class Name, class R, class F> void gdn_launch(sycl::queue* q, R range, F f);   // defined below
+// The commit of all GDN layers of a window in two launches instead of two per layer (A770: 36 layers x 2 kernels of ~31 us
+// and ~6 us, each a few hundred work-groups; together they fill the GPU). Layer i = work-group dimension 0; each layer runs
+// gdn_conv_commit_kernel / gdn_state_replay_kernel unchanged on its own buffers: the per-layer commit's bits.
+bool gdn_commit_replay_layers(float* state0, int64_t state_stride, int64_t conv_off, const float* qkv0, const float* h0,
+                              int64_t qkv_stride, const float* gate0, const float* beta0, int64_t gb_stride, int conv_channels,
+                              int h_k, int h_v, int n_tok, int n_layers, const int32_t* n_keep, void* stream) {
+    if (n_layers <= 0) return true;
+    // the per-layer commit (gdn_step_norm_multi, t_out_begin >= n_tok) takes gdn_state_replay_kernel only on the split path
+    static const bool split = [] {
+        const char* v = std::getenv("STRATA_GDN_SPLIT");
+        if (v != nullptr) return v[0] == '1';
+        return strata::intel_gpu_gen(dpct::get_in_order_queue().get_device()) == strata::IntelGpuGen::Alchemist;
+    }();
+    if (!split || n_tok < 1 || n_tok > kVerifyMaxT || h_k <= 0 || h_v % h_k) return false;
+    sycl::queue* q = strata::q_of(stream);
+    const int C = conv_channels;
+    const unsigned cb = (unsigned) ((C + 255) / 256);
+    q->parallel_for<dpct_kernel_name<class gdn_conv_commit_layers>>(
+        sycl::nd_range<3>(sycl::range(n_layers, 1, cb) * sycl::range(1, 1, 256), sycl::range(1, 1, 256)),
+        sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync},
+        [=](sycl::nd_item<3> it) {
+            const size_t L = it.get_group(0);
+            gdn_conv_commit_kernel(state0 + L * state_stride + conv_off, qkv0 + L * qkv_stride, C, n_keep);
+        });
+    gdn_launch<dpct_kernel_name<class gdn_state_replay_layers, dpct_kernel_scalar<kVerifyMaxT>>>(q,
+        sycl::nd_range<3>(sycl::range(n_layers, S / GS_COLS, h_v) * sycl::range(1, RG, GS_COLS), sycl::range(1, RG, GS_COLS)),
+        [=](sycl::nd_item<3> it) {
+            const size_t L = it.get_group(0);
+            gdn_state_replay_kernel<kVerifyMaxT>(state0 + L * state_stride, h0 + L * qkv_stride, C, gate0 + L * gb_stride,
+                                                 beta0 + L * gb_stride, h_k, h_v, n_tok, n_keep);
+        });
+    check("gdn_commit_replay_layers");
+    return true;
+}
+
 void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_beta, const float* dt, const float* ssm_a,
                   float* gate, float* beta, int n_embd, int h_v, int n_tok, void* stream) {
     if (n_embd % 8 != 0 || n_tok < 1 || n_tok > kVerifyMaxT) {
@@ -1830,6 +1867,27 @@ void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
     check("gdn_ab_multi");
 }
 
+// Large-GRF mode for the GDN recurrence kernels on Arc A-series (Alchemist): at 128 registers the step kernel spills
+// ~7.6 KB per SIMD32 thread on the A770 (unitrace: its 32 state rows a thread alone fill the default file). The same
+// arithmetic (bitwise); STRATA_GDN_LARGE_GRF=1 forces it on, =0 off.
+inline bool gdn_large_grf(sycl::queue* q) {
+    static const bool v = [q] {
+        const char* e = std::getenv("STRATA_GDN_LARGE_GRF");
+        if (e != nullptr) return std::atoi(e) != 0;
+        return strata::intel_gpu_gen(q->get_device()) == strata::IntelGpuGen::Alchemist;
+    }();
+    return v;
+}
+struct gdn_big_name;
+template <class Name, class R, class F>
+void gdn_launch(sycl::queue* q, R range, F f) {
+    if (gdn_large_grf(q))
+        q->parallel_for<dpct_kernel_name<gdn_big_name, Name>>(range,
+            sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync,
+                                                        sycl::ext::intel::experimental::grf_size<256>}, f);
+    else
+        q->parallel_for<Name>(range, sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync}, f);
+}
 void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const float* gate, const float* beta,
                          const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, int n_tok,
                          const int32_t* n_keep, void* stream, int t_out_begin, void* xq_out) {
@@ -1839,7 +1897,13 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
         std::fprintf(stderr, "gdn_step_norm_multi: invalid arguments\n");
         std::exit(1);
     }
-    static const bool split = [] { const char* v = std::getenv("STRATA_GDN_SPLIT"); return v && v[0] == '1'; }();
+    // STRATA_GDN_SPLIT: also the default on Arc A-series (Alchemist): A770, 8K, the window's GPU wait 39.5 / 38.8 ->
+    // 37.6 / 37.9 ms a round (bitwise, as below); =0 / =1 choose
+    static const bool split = [] {
+        const char* v = std::getenv("STRATA_GDN_SPLIT");
+        if (v != nullptr) return v[0] == '1';
+        return strata::intel_gpu_gen(dpct::get_in_order_queue().get_device()) == strata::IntelGpuGen::Alchemist;
+    }();
     // S26: the split runs where it is faster (gfx1151 harness, h_v 48: the commit 8-19% per call; a window of 2+ rows
     // 3-13%; one row: no gain, the old kernel stays) - bitwise equal in every case
     if (split && (t_out_begin >= n_tok || n_tok - t_out_begin >= 2)) {
@@ -1854,11 +1918,10 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
-                ->parallel_for<
+            gdn_launch<
                     dpct_kernel_name<class gdn_state_replay_kernel_e4d4c4,
-                                     dpct_kernel_scalar<kVerifyMaxT>>>(
-                    sycl::nd_range<3>(grid * block, block), exp_props,
+                                     dpct_kernel_scalar<kVerifyMaxT>>>(strata::q_of(stream),
+                    sycl::nd_range<3>(grid * block, block),
                     [=](sycl::nd_item<3> item_ct1) {
                         gdn_state_replay_kernel<kVerifyMaxT>(
                             state, h, conv_channels, gate, beta, h_k, h_v,
@@ -1875,11 +1938,10 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                strata::q_of(stream)
-                    ->parallel_for<
+                gdn_launch<
                         dpct_kernel_name<class gdn_step_split_kernel_83c676,
-                                         dpct_kernel_scalar<true>>>(
-                        sycl::nd_range<3>(grid * block, block), exp_props,
+                                         dpct_kernel_scalar<true>>>(strata::q_of(stream),
+                        sycl::nd_range<3>(grid * block, block),
                         [=](sycl::nd_item<3> item_ct1) {
                             gdn_step_split_kernel<true>(
                                 state, h, conv_channels, gate, beta, y, h_k,
@@ -1897,13 +1959,11 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                strata::q_of(stream)
-                    ->parallel_for<
+                gdn_launch<
                         dpct_kernel_name<class gdn_out_norm_kernel_a650eb,
-                                         dpct_kernel_scalar<true>>>(
+                                         dpct_kernel_scalar<true>>>(strata::q_of(stream),
                         sycl::nd_range<3>(ng * sycl::range(1, RG, S),
                                           sycl::range(1, RG, S)),
-                        exp_props,
                         [=](sycl::nd_item<3> item_ct1)
                             [[sycl::reqd_sub_group_size(32)]] {
                                 gdn_out_norm_kernel<true>(z, gamma, eps, y, h_v,
@@ -1921,13 +1981,11 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                strata::q_of(stream)
-                    ->parallel_for<
+                gdn_launch<
                         dpct_kernel_name<class gdn_out_norm_kernel_f6dfab,
-                                         dpct_kernel_scalar<false>>>(
+                                         dpct_kernel_scalar<false>>>(strata::q_of(stream),
                         sycl::nd_range<3>(ng * sycl::range(1, RG, S),
                                           sycl::range(1, RG, S)),
-                        exp_props,
                         [=](sycl::nd_item<3> item_ct1)
                             [[sycl::reqd_sub_group_size(32)]] {
                                 gdn_out_norm_kernel<false>(
@@ -1948,13 +2006,11 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
-                ->parallel_for<
-                    dpct_kernel_name<class gdn_step_commit_kernel_5d9da7>>(
+            gdn_launch<
+                    dpct_kernel_name<class gdn_step_commit_kernel_5d9da7>>(strata::q_of(stream),
                     sycl::nd_range<3>(sycl::range(1, 4u, (unsigned)h_v) *
                                           sycl::range(1, RG, 32),
-                                      sycl::range(1, RG, 32)),
-                    exp_props, [=](sycl::nd_item<3> item_ct1) {
+                                      sycl::range(1, RG, 32)), [=](sycl::nd_item<3> item_ct1) {
                         gdn_step_commit_kernel(state, h, conv_channels, gate,
                                                beta, h_k, h_v, n_keep);
                     });
@@ -1974,11 +2030,10 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
-                ->parallel_for<dpct_kernel_name<
+            gdn_launch<dpct_kernel_name<
                     class gdn_step_norm_multi_kernel_42ae26,
-                    dpct_kernel_scalar<true>, dpct_kernel_scalar<true>>>(
-                    sycl::nd_range<3>(g1 * b1, b1), exp_props,
+                    dpct_kernel_scalar<true>, dpct_kernel_scalar<true>>>(strata::q_of(stream),
+                    sycl::nd_range<3>(g1 * b1, b1),
                     [=](sycl::nd_item<3> item_ct1)
                         [[sycl::reqd_sub_group_size(32)]] {
                             gdn_step_norm_multi_kernel<true, true>(
@@ -1995,11 +2050,10 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
-                ->parallel_for<dpct_kernel_name<
+            gdn_launch<dpct_kernel_name<
                     class gdn_step_norm_multi_kernel_42ae26,
-                    dpct_kernel_scalar<false>, dpct_kernel_scalar<true>>>(
-                    sycl::nd_range<3>(g1 * b1, b1), exp_props,
+                    dpct_kernel_scalar<false>, dpct_kernel_scalar<true>>>(strata::q_of(stream),
+                    sycl::nd_range<3>(g1 * b1, b1),
                     [=](sycl::nd_item<3> item_ct1)
                         [[sycl::reqd_sub_group_size(32)]] {
                             gdn_step_norm_multi_kernel<false, true>(
@@ -2017,11 +2071,10 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<
+        gdn_launch<dpct_kernel_name<
                 class gdn_step_norm_multi_kernel_42ae26,
-                dpct_kernel_scalar<true>, dpct_kernel_scalar<false>>>(
-                sycl::nd_range<3>(g1 * b1, b1), exp_props,
+                dpct_kernel_scalar<true>, dpct_kernel_scalar<false>>>(strata::q_of(stream),
+                sycl::nd_range<3>(g1 * b1, b1),
                 [=](sycl::nd_item<3> item_ct1)
                     [[sycl::reqd_sub_group_size(32)]] {
                         gdn_step_norm_multi_kernel<true, false>(
@@ -2037,11 +2090,10 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<
+        gdn_launch<dpct_kernel_name<
                 class gdn_step_norm_multi_kernel_42ae26,
-                dpct_kernel_scalar<false>, dpct_kernel_scalar<false>>>(
-                sycl::nd_range<3>(g1 * b1, b1), exp_props,
+                dpct_kernel_scalar<false>, dpct_kernel_scalar<false>>>(strata::q_of(stream),
+                sycl::nd_range<3>(g1 * b1, b1),
                 [=](sycl::nd_item<3> item_ct1)
                     [[sycl::reqd_sub_group_size(32)]] {
                         gdn_step_norm_multi_kernel<false, false>(

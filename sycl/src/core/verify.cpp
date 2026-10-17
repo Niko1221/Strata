@@ -1852,9 +1852,34 @@ bool Verifier::capture_commit(std::string &err) try {
         copy_i32_from_mapped(commit_, m_commit_, 2 + MT, cs_);
         int64_t qsa_index = 0, gdn_index = 0;
         for (int64_t l = 0; l < lb_; ++l) (is_qsa_layer(g, l) ? qsa_index : gdn_index) += 1;
+        // The GDN layers' conv history and state replay in two launches for the whole range (gdn_commit_replay_layers:
+        // the per-layer kernels' bodies, the same state bits) instead of two per layer. A770: 36 layers 1.96 -> 0.83 ms at
+        // 3 kept rows (gdn_bench GDN_CBATCH, 0 of 29.4M floats differ); the draft round waits behind the commit, so
+        // drafting 7.51/7.31 -> 6.58/6.44 ms a round (8K bench). Default on Alchemist, where it was measured;
+        // STRATA_GDN_COMMIT_BATCH=1 forces it on, =0 off (it declines where the per-layer commit is not the split replay).
+        bool gdn_batched = false;
+        {
+            static const bool batch_env = [this] {
+                const char* e = std::getenv("STRATA_GDN_COMMIT_BATCH");
+                if (e != nullptr) return std::atoi(e) != 0;
+                return strata::intel_gpu_gen(cs_->get_device()) == strata::IntelGpuGen::Alchemist;
+            }();
+            int64_t n_gdn = 0;
+            for (int64_t l = lb_; l < le_; ++l) n_gdn += is_qsa_layer(g, l) ? 0 : 1;
+            if (batch_env && n_gdn > 0) {
+                float* state0 = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
+                gdn_batched = gdn_commit_replay_layers(
+                    state0, (int64_t) gdn_floats, (int64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size,
+                    qkv_L_ + (size_t) gdn_index * MT * C, h_L_ + (size_t) gdn_index * MT * C, MT * C,
+                    gate_L_ + (size_t) gdn_index * MT * HV, beta_L_ + (size_t) gdn_index * MT * HV, MT * HV, (int) C,
+                    (int) g.ssm_k_heads, (int) HV, (int) MT, (int) n_gdn, commit_, cs_);
+            }
+        }
         for (int64_t l = lb_; l < le_ && ok; ++l) {
             const LayerView v(*wt_, l);
-            if (!is_qsa_layer(g, l)) {
+            if (!is_qsa_layer(g, l) && gdn_batched) {
+                ++gdn_index;   // committed above
+            } else if (!is_qsa_layer(g, l)) {
                 const WeightRef* wnm = need(v, "ssm_norm.weight", err);
                 if (!wnm) { ok = false; break; }
                 float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
