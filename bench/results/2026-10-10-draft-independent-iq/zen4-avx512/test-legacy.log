@@ -1,0 +1,33 @@
+iq_avx2_parity: AMD Ryzen 5 7600X3D 6-Core Processor (avx2 1, avx512 1), CPU -1, core type 00h
+  STRATA_IQ256_GATHER -, STRATA_NO_AVXVNNI -, STRATA_IQ_MT_MIN 2, STRATA_IQ_PREFETCH -
+  variants this CPU runs: gather; this thread's: scalar
+  iq2_xxs  gate rows vs ggml vec_dot: rel 3.11e-08
+  iq2_xxs  scalar       1..8 tokens: 0 gate / gate+up rows differ from the scalar one-token rows
+  iq2_xxs  gather       1..8 tokens: 0 gate / gate+up rows differ from the scalar one-token rows
+  iq2_xs   gate rows vs ggml vec_dot: rel 3.22e-08
+  iq2_xs   scalar       1..8 tokens: 0 gate / gate+up rows differ from the scalar one-token rows
+  iq2_xs   gather       1..8 tokens: 0 gate / gate+up rows differ from the scalar one-token rows
+  iq2_s    gate rows vs ggml vec_dot: rel 3.18e-08
+  iq2_s    scalar       1..8 tokens: 0 gate / gate+up rows differ from the scalar one-token rows
+  iq2_s    gather       1..8 tokens: 0 gate / gate+up rows differ from the scalar one-token rows
+  iq3_xxs  gate rows vs ggml vec_dot: rel 3.16e-08
+  iq3_xxs  scalar       1..8 tokens: 0 gate / gate+up rows differ from the scalar one-token rows
+  iq3_xxs  gather       1..8 tokens: 0 gate / gate+up rows differ from the scalar one-token rows
+  iq3_s    gate rows vs ggml vec_dot: rel 3.13e-08
+  iq3_s    scalar       1..8 tokens: 0 gate / gate+up rows differ from the scalar one-token rows
+  iq3_s    gather       1..8 tokens: 0 gate / gate+up rows differ from the scalar one-token rows
+  iq4_xs   gate rows vs ggml vec_dot: rel 3.17e-08
+  iq4_xs   scalar       1..8 tokens: 0 gate / gate+up rows differ from the scalar one-token rows
+  iq4_xs   gather       1..8 tokens: 0 gate / gate+up rows differ from the scalar one-token rows
+  iq4_nl   down rows vs ggml vec_dot: rel 1.09e-07
+  iq4_nl   scalar       1..8 tokens: 0 down rows differ from the scalar one-token rows
+  q2_0     down rows vs a double reference: rel 1.61e-07
+  q2_0     scalar       1..8 tokens: 0 down rows differ from the scalar one-token rows
+  iq2_xxs  engine: 1..8 tokens, rotated groups: 149380 gate/up rows differ from the one-token rows
+  iq2_xs   engine: 1..8 tokens, rotated groups: 149870 gate/up rows differ from the one-token rows
+  iq2_s    engine: 1..8 tokens, rotated groups: 151585 gate/up rows differ from the one-token rows
+  iq3_xxs  engine: 1..8 tokens, rotated groups: 154175 gate/up rows differ from the one-token rows
+  iq3_s    engine: 1..8 tokens, rotated groups: 153790 gate/up rows differ from the one-token rows
+  iq4_xs   engine: 1..8 tokens, rotated groups: 0 gate/up rows differ from the one-token rows
+  iq4_nl   engine: 1..8 tokens, rotated groups: 528290 down rows differ from the one-token rows
+iq_avx2_parity: 6 failures

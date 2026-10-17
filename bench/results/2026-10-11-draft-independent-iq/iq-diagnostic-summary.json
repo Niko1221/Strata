@@ -1,0 +1,78 @@
+[
+  {
+    "mode": "small-cache-default",
+    "cache": "645",
+    "passed": false,
+    "complete": true,
+    "failures": [
+      "floor-0/code: token difference 30, finish length",
+      "floor-95/code: token difference 62, finish length",
+      "floor-95/code: token difference 62, finish length",
+      "floor-0/code: token difference 30, finish length"
+    ],
+    "error": null
+  },
+  {
+    "mode": "small-cache-no-selfcommit",
+    "cache": "645",
+    "passed": false,
+    "complete": true,
+    "failures": [
+      "floor-0/code: token difference 30, finish length",
+      "floor-95/code: token difference 62, finish length",
+      "floor-95/code: token difference 62, finish length",
+      "floor-0/code: token difference 30, finish length"
+    ],
+    "error": null
+  },
+  {
+    "mode": "small-cache-no-headmix",
+    "cache": "645",
+    "passed": false,
+    "complete": true,
+    "failures": [
+      "floor-0/code: token difference 30, finish length",
+      "floor-95/code: token difference 62, finish length",
+      "floor-95/code: token difference 62, finish length",
+      "floor-0/code: token difference 30, finish length"
+    ],
+    "error": null
+  },
+  {
+    "mode": "small-cache-generic-step",
+    "cache": "645",
+    "passed": false,
+    "complete": true,
+    "failures": [
+      "floor-0/code: token difference 30, finish length",
+      "floor-95/code: token difference 62, finish length",
+      "floor-95/code: token difference 62, finish length",
+      "floor-0/code: token difference 30, finish length"
+    ],
+    "error": null
+  },
+  {
+    "mode": "cpu-only-default",
+    "cache": "0",
+    "passed": true,
+    "complete": true,
+    "failures": [],
+    "error": null
+  },
+  {
+    "mode": "cpu-only-no-selfcommit",
+    "cache": "0",
+    "passed": true,
+    "complete": true,
+    "failures": [],
+    "error": null
+  },
+  {
+    "mode": "auto-cache-default",
+    "cache": "auto",
+    "passed": true,
+    "complete": true,
+    "failures": [],
+    "error": null
+  }
+]

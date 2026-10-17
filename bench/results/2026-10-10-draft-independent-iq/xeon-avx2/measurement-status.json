@@ -1,0 +1,57 @@
+[
+  {
+    "label": "default",
+    "code": 0,
+    "expected": 0
+  },
+  {
+    "label": "avx2",
+    "code": 0,
+    "expected": 0
+  },
+  {
+    "label": "ggml",
+    "code": 0,
+    "expected": 0
+  },
+  {
+    "label": "iq3s_mt1",
+    "code": 0,
+    "expected": 0
+  },
+  {
+    "label": "legacy",
+    "code": 1,
+    "expected": 1
+  },
+  {
+    "label": "bench-0-default",
+    "code": 0,
+    "expected": 0
+  },
+  {
+    "label": "bench-0-legacy",
+    "code": 0,
+    "expected": 0
+  },
+  {
+    "label": "bench-1-legacy",
+    "code": 0,
+    "expected": 0
+  },
+  {
+    "label": "bench-1-default",
+    "code": 0,
+    "expected": 0
+  },
+  {
+    "label": "bench-2-default",
+    "code": 0,
+    "expected": 0
+  },
+  {
+    "label": "bench-2-legacy",
+    "code": 0,
+    "expected": 0
+  }
+]

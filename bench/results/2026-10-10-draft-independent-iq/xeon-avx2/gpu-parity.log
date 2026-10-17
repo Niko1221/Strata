@@ -1,0 +1,55 @@
+          iq2_xxs avx2 gate rows vs ggml vec_dot: rel 2.95e-08
+          gate+up one token one thread: avx2 395 us (2.14 GB/s), ggml 409 us (2.07 GB/s)
+          gate+up 3 tokens one thread: avx2 561 us vs ggml 3 x 409 us
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          iq4_nl AVX-2 multi-token down vs ggml down: rel 1.04e-07
+          down 3 tokens one thread: avx2 387 us (2.38 GB/s) vs ggml 611 us (1.51 GB/s)
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic iq2_xxs /iq4_nl  blob  1766400  cpu rel 1.43e-02  gpu rel 1.28e-02  cpu-gpu 1.50e-02  ok
+          iq2_xs avx2 gate rows vs ggml vec_dot: rel 3.20e-08
+          gate+up one token one thread: avx2 463 us (2.05 GB/s), ggml 458 us (2.07 GB/s)
+          gate+up 3 tokens one thread: avx2 589 us vs ggml 3 x 458 us
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          iq4_nl AVX-2 multi-token down vs ggml down: rel 1.05e-07
+          down 3 tokens one thread: avx2 424 us (2.17 GB/s) vs ggml 494 us (1.87 GB/s)
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic iq2_xs  /iq4_nl  blob  1868800  cpu rel 1.43e-02  gpu rel 1.23e-02  cpu-gpu 1.68e-02  ok
+          iq2_s avx2 gate rows vs ggml vec_dot: rel 2.94e-08
+          gate+up one token one thread: avx2 383 us (2.74 GB/s), ggml 414 us (2.54 GB/s)
+          gate+up 3 tokens one thread: avx2 610 us vs ggml 3 x 414 us
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          iq4_nl AVX-2 multi-token down vs ggml down: rel 9.86e-08
+          down 3 tokens one thread: avx2 398 us (2.31 GB/s) vs ggml 478 us (1.93 GB/s)
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic iq2_s   /iq4_nl  blob  1971200  cpu rel 1.25e-02  gpu rel 1.24e-02  cpu-gpu 1.33e-02  ok
+          iq3_xxs avx2 gate rows vs ggml vec_dot: rel 2.96e-08
+          gate+up one token one thread: avx2 504 us (2.49 GB/s), ggml 533 us (2.35 GB/s)
+          gate+up 3 tokens one thread: avx2 697 us vs ggml 3 x 533 us
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          iq4_nl AVX-2 multi-token down vs ggml down: rel 1.03e-07
+          down 3 tokens one thread: avx2 399 us (2.31 GB/s) vs ggml 473 us (1.95 GB/s)
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic iq3_xxs /iq4_nl  blob  2176000  cpu rel 1.37e-02  gpu rel 1.26e-02  cpu-gpu 1.45e-02  ok
+          iq3_s avx2 gate rows vs ggml vec_dot: rel 3.01e-08
+          gate+up one token one thread: avx2 606 us (2.32 GB/s), ggml 819 us (1.72 GB/s)
+          gate+up 3 tokens one thread: avx2 907 us vs ggml 3 x 819 us
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          iq4_nl AVX-2 multi-token down vs ggml down: rel 1.02e-07
+          down 3 tokens one thread: avx2 420 us (2.20 GB/s) vs ggml 498 us (1.85 GB/s)
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic iq3_s   /iq4_nl  blob  2329600  cpu rel 1.48e-02  gpu rel 1.21e-02  cpu-gpu 1.54e-02  ok
+          iq4_xs avx2 gate rows vs ggml vec_dot: rel 2.95e-08
+          gate+up one token one thread: avx2 243 us (7.15 GB/s), ggml 223 us (7.82 GB/s)
+          gate+up 3 tokens one thread: avx2 479 us vs ggml 3 x 223 us
+          width invariance (1 vs 3 tokens): gate/up 0, down 0 rows differ
+          iq4_nl AVX-2 multi-token down vs ggml down: rel 9.91e-08
+          down 3 tokens one thread: avx2 396 us (2.33 GB/s) vs ggml 472 us (1.95 GB/s)
+          gpu decode-once vs per-entry kernels: bitwise equal
+          GPU dequant vs ggml to_float: rel 0.00e+00, 0 of 4915200 values differ in any bit; fp16 of it: 0 differ; embedding rows: 0 of 640 differ
+synthetic iq4_xs  /iq4_nl  blob  2662400  cpu rel 1.49e-02  gpu rel 1.16e-02  cpu-gpu 1.59e-02  ok
+native_expert_parity: 0 failures
