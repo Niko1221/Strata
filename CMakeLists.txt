@@ -2065,6 +2065,7 @@ if(STRATA_NATIVE_EXPERTS)
     # #136: the Q2_0 pack's prompt experts on Strata's own int8 kernels (moe_fused.cu, opt-in STRATA_PF_FUSED=1; CUDA
     # only: the HIP branch below keeps MMQ, and an sm_75 device or an sm_75-only build reports them unavailable)
     add_library(strata_mmq STATIC src/prefill/moe_mmq.cu src/prefill/moe_fused.cu src/prefill/moe_fused_iq.cu
+                src/prefill/rp_moe.cu
                 src/prefill/mmq_nvfp4_w4a8.cu
                 src/prefill/ggml_cuda_host.cu ${_strata_quantize_cu})
     if(STRATA_EXPERIMENTAL_SM60 AND NOT STRATA_HIP_GFX906)
@@ -2288,6 +2289,9 @@ if(STRATA_NATIVE_EXPERTS)
     # the routed-expert products (MMQ) timed at the prompt path's shapes (16 experts a launch)
     add_executable(mmq_expert_bench src/prefill/mmq_expert_bench.cpp)
     target_link_libraries(mmq_expert_bench PRIVATE strata_mmq ggml-base CUDA::cudart)
+    # gfx906: mx-llama.cpp's repacked IQ4_NL expert GEMM (rp_moe) against MMQ, correctness and time
+    add_executable(rp_expert_bench src/prefill/rp_expert_bench.cpp)
+    target_link_libraries(rp_expert_bench PRIVATE strata_mmq ggml-base CUDA::cudart)
   elseif(STRATA_PREFILL_MMQ)
     # Compile only the pinned GGML MMQ and activation-quantizer sources used by prefill. This uses
     # common.cuh's native HIP path without enabling a second GGML HIP backend.
