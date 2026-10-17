@@ -1,0 +1,20 @@
+{
+  "old": {
+    "short_decode": 66.95,
+    "prefill": {
+      "medium": 1053.8,
+      "long": 1604.25,
+      "xlong": 1786.5
+    },
+    "request_seconds": 221.388
+  },
+  "new": {
+    "short_decode": 74.80000000000001,
+    "prefill": {
+      "medium": 1059.5,
+      "long": 1611.4,
+      "xlong": 1790.5500000000002
+    },
+    "request_seconds": 210.003
+  }
+}

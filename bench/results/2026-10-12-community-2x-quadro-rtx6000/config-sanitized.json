@@ -1,0 +1,56 @@
+{
+  "exe": "<STRATA>/engine/strata",
+  "args": [
+    "--pack",
+    "<DATA>/packs/unsloth-ud-q4_k_xl",
+    "--native",
+    "<DATA>/models/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+    "--expert-profile",
+    "<STRATA>/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<DATA>/mtp/rt",
+    "--max-context",
+    "262144",
+    "--kv",
+    "int8",
+    "--kv-resident",
+    "32768",
+    "--ple-io",
+    "ram",
+    "--vision",
+    "--vram-reserve-mib",
+    "700",
+    "--remote-expert-opt"
+  ],
+  "cwd": "<STRATA>",
+  "tokenizer": "<DATA>/packs/unsloth-ud-q4_k_xl/tokenizer",
+  "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
+  "log": "<STRATA>/strata-unsloth-ud-q4_k_xl.log",
+  "lib_dirs": [
+    "/usr/bin",
+    "/usr/lib64"
+  ],
+  "port": 8080,
+  "gpu": [
+    0,
+    1
+  ],
+  "gpus_asked": true,
+  "layer_split": "auto",
+  "vision": {
+    "exe": "<STRATA>/engine/strata-vision",
+    "mmproj": "<DATA>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<DATA>/models/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+    "gpu": false,
+    "max_tokens": 300,
+    "threads": 40
+  }
+}

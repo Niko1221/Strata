@@ -1,0 +1,32 @@
+{
+  "policies": {
+    "interleave": {
+      "short_decode": 64.69999999999999,
+      "prefill": {
+        "medium": 1054.5500000000002,
+        "long": 1599.8,
+        "xlong": 1785.4
+      },
+      "total_seconds": 223.68099999999998
+    },
+    "local-memory": {
+      "short_decode": 56.8,
+      "prefill": {
+        "medium": 1053.35,
+        "long": 1602.85,
+        "xlong": 1783.65
+      },
+      "total_seconds": 234.13
+    },
+    "local-cpu-memory": {
+      "short_decode": 62.15,
+      "prefill": {
+        "medium": 1054.0,
+        "long": 1603.45,
+        "xlong": 1782.85
+      },
+      "total_seconds": 227.306
+    }
+  },
+  "selected": "interleave"
+}

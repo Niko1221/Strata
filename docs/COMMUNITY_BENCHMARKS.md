@@ -13,6 +13,13 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-12: 2x Quadro RTX 6000 24 GiB, 2x Xeon Gold 6138, 247.2 GiB OS-visible RAM](../bench/results/2026-10-12-community-2x-quadro-rtx6000/README.md):
+  Strata v0.1.43 CUDA 12.4 source build, Unsloth UD-Q4_K_XL, 262,144-token configured context,
+  interleaved host memory. Standard three-repeat suite: chat decode 65.7 tok/s; fresh 4K/16K/32K
+  prompt throughput 840.8/1542.0/1796.7 tok/s; agent follow-up decode 70.5 tok/s. Supplementary
+  custom two-launch-per-version A/B: short decode 66.95 -> 74.80 tok/s against 0.1.40.3, with
+  the new release's answer-changing tail-skip default enabled. Separate NUMA comparison on
+  0.1.40.3 after a RAM upgrade; largest custom input 43,440 tokens, no 128K/262K prompt test.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
