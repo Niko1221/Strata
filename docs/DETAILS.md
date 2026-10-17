@@ -1054,6 +1054,20 @@ A one-shot request that no later request continues (a classification call, a pro
 follows the reused prefix (or the root) is read in one run, and its session is not kept or parked for a next request.
 It still starts from a checkpoint it matches, and still saves the system-prompt root when that reaches
 `--prompt-cache-root`. Without the field (or with `true`) nothing changes.
+In the Maya checkout (`project-maya`) this knob is also a wall-time dial, because there its marks BOUND the segments
+the prompt path reads, and every segment pays a fill and a drain of the part chain: local commit `3095719`
+(2026-10-15) measured its `STRATA_GLM_CKPT_EVERY` (same 16384 default) on a 100,535-token fresh read (Maya-L split,
+8192-token chunks, one 580-token warm prompt before each arm, engine restarted between arms) - `16384` cut the read
+into 5 pieces read in 148.8 s, `32768` into 4 in 134.9 s (-9.3%), `0` into one of 13 chunks in 93.2 s (-37.4%), a
+piece fitting `~14.6 s + 6.5 s a chunk` there. Those are that checkout's numbers on its own rig, and they do not
+carry over: here a periodic mark is saved at a chunk boundary and the run carries on, so no piece ends at it. What
+cuts this engine's read into runs is the cut list - a re-read (`STRATA_CKPT_REREAD`), the system-prompt root, a
+message boundary (`STRATA_CACHE_MESSAGE_BOUNDARY`), the start of the last turn and a pinned prefix - and each of
+those is one fill and drain. So `--prompt-cache-every 0` here skips the periodic marks and the near-tail one (a
+`--prompt-cache-tail` mark needs `--prompt-cache-every` above 0), while the root, the last turn, a message
+boundary and a pin are still saved - the same trade that checkout documents for its `0`: a client that rewrote a
+turn *before* the last one mounts a farther mark. The lever for a fresh long read here is those cuts, not this
+cadence.
 
 **Checkpoints spread back from the end (opt-in, `--prompt-cache-spread`).** Least recent use keeps the newest points:
 every turn adds a checkpoint at its start, so after a few short turns the 6 sit within the last 1-2K tokens. An agent
