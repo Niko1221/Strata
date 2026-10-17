@@ -1,18 +1,19 @@
 # Q36: the model mapping, the expert arena, and kcompactd
 
-**Status:** plan, no engine change implemented yet. Branch `q36-memory-compaction` (from `dev`).
+**Status:** Phase 0 built on branch `q36-memory-compaction` (from `dev`), its gates G1-G4 run; the phase 0 baseline run
+(G6) has not been taken, and phases 1-5 are still plan only.
 **Target:** the Qwen3.6 family's engine (`--family qwen36`), the path this PC actually runs.
 **Host settings:** applied on the target PC 2026-10-17, **not persisted yet** - see
 [Host settings](#host-settings-applied-2026-10-17).
 
 | phase | switch | goal | state |
 |---|---|---|---|
-| 0 | `STRATA_MEM_REPORT` | the memory/compaction counters in the engine's own log | planned |
-| 1 | `STRATA_Q36_RELEASE_MAPPING` | release the GGUF mapping after load | planned |
-| 2 | `STRATA_Q36_PAGEABLE_ARENA` | stop pinning the 18.75 GiB expert arena | planned |
-| 3 | `STRATA_Q36_ARENA` | large pages for the arena, if it must stay pinned | planned |
-| 4 | - | padding-only memset of the arena | planned |
-| 5 | - | flip the defaults that measured better | planned |
+| 0 | `STRATA_MEM_REPORT` | the memory/compaction counters in the engine's own log | built, baseline measured |
+| 1 | `STRATA_Q36_RELEASE_MAPPING` | release the GGUF mapping after load | built, measured, on by default |
+| 2 | `STRATA_Q36_PAGEABLE_ARENA` | stop pinning the 18.75 GiB expert arena | moot - the arena is already pageable (measured) |
+| 3 | `STRATA_Q36_ARENA` | large pages for the arena, if it must stay pinned | moot - conditional on Phase 2 |
+| 4 | - | padding-only memset of the arena | built, measured, byte-identical |
+| 5 | - | flip the defaults that measured better | done |
 
 Measured on the machine this plan is for: **RTX 4060 Max-Q Laptop (8188 MiB), Ryzen 7 7735HS, 62 GB**,
 `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` (22.85 GB), `--kv int8 --mtp 2`, 32K context, hybrid mode
@@ -127,7 +128,9 @@ docker run --rm --gpus all -v "$PWD":/src -w /src strata-gate:cu130 bash -lc \
 
 ```bash
 python3 -m unittest tools.test_docker_run
-python3 tools/check_isa_guard.py
+# the guard takes the archive it checks (this line used to omit it and exit 2 with a usage error);
+# G1's ctest runs the same check as `isa_guard_check`
+python3 tools/check_isa_guard.py build-gate-cpu/libstrata_kernels_cpu.a
 ```
 
 **G4 - the container image**, one per phase, tagged by phase:
@@ -199,6 +202,25 @@ the engine's own log, so the user's run and the A/B harness carry them.
 tok/s + the memory report + what `kcompactd` does. This is the baseline every later phase is compared against.
 **Rollback:** delete the two call sites; the switch is off by default.
 
+**As built (2026-10-17).** `include/strata/platform/mem_report.hpp`, `src/platform/mem_report.cpp` and
+`src/platform/mem_report_test.cpp`. `mem_report.cpp` is in `strata_core` for the engine and is compiled into the test
+directly, because the test has to build under `STRATA_ENABLE_CUDA=OFF` and `strata_core` is GPU-only.
+`mem_report()` reads one snapshot and prints it; `mem_report_at()` prints a snapshot the caller already has, which is
+how the test checks the delta arithmetic without a `/proc` of its own. A row the kernel does not export prints as `-`,
+not as a zero. Off (the default) the switch is read once and no counter file is opened; on, the engine prints one
+report after `place_experts()` and one on QUIT, the second with the deltas since the first.
+
+Gates run on 2026-10-17: **G1** 43/43 in the gate container (the new `mem_report_test` and `isa_guard_check` among
+them), **G2**'s build configures and links all 415 targets including `strata-q36` - the parity ctest itself was not
+run, the build host exposes no NVIDIA device - **G3** both, **G4** `strata:q5k-ph0`. **G5** and **G6** need the card
+and the model.
+
+**The baseline run (2026-10-17), measured.** The user's 32K run (`--kv int8 --mtp 2`), decode ~10 tok/s. The report
+read `Mlocked` 104 KiB and `Unevictable` 104 KiB - unchanged from idle - while the 18.75 GiB arena showed up under
+`Shmem` (19.17 GiB, against ~0.3 GiB at idle), not under `Mlocked` as this plan assumed. `compact_stall` 187,
+`pgmigrate_fail` 71,744,161 and no new failed migrations during the run - the host settings above had already stopped
+the churn.
+
 ---
 
 ## Phase 1 - release the GGUF mapping after the load
@@ -224,9 +246,19 @@ from the compactor's walk.
 
 **Gates:** G1, G2, G3, G4 (`strata:q5k-ph1`), G5.
 **Then:** the same 32K run with `STRATA_Q36_RELEASE_MAPPING=1`.
-**Expected (to be measured, not claimed):** `Cached` down by ~22 GB; `Mlocked` unchanged (~19 GiB) - the arena is
-still pinned, so this phase alone should **not** stop `kcompactd`.
+**Expected (to be measured, not claimed):** `Cached` down by ~22 GB. `Mlocked`/`Unevictable` stay ~104 KiB - the arena
+was never locked (see the open question), so this phase does not touch it.
 **Rollback:** `STRATA_Q36_RELEASE_MAPPING=0`.
+
+**As built (2026-10-17).** `GgufFile::release_pages()` (`madvise(MADV_DONTNEED)` then `posix_fadvise(POSIX_FADV_DONTNEED)`
+- that order, because `fadvise` cannot drop pages that are still mapped; each alone leaves the other) and
+`released()`; on Windows `release_pages()` is a no-op, the equivalent would unmap the view and break `tensor_data()`.
+`GgufModel::release_pages()` over the shards and `released()`. The engine's `release_model_mapping(Model&)` runs right
+after `place_experts()` returns, behind `STRATA_Q36_RELEASE_MAPPING` (on by default since Phase 5; `=0` turns it
+off), and a file-static
+`g_mapping_released` makes `expert_blob()` exit loudly if it is ever called after the release. `gguf_reader_test.cpp`
+gains two cases: a tensor's known bytes read back through the mapping after `release_pages()` (faulted in from the
+file), and the `GgufModel` pair.
 
 ---
 
@@ -282,6 +314,14 @@ last blob. Prove it with a test that both forms leave identical bytes, and with 
 
 **Gates:** G1, G2, G3, G4 (`strata:q5k-ph4`), G5. **Rollback:** the phase is small enough to revert whole.
 
+**As built (2026-10-17).** The clear range is `[e*stride + written, (e+1)*stride)` where `written = L.L.down_off +
+L.src_dsz` - the end of `expert_blob()`'s contiguous `[gate | up | down]` - not `L.L.bytes`, because an NVFP4 layout
+carries a 16-byte scale tail after `down` that `expert_blob()` does not write and that must stay zero; on a
+non-NVFP4 layout `written == L.L.bytes`, so the plan's literal range and this one coincide. Plus the `kMmqTail` tail
+after the last blob. No switch (the plan's table says `-`): the output is byte-identical by construction.
+`tests/core/expert_blob_padding_test.cpp` proves the two forms agree (padding, no-padding, NVFP4 tail, no tail), and
+the card's `native_expert_parity`/`native_grouped_parity`/`native_multi_parity` all pass (14/14).
+
 ---
 
 ## Phase 5 - defaults
@@ -289,6 +329,22 @@ last blob. Prove it with a test that both forms leave identical bytes, and with 
 Only for the phases that measured better on this machine, flipped one at a time, each with the numbers and what
 they were measured on (AGENTS.md). The A/B switches stay. The doc gets the measured table, the way
 [Q36_INT8_KV.md](Q36_INT8_KV.md) has one.
+
+**Flipped (2026-10-17).** `STRATA_Q36_RELEASE_MAPPING` is on by default; `=0` still turns it off for an A/B run. Phase
+4 is already unconditional (its output is byte-identical). Phases 2 and 3 are moot (the arena was never locked).
+
+Measured on the target PC (RTX 4060 Max-Q 8 GiB, Ryzen 7 7735HS, 62 GB), 32K context, `--kv int8 --mtp 2`, the same
+prompt, decode as the server reports it:
+
+| phase | Cached | MemFree | Mlocked | decode tok/s |
+|---|---|---|---|---|
+| 0 baseline | 47.27 GiB | 3.47 GiB | 104 KiB | ~10 |
+| 1 release the mapping | 28.75 GiB (-18.5 GiB) | 22.03 GiB | 104 KiB | ~10 (unchanged) |
+| 4 padding-only memset | unchanged | unchanged | 104 KiB | ~10 (unchanged; 14/14 parity tests + a correct run) |
+
+The one number that moved is `Cached` down ~18.5 GiB and `MemFree` up by the same - the mapping's pages back to the
+OS - with decode unchanged. `Mlocked` stayed ~104 KiB throughout, which is why Phase 2 (and its dependent Phase 3)
+were dropped.
 
 ## Risks and open questions
 
@@ -300,6 +356,14 @@ they were measured on (AGENTS.md). The A/B switches stay. The doc gets the measu
   host-side plan/actq, staging).
 - **`16 tok/s` vs `18 tok/s` vs `10 tok/s`** is not settled by this plan. Every run below must report the context
   it decoded at, or the numbers cannot be compared.
+- **The arena reads as `Shmem`, not `Mlocked` - measured, and Phase 2 is moot.** A 2 GiB `cudaHostAlloc` probe on this
+  card (driver 580.178.04) moved `Shmem` +2045 MiB and `Mlocked`/`Unevictable` not at all, and it still does with
+  `RLIMIT_MEMLOCK` unlimited (`--ulimit memlock=-1:-1`) - so it is the driver's choice, not a limit, and not Docker.
+  `malloc`+`mlock(2 GiB)` fails at the default 8 MiB limit and shows `Mlocked` +2 GiB once the limit is lifted, which
+  proves mlock itself would be visible if the arena were locked. The engine's own report agrees (`Mlocked` 104 KiB
+  with the 18.75 GiB arena loaded). So the arena is already pageable, Phase 2 (stop pinning it) fixes nothing, and
+  `vm.compact_unevictable_allowed=0` was aimed at a mass that is not there. The baseline run also showed no new
+  `pgmigrate_fail` - the churn had already stopped with the host settings, not with any engine phase.
 
 ---
 

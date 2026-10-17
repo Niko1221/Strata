@@ -61,6 +61,27 @@ std::filesystem::path write_gguf(const std::vector<std::string>& names, bool hea
     std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(b.data()), (std::streamsize)b.size());
     return path;
 }
+
+// One F32[4] tensor whose four floats are 1..4, at the 32-byte-aligned data start - known bytes, so the test can
+// tell a read that came back from the file after release_pages() from a stale pointer.
+std::filesystem::path write_gguf_with_data() {
+    std::vector<uint8_t> b;
+    put<uint32_t>(b, 0x46554747u);   // "GGUF"
+    put<uint32_t>(b, 3);
+    put<uint64_t>(b, 1);             // one tensor
+    put<uint64_t>(b, 0);             // no metadata
+    put_str(b, "blk.0.attn_q.weight");
+    put<uint32_t>(b, 1);             // n_dims
+    put<uint64_t>(b, 4);             // shape[0]
+    put<uint32_t>(b, 0);             // F32
+    put<uint64_t>(b, 0);             // offset from data_start
+    b.resize((b.size() + 31) / 32 * 32, 0);   // pad to the aligned data start
+    const float vals[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    for (float v : vals) put<float>(b, v);
+    const auto path = std::filesystem::temp_directory_path() / "strata_gguf_reader_data.gguf";
+    std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(b.data()), (std::streamsize)b.size());
+    return path;
+}
 }  // namespace
 
 int main() {
@@ -123,6 +144,46 @@ int main() {
         std::filesystem::remove(path);
         check(err.find("data section starts past EOF") != std::string::npos,
               "one tensor, ends before the aligned data start: refused at open");
+    }
+    {
+        // Q36 plan Phase 1: release_pages() drops the mapping's pages; the bytes still read back through the
+        // mapping (they fault in from the file), released() says so, and the object still destructs cleanly.
+        const auto path = write_gguf_with_data();
+        std::string err;
+        bool before_ok = false, after_ok = false, released = false;
+        try {
+            strata::GgufFile g(path.string());
+            const strata::TensorInfo* t = g.find("blk.0.attn_q.weight");
+            const float* p = (const float*) g.tensor_data(*t);
+            before_ok = t && p[0] == 1.0f && p[1] == 2.0f && p[2] == 3.0f && p[3] == 4.0f;
+            g.release_pages();
+            released = g.released();
+            g.release_pages();   // a second call is a no-op
+            const float* q = (const float*) g.tensor_data(*t);
+            after_ok = q[0] == 1.0f && q[1] == 2.0f && q[2] == 3.0f && q[3] == 4.0f;
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
+        std::filesystem::remove(path);
+        check(err.empty() && before_ok, "release_pages: the tensor reads its bytes before the release");
+        check(err.empty() && released, "  released() is true after release_pages()");
+        check(err.empty() && after_ok, "  the same bytes read back after release (faulted in from the file)");
+        if (!err.empty()) std::printf("  (%s)\n", err.c_str());
+    }
+    {
+        const auto path = write_gguf_with_data();
+        std::string err;
+        bool mok = false;
+        try {
+            strata::GgufModel m = strata::GgufModel::open(path.string());
+            m.release_pages();
+            mok = m.released();
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
+        std::filesystem::remove(path);
+        check(err.empty() && mok, "GgufModel: release_pages() releases every shard and released() agrees");
+        if (!err.empty()) std::printf("  (%s)\n", err.c_str());
     }
     std::printf(g_fail ? "gguf_reader_test: %d FAILED\n" : "gguf_reader_test: all passed\n", g_fail);
     return g_fail ? 1 : 0;

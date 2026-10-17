@@ -26,6 +26,7 @@
 #include "strata/kernels/q36_kv_q8.hpp"
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/moe_mmq.hpp"
+#include "strata/platform/mem_report.hpp"
 #include "strata/qwen35/engine.hpp"
 #if defined(STRATA_Q36_CPU_POOL)
 #include "strata/kernels/cpu/native_expert.hpp"
@@ -1124,8 +1125,29 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     return true;
 }
 
+// Q36 plan Phases 1 and 5 (docs/Q36_MEMORY_COMPACTION.md): the GGUF mapping is read by load() (the dense weights)
+// and by expert_blob() (the routed experts, inside place_experts()), and by nothing after place_experts().  Its pages
+// - ~22.85 GB of file cache and ~45 MB of page tables - are returned to the OS once the experts are placed.  Phase 5
+// measured it better (18.5 GiB freed, decode unchanged), so it is on by default; STRATA_Q36_RELEASE_MAPPING=0 turns
+// it off for an A/B run.
+static bool release_mapping_enabled() {
+    const char* e = std::getenv("STRATA_Q36_RELEASE_MAPPING");
+    return e == nullptr || e[0] != '0';
+}
+static bool g_mapping_released = false;   // set by release_model_mapping; expert_blob() refuses to run after it
+
+void release_model_mapping(Model& m) {
+    if (g_mapping_released || !m.file || m.file->released()) return;
+    m.file->release_pages();
+    g_mapping_released = true;
+}
+
 /// Expert e of layer L as its native blob [gate | up | down] (L.L.bytes) at dst (host memory).
 void expert_blob(const Layer& L, int64_t e, uint8_t* dst) {
+    if (g_mapping_released) {
+        std::fprintf(stderr, "strata-q36: expert_blob() after the GGUF mapping was released\n");
+        std::exit(1);
+    }
     std::memcpy(dst, L.src_g + (size_t) e * L.src_gsz, L.src_gsz);
     std::memcpy(dst + L.L.up_off, L.src_u + (size_t) e * L.src_gsz, L.src_gsz);
     std::memcpy(dst + L.L.down_off, L.src_d + (size_t) e * L.src_dsz, L.src_dsz);
@@ -2250,8 +2272,16 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         }
         L.hblobs = arena + off;
         off += L.stride * (size_t) ne + kMmqTail;
-        std::memset(L.hblobs, 0, L.stride * (size_t) ne + kMmqTail);
-        for (int64_t e = 0; e < ne; ++e) expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
+        // Q36 plan Phase 4 (docs/Q36_MEMORY_COMPACTION.md): expert_blob() fills [0, L.L.down_off + L.src_dsz) of
+        // each slot (gate | up | down, contiguous); everything after that must stay zero - the stride padding and,
+        // on an NVFP4 layout, its 16-byte scale tail - so only that is cleared, not all 18.75 GiB that is about to
+        // be overwritten.
+        const size_t written = L.L.down_off + L.src_dsz;
+        for (int64_t e = 0; e < ne; ++e) {
+            expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
+            std::memset(L.hblobs + (size_t) e * L.stride + written, 0, L.stride - written);
+        }
+        std::memset(L.hblobs + (size_t) ne * L.stride, 0, kMmqTail);
         L.n_slots = S;
         if (S > 0) {
             CK(cudaMalloc(&L.blobs, L.stride * (size_t) S + kMmqTail));
@@ -2639,6 +2669,26 @@ int strata::qwen35::run(int argc, char** argv) {
     if (!place_experts(m, E, expert_vram, cpu_threads, hybrid_rows, expert_slots, err)) {
         std::fprintf(stderr, "strata-q36: %s\n", err.c_str());
         return 1;
+    }
+    // Q36 plan Phase 1/5 (docs/Q36_MEMORY_COMPACTION.md): return the GGUF mapping's ~22.85 GB of file cache and
+    // ~45 MB of page tables now that place_experts() has read every expert.  On by default (Phase 5 measured it
+    // better); STRATA_Q36_RELEASE_MAPPING=0 turns it off for an A/B run.
+    if (release_mapping_enabled()) release_model_mapping(m);
+    // Q36 plan Phase 0 (docs/Q36_MEMORY_COMPACTION.md): the memory and compaction counters in the engine's own log,
+    // so the run the plan is measured on and the A/B harness carry them.  The first report is after
+    // place_experts(), where Mlocked covers the pinned arena; the second one on QUIT carries the deltas since then.
+    // STRATA_MEM_REPORT=1; off, the switch is read once and no counter file is opened.
+    struct MemExit {
+        strata::platform::MemSnapshot placed;
+        bool on = false;
+        ~MemExit() {
+            if (on) strata::platform::mem_report(stderr, &placed, "on QUIT");
+        }
+    } mem_exit;
+    if (strata::platform::mem_report_enabled()) {
+        mem_exit.placed = strata::platform::mem_snapshot();
+        mem_exit.on = true;
+        strata::platform::mem_report_at(stderr, mem_exit.placed, nullptr, "after place_experts");
     }
     struct Report {
         Engine& E;
