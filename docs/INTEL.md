@@ -163,6 +163,14 @@ SYCL build (`sycl/CMakeLists.txt`) takes every other source from the original lo
 is edited. `sycl/include/dpct/` is the vendored SYCLomatic helper library, so the port builds without the
 migration tool.
 
+**Expert-parallel containers.** When `--expert-parallel-device` is present, `sycl/serve/strata-sycl.sh`
+adds `--cap-add SYS_PTRACE`. Docker's default seccomp profile otherwise blocks syscalls needed by
+Level Zero IPC handle import: on two B70s, both cross-card and self-import returned
+`ZE_RESULT_ERROR_INVALID_ARGUMENT` (`0x78000004`) even though peer access was available.
+Adding only this capability allowed both imports with the default seccomp profile still enabled.
+Ordinary layer splits receive no additional capability. Direct `docker run` launchers using
+expert parallelism need the same option.
+
 **How it was made, so it can be redone.**
 
 1. `sycl/tools/Dockerfile` - the dev image: the llama.cpp SYCL image plus SYCLomatic (`dpct` 2025.3),
