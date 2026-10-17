@@ -759,6 +759,68 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
   8192 --prefill-repeat 5` for the time of both kernels. Not taken: the same kernel with its state in SLM (no register
   spills, the same bits, ~4x slower: 13.7 vs 3.1-3.3 ms at T=1000).
 
+## Integrated Arc: the Arc 140T (`xe`, 2026-10-12)
+
+Measured on the Arc 140T (PCI id 7d51, Xe-LPG+) of a Core Ultra 9 285H with 62 GiB of RAM, Fedora 44 (kernel 7.2.9,
+`xe` driver), oneAPI 2026.0 installed on the PC, with the Coder IQ1_M, engine 0.1.43. The GPU's memory is the system
+RAM: it reports 58 GiB of global memory and no free-memory query.
+
+| | Arc Pro B70 (`xe`, 32 GB) | Arc 140T (`xe`, integrated) |
+|---|---|---|
+| where the engine runs | in the `strata-sycl-dev` image (`sycl/serve/strata-sycl.sh`) | on the PC's own oneAPI (`sycl/serve/strata-sycl-native.sh`), no Docker |
+| build | AOT `bmg-g31` | JIT (`BUILD_DIR=build-sycl bash sycl/tools/build.sh`) |
+| experts | `--stream-experts`: from the GGUF into VRAM, the rest in a pinned RAM mirror | the same flags; the cache and the mirror are both in the RAM |
+| how big the cache is | the card's free VRAM | `MemAvailable` from `/proc/meminfo` (`STRATA_SYCL_FREE_MIB` overrides it) |
+| prompt-slot borrowing | from 32K up | off |
+| `SYCL_CACHE_PERSISTENT` | 0 (it crashed on Xe2) | 1 works: the start takes 7 s instead of 79 s from the second start on (0.1.40) |
+
+- **The driver.** Only `xe` was tested. On a kernel that binds the iGPU to `i915`, `i915.force_probe=!7d51 xe.force_probe=7d51`
+  on the kernel command line moves it to `xe`.
+- **Build.** Install the oneAPI Base Toolkit (2026.0 here, Intel's installer, into `/opt/intel/oneapi`) and the GPU compute runtime of the
+  distribution (Fedora 44: `intel-compute-runtime`, `intel-level-zero`, `oneapi-level-zero`, and `cmake`, `ninja-build`). Then, in the checkout,
+  `BUILD_DIR=build-sycl bash sycl/tools/build.sh` (it sources `setvars.sh` itself). The build ends with `BUILD EXIT 0`.
+- **Free memory.** The 140T has no `ext_intel_free_memory`, also with `ZES_ENABLE_SYSMAN=1`, so the engine got 0 and the
+  expert cache refused to start. On a device with `host_unified_memory` it now reads `MemAvailable`. The `xe` driver keeps the
+  memory a GPU program freed in its own pool, which `MemAvailable` does not count until a reboot: on the first start after a
+  boot all 12,288 experts were cached, on later starts 10,496 to 10,870 (the rest mirrored). `STRATA_SYCL_FREE_MIB` sets the
+  figure by hand.
+- **No prompt-slot borrowing.** With it, the answer after a prompt that borrowed the cache's slots was token 0 (every expert
+  activation NaN from the second prompt chunk; 0.1.40, any context). The prompt now gets its own buffers on a device with
+  `host_unified_memory`. Borrowing saved about 7% of prompt time in a test without the bug (112 vs 105 tok/s, 0.1.40).
+- **The first decode window stalled** in 0.1.43 on every request until `STRATA_WINDOW_SYNC=1` (#2110).
+- **What fits.** The experts' file (shard 1) has to fit in the RAM beside everything else. The Coder IQ1_M and the IQ2_XS
+  (shard 1 36.5 GiB) ran with 10 to 13 GiB of RAM left; the IQ3_XXS (43.8 GiB) left 3 to 4 GiB and did not run well (0.1.40).
+  Programs that use the GPU's memory (another model server) take from the same RAM: stop them first.
+- **The launcher.** `sycl/serve/strata-sycl-native.sh` is the config's `exe`. It sources oneAPI, sets the port's defaults
+  (`STRATA_VERIFY_DEVICE_PLAN=1`, `STRATA_VERIFY_NO_HOST=1`, `STRATA_STAGER_THREADS=12`, `STRATA_NO_MULTI_GR=1`), each one
+  overridden by the config's `"env"` (`0` turns one off), and gives the engine an OOM score of 1000, so that a PC out of
+  memory loses the engine and not the desktop. `STRATA_SYCL_BIN` names another binary (relative to the checkout or absolute).
+
+**Running it by hand.** A config like this, started with
+`.venv/bin/python sycl/serve/server_intel.py --engine strata --config strata-coder-iq1_m.json --port 8080`:
+
+    {
+     "exe": "<checkout>/sycl/serve/strata-sycl-native.sh",
+     "args": ["--pack", "<data>/packs/coder-iq1_m", "--native", "<data>/models/coder-IQ1_M/<shard 1>.gguf",
+              "--ple-gguf", "<data>/models/coder-IQ1_M/<shard 2>.gguf", "--expert-profile", "<checkout>/data/expert-profile-coder.bin",
+              "--expert-cache", "auto", "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", "<data>/mtp/rt",
+              "--max-context", "98304", "--kv", "int8", "--stream-experts", "--vram-reserve-mib", "2048"],
+     "cwd": "<checkout>", "tokenizer": "<data>/packs/coder-iq1_m/tokenizer", "model_name": "qwen3.8-flash-next-coder-iq1_m",
+     "log": "<checkout>/strata-coder-iq1_m.log", "port": 8080, "backend": "sycl", "draft_vocab": "en", "fit_max_tokens": true,
+     "env": {"SYCL_CACHE_PERSISTENT": "1"}
+    }
+
+**Speed** (through the server, greedy, thinking off, with #2110):
+
+| | |
+|---|---|
+| decode, 100-token answers to short questions | 12.0 to 17.4 tok/s all experts cached, 11.5 to 17.2 with 1,792 of them mirrored |
+| a 72,648-token prompt | read at 156.5 tok/s (7 min 44 s), the fact at its start recalled |
+| a 24-token prompt | 1.2 s |
+
+The 140T reads 90.5 GB/s from device memory and 76.1 GB/s from host memory (a read probe, 2026-10-05). Where a decode round's
+time goes is not profiled yet.
+
 ## Not done
 
 - Images, on both Intel engines. Strata's vision path encodes with `strata-vision` into embeddings the CUDA
