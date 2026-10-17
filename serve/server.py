@@ -5667,14 +5667,16 @@ def make_handler(svc: Service):
                 ra = getattr(e, "retry_after", None)       # #1997 / #1994: a refusal that is worth retrying
                 self._json(503, {"error": {"type": "server_error", "message": str(e)}},
                            headers={"Retry-After": int(ra)} if ra else None)
-            except (TypeError, KeyError, AttributeError, IndexError, UnicodeError) as e:
-                # a body that is JSON but the wrong shape ("messages": 5, a content part that is a number): a 400 that
+            except (TypeError, KeyError, AttributeError, IndexError, UnicodeError, OverflowError, RecursionError) as e:
+                # a body that is JSON but the wrong shape ("messages": 5, a content part that is a number), a number
+                # json reads as infinite ("max_tokens": 1e400) or nesting deeper than Python recurses: a 400 that
                 # says so, with the traceback in the log, instead of a dropped connection - unless the answer began
                 if getattr(self, "answer_started", False):
                     raise
                 import traceback
-                print(f"[strata] 400 malformed request ({type(e).__name__}: {e}):\n" + traceback.format_exc(),
-                      flush=True)
+                # a RecursionError's traceback is ~1,000 frames of the same walk: its last few say where
+                print(f"[strata] 400 malformed request ({type(e).__name__}: {e}):\n"
+                      + traceback.format_exc(limit=-8 if isinstance(e, RecursionError) else None), flush=True)
                 body = {"error": {"type": "invalid_request_error",
                                   "message": f"the request is malformed ({type(e).__name__}: {e})"}}
                 self._json(400, responses_error_body(body["error"]["message"]) if path == "/v1/responses" else body)
@@ -5828,7 +5830,7 @@ def make_handler(svc: Service):
                     new, changed = runconfig.apply(cfg, req.get("set") if isinstance(req, dict) else None)
                     if changed:
                         bak = runconfig.save(svc.config_path, new)
-            except ValueError as e:
+            except (ValueError, OverflowError) as e:     # OverflowError: a whole number too big for a float
                 self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
                 return
             except OSError as e:
