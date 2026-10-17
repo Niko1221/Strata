@@ -309,18 +309,15 @@ class Validation(FakeRoot):
         self.assertRejected("strata_install", {"vision": "yes\nrm"}, "control characters")
 
     def test_amd_vision_follows_setups_rules(self):
-        """#990: --vision cpu is allowed with the AMD backend on Linux (setup.hip_vision); a GPU encoder is not."""
+        """--vision cpu and --vision gpu (the Vulkan encoder) are both allowed with the AMD backend (this tool: Linux)."""
         with mock.patch.object(M, "WIN", False):
-            self.assertRejected("strata_install", {"backend": "hip", "vision": "yes"}, "no GPU image encoder")
-            self.assertRejected("strata_install", {"backend": "hip", "vision": "gpu"}, "vision=cpu")
-            res, err = self.call("strata_install", {"backend": "hip", "vision": "cpu"})
-            self.assertFalse(err, res)
-            self.assertEqual(res["plan"]["images"], "cpu")
-            self.assertIn("--vision cpu", res["plan"]["setup_command"])
+            for asked in ("cpu", "gpu"):
+                res, err = self.call("strata_install", {"backend": "hip", "vision": asked})
+                self.assertFalse(err, res)
+                self.assertEqual(res["plan"]["images"], asked)
+                self.assertIn(f"--vision {asked}", res["plan"]["setup_command"])
             res, err = self.call("strata_install", {"backend": "hip", "vision": "no"})
             self.assertFalse(err, res)
-        with mock.patch.object(M, "WIN", True):
-            self.assertRejected("strata_install", {"backend": "hip", "vision": "cpu"}, "Linux")
 
     def test_data_dir_paths(self):
         self.assertRejected("strata_install", {"data_dir": "models"}, "absolute")

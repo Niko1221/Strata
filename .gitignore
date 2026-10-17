@@ -44,6 +44,8 @@ td.log
 # image encoder (setup.py --vision): build output and the generated build script
 build-vision*/
 build-vision.bat
+build-vision-vk.bat
+build-vision-cpu.bat
 build-vision-cuda12.bat
 
 # setup.py outputs (engine, downloads) and release builds
