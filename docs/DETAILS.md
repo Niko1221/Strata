@@ -758,6 +758,7 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | Anthropic Messages (stream and non-stream, tools) | `POST /v1/messages` |
 | OpenAI Responses (stream and non-stream, tools; stateless, [below](#the-responses-api-and-codex-cli)) | `POST /v1/responses` |
 | Model list / health | `GET /v1/models`, `GET /models`, `GET /health` |
+| Model status feed (llama.cpp's SSE endpoint, for front-ends that watch loads) | `GET /models/sse` |
 | Model properties | `GET /props` (also accepts `?model=<loaded-model-id>`) |
 | What the model is doing right now | `GET /status`, `GET /slots` (busy or idle, with `n_prompt_tokens`; one entry per slot with `--batch`) |
 | Save / restore the conversation to a file (session files, below) | `POST /slots/0?action=save\|restore` |
@@ -791,6 +792,13 @@ own panels (state, batch slots, rates, expert cache hit rate, GPU and RAM). Its 
 it also reads a vLLM server.
 
 `/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes the original chat template, context limit, configured generation defaults (shared settings take precedence), model path and engine version when available. Context means the full engine context, not the resident KV window. `n_predict: -1` means no fixed output cap. Unconfigured sampling fields are omitted. `/slots` uses llama.cpp's names: `n_ctx` and `n_prompt_tokens` (the running request's prompt size, kept after it ends: what a front-end's context meter divides by `n_ctx`). `total_slots` in `/props` is the number of `--batch` slots (1 without). `autoload` has no effect; an unknown `model` returns 404. These metadata endpoints and `/slots` require the API key when one is configured. They do not load, unload or restart models.
+
+`GET /models/sse` is llama.cpp's model status feed: a front-end that sees a status on `/models` subscribes here and
+stays, so its model selector refreshes as the model loads and unloads. Each event is llama.cpp's JSON
+(`{"model": ..., "event": "status_change", "data": {"status": ...}}`, the event name inside the data, not an SSE
+`event:` line): `loading` and `loaded` when a load starts and finishes, `unloaded` when an unload or a restart ends
+one, with the exit code when the engine had one. A quiet feed sends an SSE comment every 10 s, as the chat streams
+do. It requires the API key when one is configured.
 
 `chat_template_caps` uses llama.cpp's field names. Strata checks them when loading the active template by rendering
 small requests; a rejected or omitted feature is `false`, and a template that fails a probe in any way only turns that

@@ -3165,6 +3165,11 @@ class Service:
         self.started_at = time.time()
         self.status_lock = threading.Lock()
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
+        # llama.cpp's GET /models/sse: each watcher's handler thread owns a queue here, and the load and
+        # unload transitions below are broadcast to them (a front-end that watches model status subscribes
+        # once /models reports a status, and refreshes its model list on these events)
+        self.sse_lock = threading.Lock()
+        self.sse_clients = set()
         # sharing the GPU with other programs (all off by default): unload the engine after this many idle seconds,
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
         # server's model); the next request after an unload starts the engine again
@@ -3202,6 +3207,23 @@ class Service:
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
+
+    def model_entry(self) -> dict:
+        """This model's /models entry as llama.cpp's router reports it; GET /models/sse sends it as the
+        `info` of a load."""
+        return {"id": self.model, "object": "model", "status": {"value": "loaded"},
+                "meta": {"n_ctx": self.reported_ctx()},
+                "architecture": {"input_modalities": ["text", "image"] if self.vision is not None else ["text"],
+                                 "output_modalities": ["text"]}}
+
+    def sse_notify(self, event: str, data=None):
+        """GET /models/sse: broadcast one event to the connected watchers, in llama.cpp's shape (the event
+        name inside the JSON, not an SSE `event:` line).  Called from request threads and the idle-unload
+        thread; a watcher that has gone is dropped by its own handler."""
+        with self.sse_lock:
+            clients = list(self.sse_clients)
+        for q in clients:
+            q.put({"model": self.model, "event": event, **({"data": data} if data is not None else {})})
 
     def slot_action(self, slot: str, action: str, filename) -> tuple[int, dict]:
         """llama-server's POST /slots/{id}?action=save|restore {"filename": ...}: the conversation the engine holds,
@@ -3475,13 +3497,20 @@ class Service:
             code = self.engine.exit_code() if hasattr(self.engine, "exit_code") else None
             print(f"[strata] the engine had stopped (exit code {code}); starting it again "
                   "(a minute or two) ...", flush=True)
+            if code is not None:      # llama.cpp's router reports the child's exit on /models/sse
+                self.sse_notify("status_change", {"status": "unloaded", "exit_code": code})
+        self.sse_notify("status_change", {"status": "loading"})
         try:
             self.engine.restart()
         except Exception:
             if vision_started:
                 self.vision.unload()
+            # the watcher that saw "loading" must not stay there: the start failed, the model is unloaded
+            code = self.engine.exit_code() if hasattr(self.engine, "exit_code") else None
+            self.sse_notify("status_change", {"status": "unloaded", **({"exit_code": code} if code is not None else {})})
             raise
         print("[strata] the engine is running again", flush=True)
+        self.sse_notify("status_change", {"status": "loaded", "info": self.model_entry()})
         if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
             images_api.restore_session(self)
         if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
@@ -3596,6 +3625,7 @@ class Service:
             self.vision_held = False
             print(f"[strata] model unloaded{f' after {idle_for:.0f} s idle' if idle_for else ''}; "
                   "the next request loads it again", flush=True)
+            self.sse_notify("status_change", {"status": "unloaded", "exit_code": 0})
             return "unloaded"
         finally:
             self.fifo.release()
@@ -5492,10 +5522,7 @@ def make_handler(svc: Service):
             elif path in ("/v1/models", "/models"):
                 if self._authorized():
                     loaded = svc.loaded()
-                    model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
-                             "meta": {"n_ctx": svc.reported_ctx()},
-                             "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
-                                              "output_modalities": ["text"]}}
+                    model = svc.model_entry()
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
                         model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
                         loaded = True
@@ -5507,6 +5534,9 @@ def make_handler(svc: Service):
                         data.append({"id": svc.images.model, "object": "model", "status": {"value": "loaded"},
                                      "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]}})
                     self._json(200, {"object": "list", "data": data})
+            elif path == "/models/sse":
+                if self._authorized():
+                    self._models_sse()
             elif path == "/props":
                 if self._authorized():
                     self._props()
@@ -5887,6 +5917,30 @@ def make_handler(svc: Service):
             self.send_header("X-Accel-Buffering", "no")   # nginx and similar proxies pass each event at once
             self._cors()
             self.end_headers()
+
+        def _models_sse(self):
+            """GET /models/sse (llama.cpp's model status feed): a front-end that treats a /models entry with
+            a status as router mode subscribes here, so its model list refreshes as the model loads and
+            unloads.  The connection stays open; events arrive through svc.sse_notify and quiet stretches
+            get the usual SSE-comment keep-alive."""
+            q = queue.Queue()
+            with svc.sse_lock:
+                svc.sse_clients.add(q)
+            try:
+                self._sse()
+                while True:
+                    try:
+                        e = q.get(timeout=KEEPALIVE_S)
+                    except queue.Empty:
+                        self.wfile.write(b": keep-alive\n\n")     # an SSE comment: clients ignore it
+                    else:
+                        self.wfile.write(b"data: " + json.dumps(e, ensure_ascii=False).encode() + b"\n\n")
+                    self.wfile.flush()
+            except OSError:
+                pass                                            # the client hung up: nothing to report
+            finally:
+                with svc.sse_lock:
+                    svc.sse_clients.discard(q)
 
         def _capture(self, items, api):
             """Retain bounded input/output for the monitor without changing the API response (the items as they
