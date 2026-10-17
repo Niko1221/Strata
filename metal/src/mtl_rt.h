@@ -9,15 +9,19 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace mtl {
 
 struct Buffer {
-    void* handle = nullptr;   // id<MTLBuffer> (retained)
+    void* handle = nullptr;   // id<MTLBuffer> (retained); the first chunk of a chunked buffer
     void* ptr = nullptr;      // CPU address (shared storage)
     size_t bytes = 0;
+    // a buffer longer than maxBufferLength: overlapping chunks every `stride` bytes (see Context::wrap)
+    std::shared_ptr<std::vector<void*>> chunks;
+    size_t stride = 0;
     template <class T> T* as() const { return static_cast<T*>(ptr); }
 };
 
@@ -89,6 +93,9 @@ public:
 
     Buffer alloc(size_t bytes);                  // shared storage, zeroed
     Buffer wrap(void* page_aligned, size_t bytes);  // no-copy wrap (page-aligned, size multiple of page)
+    // the same, also when bytes > maxBufferLength: then overlapping chunks, each holding any range of up to
+    // max_span bytes that starts in it (max_span = the largest tensor bound at one offset)
+    Buffer wrap(void* page_aligned, size_t bytes, size_t max_span);
     void free(Buffer& b);
 
     // Encodes `ds` into ONE compute encoder (serial or concurrent dispatch type) and ONE command buffer, `reps`

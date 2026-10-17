@@ -248,6 +248,34 @@ class PickSlot(unittest.TestCase):
         e.slot_busy = [False] * 3
         self.assertEqual(e.pick_slot([1, 2, 3]), 1)                 # a held prompt is never the WHOLE prompt
 
+    def test_a_rewritten_next_turn_goes_to_the_slot_of_its_chat(self):
+        # #2518: two chats in two slots; each next turn renders the history again but not the reply it decoded or the
+        # assistant header, so the held stream (prompt + reply) is no start of it.  The engine's turn checkpoint sits at
+        # the last <|im_start|> of the old prompt: the prompt that agrees up to there belongs to that slot.  Before, both
+        # went to the least recently used slot in turn, and the first one overwrote the other chat's cache.
+        T = StrataEngine.TURN_ID
+        hist_a, hist_b = list(range(1000, 1600)), list(range(2000, 2600))
+        held_a = hist_a + [T, 7, 8, 9] + [50, 51, 52]                  # prompt (ends with the assistant header) + reply
+        held_b = hist_b + [T, 7, 8, 9] + [60, 61]
+        e = self.engine(2)
+        e.slot_held = [held_a, held_b]
+        e.slot_used = [10.0, 20.0]                                      # slot 0 was used longer ago
+        next_a = hist_a + [T, 5, 6, 7, 8, 9] + list(range(3000, 3100))  # the history again, then new turns
+        next_b = hist_b + [T, 5, 6, 7, 8, 9] + list(range(3000, 3100))
+        self.assertEqual(e.pick_slot(next_b), 1)                        # the LRU slot 0 holds the other chat
+        self.assertEqual(e.pick_slot(next_a), 0)
+        e.slot_busy[0] = True                                           # a busy slot is never picked
+        self.assertEqual(e.pick_slot(next_a), 1)
+        e.slot_busy[0] = False
+        # a chat that agrees with neither (a new one, or one that rewrote its history) keeps the old order
+        self.assertEqual(e.pick_slot(list(range(5000, 5200))), 0)
+        self.assertEqual(e.pick_slot(hist_a[:300] + [T, 5, 6] + list(range(3000, 3100))), 0)
+        e.slot_held[0] = []                                             # an empty slot still comes before evicting one
+        self.assertEqual(e.pick_slot(list(range(5000, 5200))), 0)
+        # the whole held stream continued is still the longer match
+        e.slot_held = [held_a, held_b + [T, 1, 2]]
+        self.assertEqual(e.pick_slot(held_b + [T, 1, 2, 3, 4]), 1)
+
     def test_batch_groups_spread_requests_over_the_groups(self):
         # #1249: with --batch-groups 2 over 4 slots (groups {0,1} and {2,3}) a second request goes to the other group,
         # and a short held prefix does not pull it back into the busy one

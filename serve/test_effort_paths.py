@@ -130,6 +130,7 @@ class EffortPaths(unittest.TestCase):
                                                      "thinking": {"type": "enabled", "budget_tokens": 20000}}), "xhigh")
         self.assertEqual(self.level("/v1/responses", {"input": "hello", "reasoning": {"effort": "high"}}), "xhigh")
         self.assertEqual(self.level("/v1/chat/completions", {"messages": MSG, "reasoning_effort": "none"}), "none")
+        self.assertEqual(self.level("/v1/chat/completions", {"messages": MSG, "reasoning_effort": False}), "none")
 
     def test_the_chat_settings_shared_with_apps_beat_the_config(self):
         self.svc.config_effort = "low"
