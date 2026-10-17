@@ -776,6 +776,9 @@ $("sidebar-toggle").onclick = () => setSidebar(!sidebarOpen, true);
 $("sidebar-new").onclick = startChat;
 $("sidebar-search").addEventListener("input", () => { sidebarQuery = $("sidebar-search").value; renderSidebar(); });
 $("sidebar-list").addEventListener("click", (e) => {
+  // a click inside the rename field is caret placement, not a click on the row: the row's handler would
+  // open the chat, which re-renders the list and takes the field away mid-click
+  if (e.target.closest(".chat-item__input")) return;
   const row = e.target.closest(".chat-item");
   if (!row) return;
   const c = chats.find((x) => x.id === row.dataset.id);
