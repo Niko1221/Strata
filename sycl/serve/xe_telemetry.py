@@ -85,6 +85,9 @@ class _XeGpu:
                 return g(p, "current"), min(x for x in (card, slot) if x) if (card or slot) else None, w
         return None, None, None
 
+    def pause(self):
+        self._e = None                          # the first resumed power reading must not average over idle time
+
     def read(self):
         out = {}
         st = self._stat()
