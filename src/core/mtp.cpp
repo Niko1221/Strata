@@ -598,7 +598,8 @@ bool MtpDrafter::setup_coupled(std::string& err) {
     if (spec_prob_env())
         std::fprintf(stderr, "strata mtp: probabilistic draft acceptance on (STRATA_SPEC_PROB): sampled requests draft by "
                              "sampling the draft head's distribution over %lld tokens; the verifier accepts with "
-                             "min(1, p/q) and resamples the residual\n", (long long) nv);
+                             "min(1, p/q) and resamples the residual; min-p gate %s\n", (long long) nv,
+                     spec_gate_pick() ? "pick (approximate)" : "top");
     else
         std::fprintf(stderr, "strata mtp: coupled draft sampling on (STRATA_SPEC_COUPLED): sampled requests draft with the "
                              "target's chain and Philox draw over %lld tokens\n", (long long) nv);

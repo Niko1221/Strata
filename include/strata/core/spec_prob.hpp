@@ -39,13 +39,13 @@
 
 namespace strata::core {
 
-/// --spec-min-p gates a further draft on the drawn token's probability under q (as the coupled drafter does).
-/// STRATA_SPEC_PROB_GATE=top gates on q's top probability instead: measured on the RTX 3060 it drafts longer windows
-/// whose later guesses are kept less often, and decodes slower.
+/// Probabilistic admission uses q's top probability, which is fixed before its token is drawn.
+/// Gating on the drawn token selects a conditional subset of q, so the original q is no longer
+/// the proposal law seen by rejection sampling. Explicit `pick` retains that approximate rule.
 inline bool spec_gate_pick() {
     static const bool on = [] {
         const char* e = std::getenv("STRATA_SPEC_PROB_GATE");
-        return e == nullptr || std::strcmp(e, "top") != 0;
+        return e != nullptr && std::strcmp(e, "pick") == 0;
     }();
     return on;
 }

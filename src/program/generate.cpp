@@ -13499,6 +13499,8 @@ int main(int argc, char** argv) {
                 extra_sources_reset();
                 for (int64_t t : ids) { const int32_t t32 = (int32_t) t; extra_sources_append(&t32, 1); }
             }
+            // This request's draws, including discarded lookahead, must not feed its source planner.
+            const auto source_policy = policy;
             bool first_window = true;
             int64_t produced_n = 0, sfx_windows = 0, sfx_drafts = 0, sfx_ok = 0;
             int64_t chain_windows = 0, chain_drafts = 0, chain_ok = 0;   // --lookup-chain's own counts
@@ -14210,8 +14212,10 @@ int main(int argc, char** argv) {
                 if (o.suffix_draft > 0 && !first_window) {
                     const int k = sfx.propose(S - 1, sbuf.data());
                     sfx_match = sfx.last_match();
-                    if (k > 0 && (!use_mtp || sbuf[0] == drafts[0])) {
-                        const strata::spec::DraftPolicy::Pick pk = policy.choose(T, k, sfx_match);
+                    const bool probabilistic = use_mtp && mtp.prob();
+                    if (k > 0 && (probabilistic || !use_mtp || sbuf[0] == drafts[0])) {
+                        const strata::spec::DraftPolicy::Pick pk = probabilistic
+                            ? source_policy.choose(S_mtp, k, sfx_match) : policy.choose(T, k, sfx_match);
                         if (pk.lookup) { T = pk.t; from_sfx = true; }
                     }
                 }
@@ -15541,6 +15545,7 @@ int main(int argc, char** argv) {
         if (use_mtp && S_mtp < o.spec) mtp.set_max_drafts(S_mtp - 1);
         strata::spec::SuffixDrafter sfx(std::max(1, o.suffix_draft), 64, (size_t) o.max_context + 4096);
         strata::spec::DraftPolicy policy(o.spec);   // MTP or lookup window (see draft_policy.hpp)
+        const auto source_policy = policy;   // fixed for this generation
         std::vector<int32_t> sbuf((size_t) o.spec, 0);
         int64_t sfx_windows = 0, sfx_drafts = 0, sfx_ok = 0;
         int64_t chain_windows = 0, chain_drafts = 0, chain_ok = 0;   // --lookup-chain's own counts
@@ -15571,8 +15576,10 @@ int main(int argc, char** argv) {
             if (o.suffix_draft > 0 && !first_window) {
                 const int k = sfx.propose(o.spec - 1, sbuf.data());
                 sfx_match = sfx.last_match();
-                if (k > 0 && (!use_mtp || sbuf[0] == drafts[0])) {
-                    const strata::spec::DraftPolicy::Pick pk = policy.choose(T, k, sfx_match);
+                const bool probabilistic = use_mtp && mtp.prob();
+                if (k > 0 && (probabilistic || !use_mtp || sbuf[0] == drafts[0])) {
+                    const strata::spec::DraftPolicy::Pick pk = probabilistic
+                        ? source_policy.choose(S_mtp, k, sfx_match) : policy.choose(T, k, sfx_match);
                     if (pk.lookup) { T = pk.t; from_sfx = true; }
                 }
             }
