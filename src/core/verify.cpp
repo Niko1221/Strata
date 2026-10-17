@@ -274,7 +274,7 @@ bool head_mix_multi_enabled() {
 // off / on (HIP builds; a CUDA build never fuses).
 // the Turing series (STRATA_SM75_PERF=1, sm75_series.hpp) defaults of the CUDA build's switches below, read per device
 bool device_is_sm75() {
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_GPU_METAL)   // (no Turing card; Metal has no compute capability)
     return false;
 #else
     static int per_dev[64];   // 0 unknown, 1 no, 2 yes
@@ -846,9 +846,9 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     sink_.staging_cap = kStagingBlobs;
     (void) TS;
     // STRATA_PIPED_CONCURRENT=1 (opt-in): a prompt can run on the same GPU while the batch windows run, so the windows'
-    // streams get the device's highest priority (HIP: the default priority, as the drafter's)
+    // streams get the device's highest priority (HIP, Metal: the default priority, as the drafter's)
     auto make_stream = [](cudaStream_t* s) -> cudaError_t {
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
         static const bool hi = [] {   // (STRATA_PIPED_CONCURRENT_PRIO=0: the default priority)
             const char* v = std::getenv("STRATA_PIPED_CONCURRENT");
             const char* p = std::getenv("STRATA_PIPED_CONCURRENT_PRIO");

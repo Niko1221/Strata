@@ -70,6 +70,8 @@ inline cudaError_t cudaDeviceGetAttribute(int* v, cudaDeviceAttr a, int d) {
 }
 inline cudaError_t cudaDeviceCanAccessPeer(int* v, int d, int p) { return strata::gpu::device_can_access_peer(v, d, p); }
 inline cudaError_t cudaDeviceEnablePeerAccess(int p, unsigned f) { return strata::gpu::device_enable_peer_access(p, f); }
+// one GPU: peer access is never enabled (above), so there is none to disable - the same answer (#2666's probe)
+inline cudaError_t cudaDeviceDisablePeerAccess(int) { return strata::gpu::compat_detail::bad(); }
 
 // ---- memory and copies
 template <class T> inline cudaError_t cudaMalloc(T** p, size_t n) { return strata::gpu::malloc_device(p, n); }
@@ -92,6 +94,10 @@ inline cudaError_t cudaMemcpy2DAsync(void* d, size_t dp, const void* s, size_t s
 }
 inline cudaError_t cudaMemcpyPeerAsync(void* d, int dd, const void* s, int sd, size_t n, cudaStream_t st = nullptr) {
     return strata::gpu::memcpy_peer_async(d, dd, s, sd, n, st);
+}
+inline cudaError_t cudaMemcpyPeer(void* d, int dd, const void* s, int sd, size_t n) {   // (#2666's peer-copy probe)
+    const cudaError_t e = strata::gpu::memcpy_peer_async(d, dd, s, sd, n, nullptr);
+    return e != cudaSuccess ? e : strata::gpu::stream_synchronize(nullptr);
 }
 
 // ---- streams, events, host functions
