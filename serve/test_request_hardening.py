@@ -6,10 +6,12 @@
 import http.client
 import json
 import os
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import serve.server as server
 from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, MockEngine, Service, body_limit, serve
 
@@ -84,6 +86,48 @@ class Hardening(unittest.TestCase):
             r = c.getresponse()
             self.assertEqual(r.status, 400, value)
             c.close()
+
+    def test_a_body_that_stops_arriving_is_answered_not_parked(self):
+        """#2814: _body() was the one body read with no deadline (the drain and the control body both bound theirs),
+        so a peer that announced a body and then said nothing - a silently dead client, no RST and no FIN - parked
+        the handler thread and its fd for good, and the watcher that would have noticed starts only after the read.
+        A within-limit body is the case no test constructed: the oversized one is refused unread by the 413 above,
+        and a half-closed one ends the read with a 400.
+
+        The deadline is per socket read, so it must answer from its own timer while the client is still there: the
+        elapsed time is checked as well as the status, or a client-side timeout would pass this too."""
+        with mock.patch.object(server, "BODY_STALL_S", 1.0):
+            for announced in ({"Content-Length": "100"}, {"Transfer-Encoding": "chunked"}):
+                with self.subTest(announced=announced):
+                    c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+                    t0 = time.monotonic()
+                    c.putrequest("POST", "/v1/chat/completions")
+                    c.putheader("Content-Type", "application/json")
+                    for k, v in announced.items():
+                        c.putheader(k, v)
+                    c.endheaders()                            # the headers only: nothing of the body is sent
+                    r = c.getresponse()
+                    took = time.monotonic() - t0
+                    body = r.read()
+                    self.assertEqual(r.status, 408, body)
+                    self.assertIn("STRATA_BODY_STALL_S", json.loads(body)["error"]["message"])
+                    self.assertLess(took, 15, "the answer has to come from the deadline, not from the client")
+                    c.close()
+
+    def test_the_body_deadline_leaves_a_good_request_alone(self):
+        # the deadline is a wait for one read that gets nothing, not a bound on the body: a complete one is read
+        # and answered as before, in the default configuration and with a deadline set
+        with mock.patch.object(server, "BODY_STALL_S", 1.0):
+            code, out = self.post("/v1/chat/completions",
+                                  {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8})
+        self.assertEqual(code, 200, out)
+
+    def test_the_deadline_is_off_by_construction_when_it_is_zero(self):
+        # 0 means the old behaviour (wait for ever), which is what #1317 chose for the engine's own reads
+        with mock.patch.object(server, "BODY_STALL_S", None):
+            code, out = self.post("/v1/chat/completions",
+                                  {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8})
+        self.assertEqual(code, 200, out)
 
     def test_default_limit_is_generous(self):
         with mock.patch.dict(os.environ, {}, clear=False):
