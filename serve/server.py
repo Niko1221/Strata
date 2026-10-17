@@ -6897,8 +6897,13 @@ def main() -> int:
                 print('[strata] the vision section\'s "elastic" needs "vram_elastic": true (the expert cache gives the '
                       "encoder its VRAM): the encoder starts with the model instead", flush=True)
                 vcfg["elastic"] = False
+            # encoder on ANOTHER card than the engine -> started on a thread while the engine loads (it went first
+            # only to take its VRAM before the engine sizes its cache, which matters on the same card)
+            other_card = vcfg.get("gpu") and vcfg.get("cuda_device") is not None and str(vcfg.get("cuda_device")) not in [str(g) for g in gpu_list(cfg)]
             vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
-                            env=vision_env(cfg, env), lazy=lazy)
+                            env=vision_env(cfg, env), lazy=lazy or bool(other_card))
+            if other_card and not lazy:
+                threading.Thread(target=vision.restart, name="vision-start", daemon=True).start()
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
         warn_budget_over_ram(engine_args(cfg) if "args" in cfg else [])      # #1080
