@@ -746,6 +746,61 @@ copies report progress to the watchdog, and Windows counts page faults at 8 a un
 whether the file tier is busy. The cure for the slowness itself is memory: a smaller `--resident-budget-gib`, a smaller
 `--conversation-cache-mib`, or the pagefile on an SSD.
 
+**The expert cache size is a budget, and on Windows an over-sized one pages instead of failing.** `--expert-cache N`
+(`"expert_cache": N`) is `N` times the largest expert blob, and the engine compares it only with the free VRAM it
+reads **before** the slots are written. `--expert-cache auto` (the default) sizes from that same figure but **checks
+again once the slots are actually written** and shrinks if they do not fit; that second check is auto-only (the loop
+breaks on `!auto_cache`). Under WDDM an allocation is not resident until it is touched, and the free figure read
+before it can be about a gigabyte too high, and the driver's default sysmem fallback puts an over-committed
+allocation in system memory instead of failing - so the start looks normal, the banner still reports the slot count,
+and only the speed collapses. The startup line is the tell: `... MiB of VRAM free with everything loaded`, and below
+about 256 MiB it adds `LOW: requests may stall; add --vram-reserve-mib N` with the value that would have left room.
+
+Measured on an RTX 4080 SUPER 32 GB, IQ3_S, engine 0.1.39, `--max-context 1048576` (yarn factor 4), fresh
+43,969 / 45,670 / 47,956-token prompts with 200 generated each, one engine start per row (the rest of the
+configuration is the one in `bench/results/2026-10-04-community-rtx-4080s-iq3s`):
+
+| expert cache | slots | VRAM free at start | decode tok/s |
+| --- | ---: | --- | --- |
+| `--expert-cache 8900` (11,631 slots, 22.07 GiB) | 11,631 | 0 MiB (`LOW`, suggests `--vram-reserve-mib 1212`) | 13.7 / 14.7 |
+| `auto` | 11,178 | 217 MiB (`LOW`) | 102.1 / 122.3 |
+| `auto` with `--vram-reserve-mib 1500` | 10,766 | 1,075 MiB | 88.9 / 96.5 / 101.4 |
+| `--expert-cache 7000` | 9,148 | 4,130 MiB | 94.1 / 97.3 |
+| the same 11,631-slot cache at `--max-context 524288` | 11,631 | 299 MiB | 113.2 / 107.9 |
+
+453 slots (0.86 GiB) separate 13.7 from 102 tok/s, and the slower run had the **higher** cache hit rate (91.4 / 94.7%
+against 90.4 / 93.9%), so this is not misses: being at 0 MiB free is what costs 7x. Two ways to stay out of it: leave
+the cache on `auto`, or keep an explicit size and raise `--vram-reserve-mib`, which the engine deducts **before** it
+sizes the cache (700 -> 1000 -> 1500 took the free figure from 217 to 575 to 1,075 MiB and cost about 400 slots).
+Where the margins are healthy the reserve is close to free: on 2x RTX 5090 (Linux, layer split, IQ3_S) taking
+`--vram-reserve-mib` from 700 to 1500 moved the free figure from 699/199 MiB to 1,197/1,071 MiB and left decode at
+157.8 against 157.7 tok/s at 1,048,576 (gucasbrg, [#781](https://github.com/Niko1221/Strata/issues/781); median of
+four of five runs, per-run spread about 3%).
+
+Engine 0.1.40 (#831) added a warning for the other way an explicit size can disappoint: a number **above the profile's
+pair count** - the profile is the ceiling on a native pack, so the extra slots were never going to be filled - now
+prints `WARNING: --expert-cache N is more than the ... pairs of the profile ...` and names `tools/make_profile.py`
+as the way to lift it. The failure on this page is a different one and is still silent: the size is legal, the profile
+has the pairs, the cache is simply larger than the free VRAM, and only the start line and the speed show it - which is
+why the fix here is `auto` or `--vram-reserve-mib`, not a bigger profile.
+
+**Checking it on Windows.** `\GPU Process Memory(<pid>)\Shared Usage` and `Dedicated Usage` (Performance Monitor, or
+`Get-Counter`) look like the right instrument, but on this machine they did **not** separate a 13.7 tok/s run from a
+102 tok/s one: `Shared` read about 55.5 GB at 262/524K and 62.4 GB at 1M in every run, because it counts the
+deliberately pinned memory (the expert arena, 50.3 GB here, plus the pinned K/V, 6.19 -> 12.38 GiB at 1M). The free
+line in the log is the reliable tell, and on NVIDIA hardware `CUDA - Sysmem Fallback Policy` set to
+`Prefer No Sysmem Fallback` for the engine's executable is the other way to make an over-sized cache fail instead of
+paging (not measured here). Reported with the measurements in
+[issue #781](https://github.com/Niko1221/Strata/issues/781).
+
+The same shape appears on a second, smaller card. On a 16 GB RTX 5080 at 786,432, UD-IQ4_XS, INT8 KV, with
+`Prefer No Sysmem Fallback` set and an explicit `--expert-cache 4000`, taking `--vram-reserve-mib` down from 770 to 0
+grew the cache from 2,782 to 3,115 slots (768 MiB) while the card's used memory moved 129 MiB, the hit rate stayed
+flat (59.9% to 63.0%) and decode fell from 40.9 to 16.6 tok/s. Every step there reached READY with 0 MiB free, so
+with the fallback off it still starts and degrades instead of failing - the slack left for the rest of the card is
+worth more than the extra slots, which is the same ordering measured above (enkynakamura, #781; one 256-token sample
+per step, so the upper rows are noisy).
+
 ---
 
 ## Using it
