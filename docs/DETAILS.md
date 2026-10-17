@@ -2108,6 +2108,16 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
   against the FP16 prompt path (IQ3_XXS, `--prefill auto`): 8K prompt KL 0.042 (0.1.39: 0.054), top-1 agreement
   93.5% (92.2%); 32K prompt KL 0.020 (0.019), top-1 95.3% (95.0%) - the same band as before. `STRATA_RING_BYTES=0`
   restores 0.1.39's ring, loan and chunk choice.
+- **`STRATA_VRAM_RESERVE_MIB="100,100,300,300"` (opt-in; `STRATA_GLM_RESERVE_MB` is the same knob): one VRAM
+  reserve per part of a layer split, in its order.** Entry 0 is the first card and replaces `--vram-reserve-mib`;
+  entry *i* is the *i*-th later card and replaces `--vram-reserve-later-mib` for it. Values are MiB, as the flags;
+  a shorter list reuses its last number and extra numbers are ignored. The reserve is deducted from a card's room
+  before its cache is sized, so the list is how one card keeps headroom for a desktop and another keeps it for
+  experts - on this rig CUDA1 and CUDA2 want more than CUDA3, whose one layer cannot use its free VRAM for experts
+  anyway. It is the Maya checkout's `STRATA_GLM_RESERVE_MB` (`Glm5Model::pool_reserve`), where it sizes each part's
+  pool separately. The start prints `strata generate: VRAM reserves per part: CUDA0 N MiB, CUDA1 N MiB, ...`, and a
+  LOW free-VRAM line names the list entry to raise instead of the flag the list overrides. Unset, the two flags
+  decide and not one number changes.
 
 The full story, with measurements, bottlenecks and what comes next: **[docs/paper/Strata-Paper.pdf](paper/Strata-Paper.pdf)**.
 

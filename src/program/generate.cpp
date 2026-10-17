@@ -604,6 +604,11 @@ struct Options {
     /// `--vram-reserve-later-mib N`: the reserve on a layer split's later cards (default: the same as the first).
     /// A card that drives no display needs less than the one the monitors are on.
     int vram_reserve_later_mib = -1;
+    /// `STRATA_VRAM_RESERVE_MIB=A,B,C,D` (opt-in; `STRATA_GLM_RESERVE_MB` is accepted as the same knob): one reserve
+    /// for every part, or one per part of a layer split in its order, in MiB (a shorter list reuses its last number;
+    /// extra numbers are ignored).  Entry 0 is the first card and replaces --vram-reserve-mib; entry i the i-th later
+    /// card.  Empty: the two flags above decide, exactly as before.  The Maya checkout's per-part reserve.
+    std::vector<int> vram_reserve_parts_mib;
     /// Plan v0.3 P5: batched prompt processing in chunks of this many tokens (0 = the token path).
     int64_t prefill_chunk = 0;
     /// `--prefill auto`: the largest chunk (up to 8192) whose buffers the expert cache can lend.  A chunk of
@@ -2638,6 +2643,28 @@ int main(int argc, char** argv) {
         }
         }
     }
+    {   // STRATA_VRAM_RESERVE_MIB / STRATA_GLM_RESERVE_MB: one reserve for every part, or one per part of a layer
+        // split in its order (a shorter list reuses its last number).  Read after the flags, which it overrides part
+        // by part; unset, not one number below changes.
+        const char* rv = std::getenv("STRATA_VRAM_RESERVE_MIB");
+        if (rv == nullptr || rv[0] == '\0') rv = std::getenv("STRATA_GLM_RESERVE_MB");
+        for (const char* p = rv; p != nullptr && *p != '\0';) {
+            char* end = nullptr;
+            const long long n = std::strtoll(p, &end, 10);
+            if (end == p || n < 0 || n > (1 << 20) || (*end != '\0' && *end != ',')) {
+                std::fprintf(stderr, "strata generate: STRATA_VRAM_RESERVE_MIB=%s is not a comma-separated list of "
+                                     "MiB counts\n", rv);
+                return 2;
+            }
+            o.vram_reserve_parts_mib.push_back((int) n);
+            if (*end != ',') break;
+            p = end + 1;
+        }
+        if (!o.vram_reserve_parts_mib.empty()) {
+            o.vram_reserve_mib = o.vram_reserve_parts_mib[0];
+            o.vram_reserve_given = true;   // the reserve is the operator's, as with --vram-reserve-mib (#496)
+        }
+    }
 #if defined(STRATA_USE_HIP)
     {   // gfx1151 (Strix Halo): the switches that are exact there are on by default (strata/core/arch_defaults.hpp); before
         // any engine code reads its switches (they are read at first use), and the user's own settings are kept
@@ -2816,6 +2843,18 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: STRATA_PRIMARY_DEVICE %d is not supported with a layer split yet\n",
                      primary_device);
         return 2;
+    }
+    if (!o.vram_reserve_parts_mib.empty()) {
+        // the reserve each part will use, said once: entry 0 is the first card, then the split's later cards
+        std::string parts;
+        const size_t nparts = multi_gpu ? split_devs.size() + 1 : 1;
+        for (size_t i = 0; i < nparts; ++i) {
+            const int mib = o.vram_reserve_parts_mib[std::min<size_t>(i, o.vram_reserve_parts_mib.size() - 1)];
+            const int dev = i == 0 ? 0 : split_devs[i - 1];
+            if (i != 0) parts += ", ";
+            parts += "CUDA" + std::to_string(dev) + " " + std::to_string(mib) + " MiB";
+        }
+        std::fprintf(stderr, "strata generate: VRAM reserves per part: %s (STRATA_VRAM_RESERVE_MIB)\n", parts.c_str());
     }
     bool split_own_auto = false;   // #340: the split keeps own prompt buffers by its rule (not --no-prefill-borrow)
     if (o.mmap_experts && !o.shared_expert_arena.empty()) {
@@ -4305,15 +4344,20 @@ int main(int argc, char** argv) {
         const char* v = std::getenv("STRATA_SPLIT_OWN_PLACE");
         return v != nullptr && std::string(v) == "reserve";
     }();
-    auto stage_room = [&](int dev, bool later, bool drafter, bool search = false) -> int64_t {
+    auto stage_room = [&](int dev, int part, bool later, bool drafter, bool search = false) -> int64_t {
         const strata::core::OnDevice on(dev);
         size_t fb = 0, tb = 0;
         if (const cudaError_t e = cudaMemGetInfo(&fb, &tb); e != cudaSuccess)
             std::fprintf(stderr, "strata generate: layer split: CUDA%d free memory: %s\n", dev < 0 ? 0 : dev,
                          cudaGetErrorString(e));
         const int64_t pf = search && split_own_auto && !place_with_reserve ? 0 : split_pf_mib;
+        // a per-part list (STRATA_VRAM_RESERVE_MIB) wins over the first/later flags: entry `part`, the last number
+        // reused by a shorter list
         const int64_t base_reserve =
-            later && o.vram_reserve_later_mib >= 0 ? o.vram_reserve_later_mib : o.vram_reserve_mib;
+            !o.vram_reserve_parts_mib.empty()
+                ? o.vram_reserve_parts_mib[std::min<size_t>((size_t) std::max(part, 0),
+                                                            o.vram_reserve_parts_mib.size() - 1)]
+                : (later && o.vram_reserve_later_mib >= 0 ? o.vram_reserve_later_mib : o.vram_reserve_mib);
         const int64_t reserve = (base_reserve + pf + (later ? kWindowMib : kPipeSnapMib) +
                                  kPipeWindowMib + (drafter ? kDrafterMib : 0)) << 20;
         return std::max<int64_t>((int64_t) fb - reserve, 0);
@@ -4330,7 +4374,7 @@ int main(int argc, char** argv) {
         std::vector<double> layer_ms((size_t) ns);
         for (int i = 0; i < ns; ++i) {
             const int dev = i == 0 ? 0 : stages[(size_t) i - 1]->dev;
-            cap[(size_t) i] = stage_room(i == 0 ? -1 : dev, i > 0, mtp_first ? i == 0 : i + 1 == ns, true);
+            cap[(size_t) i] = stage_room(i == 0 ? -1 : dev, i, i > 0, mtp_first ? i == 0 : i + 1 == ns, true);
             int sms = 0, khz = 0;
             cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
             if (cudaDeviceGetAttribute(&khz, cudaDevAttrClockRate, dev) != cudaSuccess || khz <= 0) khz = 1800000;
@@ -6143,12 +6187,12 @@ int main(int argc, char** argv) {
         }
     }
 
-    for (auto& stp : stages) {
-        GpuStage& st = *stp;
+    for (size_t si = 0; si < stages.size(); ++si) {
+        GpuStage& st = *stages[si];
         const auto& lay = strata::kernels::cpu::expert_layout();
         // the drafter and the head are already allocated by now (they load above, before this), so what is left
         // to hold back is the windows - and `free_b` has already lost the drafter.
-        const int64_t room = stage_room(st.dev, true, false);
+        const int64_t room = stage_room(st.dev, (int) si + 1, true, false);
         const strata::core::OnDevice on(st.dev);
         {
             size_t fb = 0, tb = 0;
@@ -10414,26 +10458,38 @@ int main(int argc, char** argv) {
             // (WDDM, --batch 4) CUDA0 had 740 MiB free while CUDA1 started its window captures at 153 MiB and fell to
             // 52, and the first batch window on it never finished (the host stuck in cudaGraphLaunch: a page-in while the
             // other card's graph spins on a host flag).  Said, never changed.
-            for (const auto& stp : stages) {
+            for (size_t si = 0; si < stages.size(); ++si) {
+                const auto& stp = stages[si];
                 const strata::core::OnDevice on(stp->dev);
                 size_t sf = 0, stot = 0;
                 if (cudaMemGetInfo(&sf, &stot) != cudaSuccess) { (void) cudaGetLastError(); continue; }
                 const int64_t sf_mib = (int64_t) (sf >> 20);
-                const int later_reserve = o.vram_reserve_later_mib >= 0 ? o.vram_reserve_later_mib : o.vram_reserve_mib;
+                const int later_reserve =
+                    !o.vram_reserve_parts_mib.empty()
+                        ? o.vram_reserve_parts_mib[std::min<size_t>(si + 1, o.vram_reserve_parts_mib.size() - 1)]
+                        : (o.vram_reserve_later_mib >= 0 ? o.vram_reserve_later_mib : o.vram_reserve_mib);
                 if (sf_mib >= 512)
                     std::fprintf(stderr, "strata serve: CUDA%d: %lld MiB of VRAM free with everything loaded\n", stp->dev,
                                  (long long) sf_mib);
-                else
+                else {
+                    // the fix goes through the mechanism that actually sets this card's reserve: the list overrides
+                    // the flags, so naming the flag while it is set would name a number that changes nothing
+                    const std::string fix =
+                        o.vram_reserve_parts_mib.empty()
+                            ? "add --vram-reserve-later-mib " + std::to_string(later_reserve + 768 - sf_mib) +
+                                  " to the config's args"
+                            : "set STRATA_VRAM_RESERVE_MIB's entry " + std::to_string(si + 1) + " to " +
+                                  std::to_string(later_reserve + 768 - sf_mib);
                     std::fprintf(stderr, "strata serve: CUDA%d: %lld MiB of VRAM free with everything loaded - LOW: its window "
-                                         "graphs are captured on first use and need room too, and %s; add "
-                                         "--vram-reserve-later-mib %lld to the config's args (or lower --max-context)\n",
+                                         "graphs are captured on first use and need room too, and %s; %s (or lower --max-context)\n",
                                  stp->dev, (long long) sf_mib,
 #ifdef _WIN32
                                  "under WDDM a full card pages instead of failing, which can stall a request for good (#2192)",
 #else
                                  "a full card can stall a request",
 #endif
-                                 (long long) (later_reserve + 768 - sf_mib));
+                                 fix.c_str());
+                }
             }
         }
         // what the server's Monitor tab shows (servers before 0.1.8 skip unknown lines until READY)
