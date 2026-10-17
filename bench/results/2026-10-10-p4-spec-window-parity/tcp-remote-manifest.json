@@ -1,0 +1,114 @@
+{
+  "repeats": 2,
+  "max_new": 128,
+  "prompts": [
+    {
+      "name": "code",
+      "ids": [248045, 846, 198, 7734, 264, 12654, 709, 421, 78161, 48142, 26126, 11, 10033, 424, 11, 321, 2873, 6813, 13, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271]
+    },
+    {
+      "name": "prose",
+      "ids": [248045, 846, 198, 814, 20139, 1204, 264, 417, 39100, 4138, 11, 440, 34736, 321, 34872, 9989, 13, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271]
+    },
+    {
+      "name": "counting",
+      "ids": [248045, 846, 198, 8723, 279, 24959, 494, 220, 16, 310, 220, 16, 15, 15, 11, 799, 791, 1500, 11, 1973, 29611, 13, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271]
+    }
+  ],
+  "arms": [
+    {
+      "name": "tcp",
+      "exe": "<ENGINE>",
+      "args": [
+        "--expert-profile",
+        "<EXPERT_PROFILE>",
+        "--expert-cache",
+        "512",
+        "--prefill",
+        "1024",
+        "--kv",
+        "int8",
+        "--pool-workers",
+        "27",
+        "--adapt-every",
+        "0",
+        "--adapt-swaps",
+        "64",
+        "--pcie-frac",
+        "0",
+        "--vram-reserve-mib",
+        "1024",
+        "--mtp",
+        "<MTP>",
+        "--spec",
+        "4",
+        "--spec-min-p",
+        "0.5",
+        "--suffix-draft",
+        "0",
+        "--prompt-cache",
+        "0",
+        "--conversation-cache-mib",
+        "0",
+        "--stats",
+        "--pack",
+        "<PACK>",
+        "--native",
+        "<NATIVE>",
+        "--max-context",
+        "8192",
+        "--ple-io",
+        "ram",
+        "--kv-resident",
+        "8192",
+        "--rope-scaling",
+        "none",
+        "--rope-scale",
+        "1",
+        "--prompt-cache-root",
+        "512",
+        "--prompt-cache-every",
+        "16384",
+        "--ple-gguf",
+        "<PLE_GGUF>",
+        "--mtp-max-t",
+        "4",
+        "--layer-split",
+        "16",
+        "--split-device",
+        "0",
+        "--remote-stage",
+        "127.0.0.1:18859"
+      ],
+      "env": {
+        "STRATA_ATTN_MERGE_V2": "1",
+        "STRATA_SHARED_ARENA_REUSE": "1",
+        "STRATA_IQ_MT_MIN": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "STRATA_DECODE_TIMING": "1",
+        "STRATA_PREFILL_CPU_SHARE": "0",
+        "STRATA_REMOTE_TIMEOUT_S": "300",
+        "STRATA_REMOTE_TIMING": "1",
+        "CUDA_VISIBLE_DEVICES": "0"
+      },
+      "cases": [
+        {
+          "name": "tcp-floor-0",
+          "keys": {
+            "spec_min_p": 0
+          },
+          "require": {
+            "drafts": 1
+          }
+        },
+        {
+          "name": "tcp-floor-95",
+          "keys": {
+            "spec_min_p": 0.95
+          }
+        }
+      ]
+    }
+  ]
+}
