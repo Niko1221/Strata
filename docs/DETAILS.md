@@ -991,7 +991,7 @@ print(r.choices[0].message.content)
 - **Model settings in the web page (0.1.39, #564).** The About tab's Model settings card shows and changes a few of
   the keys above in `strata-<model>.json`: the `sampling` defaults (temperature, top_p, top_k, min_p),
   `reasoning_budget_tokens`, `fit_max_tokens`, `anthropic_thinking`, `effort_position`, `aliases`, `idle_unload_s`,
-  `lazy_load`, `engine_silence_s`, `api_monitor`, `open_browser` and `--vram-reserve-mib`. An empty field removes the
+  `lazy_load`, `engine_silence_s`, `api_monitor`, `usage_stats`, `open_browser` and `--vram-reserve-mib`. An empty field removes the
   key (its default). Every other key of the file stays as it is, the earlier file is kept as
   `strata-<model>.json.bak`, and the model uses the change from its next start. Only Strata's own page can save
   (JSON, the API key when one is set, as for the Chat settings); the network, key, MCP and program keys are not
@@ -2191,6 +2191,27 @@ with **262,144 characters per input/output/reasoning/response field** and visibl
 responses are unaffected. Headers are not recorded, and the monitor key is kept in this tab's session storage.
 Treat request history as sensitive input/output when exposing Strata on a network: set an API key as above.
 The page uses relative URLs and works through the existing host binding or a reverse proxy.
+
+### Lifetime token statistics
+
+Off by default: turn it on with `"usage_stats": true` in `strata-<model>.json` (or
+`serve/server.py --usage-stats`); otherwise nothing is written and `GET /metrics` reports
+`"usage": {"enabled": false}`.
+
+It keeps request and token counters — requests, prompt tokens read and reused, output tokens,
+prompt and decode milliseconds, and MTP drafts offered/accepted — in a small JSON file beside the
+run config (`strata-<model>.usage.json`), so the totals survive restarts. **Counters only: no
+prompts, no answers, no request bodies.** Writes are atomic and throttled, and a corrupt file
+restarts the counters rather than failing the boot.
+
+`GET /metrics` then carries a `usage` object: the lifetime totals, `1d` / `7d` / `30d` views, and
+— with `?from_ts=<epoch>&to_ts=<epoch>` — a custom window. Hourly buckets are kept for 31 days,
+so a custom range answers at hour resolution inside that window; a range that starts earlier is
+clamped to the oldest kept bucket and the view reports the window it actually summed. The Monitor
+tab's Usage panel shows the same numbers. The panel opens on the **7-day** view; the view you pick
+is kept in the browser (`localStorage`, key `strata.usage.view`) and restored on the next load, so
+a Custom range comes back with its dates prefilled. A stored value that is not a known view falls
+back to 7 days.
 
 ### Prompt buffers: `bo` shares `emb` (#1454)
 

@@ -155,9 +155,44 @@ function setMetric(key, value, unit, sub) {
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
 let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
-async function poll() {
+const USAGE_VIEWS = ["1d", "7d", "30d", "all", "custom"];   // the Usage panel's views (opt-in usage_stats)
+const savedUsageView = store.get("usage.view", "");         // the browser remembers which view was last picked
+let usageRange = USAGE_VIEWS.includes(savedUsageView) ? savedUsageView : "7d";   // 7 days, unless the browser says otherwise
+function localTs(dateStr, timeStr) {  // "2026-10-10" + optional "14:30" -> epoch seconds, time defaulting to 00:00
+  if (!dateStr) return null;
+  const t = new Date(dateStr + "T" + (timeStr || "00:00"));
+  return isNaN(t) ? null : t.getTime() / 1000;
+}
+function customRange() {  // the Custom view's [from, to) in epoch seconds, or null until both dates are set
+  const f = localTs($("usage-from-d").value, $("usage-from-t").value);   // start without a time = 00:00
+  let t = null;
+  if ($("usage-to-d").value) {
+    if ($("usage-to-t").value) t = localTs($("usage-to-d").value, $("usage-to-t").value);
+    else { const d = new Date($("usage-to-d").value + "T00:00"); d.setDate(d.getDate() + 1); t = d.getTime() / 1000; }
+    // an end date with no time covers that whole day: "to Oct 13" means through Oct 13
+  }
+  return (f !== null && t !== null && t > f) ? [f, t] : null;
+}
+function localDateStr(d) {  // "YYYY-MM-DD" for the browser's own day: toISOString() would use UTC's
+  const p = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+function prefillCustomRange() {       // a sane starting window: the same 7 days the 7-day button shows
+  if ($("usage-from-d").value) return;
+  const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - 6);   // today and 6 before it
+  $("usage-from-d").value = localDateStr(d);
+  $("usage-to-d").value = localDateStr(new Date());
+}
+function metricsUrl() {
+  const p = [];
+  if (reqShowAll) p.push("requests=all");
+  const cr = usageRange === "custom" ? customRange() : null;
+  if (cr) p.push("from_ts=" + cr[0] + "&to_ts=" + cr[1]);
+  return "metrics" + (p.length ? "?" + p.join("&") : "");
+}
+async function refreshMetrics() {
   try {
-    const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {headers: headers()});
+    const r = await fetch(metricsUrl(), {headers: headers()});
     if (r.status === 401) {
       setPill("error", "API key needed");
       if (!keyWarned) { keyWarned = true; toast("warn", "API key needed", "This server needs a key: add it under About > Settings.", 6000); }
@@ -171,6 +206,9 @@ async function poll() {
   } catch (e) {
     if (++metricsFailures === 3) setPill("error", "Server not reachable");
   }
+}
+async function poll() {
+  await refreshMetrics();
   if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();       // server states change rarely: every 10 s
   setTimeout(poll, 1000);
 }
@@ -195,6 +233,7 @@ function render(m) {
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
+  if (tab === "monitor") renderUsage(m.usage);
   if (tab === "about") renderAbout(eng, hw, st);
 }
 
@@ -240,6 +279,53 @@ function renderTotals(t) {
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
+function renderUsage(u) {
+  const card = $("usage-card");
+  if (!u) { card.hidden = true; return; }                     // an older server
+  card.hidden = false;
+  const ranges = $("usage-ranges");
+  for (const b of ranges.querySelectorAll(".usage-range")) b.setAttribute("aria-pressed", String(b.dataset.range === usageRange));
+  $("usage-custom").hidden = usageRange !== "custom";
+  const note = $("usage-note");
+  note.hidden = true;
+  if (!u.enabled) {
+    ranges.hidden = true;
+    $("usage-grid").innerHTML = "";
+    note.hidden = false;
+    note.textContent = u.note || "Usage statistics are off.";
+    return;
+  }
+  ranges.hidden = false;
+  let row;
+  if (usageRange === "all") row = { ...(u.lifetime || {}), since: u.since };
+  else if (usageRange === "custom") row = ((u.views || {}).custom || {}).total || {};
+  else row = ((u.views || {})[usageRange] || {}).total || {};
+  if (usageRange === "custom" && !(u.views || {}).custom) {   // dates not set, or a window with nothing in it
+    $("usage-grid").innerHTML = "";
+    note.hidden = false;
+    note.textContent = customRange()
+      ? `Nothing in that window. The counters start at ${new Date((u.since || 0) * 1000).toLocaleString()} and only ${Math.round((u.kept_hours || 744) / 24)} days are kept.`
+      : "Pick a start and end date above. Times are optional: a start without one is 00:00, " +
+        `an end without one covers that whole day; ranges older than ${Math.round((u.kept_hours || 744) / 24)} days are clamped to what is kept.`;
+    return;
+  }
+  const read = (row.prompt_tokens || 0) - (row.reused || 0);
+  const dec = row.decode_ms > 0 ? row.output_tokens / (row.decode_ms / 1000) : null;
+  const pre = row.prompt_ms > 0 && read > 0 ? read / (row.prompt_ms / 1000) : null;
+  const acc = row.drafts_offered ? (100 * row.drafts_accepted) / row.drafts_offered : null;
+  const cell = (k, v, sub) => `<div class="usage-cell"><div class="usage-k">${k}</div><div class="usage-v">${v}</div><div class="usage-sub">${esc(sub || "")}</div></div>`;
+  $("usage-grid").innerHTML =
+    cell("Tokens generated", fmt(row.output_tokens), dec != null ? `${fmt(dec, 1)} tok/s` : "") +
+    cell("Prompt tokens read", fmt(read), pre != null ? `${fmt(pre)} tok/s` : "") +
+    cell("Reused (cache)", fmt(row.reused), row.prompt_tokens ? `${fmt((100 * row.reused) / row.prompt_tokens)}% of prompts` : "") +
+    cell("Requests", fmt(row.requests), "") +
+    cell("Drafts accepted", acc == null ? "–" : `${fmt(acc)}%`, row.drafts_offered ? `${fmt(row.drafts_accepted)} of ${fmt(row.drafts_offered)}` : "");
+  if (usageRange === "all" && row.since) {                    // the one note worth keeping: where "lifetime" starts
+    note.hidden = false;
+    note.textContent = `Since ${new Date(row.since * 1000).toLocaleDateString()}.`;
+  }
+}
+
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // model state
   const on = live.queued > 0 ? "queued" : live.state;
@@ -401,6 +487,14 @@ document.addEventListener("click", (e) => {
   if (b) copyText(b.dataset.copy, b);
 });
 $("req-all").addEventListener("click", () => { reqShowAll = !reqShowAll; if (lastMetrics) render(lastMetrics); });
+for (const b of document.querySelectorAll(".usage-range")) b.addEventListener("click", () => {
+  usageRange = b.dataset.range;
+  store.set("usage.view", usageRange);   // remember the pick for the next page load
+  if (usageRange === "custom") { prefillCustomRange(); refreshMetrics(); }   // the custom window comes from the server
+  else if (lastMetrics) render(lastMetrics);
+});
+for (const id of ["usage-from-d", "usage-from-t", "usage-to-d", "usage-to-t"])
+  $(id).addEventListener("change", () => { if (usageRange === "custom") refreshMetrics(); });
 
 // ------------------------------------------------------------------ MCP servers (GET /mcp)
 // Tools from the MCP servers in the run config: the chat offers them to the model (opt-in per request,
@@ -1090,6 +1184,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawe
 // ------------------------------------------------------------------ start
 setBusy(false);
 renderChat();
+if (usageRange === "custom") prefillCustomRange();   // a remembered Custom view needs its dates before the first poll
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
