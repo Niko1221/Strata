@@ -1,0 +1,403 @@
+{
+ "request": {
+  "wall_s": 50.58,
+  "prompt_n": 125351,
+  "gen_n": 8
+ },
+ "samples_seconds": 75,
+ "uplink_note": "Gen3 x8 = 7.88 GB/s; четыре карты делят один аплинк",
+ "rx_sum_gbps": {
+  "max": 9.33,
+  "p95": 7.67,
+  "median": 5.25
+ },
+ "tx_sum_gbps": {
+  "max": 6.88,
+  "p95": 0.89,
+  "median": 0.64
+ },
+ "per_card_peak_gbps": {
+  "0": 6.7,
+  "1": 3.4,
+  "2": 6.18,
+  "3": 5.83
+ },
+ "seconds_above_6_gbps_sum": 33,
+ "series": [
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 1.41,
+   "tx_sum": 0.0,
+   "rx_max_card": 1.41
+  },
+  {
+   "rx_sum": 2.54,
+   "tx_sum": 0.67,
+   "rx_max_card": 2.54
+  },
+  {
+   "rx_sum": 6.44,
+   "tx_sum": 0.69,
+   "rx_max_card": 3.22
+  },
+  {
+   "rx_sum": 6.42,
+   "tx_sum": 0.76,
+   "rx_max_card": 2.46
+  },
+  {
+   "rx_sum": 6.36,
+   "tx_sum": 0.59,
+   "rx_max_card": 2.25
+  },
+  {
+   "rx_sum": 7.01,
+   "tx_sum": 0.75,
+   "rx_max_card": 1.87
+  },
+  {
+   "rx_sum": 6.93,
+   "tx_sum": 0.76,
+   "rx_max_card": 1.75
+  },
+  {
+   "rx_sum": 6.85,
+   "tx_sum": 0.61,
+   "rx_max_card": 1.73
+  },
+  {
+   "rx_sum": 6.85,
+   "tx_sum": 0.75,
+   "rx_max_card": 1.72
+  },
+  {
+   "rx_sum": 6.72,
+   "tx_sum": 2.15,
+   "rx_max_card": 3.08
+  },
+  {
+   "rx_sum": 6.91,
+   "tx_sum": 0.77,
+   "rx_max_card": 1.78
+  },
+  {
+   "rx_sum": 6.95,
+   "tx_sum": 0.75,
+   "rx_max_card": 2.38
+  },
+  {
+   "rx_sum": 7.54,
+   "tx_sum": 0.76,
+   "rx_max_card": 2.27
+  },
+  {
+   "rx_sum": 6.48,
+   "tx_sum": 0.77,
+   "rx_max_card": 1.76
+  },
+  {
+   "rx_sum": 6.75,
+   "tx_sum": 0.81,
+   "rx_max_card": 1.75
+  },
+  {
+   "rx_sum": 6.9,
+   "tx_sum": 0.75,
+   "rx_max_card": 1.75
+  },
+  {
+   "rx_sum": 7.58,
+   "tx_sum": 0.64,
+   "rx_max_card": 3.87
+  },
+  {
+   "rx_sum": 6.2,
+   "tx_sum": 0.89,
+   "rx_max_card": 1.94
+  },
+  {
+   "rx_sum": 5.74,
+   "tx_sum": 0.7,
+   "rx_max_card": 2.3
+  },
+  {
+   "rx_sum": 6.91,
+   "tx_sum": 0.75,
+   "rx_max_card": 1.75
+  },
+  {
+   "rx_sum": 6.62,
+   "tx_sum": 0.77,
+   "rx_max_card": 1.71
+  },
+  {
+   "rx_sum": 9.33,
+   "tx_sum": 0.89,
+   "rx_max_card": 6.05
+  },
+  {
+   "rx_sum": 6.61,
+   "tx_sum": 0.69,
+   "rx_max_card": 2.4
+  },
+  {
+   "rx_sum": 6.39,
+   "tx_sum": 6.88,
+   "rx_max_card": 2.31
+  },
+  {
+   "rx_sum": 7.67,
+   "tx_sum": 0.81,
+   "rx_max_card": 2.26
+  },
+  {
+   "rx_sum": 7.67,
+   "tx_sum": 0.86,
+   "rx_max_card": 2.52
+  },
+  {
+   "rx_sum": 3.85,
+   "tx_sum": 4.72,
+   "rx_max_card": 2.14
+  },
+  {
+   "rx_sum": 7.42,
+   "tx_sum": 0.8,
+   "rx_max_card": 2.35
+  },
+  {
+   "rx_sum": 6.45,
+   "tx_sum": 0.84,
+   "rx_max_card": 2.4
+  },
+  {
+   "rx_sum": 6.33,
+   "tx_sum": 0.68,
+   "rx_max_card": 2.59
+  },
+  {
+   "rx_sum": 6.0,
+   "tx_sum": 0.65,
+   "rx_max_card": 2.13
+  },
+  {
+   "rx_sum": 4.94,
+   "tx_sum": 2.06,
+   "rx_max_card": 2.62
+  },
+  {
+   "rx_sum": 8.1,
+   "tx_sum": 0.87,
+   "rx_max_card": 2.5
+  },
+  {
+   "rx_sum": 5.25,
+   "tx_sum": 0.53,
+   "rx_max_card": 2.61
+  },
+  {
+   "rx_sum": 7.75,
+   "tx_sum": 0.83,
+   "rx_max_card": 2.28
+  },
+  {
+   "rx_sum": 7.93,
+   "tx_sum": 0.74,
+   "rx_max_card": 2.27
+  },
+  {
+   "rx_sum": 5.63,
+   "tx_sum": 0.63,
+   "rx_max_card": 3.37
+  },
+  {
+   "rx_sum": 5.66,
+   "tx_sum": 0.64,
+   "rx_max_card": 3.4
+  },
+  {
+   "rx_sum": 6.87,
+   "tx_sum": 0.75,
+   "rx_max_card": 3.5
+  },
+  {
+   "rx_sum": 1.69,
+   "tx_sum": 0.68,
+   "rx_max_card": 1.69
+  },
+  {
+   "rx_sum": 5.83,
+   "tx_sum": 0.7,
+   "rx_max_card": 5.83
+  },
+  {
+   "rx_sum": 6.7,
+   "tx_sum": 0.73,
+   "rx_max_card": 6.7
+  },
+  {
+   "rx_sum": 6.18,
+   "tx_sum": 0.67,
+   "rx_max_card": 6.18
+  },
+  {
+   "rx_sum": 0.05,
+   "tx_sum": 0.04,
+   "rx_max_card": 0.04
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  },
+  {
+   "rx_sum": 0.0,
+   "tx_sum": 0.0,
+   "rx_max_card": 0.0
+  }
+ ]
+}

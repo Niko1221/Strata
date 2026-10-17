@@ -1,0 +1,25 @@
+strata generate: layer split: CUDA2 holds its weights; 14.40 GiB free (its session follows)
+strata generate: layer split: CUDA3 loads the dense weights of layers 37-47 only
+strata generate: layer split: CUDA3 holds its weights; 14.49 GiB free (its session follows)
+strata generate: layer split: CUDA1 holds its weights, session [12, 25); 13.37 GiB free
+strata generate: layer split: CUDA2 holds its weights, session [25, 37); 13.43 GiB free
+strata generate: layer split: CUDA3 holds its weights, session [37, 48) and the head; 13.04 GiB free
+strata generate: layer split, CUDA1: 13.37 GiB free of 15.77, room for experts 12.78 GiB
+strata generate: layer split: CUDA1 runs layers 12-24, expert cache 6656 slots (12.27 GiB), 6656 of its 6656 profiled pairs; slot 0 verified
+strata generate: layer split, CUDA2: 13.43 GiB free of 15.77, room for experts 12.84 GiB
+strata generate: layer split: CUDA2 runs layers 25-36, expert cache 6144 slots (11.99 GiB), 6144 of its 6144 profiled pairs; slot 0 verified
+strata generate: layer split, CUDA3: 11.96 GiB free of 15.77, room for experts 11.37 GiB
+strata generate: layer split: CUDA3 runs layers 37-47, expert cache 5442 slots (11.37 GiB), 5442 of its 5632 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-11
+strata generate: layer split auto: L2 probe: the split is startable on the live free figures
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: token graph hit path: 24088 resident experts, decided on the device
+strata serve: layer split: 98% of the experts resident, the prompt path's streamed ring 96 slots
+strata hc: CUDA1: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 6 tokens, 75.8 MiB of device buffers (100% VRAM resident: zero-doorbell graph)
+strata hc: CUDA2: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 6 tokens, 75.8 MiB of device buffers (100% VRAM resident: zero-doorbell graph)
+strata hc: CUDA3: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata serve: layer split: layers 0-11 (CUDA0), 12-24 (CUDA1), 25-36 (CUDA2), 37-47 (CUDA3), one hand-off per window
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata serve: adaptive overlap: off: not on a layer split

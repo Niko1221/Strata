@@ -1,0 +1,19 @@
+устройств: 4, буфер: 256 МиБ, повторов: 12
+GPU0 <-> GPU1: canAccessPeer=1
+  GPU0 -> GPU1: 38.8 ГБ/с
+  GPU1 -> GPU0: 38.8 ГБ/с
+GPU0 <-> GPU2: canAccessPeer=1
+  GPU0 -> GPU2: 38.8 ГБ/с
+  GPU2 -> GPU0: 38.8 ГБ/с
+GPU0 <-> GPU3: canAccessPeer=1
+  GPU0 -> GPU3: 38.8 ГБ/с
+  GPU3 -> GPU0: 38.8 ГБ/с
+GPU1 <-> GPU2: canAccessPeer=1
+  GPU1 -> GPU2: 38.8 ГБ/с
+  GPU2 -> GPU1: 38.8 ГБ/с
+GPU1 <-> GPU3: canAccessPeer=1
+  GPU1 -> GPU3: 38.8 ГБ/с
+  GPU3 -> GPU1: 38.8 ГБ/с
+GPU2 <-> GPU3: canAccessPeer=1
+  GPU2 -> GPU3: 38.8 ГБ/с
+  GPU3 -> GPU2: 38.8 ГБ/с

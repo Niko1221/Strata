@@ -1,0 +1,50 @@
+{
+  "measured_at": "2026-10-15",
+  "machine": "dgbox-ai-server (192.168.2.185), Minisforum MS-01 + Spring V100 SXM2 4-GPU carrier board",
+  "engine_running": "0.1.44.1, model qwen3.8-flash-next-iq3_s, context 262144, --layer-split auto",
+  "driver": "580.178.04",
+  "purpose": "capability and bandwidth of the P2P (NVLink) route, to support enabling it in the engine",
+  "capability_matrix": {
+    "pairs": ["GPU0-GPU1", "GPU0-GPU2", "GPU0-GPU3", "GPU1-GPU2", "GPU1-GPU3", "GPU2-GPU3"],
+    "cudaDeviceCanAccessPeer": "1/1 on all pairs",
+    "cudaDevP2PAttrAccessSupported": 1,
+    "cudaDevP2PAttrNativeAtomicSupported": 1,
+    "cudaDevP2PAttrPerformanceRank": 0,
+    "nvmlDeviceGetP2PStatus": {"NVLINK": "OK", "PCI": "OK", "note": "all six pairs"}
+  },
+  "peer_access_cost_mib": {
+    "GPU1": 0,
+    "GPU2": 0,
+    "method": "cudaMemGetInfo delta around cudaDeviceEnablePeerAccess, before any allocation",
+    "why_it_matters": "free VRAM with the model loaded is 256 MiB (CUDA3), 404 MiB (CUDA0), 998 MiB (CUDA1), 1350 MiB (CUDA2)"
+  },
+  "peer_copy_bandwidth": {
+    "pair": "GPU1 <-> GPU2",
+    "buffer_mib": 32,
+    "repetitions": 20,
+    "idle_model_loaded_no_request": {"gpu1_to_gpu2_gbps": 38.4, "gpu2_to_gpu1_gbps": 38.4},
+    "during_prefill_31375_tokens": {"gpu1_to_gpu2_gbps": 29.9, "gpu2_to_gpu1_gbps": 29.4,
+                                    "load_confirmed_by": "nvidia-smi dmon -s t captured 0-5.5 GB/s per card in the same seconds"},
+    "other_pairs": "not measurable with the model loaded: a context plus a buffer needs ~400 MiB free, five pairs have less",
+    "interpretation": "38.4 GB/s is unreachable over this PCIe fabric (per-card Gen3 x8 = 7.9 GB/s, one shared x8 uplink) and is consistent with two bonded NVLink 2 links (2 x 25.781 GB/s = 51.6 GB/s theoretical, 74% achieved); so it is indirect evidence that an enabled P2P route really uses NVLink on this board"
+  },
+  "host_path_for_comparison": {
+    "per_card_link": "PCIe Gen3 x8, ~7.9 GB/s",
+    "uplink": "one Gen3 x8 shared by four cards (4:1 oversubscription), ~2 GB/s per card effective",
+    "measured_during_prefill_125351_tokens": {"average_gbps_per_card": [1.2, 1.6], "peak_gbps": [5.0, 6.2]}
+  },
+  "prompt_path_volumes_for_reference": {
+    "prefill_125351_tokens_rx_per_card_gb": [61.9, 78.4],
+    "prefill_125351_tokens_tx_per_card_gb": [6.9, 11.9],
+    "activation_stream_for_that_prompt_gb": 60.2,
+    "expert_blob_total_gb": 50.3,
+    "expert_blob_resident_per_card_gb": 12.6,
+    "note": "RX is 5-8x TX, so the dominant flow is host->card; which route those bytes take is not derivable from PCIe counters"
+  },
+  "reproduce": {
+    "build": "cuda-12.8/bin/nvcc -ccbin <private gcc-14> -arch=sm_70 -O2 -Wno-deprecated-gpu-targets -o p2p-probe p2p-probe.cu",
+    "run": "LD_LIBRARY_PATH=$HOME/strata185/cuda-12.8/lib64 ./p2p-probe",
+    "nvml_matrix": "python3 p2p-nvml.py",
+    "under_load": "bash p2p-under-load.sh"
+  }
+}

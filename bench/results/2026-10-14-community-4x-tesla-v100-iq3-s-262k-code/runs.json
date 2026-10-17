@@ -1,0 +1,795 @@
+{
+ "label": "v100-code",
+ "style": "code",
+ "env": {
+  "collected_at": "2026-10-14T22:31:33",
+  "gpus": [
+   {
+    "index": 0,
+    "name": "Tesla V100-SXM2-16GB",
+    "vram_mib": "16384",
+    "driver": "580.178.04",
+    "power_limit_w": "300.00",
+    "pci_bus": "00000000:03:00.0"
+   },
+   {
+    "index": 1,
+    "name": "Tesla V100-SXM2-16GB",
+    "vram_mib": "16384",
+    "driver": "580.178.04",
+    "power_limit_w": "300.00",
+    "pci_bus": "00000000:04:00.0"
+   },
+   {
+    "index": 2,
+    "name": "Tesla V100-SXM2-16GB",
+    "vram_mib": "16384",
+    "driver": "580.178.04",
+    "power_limit_w": "300.00",
+    "pci_bus": "00000000:05:00.0"
+   },
+   {
+    "index": 3,
+    "name": "Tesla V100-SXM2-16GB",
+    "vram_mib": "16384",
+    "driver": "580.178.04",
+    "power_limit_w": "300.00",
+    "pci_bus": "00000000:06:00.0"
+   }
+  ],
+  "gpu": {
+   "index": 0,
+   "name": "Tesla V100-SXM2-16GB",
+   "vram_mib": "16384",
+   "driver": "580.178.04",
+   "power_limit_w": "300.00",
+   "pci_bus": "00000000:03:00.0"
+  },
+  "gpu_count": 4,
+  "gpu_link": "Failed to parse --display/-d flags",
+  "cpu": {
+   "model": "13th Gen Intel(R) Core(TM) i9-13900H",
+   "logical_cpus": "20"
+  },
+  "ram_total_kib": "96228088",
+  "os": "Ubuntu 26.04.1 LTS",
+  "kernel": "7.0.0-38-generic",
+  "cuda": "nvcc не найден",
+  "storage": "",
+  "strata_commit": "296b59d2f73c8f04a805df29c2fa97655adace78",
+  "strata_branch": "v0.1.44.1",
+  "source_tree_note": "release source tree (no git metadata on this machine); the engine is built here from that tree with a private CUDA 12.8 toolkit and a private gcc for sm_70 (engine-cuda12/BUILD.json)",
+  "engine_version": "0.1.44.1",
+  "model_name": "qwen3.8-flash-next-iq3_s",
+  "context": {
+   "native": 262144,
+   "max_positions": 262144
+  },
+  "cache_max_tokens": 262144,
+  "vision": {
+   "enabled": true,
+   "available": true,
+   "error": null
+  },
+  "engine_launch_command": "движок не найден (возможно, запущен не напрямую)",
+  "server_config_path": "/home/dgbox/strata185/Strata/strata-185-iq3_s.json",
+  "server_config": {
+   "exe": "/home/dgbox/strata185/Strata/engine-cuda12/strata",
+   "args": [
+    "--pack",
+    "/home/dgbox/strata185/Strata-data/packs/iq3_s",
+    "--native",
+    "/home/dgbox/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf",
+    "/home/dgbox/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--expert-profile",
+    "/home/dgbox/strata185/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--mtp",
+    "/home/dgbox/strata185/Strata-data/mtp/rt",
+    "--max-context",
+    "262144",
+    "--kv",
+    "int8",
+    "--mmap-experts",
+    "--vision",
+    "--vram-reserve-mib",
+    "512",
+    "--control-vector-scaled",
+    "/home/dgbox/strata185/data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0",
+    "--control-vector-layer-range",
+    "4",
+    "44",
+    "--cvec-mode",
+    "project",
+    "--cvec-dir",
+    "per-layer",
+    "--spec-min-p",
+    "0.50",
+    "--pool-workers",
+    "12",
+    "--layer-split",
+    "auto"
+   ],
+   "cwd": "/home/dgbox/strata185/Strata",
+   "tokenizer": "/home/dgbox/strata185/Strata-data/packs/iq3_s/tokenizer",
+   "model_name": "qwen3.8-flash-next-iq3_s",
+   "draft_vocab": "cyrillic",
+   "expert_profile_save": "/home/dgbox/strata185/data/expert-profile-learned-185-iq3s.bin",
+   "expert_profile_save_every": 10,
+   "env": {
+    "STRATA_STAGE_TRIM": "1"
+   },
+   "log": "/home/dgbox/strata185/Strata/strata-185-iq3_s.log",
+   "lib_dirs": [
+    "/home/dgbox/strata185/cuda-12.8/bin",
+    "/home/dgbox/strata185/cuda-12.8/lib64"
+   ],
+   "port": 8080,
+   "host": "0.0.0.0",
+   "gpu": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "gpus_asked": true,
+   "vision": {
+    "exe": "/home/dgbox/strata185/Strata/engine-cuda12/strata-vision",
+    "mmproj": "/home/dgbox/strata185/Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "/home/dgbox/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "gpu": true,
+    "max_tokens": 1024
+   }
+  }
+ },
+ "memory": {
+  "start_snapshot": {
+   "vram_used_mib": 16104,
+   "vram_per_gpu_mib": [
+    15980,
+    15364,
+    15012,
+    16104
+   ],
+   "ram_used_kib": 18198792
+  },
+  "peak_vram_used_mib": 16128,
+  "peak_vram_per_gpu_mib": [
+   15980,
+   15386,
+   15034,
+   16128
+  ],
+  "peak_ram_used_kib": 18368096,
+  "note": "пик — максимум опросов каждые 2 с во время замеров"
+ },
+ "results": [
+  {
+   "case": "4096-prompt",
+   "target_prompt_tokens": 4096,
+   "max_tokens": 256,
+   "prompt_tok_s": {
+    "median": 881.6,
+    "min": 880.8,
+    "max": 883.0,
+    "n": 3
+   },
+   "gen_tok_s": {
+    "median": 101.0,
+    "min": 99.2,
+    "max": 113.0,
+    "n": 3
+   },
+   "ttft": {
+    "median": 4.53,
+    "min": 4.52,
+    "max": 4.53,
+    "n": 3
+   },
+   "wall": {
+    "median": 6.32,
+    "min": 5.44,
+    "max": 6.33,
+    "n": 3
+   },
+   "draft_ok": 314,
+   "draft_n": 413,
+   "all": [
+    {
+     "prompt_n": 3971,
+     "prompt_s": 883.0,
+     "gen_n": 181,
+     "gen_s": 99.2,
+     "draft_n": 162,
+     "draft_ok": 118,
+     "cached": 0,
+     "ttft_s": 4.521,
+     "wall_s": 6.33,
+     "text": "The text provided is a repetitive description of a function named `parse_record`"
+    },
+    {
+     "prompt_n": 3971,
+     "prompt_s": 880.8,
+     "gen_n": 182,
+     "gen_s": 101.0,
+     "draft_n": 160,
+     "draft_ok": 121,
+     "cached": 0,
+     "ttft_s": 4.534,
+     "wall_s": 6.32,
+     "text": "Based on the repetitive text provided, here is a concise summary of the function"
+    },
+    {
+     "prompt_n": 3971,
+     "prompt_s": 881.6,
+     "gen_n": 105,
+     "gen_s": 113.0,
+     "draft_n": 91,
+     "draft_ok": 75,
+     "cached": 0,
+     "ttft_s": 4.53,
+     "wall_s": 5.44,
+     "text": "The text provided is a repetitive block of the same paragraph. Here is the singl"
+    }
+   ]
+  },
+  {
+   "case": "16384-prompt",
+   "target_prompt_tokens": 16384,
+   "max_tokens": 256,
+   "prompt_tok_s": {
+    "median": 1548.5,
+    "min": 1545.5,
+    "max": 1551.1,
+    "n": 3
+   },
+   "gen_tok_s": {
+    "median": 117.5,
+    "min": 110.8,
+    "max": 118.9,
+    "n": 3
+   },
+   "ttft": {
+    "median": 10.15,
+    "min": 10.14,
+    "max": 10.17,
+    "n": 3
+   },
+   "wall": {
+    "median": 11.07,
+    "min": 11.01,
+    "max": 11.07,
+    "n": 3
+   },
+   "draft_ok": 232,
+   "draft_n": 262,
+   "all": [
+    {
+     "prompt_n": 15667,
+     "prompt_s": 1548.5,
+     "gen_n": 110,
+     "gen_s": 117.5,
+     "draft_n": 88,
+     "draft_ok": 81,
+     "cached": 0,
+     "ttft_s": 10.154,
+     "wall_s": 11.07,
+     "text": "The text provided is a repetitive block of the same sentence describing a functi"
+    },
+    {
+     "prompt_n": 15667,
+     "prompt_s": 1551.1,
+     "gen_n": 105,
+     "gen_s": 110.8,
+     "draft_n": 91,
+     "draft_ok": 75,
+     "cached": 0,
+     "ttft_s": 10.137,
+     "wall_s": 11.07,
+     "text": "The text provided is a repetitive block of the same paragraph. Here is the singl"
+    },
+    {
+     "prompt_n": 15667,
+     "prompt_s": 1545.5,
+     "gen_n": 102,
+     "gen_s": 118.9,
+     "draft_n": 83,
+     "draft_ok": 76,
+     "cached": 0,
+     "ttft_s": 10.169,
+     "wall_s": 11.01,
+     "text": "The text provided is a repetitive description of a function named `parse_record`"
+    }
+   ]
+  },
+  {
+   "case": "32768-prompt",
+   "target_prompt_tokens": 32768,
+   "max_tokens": 256,
+   "prompt_tok_s": {
+    "median": 1985.3,
+    "min": 1979.3,
+    "max": 1995.6,
+    "n": 3
+   },
+   "gen_tok_s": {
+    "median": 111.8,
+    "min": 110.4,
+    "max": 111.8,
+    "n": 3
+   },
+   "ttft": {
+    "median": 15.81,
+    "min": 15.73,
+    "max": 15.86,
+    "n": 3
+   },
+   "wall": {
+    "median": 16.69,
+    "min": 16.63,
+    "max": 16.71,
+    "n": 3
+   },
+   "draft_ok": 221,
+   "draft_n": 258,
+   "all": [
+    {
+     "prompt_n": 31307,
+     "prompt_s": 1985.3,
+     "gen_n": 103,
+     "gen_s": 111.8,
+     "draft_n": 89,
+     "draft_ok": 76,
+     "cached": 0,
+     "ttft_s": 15.807,
+     "wall_s": 16.71,
+     "text": "The text provided is a repetitive loop of the same paragraph. Here is the unique"
+    },
+    {
+     "prompt_n": 31307,
+     "prompt_s": 1979.3,
+     "gen_n": 93,
+     "gen_s": 110.4,
+     "draft_n": 80,
+     "draft_ok": 69,
+     "cached": 0,
+     "ttft_s": 15.863,
+     "wall_s": 16.69,
+     "text": "The text provided is a single sentence repeated many times. Here is the unique c"
+    },
+    {
+     "prompt_n": 31307,
+     "prompt_s": 1995.6,
+     "gen_n": 103,
+     "gen_s": 111.8,
+     "draft_n": 89,
+     "draft_ok": 76,
+     "cached": 0,
+     "ttft_s": 15.726,
+     "wall_s": 16.63,
+     "text": "The text provided is a repetitive loop of the same paragraph. Here is the unique"
+    }
+   ]
+  },
+  {
+   "case": "66560-prompt",
+   "target_prompt_tokens": 66560,
+   "max_tokens": 256,
+   "prompt_tok_s": {
+    "median": 2345.3,
+    "min": 2343.6,
+    "max": 2350.5,
+    "n": 3
+   },
+   "gen_tok_s": {
+    "median": 109.2,
+    "min": 105.3,
+    "max": 109.7,
+    "n": 3
+   },
+   "ttft": {
+    "median": 27.16,
+    "min": 27.1,
+    "max": 27.18,
+    "n": 3
+   },
+   "wall": {
+    "median": 28.09,
+    "min": 27.96,
+    "max": 28.12,
+    "n": 3
+   },
+   "draft_ok": 219,
+   "draft_n": 259,
+   "all": [
+    {
+     "prompt_n": 63539,
+     "prompt_s": 2343.6,
+     "gen_n": 105,
+     "gen_s": 109.7,
+     "draft_n": 90,
+     "draft_ok": 76,
+     "cached": 0,
+     "ttft_s": 27.181,
+     "wall_s": 28.12,
+     "text": "The text provided is a repetitive loop of the same paragraph. Here is the single"
+    },
+    {
+     "prompt_n": 63539,
+     "prompt_s": 2350.5,
+     "gen_n": 93,
+     "gen_s": 105.3,
+     "draft_n": 82,
+     "draft_ok": 68,
+     "cached": 0,
+     "ttft_s": 27.097,
+     "wall_s": 27.96,
+     "text": "The text provided is a single sentence repeated many times. Here is the unique c"
+    },
+    {
+     "prompt_n": 63539,
+     "prompt_s": 2345.3,
+     "gen_n": 103,
+     "gen_s": 109.2,
+     "draft_n": 87,
+     "draft_ok": 75,
+     "cached": 0,
+     "ttft_s": 27.162,
+     "wall_s": 28.09,
+     "text": "The text provided is a repetitive loop of the same paragraph. Here is the unique"
+    }
+   ]
+  },
+  {
+   "case": "131072-prompt",
+   "target_prompt_tokens": 131072,
+   "max_tokens": 256,
+   "prompt_tok_s": {
+    "median": 2490.7,
+    "min": 2488.7,
+    "max": 2495.8,
+    "n": 3
+   },
+   "gen_tok_s": {
+    "median": 102.5,
+    "min": 100.8,
+    "max": 102.5,
+    "n": 3
+   },
+   "ttft": {
+    "median": 50.29,
+    "min": 50.19,
+    "max": 50.32,
+    "n": 3
+   },
+   "wall": {
+    "median": 51.3,
+    "min": 51.19,
+    "max": 51.34,
+    "n": 3
+   },
+   "draft_ok": 226,
+   "draft_n": 282,
+   "all": [
+    {
+     "prompt_n": 125011,
+     "prompt_s": 2490.7,
+     "gen_n": 105,
+     "gen_s": 102.5,
+     "draft_n": 91,
+     "draft_ok": 75,
+     "cached": 0,
+     "ttft_s": 50.291,
+     "wall_s": 51.3,
+     "text": "The text provided is a repetitive loop of the same paragraph. Here is the single"
+    },
+    {
+     "prompt_n": 125011,
+     "prompt_s": 2488.7,
+     "gen_n": 104,
+     "gen_s": 100.8,
+     "draft_n": 96,
+     "draft_ok": 75,
+     "cached": 0,
+     "ttft_s": 50.324,
+     "wall_s": 51.34,
+     "text": "The text provided is a repetition of the same paragraph. Here is the single, uni"
+    },
+    {
+     "prompt_n": 125011,
+     "prompt_s": 2495.8,
+     "gen_n": 105,
+     "gen_s": 102.5,
+     "draft_n": 95,
+     "draft_ok": 76,
+     "cached": 0,
+     "ttft_s": 50.187,
+     "wall_s": 51.19,
+     "text": "The text provided is a repetitive loop of the same paragraph. Here is the single"
+    }
+   ]
+  },
+  {
+   "case": "194560-prompt",
+   "target_prompt_tokens": 194560,
+   "max_tokens": 256,
+   "prompt_tok_s": {
+    "median": 2560.5,
+    "min": 2553.3,
+    "max": 2564.2,
+    "n": 3
+   },
+   "gen_tok_s": {
+    "median": 99.8,
+    "min": 97.5,
+    "max": 103.1,
+    "n": 3
+   },
+   "ttft": {
+    "median": 72.59,
+    "min": 72.48,
+    "max": 72.79,
+    "n": 3
+   },
+   "wall": {
+    "median": 73.56,
+    "min": 73.54,
+    "max": 73.83,
+    "n": 3
+   },
+   "draft_ok": 225,
+   "draft_n": 272,
+   "all": [
+    {
+     "prompt_n": 185531,
+     "prompt_s": 2553.3,
+     "gen_n": 105,
+     "gen_s": 99.8,
+     "draft_n": 92,
+     "draft_ok": 75,
+     "cached": 0,
+     "ttft_s": 72.793,
+     "wall_s": 73.83,
+     "text": "The text provided is a repetitive loop of the same paragraph. Here is the single"
+    },
+    {
+     "prompt_n": 185531,
+     "prompt_s": 2564.2,
+     "gen_n": 105,
+     "gen_s": 97.5,
+     "draft_n": 89,
+     "draft_ok": 75,
+     "cached": 0,
+     "ttft_s": 72.479,
+     "wall_s": 73.54,
+     "text": "The text provided is a repetitive loop of the same paragraph. Here is the single"
+    },
+    {
+     "prompt_n": 185531,
+     "prompt_s": 2560.5,
+     "gen_n": 102,
+     "gen_s": 103.1,
+     "draft_n": 91,
+     "draft_ok": 75,
+     "cached": 0,
+     "ttft_s": 72.594,
+     "wall_s": 73.56,
+     "text": "The text provided is a repetition of the same paragraph. Here is the unique cont"
+    }
+   ]
+  },
+  {
+   "case": "209715-prompt",
+   "target_prompt_tokens": 209715,
+   "max_tokens": 256,
+   "prompt_tok_s": {
+    "median": 2551.7,
+    "min": 2549.2,
+    "max": 2552.5,
+    "n": 3
+   },
+   "gen_tok_s": {
+    "median": 101.8,
+    "min": 101.6,
+    "max": 109.4,
+    "n": 3
+   },
+   "ttft": {
+    "median": 78.52,
+    "min": 78.49,
+    "max": 78.59,
+    "n": 3
+   },
+   "wall": {
+    "median": 79.49,
+    "min": 79.36,
+    "max": 79.59,
+    "n": 3
+   },
+   "draft_ok": 222,
+   "draft_n": 264,
+   "all": [
+    {
+     "prompt_n": 200015,
+     "prompt_s": 2549.2,
+     "gen_n": 104,
+     "gen_s": 101.6,
+     "draft_n": 93,
+     "draft_ok": 76,
+     "cached": 0,
+     "ttft_s": 78.589,
+     "wall_s": 79.59,
+     "text": "The text provided is a repetition of the same paragraph. Here is the single, uni"
+    },
+    {
+     "prompt_n": 200015,
+     "prompt_s": 2552.5,
+     "gen_n": 104,
+     "gen_s": 101.8,
+     "draft_n": 92,
+     "draft_ok": 76,
+     "cached": 0,
+     "ttft_s": 78.49,
+     "wall_s": 79.49,
+     "text": "The text provided is a repetition of the same paragraph. Here is the single, uni"
+    },
+    {
+     "prompt_n": 200015,
+     "prompt_s": 2551.7,
+     "gen_n": 94,
+     "gen_s": 109.4,
+     "draft_n": 79,
+     "draft_ok": 70,
+     "cached": 0,
+     "ttft_s": 78.516,
+     "wall_s": 79.36,
+     "text": "The text provided is a repetition of the same paragraph. Here is the single, uni"
+    }
+   ]
+  },
+  {
+   "case": "273000-prompt",
+   "target_prompt_tokens": 273000,
+   "max_tokens": 256,
+   "prompt_tok_s": {
+    "median": 2536.9,
+    "min": 2534.7,
+    "max": 2537.1,
+    "n": 3
+   },
+   "gen_tok_s": {
+    "median": 94.6,
+    "min": 85.2,
+    "max": 100.7,
+    "n": 3
+   },
+   "ttft": {
+    "median": 102.78,
+    "min": 102.77,
+    "max": 102.87,
+    "n": 3
+   },
+   "wall": {
+    "median": 103.83,
+    "min": 103.73,
+    "max": 104.69,
+    "n": 3
+   },
+   "draft_ok": 242,
+   "draft_n": 313,
+   "all": [
+    {
+     "prompt_n": 260331,
+     "prompt_s": 2537.1,
+     "gen_n": 98,
+     "gen_s": 100.7,
+     "draft_n": 81,
+     "draft_ok": 71,
+     "cached": 0,
+     "ttft_s": 102.773,
+     "wall_s": 103.73,
+     "text": "The text provided is a repetitive loop of the same sentence. Here is the unique "
+    },
+    {
+     "prompt_n": 260331,
+     "prompt_s": 2536.9,
+     "gen_n": 164,
+     "gen_s": 85.2,
+     "draft_n": 148,
+     "draft_ok": 104,
+     "cached": 0,
+     "ttft_s": 102.785,
+     "wall_s": 104.69,
+     "text": "The text provided is a repetitive description of a function named `parse_record`"
+    },
+    {
+     "prompt_n": 260331,
+     "prompt_s": 2534.7,
+     "gen_n": 93,
+     "gen_s": 94.6,
+     "draft_n": 84,
+     "draft_ok": 67,
+     "cached": 0,
+     "ttft_s": 102.87,
+     "wall_s": 103.83,
+     "text": "The text provided is a single sentence repeated many times. Here is the unique c"
+    }
+   ]
+  },
+  {
+   "case": "gen-only",
+   "target_prompt_tokens": 120,
+   "max_tokens": 1024,
+   "prompt_tok_s": {
+    "median": 203.7,
+    "min": 202.4,
+    "max": 204.3,
+    "n": 3
+   },
+   "gen_tok_s": {
+    "median": 119.5,
+    "min": 106.0,
+    "max": 123.2,
+    "n": 3
+   },
+   "ttft": {
+    "median": 0.82,
+    "min": 0.82,
+    "max": 0.83,
+    "n": 3
+   },
+   "wall": {
+    "median": 1.68,
+    "min": 1.65,
+    "max": 10.47,
+    "n": 3
+   },
+   "draft_ok": 824,
+   "draft_n": 1064,
+   "all": [
+    {
+     "prompt_n": 163,
+     "prompt_s": 202.4,
+     "gen_n": 1024,
+     "gen_s": 106.0,
+     "draft_n": 891,
+     "draft_ok": 672,
+     "cached": 0,
+     "ttft_s": 0.827,
+     "wall_s": 10.47,
+     "text": "Based on the description provided, here is a conceptual implementation in **Rust"
+    },
+    {
+     "prompt_n": 163,
+     "prompt_s": 204.3,
+     "gen_n": 104,
+     "gen_s": 123.2,
+     "draft_n": 84,
+     "draft_ok": 76,
+     "cached": 0,
+     "ttft_s": 0.819,
+     "wall_s": 1.65,
+     "text": "The text provided is a duplicate of the same paragraph. Here is the cleaned, sin"
+    },
+    {
+     "prompt_n": 163,
+     "prompt_s": 203.7,
+     "gen_n": 104,
+     "gen_s": 119.5,
+     "draft_n": 89,
+     "draft_ok": 76,
+     "cached": 0,
+     "ttft_s": 0.821,
+     "wall_s": 1.68,
+     "text": "The text provided is a duplicate of the same paragraph. Here is the cleaned, sin"
+    }
+   ]
+  }
+ ]
+}
