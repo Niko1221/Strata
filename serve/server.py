@@ -159,6 +159,28 @@ REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my 
 # low-effort instruction in place of the xhigh one.  Both off by default.
 HIGH_EFFORT = EFFORT_TEXT["xhigh"]
 LOW_EFFORT = EFFORT_TEXT["low"]
+
+
+def template_effort_sentence(tpl, effort):
+    """The executed template's exported instruction, if it actually appears in its first system message.
+
+    Custom templates using a different layout keep the bundled fallback. Resolving the compiled template
+    handles quoting, conditionals and computed strings without searching into an unexecuted branch.
+    """
+    if tpl is None:
+        return None
+    try:
+        module = tpl.template.make_module({"messages": [{"role": "system", "content": "strata_effort_system"},
+                                                       {"role": "user", "content": "strata_effort_user"}],
+                                           "tools": None, "add_generation_prompt": True, "reasoning_effort": effort})
+        sentence = getattr(module, "reasoning_instructions", None)
+        head, separator, _ = str(module).partition(IM_END)
+        if (isinstance(sentence, str) and sentence.strip() and separator
+                and head.startswith("<|im_start|>system\n") and sentence in head):
+            return sentence
+    except Exception:                            # like the template capability probe: unsupported is a fallback
+        pass
+    return None
 LOOP_CHECK_EVERY = 512           # output tokens between two looks at the reasoning (at a clean parser boundary)
 LOOP_COVERAGE = 0.25             # the share of the last 2,000 words inside 12-word passages seen three times
 LOOP_HISTORY_WORDS = 30000       # how far back the passages are counted (bounds the cost of a look)
@@ -193,7 +215,7 @@ def reasoning_repeat_coverage(text):
     return len(covered) / (len(words) - start)
 
 
-def focused_recovery_prompt(tok, ids, generated):
+def focused_recovery_prompt(tok, ids, generated, effort_sentences=None):
     """The prompt's ids with the xhigh effort sentence of the first system message replaced by the low one, then
     every token generated so far.  A splice of token ids: the prompt is never decoded and encoded again, so a literal
     `</think>` or vision marker in it (#537, #554) stays what it was.  None when the sentence is not there as whole
@@ -204,7 +226,8 @@ def focused_recovery_prompt(tok, ids, generated):
     head = ids[:ids.index(end[0])]
     if not tok.decode(head).startswith("<|im_start|>system\n"):
         return None
-    old, new = tok.encode(HIGH_EFFORT, parse_special=False), tok.encode(LOW_EFFORT, parse_special=False)
+    high, low = effort_sentences or (HIGH_EFFORT, LOW_EFFORT)
+    old, new = tok.encode(high, parse_special=False), tok.encode(low, parse_special=False)
     for i in range(len(head) - len(old) + 1):
         if head[i:i + len(old)] == old:
             return ids[:i] + new + ids[i + len(old):] + list(generated)
@@ -3180,6 +3203,8 @@ class Service:
         self.vision_held = False                         # an elastic encoder holds VRAM the expert cache gave it
         self.last_image_at = 0.0                         # when an image turn last ended (the elastic encoder's idle)
         self.reasoning_loop_recovery = False
+        self.recovery_effort_sentences = tuple(template_effort_sentence(template, effort) or EFFORT_TEXT[effort]
+                                              for effort in ("xhigh", "low"))
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
@@ -4402,7 +4427,8 @@ class Service:
                                             looped = True        # #728: end the reply here, as for a repeated token
                                             break
                                         if not emb:              # "recover": not for a request with pictures
-                                            recover_prompt = focused_recovery_prompt(self.tok, ids, raw_ids)
+                                            recover_prompt = focused_recovery_prompt(self.tok, ids, raw_ids,
+                                                                                     self.recovery_effort_sentences)
                                             if recover_prompt is not None:
                                                 break
                                 if budget and parser.state == "reasoning":
