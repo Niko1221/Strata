@@ -518,6 +518,34 @@ def tool_arguments(raw) -> dict:
     return {"arguments": json.dumps(raw, ensure_ascii=False)}
 
 
+def _order_chat_tool_results(messages: list[dict]) -> None:
+    """The template pairs results by position, so restore call order while IDs are still available.
+
+    Only a complete, unambiguous run of results is reordered. Legacy or incomplete histories keep their
+    received order. IDs are private to this conversion and never reach the template.
+    """
+    i = 0
+    while i < len(messages):
+        if messages[i]["role"] != "tool":
+            i += 1
+            continue
+        j = i + 1
+        while j < len(messages) and messages[j]["role"] == "tool":
+            j += 1
+        prev = messages[i - 1] if i else {}
+        calls = [c.get("_call_id") for c in prev.get("tool_calls") or []] if prev.get("role") == "assistant" else []
+        results = [m.get("_call_id") for m in messages[i:j]]
+        if len(calls) == len(results) and all(isinstance(cid, str) and cid for cid in calls + results):
+            if len(set(calls)) == len(calls) and len(set(results)) == len(results) and set(calls) == set(results):
+                rank = {cid: n for n, cid in enumerate(calls)}
+                messages[i:j] = sorted(messages[i:j], key=lambda m: rank[m["_call_id"]])
+        i = j
+    for message in messages:
+        message.pop("_call_id", None)
+        for call in message.get("tool_calls") or []:
+            call.pop("_call_id", None)
+
+
 def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
     """OpenAI Chat Completions -> (template messages, template tools, template kwargs)."""
     messages = []
@@ -530,6 +558,8 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
         content = _check_parts(m.get("content"), f"messages[{i}].content",
                                TEXT_PARTS + IMAGE_PARTS if images else TEXT_PARTS)
         out = {"role": role, "content": _parts_of(content) if images else _text_of(content)}
+        if role == "tool":
+            out["_call_id"] = m.get("tool_call_id")
         if m.get("reasoning_content"):
             out["reasoning_content"] = m["reasoning_content"]
         if m.get("tool_calls"):
@@ -538,9 +568,11 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
                 fn = c.get("function", c)
                 if not isinstance(fn, dict):
                     raise ValueError("tool_calls must be a list of objects (each with a \"function\" object)")
-                calls.append({"function": {"name": fn.get("name"), "arguments": tool_arguments(fn.get("arguments"))}})
+                calls.append({"function": {"name": fn.get("name"), "arguments": tool_arguments(fn.get("arguments"))},
+                              "_call_id": c.get("id")})
             out["tool_calls"] = calls
         messages.append(out)
+    _order_chat_tool_results(messages)
     tools = [t.get("function", t) if t.get("type") == "function" else t
              for t in _tool_list(req.get("tools"), "function")] or None
     kwargs = {}
