@@ -180,16 +180,44 @@ function setPill(state, text) {
   $("pill-text").textContent = text;
 }
 
+// A slot's live tok/s, on the server's own window rule (RATE_WINDOW_S / RATE_MIN_SPAN_S, server.py:220) taken from
+// consecutive samples here. live.slots[].tok_s is the mean since the first token: it opens at the burst rate (the
+// first tokens over the sliver of a second since the last one) and only decays to the truth over minutes - 300
+// falling to 35 on a 4090 with two agents. Called once per poll, from render(), so the pill and the widgets agree.
+const SLOT_RATE_WINDOW_S = 2.0, SLOT_RATE_MIN_SPAN_S = 0.25;
+const slotRateSamples = new Map();
+function slotRates(live) {
+  const slots = live.slots || [];
+  if (!slots.length) { slotRateSamples.clear(); return []; }        // no slots: forget every ring, nothing to age
+  const rates = [];
+  for (const s of slots) {
+    if (s.state !== "decoding" || s.generated == null || s.elapsed_s == null) {
+      slotRateSamples.delete(s.slot); rates.push(null); continue;   // reading, free: no rate of its own
+    }
+    let ring = slotRateSamples.get(s.slot);
+    if (!ring || s.generated < ring[ring.length - 1][1]) ring = [];  // a new request in this slot: start clean
+    ring.push([s.elapsed_s, s.generated]);
+    while (ring.length > 8) ring.shift();
+    slotRateSamples.set(s.slot, ring);
+    const newest = ring[ring.length - 1];
+    const oldest = ring.find(([t]) => newest[0] - t <= SLOT_RATE_WINDOW_S);   // the oldest sample inside the window
+    const span = newest[0] - oldest[0];
+    rates.push(span >= SLOT_RATE_MIN_SPAN_S ? Math.max(0, (newest[1] - oldest[1]) / span) : s.tok_s);
+  }
+  return rates;
+}
+
 function render(m) {
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
+  const slotRate = slotRates(live);   // each slot's window rate, once per poll: the pill and the widgets share it
   // the header pill
   if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
     setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
   } else if (live.state === "generating") {
     // several slots decoding together (#465): every stream's own rate, so two agents are visible at once
-    const rates = (live.slots || []).filter((s) => s.state === "decoding" && s.tok_s != null).map((s) => s.tok_s);
+    const rates = (live.slots || []).map((s, i) => (s.state === "decoding" ? slotRate[i] : null)).filter((r) => r != null);
     setPill("generating", rates.length > 1
       ? `${rates.length} decoding · ${rates.map((r) => fmt(r, 1)).join(" + ")} tok/s`
       : `Generating · ${fmt(live.tok_s, 1)} tok/s`);
@@ -197,7 +225,7 @@ function render(m) {
     setPill("idle", "Idle");
   }
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
-  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
+  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept, slotRate);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
   if (tab === "about") renderAbout(eng, hw, st);
 }
@@ -267,7 +295,7 @@ function workerWidgetsFor(n) {
   });
   return workerWidgets;
 }
-function renderWorkers(live, eng) {
+function renderWorkers(live, eng, rates) {
   const card = $("workers-card"), slots = live.slots || [];
   card.hidden = !live.parallel;
   if (!live.parallel) return;                                   // one request at a time: the card stays away
@@ -284,7 +312,8 @@ function renderWorkers(live, eng) {
     w.el.dataset.state = s.state;
     text2(w.badge, decoding ? "Decoding" : reading ? "Reading" : "Free");
     w.badge.className = `st-badge worker__badge${decoding ? " st-badge--generating" : reading ? " st-badge--reading" : ""}`;
-    if (decoding && s.tok_s != null) w.rate.innerHTML = `${fmt(s.tok_s, 1)}<small>t/s</small>`;
+    const rate = (rates || [])[s.slot];
+    if (decoding && rate != null) w.rate.innerHTML = `${fmt(rate, 1)}<small>t/s</small>`;
     else w.rate.innerHTML = "&ndash;";
     text2(w.sub, decoding ? `${fmt(s.generated)} tokens · ${fmt(s.elapsed_s, 1)} s in this slot`
           : reading ? `reading ${fmt(s.prompt_tokens)} prompt tokens`
@@ -301,8 +330,8 @@ function renderWorkers(live, eng) {
         : "Every slot keeps its conversation, so an agent's next turn lands here without re-reading its history.";
   text2($("workers-note"), note);
 }
-function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
-  renderWorkers(live, eng);
+function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept, slotRate) {
+  renderWorkers(live, eng, slotRate);
   // model state
   const on = live.queued > 0 ? "queued" : live.state;
   for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);

@@ -1,5 +1,7 @@
 """Request inspection through HTTP; no native model or GPU is required."""
 import json
+import shutil
+import subprocess
 import threading
 import time
 import unittest
@@ -266,6 +268,30 @@ class ConversationCacheCard(unittest.TestCase):
             self.assertIn(f'"{el}"', js)
         self.assertIn('id="workers-card" hidden', html)
         self.assertIn("card.hidden = !live.parallel", js)
+
+    def test_a_slot_shows_its_window_rate_not_the_mean_since_the_first_token(self):
+        """live.slots[].tok_s is the mean since the first token, so a slot opens at the burst rate and only decays
+        to the truth over minutes: 300 falling to 35 on a 4090 with two agents. The card's number is the server's
+        own window rate (RATE_WINDOW_S, server.py:220) taken from consecutive samples. Needs node."""
+        if not shutil.which("node"):
+            self.skipTest("node is not installed")
+        src = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
+        a = src.index("const SLOT_RATE_WINDOW_S")
+        js = src[a:src.index("function render(m)", a)] + """
+const samples = [[0.1, 30], [1.1, 65], [2.1, 100], [3.1, 135]];   // 30 tokens in the first 0.1 s, then 35/s
+const shown = samples.map(([elapsed_s, generated]) => slotRates({
+  slots: [{slot: 0, state: "decoding", generated, elapsed_s, tok_s: +(generated / elapsed_s).toFixed(1)}]})[0]);
+const reading = slotRates({slots: [{slot: 0, state: "reading", prompt_tokens: 1280}]});
+const fresh = slotRates({slots: [{slot: 0, state: "decoding", generated: 12, elapsed_s: 0.1, tok_s: 120.0}]});
+console.log(JSON.stringify({shown, reading, fresh}));
+"""
+        run = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        got = json.loads(run.stdout)
+        # the mean over the same four samples is 300.0, 59.1, 47.6, 43.5: the slide the card used to show
+        self.assertEqual([round(x, 1) for x in got["shown"]], [300.0, 35.0, 35.0, 35.0])
+        self.assertEqual(got["reading"], [None])       # reading: a slot has no rate of its own
+        self.assertEqual(got["fresh"], [120.0])        # the first sample: the mean, as the server's rule falls back
 
 
 if __name__ == "__main__":
