@@ -31,12 +31,20 @@ void missing(const char* name) {
 
 // ---- entry points the shared host loop asks every request, with nothing to do on Metal yet
 #include "strata/kernels/cvec.hpp"
+#include "strata/kernels/fused_gr.hpp"
 namespace strata::kernels {
 // no control vector on Metal (--control-vector-scaled is not ported): the empty one, `loaded()` false
 const Cvec& cvec() {
     static const Cvec none{};
     return none;
 }
+}  // namespace strata::kernels
+
+// the hyper-connection persist read (STRATA_HC_PERSIST) is a CUDA/HIP kernel: on Metal every read takes the
+// default path, so these are the same no-ops src/kernels/cuda/fused_gr.cu compiles for non-CUDA translation units.
+namespace strata::kernels {
+void fused_gr_persist_init() {}
+bool fused_gr_read_persist(const FusedGrArgs*, int, void*) { return false; }
 }  // namespace strata::kernels
 
 // an uncaught exception or abort on the Metal build prints where it came from (macOS gives no core dump by default and
