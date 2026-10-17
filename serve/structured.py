@@ -28,6 +28,40 @@ class _ObjectError:
     message = "the answer is not a JSON object"
 
 
+class _PlainString:
+    """A json_schema that is one required string field: the model writes that string as plain text and the server
+    builds the object around it.  Measured on a scanned rent roll (Qwen3.8-Flash-Next UD-IQ4_XS, temperature 0): asked
+    for {"text": ...}, the model wrote the table inside the JSON string, then the escaped newline 256 times instead of
+    the page's last lines and the closing quote; asked for plain text, the same page came out whole and ended on its
+    own.  `inner` checks the built object against the schema as usual."""
+
+    def __init__(self, inner, key):
+        self.inner, self.key = inner, key
+
+    def iter_errors(self, value):
+        return self.inner.iter_errors(value)
+
+
+_PLAIN_FIELD_KEYS = {"type", "description", "title"}
+_PLAIN_ROOT_KEYS = {"type", "properties", "required", "additionalProperties", "description", "title", "$schema"}
+
+
+def single_string_key(schema):
+    """The field name when `schema` is an object with exactly one property, a required plain string (no enum, pattern
+    or length limits: anything the model writes is then a valid value), and nothing else allowed; else None."""
+    if not isinstance(schema, dict) or schema.get("type") != "object" or set(schema) - _PLAIN_ROOT_KEYS:
+        return None
+    props = schema.get("properties")
+    if not isinstance(props, dict) or len(props) != 1:
+        return None
+    key, field = next(iter(props.items()))
+    if schema.get("required") != [key] or schema.get("additionalProperties", False) is not False:
+        return None
+    if not isinstance(field, dict) or field.get("type") != "string" or set(field) - _PLAIN_FIELD_KEYS:
+        return None
+    return key
+
+
 _jsonschema = None                     # (validators, SchemaError, Registry, NoSuchResource), False when not installed
 _jsonschema_lock = threading.Lock()
 
@@ -80,7 +114,10 @@ def _only_objects(node, root, refs=()):
     return isinstance(branches, list) and any(_only_objects(b, root, refs) for b in branches)
 
 
-def prepare_format(response_format, messages, with_tools=False):
+def prepare_format(response_format, messages, with_tools=False, plain_string=False):
+    """The messages with the format directive added, and the validator for the answer (None: no format).
+    `plain_string` (the config's "structured_plain_string", opt-in): a json_schema that is one required string
+    field is answered as plain text and wrapped by the server (see _PlainString); not with tools."""
     if response_format is None:
         return messages, None
     if not isinstance(response_format, dict):
@@ -131,11 +168,21 @@ def prepare_format(response_format, messages, with_tools=False):
             validator = cls(schema, registry=Registry(retrieve=no_remote))
         except SchemaError as exc:
             raise ValueError(f"invalid response_format schema: {exc.message}") from exc
-    directive = ("OUTPUT FORMAT REQUIREMENT: Return exactly one JSON object matching the JSON Schema below. "
-                 "No Markdown, headings, code fences, commentary, or text outside the JSON. "
-                 "Use every required field, correct types, and only allowed fields. "
-                 "Put all requested writing inside the appropriate JSON string fields.\nJSON Schema:\n" +
-                 json.dumps(schema, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+    key = single_string_key(schema) if plain_string and not with_tools and kind == "json_schema" else None
+    if key is not None:
+        about = schema["properties"][key].get("description")
+        directive = ("OUTPUT FORMAT REQUIREMENT: Write the answer as plain text only - no JSON, no braces, no code "
+                     "fences, no quotes around it, and nothing before or after it. The server puts this text into "
+                     f"the JSON field \"{key}\" of the response itself, so do not write JSON, even where the "
+                     "instructions above ask for a JSON object." +
+                     (f" The field is described as: {about}" if isinstance(about, str) and about.strip() else ""))
+        validator = _PlainString(validator, key)
+    else:
+        directive = ("OUTPUT FORMAT REQUIREMENT: Return exactly one JSON object matching the JSON Schema below. "
+                     "No Markdown, headings, code fences, commentary, or text outside the JSON. "
+                     "Use every required field, correct types, and only allowed fields. "
+                     "Put all requested writing inside the appropriate JSON string fields.\nJSON Schema:\n" +
+                     json.dumps(schema, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
     if with_tools:
         # /v1/responses (#782): the schema is for the final answer; a turn that calls a tool is not an answer
         directive += ("\nThis applies only to your final answer. To use a tool, call it as usual; the JSON object is "
@@ -203,6 +250,8 @@ def validated_json(text, validator, finish):
 
     if finish != "stop":
         raise StructuredOutputError(f"structured output was incomplete (finish_reason={finish}); increase the output budget")
+    if isinstance(validator, _PlainString):
+        return _wrapped(text, validator, pairs, constant)
     try:
         value = json.loads(_extract_json(text), object_pairs_hook=pairs, parse_constant=constant)
         canonical = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
@@ -216,3 +265,38 @@ def validated_json(text, validator, finish):
         path = "/" + "/".join(str(part) for part in error.absolute_path)
         raise StructuredOutputError(f"model output failed the JSON Schema at {path}: {error.message}")
     return canonical
+
+
+def _wrapped(text, validator, pairs, constant):
+    """A plain-string answer (see _PlainString) as the schema's object.  A model that wrote a JSON object anyway is
+    taken at its word: that object is the answer, checked against the schema as always (an invalid one is an error,
+    never quietly turned into a string).  Any other text, as written, is the field's value."""
+    s = (text or "").strip()
+    value = None
+    if s.startswith("{") or s.startswith("```"):
+        try:
+            value = json.loads(_extract_json(s), object_pairs_hook=pairs, parse_constant=constant)
+        except (ValueError, TypeError):
+            value = None
+        if not isinstance(value, dict):
+            value = None
+    if value is not None:
+        try:
+            error = next(validator.iter_errors(value), None)
+        except Exception as exc:
+            raise StructuredOutputError(f"could not validate structured output: {exc}") from exc
+        if error is not None:
+            path = "/" + "/".join(str(part) for part in error.absolute_path)
+            raise StructuredOutputError(f"model output failed the JSON Schema at {path}: {error.message}")
+        return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    if not s:
+        raise StructuredOutputError("model returned no text for the answer")
+    value = {validator.key: s}
+    try:
+        error = next(validator.iter_errors(value), None)
+    except Exception as exc:
+        raise StructuredOutputError(f"could not validate structured output: {exc}") from exc
+    if error is not None:
+        path = "/" + "/".join(str(part) for part in error.absolute_path)
+        raise StructuredOutputError(f"model output failed the JSON Schema at {path}: {error.message}")
+    return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
