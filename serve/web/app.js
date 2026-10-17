@@ -17,6 +17,158 @@ const store = {
   set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); } catch (e) { /* private mode: in memory only */ } },
 };
 
+// ------------------------------------------------------------------ language (#2686)
+// One JSON pack per language (serve/web/i18n/<lang>.json, UTF-8 - never GBK/cp936).  The page's own markup is the
+// English pack, so an English browser sees exactly what it saw before; another pack is fetched only when that
+// language is chosen.  The strings the script builds at runtime use t() with the same keys.
+const LANGS = [{code: "en", name: "English", dir: "ltr"}];      // GET /i18n replaces this with what the server has
+let lang = "en", pack = {}, packs = {};
+const H = (key) => ({key});                  // a key read when the string is drawn, not when the table is built
+function t(key, vars) {
+  if (key && key.key) key = key.key;                            // an H() marker
+  const s = pack[key] !== undefined ? pack[key] : (BASE.get(key) !== undefined ? BASE.get(key) : FALLBACK.get(key));
+  if (s === undefined || s === null) return key;                // a missing key is a bug, not a blank page
+  if (!vars) return String(s);
+  return String(s).replace(/\{(\w+)\}/g, (m, k) => (vars[k] == null ? "" : vars[k]));
+}
+// the English strings the page ships with: they stand in until the pack arrives, and they are the fallback for a
+// key a pack lacks (so an old pack on a newer page still reads English, not raw keys)
+const BASE = new Map(Object.entries({
+  "pill.key": "API key needed", "pill.unreachable": "Server not reachable",
+  "toast.key.title": "API key needed",
+  "toast.key.text": "This server needs a key: add it under About > Settings.",
+}));
+function applyStatic(root) {
+  for (const el of root.querySelectorAll("[data-i18n]")) el.textContent = t(el.dataset.i18n);
+  for (const el of root.querySelectorAll("[data-i18n-aria]")) el.setAttribute("aria-label", t(el.dataset.i18nAria));
+  for (const el of root.querySelectorAll("[data-i18n-title]")) el.title = t(el.dataset.i18nTitle);
+  for (const el of root.querySelectorAll("[data-i18n-placeholder]")) el.placeholder = t(el.dataset.i18nPlaceholder);
+}
+function applyLang() {
+  document.documentElement.lang = lang;
+  document.documentElement.dir = (pack.meta && pack.meta.dir) || "ltr";
+  document.title = t("app.title");
+  applyStatic(document);
+  // the cards are built once at start, which can be before the pack arrived: relabel them
+  for (const m of METRICS) {
+    const el = $(`ml-${m.key}`);
+    if (el) setWords(el, t(`mon.metric.${m.key}`));
+  }
+  // what the script built since: the parts that keep their own text
+  if (lastMetrics) render(lastMetrics);
+  renderMcp();
+  if (messages.length) renderChat();
+  setBusy(!!busy);
+  outputs();
+  if (tab === "about") loadConfig();
+  fillLangs();
+}
+async function loadPack(code) {
+  if (packs[code]) return packs[code];
+  const r = await fetch("web/i18n/" + encodeURIComponent(code) + ".json");   // #2686: one file per language, UTF-8
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const body = await r.arrayBuffer();
+  packs[code] = JSON.parse(new TextDecoder("utf-8").decode(body));           // UTF-8 whatever the server said
+  return packs[code];
+}
+async function setLang(code, save) {
+  code = code || "en";
+  try {
+    pack = await loadPack(code);
+  } catch (e) {
+    pack = {};                                // no pack (an older server): the page's own English text stays
+    code = "en";
+  }
+  lang = code;
+  if (save) store.set("lang", code);
+  applyLang();
+}
+function browserLang() {
+  const wanted = [...(navigator.languages || [navigator.language]).filter(Boolean)].map(String);
+  for (const w of wanted) {
+    const lower = w.toLowerCase();
+    for (const l of LANGS) {
+      if (l.code.toLowerCase() === lower || l.code.toLowerCase() === lower.split("-")[0]) return l.code;
+    }
+  }
+  return "en";
+}
+function fillLangs() {
+  const seg = $("lang-seg");
+  if (!seg) return;                                  // an older page has no switch
+  const known = LANGS.map((l) => l.code);
+  const saved = store.get("lang", null);
+  const wanted = [...known, saved, lang].filter((c, i, a) => c && a.indexOf(c) === i);
+  // one button per language, in the drawer's own segmented control (role=radio, as "Thinking" does it)
+  seg.innerHTML = wanted.map((c) => {
+    const l = LANGS.find((x) => x.code === c);
+    return '<button type="button" role="radio" data-lang="' + esc(c) + '" aria-checked="' +
+           (c === lang ? "true" : "false") + '">' + esc(l ? l.name : c) + "</button>";
+  }).join("");
+  for (const b of seg.children) {
+    b.onclick = () => setLang(b.dataset.lang, true);
+  }
+}
+async function loadLangs() {
+  try {
+    const r = await fetch("i18n", {headers: headers()});
+    if (!r.ok) return;
+    const list = (await r.json()).languages || [];
+    if (list.length) { LANGS.length = 0; LANGS.push(...list); }
+  } catch (e) { /* an older server: English only */ }
+}
+
+// ------------------------------------------------------------------ writing text (#2687)
+// A node is written only when its text really changed.  This is what stops the flicker: Chrome's page translation
+// rewrites the words it translated, and a script that wrote "Decode now" again every second put the English back,
+// so the two fought over the same node - one flip per second.  Numbers still update every tick (a number needs no
+// translating); a label is written once and then left alone.
+function setText(el, value) {
+  if (!el) return;                                 // a missing node must not stop the page (it stops the language)
+  if (el.textContent !== String(value)) el.textContent = value;
+}
+function setHtml(el, value) {
+  if (el && el.innerHTML !== String(value)) el.innerHTML = value;
+}
+// the words a node shows, kept beside it: set once, then never touched again while the language is the same
+function setWords(el, value) {
+  if (!el) return;
+  if (el.dataset.words === String(value) && el.textContent === String(value)) return;
+  el.textContent = value;
+  el.dataset.words = value;
+}
+function setAttr(el, name, value) {
+  if (el && el.getAttribute(name) !== String(value)) el.setAttribute(name, value);
+}
+
+// ------------------------------------------------------------------ the server's error text (#2686)
+// The API answers in English - that text is a contract for programs, so it stays as it is.  Only what this page
+// shows is translated: the messages the server actually produces are matched here, and anything that does not
+// match is shown as the server wrote it (better English than a wrong guess).
+const SERVER_ERROR_TEXT = [
+  [/the request body is larger than/i, "err.bodyTooLarge"],
+  [/larger than the model/i, "err.promptTooLong"],
+  [/context|too long|exceeds/i, "err.promptTooLong"],
+  [/no image encoder|no vision|not an image/i, "err.noVision"],
+  [/missing or wrong API key/i, "err.key"],
+  [/the engine|engine died|restart/i, "err.engine"],
+  [/not found/i, "err.notFound"],
+  [/timed out|timeout/i, "err.timeout"],
+  [/out of memory|VRAM|memory/i, "err.memory"],
+  [/structured output/i, "err.structured"],
+];
+function errorText(message) {
+  const s = String(message || "");
+  if (!s) return s;
+  for (const [re, key] of SERVER_ERROR_TEXT) {
+    if (re.test(s)) {
+      const got = t(key);
+      if (got !== key) return `${got}\n\n${s}`;           // the translation, then what the server said
+    }
+  }
+  return s;
+}
+
 // ------------------------------------------------------------------ toasts
 function toast(kind, title, text = "", ms = 3500, action = null) {
   const names = {info: "info", success: "check", warn: "warning", error: "error"};
@@ -50,7 +202,7 @@ async function copyText(text, btn) {
     use.setAttribute("href", `${SPRITE}#i-check`);
     setTimeout(() => use.setAttribute("href", `${SPRITE}#i-copy`), 1500);
   }
-  toast("success", "Copied to clipboard", "", 1800);
+  toast("success", t("toast.copied"), "", 1800);
 }
 
 // ------------------------------------------------------------------ theme and tabs
@@ -95,15 +247,15 @@ function headers(json = false) {
   return h;
 }
 $("api-key").value = store.get("apikey", "");
-$("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", "API key saved", "Kept in this browser only."); };
+$("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", t("toast.keySaved"), t("toast.keySavedText")); };
 
 let health = {model: "strata", images: false, max_context: 0};
 async function loadHealth() {
   try {
     health = await (await fetch("health")).json();
-    $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
-                                          : "Attach a text file (or drop it here)";
-    $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
+    $("attach-btn").title = health.images ? t("chat.attachImages")
+                                          : t("chat.attach");
+    setText($("chat-empty-sub"), t("chat.emptySub", {model: health.model}));
     $("tab-btn-images").hidden = !health.image_generation;
     if (location.hash === "#images" && health.image_generation) showTab("images");
   } catch (e) {
@@ -112,6 +264,7 @@ async function loadHealth() {
 }
 
 // ------------------------------------------------------------------ Monitor
+const FALLBACK = new Map();                  // the page's own English, for a key no pack has (yet)
 const METRICS = [
   {key: "speed", label: "Speed", icon: "gauge", unit: "t/s", series: "tok_s"},
   {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100},
@@ -122,9 +275,10 @@ const METRICS = [
   {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100},
   {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info"},
 ];
+for (const m of METRICS) FALLBACK.set(`mon.metric.${m.key}`, m.label);
 $("metrics").innerHTML = METRICS.map((m) => `
   <div class="st-card metric-card"><div class="st-metric">
-    <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
+    <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}<span id="ml-${m.key}">${esc(t("mon.metric." + m.key))}</span></span>
     ${m.key === "speed" ? `<div class="speed-values">
       <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span></div>
       <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span></div>
@@ -149,8 +303,8 @@ function spark(id, values, max) {
   svg.querySelector(".area").setAttribute("d", `${line}L100,32L0,32Z`);
 }
 function setMetric(key, value, unit, sub) {
-  $(`mv-${key}`).innerHTML = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
-  $(`ms-${key}`).textContent = sub || "";
+  setHtml($(`mv-${key}`), value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`);
+  setWords($(`ms-${key}`), sub || "");
 }
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
@@ -159,8 +313,8 @@ async function poll() {
   try {
     const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {headers: headers()});
     if (r.status === 401) {
-      setPill("error", "API key needed");
-      if (!keyWarned) { keyWarned = true; toast("warn", "API key needed", "This server needs a key: add it under About > Settings.", 6000); }
+      setPill("error", t("pill.key"));
+      if (!keyWarned) { keyWarned = true; toast("warn", t("toast.key.title"), t("toast.key.text"), 6000); }
     } else if (r.ok) {
       lastMetrics = await r.json();
       metricsFailures = 0;
@@ -177,7 +331,7 @@ async function poll() {
 
 function setPill(state, text) {
   $("pill").dataset.state = state === "error" ? "queued" : state;
-  $("pill-text").textContent = text;
+  setWords($("pill-text"), text);
 }
 
 function render(m) {
@@ -186,13 +340,13 @@ function render(m) {
   // the header pill
   if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
-    setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
+    setPill("reading", pct != null ? t("pill.readingPct", {pct}) : t("pill.reading"));
   } else if (live.state === "generating") {
-    setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
+    setPill("generating", t("pill.generating", {rate: fmt(live.tok_s, 1)}));
   } else {
-    setPill("idle", "Idle");
+    setPill("idle", t("pill.idle"));
   }
-  if (live.queued > 0) setPill("queued", `${live.queued} queued`);
+  if (live.queued > 0) setPill("queued", t("pill.queued", {n: live.queued}));
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
   if (tab === "about") renderAbout(eng, hw, st);
@@ -203,7 +357,7 @@ function render(m) {
 function since(t) {
   if (!t) return "";
   const s = Math.max(0, Date.now() / 1000 - t);
-  return s < 60 ? "just now" : s < 3600 ? `${fmt(s / 60)} min ago` : `${fmt(s / 3600, 1)} h ago`;
+  return s < 60 ? t("cc.justNow") : s < 3600 ? t("cc.minAgo", {n: fmt(s / 60)}) : t("cc.hoursAgo", {n: fmt(s / 3600, 1)});
 }
 function renderConvCache(c) {
   $("cc-card").hidden = !c;
@@ -211,101 +365,99 @@ function renderConvCache(c) {
   const pct = (a, b) => (b ? `${Math.min(100, (100 * a) / b)}%` : "0%");
   $("cc-bars").hidden = !c.enabled;
   if (c.enabled) {
-    $("cc-slots-text").textContent = `${fmt(c.parked)} / ${fmt(c.slots)}`;
+    setText($("cc-slots-text"), `${fmt(c.parked)} / ${fmt(c.slots)}`);
     $("cc-slots-bar").style.width = pct(c.parked, c.slots);
     const budget = c.budget_mib * 1048576;
-    $("cc-mem-text").textContent = `${gb(c.bytes)} / ${gb(budget)} GB`;
+    setText($("cc-mem-text"), `${gb(c.bytes)} / ${gb(budget)} GB`);
     $("cc-mem-bar").style.width = pct(c.bytes, budget);
   }
-  $("cc-sum").textContent = c.requests ? `${fmt(c.requests_reused)} of ${fmt(c.requests)} requests reused part of their prompt` : "";
-  const share = c.prompt_tokens ? ` (${fmt((100 * c.reused_tokens) / c.prompt_tokens)}% of all prompt tokens)` : "";
-  const event = c.last_event ? `${c.last_event === "parked" ? "Parked" : "Restored"} ${fmt(c.last_tokens)} tokens, ${since(c.last_at)}` : null;
+  setText($("cc-sum"), c.requests ? t("cc.summary", {reused: fmt(c.requests_reused), n: fmt(c.requests)}) : "");
+  const share = c.prompt_tokens ? t("cc.share", {pct: fmt((100 * c.reused_tokens) / c.prompt_tokens)}) : "";
+  const event = c.last_event ? t("cc.event", {what: c.last_event === "parked" ? t("cc.eventParked") : t("cc.eventRestored"), n: fmt(c.last_tokens), when: since(c.last_at)}) : null;
   facts($("cc-facts"), [
-    ["Last request", c.last_prompt != null ? `${fmt(c.last_reused || 0)} of ${fmt(c.last_prompt)} prompt tokens reused` : null],
-    ["Reused since start", c.requests ? `${fmt(c.reused_tokens)} tokens${share}` : null],
-    ["Parked / restored", c.enabled ? `${fmt(c.parks)} / ${fmt(c.restores)}${c.evictions ? ` · ${fmt(c.evictions)} evicted` : ""}` : null],
-    ["Last switch", c.enabled ? event : null],
+    [t("cc.lastRequest"), c.last_prompt != null ? t("cc.lastRequestValue", {reused: fmt(c.last_reused || 0), n: fmt(c.last_prompt)}) : null],
+    [t("cc.reusedSince"), c.requests ? t("cc.reusedSinceValue", {n: fmt(c.reused_tokens), share}) : null],
+    [t("cc.parkedRestored"), c.enabled ? t("cc.parkedRestoredValue", {parks: fmt(c.parks), restores: fmt(c.restores), evicted: c.evictions ? t("cc.evicted", {n: fmt(c.evictions)}) : ""}) : null],
+    [t("cc.lastSwitch"), c.enabled ? event : null],
   ]);
-  $("cc-note").textContent = c.enabled
-    ? "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full."
-    : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
+  setWords($("cc-note"), c.enabled ? t("cc.noteOn") : t("cc.noteOff"));
 }
 
 function renderTotals(t) {
   if (!t || !t.requests) return "";
   const since = new Date(t.since * 1000).toLocaleString([], {weekday: "short", hour: "2-digit", minute: "2-digit"});
   const read = t.prompt_tokens - t.reused;
-  const pSpeed = t.prompt_ms > 0 && read > 0 ? ` at ${fmt(read / (t.prompt_ms / 1000))} tok/s` : "";
-  const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` at ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} tok/s` : "";
-  return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
-         `${fmt(t.output_tokens)} written${oSpeed}`;
+  const pSpeed = t.prompt_ms > 0 && read > 0 ? t("mon.totalsRate", {rate: fmt(read / (t.prompt_ms / 1000))}) : "";
+  const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? t("mon.totalsRate", {rate: fmt(t.output_tokens / (t.decode_ms / 1000), 1)}) : "";
+  return t("mon.totals", {time: since, n: fmt(t.requests), read: fmt(read), rate: pSpeed, reused: fmt(t.reused), written: fmt(t.output_tokens), wrate: oSpeed});
+
 }
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // model state
   const on = live.queued > 0 ? "queued" : live.state;
   for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);
   const prog = $("state-progress");
-  let label = "Waiting for a request", detail = "", pct = 0;
+  let label = t("mon.waiting"), detail = "", pct = 0;
   if (live.state === "reading") {
-    label = "Reading prompt";
+    label = t("mon.readingPrompt");
     prog.dataset.tone = "info";
     if (live.prompt_total) {
       pct = (100 * live.prompt_read) / live.prompt_total;
-      detail = `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens · ${fmt(pct)}%`;
+      detail = t("mon.progress", {done: fmt(live.prompt_read), total: fmt(live.prompt_total), pct: fmt(pct)});
     } else {
-      detail = `${fmt(live.prompt_tokens)} tokens`;
+      detail = t("mon.tokens", {n: fmt(live.prompt_tokens)});
     }
   } else if (live.state === "generating") {
-    label = live.phase ? live.phase[0].toUpperCase() + live.phase.slice(1) : "Generating";
+    label = live.phase ? live.phase[0].toUpperCase() + live.phase.slice(1) : t("mon.generating");
     delete prog.dataset.tone;
     pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
-    detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
+    detail = t("mon.tokenRate", {n: fmt(live.generated), rate: fmt(live.tok_s, 1)});
   } else if (last) {
     delete prog.dataset.tone;
-    detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
+    detail = t("mon.lastRequest", {n: fmt(last.output_tokens), rate: last.decode_tok_s ? t("mon.atRate", {rate: fmt(last.decode_tok_s, 1)}) : ""});
   }
-  $("state-label").textContent = label;
-  $("state-detail").textContent = detail;
+  setWords($("state-label"), label);
+  setText($("state-detail"), detail);
   $("state-bar").style.width = `${pct}%`;
 
   // the eight cards
   const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
   setMetric("speed", speed == null ? null : fmt(speed, 1), "t/s",
-            live.state === "generating" ? "Decode now" : last ? "Decode last request" : "Decode");
+            live.state === "generating" ? t("mon.sub.decodeNow") : last ? t("mon.sub.decodeLast") : t("mon.sub.decode"));
   const prefill = live.state !== "idle" ? live.prefill_tok_s_mean
                 : last && last.prompt_ms > 0 ? Math.max(0, last.prompt_tokens - (last.reused || 0)) / (last.prompt_ms / 1000) : null;
   setMetric("prefill", prefill == null ? null : fmt(prefill), "t/s",
-            live.state === "reading" ? "Prefill now" : live.state === "generating" ? "Prefill this request" : last ? "Prefill last request" : "Prefill");
+            live.state === "reading" ? t("mon.sub.prefillNow") : live.state === "generating" ? t("mon.sub.prefillThis") : last ? t("mon.sub.prefillLast") : t("mon.sub.prefill"));
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
-  const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
+  const per = (f) => (hw.gpus || []).map((g) => t("mon.sub.gpuN", {index: g.index, value: f(g)})).join(" · ");
   const multi = (hw.gpus || []).length > 1;
   setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
-            multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || (st.gpu_note ? "not available" : ""));
+            multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || (st.gpu_note ? t("mon.sub.notAvailable") : ""));
   spark("sp-gpu", h.gpu_util, 100);
   setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
             multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
-                  : eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : (st.gpu_note ? "not available on Windows AMD yet" : ""));
+                  : eng.expert_slots ? t("mon.sub.experts", {n: fmt(eng.expert_slots)}) : (st.gpu_note ? t("mon.sub.amdWindows") : ""));
   spark("sp-vram", h.gpu_mem_used, hw.gpu_mem_total);
   setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
             multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
   spark("sp-temp", h.gpu_temp, 90);
-  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
+  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? t("mon.sub.powerLimit", {n: fmt(hw.gpu_power_limit)}) : "");
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
   const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
   setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
-            hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
-            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
+            hw.gpu_pcie_rx_mb == null ? "" : t("mon.sub.pcieTo", {rate: fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)}) +
+            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · ` + t("mon.sub.pcieIdle", {n: hw.gpu_pcie_gen}) : ""));
   spark("sp-pcie", h.gpu_pcie_rx_mb);
-  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
+  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? t("mon.sub.cpuThreads", {cores: st.cores ? t("mon.sub.cores", {n: st.cores}) : "", threads: st.threads}) : "");
   spark("sp-cpu", h.cpu, 100);
   if (hw.disk_read_mb == null) {
-    setMetric("disk", null, "", st.psutil ? "" : "needs psutil (setup installs it)");
+    setMetric("disk", null, "", st.psutil ? "" : t("mon.sub.needsPsutil"));
   } else {
     const big = hw.disk_read_mb >= 1000;
     setMetric("disk", big ? fmt(hw.disk_read_mb / 1024, 2) : fmt(hw.disk_read_mb, hw.disk_read_mb < 10 ? 1 : 0), big ? "GB/s" : "MB/s",
-              hw.disk_write_mb == null ? "" : `write ${fmt(hw.disk_write_mb, 1)} MB/s`);
+              hw.disk_write_mb == null ? "" : t("mon.sub.diskWrite", {rate: fmt(hw.disk_write_mb, 1)}));
   }
   spark("sp-disk", h.disk_read_mb);
 
@@ -317,83 +469,86 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   const frac = ctx ? Math.min(1, used / ctx) : 0;
   $("ctx-fill").setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
   $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";         // a near-zero arc would draw just its round cap
-  $("ctx-pct").textContent = `${Math.round(frac * 100)}%`;
-  $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
+  setText($("ctx-pct"), `${Math.round(frac * 100)}%`);
+  setText($("ctx-sub"), ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–");
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
-  $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
+  setText($("slots-text"), eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–");
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
-  $("ram-text").textContent = hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–";
+  setText($("ram-text"), hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–");
   const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
   $("ram-bar").style.width = `${ramPct}%`;
   if (ramPct > 92) $("ram-progress").dataset.tone = "danger"; else delete $("ram-progress").dataset.tone;
-  $("temp-text").textContent = hw.gpu_temp == null ? "–" : `${fmt(hw.gpu_temp)} °C`;
+  setText($("temp-text"), hw.gpu_temp == null ? "–" : `${fmt(hw.gpu_temp)} °C`);
   $("temp-bar").style.width = hw.gpu_temp == null ? "0%" : `${Math.min(100, hw.gpu_temp)}%`;
 
   // recent requests
   const body = $("req-body");
-  if (!requests.length) {
-    body.innerHTML = `<tr><td colspan="9" class="muted">No requests yet</td></tr>`;
-  } else {
-    const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
-                   disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"]};
-    body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
-      const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
-      const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
-      const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
+  // The rows are rebuilt only when they really changed.  Rebuilding them every second replaced every word in the
+  // table, which is what made a translated table flicker back to English (#2687); when nothing changed, not one
+  // node in here is touched.
+  const rowsHtml = (list) => {
+    if (!list.length) return `<tr><td colspan="9" class="muted">${esc(t("mon.noRequests"))}</td></tr>`;
+    const badge = {stop: ["", t("mon.finish.done")], length: ["", t("mon.finish.maxTokens")], cancel: ["st-badge--queued", t("mon.finish.stopped")],
+                   disconnect: ["st-badge--queued", t("mon.finish.closed")], error: ["st-badge--error", t("mon.finish.error")]};
+    return list.map((r) => {
+      const [cls, raw] = badge[r.finish] || ["", r.finish || "–"];
+      const text = t(raw);
+      const time = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+      const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="${esc(t("mon.esp", {state: r.projection ? t("mon.esp.on") : t("mon.esp.off")}))}">${esc(r.projection ? t("mon.espBadge") : t("mon.espStock"))}</span>`;
       // #588: the VRAM share; the PCIe share (--pcie-frac) beside it when there is one
       const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%` +
-        (r.pcie_share ? ` <span class="muted" title="routed experts the GPU read over PCIe (--pcie-frac) or another GPU computed">+${(r.pcie_share * 100).toFixed(1)}% PCIe</span>` : "");
+        (r.pcie_share ? ` <span class="muted" title="${esc(t("mon.pcieShare"))}">${esc(t("mon.pciePlus", {pct: (r.pcie_share * 100).toFixed(1)}))}</span>` : "");
       // Reused tokens are not prefetched again. Match the Monitor's existing Prefill metric.
       const fresh = r.prompt_tokens == null ? null : Math.max(0, r.prompt_tokens - (r.reused || 0));
       const prefillRate = fresh > 0 && r.prompt_ms > 0 ? fresh / (r.prompt_ms / 1000) : null;
-      return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
+      return `<tr><td>${esc(time)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
         <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(prefillRate)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
         <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
     }).join("");
-  }
+  };
+  setHtml(body, rowsHtml(requests.slice(0, reqShowAll ? requests.length : 12)));
   const all = $("req-all");
   kept = kept == null ? requests.length : kept;
   all.hidden = kept <= 12;
-  all.textContent = reqShowAll ? "Show fewer" : `Show all (${kept})`;
+  setWords(all, reqShowAll ? t("mon.showFewer") : t("mon.showAllN", {n: kept}));
   $("req-wrap").classList.toggle("all", reqShowAll);
-  $("req-totals").textContent = renderTotals(totals);
+  setText($("req-totals"), renderTotals(totals));
 }
 
 function facts(el, rows) {
-  el.innerHTML = rows.filter((r) => r[1] != null && r[1] !== "").map(([k, v, copy]) =>
-    `<dt>${esc(k)}</dt><dd>${copy ? `<code>${esc(v)}</code><button class="st-btn st-btn--icon" data-copy="${esc(v)}" aria-label="Copy">${icon("copy")}</button>` : esc(v)}</dd>`).join("");
+  setHtml(el, rows.filter((r) => r[1] != null && r[1] !== "").map(([k, v, copy]) =>
+    `<dt>${esc(k)}</dt><dd>${copy ? `<code>${esc(v)}</code><button class="st-btn st-btn--icon" data-copy="${esc(v)}" aria-label="${esc(t("chat.copy"))}">${icon("copy")}</button>` : esc(v)}</dd>`).join(""));
 }
 // INFO cvec=project:4-44[:singleL] | add:A-B | 0
 function projectionText(c) {
   if (!c || c === "0" || c === 0) return null;
   const [mode, range, single] = String(c).split(":");
   const [a, b] = (range || "").split("-");
-  return `${mode === "project" ? "Projection" : "Additive"} control vector on layers ${a}–${b}` +
-         `${single ? ` (layer ${single.replace("single", "")}'s direction)` : ""}. Per chat in Sampling. Its package ` +
-         "describes the vector as a refusal-direction projection; measure the speed yourself";
+  return t("fact.projectionValue", {mode: mode === "project" ? t("fact.projectionMode") : t("fact.projectionAdd"), a, b,
+           single: single ? t("fact.projectionSingle", {n: single.replace("single", "")}) : ""});
 }
 function renderAbout(eng, hw, st) {
-  const kv = {int8: "8-bit", q4_0: "4-bit (Hadamard-rotated)", fp16: "16-bit"}[eng.kv] || eng.kv;
+  const kv = {int8: t("fact.kv8"), q4_0: t("fact.kv4"), fp16: t("fact.kv16")}[eng.kv] || eng.kv;
   facts($("facts-engine"), [
-    ["Model", eng.model],
-    ["Engine", eng.version ? `v${eng.version}` : "built from source"],
-    ["Context", eng.max_context ? `${fmt(eng.max_context)} tokens` : null],
-    ["KV cache", kv ? `${kv}${eng.kv_resident ? `, streamed: ${fmt(eng.kv_resident)} positions per layer in VRAM, the rest in RAM` : ", all in VRAM"}` : null],
-    ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
-    ["Speculation", eng.spec ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
-    ["Images", eng.images ? "on" : "off"],
-    ["Experimental speed projection", projectionText(eng.cvec)],
+    [t("fact.model"), eng.model],
+    [t("fact.engine"), eng.version ? "v" + eng.version : t("fact.engineSource")],
+    [t("fact.context"), eng.max_context ? t("fact.contextValue", {n: fmt(eng.max_context)}) : null],
+    [t("fact.kv"), kv ? (eng.kv_resident ? t("fact.kvStreamed", {kind: kv, n: fmt(eng.kv_resident)}) : t("fact.kvAll", {kind: kv})) : null],
+    [t("fact.experts"), eng.expert_slots ? t("fact.expertsValue", {n: fmt(eng.expert_slots), gb: gb((eng.expert_cache_mib || 0) * 1048576)}) : null],
+    [t("fact.speculation"), eng.spec ? t("fact.speculationValue", {n: Math.max(0, (eng.mtp_max || eng.spec) - 1), lookup: eng.lookup ? t("fact.speculationLookup") : ""}) : null],
+    [t("fact.images"), eng.images ? t("fact.on") : t("fact.off")],
+    [t("fact.projection"), projectionText(eng.cvec)],
   ]);
   facts($("facts-hw"), [
-    ["GPU", st.gpu_name ? `${st.gpu_name}${hw.gpu_mem_total ? `, ${gb(hw.gpu_mem_total, 0)} GB` : ""}` : (st.gpu_note || "not readable (NVML)")],
-    ["CPU", st.cpu_name ? `${st.cpu_name}${st.threads ? `, ${st.threads} threads` : ""}` : null],
-    ["RAM", hw.ram_total ? `${gb(hw.ram_total, 0)} GB` : null],
+    [t("fact.gpu"), st.gpu_name ? `${st.gpu_name}${hw.gpu_mem_total ? ", " + gb(hw.gpu_mem_total, 0) + " GB" : ""}` : (st.gpu_note || t("fact.gpuUnreadable"))],
+    [t("fact.cpu"), st.cpu_name ? `${st.cpu_name}${st.threads ? t("fact.cpuThreads", {n: st.threads}) : ""}` : null],
+    [t("fact.ram"), hw.ram_total ? t("fact.ramValue", {gb: gb(hw.ram_total, 0)}) : null],
   ]);
   const base = location.origin;
   facts($("facts-api"), [
-    ["OpenAI base URL", `${base}/v1`, true],
-    ["Anthropic base URL", base, true],
-    ["Model name", eng.model, true],
+    [t("fact.openai"), `${base}/v1`, true],
+    [t("fact.anthropic"), base, true],
+    [t("fact.modelName"), eng.model, true],
   ]);
 }
 document.addEventListener("click", (e) => {
@@ -416,25 +571,27 @@ async function loadMcp() {
   clearTimeout(mcpRetry);                          // right after the start, servers may still be starting (npx downloads)
   if ((mcpInfo.servers || []).some((s) => s.status === "starting")) mcpRetry = setTimeout(loadMcp, 3000);
 }
-const MCP_STATE = {ready: ["st-badge--generating", "Connected"], starting: ["st-badge--reading", "Starting"],
-                   failed: ["st-badge--error", "Failed"], stopped: ["st-badge--queued", "Stopped"], idle: ["", "Waiting"]};
+const MCP_STATE = {ready: ["st-badge--generating", H("mcp.ready")], starting: ["st-badge--reading", H("mcp.starting")],
+                   failed: ["st-badge--error", H("mcp.failed")], stopped: ["st-badge--queued", H("mcp.stopped")], idle: ["", H("mcp.idle")]};
 function renderMcp() {
   const servers = mcpInfo.servers || [];
   $("mcp-card").hidden = !servers.length;
   $("mcp-row").hidden = !servers.length;
   const ready = servers.filter((s) => s.status === "ready" || s.status === "stopped");
-  $("mcp-sum").textContent = servers.length ? `${fmt(mcpInfo.tools)} tools · ${ready.length} of ${servers.length} servers connected` : "";
-  $("mcp-row-sub").textContent = mcpInfo.tools ? `${fmt(mcpInfo.tools)} tools from ${ready.map((s) => s.name).join(", ")}; the model calls them when it decides to`
-                                               : "no server is connected yet (see the Monitor)";
-  $("mcp-list").innerHTML = servers.map((s) => {
-    const [cls, text] = MCP_STATE[s.status] || ["", s.status];
+  setText($("mcp-sum"), servers.length ? t("mcp.summary", {tools: fmt(mcpInfo.tools), ready: ready.length, n: servers.length}) : "");
+  setText($("mcp-row-sub"), mcpInfo.tools ? t("mcp.toolsFrom", {n: fmt(mcpInfo.tools), names: ready.map((s) => s.name).join(", ")})
+                                                  : t("mcp.noneYet"));
+  const mcpHtml = servers.map((s) => {
+    const [cls, rawState] = MCP_STATE[s.status] || ["", s.status];
+    const text = t(rawState);
     const info = s.info && s.info.name ? ` · ${s.info.name}${s.info.version ? ` ${s.info.version}` : ""}` : "";
     return `<div class="mcp-server"><div class="mcp-server__head"><span class="st-badge ${cls}">${esc(text)}</span>` +
-      `<strong>${esc(s.name)}</strong><span class="muted small">${esc(s.transport)} · ${fmt(s.tools.length)} tools${esc(info)}</span></div>` +
+      `<strong>${esc(s.name)}</strong><span class="muted small">${esc(s.transport)} · ${esc(t("mcp.toolCount", {n: fmt(s.tools.length)}))}${esc(info)}</span></div>` +
       (s.error ? `<div class="msg-error">${esc(s.error)}</div>` : "") +
       (s.tools.length ? `<div class="mcp-server__tools">${s.tools.map((t) => `<span class="chip" title="${esc(t.description || "")}">${esc(t.tool)}</span>`).join("")}</div>` : "") +
       `</div>`;
   }).join("");
+  setHtml($("mcp-list"), mcpHtml);
 }
 
 // ------------------------------------------------------------------ Model settings (GET / POST /config, #564)
@@ -454,7 +611,7 @@ async function loadConfig() {
     if (k.kind === "bool" || k.kind === "enum") {
       const opts = k.kind === "bool" ? [["true", "on"], ["false", "off"]] : k.choices.map((x) => [x, x]);
       const cur = v == null ? "" : String(v);
-      input = `<select class="st-input" id="${id}"><option value=""${cur === "" ? " selected" : ""}>default</option>` +
+      input = `<select class="st-input" id="${id}"><option value=""${cur === "" ? " selected" : ""}>${esc(t("cfg.default"))}</option>` +
         opts.map(([val, text]) => `<option value="${esc(val)}"${cur === val ? " selected" : ""}>${esc(text)}</option>`).join("") + `</select>`;
     } else {
       const text = v == null ? "" : Array.isArray(v) ? v.join(", ") : String(v);
@@ -479,17 +636,17 @@ $("cfg-save").addEventListener("click", async () => {
     const old = Array.isArray(k.value) ? k.value.join(", ") : k.value;
     if (JSON.stringify(v) !== JSON.stringify(old ?? null)) set[k.key] = v;
   });
-  if (!Object.keys(set).length) { $("cfg-msg").textContent = "Nothing changed."; return; }
+  if (!Object.keys(set).length) { setWords($("cfg-msg"), t("cfg.nothingChanged")); return; }
   try {
     const r = await fetch("config", {method: "POST", headers: headers(true), body: JSON.stringify({set})});
     const b = await r.json();
     if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
-    $("cfg-msg").textContent = b.changed.length
-      ? `Saved (${b.changed.join(", ")}); the earlier file is ${b.file}.bak. Start the model again to use it.` : "Nothing changed.";
+    setWords($("cfg-msg"), b.changed.length
+      ? t("cfg.saved", {keys: b.changed.join(", "), file: b.file}) : t("cfg.nothingChanged"));
     loadConfig();
   } catch (e) {
     $("cfg-msg").textContent = "";
-    toast("error", "Not saved", String(e.message || e), 6000);
+    toast("error", t("cfg.notSaved"), errorText(e.message || String(e)), 6000);
   }
 });
 
@@ -504,8 +661,8 @@ function inline(s) {
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code class="inline">${esc(codes[+i])}</code>`);
 }
 function codeBlock(lang, code) {
-  return `<div class="st-code"><div class="st-code__head"><span>${esc(lang || "code")}</span>` +
-    `<button class="st-btn st-btn--icon" data-code-copy aria-label="Copy code">${icon("copy")}</button></div>` +
+  return `<div class="st-code"><div class="st-code__head"><span>${esc(lang || t("code.lang"))}</span>` +
+    `<button class="st-btn st-btn--icon" data-code-copy aria-label="${esc(t("code.copy"))}">${icon("copy")}</button></div>` +
     `<pre><code>${esc(code)}</code></pre></div>`;
 }
 function blocks(text) {
@@ -603,8 +760,8 @@ function msgEl(m, i) {
       const wrap = document.createElement("div");
       wrap.className = "msg-images";
       for (const im of m.images) {
-        if (im.url) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || "image"; wrap.appendChild(img); }
-        else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append(im.name || "image"); wrap.appendChild(c); }
+        if (im.url) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || t("chip.image"); wrap.appendChild(img); }
+        else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append(im.name || t("chip.image")); wrap.appendChild(c); }
       }
       el.appendChild(wrap);
     }
@@ -614,35 +771,36 @@ function msgEl(m, i) {
     el.appendChild(b);
     const meta = document.createElement("div");
     meta.className = "st-msg__meta";
-    meta.textContent = `You · ${timeStr(m.time)}`;
+    meta.textContent = t("chat.you", {time: timeStr(m.time)});
     el.appendChild(meta);
   } else {
     el.innerHTML = `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
       `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking"></div></details>` +
       `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
-      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>`;
+      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="${esc(t("chat.copyAnswer"))}" title="${esc(t("chat.copy"))}">${icon("copy")}</button></div>`;
     updateAssistant(el, m, false);
   }
   return el;
 }
 // One MCP tool call in the answer: a compact block (name, state, a one-line preview) that opens to the arguments and
 // the result as the model read it.  Its body is built only while open: a result can be 20,000 characters.
-const TOOL_STATE = {writing: ["st-badge--reading", "Writing"], running: ["st-badge--generating", "Running"], done: ["", "Done"],
-                    error: ["st-badge--error", "Error"], skipped: ["st-badge--queued", "Not run"]};
+const TOOL_STATE = {writing: ["st-badge--reading", H("tool.stateWriting")], running: ["st-badge--generating", H("tool.stateRunning")], done: ["", H("tool.stateDone")],
+                    error: ["st-badge--error", H("tool.stateError")], skipped: ["st-badge--queued", H("tool.stateSkipped")]};
 function toolHtml(t, k) {
-  const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
+  const [cls, rawLabel] = TOOL_STATE[t.state] || ["", t.state];
+  const label = t(rawLabel);
   const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
   const preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
   let body = "";
   if (t.open) {
-    body = `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
+    body = `<div class="tool-call__label">${esc(t("tool.arguments"))}</div><pre class="tool-call__pre">${esc(args || t("tool.pending"))}</pre>`;
     if (t.result != null) {
-      body += `<div class="tool-call__label">${t.ok ? "Result" : "Error"}${t.chars ? ` · ${fmt(t.chars)} characters` : ""}` +
-              `${t.truncated ? ", cut for the model" : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
+      body += `<div class="tool-call__label">${t.ok ? t("tool.result") : t("tool.stateError")}${t.chars ? t("tool.chars", {n: fmt(t.chars)}) : ""}` +
+              `${t.truncated ? t("tool.truncated") : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
     }
   }
   return `<details class="st-collapse tool-call" data-tool="${k}" data-state="${esc(t.state)}"${t.open ? " open" : ""}>` +
-    `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-call__name" title="${esc(t.name || "")}">${esc(t.tool || t.name || "tool")}</span>` +
+    `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-call__name" title="${esc(t.name || "")}">${esc(t.tool || t.name || t("chip.tool"))}</span>` +
     (t.server ? `<span class="muted small">${esc(t.server)}</span>` : "") +
     `<span class="tool-call__preview muted">${esc(preview.slice(0, 200))}</span>` +
     `<span class="st-badge ${cls}">${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
@@ -678,8 +836,8 @@ function updateAssistant(el, m, streaming) {
   if (m.reasoning) {
     det.hidden = false;
     const thinkingNow = streaming && !m.text;
-    el.querySelector(".think-title").textContent = thinkingNow ? "Thinking…" :
-      m.thinkSecs != null ? `Thought for ${fmt(m.thinkSecs, 1)} s` : "Thoughts";
+    el.querySelector(".think-title").textContent = thinkingNow ? t("chat.thinking") :
+      m.thinkSecs != null ? t("chat.thoughtFor", {secs: fmt(m.thinkSecs, 1)}) : t("chat.thoughts");
     const body = el.querySelector(".thinking");
     if (det.open || thinkingNow) body.textContent = m.reasoning;
     else body.dataset.pending = "1";
@@ -692,12 +850,12 @@ function updateAssistant(el, m, streaming) {
     bubble.innerHTML = `<div class="msg-error"></div>`;
     bubble.firstChild.textContent = m.error;
   } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
-    bubble.innerHTML = m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
+    bubble.innerHTML = m.reasoning ? `<span class="muted cursor">${esc(t("chat.writing"))}</span>` : `<span class="cursor"></span>`;
   } else {
     bubble.innerHTML = answerHtml(m);
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
   }
-  el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
+  setText(el.querySelector(".meta-text"), m.meta || (streaming ? "" : m.stopped ? t("chat.stopped") : ""));
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
 }
 function renderChat() {
@@ -778,7 +936,7 @@ function assistantMessages(m) {
 function setBusy(on) {
   $("stop-btn").hidden = !on;
   $("send-btn").disabled = on;
-  $("composer-hint").textContent = on ? "" : "Shift+Enter: new line";
+  setWords($("composer-hint"), on ? "" : t("chat.hint"));
 }
 
 async function send() {
@@ -816,9 +974,9 @@ async function send() {
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
                                                    signal: controller.signal});
     if (!r.ok) {
-      let msg = `HTTP ${r.status}`;
-      try { msg = (await r.json()).error.message || msg; } catch (e) { /* not json */ }
-      if (r.status === 401) msg = "This server needs an API key: add it under About > Settings.";
+      let msg = t("toast.httpStatus", {status: r.status});
+      try { msg = errorText((await r.json()).error.message || msg); } catch (e) { /* not json */ }
+      if (r.status === 401) msg = t("toast.serverKey");
       throw new Error(msg);
     }
     const reader = r.body.getReader(), dec = new TextDecoder();
@@ -836,7 +994,7 @@ async function send() {
         if (data === "[DONE]") continue;
         let j;
         try { j = JSON.parse(data); } catch (e) { continue; }
-        if (j.error) throw new Error(j.error.message || "the engine reported an error");
+        if (j.error) throw new Error(errorText(j.error.message) || t("toast.engineError"));
         if (j.usage) usage = j.usage;
         if (j.strata_mcp) onTool(m, j.strata_mcp);
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
@@ -858,21 +1016,21 @@ async function send() {
     }
   } catch (e) {
     if (e.name === "AbortError") m.stopped = true;
-    else { m.error = e.message || String(e); toast("error", "The request failed", m.error, 6000); }
+    else { m.error = errorText(e.message || String(e)); toast("error", t("toast.requestFailed"), m.error, 6000); }
   }
   if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
   const n = usage ? usage.completion_tokens : null;
   if (n && firstAt) {
     const secs = (performance.now() - firstAt) / 1000;
-    m.meta = `${fmt(n)} tokens${secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : ""}${m.stopped ? " · stopped" : ""}` +
-             (projectionLoaded() ? (settings.esp ? " · projection on" : " · projection off") : "");
+    m.meta = t("chat.meta", {n: fmt(n), rate: secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : "", stopped: m.stopped ? ` · ${t("chat.stoppedMeta")}` : ""}) +
+             (projectionLoaded() ? (settings.esp ? " · " + t("chat.projectionOn") : " · " + t("chat.projectionOff")) : "");
   } else if (m.stopped) {
-    m.meta = "Stopped";
+    m.meta = t("chat.stopped");
   }
   for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") { t.state = "skipped"; t.ms = null; }
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
-  if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
-  if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
+  if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${t(ran > 1 ? "chat.toolCallsMany" : "chat.toolCalls", {n: ran})}`;
+  if (m.limit) m.meta = `${m.meta || ""} · ${t("chat.toolLimit", {n: m.limit})}`;
   busy = null;
   setBusy(false);
   if (frame) cancelAnimationFrame(frame);
@@ -890,21 +1048,22 @@ function autosize() { const t = $("input"); t.style.height = "auto"; t.style.hei
 $("input").addEventListener("input", autosize);
 
 $("new-btn").onclick = () => {
-  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  if (busy) { toast("warn", t("toast.stillWriting"), t("toast.stillWritingText")); return; }
   if (!messages.length) return;
   const backup = messages;
   messages = [];
   saveChat();
   renderChat();
-  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
+  toast("info", t("toast.newChat"), t("toast.newChatText"), 6000, {label: t("toast.undo"), run: () => { messages = backup; saveChat(); renderChat(); }});
 };
 $("export-btn").onclick = () => {
-  if (!messages.length) { toast("info", "Nothing to save yet"); return; }
+  if (!messages.length) { toast("info", t("toast.nothingToSave")); return; }
+  const t2 = t;                                    // the tool variable below is also named t
   const tools = (m) => (m.tools || []).filter((t) => t.result != null).map((t) =>
-    `<details><summary>Tool ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${t.ok ? "" : " (error)"}</summary>\n\n` +
+    `<details><summary>${esc(t2("chat.exportTool", {path: (t.server ? t.server + " / " : "") + (t.tool || t.name), ok: t.ok ? "" : t2("chat.exportError")}))}</summary>\n\n` +
     `\`\`\`json\n${JSON.stringify(t.arguments || {}, null, 2)}\n\`\`\`\n\n\`\`\`\n${t.result}\n\`\`\`\n\n</details>\n\n`).join("");
   const md = messages.map((m) => m.role === "user" ? `## You\n\n${m.text}\n` :
-    `## ${health.model}\n\n${m.reasoning ? `<details><summary>Thinking</summary>\n\n${m.reasoning}\n\n</details>\n\n` : ""}${tools(m)}${m.text || m.error || ""}\n`).join("\n");
+    `## ${health.model}\n\n${m.reasoning ? `<details><summary>${esc(t2("chat.exportThinking"))}</summary>\n\n${m.reasoning}\n\n</details>\n\n` : ""}${tools(m)}${m.text || m.error || ""}\n`).join("\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([md], {type: "text/markdown"}));
   a.download = `strata-chat-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md`;
@@ -922,19 +1081,19 @@ function isTextFile(f) {
 function addFiles(files) {
   for (const f of files) {
     if (f.type.startsWith("image/")) {
-      if (!health.images) { toast("warn", "Pictures are off", "This model was set up for text only."); continue; }
-      if (f.size > 20e6) { toast("warn", "Picture too large", `${f.name} is over 20 MB.`); continue; }
+      if (!health.images) { toast("warn", t("toast.picturesOff"), t("toast.picturesOffText")); continue; }
+      if (f.size > 20e6) { toast("warn", t("toast.pictureTooLarge"), t("toast.pictureTooLargeText", {name: f.name})); continue; }
       const r = new FileReader();
-      r.onload = () => { attachments.push({kind: "image", name: f.name || "pasted image", url: r.result}); renderAttachments(); };
+      r.onload = () => { attachments.push({kind: "image", name: f.name || t("chip.pasted"), url: r.result}); renderAttachments(); };
       r.readAsDataURL(f);
       continue;
     }
-    if (!isTextFile(f)) { toast("warn", "Not a text file", `${f.name}: attach text files (code, notes, logs, data)${health.images ? " or pictures" : ""}.`); continue; }
-    if (f.size > MAX_TEXT_FILE) { toast("warn", "File too large", `${f.name} is over 512 KB.`); continue; }
+    if (!isTextFile(f)) { toast("warn", t("toast.notTextFile"), t("toast.notTextFileText", {name: f.name, images: health.images ? t("toast.notTextFileImages") : ""})); continue; }
+    if (f.size > MAX_TEXT_FILE) { toast("warn", t("toast.fileTooLarge"), t("toast.fileTooLargeText", {name: f.name})); continue; }
     const r = new FileReader();
     r.onload = () => {
       const text = String(r.result);
-      if (text.includes("\u0000")) { toast("warn", "Not a text file", `${f.name} looks like a binary file.`); return; }
+      if (text.includes("\u0000")) { toast("warn", t("toast.notTextFile"), t("toast.binaryText", {name: f.name})); return; }
       attachments.push({kind: "file", name: f.name, text});
       renderAttachments();
     };
@@ -945,7 +1104,7 @@ function addFiles(files) {
 function fileBlock(f) {
   const longest = Math.max(2, ...(f.text.match(/`+/g) || []).map((s) => s.length));
   const fence = "`".repeat(longest + 1);
-  return `File: ${f.name}\n${fence}\n${f.text}\n${fence}`;
+  return `${t("file.label", {name: f.name})}\n${fence}\n${f.text}\n${fence}`;
 }
 function userText(m) {
   const files = (m.files || []).filter((f) => f.text != null);
@@ -961,7 +1120,7 @@ function renderAttachments() {
     c.innerHTML = icon(a.kind === "file" ? "attach" : "image", "st-icon st-icon--sm");
     c.append(a.name);
     const x = document.createElement("button");
-    x.type = "button"; x.className = "st-btn st-btn--icon"; x.setAttribute("aria-label", "Remove");
+    x.type = "button"; x.className = "st-btn st-btn--icon"; x.setAttribute("aria-label", t("chat.remove"));
     x.innerHTML = icon("trash");
     x.onclick = () => { attachments.splice(i, 1); renderAttachments(); };
     c.appendChild(x);
@@ -1033,7 +1192,7 @@ async function saveShared(on, s) {
   const r = await fetch("settings", {method: "POST", headers: headers(true),
                                       body: JSON.stringify({defaults: on ? sharedDefaults(s) : null})});
   if (!r.ok) {
-    let msg = `HTTP ${r.status}`;
+    let msg = t("toast.httpStatus", {status: r.status});
     try { msg = (await r.json()).error.message || msg; } catch (e) { /* not json */ }
     throw new Error(msg);
   }
@@ -1046,11 +1205,11 @@ function projectionLoaded() {
 }
 function outputs() {
   const t = +$("s-temp").value;
-  $("o-temp").textContent = t === 0 ? "0 · greedy" : t.toFixed(2);
+  $("o-temp").textContent = t === 0 ? t("drawer.greedy") : t.toFixed(2);
   $("o-topp").textContent = (+$("s-topp").value).toFixed(2);
   $("o-topk").textContent = $("s-topk").value;
   const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
-  $("o-thinking").textContent = sel ? {none: "answers right away", low: "short", medium: "medium", high: "thorough (default)"}[sel.dataset.v] : "";
+  $("o-thinking").textContent = sel ? {none: t("drawer.outNone"), low: t("drawer.outLow"), medium: t("drawer.outMedium"), high: t("drawer.outHigh")}[sel.dataset.v] : "";
   for (const id of ["s-topp", "s-topk"]) $(id).disabled = t === 0;
 }
 for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
@@ -1073,14 +1232,13 @@ $("s-apply").onclick = async () => {
   if (share || sharedOn) {
     try {
       await saveShared(share, settings);
-      toast("success", "Sampling saved", share ? "Other apps (omp, API clients) use these settings from their next request."
-                                               : "Other apps use their own settings again.");
+      toast("success", t("drawer.saved"), share ? t("drawer.savedShared") : t("drawer.savedUnshared"));
     } catch (e) {
-      toast("error", "Saved here, but not for other apps", e.message, 6000);
+      toast("error", t("drawer.savedLocalOnly"), errorText(e.message), 6000);
     }
     return;
   }
-  toast("success", "Sampling saved", settings.temperature === 0 ? "Greedy: the same question gives the same answer." : "");
+  toast("success", t("drawer.saved"), settings.temperature === 0 ? t("drawer.savedGreedy") : "");
 };
 $("sampling-btn").onclick = () => openDrawer(true);
 $("drawer-close").onclick = () => openDrawer(false);
@@ -1092,7 +1250,10 @@ setBusy(false);
 renderChat();
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
-loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
+loadLangs()                                   // what the server has, before the browser's own is matched
+  .then(() => setLang(store.get("lang", null) || browserLang(), false), () => setLang("en", false))
+  .then(() => loadHealth()).then(loadMcp)
+  .then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
 showTab(location.hash.slice(1) || "chat");
 poll();
 
@@ -1105,25 +1266,25 @@ $("img-form").onsubmit = async (ev) => {
   if ($("img-seed").value !== "") body.seed = Number($("img-seed").value);
   $("img-go").disabled = true;
   const t0 = performance.now();
-  $("img-hint").textContent = "Generating\u2026 (a minute or more on a small GPU)";
+  setWords($("img-hint"), t("img.generating"));
   try {
     const r = await fetch("v1/images/generations", {method: "POST", headers: headers(true), body: JSON.stringify(body)});
     const j = await r.json();
-    if (!r.ok) throw new Error((j.error && j.error.message) || r.statusText);
+    if (!r.ok) throw new Error(errorText((j.error && j.error.message) || r.statusText));
     for (const d of j.data) {
       const fig = document.createElement("figure");
       const img = document.createElement("img");
       img.src = "data:image/png;base64," + d.b64_json;
       img.alt = prompt;
       const cap = document.createElement("figcaption");
-      cap.textContent = `${j.size}, seed ${d.seed}, ${((performance.now() - t0) / 1000).toFixed(0)} s: ${prompt}`;
+      cap.textContent = t("img.caption", {size: j.size, seed: d.seed, secs: ((performance.now() - t0) / 1000).toFixed(0), prompt});
       fig.append(img, cap);
       $("img-results").prepend(fig);
     }
-    $("img-hint").textContent = "Done. Right-click an image to save it.";
+    setWords($("img-hint"), t("img.done"));
   } catch (e) {
-    $("img-hint").textContent = "";
-    toast("error", "No image", String(e.message || e), 8000);
+    setWords($("img-hint"), "");
+    toast("error", t("toast.noImage"), errorText(e.message || String(e)), 8000);
   } finally {
     $("img-go").disabled = false;
   }

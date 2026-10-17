@@ -1,8 +1,8 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" dir="ltr" data-theme="dark" translate="no" class="notranslate">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strata API Monitor</title>
+<title data-i18n="apimon.title">Strata API Monitor</title>
 <link rel="icon" href="/web/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/web/tokens.css">
 <style>
@@ -14,25 +14,25 @@ header{height:70px;padding:0 32px;display:flex;align-items:center;justify-conten
 <script defer src="/web/monitor.js"></script>
 </head>
 <body>
-<header><div class="brand">Strata <span>Local inference</span></div><div class="controls"><button id="key">API key</button><button id="theme" aria-label="Switch color theme">Light / dark</button></div></header>
+<header><div class="brand">Strata <span data-i18n="apimon.brand">Local inference</span></div><div class="controls"><button id="key" data-i18n="about.apiKey">API key</button><button id="theme" data-i18n-aria="theme.aria" aria-label="Switch color theme"><span data-i18n="theme.title">Light / dark</span></button></div></header>
 <main>
-<div class="top"><div><h1>API Monitor</h1><p class="sub">Model status and every request, in one place.</p></div><div class="controls"><button id="load" class="primary" disabled>Load model</button><button id="unload" disabled>Unload model</button></div></div>
+<div class="top"><div><h1 data-i18n="apimon.heading">API Monitor</h1><p class="sub" data-i18n="apimon.sub">Model status and every request, in one place.</p></div><div class="controls"><button id="load" class="primary" disabled data-i18n="apimon.load">Load model</button><button id="unload" disabled data-i18n="apimon.unload">Unload model</button></div></div>
 <div id="error" class="notice" role="status" hidden></div>
-<form id="auth" class="panel" hidden><label for="api-key">API key</label><input id="api-key" type="password" autocomplete="off" placeholder="Only needed if the server has a key"><button class="primary">Connect</button></form>
+<form id="auth" class="panel" hidden><label for="api-key" data-i18n="about.apiKey">API key</label><input id="api-key" type="password" autocomplete="off" data-i18n-placeholder="apimon.keyPlaceholder" placeholder="Only needed if the server has a key"><button class="primary" data-i18n="apimon.connect">Connect</button></form>
 <div class="cards">
-<div class="card"><div class="label">Model</div><div id="model-state" class="value"><span class="dot"></span><span id="loaded">Connecting…</span></div><div id="model" class="model">127.0.0.1:5001/v1</div></div>
-<div class="card"><div class="label">Requests retained</div><div id="count" class="value">—</div><div id="active" class="small">Waiting for server</div></div>
-<div class="card"><div class="label">Last wall-clock</div><div id="wall" class="value">—</div><div class="small">Includes queue and model loading</div></div>
-<div class="card"><div class="label">Last decode speed</div><div id="speed" class="value">—</div><div class="small">Engine timing · tokens / second</div></div>
+<div class="card"><div class="label" data-i18n="apimon.model">Model</div><div id="model-state" class="value"><span class="dot"></span><span id="loaded" data-i18n="apimon.connecting">Connecting…</span></div><div id="model" class="model">127.0.0.1:5001/v1</div></div>
+<div class="card"><div class="label" data-i18n="apimon.retained">Requests retained</div><div id="count" class="value">—</div><div id="active" class="small" data-i18n="apimon.waiting">Waiting for server</div></div>
+<div class="card"><div class="label" data-i18n="apimon.lastWall">Last wall-clock</div><div id="wall" class="value">—</div><div class="small" data-i18n="apimon.lastWallNote">Includes queue and model loading</div></div>
+<div class="card"><div class="label" data-i18n="apimon.lastSpeed">Last decode speed</div><div id="speed" class="value">—</div><div class="small" data-i18n="apimon.lastSpeedNote">Engine timing · tokens / second</div></div>
 </div>
-<section class="panel"><div class="panel-bar"><h2>Requests</h2><div class="filters"><input id="search" aria-label="Filter requests" placeholder="Search ID or endpoint"><select id="filter" aria-label="Request status"><option value="all">All statuses</option><option value="active">Active</option><option value="completed">Completed</option><option value="error">Errors</option></select></div></div>
-<div class="workspace"><div id="requests" class="requests" aria-label="Request list"></div><div class="detail">
-<div id="no-selection" class="empty"><strong>Inspect a request</strong>Select a request to see its input, output, and timings.</div>
+<section class="panel"><div class="panel-bar"><h2 data-i18n="apimon.requests">Requests</h2><div class="filters"><input id="search" data-i18n-aria="apimon.searchAria" aria-label="Filter requests" data-i18n-placeholder="apimon.searchPlaceholder" placeholder="Search ID or endpoint"><select id="filter" data-i18n-aria="apimon.filterAria" aria-label="Request status"><option value="all" data-i18n="apimon.filterAll">All statuses</option><option value="active" data-i18n="apimon.filterActive">Active</option><option value="completed" data-i18n="apimon.filterCompleted">Completed</option><option value="error" data-i18n="apimon.filterError">Errors</option></select></div></div>
+<div class="workspace"><div id="requests" class="requests" data-i18n-aria="apimon.listAria" aria-label="Request list"></div><div class="detail">
+<div id="no-selection" class="empty"><strong data-i18n="apimon.inspect">Inspect a request</strong><span data-i18n="apimon.inspectNote">Select a request to see its input, output, and timings.</span></div>
 <div id="selection" hidden><div class="row"><div id="detail-title" class="detail-title"></div><span id="detail-status" class="tag"></span></div><div id="detail-time" class="small"></div>
-<div class="facts"><div class="fact"><span>Wall-clock</span><b id="detail-wall">—</b></div><div class="fact"><span>Model load</span><b id="detail-load">—</b></div><div class="fact"><span>Queue wait</span><b id="detail-queue">—</b></div><div class="fact"><span>First token</span><b id="detail-first">—</b></div><div class="fact"><span>Prompt tokens</span><b id="detail-prompt">—</b></div><div class="fact"><span>Output tokens</span><b id="detail-tokens">—</b></div><div class="fact"><span>Decode speed</span><b id="detail-speed">—</b></div><div class="fact"><span>Response format</span><b id="detail-format">—</b></div></div>
-<div id="detail-error" class="detail-error" hidden></div><div class="tabs" role="tablist" aria-label="Request content"><button role="tab" data-pane="input" aria-selected="true">Input</button><button role="tab" data-pane="output" aria-selected="false">Output</button><button role="tab" data-pane="reasoning" aria-selected="false">Reasoning</button><button role="tab" data-pane="response" aria-selected="false">API response</button><button id="copy">Copy</button></div>
-<div id="content-note" class="small" style="margin-top:10px"></div><pre id="content" role="tabpanel" aria-label="Request content"></pre></div>
+<div class="facts"><div class="fact"><span data-i18n="apimon.wall">Wall-clock</span><b id="detail-wall">—</b></div><div class="fact"><span data-i18n="apimon.loadTime">Model load</span><b id="detail-load">—</b></div><div class="fact"><span data-i18n="apimon.queue">Queue wait</span><b id="detail-queue">—</b></div><div class="fact"><span data-i18n="apimon.firstToken">First token</span><b id="detail-first">—</b></div><div class="fact"><span data-i18n="apimon.promptTokens">Prompt tokens</span><b id="detail-prompt">—</b></div><div class="fact"><span data-i18n="apimon.outputTokens">Output tokens</span><b id="detail-tokens">—</b></div><div class="fact"><span data-i18n="apimon.decodeSpeed">Decode speed</span><b id="detail-speed">—</b></div><div class="fact"><span data-i18n="apimon.format">Response format</span><b id="detail-format">—</b></div></div>
+<div id="detail-error" class="detail-error" hidden></div><div class="tabs" role="tablist" data-i18n-aria="apimon.contentAria" aria-label="Request content"><button role="tab" data-pane="input" aria-selected="true" data-i18n="apimon.paneInput">Input</button><button role="tab" data-pane="output" aria-selected="false" data-i18n="apimon.paneOutput">Output</button><button role="tab" data-pane="reasoning" aria-selected="false" data-i18n="apimon.paneReasoning">Reasoning</button><button role="tab" data-pane="response" aria-selected="false" data-i18n="apimon.paneResponse">API response</button><button id="copy" data-i18n="chat.copy">Copy</button></div>
+<div id="content-note" class="small" style="margin-top:10px"></div><pre id="content" role="tabpanel" data-i18n-aria="apimon.contentAria" aria-label="Request content"></pre></div>
 </div></div></section>
-<footer><span>Last 100 requests kept in memory until restart. Inputs and outputs stay on this machine.</span><span id="updated">Connecting…</span></footer>
+<footer><span data-i18n="apimon.footer">Last 100 requests kept in memory until restart. Inputs and outputs stay on this machine.</span><span id="updated" data-i18n="apimon.connecting">Connecting…</span></footer>
 </main>
 </body></html>

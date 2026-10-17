@@ -2192,6 +2192,43 @@ responses are unaffected. Headers are not recorded, and the monitor key is kept 
 Treat request history as sensitive input/output when exposing Strata on a network: set an API key as above.
 The page uses relative URLs and works through the existing host binding or a reverse proxy.
 
+### The web app: one long-lived stream, and a language pack (#2686, #2687)
+
+The Chat/Monitor page and the API monitor page used to re-read their data on a timer: `GET /metrics` once a second,
+and the API monitor's two reads every 2 s. Every tick rewrote the same text nodes the browser's own page
+translation (Chrome's "translate this page") was also rewriting, so the UI flipped back to English while it updated -
+one flip per second on the Monitor.
+
+Both now open one response and keep it: `GET /metrics/stream` and `GET /api/requests/stream`, each a
+`text/event-stream` the server keeps writing to on its own tick (one second), instead of the page opening a new
+request each time. **This is one connection, not fewer updates** - the Monitor is a live dashboard and keeps
+scrolling exactly as before. `?every=N` sets the server's tick in seconds (1..60, default 1); `?requests=all` sends
+every request kept, as `GET /metrics?requests=all` did. Both end when the tab closes (the next tick notices the
+socket) or when the server stops, and both use the existing API-key check. A build without the routes - an older
+server - never delivers an event, and the page then keeps asking on its old timer: the page on an older server
+behaves exactly as it did before.
+
+**The flicker was not the rate of the updates, it was the rewriting.** Chrome translates a word by replacing it in
+the page, and a script that wrote the English back a second later put the original text in its place - so the two
+fought over the same node, one flip per second. The fix is on the page: a node is written **only when its text
+really changed** (`setText`, `setWords`, `setHtml` in `serve/web/app.js`). A number still updates every tick, and a
+number needs no translating; a word is written once and then left alone, so nothing competes with the translation.
+`translate="no"` tells the browser the page translates itself.
+
+The web app is translatable: `serve/web/i18n/<lang>.json`, one UTF-8 pack per language (`en.json`, `zh-CN.json`),
+read by the page itself over the same origin. **UTF-8 everywhere, never GBK/cp936** - the packs and every other web
+file are UTF-8, the page declares `<meta charset="utf-8">` and the server sends `charset=utf-8` with each. The
+language comes from the browser's own (`navigator.languages`), or from the switch under About > Settings, kept in
+`localStorage`; a language with no pack falls back to English. The page also sets `translate="no"`, so a browser that
+offers to translate it now leaves it alone - it brings its own translation.
+
+The wording is translated, the terms are not: **token** stays "token(s)" (never 代币 or 令牌), and VRAM, PCIe,
+Prefill, Decode, MTP, KV cache, Top-p, Top-k, seed, GPU, CPU and API key stay as they are. A key the pack lacks
+shows as the key, so a pack can lag behind the page without a blank screen. Adding a language is dropping in a
+`<lang>.json` with the same keys as `en.json` and a `meta` object (`name`, `dir`); `GET /i18n` lists what is there.
+
+Nothing else changes: the engine, the OpenAI/Anthropic APIs, the model's answers and the installer are untouched.
+
 ### Prompt buffers: `bo` shares `emb` (#1454)
 
 The prompt path's half-output buffer `bo` reuses the embedding buffer `emb`, which is dead after the first hyper-connection broadcast: T x 2560 floats less VRAM per chunk (320 MiB at 32768 rows). The planner still counts those bytes by default, so the auto chunk and the cache slots the prompt path borrows are exactly those of 0.1.40.3 and the output bits are unchanged. `STRATA_EMB_REUSE_ACCOUNT=1` lets the planner use the saved bytes: where VRAM limits the chunk it grows (RTX 3060, IQ3_XXS: 6400 to 6656 tokens, 1652 to 1670 borrowed slots, prompt about +3.9%). A different chunk changes the prompt path's rounding, so prompt residuals are not byte-identical to the default; greedy output matched in our runs. Opt-in until it has a KL measurement.

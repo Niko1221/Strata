@@ -3140,6 +3140,8 @@ class Service:
         # "*" = any), and every name it answers to, which serve() works out from the address it listens on
         self.allowed_hosts: list[str] = []
         self.host_names: set[str] = set(LOOPBACK_NAMES)
+        self.metrics_streams: list[threading.Event] = []   # #2687: the open long-lived streams, stopped on exit
+        self.stream_lock = threading.Lock()
         self.status = {"busy": False, "queued": 0}      # GET /status: what the model is doing right now
         self.rate = collections.deque(maxlen=32)        # (time, generated) samples for the live tok/s window
         # "parallel" (the engine's batch slots): every running request's own status and rate window; self.status
@@ -5306,6 +5308,18 @@ def make_handler(svc: Service):
 
             threading.Thread(target=watch, daemon=True, name="strata-client-watch").start()
 
+        def _client_gone(self) -> bool:
+            """#2687: whether this stream's client has hung up.  The response is HTTP/1.0 without keep-alive, so a
+            write to a closed socket can still succeed once (the data goes into the kernel's buffer); the socket has
+            to be asked.  The same peek the disconnect watcher uses (#430 #431)."""
+            try:
+                readable, _, _ = select.select([self.connection], [], [], 0)
+                return bool(readable) and self.connection.recv(1, socket.MSG_PEEK) == b""
+            except (ConnectionError, TimeoutError):
+                return True
+            except (OSError, ValueError):            # the socket was closed here: the response has ended
+                return True
+
         def _note(self, **values):
             """#332: what the monitor shows about this request (nothing when the monitor is off)."""
             if self.record is not None:
@@ -5332,6 +5346,64 @@ def make_handler(svc: Service):
             self.send_header("Access-Control-Allow-Headers",
                              asked or "Authorization, Content-Type, x-api-key, anthropic-version, anthropic-beta")
             self.send_header("Access-Control-Max-Age", "600")
+
+        def _metrics_stream(self, every_s, all_requests):
+            """GET /metrics/stream: one long-lived response the server writes a `metrics` event to (#2687), instead
+            of the web app asking for /metrics once a second.  A polling page rewrote its own text every second, which
+            fought Chrome's page translation and flipped the UI back to English; a stream writes only when something
+            changed, and nothing while nothing does.  It ends when the client hangs up, or when the server stops
+            (Server.server_close sets every open stream's event)."""
+            stop = threading.Event()
+            with svc.stream_lock:
+                svc.metrics_streams.append(stop)
+            try:
+                self._sse()
+                while not stop.is_set():
+                    # The Monitor is a live dashboard: the hardware sampler runs once a second, so there is always
+                    # something to send.  The point of the stream is one connection that keeps being written to, not
+                    # fewer updates - an idle Monitor must still scroll.  (The jitter was never the updates: see
+                    # serve/web/app.js, which writes a node only when its text really changed.)
+                    payload = svc.metrics(all_requests=all_requests)
+                    self.wfile.write(b"event: metrics\ndata: " +
+                                     json.dumps(payload, ensure_ascii=False).encode() + b"\n\n")
+                    self.wfile.flush()
+                    if stop.wait(every_s):
+                        break
+                    if self._client_gone():
+                        break                                    # the tab was closed: end it now, not in a minute
+            except (OSError, BrokenPipeError, ConnectionResetError):
+                pass                                             # the client hung up: the normal end of a stream
+            finally:
+                with svc.stream_lock:
+                    if stop in svc.metrics_streams:
+                        svc.metrics_streams.remove(stop)
+                self.close_connection = True
+
+        def _requests_stream(self):
+            """GET /api/requests/stream: the API monitor's two reads in one long-lived response, sent again only
+            when what the page draws from changed (#2687).  The same reason as /metrics/stream: a page that rewrites
+            its own text twice a second fights Chrome's page translation."""
+            stop = threading.Event()
+            with svc.stream_lock:
+                svc.metrics_streams.append(stop)
+            try:
+                self._sse()
+                while not stop.is_set():
+                    payload = {"status": svc.v1_status(), "requests": svc.request_records() or []}
+                    self.wfile.write(b"event: requests\ndata: " +
+                                     json.dumps(payload, ensure_ascii=False).encode() + b"\n\n")
+                    self.wfile.flush()
+                    if stop.wait(1.0):
+                        break
+                    if self._client_gone():
+                        break
+            except (OSError, BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                with svc.stream_lock:
+                    if stop in svc.metrics_streams:
+                        svc.metrics_streams.remove(stop)
+                self.close_connection = True
 
         def do_OPTIONS(self):
             # a CORS preflight: no credentials come with it, so no API key; the headers only for cors_origins
@@ -5386,6 +5458,37 @@ def make_handler(svc: Service):
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if path.startswith("/web/i18n/"):
+                # #2686: the web app's language packs (serve/web/i18n/<lang>.json, UTF-8 - never GBK/cp936): one
+                # file per language, read by the page itself.  Same origin, no CDN, and no key: it is the UI.
+                name = path[len("/web/i18n/"):]
+                f = ROOT / "serve" / "web" / "i18n" / name
+                if "/" in name or "\\" in name or not name.endswith(".json") or not f.is_file():
+                    self._json(404, {"error": {"message": "not found"}})
+                    return
+                body = f.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if path == "/i18n":
+                # #2686: which packs exist, so the Settings switch can list them (a name comes from the pack's meta)
+                try:
+                    packs = sorted((ROOT / "serve" / "web" / "i18n").glob("*.json"))
+                except OSError:
+                    packs = []
+                out = []
+                for p in packs:
+                    try:
+                        meta = json.loads(p.read_text(encoding="utf-8")).get("meta") or {}
+                    except (OSError, ValueError):
+                        continue
+                    out.append({"code": p.stem, "name": meta.get("name") or p.stem, "dir": meta.get("dir") or "ltr"})
+                self._json(200, {"languages": out})
+                return
             if path.startswith("/web/"):
                 # the web app's own files (serve/web): styles, script, icon sprite - same origin, no CDN
                 name = path[len("/web/"):]
@@ -5412,6 +5515,28 @@ def make_handler(svc: Service):
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
+                return
+            if path == "/api/requests/stream":
+                # #2687: the API monitor's own long-lived response (serve/web/monitor.js asked every 2 s).
+                # It ends when the client hangs up, or when the server stops.
+                if not svc.api_monitor:                          # #332: the monitor is opt-in
+                    self._json(404, {"error": {"message": "not found"}})
+                    return
+                if not self._authorized():
+                    return
+                self._requests_stream()
+                return
+            if path == "/metrics/stream":
+                # #2687: one long-lived response instead of the page asking once a second (the web app's Monitor).
+                # ?every=N: the server's own tick in seconds (1..60, default 1); ?requests=all: every request kept.
+                if not self._authorized():
+                    return
+                every = 1.0
+                try:
+                    every = min(60.0, max(0.5, float((parse_qs(urlsplit(self.path).query).get("every") or ["1"])[0])))
+                except ValueError:
+                    pass                                         # an odd value: the default tick
+                self._metrics_stream(every, all_requests="requests=all" in self.path)
                 return
             if path == "/metrics":
                 from serve import prometheus
@@ -6235,6 +6360,13 @@ class Server(ThreadingHTTPServer):
         tel = getattr(getattr(self, "svc", None), "telemetry", None)
         if tel is not None and hasattr(tel, "close"):
             tel.close()
+        # #2687: the open streams end with the server, so no thread is left waiting on a tick
+        svc = getattr(self, "svc", None)
+        streams = getattr(svc, "metrics_streams", None)
+        if streams is not None:
+            with getattr(svc, "stream_lock", threading.Lock()):
+                while streams:
+                    streams.pop().set()
         super().server_close()
 
 
