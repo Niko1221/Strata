@@ -13,6 +13,13 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-12: NVIDIA RTX PRO 4500 Blackwell 32 GB, AMD EPYC 7A23 48-core, 123 GiB RAM](../bench/results/2026-10-12-community-rtx-pro-4500-blackwell-qwen3-8-flash-next-unsloth-ud-iq4-xs/README.md):
+  Strata v0.1.43 source build, Unsloth UD-IQ4_XS, 600,000-token context (`--kv int8`, yarn ×2.29,
+  `--kv-resident 300000` half-resident KV); built-in `tools/strata_bench.py --long` suite, 3 runs each:
+  chat decode 82.6 tok/s (TTFT 0.33 s), prompt 1,718 / 3,057 / 3,242 tok/s at 4K / 16K / 32K,
+  agent session (6 turns, 14.5K tokens) decode 97.9 tok/s with 68.8 % cache hit and only 4 tokens
+  re-read per session. First RTX PRO 4500 Blackwell entry in this list.
+
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
