@@ -1,0 +1,8 @@
+{
+  "os": "Windows-11-10.0.26300-SP0",
+  "python": "3.13.11 (tags/v3.13.11:6278944, Dec  5 2025, 16:26:58) [MSC v.1944 64 bit (AMD64)]",
+  "physical_ram_bytes": 68481699840,
+  "logical_cpus": 20,
+  "cpu_physical_cores": 12,
+  "gpu": "NVIDIA GeForce RTX 3060, 12288 MiB, 617.42, 170.00 W, 4, 16"
+}

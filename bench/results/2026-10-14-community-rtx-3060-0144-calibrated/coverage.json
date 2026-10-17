@@ -1,0 +1,26 @@
+{
+  "measurement_date": "2026-10-14",
+  "engine": "0.1.44.1",
+  "current_source_commit": "9be6d88cc820ac3ea9133ca876345fab869939e0",
+  "historical_source_commit": "0e97d25d9bf29af6b108f6fdce6f3a0dfb7e1c25",
+  "preserved_current_files": 273,
+  "historical_source_files": 29,
+  "current_requests": {
+    "speed": 36,
+    "warmup": 12,
+    "recall": 3,
+    "conversation": 4,
+    "soak": 15,
+    "failed": 0
+  },
+  "corresponding_historical_speed_requests": 36,
+  "excluded_current_checks": [
+    "64K-limit matrix",
+    "short input at 262K",
+    "multiple recall depths",
+    "placement trials",
+    "historical-stop replays",
+    "one-hour soak"
+  ],
+  "historical_full_publication": "https://github.com/libratechw/Strata/tree/0e97d25d9bf29af6b108f6fdce6f3a0dfb7e1c25/bench/results/2026-10-12-community-rtx-3060-0143"
+}

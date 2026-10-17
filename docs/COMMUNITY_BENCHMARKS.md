@@ -45,6 +45,10 @@ and their limits. Report what you actually measured and label estimates separate
   (medians). Prompt is power-limited (70 W package limit); needle 15/15, agentic 5/5.
 - [2026-10-09: RTX 3060 12 GB, Core i7-12700, 64 GB RAM](../bench/results/2026-10-09-community-rtx-3060-0141/README.md):
   Strata v0.1.41 official Windows release, original Flash-Next Q2_0, IQ2_XS, IQ3_XXS and IQ3_S; prompt sweep from 128 to 128K tokens (260K for three of the four), plus recall, HumanEval 0-39, cache, MTP and concurrency checks.
+- [2026-10-14: RTX 3060 12 GB, Core i7-12700, 64 GB RAM](../bench/results/2026-10-14-community-rtx-3060-0144-calibrated/README.md):
+  Strata 0.1.44.1 official Windows CUDA 13.0 release, original Flash-Next Q2_0, IQ2_XS and IQ3_XXS with official calibration results;
+  three fresh runs each at 4K/32K/120K input under a 128K limit and 260K input under a 262,144 limit, plus representative recall/reuse checks and a short IQ2_XS soak.
+  Includes the saved 0.1.43 comparison and historical evidence; engine and settings both changed.
 - [2026-10-10: AMD Radeon RX 9070 16 GB (gfx1201), Ryzen 7 5800X3D, 64 GB RAM](../bench/results/2026-10-10-community-rx-9070/README.md):
   Strata 0.1.41 prebuilt Windows HIP engine, Flash-Next IQ3_XXS, 131,072-token context; three runs each at 4,195,
   33,467 and about 130,000 prompt tokens with a 256-token cap, plus six recall checks. Decode 58.7/57.9/57.9 tok/s,

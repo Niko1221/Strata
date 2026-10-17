@@ -1,0 +1,134 @@
+{
+  "<STRATA>/engine/strata.exe": {
+    "bytes": 190011904,
+    "sha256": "bd18453f65b4d03b15de6100b1a9226426266560779b51b9265de176ae8f34d4"
+  },
+  "<STRATA>/data/expert-profile.bin": {
+    "bytes": 196632,
+    "sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf"
+  },
+  "<DATA>/mtp/rt/dense.bin": {
+    "bytes": 116099072,
+    "sha256": "c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a"
+  },
+  "<DATA>/mtp/rt/dense.txt": {
+    "bytes": 1880,
+    "sha256": "8773c81ebb0986e37fe94a8a9933e87be48b1fabc6889a0106bcdab179d1c2ac"
+  },
+  "<DATA>/mtp/rt/draft_vocab.bin": {
+    "bytes": 425196,
+    "sha256": "b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91"
+  },
+  "<DATA>/mtp/rt/experts.bin": {
+    "bytes": 707788800,
+    "sha256": "09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f"
+  },
+  "<DATA>/packs/q2_0/conversions.json": {
+    "bytes": 320,
+    "sha256": "f3845c0566e9b926c4caeea2e1f20f11f5293f143ad08f1b48c91adf3d7ed6fd"
+  },
+  "<DATA>/packs/q2_0/dense.bin": {
+    "bytes": 1485606400,
+    "sha256": "a43d7d0b69525335f4b000d5197a1d3aefcd3c0014fc3e12b3455e0a5d827ba2"
+  },
+  "<DATA>/packs/q2_0/index.txt": {
+    "bytes": 93561,
+    "sha256": "c758314d495a1261d06a806b1c415596dfabe62e0cbf44ce592dc84c53229ccd"
+  },
+  "<DATA>/packs/q2_0/native_experts.txt": {
+    "bytes": 3286,
+    "sha256": "015e53d3ae36324f172be4942bcf129539b343e2eb4fcd4f25ca5eff180bfa41"
+  },
+  "<DATA>/packs/q2_0/tokenizer/chat_template.jinja": {
+    "bytes": 9993,
+    "sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+  },
+  "<DATA>/packs/q2_0/tokenizer/merges.txt": {
+    "bytes": 3600844,
+    "sha256": "080cf95432173729d160346b7882bd2a644b07f7a3813a3eb73f4e66787bfde9"
+  },
+  "<DATA>/packs/q2_0/tokenizer/tokenizer.json": {
+    "bytes": 554,
+    "sha256": "87be2ac47d8bc7393b7435df6ccd276740019a393941a2585d5edce59f450c54"
+  },
+  "<DATA>/packs/q2_0/tokenizer/token_type.json": {
+    "bytes": 744960,
+    "sha256": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b"
+  },
+  "<DATA>/packs/q2_0/tokenizer/vocab.json": {
+    "bytes": 5737005,
+    "sha256": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4"
+  },
+  "<DATA>/packs/iq2_xs/conversions.json": {
+    "bytes": 324,
+    "sha256": "020bb147e315424ef94e736c74dc6cab3a1bcaa3c87fa7e14795c8c93091df1c"
+  },
+  "<DATA>/packs/iq2_xs/dense.bin": {
+    "bytes": 1538035200,
+    "sha256": "d2af3d8331e5c7a1985d1d589747230f9d56719a6d33c7cddc9ee6b81cde6b13"
+  },
+  "<DATA>/packs/iq2_xs/index.txt": {
+    "bytes": 93686,
+    "sha256": "19e781af360ca3b83fd90fe09e757ac9aa2a9dcada26810ddc9e933bdb112091"
+  },
+  "<DATA>/packs/iq2_xs/native_experts.txt": {
+    "bytes": 3289,
+    "sha256": "48df605acb89c7e8c3176a51cec777c2ed344ea439e8f3a37e5ce4f9dcb6946c"
+  },
+  "<DATA>/packs/iq2_xs/tokenizer/chat_template.jinja": {
+    "bytes": 9993,
+    "sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+  },
+  "<DATA>/packs/iq2_xs/tokenizer/merges.txt": {
+    "bytes": 3600844,
+    "sha256": "080cf95432173729d160346b7882bd2a644b07f7a3813a3eb73f4e66787bfde9"
+  },
+  "<DATA>/packs/iq2_xs/tokenizer/tokenizer.json": {
+    "bytes": 554,
+    "sha256": "87be2ac47d8bc7393b7435df6ccd276740019a393941a2585d5edce59f450c54"
+  },
+  "<DATA>/packs/iq2_xs/tokenizer/token_type.json": {
+    "bytes": 744960,
+    "sha256": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b"
+  },
+  "<DATA>/packs/iq2_xs/tokenizer/vocab.json": {
+    "bytes": 5737005,
+    "sha256": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4"
+  },
+  "<DATA>/packs/iq3_xxs/conversions.json": {
+    "bytes": 326,
+    "sha256": "0b5fd7f418b9a01029067e51b1d2cc36f70fc85c17d0c889fff2273006a4fff5"
+  },
+  "<DATA>/packs/iq3_xxs/dense.bin": {
+    "bytes": 1538035200,
+    "sha256": "d2af3d8331e5c7a1985d1d589747230f9d56719a6d33c7cddc9ee6b81cde6b13"
+  },
+  "<DATA>/packs/iq3_xxs/index.txt": {
+    "bytes": 93687,
+    "sha256": "1afe12b36cd2d13bf122b741fa0e81e1f751319cc3c451e54ba75524d825f148"
+  },
+  "<DATA>/packs/iq3_xxs/native_experts.txt": {
+    "bytes": 3296,
+    "sha256": "ae28cf7a2a1c9063c4b55d6c8cf86d4d079dcddcf597f9e8697c9157d462c0ee"
+  },
+  "<DATA>/packs/iq3_xxs/tokenizer/chat_template.jinja": {
+    "bytes": 9993,
+    "sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+  },
+  "<DATA>/packs/iq3_xxs/tokenizer/merges.txt": {
+    "bytes": 3600844,
+    "sha256": "080cf95432173729d160346b7882bd2a644b07f7a3813a3eb73f4e66787bfde9"
+  },
+  "<DATA>/packs/iq3_xxs/tokenizer/tokenizer.json": {
+    "bytes": 554,
+    "sha256": "87be2ac47d8bc7393b7435df6ccd276740019a393941a2585d5edce59f450c54"
+  },
+  "<DATA>/packs/iq3_xxs/tokenizer/token_type.json": {
+    "bytes": 744960,
+    "sha256": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b"
+  },
+  "<DATA>/packs/iq3_xxs/tokenizer/vocab.json": {
+    "bytes": 5737005,
+    "sha256": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4"
+  }
+}
