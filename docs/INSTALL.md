@@ -76,7 +76,7 @@ sudo), and compiles the engine on your PC for the card (10-20 minutes, once; it 
 `sudo apt install build-essential git`). Several AMD cards share the model with `--gpus`, as on NVIDIA.
 
 What differs from NVIDIA for now: pictures are read by the image encoder on the CPU (`--vision cpu`, about 3 s per
-picture at the default 300 image tokens on 8 cores), `--calibrate` is NVIDIA-only, and Unsloth's 4-bit model needs an NVIDIA card. Measurements per card, the
+picture at the default 300 image tokens on 8 cores) and `--calibrate` is NVIDIA-only. Measurements per card, the
 build by hand and the tuning tables: [AMD_HIP.md](AMD_HIP.md).
 
 ## Two or three cards
