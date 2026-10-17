@@ -1,0 +1,24 @@
+{
+  "schema": "adaptive-public-integration-result.v1",
+  "date": "2026-10-18",
+  "public_parent": "281220bc69315c1570b4ab824f2fc45867c76a6b",
+  "upstream_release": "v0.1.45",
+  "upstream_parent": "477ac13cbe8e582c20484871ce459d20d82df09d",
+  "tested_code_tree_before_report": "541ac19a27b48a2dfeb88c0c5f3d8d4d19d8024d",
+  "platform": "Windows",
+  "python": "3.11.9",
+  "tests": {
+    "server": {"passed": 1298, "skipped": 13, "total": 1311, "exit_code": 0},
+    "supervisor_broker": {"passed": 54, "skipped": 0, "exit_code": 0},
+    "parallel_setup": {"passed": 3, "skipped": 0, "exit_code": 0},
+    "browser_resource_controls": {"passed": 12, "skipped": 0, "exit_code": 0},
+    "native_cpu": {"passed": 7, "failed": 0, "exit_code": 0}
+  },
+  "private_disk_bank_included": false,
+  "public_cuda_build_executed": false,
+  "public_gpu_runtime_executed": false,
+  "hip_sycl_builds_executed": false,
+  "live_model_media_or_desktop_executed": false,
+  "performance_claim": false,
+  "status": "public-source-and-cpu-qualified-only"
+}

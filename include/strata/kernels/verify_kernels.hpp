@@ -38,6 +38,20 @@ void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
 /// The recurrence + output norm for T tokens (h = (T, conv_channels) as q|k|v, gate/beta (T, h_v), z/y
 /// (T, value_dim)).  With `n_keep == nullptr` the state is read and NOT written (verify); otherwise the first
 /// *n_keep tokens are run and the state is written (commit; `y` may be scratch).  Bitwise `fused_gdn_step_norm`.
+/// Batch windows: up to 8 slot groups in one launch - group i is rows [first[i], first[i] + ntok[i]) of the
+/// window's buffers, recurring over its own slot's state[i] (and committing keep[i] tokens when keep is given).
+struct GdnGroups {
+    float* state[8] = {};
+    const int32_t* keep[8] = {};
+    int first[8] = {};
+    int ntok[8] = {};
+    int n = 0;
+};
+/// gdn_step_norm_multi over several slots' groups at once (the generic kernel, grid.y = group; per group the
+/// same arithmetic as one call each: bit-identical).  `commit`: every group keeps *keep[i] tokens, no outputs used.
+void gdn_step_norm_groups(const GdnGroups& groups, const float* h, int conv_channels, const float* gate, const float* beta,
+                          const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, bool commit,
+                          void* stream);
 void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const float* gate, const float* beta,
                          const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, int n_tok,
                          const int32_t* n_keep, void* stream, int t_out_begin = 0, void* xq_out = nullptr);
@@ -60,6 +74,21 @@ void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream);
 /// kernel costs ~2.4 us on a gfx1201 graph whatever it does.  n <= 128 * k for any k (a strided loop).
 void wait_copy_i32_from_mapped(const uint32_t* flag, uint32_t value, int32_t* dst, const int32_t* src, int64_t n,
                                void* stream);
+
+/// Layer split, overlapped hand-off (STRATA_SPLIT_OVERLAP): dst (mapped) = [a (na) | b (nb) | c (nc)] with volatile
+/// stores, then the LAST block to finish raises *flag = 1 (mapped) after a system fence, so the next stage's GPU can
+/// start (wait_flag_ge(flag, 1)) without the host syncing this stage first.  `counter` is one device word, 0 between
+/// calls (the last block resets it).  Volatile because on RDNA a plain store to mapped memory can sit in the L2.
+/// `drop` (mapped, may be null): a test hook - nonzero leaves the flag down, as if the publish were lost.
+void handoff_publish(float* dst, const float* a, int64_t na, const float* b, int64_t nb, const float* c, int64_t nc,
+                     uint32_t* counter, uint32_t* flag, void* stream, const uint32_t* drop = nullptr);
+/// The reading stage's hand-off wait, bounded: spin until *flag >= value, or after timeout_ns (0: no bound) set
+/// *err = 1 (mapped) and return, so the window's graph completes and the host fails the window cleanly.
+void wait_handoff(const uint32_t* flag, uint32_t value, uint32_t* err, unsigned long long timeout_ns, void* stream);
+/// wait_flag_ge, also writing the GPU's clock (ns, gpu_stamp's) as the kernel starts into *t_in and as it returns
+/// into *t_out (either may be null): the verify window's PCIe-share balance, at no extra launch.
+void wait_flag_ge_stamped(const uint32_t* flag, uint32_t value, unsigned long long* t_in, unsigned long long* t_out,
+                          void* stream);
 /// the GPU's %globaltimer (ns) into buf[i] (a one-thread kernel: the verify window's stage profiler).  Inside a PDL
 /// stretch (pdl.hpp) the stamp passes the early launch on, so a profiled window keeps the chain it measures.
 void gpu_stamp(unsigned long long* buf, int i, void* stream);
@@ -101,6 +130,9 @@ void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* i
 /// into dst + k * blob_bytes with coalesced 16-byte loads - the PCIe share of a layer's missed experts, staged
 /// into VRAM before the grouped expert kernel reads them.  Launched for a capacity of `cap` blobs.
 void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, int64_t blob_bytes, int cap, void* stream);
+/// table[pairs[2k]] = pairs[2k + 1] for k < n, `pairs` in mapped host memory: a residency table's changed entries,
+/// stream-ordered before the window that reads it, without the copy engine (where the tier's swaps may queue).
+void res_patch(int32_t* table, const int32_t* pairs, int n, void* stream);
 /// ptr[k] = base + k * blob_bytes for k < *n (the staged copies `fetch_blobs` made).
 void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream);
 

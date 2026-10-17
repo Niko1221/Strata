@@ -56,6 +56,30 @@ struct Prefix {
         return consumed.size() + 1 == emitted.size() &&
                std::equal(consumed.begin(), consumed.end(), emitted.begin());
     }
+
+    // STRATA_ADMIT_MERGE_FIRST: the preceding prompt read deliberately left this
+    // many rows unread. Their predictions are not outputs, except the last one.
+    void merged_prompt(int prompt_rows, int64_t max_new, int eos_row) {
+        last_t = strata::program::serve_window_size(prompt_rows, max_new - produced, true);
+        if (last_t == 0) return;
+        std::vector<int32_t> input(emitted.end() - last_t, emitted.end());
+        consumed.assign(emitted.begin(), emitted.end() - last_t);
+        std::vector<int32_t> output((size_t) last_t);
+        std::iota(output.begin(), output.end(), (int32_t) emitted.size());
+        if (eos_row >= 0 && eos_row < last_t) output[(size_t) eos_row] = eos_token;
+        // A first prompt window has no draft chain. The common size helper must
+        // not turn zero chain rows negative when max_new=1 and prompt_rows>1.
+        const int chain = std::min(0,
+            strata::program::serve_window_size(last_t, max_new - produced, true) - last_t);
+        require(chain == 0, "merged prompt cannot acquire a negative lookup-chain size");
+        last_keep = strata::program::serve_output_count(output.data(), last_t,
+            [](int32_t token) { return token == eos_token; }, true);
+        consumed.insert(consumed.end(), input.begin(), input.begin() + last_keep);
+        emitted.push_back(output[(size_t) last_keep - 1]);
+        ++produced;
+        last_emitted = 1;
+        eos = output[(size_t) last_keep - 1] == eos_token;
+    }
     bool reusable() const {
         auto followup = emitted;
         followup.push_back(999999); // the next chat turn must not be mistaken for a hidden generated token
@@ -84,6 +108,27 @@ int main() {
         fixed_eos.window(4, 3, 64, 0);
         require(fixed_eos.eos && fixed_eos.last_keep == 1 && fixed_eos.exact() && fixed_eos.reusable(),
                 "EOS commits its input only, leaving EOS as the unconsumed head");
+
+        // .45 merges the last prompt rows with the first output only for a batch
+        // admission with max_new=1. Applying the generated-token cap would read
+        // only row zero; scanning earlier predictions for EOS would lose rows too.
+        const int32_t prompt_predictions[] = {eos_token, 21, 22, 23};
+        require(strata::program::serve_window_size(4, 1) == 1 &&
+                strata::program::serve_output_count(prompt_predictions, 4,
+                    [](int32_t token) { return token == eos_token; }) == 1,
+                "historical generated-only rules reproduce both merged-prompt truncations");
+        for (int rows = 2; rows <= 16; ++rows)
+            for (int eos_row = -1; eos_row < rows; ++eos_row) {
+                Prefix merged(23);
+                merged.merged_prompt(rows, 1, eos_row);
+                require(merged.last_t == rows && merged.last_keep == rows && merged.last_emitted == 1 &&
+                        merged.produced == 1 && merged.exact() && merged.reusable(),
+                        "merged prompt commits every prompt row and only one reusable output head");
+                require(merged.eos == (eos_row == rows - 1),
+                        "only the merged prompt's final prediction may stop generation");
+            }
+        require(strata::program::serve_window_size(4, 0, true) == 0,
+                "a merged prompt still needs one available output token");
 
         // Remaining output capacity, MTP/lookup proposals, partial/full matches, and EOS both
         // inside the accepted prefix and in rejected/unverified tails. Each case also models

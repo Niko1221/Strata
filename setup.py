@@ -193,7 +193,7 @@ CUDA12_WHEELS = ["nvidia-cublas-cu12==12.9.1.4", "nvidia-cuda-runtime-cu12==12.9
 # toolkit the CUDA 12 zip is built with (cuBLAS 12.9.1.4, runtime 12.9.79).  Not tested on such an old driver here.
 CUDA12_MIN_DRIVER = 528 if WIN else 525
 ENGINE12_DIR = "engine-cuda12"
-MIN_ENGINE = (0, 1, 44, 1)             # versions compare all numbers; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
+MIN_ENGINE = (0, 1, 45)                # versions compare all numbers; v0.1.45: Qwen3.6 parallel requests and pictures, fixes #2346 #2372 #2396; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 # KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, hybrid K8V4 (8-bit K, 4-bit V) 816
 KV_CELL_BYTES = {"q4_0": 576, "k8v4": 816}
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
@@ -453,7 +453,10 @@ OWN_PATH_FAMILIES = {
                # V in fp32 (strata-q36)
                "kv_bytes_per_token": 11 * 2 * 256 * 2 * 4,
                "mtp": 2,                     # drafts per step (greedy requests): measured best on the R9700
-               "vision": False},             # the image encoder for this family is not wired up yet
+               # pictures: Unsloth's mmproj (the same projector family as Flash-Next's: qwen3vl_merger) through
+               # strata-vision; a parallel slot's session: its KV cache (kv_bytes_per_token) and the recurrent state of
+               # the 30 GDN layers (state_gb)
+               "vision": True, "state_gb": 0.07}
 }
 PREVIEW_FAMILIES = OWN_PATH_FAMILIES             # the earlier name (tools and tests that import it)
 # EXPERIMENTAL, off by default (setup asks): a control vector shipped with the repository, see its README
@@ -1908,6 +1911,26 @@ def unsloth_images_default(model, family, ram, gpu=None) -> bool:
     return g.get("vram_gb", 0.0) >= UNSLOTH_IMAGES_MIN_VRAM_GB
 
 
+IMAGES_GPU_ENCODER_MIN_VRAM_GB = 23.5   # #2406: below this the images answer "yes" gets the CPU encoder (a card of 12-16 GB: the GPU
+                                        # encoder's ~1.1-1.4 GB is ~850 expert slots lost, 3-5% of decode and prompt on P100 / A4000
+                                        # 16 GB (Linux, IQ3_S / IQ3_XXS), and 35-60% on an RTX 4080 SUPER under Windows as reported)
+
+
+def flash_vision_encoder(asked: str, gpu: dict) -> str:
+    """#2406: which encoder a Flash-Next images answer gets on NVIDIA.  "yes" (the question's y, or --vision yes) means the
+    GPU encoder on a card of 24 GB and more and the CPU encoder below that: a picture then takes a few seconds, the text
+    keeps the ~1 GB of VRAM for experts.  --vision gpu is always kept (with a note on a small card); --vision cpu is kept."""
+    vram = float((gpu or {}).get("vram_gb") or 0.0)
+    small = 0 < vram < IMAGES_GPU_ENCODER_MIN_VRAM_GB
+    if asked == "gpu" and small:
+        warn(f"the GPU image encoder keeps ~1.4 GB of VRAM that a {vram:.0f} GB card would use for experts (measured 3-5% "
+             "of decode on 16 GB cards, more on some Windows PCs, #2406): kept as you chose; --vision cpu reads pictures "
+             "on the CPU instead (a few seconds each)")
+    if asked == "yes":
+        return "cpu" if small else "gpu"
+    return asked
+
+
 UMA_EXPERTS = 24576            # the Flash-Next model's experts (48 layers x 512): the most an expert cache can hold
 
 
@@ -1954,6 +1977,10 @@ def check_shards(shards):
             fail(f"{s.name} is not a whole GGUF shard ({e})", "delete it and run setup again")
         need = g.data_start + max((t.offset + (t.expected_bytes() or 0) for t in g.tensors), default=0)
         have = s.stat().st_size
+        if not g.tensors:
+            # #2346: a metadata-only shard (Unsloth's UD-Q5_K_XL 00001, 10,946,618 bytes) ends at its header: the
+            # alignment padding before an empty data section is not in the file, so data_start can be past its end
+            need = min(need, have)
         if have < need:
             fail(f"{s.name} is short: {have:,} of {need:,} bytes ({need - have:,} missing)",
                  "delete it and run setup again (or copy the whole file into --gguf-dir)")
@@ -2077,6 +2104,7 @@ ROCM_INDEXES = {"gfx1100": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",   
                 "gfx1030": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
                 "gfx1031": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
                 "gfx1151": "https://rocm.nightlies.amd.com/v2/gfx1151/",       # Strix Halo (docs/STRIX_HALO.md)
+                "gfx1150": "https://rocm.nightlies.amd.com/v2/gfx1150/",       # Strix Point: only with STRATA_EXPERIMENTAL_GFX1150=1
                 "gfx1103": "https://rocm.nightlies.amd.com/v2/gfx110X-all/"}   # Radeon 780M: only with STRATA_EXPERIMENTAL_GFX1103=1
 # The TheRock nightly indexes are pruned and move on, and each GPU family's index holds its own range (#1103: gfx103X-all
 # starts at 7.13.0a20260422 and has no 7.10; #1267: the 7.10 wheel segfaults on a Strix Halo with kernel 7.2.8), so one
@@ -2091,9 +2119,38 @@ ROCM_VERSION_OVERRIDE = os.environ.get("STRATA_ROCM_VERSION") or None
 ROCM_VERSION = ROCM_VERSION_OVERRIDE or ROCM_VERSION_DEFAULT   # kept for callers that read one version
 ROCM_SYSTEM_MIN = (7, 0)       # an older system ROCm is passed over for the wheels (gfx1201 needs ROCm 6.4 or newer)
 # STRATA_EXPERIMENTAL_GFX1103=1 (opt-in, unsupported): the Radeon 780M / 760M / 740M iGPU (Ryzen 7040 / 8040, gfx1103) is taken
-# as a unified-memory AMD card like Strix Halo, with the portable kernels (no WMMA) (measured on one machine: Ryzen 7 255).  Unset: unchanged.
+# as a unified-memory AMD card like Strix Halo, with the native dot4 and gfx11 WMMA kernels, the gfx1103 exact speed switches
+# and a hipBLASLt table when one matches (measured on one machine: Ryzen 7 8745HS).  Unset: unchanged.
 GFX1103_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1103") == "1"
-AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151") + (("gfx1103",) if GFX1103_OPT_IN else ())
+# STRATA_EXPERIMENTAL_GFX1150=1 (opt-in, unvalidated): the Radeon 890M / 880M iGPU (Ryzen AI 300, Strix Point, gfx1150)
+# is taken as a unified-memory AMD card like Strix Halo.  The engine builds and runs for gfx1150 from 0.1.40.2 (#1217;
+# tools/hip/gfx1150-hipblaslt-100401.txt is calibrated on it), but no release ships a ready-made Windows engine for it:
+# build one with `STRATA_HIP_ARCHS=gfx1150 tools\hip\build_windows.bat` and start setup with `--prebuilt dist\`.
+# Unset: unchanged.
+GFX1150_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1150") == "1"
+AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151") \
+            + (("gfx1103",) if GFX1103_OPT_IN else ()) + (("gfx1150",) if GFX1150_OPT_IN else ())
+# The exact (bit-identical) speed switches the engine turns on by default on gfx1151 (src/core/arch_defaults.cpp), less
+# STRATA_HCD_EXACT: that one copies the gfx1151 hipBLASLt table's solutions 1176 / 1177, and the gfx1103 table
+# (tools/hip/gfx1103-hipblaslt-100401.txt) picks others, so it would only report that it cannot run.  A gfx1103 install
+# takes them from here (setup writes them into the config's "env"), the same way the table is written: one 780M measured
+# the same greedy answers with all 17 on and with all 17 off, +13% to +15% prompt and decode +3.2% (the decode half
+# alone).  The engine keeps gfx1103 out of its own arch defaults (src/core/arch_defaults_test.cpp asserts it stays
+# empty), so this keeps the default path byte-identical.
+GFX1103_SWITCHES = {
+    # prompt
+    "STRATA_GDN_HEAD": "1", "STRATA_GDN_PP": "2", "STRATA_GDN_CONVL2": "1", "STRATA_GDN_NOY": "1",
+    "STRATA_CVEC_FUSE": "1", "STRATA_PF_PAD": "1",
+    # decode
+    "STRATA_Q8_PACKED": "1", "STRATA_Q6_PACKED": "1", "STRATA_MMVF_ROWS": "1", "STRATA_ATTN_LANECELL": "1",
+    "STRATA_EXPERT_V2": "1", "STRATA_TSUM": "1", "STRATA_LFUSE": "1", "STRATA_GDN_SPLIT": "1",
+    "STRATA_QFUSE": "1", "STRATA_PLE_BATCH": "1", "STRATA_SH_STREAM": "1",
+}
+# The same set for a gfx1150 install (Radeon 890M / 880M): less STRATA_HCD_EXACT as well, because a gfx1150 table picks other
+# solutions than the gfx1151 one.  The Radeon 890M report (docs/AMD_HIP.md; bench/results/2026-10-07-community-gfx1150) measured the
+# same greedy answers with all 17 on and with all 17 off, decode +2% and prompts +3-6%.  The engine's arch defaults are not used
+# for gfx1150 (src/core/arch_defaults_test.cpp asserts gfx1150 stays empty), so this keeps the default path byte-identical.
+GFX1150_SWITCHES = dict(GFX1103_SWITCHES)
 AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs has no product name
              "gfx1101": "AMD Radeon RX 7800 XT / 7700 XT (gfx1101)",
              "gfx1102": "AMD Radeon RX 7600 / 7600 XT (gfx1102)",
@@ -2199,6 +2256,15 @@ def is_strix_halo(g) -> bool:
     return isinstance(g, dict) and gfx_arch_is(g.get("arch"), STRIX_HALO_ARCH)
 
 
+def is_uma_apu(g) -> bool:
+    """A unified-memory AMD APU whose "VRAM" is a BIOS carve-out plus shared system memory: Strix Halo (gfx1151), and
+    the opt-in gfx1150 (Strix Point) / gfx1103 (Phoenix / Hawk Point) iGPUs.  Everything else is a discrete card."""
+    arch = g.get("arch") if isinstance(g, dict) else None
+    return (is_strix_halo(g)
+            or (GFX1150_OPT_IN and gfx_arch_is(arch, "gfx1150"))
+            or (GFX1103_OPT_IN and gfx_arch_is(arch, "gfx1103")))
+
+
 def amd_apply_uma(g: dict, gtt_gb: float = 0.0, ram: float | None = None) -> dict:
     """Strix Halo is an APU with unified memory.  Its "dedicated VRAM" is a BIOS carve-out (512 MB to 96 GB; 2 GB on the
     maintainers' box) and the GPU also reaches shared system memory (Linux: the GTT pool, `mem_info_gtt_total`, half the
@@ -2206,7 +2272,7 @@ def amd_apply_uma(g: dict, gtt_gb: float = 0.0, ram: float | None = None) -> dic
     the model's experts live in, so it is not extra room beside the RAM.  g gets: uma, dedicated_gb (the carve-out: the
     only part that adds to the RAM, which the low-RAM mode counts) and vram_gb = the memory the GPU can use in all
     (the carve-out plus the shared pool less what the OS keeps), which sizes the context and the parallel slots."""
-    if g.get("uma") or not (is_strix_halo(g) or (GFX1103_OPT_IN and gfx_arch_is(g.get("arch"), "gfx1103"))):
+    if g.get("uma") or not is_uma_apu(g):
         return g
     ram = ram_gb() if ram is None else ram
     carve = max(0.0, float(g.get("vram_gb") or 0.0))
@@ -2305,12 +2371,24 @@ def nvfp4_card_note(gpu) -> str:
     return "runs, but UD-IQ4_XS is faster on this card"
 
 
-def family_menu_note(family: str, hip: bool, gpu) -> str:
-    """The card- and RAM-dependent tail of a family's line in the model menu."""
+def nvfp4_cpu_note(avx2: bool, avx512: bool) -> str:
+    """What the NVFP4 menu line and the install step say about this CPU (#2347).  Its experts that stay on the CPU run
+    on AVX-512 rows when the CPU has them, else on AVX2 rows (bit-equal to ggml's AVX2 dot).  Measured (docs/NVFP4.md):
+    per core the AVX2 rows are ~10% slower, and on a whole pool that reads DRAM the two are the same speed up to two
+    tokens a window (Ryzen 7 255: 58.9 vs 58.7 GB/s) and ~12% apart at four.  A note only: nothing is refused."""
+    if avx512 or not avx2:
+        return ""                                      # no AVX2 at all: the older-CPU build's own warning says it
+    return ("this CPU has no AVX-512, so NVFP4's CPU rows run on AVX2: about as fast when memory-bound, up to ~12% "
+            "slower on 4-token windows")
+
+
+def family_menu_note(family: str, hip: bool, gpu, avx2: bool = True, avx512: bool = True) -> str:
+    """The card-, CPU- and RAM-dependent tail of a family's line in the model menu."""
     if family == "nvfp4":
         d = MODELS["NVFP4"]
+        cpu = nvfp4_cpu_note(avx2, avx512)
         return (f"   [{nvfp4_card_note(gpu)}; {d['download_gb']:.0f} GB download, ~{d['ram_gb']} GB of RAM keeps every "
-                "expert in RAM]")
+                "expert in RAM" + (f"; {cpu}" if cpu else "") + "]")
     if family == "unsloth" and hip:
         return "   [UD-IQ4_XS is the 4-bit choice on AMD and Intel cards; NVFP4 runs on NVIDIA only]"
     return ""
@@ -2344,8 +2422,26 @@ def gfx1103_notes(gpu, ram) -> list[str]:
              f"seen by the OS + a {gpu.get('dedicated_gb', 0.0):.1f} GB BIOS carve-out), so the model's experts live in "
              "that pool and the expert cache is sized from the memory the OS can give back."]
     notes.append("  " + ("The engine is compiled here for gfx1103" if not WIN else "This GPU has no ready-made Windows engine")
+                 + " with the native dot4 and WMMA kernels and the 780M's exact speed switches"
                  + " (experimental opt-in, STRATA_EXPERIMENTAL_GFX1103=1; measured on one machine, not validated on a real "
-                 "card): see docs/AMD_HIP.md. This is not a Strix Halo.")
+                 "card): see docs/AMD_HIP.md and docs/RADEON_780M.md. This is not a Strix Halo.")
+    if not WIN and gpu.get("shared_gb", 0) < 0.75 * ram - 1:
+        notes.append(f"!the GPU can reach {gpu.get('shared_gb', 0):.0f} GB of shared memory (the GTT pool; the kernel's "
+                     "default is about half of the RAM). The kernel option ttm.pages_limit raises it; setup changes no "
+                     "host setting - a bigger model needs the room, a smaller one runs as it is")
+    return notes
+
+
+def gfx1150_notes(gpu, ram) -> list[str]:
+    """What setup tells the owner of a Radeon 890M / 880M (Ryzen AI 300, Strix Point, gfx1150, unified memory): never
+    the Strix Halo text, which is about another chip (gfx1151).  Opt-in only (STRATA_EXPERIMENTAL_GFX1150=1)."""
+    notes = [f"  Radeon 890M / 880M class (gfx1150, Strix Point): the CPU and the GPU share one memory pool ({ram:.0f} GB "
+             f"seen by the OS + a {gpu.get('dedicated_gb', 0.0):.1f} GB BIOS carve-out), so the model's experts live in "
+             "that pool and the expert cache is sized from the memory the OS can give back."]
+    notes.append("  " + ("The engine is compiled here for gfx1150" if not WIN else
+                         "Windows has no ready-made engine for gfx1150: build one with STRATA_HIP_ARCHS=gfx1150 "
+                         "tools\\hip\\build_windows.bat and start setup with --prebuilt dist\\")
+                 + " (experimental opt-in, STRATA_EXPERIMENTAL_GFX1150=1, unvalidated: docs/AMD_HIP.md).")
     if not WIN and gpu.get("shared_gb", 0) < 0.75 * ram - 1:
         notes.append(f"!the GPU can reach {gpu.get('shared_gb', 0):.0f} GB of shared memory (the GTT pool; the kernel's "
                      "default is about half of the RAM). The kernel option ttm.pages_limit raises it; setup changes no "
@@ -2354,9 +2450,11 @@ def gfx1103_notes(gpu, ram) -> list[str]:
 
 
 def igpu_notes(gpu, ram) -> list[str]:
-    """The unified-memory notes for exactly this chip: Strix Halo (gfx1151) or the gfx1103 opt-in, nothing else."""
+    """The unified-memory notes for exactly this chip: Strix Halo (gfx1151) or the gfx1150 / gfx1103 opt-in, nothing else."""
     if is_strix_halo(gpu):
         return strix_halo_notes(gpu, ram)
+    if GFX1150_OPT_IN and gfx_arch_is(gpu.get("arch"), "gfx1150"):
+        return gfx1150_notes(gpu, ram)
     if gfx_arch_is(gpu.get("arch"), "gfx1103"):
         return gfx1103_notes(gpu, ram)
     return []
@@ -2484,9 +2582,9 @@ def amd_gpus_win() -> list[dict]:
     hip = hip_devices()
     if not hip:
         return amd_gpus_windows()
-    halo = [g for g in hip if is_strix_halo(g)]
+    halo = [g for g in hip if is_uma_apu(g)]
     if halo:                                           # an APU: the HIP runtime's figure is not the BIOS carve-out
-        reg = [r for r in amd_gpus_windows() if is_strix_halo(r)]
+        reg = [r for r in amd_gpus_windows() if is_uma_apu(r)]
         for k, g in enumerate(halo):
             reported = g["vram_gb"]
             g["vram_gb"] = reg[k]["dedicated_gb"] if k < len(reg) else 0.0
@@ -2651,6 +2749,17 @@ def amd_gpus_windows(adapters=None, registry=None) -> list[dict]:
     return found
 
 
+def engine_env(eng: Path) -> dict:
+    """The environment for running an installed engine's own programs (`strata --families`, `strata-device
+    --list-devices`): the ready-made Windows HIP engine keeps hipblas.dll / libhipblaslt.dll in its rocm/bin, which the
+    loader finds through PATH only (#2372: a launch without it shows a "not found" dialog per DLL and prints nothing)."""
+    env = dict(os.environ)
+    dirs = [str(d) for d in hip_lib_dirs(eng)]
+    if dirs:
+        env["PATH"] = os.pathsep.join(dirs + [env.get("PATH", "")])
+    return env
+
+
 def hip_devices(probe: Path | None = None, text: str | None = None) -> list[dict] | None:
     """The GPUs the HIP runtime enumerates, numbered as HIP_VISIBLE_DEVICES numbers them, from the installed engine's
     `strata-device --list-devices`; None when there is no HIP engine here or it does not answer.  text: its output
@@ -2665,10 +2774,8 @@ def hip_devices(probe: Path | None = None, text: str | None = None) -> list[dict
             return None
         try:
             hip_runtime_beside_exe(probe.parent)       # #468 #461: not the driver's System32 copy
-            env = dict(os.environ)                     # the ready-made engine's ROCm DLLs (rocm/bin beside it)
-            env["PATH"] = os.pathsep.join([str(d) for d in hip_lib_dirs(probe.parent)] + [env.get("PATH", "")])
             r = subprocess.run([str(probe), "--list-devices"], capture_output=True, text=True, timeout=120,
-                               cwd=str(probe.parent), env=env)
+                               cwd=str(probe.parent), env=engine_env(probe.parent))
         except (OSError, subprocess.TimeoutExpired):
             return None
         if r.returncode != 0:
@@ -3000,7 +3107,7 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
              "10-20 minutes, once) ...")
     cmake_build(ROOT, ROOT / "build-hip", "strata",
                 ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_BUILD_TESTS=OFF",
-                 "-DSTRATA_PREFILL_MMQ=ON", "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
+                 "-DSTRATA_PREFILL_MMQ=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
                  f"-DCMAKE_HIP_COMPILER={root / 'llvm' / 'bin' / 'clang++'}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
                  "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
                  f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
@@ -3954,7 +4061,8 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
             "  The engine's source changed: compiling it again (only what changed, a few minutes) ..."
             if local and (eng / EXE).exists() else "  Compiling the Strata engine for your GPU (10-20 minutes, once) ...")
         cmake_build(ROOT, bdir, "strata",
-                    ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
+                    ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON",
+                     f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
                      f"-DCMAKE_CUDA_COMPILER={nvcc}", *toolkit_root_defs(nvcc), f"-DSTRATA_GGML_DIR={llama}",
                      *host_compiler_defs(True), *engine_defs(archs, toolkit),
                      *isa_floor_defs(floor, bdir, meta)],
@@ -4414,8 +4522,8 @@ def write_config(path: Path, cfg: dict):
 # "sampling" or "mcp_servers" block, "allowed_hosts", "cors_origins", "open_browser" - and is kept when setup runs again
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
                         "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision"})
-SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
-                       "STRATA_ROUTE_TAIL_SKIP"})   # the "env" entries setup writes
+SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_ROCBLAS_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
+                       "STRATA_ROUTE_TAIL_SKIP"}) | frozenset(GFX1103_SWITCHES) | frozenset(GFX1150_SWITCHES)   # the "env" entries setup writes (the gfx1103 switches are setup's too: a re-run refreshes them, they do not linger)
 # 0.1.44 added these three, written for Unsloth's files only (unsloth_default_env).  In any other model's config they are the
 # user's own (STRATA_ROUTE_TAIL_SKIP=0 to turn the tail skip off, STRATA_MMQ_KQ=1 ...): a setup run again keeps them there
 # (0.1.44 dropped them with the rest of SETUP_ENV).
@@ -4575,8 +4683,9 @@ def choices_from_config(cfg_path: Path) -> dict:
         size = next((m for m in d["models"] if m.lower() == tag[len(d["tag"]):].lower()), None)
         a = cfg.get("args", [])
         ctx = a[a.index("--max-context") + 1] if "--max-context" in a and a.index("--max-context") + 1 < len(a) else None
+        vis = cfg.get("vision")
         return {"family": own, "model": size, "context": int(ctx) if ctx and ctx.isdigit() else None, "kv": None,
-                "vision": "none", "esp": "off", "host": cfg.get("host"), "api_key": cfg.get("api_key"),
+                "vision": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none", "esp": "off", "host": cfg.get("host"), "api_key": cfg.get("api_key"),
                 "port": cfg.get("port"), "gpu": cfg.get("gpu"), "layer_split": None,
                 "cuda": 12 if config_toolkit(cfg) == 12 else None, "vram_reserve_mib": None}
     family = next((f for f, d in FAMILIES.items() if d["tag"] and tag.startswith(d["tag"])), "qwen")
@@ -4752,7 +4861,8 @@ def calibrate_config(cfg_path: Path) -> bool:
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     say()
     say("  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the")
-    say("  draft depth, the CPU threads, the expert cache). It takes roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.")
+    say("  draft depth, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes")
+    say("  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.")
     try:
         since = os.path.getsize(cfg["log"]) if cfg.get("log") and os.path.isfile(cfg["log"]) else 0
     except OSError:
@@ -4766,13 +4876,17 @@ def calibrate_config(cfg_path: Path) -> bool:
             say(f"       the engine said: {why}")
         return False
     cfg["args"] = CAL.apply(cfg["args"], res["settings"])
+    if "env" in res:                                   # HIP: the engine variables it measured (STRATA_SH_STREAM)
+        cfg["env"] = CAL.apply_env(cfg.get("env"), res["env"])
     write_config(cfg_path, cfg)
     st = load_settings()
-    st.setdefault("calibration", {})[hardware_key(cfg)] = {"settings": res["settings"], "tok_s": res["report"].get("tok_s"),
+    st.setdefault("calibration", {})[hardware_key(cfg)] = {"settings": res["settings"], "env": res.get("env") or {},
+                                                           "tok_s": res["report"].get("tok_s"),
                                                            "date": time.strftime("%Y-%m-%d")}
     save_settings(st)
-    if res["settings"]:
-        ok("tuned for this PC: " + ", ".join(f"{k} {v}" for k, v in res["settings"].items())
+    chosen = {**res["settings"], **(res.get("env") or {})}
+    if chosen:
+        ok("tuned for this PC: " + ", ".join(f"{k} {v}" if k.startswith("--") else f"{k}={v}" for k, v in chosen.items())
            + (f" ({res['report']['tok_s']} tok/s)" if res["report"].get("tok_s") else ""))
     else:
         ok("tuned for this PC: the default settings are already the fastest here"
@@ -5508,7 +5622,8 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision):
 def engine_families(eng: Path) -> set:
     """The model families an engine runs (`strata --families`; an engine from before it: Flash-Next's only)."""
     try:
-        text = subprocess.run([str(eng / EXE), "--families"], capture_output=True, text=True, timeout=60).stdout
+        text = subprocess.run([str(eng / EXE), "--families"], capture_output=True, text=True, timeout=60,
+                              env=engine_env(eng)).stdout      # #2372: with the engine's rocm/bin on PATH
     except (OSError, subprocess.SubprocessError):
         return {"qwen4exp"}
     names = set(text.split())
@@ -5525,6 +5640,117 @@ def own_path_size(fam: dict, ram: float) -> str:
     """The recommended size: the largest file whose RAM need this PC has (the smallest when none fits)."""
     fits = [m for m, d in fam["models"].items() if ram >= d["ram_gb"]]
     return max(fits, key=lambda m: fam["sha256"][fam["file"].format(q=m)][0]) if fits else next(iter(fam["models"]))
+
+
+def own_path_vision(a, fam: dict, gpu: dict, hip: bool) -> str:
+    """The image encoder for an own-path family (Qwen3.6-35B-A3B): "gpu", "cpu" or "none".  The Flash-Next families' rules:
+    --vision yes|no|gpu|cpu, else a question whose default answer is yes where the GPU encoder costs little - an NVIDIA
+    card of 16 GB or more (its ~1.4 GB is under a tenth of it) - and, on AMD under Linux, yes with the CPU encoder (it takes
+    no VRAM; there is no GPU encoder for AMD yet).  A smaller NVIDIA card is recommended the CPU encoder (the GPU one takes
+    room from the experts); what is asked for with --vision gpu is kept, with a note (recommend, never force)."""
+    asked = a.vision
+    vram = float(gpu.get("vram_gb", 0.0))
+    big = vram >= UNSLOTH_IMAGES_MIN_VRAM_GB
+    if asked in ("no", "none"):
+        return "none"
+    if asked is None:
+        say()
+        say(f"  Images: {fam['title']} can also read pictures (screenshots, photos, scanned pages). This adds a "
+            f"{fam['sha256'][fam['mmproj']][0] / 1e9:.1f} GB download" + (
+                "; the encoder runs on the CPU (no VRAM), a few seconds per picture." if hip else
+                " and the image encoder runs on the GPU (~1.4 GB of VRAM kept free, 0.1-0.5 s per picture)." if big else
+                "; the encoder runs on the CPU (a few seconds per picture), because the GPU encoder would take ~1.4 GB "
+                "of VRAM from the experts on this card."))
+        default = "n" if (hip and WIN) else "y" if (big or hip) else "n"
+        if ask("Do you want images?", ["y", "n"], default, a.yes) != "y":
+            return "none"
+        asked = "cpu" if (hip or not big) else "gpu"
+    if hip:
+        if asked == "gpu":
+            say("  The AMD backend has no GPU image encoder yet: the encoder runs on the CPU.")
+        if WIN:
+            warn("images on the CPU with an AMD card are Linux-only for now (the ready-made Windows AMD engine has no "
+                 "image encoder): images off")
+            return "none"
+        return "cpu"
+    if asked == "yes":
+        asked = "gpu" if big else "cpu"
+    if asked == "gpu" and not big and vram > 0:
+        warn(f"the GPU image encoder takes ~1.4 GB of VRAM, which on a {vram:.0f} GB card is room the experts would use: "
+             "--vision cpu reads pictures on the CPU instead (a few seconds each); kept as you chose")
+    return asked
+
+
+def own_path_parallel_slot_gb(fam: dict, ctx: int) -> float:
+    """The VRAM one batch slot's session takes: its KV cache (fp32 K and V of the attention layers and the MTP block) and
+    the recurrent state of the GDN layers."""
+    return ctx * fam["kv_bytes_per_token"] / 1e9 + fam["state_gb"]
+
+
+PARALLEL_SMALL_SHARE = 0.35     # a card that does not hold every expert: the slots' sessions may take this share of the room the
+                                # experts would have (VRAM less ~4.5 GB for the dense weights and buffers).  Measured (Q4_K_XL):
+                                # RTX 3060 12 GB, 8K context, 4 slots (23% of that room): a request alone -4%; A4000 / P100
+                                # 16 GB, 32K, 2 slots (27%): -11% / -9%, 4 slots (54%): -27% and no gain together.
+
+
+def own_path_parallel_fits_all(fam: dict, model: str, vram_gb: float, ctx: int, n: int) -> bool:
+    """True where every routed expert still sits in VRAM beside n slots' sessions (one more session than the slots: the
+    solo path's own)."""
+    size = fam["sha256"][fam["file"].format(q=model)][0] / 1e9
+    base = size * 0.93 + 4.5       # the routed experts + the dense weights and buffers (the file's 7% beyond them)
+    return base + (n + 1) * own_path_parallel_slot_gb(fam, ctx) <= vram_gb
+
+
+def own_path_parallel_recommend(fam: dict, model: str, vram_gb: float, ctx: int) -> int:
+    """How many requests at once to recommend: 0 = none (the card cannot hold even two slots).  Where every routed expert
+    still fits in VRAM with the slots' sessions, up to 4 (a batch reads each expert once for all its rows).  On a card
+    that does not hold every expert even for one session (the hybrid mode already) it is recommended too, as an offer with
+    its price said: measured on
+    an RTX 3060 12 GB, 4 requests together run ~1.5x as fast as one, a request alone ~5% slower, because the slots take
+    VRAM from the expert cache; up to the count whose sessions leave PARALLEL_SMALL_ROOM_GB of the card."""
+    slot = own_path_parallel_slot_gb(fam, ctx)
+    best = max([n for n in (2, 3, 4) if own_path_parallel_fits_all(fam, model, vram_gb, ctx, n)], default=0)
+    if best:
+        return best
+    if own_path_parallel_fits_all(fam, model, vram_gb, ctx, 0):
+        return 0       # a card that holds every expert for one session only: more sessions would push experts to the CPU
+                       # (measured on a 32 GB R9700 at 128K: 4 slots left 15 of 256 experts per layer, decode 81 tok/s
+                       # against ~180): not offered there, a number asked for is kept
+    room = max(vram_gb - 4.5, 0.0)
+    return max([n for n in (2, 3, 4) if n * slot <= PARALLEL_SMALL_SHARE * room], default=0)
+
+
+def own_path_parallel_note(a_parallel, fam: dict, model: str, vram_gb: float, ctx: int) -> list:
+    """What setup says about "parallel" for an own-path family: the recommendation, or how the asked count compares with
+    it (kept as asked: recommend, never force)."""
+    rec = own_path_parallel_recommend(fam, model, vram_gb, ctx)
+    slot = own_path_parallel_slot_gb(fam, ctx)
+    if a_parallel is None or a_parallel <= 1:
+        if not rec:
+            return ["Several requests at once (opt-in, --parallel N): left at one at a time, because this card cannot spare "
+                    f"the room: each session takes ~{slot:.1f} GB of VRAM at this context, and where the card holds every "
+                    "expert only for one session, more would move experts to the CPU and slow every request a lot (a "
+                    "smaller context leaves room for more; docs/QWEN36.md)."]
+        if own_path_parallel_fits_all(fam, model, vram_gb, ctx, rec):
+            return [f"Several requests at once (opt-in): --parallel {rec} decodes up to {rec} together instead of one after "
+                    f"the other (each takes ~{slot:.1f} GB of VRAM at this context; docs/BATCHING.md)."]
+        return [f"Several requests at once (opt-in): --parallel {rec} decodes up to {rec} together, so a second user or agent "
+                "starts at once instead of waiting for the first. The price on this card, which does not hold every expert: "
+                f"each session takes ~{slot:.1f} GB of VRAM from the expert cache, so a request alone runs about 4-11% "
+                "slower, and next to one-at-a-time WITH the draft layer the requests together are only 1.0-1.15x faster "
+                "(measured, Q4_K_XL: RTX 3060 12 GB at 8K context, 4 requests: 1.15x, alone -4%; A4000 / P100 16 GB at "
+                "32K, 2 requests: 1.0x, alone -7 to -11%). Worth it for several users at once, not for one chat "
+                "(docs/QWEN36.md)."]
+    lines = [f"parallel requests: {a_parallel} at once (each takes ~{slot:.1f} GB of VRAM at this context, "
+             f"{a_parallel * slot:.1f} GB in all)"]
+    if a_parallel > PARALLEL_MAX:
+        lines.append(f"the engine runs at most {PARALLEL_MAX} at once; it will use {PARALLEL_MAX}")
+    if not rec:
+        lines.append("recommended for this card: one at a time - there is no room for more sessions; kept as you chose")
+    elif a_parallel > rec:
+        lines.append(f"recommended for this card: {rec} - more slots leave fewer experts in VRAM, which can make every "
+                     "request slower; kept as you chose")
+    return lines
 
 
 def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted):
@@ -5578,8 +5804,20 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         warn(f"{ctx // 1024}K is past {fam['title']}'s trained 262,144 positions and this engine path has no rope "
              "scaling yet: kept as you chose, but answers past 256K are untested")
     ok(f"context: {ctx} tokens")
-    if a.vision not in (None, "no", "none"):
-        warn(f"images are not available with {fam['title']} yet: off")
+    vision = own_path_vision(a, fam, gpu, hip)
+    ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
+    vram_gb = float(gpu.get("vram_gb", 0.0))
+    par = getattr(a, "parallel", None)
+    par_said = False
+    if par is None and not a.yes:                      # offered, with its price; Enter keeps one at a time (never forced)
+        say()
+        for line in own_path_parallel_note(None, fam, model, vram_gb, ctx):
+            say("  " + line)
+        par_said = True
+        if own_path_parallel_recommend(fam, model, vram_gb, ctx):
+            n = int(ask("How many requests at once (1 = one at a time)?", [str(i) for i in range(1, PARALLEL_MAX + 1)],
+                        "1", a.yes))
+            par = n if n > 1 else None
     if a.rope_scaling or a.rope_scale or a.kv or a.resident_budget_gib is not None or a.low_ram not in (None, "auto"):
         warn(f"--rope-scaling / --kv / --resident-budget-gib / --low-ram are Flash-Next settings: {fam['title']} "
              "does not use them")
@@ -5596,7 +5834,10 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
                 "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil")
 
     step(4, "the Strata engine")
-    llama, eng, meta, lib_dirs, gpu, _ = engine_step(a, gpu, hip, amd, cuda_tk, "none")
+    llama, eng, meta, lib_dirs, gpu, vision = engine_step(a, gpu, hip, amd, cuda_tk, vision)
+    if vision != "none" and not (eng / VEXE).exists():
+        warn("this engine has no image encoder: images off (run setup again with --build to compile it)")
+        vision = "none"
     if fam["arch"] not in engine_families(eng):
         fail(f"this engine ({meta.get('version')}) does not run {fam['title']} yet",
              "update Strata, or compile the engine with --build, and run setup again")
@@ -5611,6 +5852,16 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         download(fam["hf"] + gguf.name, gguf)
     verify_sha256(gguf, *fam["sha256"][gguf.name])
     ok(f"model file: {gguf}")
+    mmproj = folder / fam["mmproj"]
+    if vision != "none":                               # the image encoder: Unsloth's mmproj, pinned, size + SHA-256 checked
+        if mmproj.exists() and done(mmproj):
+            ok(f"{mmproj.name} already downloaded")
+        else:
+            if a.gguf_dir:
+                fail(f"{mmproj} is missing", f"put {mmproj.name} in {folder}, or drop --gguf-dir to download it")
+            download(fam["mmproj_hf"] + mmproj.name, mmproj, "vision encoder")
+        verify_sha256(mmproj, *fam["sha256"][mmproj.name])
+        ok(f"vision encoder: {mmproj}")
 
     step(6, "preparing the model for Strata")
     data, _ = data_folder(a.data_dir)
@@ -5645,6 +5896,25 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         cfg["open_browser"] = a.browser
     cfg["args"] = recommend_pool_workers(cfg["args"])   # --pool-workers: this engine path's CPU expert threads too
     cfg_path = ROOT / f"strata-{tag.lower()}.json"
+    if vision != "none":
+        old_cfg = cfg_path if cfg_path.is_file() else adopted
+        vt = vision_tokens(getattr(a, "vision_tokens", None), vision, old_cfg)
+        cfg["args"].append("--vision")
+        cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(mmproj), "model": str(gguf), "gpu": vision == "gpu",
+                         "max_tokens": vt}          # the text model, opened vocab-only
+        if vision == "cpu":
+            cfg["vision"]["threads"] = max(1, (os.cpu_count() or 8) // 2)
+    elif getattr(a, "vision_tokens", None) is not None:
+        warn("--vision-tokens: images are off, so it is not used")
+    # requests at once ("parallel", opt-in): written only when given; the recommendation is said once
+    if par is not None:
+        if par >= 2:
+            cfg["parallel"] = par
+            for i, line in enumerate(own_path_parallel_note(par, fam, model, vram_gb, ctx)):
+                (ok if i == 0 else warn)(line)
+        else:
+            cfg["parallel"] = 1
+            ok("parallel requests: one at a time (--parallel 1)")
     write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None)
     script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
     ok(f"start script: {script.name}")
@@ -5653,6 +5923,11 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     say(f"  API (OpenAI):     http://127.0.0.1:{port}/v1   (any API key; model name: anything)")
     say(f"  API (Anthropic):  http://127.0.0.1:{port}/v1/messages")
     say(f"  Next time:        just run {'START-HERE.bat' if WIN else './setup.sh'} (or {script.name}) - it starts right away")
+    if vision != "none":
+        say("  Images:           send them in the chat page, in chat.py (/image <path>) or over the API")
+    if par is None and not par_said:                   # the opt-in, said once (nothing changes)
+        for line in own_path_parallel_note(None, fam, model, vram_gb, ctx):
+            say("  " + line)
     if a.no_start:
         return 0
     return start(cfg_path, port)
@@ -5707,8 +5982,8 @@ def main() -> int:
         return mac_setup(sys.argv[1:])
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES),
-                    help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5 (qwen36 = Qwen3.6-35B-A3B: download only, the "
-                         "engine does not run it yet)")
+                    help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, qwen36 = Qwen3.6-35B-A3B (pictures with --vision, "
+                         "several requests at once with --parallel; docs/QWEN36.md)")
     ap.add_argument("--model", choices=list(dict.fromkeys([*MODELS, *(m for f in PREVIEW_FAMILIES.values()
                                                                        for m in f["models"])])))
     ap.add_argument("--context", type=int)
@@ -6129,7 +6404,7 @@ def main() -> int:
         for i, f in enumerate(fams, 1):
             d = FAMILIES[f]
             say(f"  {i}) {d['title']:20s} {d['by']} - {d['about']}" + ("   [experimental]" if d.get("experimental") else "")
-                + family_menu_note(f, hip, gpu)
+                + family_menu_note(f, hip, gpu, avx2, avx512)
                 + (f"   (recommended for Strix Halo: {STRIX_HALO_MODEL})" if f == rec_fam and rec_fam != fams[0] else ""))
         for j, f in enumerate(OWN_PATH_FAMILIES, len(fams) + 1):   # families with an engine path of their own
             d = OWN_PATH_FAMILIES[f]
@@ -6148,6 +6423,8 @@ def main() -> int:
         warn(f"--gguf-dir does not apply to {fam['title']}: its files are ready-made packs, not GGUF shards")
         a.gguf_dir = None
     ok(f"model: {fam['title']}")
+    if fam.get("ready") and nvfp4_cpu_note(avx2, avx512):   # #2347: a note (the AVX2 rows work), not a refusal
+        warn(nvfp4_cpu_note(avx2, avx512))
     if fam.get("license"):
         say(f"  Its license: {fam['license']}")
     say()
@@ -6303,14 +6580,22 @@ def main() -> int:
         vision = hip_vision(a.vision if a.vision is not None or not unsloth_images_default(model, family, ram, gpu)
                             else "cpu")
     elif a.vision:
-        vision = {"yes": "gpu", "no": "none"}.get(a.vision, a.vision)
+        vision = flash_vision_encoder(a.vision, gpu) if a.vision != "no" else "none"
+        vision = "none" if vision in ("no", "none") else vision
     else:
+        small = 0 < float(gpu.get("vram_gb") or 0.0) < IMAGES_GPU_ENCODER_MIN_VRAM_GB
         say()
         say("  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB")
-        say("  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.")
+        if small:
+            say("  download. On a card under 24 GB the encoder runs on the CPU (a few seconds per picture, nothing taken")
+            say("  from the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU")
+            say("  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and")
+            say("  more on some PCs. --vision gpu if you want pictures in under a second.")
+        else:
+            say("  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.")
         # MODEL-UPDATE: on by default for Unsloth's files on a card with room for the encoder (16 GB and more)
         default = "y" if unsloth_images_default(model, family, ram, gpu) else "n"
-        vision = "gpu" if ask("Do you want images?", ["y", "n"], default, a.yes) == "y" else "none"
+        vision = flash_vision_encoder("yes", gpu) if ask("Do you want images?", ["y", "n"], default, a.yes) == "y" else "none"
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
     if vision != "none" and MODELS[model].get("vision_untested"):
         warn(f"images with {model} are untested: users report them working, but we have not run this file with "
@@ -6743,6 +7028,23 @@ def main() -> int:
         if GFX1103_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1103") and not WIN:
             # the 780M's KFD queues are evicted (a GPU reset) while transparent huge pages move the pinned expert arena
             cfg.setdefault("env", {})["STRATA_NO_ARENA_THP"] = "1"
+            # the exact gfx1151 speed switches measured on this chip (GFX1103_SWITCHES): the engine has no arch defaults
+            # for gfx1103, so setup writes them into the config.  They are setup's own (SETUP_ENV), so a re-run refreshes
+            # them and turning the opt-in off takes them out again.
+            cfg.setdefault("env", {}).update(GFX1103_SWITCHES)
+        if GFX1150_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1150"):
+            # the exact gfx1151 speed switches measured on this chip (GFX1150_SWITCHES): the engine has no arch defaults
+            # for gfx1150, so setup writes them into the config.  They are setup's own (SETUP_ENV), so a re-run refreshes
+            # them and turning the opt-in off takes them out again.
+            cfg.setdefault("env", {}).update(GFX1150_SWITCHES)
+        # RDNA2 (gfx103x): the prompt's FP16 GEMMs through rocBLAS's best kernel per shape (tools/hip/tune_rocblas;
+        # the GDN input projection 6x faster below 1,152 tokens on a 6900 XT).  The ids are valid for one rocBLAS
+        # build, which only the engine can read, so setup points it at the directory and the engine picks the file
+        # <arch>-rocblas-<version>.txt for its own library, or runs the default kernels and says so in its log.
+        rocblas_tables = sorted(p.name for p in (ROOT / "tools" / "hip").glob(f"{gpu['arch']}-rocblas-*.txt"))
+        if rocblas_tables:
+            cfg.setdefault("env", {})["STRATA_ROCBLAS_TUNING"] = str(ROOT / "tools" / "hip")
+            ok(f"rocBLAS tuning tables for {gpu['arch']}: {', '.join(rocblas_tables)} (the engine takes the one of its rocBLAS build)")
         if resident:   # ROCm: large page-locked host allocations can fail or be slow for the CPU; keep the copy pageable
             cfg.setdefault("env", {})["STRATA_RESIDENT_PIN"] = "0"
     if gpu["count"] > 1 or a.gpu is not None:
@@ -6804,6 +7106,8 @@ def main() -> int:
         sys.path.insert(0, str(ROOT / "tools"))
         import calibrate as CAL
         cfg["args"] = CAL.apply(cfg["args"], cal.get("settings") or {})
+        if "env" in cal:                               # a calibration from before the env step leaves "env" as it is
+            cfg["env"] = CAL.apply_env(cfg.get("env"), cal["env"])
         ok("the settings tuned for this PC earlier are used" + (f" ({cal['date']})" if cal.get("date") else ""))
     else:                                              # #642: measured counts (a calibration) win over the rule
         cfg["args"] = recommend_pool_workers(cfg["args"])
