@@ -1,0 +1,56 @@
+date: 2026-10-10T11:00:24+02:00
+Linux jet 6.18.54-gentoo-dist-bin #1 SMP PREEMPT_DYNAMIC Fri Sep 25 16:20:25 -00 2026 x86_64 13th Gen Intel(R) Core(TM) i9-13900HX GenuineIntel GNU/Linux
+uptime:  11:00:24 up 1 min,  1 user,  load average: 0.20, 0.07, 0.02
+cmdline: BOOT_IMAGE=/vmlinuz-6.18.54-gentoo-dist-bin root=UUID=bc009c33-316a-4e66-b5e6-90837082513f ro rootflags=subvol=@ rd.luks.uuid=300bcb5a-e608-4905-913b-3047ecd92ee6
+GPU IOMMU group type: identity
+commit: fb58e0dbc8399662c0e47c76578c6e878b14f6cf (v0.1.41)
+{
+ "source": "local",
+ "version": "0.1.41",
+ "archs": [
+  89
+ ],
+ "vision": "none",
+ "cuda_dirs": [
+  "/opt/cuda/bin",
+  "/opt/cuda/lib64"
+ ],
+ "src": "62eb4907c92a8cb7",
+ "vision_src": null
+}
+engine sha256: de1ee0eb6517fa0f2c76f7c988d2e3a12b11305eb983e711df2bd0bae7261cc8
+expert-profile sha256: 8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf
+platform_profile: performance  ppd: performance
+nvidia-powerd: 2913 nvidia-powerd
+firmware ppt_pl1_spl=0
+firmware ppt_pl2_sppt=0
+firmware ppt_pl3_fppt=0
+cpu governor: powersave  epp: performance
+THP: always [madvise] never
+               total        used        free      shared  buff/cache   available
+Mem:     67130122240  1873772544 64597241856    13398016  1004445696 65256349696
+Swap:    77309403136           0 77309403136
+NAME           TYPE      SIZE USED PRIO
+/dev/zram0     partition   8G   0B  100
+/swap/swapfile file       64G   0B   10
+name, driver_version, pcie.link.gen.max, pcie.link.width.max, memory.total [MiB], memory.used [MiB]
+NVIDIA GeForce RTX 4090 Laptop GPU, 615.78.08, 4, 16, 16376 MiB, 2 MiB
+pid, process_name, used_gpu_memory [MiB]
+
+==============NVSMI LOG==============
+
+Timestamp                                              : Sat Oct 10 11:00:25 2026
+Driver Version                                         : 615.78.08 [Deprecated; will be removed in CUDA 14.0. Use KMD Version instead]
+CUDA Version                                           : 13.4 [Deprecated; will be removed in CUDA 14.0. Use CUDA UMD Version instead]
+KMD Version                                            : 615.78.08
+CUDA UMD Version                                       : 13.4
+
+Attached GPUs                                          : 1
+GPU 00000000:01:00.0
+    GPU Power Readings
+Cuda compilation tools, release 13.4, V13.4.59
+Build cuda_13.4.r13.4/compiler.38657139_0
+gcc (Gentoo 16.2.1_p20260926 p1) 16.2.1 20260926
+Python 3.14.7
+btrfs rw,noatime,compress=zstd:3,ssd,discard=async,space_cache=v2,subvolid=257,subvol=/@home
+no desktop or browser processes

@@ -1,5 +1,11 @@
 # Community benchmark: RTX 4090 Laptop GPU, Core i9-13900HX
 
+> **Follow-up, 2026-10-10:** the same laptop on Gentoo with engine 0.1.41 decoded at
+> 60.9 / 61.7 / 58.7 tok/s with the defaults and 75.9 / 81.9 / 76.6 tok/s with the
+> settings `./setup.sh --calibrate` picked (131,072-token limit; at 262,144: 53.1-54.5
+> and 70.6-74.6 tok/s). See the
+> [follow-up report](../2026-10-10-community-rtx-4090-laptop-engine-0.1.41-calibrated/README.md).
+
 Measured on 2026-10-04 by [30crows](https://github.com/30crows) on a Lenovo Legion
 notebook (model 82WQ). This tests Strata 0.1.38 with the original Flash-Next IQ3_S
 and one GPU, with a 131,072-token context limit and, in a second session, a
