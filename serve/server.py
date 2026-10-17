@@ -6175,7 +6175,7 @@ def make_handler(svc: Service):
                         raise ValueError("query (the text to look up) is required")
                     cfg = {k: req.get(k) for k in ("engine", "url", "api_key", "max_results",
                                  "read_pages", "read_max", "page_limit", "page_chars")}
-                    cfg["n_ctx"] = self.reported_ctx()   # context-aware reading budget (serve/websearch.py)
+                    cfg["n_ctx"] = svc.reported_ctx()   # context-aware reading budget (serve/websearch.py)
                     self._json(200, {"query": q, "results": websearch.search(q, cfg)})
                 except websearch.SearchError as e:
                     self._json(502, {"error": {"message": str(e)}})
