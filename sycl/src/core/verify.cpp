@@ -1832,8 +1832,12 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-bool Verifier::capture_commit(std::string &err) try {
-    if (commit_exec_ != nullptr) return true;
+// The commit's kernel sequence, without the command graph around it.  capture_commit()
+// records this between begin_recording/end_recording and finalizes it into commit_exec_;
+// where the graph extension does not exist (STRATA_VERIFY_EAGER=1) nothing is captured and
+// commit() runs this on the queue instead.  Everything it reads is refreshed here - the mapped
+// commit_ upload, the layer snapshots - so a replay sees the same inputs the graph would have.
+bool Verifier::record_commit(std::string &err) {
     using namespace strata::kernels;
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
@@ -1843,10 +1847,6 @@ bool Verifier::capture_commit(std::string &err) try {
                                 (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
     const int64_t TS = (s.idx_block - 1) * ID;
     const int64_t HS = (int64_t) NG_HIST * NG_HC_DIM;
-    if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
-        err = "verify: begin commit capture failed";
-        return false;
-    }
     bool ok = true;
     try {
         copy_i32_from_mapped(commit_, m_commit_, 2 + MT, cs_);
@@ -1889,6 +1889,21 @@ bool Verifier::capture_commit(std::string &err) try {
         err = std::string("verify commit: ") + e.what();
         ok = false;
     }
+    return ok;
+}
+
+bool Verifier::capture_commit(std::string &err) try {
+    // STRATA_VERIFY_EAGER=1: no command graph on this backend, so nothing is recorded here and the
+    // launch site replays the body (see record_commit).  Answering "captured" without a graph is
+    // what lets a backend that has no graph extension run at all; the window path does the same
+    // in capture() and replays it in run().
+    if (std::getenv("STRATA_VERIFY_EAGER") != nullptr) return true;
+    if (commit_exec_ != nullptr) return true;
+    if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
+        err = "verify: begin commit capture failed";
+        return false;
+    }
+    const bool ok = record_commit(err);
     dpct::experimental::command_graph_ptr graph = nullptr;
     const dpct::err0 ce =
         DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs_, &graph));
@@ -2626,6 +2641,12 @@ bool Verifier::commit(int n_keep, std::string &err) try {
         // a one-token window has advanced the state itself (record_window): no commit graph
     } else {
         std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (std::getenv("STRATA_VERIFY_EAGER") != nullptr) {
+            // No graph was captured on this backend, so the commit's kernel sequence runs here on the
+            // queue.  h_commit_ was just written above and the body's first step uploads it from the
+            // mapped buffer, so the replay reads this window's commit count.
+            if (!record_commit(err)) return false;
+        } else {
         const dpct::err0 le =
             DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*commit_exec_));
         /*
@@ -2644,6 +2665,7 @@ bool Verifier::commit(int n_keep, std::string &err) try {
           err = std::string("verify: commit launch: ") +
                 dpct::get_error_string_dummy(le);
           return false;
+        }
         }
         // set_commit_async: no wait here - the next window runs on the same stream after it, and the drafter (its own
         // stream) reads only this window's final rows and its own K/V. h_commit_ is next written after the next window's

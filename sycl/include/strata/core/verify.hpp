@@ -354,6 +354,9 @@ private:
     bool staged_ = false;
     bool copy_used_ = false;
     bool capture_commit(std::string& err);
+    // capture_commit's kernel sequence, without the command graph: recorded by it, and replayed by commit() on
+    // backends that have no graph extension (STRATA_VERIFY_EAGER=1).  See capture_commit.
+    bool record_commit(std::string& err);
     bool record_window(int T, dpct::queue_ptr cs, std::string &err);
     // STRATA_VERIFY_STEPPED=1 (opt-in; Arc A-series / DG2): DG2 has no usm_atomic_host_allocations, so a running
     // kernel does not see the host's flag stores and the host sees the GPU's ring late (the doorbell wait is most of
