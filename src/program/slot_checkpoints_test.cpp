@@ -6,6 +6,7 @@ namespace {
 struct Ck {
     std::vector<int32_t> ids;
     int tag = 0;
+    bool branch = false;
 };
 std::vector<int32_t> run(int32_t from, int32_t n) {
     std::vector<int32_t> v;
@@ -18,6 +19,7 @@ int main() {
     using strata::program::branch_checkpoint_boundary;
     using strata::program::deepest_prefix_checkpoints;
     using strata::program::shared_prefix;
+    using strata::program::slot_checkpoint_picks;
     int checks = 0;
     auto expect = [&](bool ok, const char* what) {
         ++checks;
@@ -43,6 +45,25 @@ int main() {
               expect(tags(0).empty(), "keep 0") &&
               expect(deepest_prefix_checkpoints(cks, run(0, 100), 3).empty(), "none is a start of a short history") &&
               expect(deepest_prefix_checkpoints(std::vector<Ck>{}, held, 2).empty(), "no checkpoints");
+    // the picks: root 8192, periodic 16384, a branch at 40000, periodic 49152, the turn 49990
+    std::vector<Ck> bks = {{run(0, 8192), 1}, {run(0, 16384), 2}, {run(0, 40000), 3, true}, {run(0, 49152), 4},
+                           {run(0, 49990), 5}, {other, 6}};
+    auto picks = [&](const std::vector<Ck>& v, std::size_t keep) {
+        std::vector<int> t;
+        for (const Ck* c : slot_checkpoint_picks(v, held, keep)) t.push_back(c->tag);
+        return t;
+    };
+    ok = ok && expect(picks(bks, 2) == std::vector<int>{3, 5}, "keep 2: the turn and the branch past a periodic one") &&
+         expect(picks(bks, 1) == std::vector<int>{5}, "keep 1: the turn only") &&
+         expect(picks(bks, 3) == std::vector<int>{3, 4, 5}, "keep 3: then the deepest other") &&
+         expect(picks(bks, 9) == std::vector<int>{1, 2, 3, 4, 5}, "keep more than there are") &&
+         expect(picks(bks, 0).empty(), "keep 0");
+    bks[2].branch = false;
+    ok = ok && expect(picks(bks, 2) == std::vector<int>{4, 5}, "no branch: the two deepest (a chain's first query)");
+    bks[0].branch = true;
+    ok = ok && expect(picks(bks, 2) == std::vector<int>{1, 5}, "the deepest branch, however shallow");
+    bks[4].branch = true;
+    ok = ok && expect(picks(bks, 2) == std::vector<int>{1, 5}, "the turn marked too: not taken twice");
     std::vector<int64_t> prompt(held.begin(), held.end());
     prompt[49940] = -5;
     ok = ok && expect(shared_prefix(prompt, held) == 49940, "shared prefix at the rewrite") &&
