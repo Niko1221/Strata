@@ -1,4 +1,4 @@
-﻿# Strata Engine - top-level build (P1.S1).
+# Strata Engine - top-level build (P1.S1).
 #
 # Targets (phase-1 Ă‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
 # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
@@ -289,6 +289,19 @@ if(STRATA_BUILD_TESTS)
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
   target_include_directories(host_limits_test PRIVATE include)
   add_test(NAME host_limits_test COMMAND host_limits_test)
+
+  # Q36 plan Phase 0 (docs/Q36_MEMORY_COMPACTION.md): /proc/meminfo and /proc/vmstat parsed from fixtures, the
+  # delta arithmetic and the unit formatting.  Its own copy of the source, so the CPU-only build runs it without
+  # a toolkit (`strata_core` is GPU-only and carries the same file for the engine).
+  add_executable(mem_report_test src/platform/mem_report_test.cpp src/platform/mem_report.cpp)
+  target_include_directories(mem_report_test PRIVATE include)
+  add_test(NAME mem_report_test COMMAND mem_report_test)
+
+  # Q36 plan Phase 4 (docs/Q36_MEMORY_COMPACTION.md): the arena's padding-only zeroing leaves byte-identical memory
+  # to the whole memset.  Pure std, no GPU.
+  add_executable(expert_blob_padding_test tests/core/expert_blob_padding_test.cpp)
+  target_include_directories(expert_blob_padding_test PRIVATE include)
+  add_test(NAME expert_blob_padding_test COMMAND expert_blob_padding_test)
 endif()
 
 # ---- strata_plan ----------------------------------------------------------
@@ -305,7 +318,7 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
-                               src/core/layout.cpp)
+                               src/core/layout.cpp src/platform/mem_report.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   if(STRATA_ENABLE_CUDA AND STRATA_EXPERIMENTAL_SM60)
     # the runtime device check (src/core/device.cu) admits the cards this build was made for (#236)
@@ -378,6 +391,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/native_qsa_score.cu
                           src/kernels/cuda/ple.cu
                           src/kernels/cuda/kv_q8.cu
+                          src/kernels/cuda/q36_kv_q8.cu
                           src/kernels/cuda/kv_stream.cu
                           src/kernels/cuda/kv_q4.cu
                           src/kernels/cuda/fused_gr.cu
@@ -1045,6 +1059,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(kv_q8_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(kv_q8_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME kv_q8_parity COMMAND kv_q8_parity)
+
+  # docs/Q36_INT8_KV.md Phase 1: the Qwen3.6 engine's q8_0 primitive (32 int8 + one fp16 scale per block),
+  # round-tripped against a host reference (GPU, synthetic, no model).
+  add_executable(q36_kv_q8_parity src/kernels/q36_kv_q8_parity.cpp)
+  target_include_directories(q36_kv_q8_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(q36_kv_q8_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME q36_kv_q8_parity COMMAND q36_kv_q8_parity)
 
   # KV streaming (docs/kv-streaming-design.md): streamed vs resident attention, bitwise (GPU, synthetic, no model).
   add_executable(kv_stream_parity src/kernels/kv_stream_parity.cpp)

@@ -383,6 +383,26 @@ public:
     }
     const uint8_t* tensor_data(const TensorInfo& t) const { return base_ + data_start_ + t.offset; }
 
+    /// Drop the mapping's pages now that every reader is done (Q36 plan Phase 1, docs/Q36_MEMORY_COMPACTION.md).
+    /// Linux: `posix_fadvise(POSIX_FADV_DONTNEED)` drops the file's pages from the page cache and
+    /// `madvise(MADV_DONTNEED)` drops the mapping's page-table entries - each alone leaves the other, so both are
+    /// needed to return the memory.  The fd stays open and the mapping stays in place: a read after this faults the
+    /// bytes back in from the file, so a caller that must not re-read checks `released()` first.  Windows: a no-op
+    /// (the equivalent is to unmap the view, which would break `tensor_data()`).  Idempotent.
+    void release_pages() {
+        if (released_) return;
+#ifndef _WIN32
+        // Drop the page-table entries first, then the page cache: fadvise(DONTNEED) cannot drop pages that are
+        // still mapped, so the order is madvise then fadvise (measured: a 2 GiB read-only mapping drops ~2 GiB of
+        // Cached in that order, 0 in the other).
+        if (base_) madvise((void*) base_, size_, MADV_DONTNEED);
+        if (fd_ >= 0) posix_fadvise(fd_, 0, 0, POSIX_FADV_DONTNEED);
+#endif
+        released_ = true;
+    }
+    /// Whether `release_pages()` has run.
+    bool released() const { return released_; }
+
 private:
     void open() {
 #ifdef _WIN32
@@ -480,6 +500,7 @@ private:
     const uint8_t* base_ = nullptr;
     uint64_t size_ = 0, data_start_ = 0, alignment_ = 32;
     uint32_t version_ = 0;
+    bool released_ = false;
 #ifdef _WIN32
     void* file_ = nullptr;
     void* map_ = nullptr;
@@ -551,6 +572,16 @@ public:
         const uint64_t bytes = tensor_payload_bytes(t);
         const uint64_t payload = g.file_size() - g.data_start();
         return bytes != 0 && t.offset <= payload && bytes <= payload - t.offset;
+    }
+    /// Release every shard's mapping (see `GgufFile::release_pages`); the metadata, tensor directory and
+    /// `find()` stay usable, the tensor bytes do not.
+    void release_pages() {
+        for (auto& s : shards_) s->release_pages();
+    }
+    /// Whether every shard has had its pages released.
+    bool released() const {
+        return !shards_.empty() && std::all_of(shards_.begin(), shards_.end(),
+                                               [](const std::unique_ptr<GgufFile>& s) { return s->released(); });
     }
 
 private:

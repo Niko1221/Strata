@@ -127,6 +127,14 @@ One token per expert (most of decode) is at the RAM bound on all three; older CP
 expert (ggml's dot decodes the weights once per token; `STRATA_KQ256=1`, bit-exact, takes 11-20% off Q4_K at 3-4
 tokens).
 
+**Q5_K (down) has no multi-token kernel, and one was measured not to be worth adding.** `Qwen3.6-35B-A3B-UD-Q4_K_XL`
+is Q4_K gate/up with **Q5_K down**, so its down projection was the only one in the pool on ggml-cpu's single-token
+dot. A `q5k_dot` was written (2026-10-16, `q5k-down-kernel` branch, bit-exact like the kernels above) and measured in
+the engine at 32K context with int8 KV: **18.14 tok/s with the switch off against 17.72 with it on**, 12 and 18
+greedy generations, the replies byte-identical either way. The engine's verify windows hold about two drafts, where
+the kernel is only ~1.08x on the rows (1.53x at 4 tokens, 1.87x at 8), so `STRATA_KQ256` does not cover Q5_K down.
+`bench/results/2026-10-16-q5k-down-kernel/` has the runs; the branch is parked.
+
 **Dense Q8_0 GEMVs** (`q8_gemv_bench`, the engine's shapes, 2-4 columns): one row per block where it was measured
 faster, the same bits as two (R9700: 2560 -> 10240 / 6144 / 12288 at 76-86% of 644 GB/s instead of 51-80%; RTX A4000:
 +1-4%, and 6144 -> 2560 at 6 columns 70% -> 76%). UD-Q4_K_XL decode +1.0-2.7% on the R9700, the same text.
