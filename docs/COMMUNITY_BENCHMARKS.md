@@ -13,6 +13,10 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-16: RTX 3090 24 GiB + RTX 3060 12 GiB + 2x V100 32 GiB, Ryzen 7 9700X, 64 GB RAM](../bench/results/2026-10-16-community-3090-3060-dual-v100/README.md):
+  unmodified 0.1.43.1 CUDA 12.8 source build, OrcaRouter Q4_K_M, 262144 context, FP16 KV, prefill 6144, PLE in RAM;
+  earlier 61.7K-prompt throughput groups and 72 custom native-tool agent episodes (69 strict successes), with full conditions and a linked reproducible lab archive.
+
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
