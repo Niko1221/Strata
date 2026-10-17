@@ -28,6 +28,7 @@ struct Input {
     bool adapt_async = false;  ///< --adapt-async 1 was asked for
     bool mtp_serial = false;   ///< STRATA_BATCH_MTP_SERIAL=1: --batch-mtp with no --batch-groups runs one serial group (0.1.43)
     bool nv_serial_faster = false;   ///< PROPOSED (0.2.1, owner decides): NVIDIA build, STRATA_BATCH_GROUPS_NV_SERIAL not 0 - two cards run faster in serial windows (z440 2x A4000, aggregate tok/s: +16% at 2 slots, +12% at 4, +15% at 8)
+    bool mtp_piped = false;    ///< STRATA_PIPED_MTP=1: the pipelined groups draft too, when each group is one slot
 };
 
 struct Result {
@@ -36,6 +37,7 @@ struct Result {
     Serial serial = Serial::None;      ///< `auto` would have pipelined, but this feature needs the serial windows
     int would_be = 1;                  ///< what `auto` would have picked without it (== groups unless `serial`)
     bool mtp_dropped = false;          ///< --batch-mtp met the default pipeline: the pipeline wins, --batch-mtp is off
+    bool mtp_piped = false;            ///< STRATA_PIPED_MTP: --batch-mtp's drafts run in the pipelined groups
 };
 
 /// The most groups, at most one per stage of the layer split (`later_stages` + 1 GPUs), that divide `batch`.
@@ -60,7 +62,9 @@ inline Result resolve(const Input& in) {
         if (in.batch_mtp && in.mtp_serial) r.serial = Serial::BatchMtp;
         else if (in.nv_serial_faster && in.later_stages == 1 && !in.batch_mtp && !in.adapt_async) r.serial = Serial::TwoCardsSerialFaster;
         else if (in.adapt_async) r.serial = Serial::AdaptAsync;
-        r.mtp_dropped = in.batch_mtp && r.serial == Serial::None;
+        // STRATA_PIPED_MTP: one slot per group (the slots as many as the stages) pipelines AND drafts
+        r.mtp_piped = in.batch_mtp && in.mtp_piped && r.serial == Serial::None && r.would_be == in.batch;
+        r.mtp_dropped = in.batch_mtp && r.serial == Serial::None && !r.mtp_piped;
         if (r.serial != Serial::None) r.groups = 1;
     }
     return r;
