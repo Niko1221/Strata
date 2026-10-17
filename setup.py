@@ -1608,6 +1608,29 @@ def drop_archive(z: Path) -> None:
     z.unlink(missing_ok=True)
     z.with_name(z.name + ".done").unlink(missing_ok=True)
 
+def aria2c_download(url: str, part: Path) -> bool:
+    aria2c = shutil.which("aria2c")
+    if not aria2c:
+        return False
+    say(f"  using aria2c: {part.name}")
+    r = subprocess.run([
+        aria2c,
+        "-x", "8",
+        "-s", "8",
+        "-c",
+        "--file-allocation=none",
+        "--allow-overwrite=true",
+        "--auto-file-renaming=false",
+        "--user-agent=strata-setup",
+	"--console-log-level=warn",
+        "-d", str(part.parent),
+        "-o", part.name,
+        url,
+    ])
+    if r.returncode != 0:
+        warn(f"aria2c failed (exit {r.returncode}); falling back to the built-in downloader")
+        return False
+    return True
 
 def download(url, dst: Path, what=None):
     """Resumable HTTP(S) download with a progress line; `file://` and plain paths are copied (tests, mirrors).
@@ -1657,6 +1680,34 @@ def download(url, dst: Path, what=None):
         mark(dst)
         ok(f"{what or dst.name} already downloaded")
         return
+    if aria2c_download(url, part):
+        if total and part.stat().st_size != total:
+            fail(
+                f"could not finish downloading {dst.name}: "
+                f"{part.stat().st_size:,} bytes on disk, the server says {total:,}",
+                "check your internet connection and run it again "
+                "(the download resumes where it stopped)"
+            )
+        part.replace(dst)
+        meta = ms_meta(*ms) if ms is not None else None
+        if meta is not None and meta[1]:
+            verify_sha256(dst, meta[0], meta[1])
+        else:
+            if ms is not None:
+                warn(f"{what or dst.name}: ModelScope publishes no SHA-256 for it: the file is not verified")
+            mark(dst)
+        ok(f"{what or dst.name} downloaded")
+        return
+
+    aria_ctl = part.with_name(part.name + ".aria2")
+    if aria_ctl.exists():
+        warn(
+            f"{what or dst.name}: incomplete aria2 download cannot be resumed "
+            "by the built-in downloader; starting it over"
+        )
+        part.unlink(missing_ok=True)
+        aria_ctl.unlink(missing_ok=True)
+
     have = part.stat().st_size if part.exists() else 0
     for attempt in range(30):
         if total and have >= total:                    # stopped after the last byte, before the rename: nothing to
