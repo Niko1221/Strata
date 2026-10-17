@@ -19,3 +19,7 @@ git diff --check
 ```
 
 The transport tests use an existing mock engine and scripted tool response. They verify authenticated binary delivery, invalid media rejection, path traversal refusal, streaming metadata, forwarding to vision preparation and subsequent-turn cache resolution. They do not establish visual understanding or generation quality.
+
+## Browser layout checks
+
+Use a configured image MCP fixture and the mock engine; no GPU is needed for the transport or layout check. Include a long tool name and long text result, and check a running call while Stop is visible. At viewport widths 320, 390, 640, 768 and 1280 pixels, the document must not be wider than the viewport and the preview must fit its chat bubble. Also expand tool details, reload the page, and check that the preview and download link return. A missing cache may remove the picture but must not prevent the next text turn.
