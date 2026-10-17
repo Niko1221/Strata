@@ -152,6 +152,52 @@ function setMetric(key, value, unit, sub) {
   $(`mv-${key}`).innerHTML = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
   $(`ms-${key}`).textContent = sub || "";
 }
+// Optional total GPU electricity costs; uses the existing Speed card layout.
+function renderPowerWithPrice(hw, st) {
+  const kwh = hw.gpu_energy_kwh;
+  const energy = Number.isFinite(kwh) ? (kwh < 1 ? `${fmt(kwh * 1000, 1)} Wh` : `${fmt(kwh, 3)} kWh`) : "";
+  const powerLimit = hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "";
+  const price = st.electricity_price_per_kwh;
+  const cost = Number.isFinite(kwh) && Number.isFinite(price) && price >= 0 ? kwh * price : null;
+  if (cost == null || !Number.isFinite(cost)) {
+    const previous = $("mv-power-cost");
+    if (previous) previous.parentElement.hidden = true;
+    setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W",
+              [powerLimit, energy].filter(Boolean).join(" · "));
+    return;
+  }
+
+  let costValue = $("mv-power-cost");
+  if (!costValue) {
+    const columns = document.createElement("div"), left = document.createElement("div"), right = document.createElement("div");
+    columns.className = "speed-values";  // same two-column typography and height as Speed
+    costValue = document.createElement("span");
+    costValue.id = "mv-power-cost";
+    costValue.className = "st-metric__value";
+    const units = document.createElement("span");
+    units.id = "ms-power-energy";
+    units.className = "st-metric__sub";
+    $("mv-power").before(columns);
+    columns.append(left, right);
+    left.append($("mv-power"), $("ms-power"));
+    right.append(costValue, units);
+  }
+  costValue.parentElement.hidden = false;
+  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", powerLimit);
+  const digits = cost >= 10 ? 2 : 3;
+  const tiny = cost > 0 && cost < 0.001;
+  const displayed = tiny ? 0.001 : cost;
+  const currency = st.electricity_currency || "EUR";
+  let symbol = currency;
+  try {
+    symbol = new Intl.NumberFormat(undefined, {style: "currency", currency})
+      .formatToParts(displayed).find((part) => part.type === "currency")?.value || currency;
+  } catch (_) { /* Use the configured ISO currency code for unsupported currencies. */ }
+  const amount = new Intl.NumberFormat(undefined, {minimumFractionDigits: digits, maximumFractionDigits: digits})
+    .format(displayed);
+  costValue.innerHTML = `${tiny ? "&lt; " : ""}${esc(amount)}<small>${esc(symbol)}</small>`;
+  $("ms-power-energy").textContent = energy;
+}
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
 let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
@@ -291,7 +337,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
             multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
   spark("sp-temp", h.gpu_temp, 90);
-  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
+  renderPowerWithPrice(hw, st);
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
   const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
   setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
