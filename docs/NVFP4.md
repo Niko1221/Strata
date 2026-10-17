@@ -7,6 +7,11 @@ reads. Measured on Windows 11, RTX 5090 (32 GB), Ryzen 9 9950X3D, 128 GB DDR5-56
 
 ## Getting a model
 
+For the newer `nvidia/Qwen3.8-Flash-Next-FP4-Local` checkpoint, which stores
+CSF-compressed expert scales, mixed MXFP8/NVFP4 dense weights and an NVFP4
+n-gram table, see [the opt-in CSF converter](NVFP4_CSF.md). The ordinary
+converter below does not decode that checkpoint's scale streams.
+
 ```
 python tools/nvfp4_convert.py --model <ModelOpt NVFP4 checkpoint dir> --outfile <model>.gguf
 python tools/iq_pack.py --gguf <model>.gguf --out <pack dir>
