@@ -2818,8 +2818,13 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     for (Layer& L : m.layers) main_need += L.stride * (size_t) ne + kMmqTail;
     const size_t slack = ((size_t) 512 << 20) + (E.kAttScoreFloats - ((size_t) 16 << 20)) * 6;   // reserve + scores
     const bool mtp_cpu_ok = m.has_mtp && std::getenv("STRATA_Q36_NO_MTP_CPU") == nullptr;
+    // On small cards the optional decode copies can leave too little room for the hybrid prompt's staging pair
+    // and CPU-output scratch, even with no expert slots. Keep the same reserve as the placement budget below.
+    const size_t hybrid_scratch = (size_t) E.tmax * (size_t) m.top_k * ((size_t) g.n_embd + 1) * 4;
+    const bool staging_short = E.use_mmq && total > budget &&
+                              2 * (max_layer + kMmqTail) + hybrid_scratch + reserve > fr;
     if (slots <= 0 && vram_gib < 0 && total > budget && packed_bytes > 0 &&
-        (total <= budget + packed_bytes || (mtp_cpu_ok && main_need <= budget + packed_bytes + slack)) &&
+        (total <= budget + packed_bytes || (mtp_cpu_ok && main_need <= budget + packed_bytes + slack) || staging_short) &&
         std::getenv("STRATA_Q36_KEEP_PACKED") == nullptr) {
         CK(cudaDeviceSynchronize());
         for (const auto& pk : m.packed) {
@@ -2829,7 +2834,11 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         m.packed.clear();
         E.reset_graphs();
         CK(cudaMemGetInfo(&fr, &tot));
-        std::fprintf(stderr, "strata-q36: the packed Q8_0 decode copies (%.2f GiB) given back so that every routed "
+        if (staging_short)
+            std::fprintf(stderr, "strata-q36: the packed Q8_0 decode copies (%.2f GiB) given back for the hybrid "
+                         "prompt's staging buffers (STRATA_Q36_KEEP_PACKED=1 keeps them)\n",
+                         (double) packed_bytes / (1 << 30));
+        else std::fprintf(stderr, "strata-q36: the packed Q8_0 decode copies (%.2f GiB) given back so that every routed "
                      "expert fits in VRAM (STRATA_Q36_KEEP_PACKED=1 keeps them and runs the hybrid mode)\n",
                      (double) packed_bytes / (1 << 30));
     }
