@@ -284,10 +284,10 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(tuning_header_arch_family_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/prefill")
   add_test(NAME tuning_header_arch_family_test COMMAND tuning_header_arch_family_test)
 
-  # A parity-passing P4 candidate may not bypass the staged implementation's own reference check (no GPU).
-  add_executable(fused_gr_p4_policy_test tests/kernels/fused_gr_p4_policy_test.cpp)
-  target_include_directories(fused_gr_p4_policy_test PRIVATE include)
-  add_test(NAME fused_gr_p4_policy_test COMMAND fused_gr_p4_policy_test)
+  # The gfx12 fused-GR selector keeps a single override for P4, staged, split and plain paths (no GPU).
+  add_executable(fused_gr_selector_test tests/kernels/fused_gr_selector_test.cpp)
+  target_include_directories(fused_gr_selector_test PRIVATE include)
+  add_test(NAME fused_gr_selector_test COMMAND fused_gr_selector_test)
 
   # the auto layer split's minimum stage size (#1616): header-only rule, no GPU
   add_executable(split_rules_test tests/program/split_rules_test.cpp)

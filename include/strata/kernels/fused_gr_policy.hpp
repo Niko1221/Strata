@@ -1,15 +1,23 @@
 #pragma once
 
+#include <string_view>
+
 namespace strata::kernels::detail {
 
-// P4 may only be promoted when the architecture and both sides of its staged-parity oracle pass.
-constexpr bool fused_gr_p4_parity_gate(bool gfx12, bool staged_ok, bool p4_ok) noexcept {
-    return gfx12 && staged_ok && p4_ok;
-}
+constexpr int kGrVariantPlain = 1;
+constexpr int kGrVariantSplit = 2;
+constexpr int kGrVariantStaged = 3;
+constexpr int kGrVariantP4 = 7;
 
-// Emit the q32 parity diagnostic only when the complete self-test succeeded and this path was checked.
-constexpr bool fused_gr_p4_q32_parity_marker_ok(bool selftest_ok, bool qfuse_hc, bool staged_ok, bool p4_ok) noexcept {
-    return selftest_ok && qfuse_hc && staged_ok && p4_ok;
+// STRATA_HC_SPLIT is the sole fused-GR selector. Unset selects P4 on gfx12 and staged elsewhere.
+// Explicit 0/1/2 select legacy paths; 7 selects P4 only on gfx12. Unknown values fail safe to staged.
+constexpr int fused_gr_env_variant(std::string_view value, bool gfx12) noexcept {
+    if (value == "0") return kGrVariantPlain;
+    if (value == "1") return kGrVariantSplit;
+    if (value == "2") return kGrVariantStaged;
+    if (value == "7") return gfx12 ? kGrVariantP4 : kGrVariantStaged;
+    if (value.empty() && gfx12) return kGrVariantP4;
+    return kGrVariantStaged;
 }
 
 }  // namespace strata::kernels::detail

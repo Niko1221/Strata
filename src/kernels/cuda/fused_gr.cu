@@ -805,7 +805,6 @@ __global__ void __launch_bounds__(THREADS) gr_up_v3_kernel(GrMulti m, const floa
 //    accumulates its chunks lane + 32 q in ascending order, as in the plain read with either tile.  Before sm_80
 //    (and on HIP) the staging is a plain copy: the same bits, only not asynchronous.
 constexpr int kHcPlain = 1, kHcSplit = 2, kHcStaged = 3, kHcRegisterHalf = 7;
-constexpr int kP4SelfTest = 4; // ok_variant/set-array index; STRATA_HC_SPLIT selector remains 7
 constexpr int H_TILE = 1280;                          // staged tile: half a stream = 160 chunks of 8, 5 per lane
 constexpr int HQ = H_TILE / 8 / 32;
 constexpr int N_HTILES = D / H_TILE;                  // 8
@@ -1036,41 +1035,59 @@ __global__ void __launch_bounds__(THREADS) gr_down_staged_kernel(GrMulti m) {
     }
 }
 
-// The compile-time register tuple used by P4. Each chain slot is a VGPR-resident float4; compile-time indexing
-// prevents the runtime-indexed array from lowering to private scratch on gfx1201. Slots outside the runtime token
-// count are initialized to zero and never scattered.
+// Compile-time per-thread slots keep activation tuples in VGPRs rather than runtime-indexed private scratch.
 template <int I> struct HcChain { float4 head; HcChain<I - 1> tail; };
 template <> struct HcChain<0> { float4 head; };
 
-template <int Dd, int NN>
-__device__ __forceinline__ void hc_load_all(HcChain<NN>& c, const GrMulti& m, int h, int t, int total) {
+__device__ __forceinline__ void p4_sync_lds() {
+#if defined(__HIP_PLATFORM_AMD__) && (defined(__gfx1200__) || defined(__gfx1201__))
+    asm volatile("s_wait_dscnt 0x0\n\ts_barrier_signal -1\n\ts_barrier_wait -1" ::: "memory");
+#else
+    __syncthreads();
+#endif
+}
+
+#if defined(__HIP_PLATFORM_AMD__) && (defined(__gfx1200__) || defined(__gfx1201__))
+#define STRATA_P4_WAVES_ATTR __attribute__((amdgpu_waves_per_eu(MAX_T <= 6 ? 12 : 10, 16)))
+#else
+#define STRATA_P4_WAVES_ATTR
+#endif
+
+template <int Dd, int NN, int FULL_TOTAL = 0>
+__device__ __forceinline__ void hc_load_all(HcChain<NN>& c, const float* xn, int h, int t, int total) {
     const int idx = t + Dd * THREADS;
-    if (idx < total) {
+    if (((Dd + 1) * THREADS <= FULL_TOTAL) || idx < total) {
         const int k = idx / (H_TILE / 4), s4 = idx - k * (H_TILE / 4);
-        c.head = *reinterpret_cast<const float4*>(m.xn + (size_t) k * D + (size_t) h * H_TILE + (size_t) s4 * 4);
+        c.head = __ldg(reinterpret_cast<const float4*>(xn + (size_t) k * D + (size_t) h * H_TILE + (size_t) s4 * 4));
     } else {
         c.head = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
-    if constexpr (NN > 0) hc_load_all<Dd + 1, NN - 1>(c.tail, m, h, t, total);
+    if constexpr (NN > 0) hc_load_all<Dd + 1, NN - 1, FULL_TOTAL>(c.tail, xn, h, t, total);
 }
 
-template <int Dd, int NN>
+template <int Dd, int NN, int FULL_TOTAL = 0>
 __device__ __forceinline__ void hc_scatter_all(const HcChain<NN>& c, float4* buf, int t, int total) {
     const int idx = t + Dd * THREADS;
-    if (idx < total) {
+    if (((Dd + 1) * THREADS <= FULL_TOTAL) || idx < total) {
         const int k = idx / (H_TILE / 4), s4 = idx - k * (H_TILE / 4);
         buf[(size_t) k * (H_TILE / 4) + (s4 & 1) * (H_TILE / 8) + (s4 >> 1)] = c.head;
     }
-    if constexpr (NN > 0) hc_scatter_all<Dd + 1, NN - 1>(c.tail, buf, t, total);
+    if constexpr (NN > 0) hc_scatter_all<Dd + 1, NN - 1, FULL_TOTAL>(c.tail, buf, t, total);
 }
 
-// P4 (gfx1200/gfx1201 only): staged's activation pipeline with the next tile carried in two compile-time halves.
-// The arithmetic and q/k order are unchanged; the second tuple half is fetched mid-dot to shorten live ranges.
+// P4: one-barrier double-buffered activation pipeline, in-place weight reload, and DPP owner reduction.
+// Each output keeps the staged path's tile/lane/FMA order; the runtime selector is gfx12-gated.
 template <int MAX_T = kFusedGrMaxT, bool EXACT_T = false>
-__global__ void __launch_bounds__(THREADS) gr_down_register_half_kernel(GrMulti m) {
+__global__ void __launch_bounds__(THREADS) STRATA_P4_WAVES_ATTR gr_down_register_half_kernel(GrMulti m) {
     extern __shared__ __align__(16) float4 hbuf[];
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
-    const int T = EXACT_T ? MAX_T : m.T;
+#if defined(__clang__)
+    __builtin_assume(t >= 0 && t < THREADS);
+#endif
+    const int k0 = (int) blockIdx.y * MAX_T;
+    const int rem_t = m.T - k0;
+    const int T = EXACT_T ? MAX_T : (rem_t < MAX_T ? rem_t : MAX_T);
+    const float* xn = m.xn + (size_t) k0 * D;
     const bool inject_block = blockIdx.x == DOWN_BLOCKS;
     const int row = inject_block ? warp : blockIdx.x * WARPS + warp;
     const bool active = !(inject_block && (m.a[0].w_inject == nullptr || warp >= HC));
@@ -1078,41 +1095,36 @@ __global__ void __launch_bounds__(THREADS) gr_down_register_half_kernel(GrMulti 
     const uint4* w4 = reinterpret_cast<const uint4*>(wrow);
     const size_t buf_f4 = (size_t) T * (H_TILE / 4);
     const int total = T * (H_TILE / 4);
+    constexpr int FULL_TOTAL = EXACT_T ? MAX_T * (H_TILE / 4) : 0;
     constexpr int NS = (MAX_T * (H_TILE / 4) + THREADS - 1) / THREADS;
-    constexpr int H0 = (NS + 1) / 2;
-    float acc[MAX_T];
+    constexpr int P = s26ts::pow2_ceil(MAX_T);
+    float acc[P];
 #pragma unroll
-    for (int k = 0; k < MAX_T; ++k) acc[k] = 0.0f;
-    uint4 wv[HQ], wnext[HQ];
+    for (int k = 0; k < P; ++k) acc[k] = 0.0f;
+    uint4 wv[HQ];
     if (active) {
 #pragma unroll
         for (int q = 0; q < HQ; ++q) wv[q] = __ldg(w4 + lane + 32 * q);
     }
-    stage_htile(m, T, 0, hbuf, t);
-    cp_async_commit();
-    stage_htile(m, T, 1, hbuf + buf_f4, t);
-    cp_async_commit();
-    HcChain<H0 - 1> t0;
-    HcChain<NS - H0 - 1> t1;
-    hc_load_all<0, H0 - 1>(t0, m, 2, t, total);
+    {
+        HcChain<NS - 1> first;
+        hc_load_all<0, NS - 1, FULL_TOTAL>(first, xn, 0, t, total);
+        hc_scatter_all<0, NS - 1, FULL_TOTAL>(first, hbuf, t, total);
+    }
+    p4_sync_lds();
 #pragma unroll 1
-    for (int h = 0; h < N_HTILES; ++h) {
-        if (active && h + 1 < N_HTILES) {
-#pragma unroll
-            for (int q = 0; q < HQ; ++q) wnext[q] = __ldg(w4 + (h + 1) * (H_TILE / 8) + lane + 32 * q);
-        }
-        if (h + 1 < N_HTILES) cp_async_wait1();
-        else cp_async_wait0();
-        __syncthreads();
+    for (int h = 0; h < N_HTILES - 1; ++h) {
+        const int hn = h + 1;
+        HcChain<NS - 1> next;
+        hc_load_all<0, NS - 1, FULL_TOTAL>(next, xn, hn, t, total);
         const float4* cur = hbuf + (h & 1) * buf_f4;
         if (active) {
+            const uint4* wn_ptr = w4 + hn * (H_TILE / 8) + lane;
 #pragma unroll
             for (int q = 0; q < HQ; ++q) {
-                // Fetch the next register half at q==2 so its global loads overlap the remaining dot products.
-                if (q == 2 && h + 2 < N_HTILES)
-                    hc_load_all<H0, NS - H0 - 1>(t1, m, h + 2, t, total);
                 const int j = lane + 32 * q;
                 const Bf16x8 wvq = unpack8(wv[q]);
+                wv[q] = __ldg(wn_ptr + 32 * q);
 #pragma unroll
                 for (int k = 0; k < MAX_T; ++k) {
                     if (EXACT_T || k < T) {
@@ -1122,29 +1134,32 @@ __global__ void __launch_bounds__(THREADS) gr_down_register_half_kernel(GrMulti 
                 }
             }
         }
-        // Inactive lanes skip the mid-dot prefetch but still take part in the shared-buffer scatter.
-        if (h + 2 < N_HTILES && !active) hc_load_all<H0, NS - H0 - 1>(t1, m, h + 2, t, total);
-        __syncthreads();
-        if (h + 2 < N_HTILES) {
-            hc_scatter_all<0, H0 - 1>(t0, hbuf + (h & 1) * buf_f4, t, total);
-            hc_scatter_all<H0, NS - H0 - 1>(t1, hbuf + (h & 1) * buf_f4, t, total);
-        }
-        if (h + 3 < N_HTILES) hc_load_all<0, H0 - 1>(t0, m, h + 3, t, total);
-        cp_async_commit();
-        if (h + 1 < N_HTILES) {
+        hc_scatter_all<0, NS - 1, FULL_TOTAL>(next, hbuf + (hn & 1) * buf_f4, t, total);
+        p4_sync_lds();
+    }
+    if (active) {
+        const float4* cur = hbuf + ((N_HTILES - 1) & 1) * buf_f4;
 #pragma unroll
-            for (int q = 0; q < HQ; ++q) wv[q] = wnext[q];
+        for (int q = 0; q < HQ; ++q) {
+            const int j = lane + 32 * q;
+            const Bf16x8 wvq = unpack8(wv[q]);
+#pragma unroll
+            for (int k = 0; k < MAX_T; ++k) {
+                if (EXACT_T || k < T) {
+                    const float4* pk = cur + (size_t) k * (H_TILE / 4);
+                    acc[k] += dot8u(wvq, pk[j], pk[H_TILE / 8 + j]);
+                }
+            }
         }
     }
     if (!active) return;
-#pragma unroll
-    for (int k = 0; k < MAX_T; ++k) {
-        const float s = (EXACT_T || k < T) ? warp_sum(acc[k]) : 0.0f;
-        if ((!EXACT_T && k >= T) || lane != k) continue;
-        if (inject_block) m.a[k].inject_out[row] = s;
+    const float sum = s26ts::tsum<P>(acc, lane);
+    const int tk = s26ts::tsum_token<P>(lane);
+    if (lane == s26ts::tsum_lane<P>(tk) && (EXACT_T ? tk < MAX_T : tk < T)) {
+        if (inject_block) m.a[k0 + tk].inject_out[row] = sum;
         else {
-            const float x = s / (float) HC;
-            m.a[k].lo[row] = x / (1.0f + __expf(-x));
+            const float x = sum / (float) HC;
+            m.a[k0 + tk].lo[row] = x / (1.0f + __expf(-x));
         }
     }
 }
@@ -1242,8 +1257,12 @@ int down_chunk(bool staged, int* tile_out) {
         set_staged_attr(gr_down_staged_kernel<6, true>, 6);
         set_staged_attr(gr_down_register_half_kernel<1, true>, 1);
         set_staged_attr(gr_down_register_half_kernel<2, true>, 2);
+        set_staged_attr(gr_down_register_half_kernel<2, false>, 2);
         set_staged_attr(gr_down_register_half_kernel<3, true>, 3);
+        set_staged_attr(gr_down_register_half_kernel<3, false>, 3);
         set_staged_attr(gr_down_register_half_kernel<4, true>, 4);
+        set_staged_attr(gr_down_register_half_kernel<5, true>, 5);
+        set_staged_attr(gr_down_register_half_kernel<6, true>, 6);
         set_staged_attr(gr_down_register_half_kernel<kFusedGrMaxT, false>, kFusedGrMaxT);
         set_staged_attr(gr_down_staged_kernel<4, false>, 4);
         set_staged_attr(gr_down_staged_kernel<kFusedGrMaxT, false>, kFusedGrMaxT);
@@ -1406,13 +1425,28 @@ void launch_multi(const GrMulti& m, int variant, cudaStream_t st, unsigned long 
         // (decided once per device: this runs per layer when decode is not captured)
         const bool max4 = ct <= 4 && gr_down_max4();
         if (staged && variant == kHcRegisterHalf) {
-            // P4 shares staged's grid and dynamic shared-memory layout.
-            const size_t cta_smem = (size_t) ct * 2 * H_TILE * sizeof(float);
-            if (exact_t && ct == 1) gr_down_register_half_kernel<1, true><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
-            else if (exact_t && ct == 2) gr_down_register_half_kernel<2, true><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
-            else if (exact_t && ct == 3) gr_down_register_half_kernel<3, true><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
-            else if (exact_t && ct == 4) gr_down_register_half_kernel<4, true><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
-            else gr_down_register_half_kernel<kFusedGrMaxT, false><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
+            // One selector enables the P4 pipeline and its measured token-group launch for T=3..6.
+            const int tg = exact_t && ct >= 3 && ct <= 6 ? (ct + 1) / 2 : 0;
+            if (tg == 2) {
+                const dim3 grid(DOWN_BLOCKS + 1, (unsigned) ((ct + 1) / 2));
+                const size_t group_smem = (size_t) 2 * 2 * H_TILE * sizeof(float);
+                if (ct == 4) gr_down_register_half_kernel<2, true><<<grid, THREADS, group_smem, st>>>(c);
+                else gr_down_register_half_kernel<2, false><<<grid, THREADS, group_smem, st>>>(c);
+            } else if (tg == 3) {
+                const dim3 grid(DOWN_BLOCKS + 1, 2);
+                const size_t group_smem = (size_t) 3 * 2 * H_TILE * sizeof(float);
+                if (ct == 6) gr_down_register_half_kernel<3, true><<<grid, THREADS, group_smem, st>>>(c);
+                else gr_down_register_half_kernel<3, false><<<grid, THREADS, group_smem, st>>>(c);
+            } else {
+                const size_t cta_smem = (size_t) ct * 2 * H_TILE * sizeof(float);
+                if (exact_t && ct == 1) gr_down_register_half_kernel<1, true><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
+                else if (exact_t && ct == 2) gr_down_register_half_kernel<2, true><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
+                else if (exact_t && ct == 3) gr_down_register_half_kernel<3, true><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
+                else if (exact_t && ct == 4) gr_down_register_half_kernel<4, true><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
+                else if (exact_t && ct == 5) gr_down_register_half_kernel<5, true><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
+                else if (exact_t && ct == 6) gr_down_register_half_kernel<6, true><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
+                else gr_down_register_half_kernel<kFusedGrMaxT, false><<<DOWN_BLOCKS + 1, THREADS, cta_smem, st>>>(c);
+            }
         } else if (staged) {
             // #783 PR-g (stuchapin909): a launch of exactly ct <= 6 tokens is its own instantiation, the loop bounds
             // are compile-time (the same sums in the same order); STRATA_NO_MULTI_GR=1 keeps the generic kernels
@@ -1497,15 +1531,10 @@ void launch_multi(const GrMulti& m, int variant, cudaStream_t st, unsigned long 
     }
 }
 
-/// STRATA_HC_SPLIT: unset = staged (or P4 on parity-passing gfx1200/1201); 2 requests staged, with split/plain fallback.
-/// 7 opts into P4 self-testing on gfx1200/gfx1201; after verification it is selected, otherwise staged/split fallback.
-int env_variant() {
+/// STRATA_HC_SPLIT is the sole fused-GR override: unset = P4 on gfx12, staged elsewhere; 0/1/2 force legacy paths.
+int env_variant(bool gfx12) {
     const char* e = std::getenv("STRATA_HC_SPLIT");
-    if (e == nullptr || e[0] == '\0') return kHcStaged;
-    if (e[0] == '0') return kHcPlain;
-    if (e[0] == '1') return kHcSplit;
-    if (e[0] == '7') return kHcRegisterHalf;
-    return kHcStaged;
+    return detail::fused_gr_env_variant(e ? std::string_view(e) : std::string_view{}, gfx12);
 }
 
 // per device: the variant `fused_gr_check` chose (0 = not checked yet)
@@ -2535,11 +2564,9 @@ namespace {
 /// 1..8 tokens, with and without the pending write; every output of split and staged compared with the plain read's
 /// bit for bit (and the plain read's with the single-token read's).  `why[v]` gets the first difference of variant
 /// v; false if the check itself could not run.
-bool fused_gr_selftest(bool ok_variant[5], std::string why[5], bool test_p4) {
+bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) {
     constexpr int TM = kFusedGrMaxT;
-    constexpr int NV = 5;                             // sets: plain, split, staged, single-token, register-half
-    const int dev = [&] { int d = 0; cudaGetDevice(&d); return d; }();
-    const bool allow_p4 = test_p4 && p4_gfx12_device(dev);
+    constexpr int NV = 4;                             // sets: 0 = plain, 1 = split, 2 = staged, 3 = single-token
     std::mt19937 rng(20260930u);
     std::normal_distribution<float> nd(0.0f, 1.0f);
     std::vector<uint16_t> h_down((size_t) LR * D), h_up((size_t) D * LR), h_inj((size_t) HC * D);
@@ -2551,17 +2578,11 @@ bool fused_gr_selftest(bool ok_variant[5], std::string why[5], bool test_p4) {
     for (auto& x : h_R) x = nd(rng);
     for (auto& x : h_bo) x = 0.5f * nd(rng);
     for (auto& x : h_ip) x = 2.0f * nd(rng);
-    for (int v = 0; v < NV; ++v) { ok_variant[v] = v == 1; why[v].clear(); }
-    ok_variant[kP4SelfTest] = allow_p4;
+    for (int v = 0; v < 4; ++v) { ok_variant[v] = v == 1; why[v].clear(); }
 
     const size_t n_set = (size_t) TM * (D + D + LR + HC + HC + N);   // R_out, xn, lo, rs, inject, mixed (floats)
-    const size_t q8_per_token = (size_t) (N / 32) * sizeof(GrQ81);
-    const size_t q8_set_bytes = (size_t) TM * q8_per_token;
-    const size_t q8_cnt_bytes = (size_t) (N / 32) * sizeof(unsigned);
     const size_t bytes = h_down.size() * 2 + h_up.size() * 2 + h_inj.size() * 2 +
-                         (h_norm.size() + h_R.size() + h_bo.size() + h_ip.size() + NV * n_set) * 4 +
-                         NV * (q8_set_bytes + q8_cnt_bytes) + 50 * 256;
-    // `take()` rounds each allocation up to 256 bytes; reserve the worst-case padding for all source, result and q8 buffers.
+                         (h_norm.size() + h_R.size() + h_bo.size() + h_ip.size() + NV * n_set) * 4 + 32 * 256;
     uint8_t* base = nullptr;
     if (cudaMalloc((void**) &base, bytes) != cudaSuccess) {
         cudaGetLastError();
@@ -2577,40 +2598,32 @@ bool fused_gr_selftest(bool ok_variant[5], std::string why[5], bool test_p4) {
     float* d_R = (float*) take(h_R.size() * 4);
     float* d_bo = (float*) take(h_bo.size() * 4);
     float* d_ip = (float*) take(h_ip.size() * 4);
-    struct Set { float *R_out, *xn, *lo, *rs, *inj, *mixed; uint8_t* q8_mixed; unsigned* q8_cnt; } set[NV];
+    struct Set { float *R_out, *xn, *lo, *rs, *inj, *mixed; } set[NV];
     for (Set& x : set) {
         x.R_out = (float*) take((size_t) TM * D * 4); x.xn = (float*) take((size_t) TM * D * 4);
         x.lo = (float*) take((size_t) TM * LR * 4); x.rs = (float*) take((size_t) TM * HC * 4);
         x.inj = (float*) take((size_t) TM * HC * 4); x.mixed = (float*) take((size_t) TM * N * 4);
-        x.q8_mixed = (uint8_t*) take(q8_set_bytes); x.q8_cnt = (unsigned*) take(q8_cnt_bytes);
     }
-    cudaStream_t st = nullptr, p4_st = nullptr;
-    bool ok = off <= bytes && cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking) == cudaSuccess;
-    bool p4_ok = !allow_p4 || (off <= bytes && cudaStreamCreateWithFlags(&p4_st, cudaStreamNonBlocking) == cudaSuccess);
-    if (allow_p4 && !p4_ok) {
-        why[kP4SelfTest] = "creating the P4 self-test stream failed";
-        cudaGetLastError(); // do not carry a candidate-only stream error into fallback validation
-    }
-    ok = ok &&
-        cudaMemcpyAsync(d_down, h_down.data(), h_down.size() * 2, cudaMemcpyHostToDevice, st) == cudaSuccess &&
-        cudaMemcpyAsync(d_up, h_up.data(), h_up.size() * 2, cudaMemcpyHostToDevice, st) == cudaSuccess &&
-        cudaMemcpyAsync(d_inj, h_inj.data(), h_inj.size() * 2, cudaMemcpyHostToDevice, st) == cudaSuccess &&
-        cudaMemcpyAsync(d_norm, h_norm.data(), h_norm.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess &&
-        cudaMemcpyAsync(d_R, h_R.data(), h_R.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess &&
-        cudaMemcpyAsync(d_bo, h_bo.data(), h_bo.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess &&
-        cudaMemcpyAsync(d_ip, h_ip.data(), h_ip.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess;
+    cudaStream_t st = nullptr;
+    bool ok = off <= bytes && cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking) == cudaSuccess &&
+              cudaMemcpyAsync(d_down, h_down.data(), h_down.size() * 2, cudaMemcpyHostToDevice, st) == cudaSuccess &&
+              cudaMemcpyAsync(d_up, h_up.data(), h_up.size() * 2, cudaMemcpyHostToDevice, st) == cudaSuccess &&
+              cudaMemcpyAsync(d_inj, h_inj.data(), h_inj.size() * 2, cudaMemcpyHostToDevice, st) == cudaSuccess &&
+              cudaMemcpyAsync(d_norm, h_norm.data(), h_norm.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess &&
+              cudaMemcpyAsync(d_R, h_R.data(), h_R.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess &&
+              cudaMemcpyAsync(d_bo, h_bo.data(), h_bo.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess &&
+              cudaMemcpyAsync(d_ip, h_ip.data(), h_ip.size() * 4, cudaMemcpyHostToDevice, st) == cudaSuccess;
     if (!ok) why[0] = "setting up the check failed";
     std::vector<float> h1, h2;
     // true when equal; false with the first difference in `w` (or a read-back failure in `ok`)
-    auto same = [&](const float* d1, const float* d2, size_t n, const char* what, int T, int apply,
-                    cudaStream_t cmp_st, bool& check_ok, std::string& w) {
+    auto same = [&](const float* d1, const float* d2, size_t n, const char* what, int T, int apply, std::string& w) {
         h1.resize(n);
         h2.resize(n);
-        if (cudaMemcpyAsync(h1.data(), d1, n * 4, cudaMemcpyDeviceToHost, cmp_st) != cudaSuccess ||
-            cudaMemcpyAsync(h2.data(), d2, n * 4, cudaMemcpyDeviceToHost, cmp_st) != cudaSuccess ||
-            cudaStreamSynchronize(cmp_st) != cudaSuccess) {
-            check_ok = false;
-            w = "reading back the check failed";
+        if (cudaMemcpyAsync(h1.data(), d1, n * 4, cudaMemcpyDeviceToHost, st) != cudaSuccess ||
+            cudaMemcpyAsync(h2.data(), d2, n * 4, cudaMemcpyDeviceToHost, st) != cudaSuccess ||
+            cudaStreamSynchronize(st) != cudaSuccess) {
+            why[0] = "reading back the check failed";
+            ok = false;
             return false;
         }
         for (size_t i = 0; i < n; ++i) {
@@ -2627,125 +2640,51 @@ bool fused_gr_selftest(bool ok_variant[5], std::string why[5], bool test_p4) {
         }
         return true;
     };
-    std::vector<uint8_t> b1, b2;
-    auto same_bytes = [&](const uint8_t* d1, const uint8_t* d2, size_t n, const char* what, int T, int apply,
-                          cudaStream_t cmp_st, bool& check_ok, std::string& w) {
-        b1.resize(n);
-        b2.resize(n);
-        if (cudaMemcpyAsync(b1.data(), d1, n, cudaMemcpyDeviceToHost, cmp_st) != cudaSuccess ||
-            cudaMemcpyAsync(b2.data(), d2, n, cudaMemcpyDeviceToHost, cmp_st) != cudaSuccess ||
-            cudaStreamSynchronize(cmp_st) != cudaSuccess) {
-            check_ok = false;
-            w = "reading back the " + std::string(what) + " check failed";
-            return false;
-        }
-        for (size_t i = 0; i < n; ++i) {
-            if (b1[i] != b2[i]) {
-                char buf[192];
-                std::snprintf(buf, sizeof buf, "%s differs for %d token(s)%s at byte %zu (%02x, not %02x)", what,
-                              T, apply ? " with the pending write" : "", i, (unsigned) b2[i], (unsigned) b1[i]);
-                w = buf;
-                return false;
-            }
-        }
-        return true;
-    };
-    auto all_same = [&](const Set& s1, const Set& s2, int T, int apply, bool inject, bool q8,
-                        cudaStream_t cmp_st, bool& check_ok, std::string& w) {
-        return same(s1.lo, s2.lo, (size_t) T * LR, "lo", T, apply, cmp_st, check_ok, w) &&
-               same(s1.rs, s2.rs, (size_t) T * HC, "rs", T, apply, cmp_st, check_ok, w) &&
-               (!inject || same(s1.inj, s2.inj, (size_t) T * HC, "inject", T, apply, cmp_st, check_ok, w)) &&
-               same(s1.mixed, s2.mixed, (size_t) T * N, "mixed", T, apply, cmp_st, check_ok, w) &&
-               (!q8 || same_bytes(s1.q8_mixed, s2.q8_mixed, (size_t) T * q8_per_token, "q8_1", T, apply, cmp_st,
-                                  check_ok, w)) &&
-               same(s1.R_out, s2.R_out, (size_t) T * D, "R", T, apply, cmp_st, check_ok, w);
+    auto all_same = [&](const Set& s1, const Set& s2, int T, int apply, std::string& w) {
+        return same(s1.lo, s2.lo, (size_t) T * LR, "lo", T, apply, w) &&
+               same(s1.rs, s2.rs, (size_t) T * HC, "rs", T, apply, w) &&
+               same(s1.inj, s2.inj, (size_t) T * HC, "inject", T, apply, w) &&
+               same(s1.mixed, s2.mixed, (size_t) T * N, "mixed", T, apply, w) &&
+               same(s1.R_out, s2.R_out, (size_t) T * D, "R", T, apply, w);
     };
     ok_variant[2] = ok_variant[3] = ok;
-    // A rejected P4 candidate must not invalidate the established split/staged fallback.
-    ok_variant[4] = allow_p4 && p4_ok && ok;
     bool single_ok = ok;
-    for (int q8 = 0; q8 < 2 && ok; ++q8) {
-        for (int inject = 0; inject < 2 && ok; ++inject) {
-            for (int apply = 0; apply < 2 && ok; ++apply) {
-                for (int T = 1; T <= TM && ok; ++T) {
-                    FusedGrArgs a[NV][TM];
-                    for (int v = 0; v < NV; ++v) {
-                        const size_t span = (size_t) ((uint8_t*) (set[v].mixed + (size_t) TM * N) - (uint8_t*) set[v].R_out);
-                        ok = ok && cudaMemsetAsync(set[v].R_out, 0xFF, span, st) == cudaSuccess;
-                        if (q8) {
-                            ok = ok && cudaMemsetAsync(set[v].q8_mixed, 0xFF, q8_set_bytes, st) == cudaSuccess;
-                            ok = ok && cudaMemsetAsync(set[v].q8_cnt, 0, q8_cnt_bytes, st) == cudaSuccess;
-                        }
-                        for (int k = 0; k < T; ++k) {
-                            FusedGrArgs& x = a[v][k];
-                            x.R = d_R + (size_t) k * D; x.R_out = set[v].R_out + (size_t) k * D; x.apply = apply != 0;
-                            x.bo_prev = d_bo + (size_t) k * N; x.inj_prev = d_ip + (size_t) k * HC;
-                            x.w_norm = d_norm; x.w_down = d_down; x.w_up = d_up; x.w_inject = inject ? d_inj : nullptr; x.eps = 1e-6f;
-                            x.lo = set[v].lo + (size_t) k * LR; x.rs = set[v].rs + (size_t) k * HC;
-                            x.inject_out = set[v].inj + (size_t) k * HC; x.mixed = set[v].mixed + (size_t) k * N;
-                            x.q8_mixed = q8 ? set[v].q8_mixed + (size_t) k * q8_per_token : nullptr;
-                            x.q8_cnt = q8 ? set[v].q8_cnt : nullptr;
-                        }
-                    }
-                    if (!ok) break;
-                    for (int v = 0; v < 3; ++v) {
-                        GrMulti m;
-                        for (int k = 0; k < T; ++k) m.a[k] = a[v][k];
-                        m.xn = set[v].xn;
-                        m.T = T;
-                        launch_multi(m, v + 1, st, nullptr, 0);
-                    }
-                    if (T == 1 && inject && !q8) fused_gr_read(a[3][0], st);
-                    if (cudaGetLastError() != cudaSuccess || cudaStreamSynchronize(st) != cudaSuccess) {
-                        why[0] = q8 ? "a QFUSE_HC check kernel failed" : "a kernel of the check failed";
-                        ok = false;
-                        break;
-                    }
-                    if (ok_variant[2] && !all_same(set[0], set[1], T, apply, inject != 0, q8 != 0, st, ok, why[2]))
-                        ok_variant[2] = false;
-                    if (ok && ok_variant[3] && !all_same(set[0], set[2], T, apply, inject != 0, q8 != 0, st, ok, why[3]))
-                        ok_variant[3] = false;
-                    if (ok && T == 1 && inject && !q8 && single_ok &&
-                        !all_same(set[3], set[0], T, apply, inject != 0, false, st, ok, why[1]))
-                        single_ok = false;
-
-                    // The candidate runs on its own stream so an unsupported instruction or launch error cannot poison
-                    // the fallback self-test's stream or mark staged/split unusable. q8=1 also covers QFUSE_HC's q32 up path.
-                    if (allow_p4 && ok_variant[kP4SelfTest]) {
-                        GrMulti half_m;
-                        for (int k = 0; k < T; ++k) half_m.a[k] = a[kP4SelfTest][k];
-                        half_m.xn = set[kP4SelfTest].xn;
-                        half_m.T = T;
-                        launch_multi(half_m, kHcRegisterHalf, p4_st, nullptr, 0);
-                        const cudaError_t p4_launch = cudaGetLastError();
-                        const cudaError_t p4_sync = p4_launch == cudaSuccess ? cudaStreamSynchronize(p4_st) : p4_launch;
-                        if (p4_launch != cudaSuccess || p4_sync != cudaSuccess) {
-                            why[kP4SelfTest] = std::string("P4 candidate launch/sync failed: ") + cudaGetErrorString(
-                                p4_launch != cudaSuccess ? p4_launch : p4_sync);
-                            ok_variant[kP4SelfTest] = false;
-                            cudaGetLastError(); // clear any thread-local launch error before continuing fallback validation
-                        } else if (!all_same(set[2], set[kP4SelfTest], T, apply, inject != 0, q8 != 0, p4_st,
-                                             ok_variant[kP4SelfTest], why[kP4SelfTest])) {
-                            ok_variant[kP4SelfTest] = false;
-                        }
-                    }
+    for (int apply = 0; apply < 2 && ok; ++apply) {
+        for (int T = 1; T <= TM && ok; ++T) {
+            FusedGrArgs a[NV][TM];
+            for (int v = 0; v < NV; ++v) {
+                const size_t span = (size_t) ((uint8_t*) (set[v].mixed + (size_t) TM * N) - (uint8_t*) set[v].R_out);
+                ok = ok && cudaMemsetAsync(set[v].R_out, 0xFF, span, st) == cudaSuccess;   // the whole set
+                for (int k = 0; k < T; ++k) {
+                    FusedGrArgs& x = a[v][k];
+                    x.R = d_R + (size_t) k * D; x.R_out = set[v].R_out + (size_t) k * D; x.apply = apply != 0;
+                    x.bo_prev = d_bo + (size_t) k * N; x.inj_prev = d_ip + (size_t) k * HC;
+                    x.w_norm = d_norm; x.w_down = d_down; x.w_up = d_up; x.w_inject = d_inj; x.eps = 1e-6f;
+                    x.lo = set[v].lo + (size_t) k * LR; x.rs = set[v].rs + (size_t) k * HC;
+                    x.inject_out = set[v].inj + (size_t) k * HC; x.mixed = set[v].mixed + (size_t) k * N;
                 }
             }
+            for (int v = 0; v < 3; ++v) {
+                GrMulti m;
+                for (int k = 0; k < T; ++k) m.a[k] = a[v][k];
+                m.xn = set[v].xn;
+                m.T = T;
+                launch_multi(m, v + 1, st, nullptr, 0);
+            }
+            if (T == 1) fused_gr_read(a[3][0], st);
+            if (cudaGetLastError() != cudaSuccess || cudaStreamSynchronize(st) != cudaSuccess) {
+                why[0] = "a kernel of the check failed";
+                ok = false;
+                break;
+            }
+            if (ok_variant[2] && !all_same(set[0], set[1], T, apply, why[2])) ok_variant[2] = false;
+            if (ok && ok_variant[3] && !all_same(set[0], set[2], T, apply, why[3])) ok_variant[3] = false;
+            if (ok && T == 1 && single_ok && !all_same(set[3], set[0], T, apply, why[1])) single_ok = false;
         }
     }
-    if (!single_ok && ok) {
+    if (!single_ok && ok) {                            // the plain read itself disagrees with the single-token read
         why[2] = why[3] = "the plain read differs from the single-token read: " + why[1];
         ok_variant[2] = ok_variant[3] = false;
-        ok_variant[4] = false;
-    }
-#if !STRATA_GR_FAST_BUILD
-    if (detail::fused_gr_p4_q32_parity_marker_ok(
-            ok, qfuse_hc_local(), ok_variant[kHcStaged], ok_variant[kP4SelfTest]))
-        std::fprintf(stderr, "strata hc: P4 + QFUSE_HC q32 outputs passed bitwise parity for T=1..8/apply/inject\n");
-#endif
-    if (p4_st != nullptr) {
-        cudaStreamSynchronize(p4_st);
-        cudaStreamDestroy(p4_st);
     }
     if (st != nullptr) {
         cudaStreamSynchronize(st);
@@ -2753,10 +2692,7 @@ bool fused_gr_selftest(bool ok_variant[5], std::string why[5], bool test_p4) {
     }
     cudaFree(base);
     cudaGetLastError();
-    if (!ok) {
-        ok_variant[2] = ok_variant[3] = false;
-        ok_variant[4] = false;
-    }
+    if (!ok) ok_variant[2] = ok_variant[3] = false;
     return ok;
 }
 
@@ -2767,54 +2703,52 @@ int fused_gr_variant() {
     cudaGetDevice(&dev);
     const int v = dev >= 0 && dev < 64 ? g_variant[dev].load() : 0;
     if (v > 0) return v;
-    const char* e = std::getenv("STRATA_HC_SPLIT");
-    if (e != nullptr && e[0] == '1') return kHcSplit;
-    if (e != nullptr && (e[0] == '2' || e[0] == '7')) return kHcStaged;
-    return kHcPlain;
+    const bool gfx12 = dev >= 0 && dev < 64 && p4_gfx12_device(dev);
+    return env_variant(gfx12);
 }
 
 void fused_gr_check() {
     int dev = 0;
     cudaGetDevice(&dev);
     if (dev < 0 || dev >= 64 || g_variant[dev].load() > 0) return;
-    const int want = env_variant();
-    const char* const split_env = std::getenv("STRATA_HC_SPLIT");
-    const bool env_unset = split_env == nullptr || split_env[0] == '\0';
     const bool gfx12 = p4_gfx12_device(dev);
-    // STRATA_HC_SPLIT=7 opts into the P4 candidate self-test; other explicit selectors skip that candidate.
-    if (want == kHcPlain) {
-        g_variant[dev].store(kHcPlain);
-        std::fprintf(stderr, "strata hc: CUDA%d: the hyper-connection read runs as the plain one (STRATA_HC_SPLIT=0)\n",
-                     dev);
+    const char* const selector = std::getenv("STRATA_HC_SPLIT");
+    const bool selector_unset = selector == nullptr || selector[0] == '\0';
+    const bool explicit_p4 = selector != nullptr && std::strcmp(selector, "7") == 0;
+    const int want = env_variant(gfx12);
+
+    // The tested gfx12 P4 path is the default. Its token grouping is internal to the same selector; no P4 parity
+    // self-test is run. STRATA_HC_SPLIT=2 is the established staged fallback.
+    if (want == kHcRegisterHalf) {
+        g_variant[dev].store(kHcRegisterHalf);
+        std::fprintf(stderr, "strata hc: CUDA%d: runtime arch gate gfx1200/gfx1201 RDNA4; "
+                             "hyper-connection read runs as register-half P4 (default; STRATA_HC_SPLIT=2 forces staged)%s\n",
+                     dev, explicit_p4 && !selector_unset ? " (explicit selector)" : "");
         return;
     }
-    const bool test_p4 = gfx12 && (env_unset || want == kHcRegisterHalf);
-    bool okv[5];
-    std::string why[5];
-    const bool ran = fused_gr_selftest(okv, why, test_p4);
-    const bool p4_ok = ran && test_p4 &&
-                       detail::fused_gr_p4_parity_gate(gfx12, okv[kHcStaged], okv[kP4SelfTest]);
+    if (explicit_p4 && !gfx12)
+        std::fprintf(stderr, "strata hc: CUDA%d: selector 7 is gfx1200/gfx1201-only; using staged fallback\n", dev);
+
+    if (want == kHcPlain) {
+        g_variant[dev].store(kHcPlain);
+        std::fprintf(stderr, "strata hc: CUDA%d: the hyper-connection read runs as plain (STRATA_HC_SPLIT=0)\n", dev);
+        return;
+    }
+
+    // Preserve upstream's established check for the legacy staged/split choices. P4 is deliberately not part of it.
+    bool okv[4];
+    std::string why[4];
+    const bool ran = fused_gr_selftest(okv, why);
     int use = kHcPlain;
     if (want == kHcSplit && okv[kHcSplit]) use = kHcSplit;
-    else if (want == kHcRegisterHalf && p4_ok) use = kHcRegisterHalf;
-    else if ((want == kHcStaged || want == kHcRegisterHalf) && okv[kHcStaged]) use = kHcStaged;
+    else if (want == kHcStaged && okv[kHcStaged]) use = kHcStaged;
     else if (okv[kHcSplit]) use = kHcSplit;
-    if (env_unset && p4_ok) use = kHcRegisterHalf;
     g_variant[dev].store(use);
     if (!ran)
         std::fprintf(stderr, "strata hc: CUDA%d: the split/staged self-test could not run (%s)\n", dev, why[0].c_str());
-    if (want == kHcRegisterHalf && !gfx12)
-        std::fprintf(stderr, "strata hc: CUDA%d: P4 is restricted to gfx1200/gfx1201; staged remains active\n", dev);
-    if (test_p4 && ran && !okv[kP4SelfTest])
-        std::fprintf(stderr, "strata hc: CUDA%d: P4 register-half failed bitwise staged parity - not used: %s\n", dev,
-                     why[kP4SelfTest].c_str());
-    const char* what = use == kHcRegisterHalf ? "register-half (P4; bitwise staged parity passed)"
-                      : use == kHcStaged ? "staged"
-                      : use == kHcSplit ? "split"
-                                        : "plain";
-    std::fprintf(stderr, "strata hc: CUDA%d: runtime arch gate %s; hyper-connection read runs as %s%s\n", dev,
-                 gfx12 ? "gfx1200/gfx1201 RDNA4" : "non-RDNA4", what,
-                 env_unset && use == kHcRegisterHalf ? " (promoted default; STRATA_HC_SPLIT=2 forces staged)" : "");
+    const char* what = use == kHcStaged ? "staged" : use == kHcSplit ? "split" : "plain";
+    std::fprintf(stderr, "strata hc: CUDA%d: runtime arch gate %s; hyper-connection read runs as %s\n", dev,
+                 gfx12 ? "gfx1200/gfx1201 RDNA4" : "non-RDNA4", what);
 }
 
 

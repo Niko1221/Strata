@@ -72,14 +72,13 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
 
 /// The bench only: the AMD latency-hidden kernels on (1) or off (0); -1 = STRATA_GR_FAST.
 void fused_gr_set_fast(int on);
-/// The multi read's variants (#315; not main's opt-in STRATA_GR_V3 read, which sums in another order), all computing
-/// every output with exactly the staged read's operations in its order. On runtime gfx1200/gfx1201 only, the P4
-/// register-half down kernel is selected by default iff its bitwise self-test passes against staged AND staged passes
-/// against plain. The check covers T=1..8, apply on/off, inject weights present/null, and (when compiled) q8_1 /
-/// QFUSE_HC up-kernel outputs. Other architectures retain upstream's staged selection. `STRATA_HC_SPLIT` unset runs
-/// the P4 self-test on gfx1200/gfx1201 and selects it only if both parity gates pass. `=2` requests staged and `=7`
-/// opts into P4 testing, both still arch/parity gated; the verifier can fall back to split/plain if needed. `=0` selects
-/// plain and `=1` selects split, skipping P4 testing. `fused_gr_check` runs once per card and latches its choice.
+/// The multi read's legacy staged/split/plain variants (#315; not main's opt-in STRATA_GR_V3 read, which sums in a
+/// different order). On runtime gfx1200/gfx1201, the register-half P4 down kernel is the default and is byte-identical
+/// to the staged path by construction; it is not runtime-parity-tested. Its best token grouping is selected internally
+/// for T=3..6; there is no separate P4 grouping switch. `STRATA_HC_SPLIT` is the single override: unset selects P4
+/// on gfx12 and staged elsewhere; `=7` explicitly selects P4 on gfx12; `=2` forces staged, `=1` split, and `=0` plain.
+/// Other architectures keep the upstream path. The established staged/split self-test remains for legacy overrides,
+/// but does not execute or gate P4. `fused_gr_check` runs once per card and latches the selection.
 void fused_gr_check();
 int fused_gr_variant();
 
