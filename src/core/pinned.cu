@@ -4,7 +4,10 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <vector>
 #include <climits>
 #include <cerrno>
 #include <cstdlib>
@@ -406,9 +409,40 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
         mapping_base = base;
         mapping_bytes = bytes;
     }
+#ifdef _WIN32
+    // Windows, 4 KB pages: touch every page from several threads before the registration.  Left to cudaHostRegister,
+    // the first touch (the zero-fill) of the whole arena ran on one thread inside it: 4.98 s for 46.8 GiB on an RTX
+    // 3090 + Core Ultra 9 285K.  Touched by 16 threads first it took 0.5-1.2 s, and the registration then 0.08 s, the
+    // whole arena still registered (PORTABLE ok) and decode/prompt speed unchanged (3 + 3 starts).  Not for large
+    // pages or memory cudaHostAlloc pinned (resident already), or a shared arena file (touching would read it).
+    // STRATA_ARENA_PREFAULT=N sets the threads, 0 leaves the first touch to cudaHostRegister as before.
+    if (base != nullptr && backing == PageBacking::NormalPages && shared_file.empty()) {
+        const char* pf = std::getenv("STRATA_ARENA_PREFAULT");
+        const int n = pf != nullptr && *pf ? std::clamp(std::atoi(pf), 0, 64)
+                                           : (int) std::clamp(std::thread::hardware_concurrency(), 1u, 16u);
+        if (n > 0) {
+            const auto t0 = std::chrono::steady_clock::now();
+            const uint64_t per = (bytes / (uint64_t) n + 4095) / 4096 * 4096;
+            std::vector<std::thread> pool;
+            volatile uint8_t* const first = (volatile uint8_t*) base;
+            for (int t = 0; t < n; ++t)
+                pool.emplace_back([first, bytes, per, t] {
+                    volatile uint8_t* p = first;
+                    const uint64_t end = std::min<uint64_t>(bytes, (uint64_t) (t + 1) * per);
+                    for (uint64_t off = (uint64_t) t * per; off < end; off += 4096) p[off] = 0;
+                });
+            for (auto& th : pool) th.join();
+            char buf[160];
+            std::snprintf(buf, sizeof buf, "; pages first touched by %d threads in %.2f s (STRATA_ARENA_PREFAULT=0: by "
+                          "cudaHostRegister)", n, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+            note += buf;
+        }
+    }
+#endif
 
-    // Register with CUDA BEFORE any page is touched: cudaHostRegister pins what is resident now, and a region
-    // that has already been faulted in page by page is far more expensive to register and may fail outright.
+    // Register with CUDA before the experts are read into it.  (The old note here - a region faulted in page by page
+    // is far more expensive to register and may fail - did not hold on Windows for pages touched by the threads
+    // above: see their note.)
     if (base) {
         // #243: STRATA_ARENA_PIN_GIB=N caps the registration from the start where the caller set no cap
         const int env_gib = arena_pin_cap_gib();
