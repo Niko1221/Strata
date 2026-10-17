@@ -981,6 +981,25 @@ print(r.choices[0].message.content)
   `ANTHROPIC_MODEL` to a Claude model name it knows (it refuses names it doesn't; Strata ignores the name), plus any
   `ANTHROPIC_AUTH_TOKEN` (or your `api_key`, if you set one).
 - **Codex CLI** (0.1.39): see [the Responses API](#the-responses-api-and-codex-cli) below.
+- **ACP-capable editors via acp-bridge:** [acp-bridge](https://github.com/BlakeHung/acp-bridge) is
+  a small static Rust binary that turns any OpenAI-compatible backend into an ACP (Agent Client Protocol) agent — the
+  protocol Zed and JetBrains speak to coding agents. Point it at Strata and the model shows up inside those editors.
+  For the full install-to-Zed walkthrough, see
+  [Strata: Run a 125B Model on Your Own PC — from Install to Coding Agent](https://wchung.tw/blog/strata-local-125b).
+
+  ```yaml
+  # acp-bridge config
+  backend: openai-compat
+  base_url: http://127.0.0.1:8080/v1
+  api_key: none        # or your api_key
+  model: strata        # an alias or the /v1/models id
+  ```
+
+  Register the binary in Zed (*agent_servers*). acp-bridge keeps the token traffic local and was integrated with
+  thinking-mode Qwen in mind: its 0.9.2 release recovers tool calls that thinking models sometimes embed in the
+  content channel instead of the structured `tool_calls` field, which is exactly the shape Qwen3.8 through
+  OpenAI-compatible surfaces can produce. An end-to-end compatibility suite for both output shapes runs in the
+  acp-bridge repo (see `tests/strata_compat.rs`).
 - **Context.** Chosen in setup (8K-262K). Requests longer than that are refused, never silently cut. A request whose
   `max_tokens` would run past the context is refused too (400); agents that always ask for their full output cap
   can instead get it shortened to the room left: add `"fit_max_tokens": true` to `strata-<model>.json` (or pass
