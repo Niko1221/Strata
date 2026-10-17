@@ -1,0 +1,53 @@
+{
+ "model": "qwen3.8-flash-next-ud-q4_k_xl",
+ "engine": "0.1.41",
+ "passed": 3,
+ "of": 3,
+ "rows": [
+  {
+   "question": "What number is written in this image? Reply with the digits only.",
+   "expected": "4271",
+   "answer": "4271",
+   "ok": true,
+   "seconds": 4.98,
+   "usage": {
+    "prompt_tokens": 412,
+    "completion_tokens": 5,
+    "total_tokens": 417,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "question": "What color is the circle in this image? Reply with one word.",
+   "expected": "red",
+   "answer": "Red",
+   "ok": true,
+   "seconds": 1.25,
+   "usage": {
+    "prompt_tokens": 412,
+    "completion_tokens": 2,
+    "total_tokens": 414,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "question": "What shape is the blue object in this image? Reply with one word.",
+   "expected": "square",
+   "answer": "square",
+   "ok": true,
+   "seconds": 1.3,
+   "usage": {
+    "prompt_tokens": 413,
+    "completion_tokens": 2,
+    "total_tokens": 415,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  }
+ ]
+}

@@ -1,0 +1,40 @@
+{
+ "exe": "/home/chris/src/Strata-0.1.41/build/strata",
+ "args": [
+  "--pack",
+  "/home/chris/src/Strata-0.1.41/packs/ud-q5_k_xl",
+  "--native",
+  "/home/chris/models/unsloth/Qwen3.8-Flash-Next-GGUF/UD-Q5_K_XL-padded/Qwen3.8-Flash-Next-UD-Q5_K_XL-00001-of-00006.gguf",
+  "--expert-profile",
+  "/home/chris/src/Strata-0.1.41/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.70",
+  "--max-context",
+  "49152",
+  "--kv",
+  "int8",
+  "--short-read",
+  "1024",
+  "--adapt-every",
+  "100000",
+  "--mtp",
+  "/home/chris/models/strata/mtp/rt",
+  "--resident-budget-gib",
+  "56"
+ ],
+ "cwd": "/home/chris/src/Strata-0.1.41",
+ "tokenizer": "/home/chris/src/Strata-0.1.41/packs/ud-q5_k_xl/tokenizer",
+ "model_name": "quality-ud-q5_k_xl",
+ "lib_dirs": [
+  "/usr/local/cuda-13.3/bin",
+  "/usr/local/cuda-13.3/lib64"
+ ],
+ "port": 8096,
+ "log": "/home/chris/v041/quality/arms/ud-q5_k_xl/engine.log"
+}

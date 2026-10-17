@@ -1,0 +1,3 @@
+9322a4e gguf_reader: open a tensor-less shard that ends before its aligned data start
+ee34ae3 gguf_reader_test: a tensor-less file that ends before its aligned data start
+fb58e0d Stage buffers: pinning is opt-in (STRATA_STAGE_PIN=1); on by default it corrupted IQ3_S decode after a long prompt in the release gate
