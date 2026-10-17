@@ -248,6 +248,10 @@ START-HERE.bat --port 8081                      another port
 START-HERE.bat --gpu 1                          another GPU (setup picks the one with the most VRAM)
 START-HERE.bat --gpus 0,2                       several GPUs sharing the model
 START-HERE.bat --vram-reserve-mib 2048          leave 2 GB of VRAM free for other programs (remembered)
+START-HERE.bat --thinking                      write the sampling the model card recommends into the model's config,
+                                                for every client that asks for none (for direct answers: --instruct;
+                                                remembered; without either flag those clients get the model card's
+                                                sampling, the server picking it itself since 0.1.45)
 START-HERE.bat --no-browser                     do not open the chat page when the model is ready (remembered;
                                                 --browser undoes it)
 START-HERE.bat --setup --backend hip            the AMD engine on a PC that also has an NVIDIA card
@@ -255,6 +259,26 @@ START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>     reachable from othe
 START-HERE.bat --calibrate                      tune the engine for this PC (about 15-30 minutes, longer on a slow card), then start
 START-HERE.bat --check                          only check this PC
 ```
+
+**Which sampling a client gets (#1129):** `--thinking` writes the sampling the Qwen3.8-Flash-Next card recommends
+for thinking answers into the model's `strata-<model>.json` (`temperature=1.0, top_p=0.95, top_k=20, min_p=0.0,
+presence_penalty=0.0, repetition_penalty=1.0`); `--instruct` writes the card's set for direct answers instead
+(`temperature=0.7, top_p=0.80, top_k=20, min_p=0.0, presence_penalty=1.5, repetition_penalty=1.0`). Give either flag
+at setup or at a start. Writing one of the two is opt-in: a run that names no flag writes no block, and every client
+that sends no sampling of its own then gets the sampling the card recommends - the server applies it itself since
+0.1.45 (#2685): thinking 1.0 / 0.95 / 20, not thinking 0.7 / 0.8 / 20 with presence_penalty 1.5; greedy only when
+asked for, by temperature 0. With a block those clients get its numbers instead and answers differ from run to run;
+a client that sends its
+own sampling keeps its own either way. Note for batch mode: repetition / frequency / presence penalties are not
+applied inside batch windows yet (docs/BATCHING.md, "Limits (for now)"), so with `"parallel": N` an `--instruct`
+block takes effect only outside a batch - its `presence_penalty=1.5` does nothing there. Setup keeps numbers you
+wrote by hand when it runs again without a flag, and a start that picks one of the two sets keeps the file it
+replaced as `strata-<model>.json.bak` the same way. Sampling only: whether the model thinks stays per request. A
+start says which numbers are in use - setup prints `Settings (...): ... sampling thinking: temperature=1.0, ...`,
+and the server window prints `sampling defaults from the config: ... (Qwen's thinking preset)`, or the model card's
+numbers when the model's config has no block. The About tab's Model settings shows and edits the block's
+temperature, top_p, top_k and min_p; to decode greedy, set `sampling.temperature` to 0 there
+or in the file.
 
 **Leaving VRAM for other programs (#493):** Strata fills the graphics card's free VRAM with experts (the expert cache)
 and leaves `--vram-reserve-mib` MiB free: 700 by default. For a game, a 3D program or another model beside it, leave

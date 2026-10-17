@@ -39,6 +39,45 @@ EDITABLE = [
 ]
 SPEC = {k: kind for k, kind, _ in EDITABLE}
 
+# #1129: Qwen's own recommended sampling, from the model card (huggingface.co/Qwen/Qwen3.8-Flash-Next): one set for
+# thinking answers, one for direct ("instruct") ones.  setup writes one of them as the config's "sampling" block only
+# when a flag names it (--thinking / --instruct) - without a flag a new install writes no block and requests that
+# send no sampling of their own get the model card's sampling straight from the server (0.1.45, #2685); the server
+# names the preset on its start line, and setup's settings line shows the numbers.  Sampling only: thinking on or
+# off stays per request (reasoning_effort, the chat page's Thinking switch).
+SAMPLING_PRESETS = {
+    "thinking": {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
+                 "presence_penalty": 0.0, "repetition_penalty": 1.0},
+    "instruct": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0,
+                 "presence_penalty": 1.5, "repetition_penalty": 1.0},
+}
+
+# the order the two lines below print the block in (the server's own list of supported keys)
+SAMPLING_ORDER = ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty",
+                  "repetition_penalty", "penalty_last_n", "seed")
+
+
+def sampling_summary(block) -> str:
+    """The "sampling" block in one line ("temperature=1.0, top_p=0.95"), keys in a fixed order, so setup's settings
+    line and the server's start line read the same way.  "" for no block."""
+    if not isinstance(block, dict):
+        return ""
+    keys = [k for k in SAMPLING_ORDER if k in block] + sorted(k for k in block if k not in SAMPLING_ORDER)
+    return ", ".join(f"{k}={block[k]}" for k in keys)     # 1.0 stays 1.0: the line reads like the model card
+
+
+def preset_of(block) -> str | None:
+    """The #1129 preset a "sampling" block holds ("thinking" / "instruct"), or None: numbers of the user's own, or no
+    block.  Numbers are compared as the server reads them, so top_k 20 and 20.0, or top_p 0.8 and 0.80, match."""
+    if not isinstance(block, dict) or not block:
+        return None
+    for name, preset in SAMPLING_PRESETS.items():
+        try:
+            if {k: float(v) for k, v in block.items()} == {k: float(v) for k, v in preset.items()}:
+                return name
+        except (TypeError, ValueError):                 # a value that is not a number: no preset
+            return None
+    return None
 
 def _arg(cfg: dict, flag: str):
     a = cfg.get("args") if isinstance(cfg.get("args"), list) else []
