@@ -23,7 +23,7 @@ PCIe 3.0 x8 slot (the card trains at Gen3 x8 there; it can do Gen5 x16).
 | decode, Coder IQ1_M | 44-51 tok/s on an RTX 5070 | **78.2 tok/s** (19-token prompt, 256 greedy tokens), **75.7** after a 2,184-token prompt, 69 after 40K, 66.6 after 128K, 55.9 after 256K; 48-72 through the API | 23-25 tok/s |
 | prompt reading | ~1,870 tok/s | **790 tok/s** at 2,184 tokens, 1,117 at 40K, 888 at 128K, 757 at 256K | ~150 tok/s (424 at 105K) |
 | speculative decoding (MTP) | yes | yes (the base checkpoint's draft layer; 70-85% of drafts accepted on code) | no |
-| images | yes | not yet | not yet |
+| images | yes | yes (a separate build of the encoder; `--vision`) | not yet |
 | context | up to 262K | 256K measured, 56 tok/s decode there (`--kv-resident`: the KV in pinned host memory, the attended window in VRAM) | 131K measured ceiling |
 
 Decode speed with speculative decoding depends on the text: code drafts well, prose less so (see "Speed depends
@@ -693,6 +693,23 @@ test an SM-holding NVIDIA bench (not built). Outputs identical to 0.1.33 (Coder 
 - AOT device code is what runs: `AOT=bmg-g31 BUILD_DIR=.../build-sycl-aot` (the JIT build costs ~47 s of
   compiling on the first window).
 
+## Images on the SYCL port (`strata-vision`, the CLIP graph on the Arc)
+
+An image in a request becomes embedding rows the engine reads in place of its `<|image_pad|>` tokens. The engine's
+half is already ported (`--vision`, the `GENI` request, the per-cell M-RoPE table, the `SVE1` file); what the port
+was missing is the producer, and that is a build option, not a kernel.
+
+`strata-vision` is llama.cpp's `mtmd` front end with llama.cpp's SYCL backend running the CLIP graph on the Arc:
+`-DSTRATA_VISION_SYCL=ON` with `icx`/`icpx` and oneMKL, which ggml-sycl requires for the INTEL target.
+`sycl/tools/build.sh` with no arguments builds it beside the engine into `build-vision-sycl/bin/strata-vision`,
+which is where `sycl/setup_intel.py` looks (`sycl_vision_encoder`); `./setup.sh --backend sycl --vision yes`
+writes the config's `vision` section and `--vision` in the engine's args. Without the encoder the installer says so
+and images stay off. The encoder is a second llama.cpp build beside the engine's, at the pinned commit
+(`third_party/llama.cpp`), so a llama.cpp bump has to move both.
+
+The CLIP graph is JIT-compiled at the encoder's first image: about 18 s at the 1024-token cap, once per server
+start.
+
 ## Arc A750 and the other Alchemist cards (`i915`, 2026-10-07)
 
 Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in a PC with 64 GB of RAM, a Ryzen 5 5600X
@@ -761,8 +778,9 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
 
 ## Not done
 
-- Images, on both Intel engines. Strata's vision path encodes with `strata-vision` into embeddings the CUDA
-  engine reads; neither the SYCL port nor the llama.cpp config wires it yet.
+- Images on the llama.cpp Intel path (its config wires no mmproj for this model). The SYCL port has them: see
+  "Images on the SYCL port" above - `sycl/tools/build.sh` builds the encoder beside the engine, and
+  `./setup.sh --backend sycl --vision yes` wires it into the serving path.
 - Speculative decoding on the llama.cpp path (the GGUF carries no draft layer llama.cpp can use). The SYCL
   port has it (MTP draft layer, `--mtp`).
 

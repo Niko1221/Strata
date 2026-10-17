@@ -37,6 +37,9 @@ import setup as S  # noqa: E402
 SYCL_WRAPPER = ROOT / "sycl" / "serve" / "strata-sycl.sh"
 SYCL_IMAGE = "strata-sycl-dev"
 SERVER = ROOT / "sycl" / "serve" / "server_intel.py"
+# the image encoder is started through this launcher, not as the bare binary: it composes the oneAPI runtime
+# library path itself (strata-vision-sycl.sh), and setup writes no "lib_dirs"
+VISION_LAUNCHER = ROOT / "sycl" / "serve" / "strata-vision-sycl.sh"
 MOUNT = Path(os.environ.get("STRATA_SYCL_ROOT") or ROOT.parent)   # what strata-sycl.sh mounts at /work
 
 # Battlemage / Alchemist PCI device ids -> (name, VRAM GB). lspci's database lags new cards (an Arc Pro B70 reads
@@ -94,6 +97,63 @@ def sycl_engine():
     if exe is None:
         return None, "it is not built (docs/INTEL.md, \"How to build it\": Docker, then sycl/tools/build.sh in the image)"
     return exe, None
+
+
+VISION_RESERVE_MIB = 1024       # VRAM the image encoder keeps for its device buffers and its activations
+VISION_ENCODER: Path | None = None   # the encoder staged for this run (the config names it)
+
+
+def sycl_vision_encoder() -> tuple[Path | None, str | None]:
+    """The Intel image encoder - tools/vision built with STRATA_VISION_SYCL - as (binary, why-not).
+
+    Discovered, not built here: like the engine (sycl_engine above), the encoder is made by the port's own build
+    (`sycl/tools/build.sh strata-vision` in the dev image, or tools/vision configured with
+    -DSTRATA_VISION_SYCL=ON against the oneAPI compiler); a build step here would have to guess at a toolchain
+    this installer does not otherwise use."""
+    if S.WIN:
+        return None, "the SYCL port runs on Linux only"
+    for p in (ROOT / "engine" / S.VEXE, ROOT / "build-vision-sycl" / "bin" / S.VEXE,
+              ROOT / "build-vision" / "bin" / S.VEXE):
+        if p.is_file():
+            return p, None
+    return None, ("it is not built (tools/vision with -DSTRATA_VISION_SYCL=ON, or the port's build script in "
+                   "the dev image; docs/INTEL.md)")
+
+
+def vision_intel(asked) -> str:
+    """The image encoder with the SYCL backend (--vision), answering setup's images hook.
+
+    `yes`/`gpu` place the CLIP graph on the Arc (the encoder process warms up there before the engine starts,
+    so the engine sizes its expert cache around it), `cpu` runs the same binary's CLIP graph on the CPU - the
+    server starts it without --gpu then.  Anything else, or an encoder that is not built, leaves images off as
+    before."""
+    if asked in (None, "no", "none"):
+        return "none"
+    enc, why = sycl_vision_encoder()
+    if enc is None:
+        S.warn(f"the Intel image encoder cannot be used: {why}; images off")
+        return "none"
+    if asked in ("yes", "gpu"):
+        return "gpu"
+    return "cpu" if asked == "cpu" else "none"
+
+
+def build_engine_sycl(stub: Path, gpu, llama, vision: str = "none") -> Path:
+    """setup's engine step for the SYCL port: hand back the stub the engine build is replaced by, and when images
+    are on put the encoder somewhere permanent - the stub is a temporary directory, and the config has to name a
+    path that outlives this run."""
+    global VISION_ENCODER
+    if vision != "none":
+        enc, why = sycl_vision_encoder()
+        if enc is None:
+            S.warn(f"the Intel image encoder cannot be used: {why}; images off")
+        else:
+            dest = ROOT / "engine" / S.VEXE
+            dest.parent.mkdir(exist_ok=True)
+            if dest.resolve() != enc.resolve():
+                shutil.copy2(enc, dest)
+            VISION_ENCODER = dest
+    return stub
 
 
 def sycl_path(path) -> str:
@@ -188,6 +248,11 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
     drop(args, "--vram-reserve-mib", True)
     reserve = asked_reserve or (str(SMALL_RESERVE_MIB) if small_card(vram_gb, driver) else
                                 "1024" if ctx <= 32768 else "2048")
+    images_on = bool((cfg.get("vision") or {}).get("gpu"))
+    if images_on:
+        # the encoder's device buffers (~1 GB at the largest picture it warms up on) sit beside the expert cache,
+        # and its process starts before the engine; a reserve under that starves one of the two
+        reserve = str(max(int(reserve), VISION_RESERVE_MIB))
     alchemist = driver == "i915" or devid in ALCHEMIST_IDS
     if driver == "i915":
         # Arc A-series on i915 (the A750): the experts load into an ordinary RAM arena and the CPU computes the ones
@@ -202,8 +267,18 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
         args += ["--prefill", "4096"]                   # over PCIe once per chunk, so fewer, bigger chunks read the prompt
                                                         # faster (Arc Pro B70, IQ3_S, a 4,095-token prompt: 2,048-token
                                                         # chunks 618 tok/s, 4,096: 1,002; docs/INTEL.md); it costs ~700 cache slots
-    out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "vision", "gpus")}
+    out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "gpus")}
     out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER), "args": args, "sycl_root": str(MOUNT)})
+    if isinstance(out.get("vision"), dict):
+        # the vision section is kept (the engine's --vision is already in args): serve/server.py's Vision class
+        # starts the encoder on this host, so it is named by its real path and gets its device from cfg["env"]
+        # (ONEAPI_DEVICE_SELECTOR), not from a device index
+        out["vision"].pop("cuda_device", None)
+        # ... through the port's launcher, not the bare binary: a binary built against oneAPI does not resolve
+        # libsycl.so, oneMKL or UMF from the loader's default path, and this config carries no "lib_dirs", so
+        # the launcher composes them
+        if VISION_ENCODER is not None:
+            out["vision"]["exe"] = str(VISION_LAUNCHER)
     env = {}
     if alchemist:
         if driver == "i915":
@@ -274,10 +349,15 @@ def install(argv) -> None:
     S.gpus = lambda *a, **k: []
     S.amd_gpus = lambda *a, **k: intel
     S.amd_problem = lambda g: None
-    S.hip_vision = lambda asked: "none"                 # images are not wired on the SYCL port yet
-    S.build_engine_hip = lambda *a, **k: stub
+    S.hip_vision = vision_intel                        # images with the SYCL encoder (tools/vision, ggml-sycl)
     S.hipblaslt_table = lambda *a, **k: None
     S.ram_gb = lambda: fake_ram                         # the experts are in VRAM: setup's RAM rule does not apply
+
+    def build_engine_hip_intel(gpu, llama, vision="none"):
+        """setup's engine step for this backend: the SYCL engine is built by the port (sycl_engine above), and
+        this only stages the image encoder when setup asked for images."""
+        return build_engine_sycl(stub, gpu, llama, vision)
+    S.build_engine_hip = build_engine_hip_intel
 
     bench_tips = S.bench_tips
 

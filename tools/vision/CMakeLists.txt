@@ -2,19 +2,34 @@
 # the vision encoder is chosen).  Uses llama.cpp's mtmd library at the same pinned commit as the engine's ggml.
 #
 #   cmake -S tools/vision -B build-vision -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR=third_party/llama.cpp
-#         [-DSTRATA_VISION_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native] [-DSTRATA_PORTABLE=OFF]
+#         [-DSTRATA_VISION_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native] [-DSTRATA_VISION_SYCL=ON] [-DSTRATA_PORTABLE=OFF]
 #   cmake --build build-vision --target strata-vision
 #
 # Portable (AVX2 baseline) is the default, so an encoder built without extra flags runs on any AVX2 PC: the 0.1.32
 # release's encoder was built native on an AVX-512 machine and stopped with an illegal instruction elsewhere
 # (#411 #412 #419).  setup.py, which builds for the PC it runs on, passes -DSTRATA_PORTABLE=OFF.  The option is
 # kept in CMakeCache.txt, so a build folder configured before this default still needs the flag (or a fresh folder).
+#
+# STRATA_VISION_CUDA and STRATA_VISION_SYCL are the GPU backends, one to a build.  SYCL is llama.cpp's ggml-sycl:
+# it needs the DPC++ compiler (icx/icpx) and oneMKL, and the device comes from ONEAPI_DEVICE_SELECTOR at run time.
 cmake_minimum_required(VERSION 3.21)
 project(strata_vision C CXX)
 
 set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/llama.cpp" CACHE PATH "llama.cpp checkout")
 option(STRATA_VISION_CUDA "run the vision encoder on the GPU (builds ggml-cuda)" OFF)
+option(STRATA_VISION_SYCL "run the vision encoder on an Intel GPU (builds ggml-sycl)" OFF)
 option(STRATA_PORTABLE "build for other PCs: AVX2 baseline, static MSVC runtime" ON)
+# the GPU backends; a build has exactly one
+set(STRATA_VISION_GPU "")
+foreach(_b STRATA_VISION_CUDA STRATA_VISION_SYCL)
+  if(${_b})
+    list(APPEND STRATA_VISION_GPU ${_b})
+  endif()
+endforeach()
+list(LENGTH STRATA_VISION_GPU _gpu_n)
+if(_gpu_n GREATER 1)
+  message(FATAL_ERROR "strata-vision: ${STRATA_VISION_GPU} are exclusive; a build has one GPU backend")
+endif()
 if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 endif()
@@ -52,6 +67,15 @@ else()
 endif()
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA ${STRATA_VISION_CUDA} CACHE BOOL "" FORCE)
+set(GGML_SYCL ${STRATA_VISION_SYCL} CACHE BOOL "" FORCE)
+if(STRATA_VISION_SYCL)
+  # ggml-sycl's CMake requires oneMKL for the INTEL target (find_package(MKL REQUIRED)); checked here so the
+  # failure names the flag instead of coming from inside ggml
+  if(NOT MKL_DIR)
+    message(FATAL_ERROR "strata-vision: STRATA_VISION_SYCL needs oneMKL; pass -DMKL_DIR=<dir with lib/cmake/mkl>")
+  endif()
+  message(STATUS "strata-vision: Intel GPU build (ggml-sycl, oneMKL ${MKL_DIR})")
+endif()
 
 add_subdirectory(${LLAMA_DIR} llama EXCLUDE_FROM_ALL)
 
