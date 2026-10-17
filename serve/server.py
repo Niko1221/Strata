@@ -62,6 +62,7 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
+from serve import engine_options  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
@@ -3600,6 +3601,71 @@ class Service:
         finally:
             self.fifo.release()
 
+    def _spawn_from(self, cfg: dict) -> tuple:
+        """The engine's spawn tuple from a run config: the same build main() does at start."""
+        exe = cfg["exe"] if os.path.isabs(cfg["exe"]) else os.path.abspath(os.path.join(cfg.get("cwd") or ".", cfg["exe"]))
+        cpus = getattr(self.engine, "spawn", (None,) * 7)[6]
+        return (exe, engine_args(cfg) + (effort_end_args(cfg, exe, self.tok) or []),
+                cfg.get("cwd"), cfg.get("log"), child_env(cfg), False, cpus)
+
+    def restart_supported(self) -> bool:
+        """The in-page engine restart supports one StrataEngine, not mock or ReplicaEngine."""
+        return bool(self.config_path and getattr(self.engine, "spawn", None)
+                    and hasattr(self.engine, "unload") and not hasattr(self.engine, "engines"))
+
+    def restart_pending(self, cfg: dict) -> bool:
+        """True when the run config's engine args/env differ from what the running engine was spawned with
+        (the Engine tab's "restart to apply" banner)."""
+        if not self.restart_supported():
+            return False
+        sp = getattr(self.engine, "spawn", None)
+        if not sp:
+            return False
+        try:
+            want = self._spawn_from(cfg)
+        except (KeyError, ValueError):
+            return False
+        return list(sp[1]) != want[1] or dict(sp[4] or {}) != dict(want[4] or {})
+
+    def apply_config_and_restart(self) -> str:
+        """The Engine tab's restart: unload, respawn the engine from the run config as it is now, load.
+        "busy" (a request is running: nothing is stopped), "unsupported" (a mock engine, a replica group),
+        "restarting" when the new engine is on its way (the thread loads it; /health shows when it is back).
+        The replacement spawn is built first and the unload + install runs while holding self.fifo: load() takes
+        that lock to start the engine, so no request can reload the old spawn in the gap (and unload() takes the
+        same non-reentrant lock itself, so its work is done inline here, not by calling it under the lock)."""
+        if not self.config_path:
+            raise OSError("this server was started without a run config")
+        cfg = runconfig.load(self.config_path)
+        if not self.restart_supported():
+            return "unsupported"
+        want = self._spawn_from(cfg)
+        with self.fifo:
+            if self.engine.alive():
+                with self.status_lock:
+                    if self.status.get("busy") or self.status.get("queued"):
+                        return "busy"
+                self.engine.unload()          # EngineStuck when the process cannot be ended: the endpoint answers 503
+                if self.vision is not None and hasattr(self.vision, "unload"):
+                    self.vision.unload()
+                self.vision_held = False
+                print("[strata] model unloaded by the Engine tab restart; the new settings load now", flush=True)
+            self.engine.spawn = want
+            try:
+                self.engine.silence_s = engine_silence_s(cfg)
+            except ValueError:
+                pass
+            self.backend = cfg.get("backend")
+        threading.Thread(target=self._load_after_restart, name="strata-restart", daemon=True).start()
+        return "restarting"
+
+    def _load_after_restart(self):
+        try:
+            self.load()
+            print("[strata] the engine restarted with the run config's current settings", flush=True)
+        except (GpuBusy, RuntimeError, EngineStuck) as e:
+            print(f"[strata] the restart's load failed: {e}; the next request will try again", flush=True)
+
     def start_idle_unload(self):
         if not self.idle_unload_s or not hasattr(self.engine, "unload"):
             return
@@ -5445,6 +5511,10 @@ def make_handler(svc: Service):
                 if self._authorized():
                     self._config_get()
                 return
+            if path == "/engine-options":                    # the Engine tab: GPU switches for this vendor
+                if self._authorized():
+                    self._engine_options_get()
+                return
             if path == "/mcp":
                 # the MCP servers, their state and tools (the web app's switch and Monitor card)
                 if self._authorized():
@@ -5553,10 +5623,10 @@ def make_handler(svc: Service):
             if path == "/config":
                 self._config_post()
                 return
-            if path in ("/unload", "/load") and not self._control_body():
+            if path in ("/unload", "/load", "/restart") and not self._control_body():
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
-            if path in ("/unload", "/load") and not self._own_page("the model can be loaded or unloaded"):
+            if path in ("/unload", "/load", "/restart") and not self._own_page("the model can be loaded or unloaded"):
                 return
             # the same for the slot files: else any site could overwrite a saved conversation or replace the live one
             if path.startswith("/slots/") and not self._own_page("conversations can be saved or restored"):
@@ -5579,6 +5649,23 @@ def make_handler(svc: Service):
                     ra = getattr(e, "retry_after", None)
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}},
                                headers={"Retry-After": int(ra)} if ra else None)
+                return
+            if path == "/restart":                    # the Engine tab: unload + load with the run config as it is now
+                try:
+                    r = svc.apply_config_and_restart()
+                except EngineStuck as e:                   # the running engine could not be ended (as /unload answers)
+                    self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                    return
+                except (OSError, ValueError) as e:
+                    self._json(400, {"error": {"type": "invalid_request_error",
+                                               "message": f"the run config cannot be used: {e}"}})
+                    return
+                if r == "unsupported":
+                    self._json(400, {"error": {"type": "invalid_request_error",
+                                               "message": "this engine cannot be restarted from the page "
+                                                          "(a mock engine or a replica group)"}})
+                    return
+                self._json(409 if r == "busy" else 200, {"status": r})
                 return
             try:
                 req = json.loads(self._body() or b"{}")
@@ -5811,6 +5898,31 @@ def make_handler(svc: Service):
                 self._json(500, {"error": {"type": "server_error", "message": f"the run config cannot be read: {e}"}})
                 return
             self._json(200, runconfig.view(cfg, svc.config_path))
+
+        def _engine_options_get(self):
+            """The Engine tab: the GPU switches that apply to this machine, with their current values.
+            Vendor from the config's backend key, refined by the engine's own startup line in its log."""
+            if not svc.config_path:
+                self._json(404, {"error": {"message": "this server was started without a run config"}})
+                return
+            try:
+                cfg = runconfig.load(svc.config_path)
+            except (OSError, ValueError) as e:
+                self._json(500, {"error": {"type": "server_error", "message": f"the run config cannot be read: {e}"}})
+                return
+            archs = engine_options.detect_archs(cfg.get("log") or "")
+            vendors = engine_options.detect_vendors(cfg, cfg.get("log") or "")
+            opts = engine_options.catalog(vendors)
+            # engine_args() synthesizes flags from higher-level keys ("vram_elastic": true runs --vram-elastic):
+            # the tab shows the effective spawn, not just the raw args list.
+            eff = dict(cfg)
+            eff["args"] = engine_args(cfg)
+            for o in opts:
+                o["value"] = runconfig.value_of(cfg if o["key"].startswith("env.") else eff, o["key"])
+            self._json(200, {"vendor": " + ".join(vendors), "arch": ", ".join(archs),
+                             "file": Path(svc.config_path).name, "options": opts,
+                             "restart_supported": svc.restart_supported(), "restart_pending": svc.restart_pending(cfg),
+                             "note": "Kept in the run config's env/args for every client; used from the next start of the model."})
 
         def _config_post(self):
             """#564: change a few documented keys of the run config - JSON from Strata's own page only, as

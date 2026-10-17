@@ -73,13 +73,14 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
 
 let tab = "chat";
 function showTab(name) {
-  tab = ["chat", "images", "monitor", "about"].includes(name) ? name : "chat";
+  tab = ["chat", "images", "monitor", "engine", "about"].includes(name) ? name : "chat";
   for (const b of document.querySelectorAll(".st-tab")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const v of ["chat", "images", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
+  for (const v of ["chat", "images", "monitor", "engine", "about"]) $(`view-${v}`).hidden = v !== tab;
   if (tab === "images") $("img-prompt").focus();
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
   if (tab === "monitor") loadMcp();
+  if (tab === "engine") loadEngine();
   if (tab === "about") loadConfig();
   if (lastMetrics) render(lastMetrics);
 }
@@ -491,6 +492,122 @@ $("cfg-save").addEventListener("click", async () => {
     $("cfg-msg").textContent = "";
     toast("error", "Not saved", String(e.message || e), 6000);
   }
+});
+
+// ------------------------------------------------------------------ Engine switches (GET /engine-options, POST /config)
+// GPU speed/feature switches for this vendor (the server's catalog: serve/engine_options.py), read from and
+// written to the run config's env block / args list. Only cataloged keys are accepted; next start applies.
+let engOpts = [];
+let engDraft = {};                       // key -> edited value (survives re-renders by the search/experimental filter)
+async function loadEngine() {
+  let r;
+  try { r = await fetch("engine-options", {headers: headers()}); } catch (e) { return; }
+  if (!r.ok) { $("tab-btn-engine").hidden = true; return; }   // no run config, or an older server
+  const d = await r.json();
+  engOpts = d.options || [];
+  engDraft = {};                                              // the saved values are the baseline again
+  const scope = d.vendor === "all" ? "all GPUs" : d.vendor;
+  $("eng-scope").textContent = [scope + (d.arch ? " · " + d.arch : ""), d.file].filter(Boolean).join(" · ");
+  $("eng-restart-bar").hidden = !(d.restart_supported && d.restart_pending);
+  renderEngine();
+}
+function engParse(o, s) {
+  s = (s == null ? "" : String(s)).trim();
+  if (s === "") return null;                                  // empty: the engine default (removes the key)
+  if (o.kind === "bool") return s === "true";
+  if (o.kind === "int" || o.kind === "number") return Number(s);
+  return s;
+}
+function engNorm(o, v) {
+  if (v === null || v === undefined) return null;
+  if (o.kind === "bool") return !!v;
+  if (o.kind === "int" || o.kind === "number") return Number(v);
+  return String(v);
+}
+function engInput(o, i) {
+  const saved = o.value == null ? "" : String(o.value);
+  const cur = o.key in engDraft ? (engDraft[o.key] === null ? "" : String(engDraft[o.key])) : saved;
+  if (o.kind === "bool" || o.kind === "enum") {
+    const opts = o.kind === "bool" ? [["true", "on"], ["false", "off"]] : (o.choices || []).map((x) => [x, x]);
+    return `<select class="st-input" id="eng-${i}"><option value=""${cur === "" ? " selected" : ""}>default</option>` +
+      opts.map(([val, text]) => `<option value="${esc(val)}"${cur === val ? " selected" : ""}>${esc(text)}</option>`).join("") + "</select>";
+  }
+  return `<input class="st-input" id="eng-${i}" ${o.kind === "int" ? 'type="number" step="1"' : o.kind === "number" ? 'type="number" step="any"' : "type=text"} ` +
+    `value="${esc(cur)}" placeholder="default" autocomplete="off">`;
+}
+function renderEngine() {
+  const q = $("eng-search").value.trim().toLowerCase(), ab = $("eng-ab").checked;
+  const parts = [];
+  let shown = 0, group = null;
+  engOpts.forEach((o, i) => {
+    if (o.tier === "ab" && !ab) return;
+    const hay = ((o.name || "") + " " + (o.flag || "") + " " + (o.desc || "") + " " + (o.best || "")).toLowerCase();
+    if (q && !hay.includes(q)) return;
+    if (group !== o.vendor) {
+      group = o.vendor;
+      parts.push(`<div class="eng-group">${o.vendor === "all" ? "All GPUs" : "For your GPU: " + esc(o.vendor)}</div>`);
+    }
+    shown++;
+    parts.push(`<div class="eng-row"><label for="eng-${i}"><code>${esc(o.name || o.flag)}</code>` +
+      ` <span class="muted small">${esc(o.values || "")}</span>` +
+      `<span class="eng-desc">${esc(o.desc || "")}` +
+      (o.gate ? ` <span class="muted">Gate: ${esc(o.gate)}.</span>` : "") +
+      (o.best ? ` <span class="muted">Best for: ${esc(o.best)}.</span>` : "") + `</span></label>${engInput(o, i)}</div>`);
+  });
+  $("eng-list").innerHTML = parts.join("") || '<p class="muted small">Nothing matches.</p>';
+  $("eng-count").textContent = `${shown} of ${engOpts.length}`;
+  $("eng-list").querySelectorAll(".eng-row [id^=eng-]").forEach((el) => {   // keep edits in engDraft, not in the DOM
+    const o = engOpts[Number(el.id.slice(4))];
+    const read = () => { engDraft[o.key] = engParse(o, el.value); };
+    el.addEventListener("input", read);
+    el.addEventListener("change", read);
+  });
+}
+$("eng-search").addEventListener("input", renderEngine);
+$("eng-ab").addEventListener("change", renderEngine);
+$("eng-save").addEventListener("click", async () => {
+  const set = {};
+  engOpts.forEach((o) => {                                   // drafts win, and edited rows count even when filtered out
+    const v = o.key in engDraft ? engDraft[o.key] : o.value;
+    const norm = engNorm(o, v), old = engNorm(o, o.value);
+    if (JSON.stringify(norm) !== JSON.stringify(old)) set[o.key] = norm;
+  });
+  if (!Object.keys(set).length) { $("eng-msg").textContent = "Nothing changed."; return; }
+  try {
+    const r = await fetch("config", {method: "POST", headers: headers(true), body: JSON.stringify({set})});
+    const b = await r.json();
+    if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
+    engDraft = {};
+    $("eng-msg").textContent = b.changed.length
+      ? `Saved (${b.changed.join(", ")}); the earlier file is ${b.file}.bak. Start the model again to use it.` : "Nothing changed.";
+    if (b.changed.some((k) => k.startsWith("env.") || k.startsWith("arg"))) $("eng-restart-bar").hidden = false;
+    loadEngine();
+  } catch (e) {
+    toast("error", "Not saved", String(e.message || e), 6000);
+  }
+});
+$("eng-restart").addEventListener("click", async () => {
+  const btn = $("eng-restart");
+  btn.disabled = true;
+  $("eng-restart-msg").textContent = "Restarting: the model loads again (a minute or two) ...";
+  try {
+    const r = await fetch("restart", {method: "POST", headers: headers(true), body: "{}"});
+    const b = await r.json();
+    if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
+    let loaded = false;
+    for (let i = 0; i < 600; i++) {                     // /health: loaded again (the model reload takes a while)
+      await new Promise((res) => setTimeout(res, 2000));
+      let h;
+      try { h = await (await fetch("health", {headers: headers()})).json(); } catch (e) { continue; }
+      if (h.loaded) { loaded = true; break; }
+    }
+    if (!loaded) throw new Error("Timed out waiting for the restarted model; check the server log.");
+    $("eng-restart-msg").textContent = "The engine restarted with the new settings.";
+    loadEngine();
+  } catch (e) {
+    $("eng-restart-msg").textContent = String(e.message || e);
+  }
+  btn.disabled = false;
 });
 
 // ------------------------------------------------------------------ Markdown (escaped first, then formatted)
