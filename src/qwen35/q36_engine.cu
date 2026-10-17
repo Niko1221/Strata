@@ -18,6 +18,7 @@
 // [--force IDS] [--dump-full-logits F] (tools/qwen35/kl.py's reference interface), --bench-pp N / --bench-tg N.
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
+#include "strata/core/bounded_expert_cache.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -861,6 +862,7 @@ struct Model {
     strata::core::ModelGeometry g;
     std::shared_ptr<strata::GgufModel> file;   // kept mapped: the experts are placed after the engine's buffers
     bool hybrid = false;                       // not every expert fits in VRAM: slots + the CPU pool
+    std::shared_ptr<strata::core::BoundedExpertCache> expert_cache; // opt-in: repack only demanded GGUF experts
     // the packed Q8_0 decode copies (gguf weights, packed copy, bytes): given back when that lets every expert fit
     std::vector<std::tuple<const uint8_t*, uint8_t*, size_t>> packed;
     // the GGUF-native MTP block (blk.<n_layers>, loaded with --mtp): eh_proj over [enorm(e) | hnorm(h)], then an
@@ -956,7 +958,7 @@ float* upload_f32(const strata::TensorInfo& t, const uint8_t* src) {
     return d;
 }
 
-bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
+bool load(const std::string& path, Model& m, std::string& err, bool want_mtp, bool low_memory = false) {
     const auto t0 = Clock::now();
     m.file = std::make_shared<strata::GgufModel>(strata::GgufModel::open(path));
     const strata::GgufModel& gm = *m.file;
@@ -1024,10 +1026,10 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     };
     auto L = [](int64_t l, const char* s) { return "blk." + std::to_string(l) + "." + s; };
     m.layers.resize((size_t) g.n_layers);
-    // the MTP block whenever the file has one, with or without drafts (--mtp): the VRAM it takes is then the same
-    // either way, so the hybrid mode's slot tables - and with them the greedy text - do not depend on --mtp
-    (void) want_mtp;
-    m.has_mtp = g.n_mtp_layers > 0;
+    // Keep the default placement independent of --mtp; the opt-in low-memory mode unloads unused MTP weights.
+    m.has_mtp = g.n_mtp_layers > 0 && (!low_memory || want_mtp);
+    if (low_memory && g.n_mtp_layers > 0 && !m.has_mtp)
+        std::fprintf(stderr, "strata-q36: low-memory mode: unused MTP weights and buffers are not loaded\n");
     for (int64_t l = 0; l < g.n_layers + (m.has_mtp ? 1 : 0); ++l) {
         const bool is_mtp = l == g.n_layers;
         Layer& y = is_mtp ? m.mtp : m.layers[(size_t) l];
@@ -1242,6 +1244,8 @@ struct Engine {
 #endif
     };
     std::vector<Hy> hy;
+    using BlobLease = strata::core::BoundedExpertCache::Lease;
+    std::vector<BlobLease> cpu_leases, stage_leases[2];
     int hybrid_t = 32;
     bool main_hybrid = false;   // some main layer is hybrid (else only the MTP block is: the decode graph stays)
     bool mtp_graph = true;      // the MTP draft step may be a graph (not when its layer is hybrid)
@@ -2161,6 +2165,22 @@ struct Engine {
     // ---- the hybrid mode
     const Layer& layer_at(int li) const { return li < (int) m->layers.size() ? m->layers[(size_t) li] : m->mtp; }
 
+    const uint8_t* host_expert(size_t li, int expert, std::vector<BlobLease>& leases) {
+        const Layer& L = layer_at((int) li);
+        if (!m->expert_cache) return L.hblobs + (size_t) expert * L.stride;
+        try {
+            const uint64_t key = ((uint64_t) li << 32) | (uint32_t) expert;
+            auto blob = m->expert_cache->get(key, L.stride,
+                [&](uint8_t* p) { expert_blob(L, expert, p); });
+            const uint8_t* p = blob->data();
+            leases.push_back(std::move(blob));
+            return p;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "strata-q36: expert cache: %s\n", e.what());
+            std::exit(1);
+        }
+    }
+
     /// A streamed forward over the state indices `seq`: the first two layers' experts start copying now.
     void stream_begin(const std::vector<int>& seq) {
         stream_seq = seq;
@@ -2177,6 +2197,21 @@ struct Engine {
         static const bool all = std::getenv("STRATA_Q36_STREAM_ALL") != nullptr;
         const int ne = (int) m->g.n_expert;
         const Hy& H = hy[(size_t) stream_seq[(size_t) i]];
+        if (m->expert_cache) {
+            // A source lease can be released once its prior upload finished; the GPU stage has its own read event.
+            if (!stage_leases[b].empty()) CK(cudaEventSynchronize(ev_copy[b]));
+            stage_leases[b].clear();
+            const size_t li = (size_t) stream_seq[(size_t) i];
+            for (int x = 0; x < ne; ++x) {
+                const int slot = H.slot_of[(size_t) x];
+                if (slot >= 0 && !all)
+                    CK(cudaMemcpyAsync(stage[b] + (size_t) x * L.stride, L.blobs + (size_t) slot * L.stride,
+                                       L.stride, cudaMemcpyDeviceToDevice, cst));
+                else
+                    CK(cudaMemcpyAsync(stage[b] + (size_t) x * L.stride, host_expert(li, x, stage_leases[b]),
+                                       L.stride, cudaMemcpyHostToDevice, cst));
+            }
+        } else
         // fewer than half the experts resident (a 12 GB card): the one whole-layer copy is faster than many small ones
         // (RTX 3060, UD-Q4_K_XL at 37 of 256: pp2048 1970 whole vs 1540 in runs)
         if (all || 2 * L.n_slots < ne) {
@@ -2245,6 +2280,7 @@ struct Engine {
         const auto t0 = Clock::now();
         // the missed entries per expert (up to MAXT tokens per job)
         jobs.clear();
+        cpu_leases.clear(); // the previous pool call completed before returning from this function
         std::vector<char> quantized((size_t) T, 0);
         int n_miss = 0;
         std::map<int, size_t> open;   // expert -> its job with room
@@ -2267,7 +2303,7 @@ struct Engine {
             auto it = open.find(x);
             if (it == open.end() || jobs[it->second].nt == C::MAXT) {
                 C::ExpertJobMulti j;
-                j.blob = L.hblobs + (size_t) x * L.stride;
+                j.blob = host_expert(li, x, cpu_leases);
                 jobs.push_back(j);
                 it = open.insert_or_assign(x, jobs.size() - 1).first;
             }
@@ -2280,6 +2316,7 @@ struct Engine {
         hy_gpu += n_ent - n_miss;
         if (n_miss == 0) return;
         pool->run_split_multi_native(H.fmt, jobs.data(), (int) jobs.size());
+        cpu_leases.clear();
         hy_cpu_ms += ms_since(t0);
         CK(cudaMemcpyAsync(ecpu, cpu_out, (size_t) n_ent * N * 4, cudaMemcpyHostToDevice, st));
         CK(cudaMemcpyAsync(d_miss, h_miss, (size_t) n_ent * 4, cudaMemcpyHostToDevice, st));
@@ -2297,6 +2334,7 @@ struct Engine {
         if (!m->hybrid || off || warming) return;
         const int64_t ne = m->g.n_expert;
         int left = max_swaps;
+        std::vector<BlobLease> copy_leases;
         for (size_t li = 0; li < hy.size() && left > 0; ++li) {
             Hy& H = hy[li];
             const Layer& L = layer_at((int) li);
@@ -2325,7 +2363,7 @@ struct Engine {
                     H.slot_of[(size_t) y] = -1;
                     H.slot_of[(size_t) x] = s;
                     H.exp_in_slot[(size_t) s] = x;
-                    CK(cudaMemcpyAsync(L.blobs + (size_t) s * L.stride, L.hblobs + (size_t) x * L.stride, L.L.bytes,
+                    CK(cudaMemcpyAsync(L.blobs + (size_t) s * L.stride, host_expert(li, x, copy_leases), L.L.bytes,
                                        cudaMemcpyHostToDevice, st));
                     --left;
                     ++hy_swaps;
@@ -2919,8 +2957,9 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     for (Layer* L : all)
         if (!mtp_only || L == &m.mtp) host += L->stride * (size_t) ne + kMmqTail;
     uint8_t* arena = nullptr;
-    bool pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
-    if (!pinned) {
+    bool pinned = false;
+    if (!m.expert_cache) pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
+    if (!m.expert_cache && !pinned) {
         (void) cudaGetLastError();
         arena = (uint8_t*) std::malloc(host);
         if (!arena) {
@@ -2943,15 +2982,23 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
             L.n_slots = (int) ne;
             continue;
         }
-        L.hblobs = arena + off;
-        off += L.stride * (size_t) ne + kMmqTail;
-        std::memset(L.hblobs, 0, L.stride * (size_t) ne + kMmqTail);
-        for (int64_t e = 0; e < ne; ++e) expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
+        if (!m.expert_cache) {
+            L.hblobs = arena + off;
+            off += L.stride * (size_t) ne + kMmqTail;
+            std::memset(L.hblobs, 0, L.stride * (size_t) ne + kMmqTail);
+            for (int64_t e = 0; e < ne; ++e) expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
+        }
         L.n_slots = S;
         if (S > 0) {
             CK(cudaMalloc(&L.blobs, L.stride * (size_t) S + kMmqTail));
             CK(cudaMemset(L.blobs, 0, L.stride * (size_t) S + kMmqTail));
-            CK(cudaMemcpy(L.blobs, L.hblobs, L.stride * (size_t) S, cudaMemcpyHostToDevice));
+            if (m.expert_cache) {
+                std::vector<uint8_t> blob(L.stride, 0);
+                for (int e = 0; e < S; ++e) {
+                    expert_blob(L, e, blob.data());
+                    CK(cudaMemcpy(L.blobs + (size_t) e * L.stride, blob.data(), L.stride, cudaMemcpyHostToDevice));
+                }
+            } else CK(cudaMemcpy(L.blobs, L.hblobs, L.stride * (size_t) S, cudaMemcpyHostToDevice));
         }
         Engine::Hy& H = E.hy[li];
         H.slot_of.assign((size_t) ne, -1);
@@ -2991,6 +3038,9 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     }
     E.pool = std::make_unique<C::ExpertPool>(threads);
     CK(cudaDeviceSynchronize());
+    if (m.expert_cache)
+        std::fprintf(stderr, "strata-q36: GGUF-backed expert cache: %.2f GiB RAM budget, %.2f GiB full arena avoided\n",
+                     (double) m.expert_cache->budget() / (1ull << 30), (double) host / (1ull << 30));
     if (mtp_only)
         std::fprintf(stderr, "strata-q36: every main layer's routed experts in VRAM (%.2f GiB); the MTP block's: %d of "
                      "%lld in VRAM, the rest on the CPU pool (its drafts only)\n", (double) total_main / (1 << 30), S,
@@ -2999,7 +3049,8 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     std::fprintf(stderr, "strata-q36: hybrid experts: %d of %lld per layer in VRAM (%.2f GiB), all %.2f GiB in %s host "
                  "memory, the rest of a batch of <= %d rows on %d CPU threads, bigger prompt chunks streamed (%.2f GiB "
                  "staging); %.1f s\n", S, (long long) ne, (double) S * per_slot / (1 << 30), (double) host / (1 << 30),
-                 pinned ? "pinned" : "pageable", E.hybrid_t, E.pool->workers() + (E.pool->host_works() ? 1 : 0),
+                 m.expert_cache ? "file-backed (bounded cache, not fully allocated)" : pinned ? "pinned" : "pageable",
+                 E.hybrid_t, E.pool->workers() + (E.pool->host_works() ? 1 : 0),
                  (double) staging / (1 << 30), ms_since(t0) / 1000.0);
     return true;
 #endif
@@ -3733,6 +3784,8 @@ int strata::qwen35::run(int argc, char** argv) {
     std::string model, tokens, force, dump_full, emb_file;
     int ctx = 32768, chunk = 0, n_gen = 64, bench_pp = 0, bench_tg = 0, mtp_d = 0, cpu_threads = 0, hybrid_rows = 128;
     double expert_vram = -1.0;
+    double expert_ram_gib = 6.0;
+    bool low_memory = false;
     bool warm = true;
     int expert_slots = 0, batch = 0, draft_vocab = -1;
     bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
@@ -3773,6 +3826,11 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--batch" || a == "--slots") batch = std::atoi(next().c_str());   // sessions decoding together
         else if (a == "--batch-mtp") batch_mtp = true;                                  // ... each verifying an MTP proposal
         else if (a == "--expert-vram") expert_vram = std::atof(next().c_str());   // GiB for the routed experts
+        else if (a == "--low-memory") low_memory = true;
+        else if (a == "--expert-ram-gib") {
+            expert_ram_gib = std::atof(next().c_str());
+            low_memory = true;
+        }
         else if (a == "--cpu-threads") cpu_threads = std::atoi(next().c_str());
         else if (a == "--expert-slots") expert_slots = std::atoi(next().c_str());
         else if (a == "--hybrid-rows") hybrid_rows = std::atoi(next().c_str());
@@ -3787,32 +3845,53 @@ int strata::qwen35::run(int argc, char** argv) {
             std::fprintf(stderr,
                          "usage: strata-q36 --model GGUF [--max-context 32768] [--chunk 512] [--no-graph]\n"
                          "       (--serve | --tokens IDS [--n 64] [--force IDS] [--dump-full-logits F] | --bench-pp N "
-                         "--bench-tg N)\n");
+                         "--bench-tg N)\n"
+                         "       --low-memory [--expert-ram-gib 6]: bounded GGUF-backed experts, MTP off, one text session\n");
             return 2;
         }
     }
     if (model.empty()) { std::fprintf(stderr, "strata-q36: --model is required\n"); return 2; }
 #if !defined(_WIN32)
     setenv("CUDA_MODULE_LOADING", "EAGER", 0);   // every kernel loaded with the context, not in the first prompt
-    setenv("STRATA_Q8_PACKED", "1", 0);   // the packed Q8_0 decode copy unless STRATA_Q8_PACKED is set otherwise
+    setenv("STRATA_Q8_PACKED", low_memory ? "0" : "1", 0);
     setenv("STRATA_MMQ_KQ", "1", 0);      // the K-quant MMQ prompt kernels (every expert of this family is a K-quant)
 #else
     if (std::getenv("STRATA_MMQ_KQ") == nullptr) _putenv_s("STRATA_MMQ_KQ", "1");
-    if (std::getenv("STRATA_Q8_PACKED") == nullptr) _putenv_s("STRATA_Q8_PACKED", "1");   // as on Linux (it was missing here)
+    if (std::getenv("STRATA_Q8_PACKED") == nullptr) _putenv_s("STRATA_Q8_PACKED", low_memory ? "0" : "1");
     if (std::getenv("CUDA_MODULE_LOADING") == nullptr) _putenv_s("CUDA_MODULE_LOADING", "EAGER");
 #endif
     if (mtp_d < 0 || mtp_d > 7) { std::fprintf(stderr, "strata-q36: --mtp takes 0 .. 7 drafts\n"); return 2; }
     if (chunk < 0 || chunk > 4096 || ctx < 256) { std::fprintf(stderr, "strata-q36: bad --chunk / --max-context\n"); return 2; }
+    if (low_memory && (mtp_d != 0 || batch > 1 || vision || !std::isfinite(expert_ram_gib) ||
+                       expert_ram_gib < 2.0 || expert_ram_gib > 64.0)) {
+        std::fprintf(stderr, "strata-q36: --low-memory requires --mtp 0, one text session, and --expert-ram-gib 2..64\n");
+        return 2;
+    }
     Model m;
     std::string err;
     try {
-        if (!load(model, m, err, mtp_d > 0)) { std::fprintf(stderr, "strata-q36: %s\n", err.c_str()); return 1; }
+        if (!load(model, m, err, mtp_d > 0, low_memory)) { std::fprintf(stderr, "strata-q36: %s\n", err.c_str()); return 1; }
+        if (low_memory) {
+            using Cache = strata::core::BoundedExpertCache;
+            m.expert_cache = std::make_shared<Cache>((size_t) (expert_ram_gib * (1ull << 30)), [](size_t bytes) {
+                void* p = nullptr;
+                const cudaError_t status = cudaHostAlloc(&p, bytes, cudaHostAllocDefault);
+                if (status != cudaSuccess) {
+                    (void) cudaGetLastError();
+                    throw std::runtime_error("cannot pin an expert cache entry; reduce --expert-ram-gib");
+                }
+                std::shared_ptr<uint8_t> memory((uint8_t*) p, [](uint8_t* data) { (void) cudaFreeHost(data); });
+                std::memset(p, 0, bytes);
+                return std::make_shared<Cache::Blob>(bytes, std::move(memory));
+            });
+        }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "strata-q36: %s\n", e.what());
         return 1;
     }
     Engine E;
     E.use_graph = graph;
+    if (low_memory) E.kAttScoreFloats = (size_t) 16 << 20;
     if (chunk == 0) {
         // auto: the largest chunk (4096 .. 1024) that fits beside every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
         // experts over PCIe once, so a bigger chunk pays that once for more tokens)
@@ -3857,6 +3936,7 @@ int strata::qwen35::run(int argc, char** argv) {
             std::fprintf(stderr, "strata-q36: chunk rule: free %.2f GiB (raw %.2f, with %.2f packed), main experts %.2f GiB, chunk %d\n",
                          fr / 1073741824.0, fr_raw / 1073741824.0, packed / 1073741824.0, experts / 1073741824.0, chunk);
     }
+    if (low_memory && chunk > 256) chunk = 256;
     E.init(m, ctx, chunk, batch, vision);
     if (!place_experts(m, E, expert_vram, cpu_threads, hybrid_rows, expert_slots, err)) {
         std::fprintf(stderr, "strata-q36: %s\n", err.c_str());
@@ -3865,6 +3945,14 @@ int strata::qwen35::run(int argc, char** argv) {
     struct Report {
         Engine& E;
         ~Report() {
+            if (E.m->expert_cache) {
+                const auto& c = *E.m->expert_cache;
+                std::fprintf(stderr, "strata-q36: expert RAM cache: resident %zu, peak %zu, budget %zu bytes; "
+                             "%llu hits, %llu misses, %llu evictions, %llu fetched bytes\n",
+                             c.resident(), c.peak(), c.budget(), (unsigned long long) c.hits(),
+                             (unsigned long long) c.misses(), (unsigned long long) c.evictions(),
+                             (unsigned long long) c.fetched());
+            }
             if (E.verify_k) std::fprintf(stderr, "strata-q36 VERIFY: %lld comparisons, %lld mismatches\n", E.v_calls, E.v_bad);
             if (E.verify_k)
                 for (const auto& kv : E.v_by)
@@ -3929,6 +4017,8 @@ int strata::qwen35::run(int argc, char** argv) {
     E.process(prompt.data(), (int64_t) prompt.size(), [](int64_t) {});
     const double pp_ms = ms_since(t0);
     const auto t1 = Clock::now();
+    if (m.expert_cache)
+        std::fprintf(stderr, "strata-q36: low-memory prompt ready: %zu tokens in %.1f ms\n", prompt.size(), pp_ms);
     if (E.mtp_d > 0 && forced.empty() && !ff) {
         long long offered = 0, accepted = 0;
         std::vector<int32_t> fix, drafts;
@@ -3955,6 +4045,8 @@ int strata::qwen35::run(int argc, char** argv) {
         return 0;
     }
     for (int i = 0; i < n_gen; ++i) {
+        if (m.expert_cache && i > 0 && i % 16 == 0)
+            std::fprintf(stderr, "strata-q36: low-memory generated %d / %d tokens in %.1f s\n", i, n_gen, ms_since(t1) / 1000.0);
         const int a = E.greedy();
         gen.push_back(a);
         if (ff) {
