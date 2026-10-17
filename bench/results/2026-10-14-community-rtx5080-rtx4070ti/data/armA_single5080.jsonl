@@ -1,0 +1,12 @@
+{"label": "8K_tok", "run": 1, "prompt_tokens": 8729, "completion_tokens": 31, "wall_s": 3.91, "prefill_tps": 2231.7, "answer": "以上文件是一份重複記錄系統溫度、流量、例行檢查、資料同步、備份驗證及日誌狀態均正常的系統維運紀錄。", "needle": "專案鳳凰的啟動代碼是 9-1-8-4。", "recall": "unknown"}
+{"label": "8K_tok", "run": 2, "prompt_tokens": 8722, "completion_tokens": 32, "wall_s": 3.24, "prefill_tps": 2689.0, "answer": "以上文件是一份重複記錄系統溫度、流量、例行檢查、資料夾同步、備份驗證及日誌狀態均正常的系統維運紀錄。", "needle": "每月第三個週三是備份驗證日。", "recall": "unknown"}
+{"label": "8K_tok", "run": 3, "prompt_tokens": 8727, "completion_tokens": 41, "wall_s": 3.34, "prefill_tps": 2613.0, "answer": "以上文件是一份重複記錄系統維運狀態（如溫度、流量、備份及日誌檢查）的日誌，並包含關於伺服器機櫃總閘位置的備忘資訊。", "needle": "伺服器機櫃的總閘在地下二樓配電室。", "recall": "unknown"}
+{"label": "70K_tok", "run": 1, "prompt_tokens": 70730, "completion_tokens": 32, "wall_s": 18.58, "prefill_tps": 3806.6, "answer": "以上文件是一份重複記錄系統溫度、流量、例行檢查、資料夾同步、備份驗證及日誌狀態均正常的系統維運紀錄。", "needle": "郵件中提及的船運單號是 TX-5561-B。", "recall": "unknown"}
+{"label": "70K_tok", "run": 2, "prompt_tokens": 70729, "completion_tokens": 24, "wall_s": 18.63, "prefill_tps": 3797.5, "answer": "以上文件是一份重複記錄系統溫度、流量、備份及日誌狀態均正常的系統維運紀錄。", "needle": "北極星號的停泊編號是 KL-7742。", "recall": "unknown"}
+{"label": "70K_tok", "run": 3, "prompt_tokens": 70728, "completion_tokens": 30, "wall_s": 18.67, "prefill_tps": 3788.0, "answer": "以上文件是一份重複顯示系統維運紀錄（包含溫度、流量、備份及日誌檢查皆正常）的系統狀態報告。", "needle": "倉庫B的緊急鑰匙藏在紅色消防箱後方。", "recall": "unknown"}
+{"label": "240K_tok", "run": 1, "prompt_tokens": 237969, "completion_tokens": 32, "wall_s": 66.89, "prefill_tps": 3557.4, "answer": "以上文件是一份重複記錄系統溫度、流量、例行檢查、資料夾同步、備份驗證及日誌狀態皆正常的系統維運紀錄。", "needle": "每月第三個週三是備份驗證日。", "recall": "unknown"}
+{"label": "240K_tok", "run": 2, "prompt_tokens": 237974, "completion_tokens": 48, "wall_s": 67.14, "prefill_tps": 3544.5, "answer": "這段文字主要記錄了系統維運的例行檢查結果（如溫度、流量、備份與日誌均正常），並重複強調了伺服器機櫃總閘位於地下二樓配電室這一關鍵資訊。", "needle": "伺服器機櫃的總閘在地下二樓配電室。", "recall": "unknown"}
+{"label": "240K_tok", "run": 3, "prompt_tokens": 237976, "completion_tokens": 32, "wall_s": 67.05, "prefill_tps": 3549.0, "answer": "以上文件是一份重複記錄系統溫度、流量、例行檢查、資料夾同步、備份驗證及日誌狀態均正常的系統維運紀錄。", "needle": "郵件中提及的船運單號是 TX-5561-B。", "recall": "unknown"}
+{"label": "decode512", "run": 1, "completion_tokens": 430, "wall_s": 5.64, "decode_tps": 76.2}
+{"label": "decode512", "run": 2, "completion_tokens": 498, "wall_s": 5.86, "decode_tps": 85.0}
+{"label": "decode512", "run": 3, "completion_tokens": 512, "wall_s": 5.99, "decode_tps": 85.5}

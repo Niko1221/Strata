@@ -1,0 +1,12 @@
+{"label": "8K_tok", "run": 1, "prompt_tokens": 8728, "completion_tokens": 24, "wall_s": 7.51, "prefill_tps": 1162.0, "answer": "以上文件是一份重複記錄系統溫度、流量、備份及日誌狀態均正常的系統維運紀錄。", "needle": "北極星號的停泊編號是 KL-7742。", "recall": "unknown"}
+{"label": "8K_tok", "run": 2, "prompt_tokens": 8727, "completion_tokens": 43, "wall_s": 6.85, "prefill_tps": 1273.2, "answer": "以上文件是一份重複顯示系統維運紀錄（包含溫度、流量、備份及日誌檢查皆正常）並夾帶倉庫B緊急鑰匙藏匿位置提示的日誌。", "needle": "倉庫B的緊急鑰匙藏在紅色消防箱後方。", "recall": "unknown"}
+{"label": "8K_tok", "run": 3, "prompt_tokens": 8729, "completion_tokens": 36, "wall_s": 5.47, "prefill_tps": 1595.4, "answer": "以上文件是一份重複顯示系統維運紀錄（包含溫度、流量、備份及日誌狀態）並包含專案鳳凰啟動代碼的系統日誌。", "needle": "專案鳳凰的啟動代碼是 9-1-8-4。", "recall": "unknown"}
+{"label": "70K_tok", "run": 1, "prompt_tokens": 70729, "completion_tokens": 32, "wall_s": 26.7, "prefill_tps": 2649.2, "answer": "以上文件是一份重複記錄系統溫度、流量、例行檢查、資料夾同步、備份驗證及日誌狀態均正常的系統維運紀錄。", "needle": "北極星號的停泊編號是 KL-7742。", "recall": "unknown"}
+{"label": "70K_tok", "run": 2, "prompt_tokens": 70728, "completion_tokens": 32, "wall_s": 27.11, "prefill_tps": 2608.5, "answer": "以上文件是一份重複記錄系統溫度、流量、例行檢查、資料夾同步、備份驗證及日誌狀態均正常的系統維運紀錄。", "needle": "倉庫B的緊急鑰匙藏在紅色消防箱後方。", "recall": "unknown"}
+{"label": "70K_tok", "run": 3, "prompt_tokens": 70730, "completion_tokens": 24, "wall_s": 26.43, "prefill_tps": 2676.6, "answer": "以上文件是一份重複記錄系統溫度、流量、備份及日誌狀態均正常的系統維運紀錄。", "needle": "專案鳳凰的啟動代碼是 9-1-8-4。", "recall": "unknown"}
+{"label": "240K_tok", "run": 1, "prompt_tokens": 237975, "completion_tokens": 41, "wall_s": 91.79, "prefill_tps": 2592.5, "answer": "以上文件主要包含重複的系統維運紀錄（如溫度、流量、備份狀態等），並提及了北極星號的停泊編號為 KL-7742。", "needle": "北極星號的停泊編號是 KL-7742。", "recall": "unknown"}
+{"label": "240K_tok", "run": 2, "prompt_tokens": 237974, "completion_tokens": 31, "wall_s": 90.8, "prefill_tps": 2620.8, "answer": "以上文件是一份重複記錄系統溫度、流量、例行檢查、資料夾同步、備份驗證及日誌狀態的系統維運紀錄。", "needle": "倉庫B的緊急鑰匙藏在紅色消防箱後方。", "recall": "unknown"}
+{"label": "240K_tok", "run": 3, "prompt_tokens": 237976, "completion_tokens": 32, "wall_s": 93.46, "prefill_tps": 2546.4, "answer": "這段文字主要是一連串重複的系統維運紀錄，顯示溫度、流量、備份及日誌等指標均正常且無異常。", "needle": "專案鳳凰的啟動代碼是 9-1-8-4。", "recall": "unknown"}
+{"label": "decode512", "run": 1, "completion_tokens": 480, "wall_s": 20.34, "decode_tps": 23.6}
+{"label": "decode512", "run": 2, "completion_tokens": 506, "wall_s": 10.43, "decode_tps": 48.5}
+{"label": "decode512", "run": 3, "completion_tokens": 477, "wall_s": 28.67, "decode_tps": 16.6}
