@@ -1,0 +1,27 @@
+Endpoint   : http://<host>:5003/v1
+Model      : qwen3.8-flash-next-unsloth-ud-iq4_xs
+Thinking   : off
+Sampling   : temp 0.7  top_p 1.0  top_k 64  min_p 0.08  rep 1.03
+max_tokens : 2048, 10 questions, sequential
+
+[ 1] prompt=  36  out=1728  TTFT=0.41s  total= 25.85s  prefill=    88.5 t/s  decode=  67.92 t/s
+[ 2] prompt=  43  out=1088  TTFT=0.68s  total= 14.12s  prefill=    63.0 t/s  decode=  80.95 t/s
+[ 3] prompt=  43  out= 876  TTFT=0.86s  total= 11.46s  prefill=    49.9 t/s  decode=  82.66 t/s
+[ 4] prompt=  45  out=1948  TTFT=0.79s  total= 30.18s  prefill=    56.7 t/s  decode=  66.30 t/s
+[ 5] prompt=  65  out= 435  TTFT=0.92s  total=  6.65s  prefill=    70.4 t/s  decode=  76.01 t/s
+[ 6] prompt=  42  out=1475  TTFT=7.20s  total= 29.61s  prefill=     5.8 t/s  decode=  65.81 t/s
+[ 7] prompt=  61  out= 698  TTFT=1.19s  total= 10.82s  prefill=    51.1 t/s  decode=  72.48 t/s
+[ 8] prompt=  49  out=2048  TTFT=0.49s  total= 29.44s  prefill=   100.0 t/s  decode=  70.74 t/s
+[ 9] prompt=  69  out=1191  TTFT=0.66s  total= 14.97s  prefill=   105.3 t/s  decode=  83.22 t/s
+[10] prompt=  48  out=1920  TTFT=0.57s  total= 30.05s  prefill=    84.5 t/s  decode=  65.13 t/s
+
+==============================================================================
+SUMMARY  (10 questions)
+==============================================================================
+Prefill  : mean     67.5 t/s   median     66.7   min      5.8   max    105.3
+Decode   : mean    73.12 t/s   median    71.61   min    65.13   max    83.22
+TTFT     : mean     1.38 s   median     0.74 s
+Total    : mean    20.31 s
+
+Note: TTFT includes LAN latency (~ms) and any queue wait;
+      prefill t/s = prompt_tokens / TTFT, decode t/s = out_tokens / (total - TTFT).

@@ -1,0 +1,31 @@
+Endpoint   : http://<host>:5003/v1
+Model      : qwen3.8-flash-next-unsloth-ud-iq4_xs
+Thinking   : off
+Sampling   : temp 0.7  top_p 1.0  top_k 64  min_p 0.08  rep 1.03
+max_tokens : 512, long-context ramp 15000→120000 tokens
+
+[ 1] ctx~15000  actual_prompt=13777  out=194  TTFT= 31.10s  total= 34.01s  prefill=   443.0 t/s  decode=  66.60 t/s
+[ 2] ctx~30000  actual_prompt=30037  out=282  TTFT= 40.88s  total= 45.11s  prefill=   734.7 t/s  decode=  66.79 t/s
+[ 3] ctx~45000  actual_prompt=45097  out=290  TTFT= 53.68s  total= 58.16s  prefill=   840.1 t/s  decode=  64.75 t/s
+[ 4] ctx~60000  actual_prompt=60139  out=340  TTFT= 79.97s  total= 85.12s  prefill=   752.0 t/s  decode=  66.07 t/s
+[ 5] ctx~75000  actual_prompt=75067  out=305  TTFT= 78.96s  total= 83.58s  prefill=   950.7 t/s  decode=  66.10 t/s
+[ 6] ctx~90000  actual_prompt=90107  out=448  TTFT= 96.40s  total=103.16s  prefill=   934.7 t/s  decode=  66.33 t/s
+[ 7] ctx~105000  actual_prompt=105075  out=415  TTFT= 95.01s  total=101.19s  prefill=  1105.9 t/s  decode=  67.13 t/s
+[ 8] ctx~120000  actual_prompt=120076  out=187  TTFT=115.42s  total=118.23s  prefill=  1040.3 t/s  decode=  66.74 t/s
+
+==============================================================================
+SUMMARY  (8 long-context runs, 13777–120076 prompt tokens)
+==============================================================================
+Prefill  : mean    850.2 t/s   median    887.4   min    443.0   max   1105.9
+Decode   : mean    66.31 t/s   median    66.46   min    64.75   max    67.13
+TTFT     : mean    73.93 s   median    79.47 s
+
+Per-run prefill t/s vs context length (watch for degradation):
+  13777 tok    443.0 t/s  ############################################
+  30037 tok    734.7 t/s  #########################################################################
+  45097 tok    840.1 t/s  ####################################################################################
+  60139 tok    752.0 t/s  ###########################################################################
+  75067 tok    950.7 t/s  ###############################################################################################
+  90107 tok    934.7 t/s  #############################################################################################
+  105075 tok   1105.9 t/s  ##############################################################################################################
+  120076 tok   1040.3 t/s  ########################################################################################################
