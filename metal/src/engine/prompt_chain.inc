@@ -25,6 +25,9 @@ int pc_unit_of(int t) {
 
 bool Window::coop_k4() {
     if (const char* e = std::getenv("COOP_K4")) return std::atoi(e) != 0;
+    // without the MetalPerformancePrimitives headers - an SDK older than Metal 4, or the legacy override - the probe
+    // kernel is compiled out, and asking for the missing function is fatal; the layout can only be the non-K4 one
+    if (!cx_->msl_has_mpp()) return false;
     const int lib = cx_->compile({"mm_bench.metal"}, "#define NO_GGML_COMMON 1\n");
     mtl::Pipeline p = cx_->pipeline(lib, "coop_layout_16_64_32");
     mtl::Buffer out = cx_->alloc(4 * 3 * 32 * 128 * 4);
@@ -56,8 +59,9 @@ bool Window::pc_setup(int C) {
         b.lgdn = cx_->compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
         b.lqsa = cx_->compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
         b.k4 = coop_k4();
+        b.mpp = cx_->msl_has_mpp();
     }
-    b = PromptBufs{b.lib, b.lgdn, b.lqsa, b.k4};   // (re)allocated below for the larger chunk
+    b = PromptBufs{b.lib, b.lgdn, b.lqsa, b.k4, b.mpp};   // (re)allocated below for the larger chunk
     b.C = C;
     const size_t MT = (size_t) C;
     const int MB = (int) max_cells_ / 4 + 2;
@@ -93,11 +97,16 @@ bool Window::pc_setup(int C) {
     // else v2
     b.gu3[0] = 16; b.gu3[1] = 32; b.gu3[2] = 32; b.gu3[3] = 4;
     b.dn3[0] = 16; b.dn3[1] = 64; b.dn3[2] = 32; b.dn3[3] = 2;
-    b.meta.as<uint32_t>()[2] = b.k4 ? NFF / (b.gu3[1] * b.gu3[3]) : NFF / 64;
-    b.meta.as<uint32_t>()[5] = b.k4 ? N / (b.dn3[1] * b.dn3[3]) : N / 64;
-    std::fprintf(stderr, "strata metal: prompt kernels (mac-kern's prompt chain) for chunks of %d rows, %s, ready in %.0f ms\n",
+    // the indirect grid x is one value per chunk, so all a chunk's v2 tiles must share a TN.  A pack is not homogeneous
+    // (this IQ3_S recipe: gate/up IQ2_S / IQ3_S / IQ3_XXS / IQ4_XS over 48 layers) but gu2_tile/dn2_tile hand back one
+    // TN per mpp-ness (32 without matmul2d, 64 with it, 16 only for K-quant experts), so layer 0's type picks it.
+    b.meta.as<uint32_t>()[2] = b.k4 ? NFF / (b.gu3[1] * b.gu3[3])
+                                    : NFF / tile_tn(gu2_tile(T("blk.0.ffn_gate_exps.weight").type, b.mpp));
+    b.meta.as<uint32_t>()[5] = b.k4 ? N / (b.dn3[1] * b.dn3[3])
+                                    : N / tile_tn(dn2_tile(T("blk.0.ffn_down_exps.weight").type));
+    std::fprintf(stderr, "strata metal: prompt kernels (mac-kern's prompt chain) for chunks of %d rows, %s%s, ready in %.0f ms\n",
                  C, b.k4 ? "matrix-unit register operands (COOP_K4)" : "the older expert / attention kernels (no M5 layout)",
-                 now_ms() - t0);
+                 b.mpp ? "" : " (no matmul2d in this SDK: the simdgroup_matrix twins)", now_ms() - t0);
     return true;
 }
 
@@ -148,7 +157,9 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         ds.push_back(std::move(d));
     };
     auto gemm = [&](const mtl::Buffer& A, const mtl::Buffer& B, const mtl::Buffer& Y, int M, int Nn, int K) {
-        const int tm = 64, tn = Nn <= 64 ? 32 : 64;
+        // TN 64 is matmul2d's best; the simdgroup_matrix twins want TN 32, worth more than twice the dense
+        // projections' throughput over a whole chain on the M2 Max.
+        const int tm = 64, tn = (Nn <= 64 || !b.mpp) ? 32 : 64;
         const std::string fn = "gemm_f16_" + std::to_string(tm) + "_" + std::to_string(tn) + "_4";
         PcGemmArgs g{M, Nn, K, 0};
         D(P_(b.lib, fn), {mtl::Arg::B(A), mtl::Arg::B(B), mtl::Arg::B(Y), mtl::Arg::V(g)}, (Nn + tn - 1) / tn, (M + tm - 1) / tm, 128);
@@ -302,7 +313,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
             const std::string fn = "mm_gu3_" + std::to_string(eg.type) + "_" + tl3(b.gu3);
             gu.p = P_(b.lib, fn, mtl::Constants().b(7, true), fn + "#k4");
         } else {
-            const std::string fn = "mm_gu2_" + std::to_string(eg.type) + gu2_tile(eg.type);
+            const std::string fn = "mm_gu2_" + std::to_string(eg.type) + gu2_tile(eg.type, b.mpp);
             gu.p = P_(b.lib, fn, mtl::Constants().i(5, 0), fn + "#p0");
         }
         gu.args = {mtl::Arg::B(W_), mtl::Arg::B(b.XS), mtl::Arg::B(b.HS), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};

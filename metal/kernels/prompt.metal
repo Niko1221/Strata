@@ -9,6 +9,16 @@
 //   swiglu_h       h = half(silu(g) * u)
 //   moe_out        bo = y_routed + sigmoid(sg) * y_shared
 
+// gemm_hc_up is the one matrix multiply here: matmul2d where the SDK ships MetalPerformancePrimitives, the
+// simdgroup_matrix body where it does not (dense_mm.metal answers the same question for its own GEMMs).
+#if !defined(STRATA_MSL_MPP)
+#  if __has_include(<MetalPerformancePrimitives/MetalPerformancePrimitives.h>)
+#    define STRATA_MSL_MPP 1
+#  else
+#    define STRATA_MSL_MPP 0
+#  endif
+#endif
+
 kernel void route_topk(device const float* logits [[buffer(0)]], device int* ids [[buffer(1)]],
                        device float* w [[buffer(2)]], constant uint& n_tok [[buffer(3)]],
                        uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
@@ -148,8 +158,10 @@ template <int TM, int TN, int SG>
 kernel void gemm_hc_up(device half* A [[buffer(0)]], device half* B [[buffer(1)]], device const half* xnh [[buffer(2)]],
                        device float* mixed [[buffer(3)]], device half* mixh [[buffer(4)]], constant GemmArgs& g [[buffer(5)]],
                        constant EpiArgs& e [[buffer(6)]], uint3 tg [[threadgroup_position_in_grid]],
-                       ushort tid [[thread_index_in_threadgroup]]) {
+                       ushort tid [[thread_index_in_threadgroup]], ushort li [[thread_index_in_simdgroup]],
+                       ushort sg [[simdgroup_index_in_threadgroup]]) {
     threadgroup float ot[TM * TN];
+#if STRATA_MSL_MPP
     tensor<device half, dextents<int32_t, 2>, tensor_inline> tA(A, dextents<int32_t, 2>(g.K, g.M));
     tensor<device half, dextents<int32_t, 2>, tensor_inline> tB(B, dextents<int32_t, 2>(g.K, g.N));
     tensor<threadgroup float, dextents<int32_t, 2>, tensor_inline> tO(ot, dextents<int32_t, 2>(TN, TM));
@@ -158,6 +170,57 @@ kernel void gemm_hc_up(device half* A [[buffer(0)]], device half* B [[buffer(1)]
     auto mA = tA.slice(0, int(tg.y) * TM);
     auto mB = tB.slice(0, int(tg.x) * TN);
     op.run(mA, mB, tO);
+#else
+    // The same tile from simdgroup_matrix: the SG simdgroups split it into SR x SC groups of SM x SN. Only M needs
+    // clipping - grid y is a ceiling over n_tok while grid x = hc * n / TN is exact - and a block whose rows run past
+    // the chunk is loaded from a base pushed back inside A and written at that base, so the tokens missing from ot
+    // are exactly the rows the epilogue below skips.
+    constexpr int SR = (TM >= 32 && SG >= 2) ? 2 : 1, SC = SG / SR;
+    constexpr int SM = TM / SR, SN = TN / SC, NI = SM / 8, NJ = SN / 8;
+    const int M = g.M, N = g.N, K = g.K, tm0 = int(tg.y) * TM, n0 = int(tg.x) * TN;
+    const int ml = int(sg / SC) * SM, nl = int(sg % SC) * SN;
+    if (M < 8 || N < 8 || K % 8 != 0) {   // a shape an 8 x 8 block cannot clip: one output per thread
+        for (int it = int(tid); it < TM * TN; it += SG * 32) ot[it] = 0.0f;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (int it = int(tid); it < TM * TN; it += SG * 32) {
+            const int m = tm0 + it / TN;
+            if (m >= M) continue;
+            float s = 0.0f;
+            for (int k = 0; k < K; ++k)
+                s += float(A[ulong(m) * K + k]) * float(B[ulong(n0 + it % TN) * K + k]);
+            ot[it] = s;
+        }
+    } else {
+        threadgroup float bs[SG][64];
+        int mbs[NI];
+        simdgroup_matrix<float, 8, 8> acc[NI][NJ];
+        for (int i = 0; i < NI; ++i) {
+            mbs[i] = min(tm0 + ml + 8 * i, M - 8);
+            for (int j = 0; j < NJ; ++j) acc[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+        }
+        for (int k = 0; k < K; k += 8) {
+            simdgroup_matrix<half, 8, 8> ma[NI], mb[NJ];
+            for (int i = 0; i < NI; ++i) simdgroup_load(ma[i], A + ulong(mbs[i]) * K + k, K);
+            for (int j = 0; j < NJ; ++j) simdgroup_load(mb[j], B + ulong(n0 + nl + 8 * j) * K + k, K, ulong2(0, 0), true);
+            for (int i = 0; i < NI; ++i)
+                for (int j = 0; j < NJ; ++j) simdgroup_multiply_accumulate(acc[i][j], ma[i], mb[j], acc[i][j]);
+        }
+        for (int i = 0; i < NI; ++i)
+            for (int j = 0; j < NJ; ++j) {
+                if (mbs[i] == tm0 + ml + 8 * i) {
+                    simdgroup_store(acc[i][j], &ot[(ml + 8 * i) * TN + nl + 8 * j], TN);
+                    continue;
+                }
+                simdgroup_store(acc[i][j], &bs[sg][0], 8);
+                simdgroup_barrier(mem_flags::mem_threadgroup);
+                for (int q = li; q < 64; q += 32) {
+                    const int lr = q >> 3, lc = q & 7;
+                    if (mbs[i] + lr >= tm0) ot[(mbs[i] + lr - tm0) * TN + nl + 8 * j + lc] = bs[sg][q];
+                }
+                simdgroup_barrier(mem_flags::mem_threadgroup);
+            }
+    }
+#endif
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const int hc = int(e.hc), n = int(e.n_embd), DPT = TN / hc;
     const int t0 = int(tg.y) * TM, d0 = int(tg.x) * DPT;

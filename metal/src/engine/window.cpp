@@ -95,7 +95,7 @@ double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::
 // the prompt chain's state (prompt_chain.inc): kernel libraries, the variant, buffers for chunks of C rows
 struct PromptBufs {
     int lib = -1, lgdn = -1, lqsa = -1;
-    bool k4 = false;
+    bool k4 = false, mpp = true;
     int C = 0, maxrows = 0;
     double gpu_ms = 0, host_ms = 0, mtp_ms = 0;
     int gu3[4] = {}, dn3[4] = {};
@@ -1984,18 +1984,28 @@ struct PgPlan { uint32_t n_ent, topk, n_expert, tm, n_blocks; };
 struct PgMm { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff; };
 int pg_unit(int t) { return t == ref::Q2_0 || t == ref::IQ3_S || t == ref::BF16 || t == ref::F32 ? 16 : 32; }
 // the v2 (M4) expert tiles: the K-quants need TK 128, Q8_0 / IQ4_XS TK 32 (their 32-value units), the rest TK 16
-std::string gu2_tile(int t) {
+std::string gu2_tile(int t, bool mpp) {
     if (t == ref::Q4_K || t == ref::Q5_K || t == ref::Q6_K) return "_16_16_128_2";   // the M4's best (513fc615)
+    // Without matmul2d the kernel is the simdgroup_matrix twin, and its best tile is a different one: measured over a
+    // whole prompt chain on the M2 Max (IQ3_XXS gate/up, chunks of 1024), TN 32 with TK one whole quant unit takes
+    // gate/up from 4.13 s to 2.89 s - 30% of the chunk - where TN 64 / TK 16 and TN 64 / TK 32 both sat at 4.1-4.3.
+    if (!mpp) return "_16_32_32_2";
     if (t == ref::Q8_0 || t == ref::IQ4_XS) return "_16_64_32_2";
     return "_16_64_16_2";
 }
 std::string dn2_tile(int t) { return t == ref::IQ4_NL || t == ref::Q5_1 || t == ref::Q8_0 ? "_16_64_32_2" : "_16_64_16_2"; }
+// the TN a tile name carries (its name is TM _ TN _ TK _ SG): the grouped GEMM's grid x is n_out / TN
+int tile_tn(const std::string& name) {
+    int tm = 0, tn = 0;
+    std::sscanf(name.c_str(), "_%d_%d", &tm, &tn);
+    return tn ? tn : 64;
+}
 }  // namespace
 
 struct Window::PromptGemm {
     int MT = 0, QS = 256, TM = 16, maxrows = 0, nblk_max = 0;
     int lib = -1, lgdn = -1, lqsa = -1;
-    bool k4 = false, gu_v3 = false, dn_v3 = false, flash = false;
+    bool k4 = false, mpp = true, gu_v3 = false, dn_v3 = false, flash = false;
     mtl::Buffer R, bo, inj[2], xnh, V, loh, mixed, mixh, qkv, z, al, be, ygh, gqn, gkn, gvc, ggb, gkq, go, yg, qfull, kcur, vcur,
         iqr, ikr, qcur, qcurh, qidx, scores, qids, part, XQ, xqh, logits, ids, wts, bcnt, boff, eoff, tiles, meta, stok, sw, pos,
         XS, HS, YE, yr, gsh, ush, hh, ys, sgv, emb, embh, pkey, pval, keyn, qn, gated, normW;
@@ -2037,6 +2047,7 @@ bool Window::prompt_gemm_init(std::string& err) {
                           "prompt.metal"});
     p.lgdn = cx_->compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
     p.lqsa = cx_->compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+    p.mpp = cx_->msl_has_mpp();
     p.k4 = ::coop_k4(*cx_);
     const char* eg = std::getenv("STRATA_METAL_PROMPT_EXPERTS");   // v2 | v3 (default: v3 with the M5's layout)
     p.gu_v3 = p.dn_v3 = eg ? std::string(eg) == "v3" : p.k4;
@@ -2098,8 +2109,9 @@ bool Window::prompt_gemm_init(std::string& err) {
     }
     make();
     pg_ = pg.release();
-    std::fprintf(stderr, "strata metal: prompts on the matrix units in chunks of %d (experts %s, QSA %s, matmul2d layout %s; "
-                         "%.2f GB of buffers%s)\n", C, p.gu_v3 ? "v3" : "v2", p.flash ? "flash" : "v1", p.k4 ? "K4" : "other",
+    std::fprintf(stderr, "strata metal: prompts on the matrix units in chunks of %d (experts %s, QSA %s, matmul2d %s, layout %s; "
+                         "%.2f GB of buffers%s)\n", C, p.gu_v3 ? "v3" : "v2", p.flash ? "flash" : "v1", p.mpp ? "yes" : "no",
+                 p.k4 ? "K4" : "other",
                  need / 1e9, stream_ ? ", in the expert arena while a prompt runs" : "");
     (void) err;
     return true;
@@ -2107,9 +2119,13 @@ bool Window::prompt_gemm_init(std::string& err) {
 
 bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::string& err) {
     PromptGemm& p = *pg_;
-    p.meta.as<uint32_t>()[2] = p.gu_v3 ? NFF / (32 * 4) : NFF / 64;
-    p.meta.as<uint32_t>()[5] = p.dn_v3 ? N / (64 * 2) : N / 64;
     auto TN = [this](const std::string& n) -> const gguf::Tensor& { return this->T(n); };
+    // The grouped GEMMs' indirect grid x is one value per chunk, so a chunk needs one tile width for all its layers.
+    // A pack is not homogeneous (this IQ3_S recipe: gate/up IQ2_S / IQ3_S / IQ3_XXS / IQ4_XS over 48 layers), but every
+    // tile these two functions hand back for a given mpp-ness shares its TN - 32 without matmul2d, 64 with it, 16 only
+    // for K-quant experts - so layer 0's type picks it and the grid stays valid for the rest.
+    p.meta.as<uint32_t>()[2] = p.gu_v3 ? NFF / (32 * 4) : NFF / tile_tn(gu2_tile(TN("blk.0.ffn_gate_exps.weight").type, p.mpp));
+    p.meta.as<uint32_t>()[5] = p.dn_v3 ? N / (64 * 2) : N / tile_tn(dn2_tile(TN("blk.0.ffn_down_exps.weight").type));
     if (Tn < 1 || Tn > p.MT) { err = "metal prompt: chunk size out of range"; return false; }
     if (pos0 + Tn + 1 >= max_cells_) { err = "metal prompt: the chunk runs past the context"; return false; }
     if (stream_ && !st_->ready() && !stream_arena(err)) return false;
@@ -2159,7 +2175,9 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
         return P(lib, fn, c, "pg:" + (key.empty() ? fn : key));
     };
     auto gemm = [&](const mtl::Buffer& A, const mtl::Buffer& B, const mtl::Buffer& Y, int M, int Nn, int K) {
-        const int tm = 64, tn = Nn <= 64 ? 32 : 64;
+        // TN 64 is matmul2d's best; the simdgroup_matrix twins want TN 32, worth more than twice the dense
+        // projections' throughput over a whole chain on the M2 Max.
+        const int tm = 64, tn = (Nn <= 64 || !p.mpp) ? 32 : 64;
         const std::string fn = "gemm_f16_" + std::to_string(tm) + "_" + std::to_string(tn) + "_4";
         PgGemm g{M, Nn, K, 0};
         D(PP(p.lib, fn), {mtl::Arg::B(A), mtl::Arg::B(B), mtl::Arg::B(Y), mtl::Arg::V(g)}, (Nn + tn - 1) / tn, (M + tm - 1) / tm, 128);
@@ -2339,7 +2357,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
             gu.p = PP(p.lib, fn, c, fn + ak);
             gu.tg[0] = 32 * 4;
         } else {
-            const std::string fn = "mm_gu2_" + std::to_string(eg.type) + gu2_tile(eg.type);
+            const std::string fn = "mm_gu2_" + std::to_string(eg.type) + gu2_tile(eg.type, p.mpp);
             mtl::Constants c = mtl::Constants().i(5, 0);
             if (stream_) c.b(20, true);
             gu.p = PP(p.lib, fn, c, fn + ak);

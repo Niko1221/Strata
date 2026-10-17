@@ -6,8 +6,20 @@
 //   per head: m = max, p = exp(s - m), l = sum p (fp32, through threadgroup memory), P -> fp16
 //   acc[12 x 256] = P[12 x 64] . V[64 x 256]  four 64-dim matmuls, V decoded into the right input
 // The operands are fp16 (q rounded from fp32; k, v = int8 * scale rounded): to rounding of qsa_attn's fp32.
+// The M4/M5 matrix-unit variants of the QSA prompt kernels.  An SDK without the MetalPerformancePrimitives header
+// (macOS 15 and its toolchain) compiles them out: the chain's non-K4 branch uses qsa.metal's qsa_score / qsa_attn,
+// which need nothing past metal_stdlib.
+#if !defined(STRATA_MSL_MPP)
+#  if __has_include(<MetalPerformancePrimitives/MetalPerformancePrimitives.h>)
+#    define STRATA_MSL_MPP 1
+#  else
+#    define STRATA_MSL_MPP 0
+#  endif
+#endif
+#if STRATA_MSL_MPP
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 using namespace mpp::tensor_ops;
+#endif
 #ifndef STRATA_COOP_K4
 #define STRATA_COOP_K4
 // function constant 7: the right-input cooperative tensor holds runs of 4 consecutive k at one n per lane (the M5's
@@ -21,6 +33,7 @@ constant bool coop_k4 = is_function_constant_defined(COOP_K4) ? COOP_K4 : true;
 constant int QSA_STOP [[function_constant(8)]];
 constant int qsa_stop = is_function_constant_defined(QSA_STOP) ? QSA_STOP : 0;
 
+#if STRATA_MSL_MPP
 // grid (chunks, QKV, n_tok), 32 threads.  qh: the q heads as fp16 [t][QH][QD] (qcur rounded).
 kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* kq [[buffer(1)]],
                         device const char* vq [[buffer(2)]], device const half* ksc [[buffer(3)]],
@@ -142,12 +155,15 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
     if (lane < HPG) { pp[lane * (QD + 2) + QD] = mh; pp[lane * (QD + 2) + QD + 1] = lh; }
 }
 
+#endif  // qsa_attn_mm
+
 // qcur (fp32) -> fp16 for qsa_attn_mm
 kernel void qsa_q_f16(device const float* q [[buffer(0)]], device half* qh [[buffer(1)]], constant uint& n [[buffer(2)]],
                       uint gid [[thread_position_in_grid]]) {
     if (gid < n) qh[gid] = half(q[gid]);
 }
 
+#if STRATA_MSL_MPP
 // qsa_score as a GEMM (fp32 operands, so the selection sees qsa_score's values to fp32 rounding): S[(t, h)][b] =
 // qidx[t][h] . pooled[b] for 16 tokens x IH heads (64 rows) by 64 blocks a threadgroup; the epilogue sums relu over
 // the heads.  The tail block n_bid (the `dead` key, + 1e9 when it has cells) and blocks past it are left to the
@@ -338,3 +354,4 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
             }
         }
 }
+#endif  // qsa_score_mm, qsa_flash

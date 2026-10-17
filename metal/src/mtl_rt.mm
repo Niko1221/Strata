@@ -10,6 +10,9 @@
 #include <fstream>
 #include <sstream>
 
+// MTLGPUFamilyMetal4 only exists in the macOS 26 SDK.
+enum { STRATA_MTL_GPU_FAMILY_METAL4 = 5002 };
+
 namespace mtl {
 
 double now_s() {
@@ -59,14 +62,33 @@ bool Context::has_family_apple(int n) const {
     return [impl_->dev supportsFamily:(MTLGPUFamily)(MTLGPUFamilyApple1 + (n - 1))];
 }
 bool Context::supports_metal4() const {
-    if (@available(macOS 26.0, *)) return [impl_->dev supportsFamily:MTLGPUFamilyMetal4];
+    if (@available(macOS 26.0, *)) return [impl_->dev supportsFamily:(MTLGPUFamily)STRATA_MTL_GPU_FAMILY_METAL4];
     return false;
+}
+bool Context::msl_has_mpp() const {
+    // What the kernel files' own `#if __has_include(<MetalPerformancePrimitives/...>)` will decide, asked of the same
+    // compiler that builds them: a source that fails when the header is missing.  The GPU family is not the question -
+    // an M2 on macOS 15 has matmul2d nowhere in its toolchain, and the chain then runs the simdgroup_matrix twins.
+    static const bool has = [this] {
+        if (std::getenv("STRATA_METAL_LEGACY") != nullptr) return false;   // compile() makes that answer for the headers
+        const std::string src = "#include <metal_stdlib>\nusing namespace metal;\n"
+                                "#if !__has_include(<MetalPerformancePrimitives/MetalPerformancePrimitives.h>)\n"
+                                "#error \"no MetalPerformancePrimitives\"\n#endif\n"
+                                "kernel void mpp_probe(device float* o [[buffer(0)]]) { o[0] = 1.0f; }\n";
+        MTLCompileOptions* o = [MTLCompileOptions new];
+        NSError* err = nil;
+        return [impl_->dev newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()] options:o error:&err] != nil;
+    }();
+    return has;
 }
 uint64_t Context::recommended_working_set() const { return [impl_->dev recommendedMaxWorkingSetSize]; }
 uint64_t Context::max_buffer_length() const { return [impl_->dev maxBufferLength]; }
 
 int Context::compile(const std::vector<std::string>& files, const std::string& prelude, bool fast_math) {
-    std::string src = prelude + "\n#include <metal_stdlib>\nusing namespace metal;\n";
+    // The kernel files ask the compiler's own header set whether matmul2d exists. STRATA_METAL_LEGACY answers for it,
+    // so the simdgroup_matrix twins can be measured on a Mac that has both.
+    std::string src = prelude + (std::getenv("STRATA_METAL_LEGACY") ? "\n#define STRATA_MSL_MPP 0\n" : "") +
+                      "\n#include <metal_stdlib>\nusing namespace metal;\n";
     if (!ggml_common_path.empty() && prelude.find("NO_GGML_COMMON") == std::string::npos) {
         src += "#define GGML_COMMON_DECL_METAL\n#define GGML_COMMON_IMPL_METAL\n";
         src += read_file(ggml_common_path);

@@ -1,10 +1,21 @@
 // metal/kernels/dense_mm.metal - dense projections for a PROMPT chunk (after quant/units/mma.metal):
 //   act_f16    X[t][k] -> half (the matrix units' operand)
 //   dq_f16<F>  a quantized matrix -> half rows (ref_quant's values rounded to fp16), once per chunk
-//   gemm_f16   Y[t][n] = Xh[t] . Wh[n] (fp32) by MetalPerformancePrimitives matmul2d, TM x TN tiles, K dynamic;
-//              rows of Y past n_out / t past n_tok are not written (the tensors carry the extents)
+//   gemm_f16   Y[t][n] = Xh[t] . Wh[n] (fp32), TM x TN tiles, K dynamic; rows of Y past n_out / t past n_tok are not
+//              written. Two bodies: MetalPerformancePrimitives matmul2d (the M5's neural accelerators) and, for the
+//              SDKs that do not ship that header at all, the same tiles built from simdgroup_matrix. A host build can
+//              define STRATA_MSL_MPP to pick one and A/B it against the other.
+#if !defined(STRATA_MSL_MPP)
+#  if __has_include(<MetalPerformancePrimitives/MetalPerformancePrimitives.h>)
+#    define STRATA_MSL_MPP 1
+#  else
+#    define STRATA_MSL_MPP 0
+#  endif
+#endif
+#if STRATA_MSL_MPP
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 using namespace mpp::tensor_ops;
+#endif
 
 kernel void act_f16(device const float* x [[buffer(0)]], device half* xh [[buffer(1)]], constant uint& n [[buffer(2)]],
                     uint gid [[thread_position_in_grid]]) {
@@ -45,6 +56,7 @@ kernel void dq_f16(device const uchar* W [[buffer(0)]], device half* Wh [[buffer
 
 struct GemmArgs { int M, N, K; int pad; };   // Y is M rows of N floats
 
+#if STRATA_MSL_MPP
 template <int TM, int TN, int SG>
 kernel void gemm_f16(device half* A [[buffer(0)]], device half* B [[buffer(1)]], device float* Y [[buffer(2)]],
                      constant GemmArgs& a [[buffer(3)]], uint3 tg [[threadgroup_position_in_grid]]) {
@@ -58,6 +70,62 @@ kernel void gemm_f16(device half* A [[buffer(0)]], device half* B [[buffer(1)]],
     auto mY = tY.slice(int(tg.x) * TN, int(tg.y) * TM);
     op.run(mA, mB, mY);
 }
+#else
+// gemm_f16 without the tensor ops: SG simdgroups, each one a TM/2 x TN/2 sub-tile of 8 x 8 accumulators over a K in
+// steps of 8. matmul2d clipped an edge tile with its tensor extents; here a block whose rows run past the matrix is
+// loaded from a base pushed back inside it and stored at that same pushed-back base, so the products dropped are
+// exactly the rows and columns outside M / N and every value written is the product of the rows read for it. A
+// duplicate block may write a row a first block already wrote, with the same number.
+template <int TM, int TN, int SG>
+kernel void gemm_f16(device half* A [[buffer(0)]], device half* B [[buffer(1)]], device float* Y [[buffer(2)]],
+                     constant GemmArgs& a [[buffer(3)]], uint3 tg [[threadgroup_position_in_grid]],
+                     ushort tid [[thread_index_in_threadgroup]], ushort li [[thread_index_in_simdgroup]],
+                     ushort sg [[simdgroup_index_in_threadgroup]]) {
+    constexpr int SM = TM / 2, SN = TN / 2, NI = SM / 8, NJ = SN / 8;
+    const int M = a.M, N = a.N, K = a.K;
+    const int m0 = int(tg.y) * TM + int(sg >> 1) * SM, n0 = int(tg.x) * TN + int(sg & 1) * SN;
+    if (M < 8 || N < 8 || K % 8 != 0) {   // a shape an 8 x 8 block cannot clip: one output per thread, in bounds
+        for (int i = int(tid); i < TM * TN; i += 32 * SG) {
+            const int r = m0 + i / TN, c = n0 + i % TN;
+            if (r >= M || c >= N) continue;
+            float s = 0.0f;
+            for (int k = 0; k < K; ++k) s += float(A[ulong(r) * K + k]) * float(B[ulong(c) * K + k]);
+            Y[ulong(r) * N + c] = s;
+        }
+        return;
+    }
+    int mbs[NI], nbs[NJ];
+    simdgroup_matrix<float, 8, 8> acc[NI][NJ];
+    for (int i = 0; i < NI; ++i) {
+        mbs[i] = min(m0 + 8 * i, M - 8);
+        for (int j = 0; j < NJ; ++j) acc[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    }
+    for (int j = 0; j < NJ; ++j) nbs[j] = min(n0 + 8 * j, N - 8);
+    for (int k = 0; k < K; k += 8) {
+        simdgroup_matrix<half, 8, 8> ma[NI], mb[NJ];
+        for (int i = 0; i < NI; ++i) simdgroup_load(ma[i], A + ulong(mbs[i]) * K + k, K);
+        for (int j = 0; j < NJ; ++j) simdgroup_load(mb[j], B + ulong(nbs[j]) * K + k, K, ulong2(0, 0), true);
+        for (int i = 0; i < NI; ++i)
+            for (int j = 0; j < NJ; ++j) simdgroup_multiply_accumulate(acc[i][j], ma[i], mb[j], acc[i][j]);
+    }
+    threadgroup float st[SG][64];
+    for (int i = 0; i < NI; ++i)
+        for (int j = 0; j < NJ; ++j) {
+            const int r = mbs[i], c = nbs[j];
+            if (r == m0 + 8 * i && c == n0 + 8 * j) {
+                simdgroup_store(acc[i][j], Y + ulong(r) * N + c, N);
+                continue;
+            }
+            simdgroup_store(acc[i][j], &st[sg][0], 8);
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+            for (int e = li; e < 64; e += 32) {
+                const int lr = e >> 3, lc = e & 7;
+                if (r + lr < M && c + lc < N) Y[ulong(r + lr) * N + c + lc] = st[sg][lr * 8 + lc];
+            }
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+        }
+}
+#endif
 
 #define DQ(F) template [[host_name("dq_f16_" #F)]] kernel decltype(dq_f16<F>) dq_f16<F>;
 #define DQ_(F) DQ(F)

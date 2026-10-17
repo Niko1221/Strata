@@ -76,6 +76,10 @@ public:
     std::string device_name() const;
     bool has_family_apple(int n) const;          // MTLGPUFamilyApple<n>
     bool supports_metal4() const;
+    // Can this machine's MSL compiler build matmul2d?  It needs <MetalPerformancePrimitives/...>, which an SDK older
+    // than Metal 4 does not ship even where the GPU family says Metal 4 - so the kernel variants key on the compiler,
+    // the same oracle their own #if __has_include uses.  One tiny compile, cached for the process.
+    bool msl_has_mpp() const;
     uint64_t recommended_working_set() const;
     uint64_t max_buffer_length() const;
     uint64_t allocated() const { return allocated_; }   // bytes of alloc() + wrap() buffers so far

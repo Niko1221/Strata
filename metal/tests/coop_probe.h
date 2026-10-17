@@ -9,6 +9,10 @@
 
 inline bool coop_k4(mtl::Context& cx) {
     if (const char* e = std::getenv("COOP_K4")) return std::atoi(e) != 0;
+    // The probe reads a cooperative tensor written by matmul2d.  Without the MetalPerformancePrimitives headers - an
+    // SDK older than Metal 4, or the legacy override that measures the simdgroup_matrix twins - the kernels are
+    // compiled out and asking for the missing function would be fatal; the layout can only be the non-K4 one.
+    if (!cx.msl_has_mpp()) return false;
     const int lib = cx.compile({"mm_bench.metal"}, "#define NO_GGML_COMMON 1\n");
     for (const char* tile : {"coop_layout_16_64_32", "coop_layout_16_32_32"}) {
     mtl::Pipeline p = cx.pipeline(lib, tile);

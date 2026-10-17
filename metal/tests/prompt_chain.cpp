@@ -147,6 +147,16 @@ int main(int argc, char** argv) {
     };
     if (dn_mode.rfind("v3:", 0) == 0) v3_tile(dn_mode, dn3);
     const bool gu_v3 = gu_mode.rfind("v3:", 0) == 0, dn_v3 = dn_mode.rfind("v3:", 0) == 0;
+    // the v2 tiles (the simdgroup_matrix twins): PC_GU2/PC_DN2 = "TM,TN,TK,SG".  TM stays the plan's 16, SG is the
+    // threadgroup's simdgroup count and TN the whole tile width (grid x = n_out / TN).  Unset keeps the shipped
+    // default of 16,64,16,2 - or 16,64,32,2 where a K chunk of 16 would split a quant unit.
+    int gu2[4] = {0, 0, 0, 0}, dn2[4] = {0, 0, 0, 0};
+    if (const char* e = std::getenv("PC_GU2")) std::sscanf(e, "%d,%d,%d,%d", &gu2[0], &gu2[1], &gu2[2], &gu2[3]);
+    if (const char* e = std::getenv("PC_DN2")) std::sscanf(e, "%d,%d,%d,%d", &dn2[0], &dn2[1], &dn2[2], &dn2[3]);
+    auto tl2 = [](const int* t, const char* def) {
+        return t[1] ? std::to_string(t[0]) + "_" + std::to_string(t[1]) + "_" + std::to_string(t[2]) + "_" + std::to_string(t[3])
+                    : std::string(def);
+    };
     const char* gdn_env = std::getenv("PC_GDN");
     const std::string gdn_mode = gdn_env ? gdn_env : "scanr_4";
     mtl::Buffer qfull = F32(MT * 12288), kcur = F32(MT * 512), vcur = F32(MT * 512), iqr = F32(MT * 512), ikr = F32(MT * 128),
@@ -202,8 +212,8 @@ int main(int argc, char** argv) {
             ref::dequant(te.type, (const uint8_t*)f.map + te.offset + id * rb, E.data() + t * N, N);
         }
     }
-    meta.as<uint32_t>()[2] = gu_v3 ? NFF / (gu3[1] * gu3[3]) : NFF / 64;
-    meta.as<uint32_t>()[5] = dn_v3 ? N / (dn3[1] * dn3[3]) : N / 64;
+    meta.as<uint32_t>()[2] = gu_v3 ? NFF / (gu3[1] * gu3[3]) : NFF / (gu2[1] ? gu2[1] : 64);
+    meta.as<uint32_t>()[5] = dn_v3 ? N / (dn3[1] * dn3[3]) : N / (dn2[1] ? dn2[1] : 64);
 
     // ---- the chunk's dispatches
     std::vector<mtl::Dispatch> ds;
@@ -424,6 +434,14 @@ int main(int argc, char** argv) {
                       (uint32_t)ref::row_bytes(ed.type, NFF), N, NFF};
             ma.gu_stride = (uint64_t)ma.gu_row * NFF;
             ma.d_stride = (uint64_t)ma.d_row * N;
+            static bool expert_fmt = false;
+            if (!expert_fmt) {
+                expert_fmt = true;
+                std::printf("expert weights: gate/up %s, down %s; v2 tiles gu %s dn %s\n", ref::type_name(eg.type),
+                            ref::type_name(ed.type),
+                            tl2(gu2, fmt_unit32(eg.type) ? "16_64_32_2" : "16_64_16_2").c_str(),
+                            tl2(dn2, ed.type == ref::IQ4_NL ? "16_64_32_2" : "16_64_16_2").c_str());
+            }
             const uint32_t ne = N;
             mtl::Dispatch g;
             g.p = P(lib, "mm_gather");
@@ -434,18 +452,20 @@ int main(int argc, char** argv) {
             push(g, "experts");
             mtl::Dispatch gu;
             gu.p = gu_v3 ? P(lib, "mm_gu3_" + std::to_string(eg.type) + "_" + gu3_for(eg.type), mtl::Constants().b(7, k4))
-                         : P(lib, "mm_gu2_" + std::to_string(eg.type) + (fmt_unit32(eg.type) ? "_16_64_32_2" : "_16_64_16_2"),
-                             mtl::Constants().i(5, 0));
+                         : P(lib, "mm_gu2_" + std::to_string(eg.type) + "_" +
+                                      tl2(gu2, fmt_unit32(eg.type) ? "16_64_32_2" : "16_64_16_2"),
+                                 mtl::Constants().i(5, 0));
             gu.args = {mtl::Arg::B(W), mtl::Arg::B(XS), mtl::Arg::B(HS), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
-            gu.tg[0] = gu_v3 ? 32 * gu3[3] : 64;
+            gu.tg[0] = gu_v3 ? 32 * gu3[3] : (gu2[3] ? 32 * gu2[3] : 64);
             gu.indirect = &meta;
             gu.ind_off = 2 * 4;
             push(gu, "experts gu");
             mtl::Dispatch dn;
             dn.p = dn_v3 ? P(lib, "mm_down3_" + std::to_string(ed.type) + "_" + tl3(dn3), mtl::Constants().b(7, k4))
-                         : P(lib, "mm_down2_" + std::to_string(ed.type) + (ed.type == ref::IQ4_NL ? "_16_64_32_2" : "_16_64_16_2"));
+                         : P(lib, "mm_down2_" + std::to_string(ed.type) + "_" +
+                                      tl2(dn2, ed.type == ref::IQ4_NL ? "16_64_32_2" : "16_64_16_2"));
             dn.args = {mtl::Arg::B(W), mtl::Arg::B(HS), mtl::Arg::B(YE), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
-            dn.tg[0] = dn_v3 ? 32 * dn3[3] : 64;
+            dn.tg[0] = dn_v3 ? 32 * dn3[3] : (dn2[3] ? 32 * dn2[3] : 64);
             dn.indirect = &meta;
             dn.ind_off = 5 * 4;
             push(dn, "experts dn");
