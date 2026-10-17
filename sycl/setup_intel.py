@@ -214,6 +214,18 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
         # first launch - "'double' is not supported in ... device", the engine dies on the first request with a
         # temperature - unless the driver emulates it (docs/INTEL.md)
         env.update({"IGC_EnableDPEmulation": "1", "OverrideDefaultFP64Settings": "1", "NEOReadDebugKeys": "1"})
+        if driver != "i915":
+            # Level Zero refuses a single device allocation above the card's max_mem_alloc_size (~4 GiB on DG2) unless
+            # relaxed: the expert cache then fell back to what fits under it (Arc A770 16 GB, Coder IQ1_M at 128K: 1,906
+            # slots in 3.64 GiB instead of 4,540 in 8.64 GiB; decode 16.5-17.5 -> 24.0-27.6 tok/s on an 8K prompt).
+            # The JIT build keeps 64-bit addresses past 4 GiB (-ze-opt-greater-than-4GB-buffer-required, docs/INTEL.md),
+            # which is what makes the bigger arena safe. Measured on xe only; i915 keeps the driver's limit.
+            env["UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS"] = "1"
+            # The Level Zero v2 adapter: the stepped verify window's graph segments (~97 a round) submit in ~25 us
+            # instead of 53-200 us under the default adapter (Arc A770 16 GB, xe, oneAPI 2026.1, compute runtime 26.05):
+            # decode +7%, prompt +3%, and the window's occasional 3x-slower serves under memory pressure gone in the A/B.
+            # Measured on xe only.
+            env["UR_LOADER_USE_LEVEL_ZERO_V2"] = "1"
     if exe != ROOT / "build-sycl-aot" / "strata":
         env["STRATA_SYCL_BIN"] = exe.relative_to(ROOT).as_posix()
     if MOUNT.resolve() != ROOT.parent.resolve():
