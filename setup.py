@@ -3948,7 +3948,7 @@ def cmake_build(src, bdir, target, defs, vcvars, bat_name):
         q = lambda c: " ".join(f'"{x}"' if " " in str(x) else str(x) for x in c)  # noqa: E731
         bat.write_text(f'@echo off\r\ncall "{vcvars}" >nul\r\n{q(conf)} || exit /b 1\r\n{q(build)} && exit /b 0\r\n'
                        f'echo   (the build stopped - trying it once more)\r\n{q(build)} || exit /b 1\r\n',
-                       encoding="utf-8")
+                       encoding="utf-8", newline="")   # \r\n as written: text mode on Windows would double the \r
         run(["cmd", "/c", str(bat)])
     else:
         run(conf)
@@ -5506,7 +5506,8 @@ def write_run_script(model, cfg_path, port, open_browser=True):
     if WIN:
         script = ROOT / f"run-{model.lower()}.bat"
         script.write_text("@echo off\r\ntitle Strata " + model + "\r\ncd /d \"" + str(ROOT) + "\"\r\n" +
-                          " ".join(f'"{x}"' for x in serve) + "\r\nif errorlevel 1 pause\r\n", encoding="utf-8")
+                          " ".join(f'"{x}"' for x in serve) + "\r\nif errorlevel 1 pause\r\n", encoding="utf-8",
+                          newline="")              # \r\n as written: text mode on Windows would double the \r
     else:
         script = ROOT / f"run-{model.lower()}.sh"
         script.write_text("#!/bin/sh\ncd \"" + str(ROOT) + "\"\nexec " + " ".join(f'"{x}"' for x in serve) + "\n",
