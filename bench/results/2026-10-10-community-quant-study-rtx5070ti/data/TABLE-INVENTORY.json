@@ -1,0 +1,165 @@
+[
+  {
+    "id": "T01",
+    "title": "Model provenance and engine cohorts",
+    "rows": 10,
+    "headers": [
+      "File / lab",
+      "Quant",
+      "File GB",
+      "Engine",
+      "Status",
+      "Download"
+    ]
+  },
+  {
+    "id": "T02",
+    "title": "Integrated headline scorecard",
+    "rows": 10,
+    "headers": [
+      "File / lab",
+      "Engine",
+      "Tool mean",
+      "Pass^5",
+      "HE+ low",
+      "HE+ xhigh",
+      "Math",
+      "Algebra",
+      "Debug"
+    ]
+  },
+  {
+    "id": "T03",
+    "title": "Integrated tool reliability \u2014 sorted by Pass^5 floor",
+    "rows": 22,
+    "headers": [
+      "Arm / lab",
+      "Mean +/- SD",
+      "Pass@5",
+      "Pass^5 floor",
+      "Ceiling-floor gap",
+      "Warnings (last trial)",
+      "Engine"
+    ]
+  },
+  {
+    "id": "T04",
+    "title": "Multi-step tool-chain results \u2014 sorted by Hard Mode mean",
+    "rows": 22,
+    "headers": [
+      "Arm / lab",
+      "Hard Mode mean",
+      "SD across five",
+      "Turn budget",
+      "Engine"
+    ]
+  },
+  {
+    "id": "T05",
+    "title": "Integrated coding results \u2014 sorted by final score",
+    "rows": 22,
+    "headers": [
+      "Arm / lab",
+      "First %",
+      "Final %",
+      "Solved / scored",
+      "Repairs",
+      "Infra / harness excluded",
+      "Run / protocol"
+    ]
+  },
+  {
+    "id": "T06",
+    "title": "Integrated sampled suites \u2014 sorted by hidden debugging passes",
+    "rows": 12,
+    "headers": [
+      "File / lab",
+      "GSM8K /100",
+      "Algebra /100",
+      "IFEval prompt / instruction %",
+      "Bugs visible",
+      "Bugs hidden",
+      "Needle % @ measured context",
+      "Engine"
+    ]
+  },
+  {
+    "id": "T07",
+    "title": "Integrated time-to-result economics",
+    "rows": 20,
+    "headers": [
+      "Arm / lab",
+      "Output tokens",
+      "Passing tokens",
+      "Passing seconds",
+      "Failed response time %",
+      "Wall",
+      "Engine"
+    ]
+  },
+  {
+    "id": "T08",
+    "title": "Integrated low-effort performance profiles",
+    "rows": 10,
+    "headers": [
+      "File / lab",
+      "Engine",
+      "Context tokens: 0 / mid / deep",
+      "Decode tok/s: 0 / mid / deep",
+      "First-token rate: 0 / mid / deep",
+      "Deep TTFT s"
+    ]
+  },
+  {
+    "id": "T09",
+    "title": "Integrated xhigh-effort performance profiles",
+    "rows": 10,
+    "headers": [
+      "File / lab",
+      "Engine",
+      "Context tokens: 0 / mid / deep",
+      "Decode tok/s: 0 / mid / deep",
+      "First-token rate: 0 / mid / deep",
+      "Deep TTFT s"
+    ]
+  },
+  {
+    "id": "T10",
+    "title": "All-test capability matrix \u2014 no overall score",
+    "rows": 20,
+    "headers": [
+      "Setup / effort",
+      "Code first/final %",
+      "Tool mean\u00b1SD / floor",
+      "Hard Mode",
+      "Math / algebra %",
+      "IFE prompt / instr %",
+      "Bugs visible / hidden",
+      "Needle % @ tokens",
+      "Speed (Total Wall)"
+    ]
+  },
+  {
+    "id": "T11",
+    "title": "Time-to-result, reliability and deployment decision matrix",
+    "rows": 20,
+    "headers": [
+      "Setup / effort",
+      "Code wall",
+      "Debug wall",
+      "5-run tool wall",
+      "Code tokens",
+      "Stored rating / warnings",
+      "Decision / deployment caveat"
+    ]
+  },
+  {
+    "id": "T12",
+    "title": "Version-pinned provenance",
+    "rows": 8,
+    "headers": [
+      "Provenance item",
+      "Pinned value"
+    ]
+  }
+]

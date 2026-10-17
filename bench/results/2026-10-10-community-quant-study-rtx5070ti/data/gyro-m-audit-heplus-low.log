@@ -1,0 +1,11 @@
+tasks=164  pass=156 (95.1%)
+output tokens: total=80,523  median=246  max=14,921
+duration s: median=3.3  max=158.3  sum=16 min
+empty responses=0
+biggest token consumers:
+  HumanEval/145: 14,921 tok, 158s, passed=True
+  HumanEval/132: 4,551 tok, 47s, passed=False
+  HumanEval/76: 4,447 tok, 48s, passed=False
+  HumanEval/32: 4,335 tok, 46s, passed=False
+  HumanEval/124: 2,983 tok, 34s, passed=False
+sample [HumanEval/0]: sorted_numbers = sorted(numbers) / for i in range(len(sorted_numbers) - 1): /     if sorted_numbers[i + 1] - sorted_numbers[

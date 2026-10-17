@@ -1,0 +1,48 @@
+{
+  "run_id": "algebra-rc2-20261014e",
+  "identity": {
+    "model": "gyro-s-rc2-ranking",
+    "quant": "TQ1_0",
+    "model_sha256": "c6ea1b08ca312f99095b27588ba35976b53f948268e7f91e7761926aa01d9c87",
+    "engine_commit": "9ff02c9fa9c86a88088370925b3c9131cc5d6c26",
+    "engine_sha256": "08d70e30b9176dee5273ba74bd67c4d4c435bef92d449323168d7a8a3497585f",
+    "context": 131072,
+    "kv": "int8"
+  },
+  "offline_cache": {
+    "test_sha256": "61c1270f0bc5c1d3a1131b414b63bf3bf8ddcd166741972e09c122a63131de3c",
+    "dev_sha256": "a5a26ee63aa064136be38fc728ad549b7bb52cd3685339dd4bfa635ce3d9e586",
+    "loaded_from_cache": true,
+    "http_429": false
+  },
+  "slice_audit": {
+    "plugin-mmlu": {
+      "present": true,
+      "valid": true
+    },
+    "all_required_valid": true
+  },
+  "report": {
+    "file": "2026-10-14T20-43-48.871849Z_12e4ce1b--gyro-s-rc2-algebra-rc2-20261014e-mmlu.md",
+    "sha256": "7c5b40a9472d313d5d42fb40c7856d10f9361aabe85481b0e3480776dddb03c2",
+    "accuracy": 79.0,
+    "correct": 79,
+    "total": 100,
+    "completion": "100.0%",
+    "shots": 5,
+    "scored_duration_s": 219.0,
+    "wall_s": 255.52,
+    "tokens": 66984
+  },
+  "guard": {
+    "restored_by_guard": true,
+    "note": "guarded algebra-only window; daily driver restored and verified healthy"
+  },
+  "legacy_rc1_preserved": "rc1 76% remains archived under models/gyro-s/legacy_rc1_auxiliary; not substituted",
+  "artifacts": {
+    "data/2026-10-14T20-43-48.871849Z_12e4ce1b--gyro-s-rc2-algebra-rc2-20261014e-mmlu.md": {
+      "original_sha256": "7c5b40a9472d313d5d42fb40c7856d10f9361aabe85481b0e3480776dddb03c2",
+      "packaged_sha256": "7c5b40a9472d313d5d42fb40c7856d10f9361aabe85481b0e3480776dddb03c2"
+    }
+  }
+}

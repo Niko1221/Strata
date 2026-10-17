@@ -1,0 +1,104 @@
+{
+  "schema_version": "gyro-m-speed-attribution-audit/1",
+  "run_id": "full-20261012-rerun-1230",
+  "setup": "Gyro-M TQ2_0 / AgentionAI Strata rc2",
+  "status": "unverified_endpoint_attribution",
+  "decision": "The runner's :8090 API gate identified gyro-m-strata at 131,072 context and the rc2 engine binary was pinned, but no retained run-bound evidence joins each speed request to that binary with reasoning_effort unchanged. Preserve the endpoint observations; exclude every Gyro-M speed cell from comparative speed figures/tables and the zero-context composite axis.",
+  "evidence": {
+    "runner": {
+      "file": "gyro_m_full_battery.py",
+      "sha256": "4ddd3d07a71d1f3221e2b3831d76d4a66a4d7d8ed26f4d1c7b7dfaa229ec94d9",
+      "line": 35,
+      "excerpt": "BASE = 'http://127.0.0.1:8090'"
+    },
+    "runner_preflight": {
+      "api_gate_file": "results/gyro-m-rc2/full-20261012-rerun-1230/api-preflight.json",
+      "api_gate_sha256": "18900f37f3384d5e1d3be1bd7d946ec00b39b7ed37fc23371e8a47c64e285fdd",
+      "api_gate_at": "2026-10-12T12:33:58+02:00",
+      "model_ids": ["gyro-m-strata"],
+      "model_ok": true,
+      "plain_exact_string_ok": true,
+      "forced_tool_ok": true,
+      "context_tokens": 131072,
+      "orchestrator_log_sha256": "d71bae7a184453cc59187cc7f2697edee8ec3cf892da0812cc702b1796eb74d1",
+      "orchestrator_log_evidence": "Initial and per-phase READY records reported gyro-m-strata / context=131072; the perf commands target the same :8090/v1 endpoint.",
+      "limitation": "These are endpoint/API checks, not an engine-side join for each timed benchmark request."
+    },
+    "server_start": {
+      "file": "gyro_m_start_server.sh",
+      "sha256": "5c5a42a73e1055ce9d5a19404b61c793ab0df16bb65f68934da537d3db4743dc",
+      "line": 20,
+      "excerpt": "exec .venv/bin/python -m serve.server --engine strata --config strata-gyro-m.json --port 8080",
+      "configured_port": 8080
+    },
+    "available_router": {
+      "file": "router-proxy.py",
+      "sha256": "6e40bc2e1700e431eda4c43d70bbaedcbed6535e10f4f00a82c3abe3ac194c88",
+      "line": 4,
+      "excerpt": "Listens on :8081, forwards to Strata at :8080; rewrites top-level reasoning_effort based on prompt/tool-history classification",
+      "listen_port": 8081,
+      "upstream_port": 8080,
+      "rewrites_reasoning_effort": true,
+      "participation_in_campaign_route_proven": false
+    },
+    "campaign_manifest": {
+      "file": "results/gyro-m-rc2/full-20261012-rerun-1230/manifest.json",
+      "sha256": "8463ac1ab5158069c673b77e6cdc6e996caebceef3d2f26dbc6503b124dbb221",
+      "engine_commit": "9ff02c9fa9c86a88088370925b3c9131cc5d6c26",
+      "engine_sha256": "08d70e30b9176dee5273ba74bd67c4d4c435bef92d449323168d7a8a3497585f",
+      "context": 131072,
+      "kv": "int8"
+    },
+    "campaign_steps": {
+      "file": "results/gyro-m-rc2/full-20261012-rerun-1230/steps.jsonl",
+      "sha256": "9b87520ffbe6c3d18b0c10d07949ca1205154a565bcea250df6dc7a1f2c0f887",
+      "perf_low_no_progress_warning": true,
+      "perf_xhigh_no_progress_warning": false
+    },
+    "engine_console_log": {
+      "expected_filename": "strata-console.log",
+      "retained_or_present_at_audit": false,
+      "note": "No engine-side log was available to join the client requests to the pinned Strata process."
+    },
+    "route_resolution": {
+      "client_target_observed": "http://127.0.0.1:8090/v1",
+      "endpoint_model_context_gate_passed": true,
+      "runner_benchmark_commands_use_same_endpoint": true,
+      "recorded_server_port": 8080,
+      "available_router_path": "8081 -> 8080",
+      "8090_to_8080_mapping_proven": false,
+      "pinned_engine_request_attribution_proven": false,
+      "reasoning_effort_preservation_proven": false,
+      "limitation": "The retained run sources establish that the :8090 API gate served the expected Gyro-M model/context, that the runner used this endpoint for the timed commands, and that the pinned rc2 binary was separately verified. They do not establish the intervening :8090 route or join each timed request to that binary. The available :8081 router source rewrites reasoning_effort; its participation in this run is unproven. This is insufficient for engine-speed attribution, not evidence that the endpoint observations are fabricated or numerically incorrect."
+    }
+  },
+  "client_observations": [
+    {
+      "effort": "low",
+      "source_json": "data/gyro-m-perf-low.json",
+      "source_json_sha256": "f245a2dbffff741cb917462ddb72eecb71718969f71a844c6f3eccca5238e707",
+      "source_log": "logs/gyro-m-full-20261012-rerun-1230/perf-low.log",
+      "source_log_sha256": "b3210ab2d368907d0ab3c1195b954c1886c265538d70b139e53f2c3af222c7da",
+      "no_progress_warning": true,
+      "depths": [
+        {"context_tokens": 0, "prompt_size_requested": 2048, "generation_tokens_requested": 256, "repeats": 3, "tg_values": [103.87820812705854, 79.69912448880353, 96.60265172933617], "tg_mean": 93.39332811506608},
+        {"context_tokens": 32768, "prompt_size_requested": 2048, "generation_tokens_requested": 256, "repeats": 3, "tg_values": [83.5260780294631, 86.45767396181614, 92.39590994947548], "tg_mean": 87.4598873135849},
+        {"context_tokens": 122880, "prompt_size_requested": 2048, "generation_tokens_requested": 256, "repeats": 3, "tg_values": [87.66010963947039, 85.46502302598024, 86.32620944148731], "tg_mean": 86.48378070231264}
+      ]
+    },
+    {
+      "effort": "xhigh",
+      "source_json": "data/gyro-m-perf-xhigh.json",
+      "source_json_sha256": "9b0b11cc238355e7dad204cc11968bd8b596b84bcd4ceec1228dee221ed70b0b",
+      "source_log": "logs/gyro-m-full-20261012-rerun-1230/perf-xhigh.log",
+      "source_log_sha256": "ba72bb73079e2786967446b7a99e0b96039edd84026659d2041c4d49da72af95",
+      "no_progress_warning": false,
+      "depths": [
+        {"context_tokens": 0, "prompt_size_requested": 2048, "generation_tokens_requested": 256, "repeats": 3, "tg_values": [93.58645728674375, 80.1457310864266, 89.23101988880887], "tg_mean": 87.65440275399307},
+        {"context_tokens": 32768, "prompt_size_requested": 2048, "generation_tokens_requested": 256, "repeats": 3, "tg_values": [81.99134766780159, 81.10198194928961, 78.39229421104785], "tg_mean": 80.49520794271302},
+        {"context_tokens": 122880, "prompt_size_requested": 2048, "generation_tokens_requested": 256, "repeats": 3, "tg_values": [82.98140521003525, 78.63535468012641, 80.50003589222007], "tg_mean": 80.70559859412724}
+      ]
+    }
+  ],
+  "scope": "Gyro-M HE+ and TEB quality evidence is audited separately and remains unaffected by this speed-attribution finding. API-gated client rates remain available as descriptive endpoint observations only; no performance value is rewritten or promoted to engine throughput or composite eligibility."
+}

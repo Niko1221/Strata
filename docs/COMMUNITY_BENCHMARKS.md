@@ -67,6 +67,9 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 
+- [2026-10-10, updated 2026-10-14: RTX 5070 Ti 16 GB, Ryzen 9800X3D, 64 GB RAM (Windows + WSL2)](../bench/results/2026-10-10-community-quant-study-rtx5070ti/README.md):
+  a 10-file, 3-lab quant battery (ISTA-DASLab, UkisAI Swift, AgentionAI Gyro-S/M): 20 effort arms, 20 tool arms; eight stock files on Strata 0.1.40.3 and separate rc2 fork observations. Gyro-S sampled knowledge/debug/recall values from rc1 are analysis-only. HumanEval+ uses actual scoring denominators; pinned tool-eval-bench covers 92 scenarios x five runs; report includes debugging, recall and audited decode/TTFT profiles. GPT-6-luna MAX and GPT-6.1-SOL ultra are separately labeled hosted quality references; SOL uses the first upload only (Five Bugs 25/25 visible, 20/25 hidden). The Gyro-S overall battery is aborted/invalid on an auxiliary plugin-MMLU slice, while required coding/tool slices pass eligibility; Gyro-M remains experimental and its speed route is unverified. Hosted references remain outside local counts, rankings, recommendations and composites. PDF, raw evidence, source hashes, portable rebuild and whole-table pagination proof included.
+
 ## Run the benchmark
 
 The simplest report is one command after setup. Windows: double-click `BENCH.bat`. Linux: `./bench.sh`. Or

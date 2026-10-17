@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "arm": {
+    "key": "base-iq3_xxs",
+    "effort": "low"
+  },
+  "method": "offline adjudication of model-output syntax failure, not a new generation run",
+  "source_run": "2026-10-08_07-45-50",
+  "source_sha256": "b4ea694c03e517709de5aceb49e9ec75fafc235cc1dd29175796b0485b96f9ad",
+  "attempted_unique_tasks": 164,
+  "original_scored_total": 163,
+  "corrected_scored_total": 164,
+  "passed": 155,
+  "corrected_final_pct": 94.5,
+  "first_passed": 151,
+  "corrected_first_pct": 92.1,
+  "adjudicated_task": "HumanEval/120",
+  "corrected_task_verdict": "ordinary model failure",
+  "syntax_error": {
+    "type": "SyntaxError",
+    "message": "invalid syntax (<offline-base-iq3xxs-model-output>, line 27)"
+  },
+  "initial_attempt_already_failed": true,
+  "repair_attempt_was_exercised": true,
+  "generated_code_executed": false,
+  "raw_source_modified": false,
+  "timing_policy": "Existing measured run wall retained; response/tokens unaffected. Full report extraction must independently recompute timing/token aggregates if source filtering excluded this task."
+}

@@ -1,0 +1,2408 @@
+{
+  "schema": "hosted-api-reference-v1",
+  "run_id": "gpt6luna-max-20261012",
+  "assembled_on": "2026-10-13",
+  "role": "external_baseline_reference_only",
+  "recommendation": null,
+  "eligible_for_local_composite": false,
+  "display_name": "GPT-6-luna MAX (OpenAI-hosted API reference)",
+  "model": "gpt-6-luna",
+  "provider_route": "OpenAI Codex Responses API via loopback compatibility adapter",
+  "reasoning_effort": "max",
+  "bridge": {
+    "bind": "127.0.0.1",
+    "context_tokens": 272000,
+    "logs_prompts_or_outputs": false,
+    "stores_responses_upstream": false
+  },
+  "comparability_note": "A hosted reference anchor for the local Qwen quant study; not a local Strata run, not part of the local model/file count, and not a recommendation.",
+  "sampling_caveat": "MAX is explicitly pinned; unsupported/unverified Chat Completions sampling fields (temperature, presence_penalty, seed, top-p/top-k) are not forwarded by the Codex Responses bridge.",
+  "metrics": {
+    "human_eval_plus": {
+      "tasks": [
+        {
+          "task_id": "HumanEval/0",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/1",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/2",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/3",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/4",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/5",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/6",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/7",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/8",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/9",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/10",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/11",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/12",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/13",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/14",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/15",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/16",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/17",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/18",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/19",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/20",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/21",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/22",
+          "first_pass": false,
+          "final_pass": true,
+          "repaired": true
+        },
+        {
+          "task_id": "HumanEval/23",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/24",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/25",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/26",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/27",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/28",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/29",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/30",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/31",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/32",
+          "first_pass": false,
+          "final_pass": false,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/33",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/34",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/35",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/36",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/37",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/38",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/39",
+          "first_pass": false,
+          "final_pass": true,
+          "repaired": true
+        },
+        {
+          "task_id": "HumanEval/40",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/41",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/42",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/43",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/44",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/45",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/46",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/47",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/48",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/49",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/50",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/51",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/52",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/53",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/54",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/55",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/56",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/57",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/58",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/59",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/60",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/61",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/62",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/63",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/64",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/65",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/66",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/67",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/68",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/69",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/70",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/71",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/72",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/73",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/74",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/75",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/76",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/77",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/78",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/79",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/80",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/81",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/82",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/83",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/84",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/85",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/86",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/87",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/88",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/89",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/90",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/91",
+          "first_pass": false,
+          "final_pass": false,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/92",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/93",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/94",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/95",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/96",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/97",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/98",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/99",
+          "first_pass": false,
+          "final_pass": false,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/100",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/101",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/102",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/103",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/104",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/105",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/106",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/107",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/108",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/109",
+          "first_pass": false,
+          "final_pass": true,
+          "repaired": true
+        },
+        {
+          "task_id": "HumanEval/110",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/111",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/112",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/113",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/114",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/115",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/116",
+          "first_pass": false,
+          "final_pass": false,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/117",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/118",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/119",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/120",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/121",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/122",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/123",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/124",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/125",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/126",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/127",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/128",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/129",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/130",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/131",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/132",
+          "first_pass": false,
+          "final_pass": false,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/133",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/134",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/135",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/136",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/137",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/138",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/139",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/140",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/141",
+          "first_pass": false,
+          "final_pass": false,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/142",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/143",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/144",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/145",
+          "first_pass": false,
+          "final_pass": false,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/146",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/147",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/148",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/149",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/150",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/151",
+          "first_pass": false,
+          "final_pass": true,
+          "repaired": true
+        },
+        {
+          "task_id": "HumanEval/152",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/153",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/154",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/155",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/156",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/157",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/158",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/159",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/160",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/161",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/162",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        },
+        {
+          "task_id": "HumanEval/163",
+          "first_pass": true,
+          "final_pass": true,
+          "repaired": false
+        }
+      ],
+      "first_passes": 153,
+      "first_percent": 93.3,
+      "final_passes": 157,
+      "final_percent": 95.7,
+      "repair_successes": 4,
+      "repair_attempted": 11,
+      "wall_seconds": 1987.5,
+      "output_tokens_provider_reported": 80800,
+      "provider_reported_tokens_per_second": 42.0,
+      "token_rate_caveat": "Provider-reported completion usage includes hidden reasoning tokens; not visible-text throughput or local engine decode speed.",
+      "errors": 0,
+      "harness_errors": 0,
+      "timeouts": 0,
+      "length_events": 0,
+      "loop_kills": 0,
+      "blank_final_count": 0
+    },
+    "tool_eval_bench": {
+      "version": "2.7.1.dev16+gf7c34a130",
+      "scenarios": 92,
+      "trials": 5,
+      "seed": 42,
+      "temperature": 0,
+      "hard_mode": true,
+      "timeout_seconds": 300,
+      "max_turns": 8,
+      "trial_points": [
+        170,
+        170,
+        164,
+        164,
+        162
+      ],
+      "trial_max_points": [
+        184,
+        184,
+        184,
+        184,
+        184
+      ],
+      "trial_scores": [
+        92,
+        92,
+        89,
+        89,
+        88
+      ],
+      "mean": 90,
+      "stddev": 1.9,
+      "pass_at_5_count": 85,
+      "pass_at_5_percent": 92.4,
+      "pass_hat_5_count": 69,
+      "pass_hat_5_percent": 75.0,
+      "reliability_gap_percent": 17.4,
+      "hard_mode_mean_percent": 87.8,
+      "hard_mode_stddev_percent": 7.0,
+      "final_trial_safety_warnings": 0,
+      "repair_slices": [
+        "TC-28 trial 5",
+        "TC-62 trial 5",
+        "TC-76 trial 5",
+        "TC-80 trial 4"
+      ],
+      "scenarios_by_trial": [
+        {
+          "scenario_id": "TC-01",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-02",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-03",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-04",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-05",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-06",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-07",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-08",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-09",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-10",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-11",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-12",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-13",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-14",
+          "points": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-15",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-16",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-17",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-18",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-19",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-20",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-21",
+          "points": [
+            1,
+            1,
+            1,
+            2,
+            1
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-22",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-23",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-24",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-25",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-26",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-27",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-28",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-29",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-30",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-31",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-32",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-33",
+          "points": [
+            2,
+            2,
+            0,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-34",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-35",
+          "points": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-36",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-37",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-38",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-39",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-40",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-41",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-42",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-43",
+          "points": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-44",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-45",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-46",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-47",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            1
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-48",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-49",
+          "points": [
+            1,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-50",
+          "points": [
+            1,
+            1,
+            1,
+            2,
+            1
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-51",
+          "points": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-52",
+          "points": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-53",
+          "points": [
+            2,
+            2,
+            2,
+            1,
+            0
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-54",
+          "points": [
+            1,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-55",
+          "points": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-56",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-57",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-58",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-59",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-60",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-61",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-62",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            1
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-63",
+          "points": [
+            2,
+            1,
+            1,
+            1,
+            0
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-64",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-65",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-66",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-67",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-68",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-69",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-70",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-71",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-72",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-73",
+          "points": [
+            1,
+            2,
+            2,
+            1,
+            1
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-74",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            0
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-75",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-76",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-77",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-78",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-79",
+          "points": [
+            2,
+            2,
+            0,
+            0,
+            0
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-80",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-81",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-82",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-83",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-84",
+          "points": [
+            2,
+            2,
+            2,
+            1,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-85",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-86",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-87",
+          "points": [
+            2,
+            2,
+            0,
+            0,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-88",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        },
+        {
+          "scenario_id": "TC-89",
+          "points": [
+            2,
+            0,
+            0,
+            0,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-90",
+          "points": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "pass_at_5": false,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-91",
+          "points": [
+            2,
+            2,
+            2,
+            1,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": false
+        },
+        {
+          "scenario_id": "TC-92",
+          "points": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "pass_at_5": true,
+          "pass_hat_5": true
+        }
+      ]
+    },
+    "five_bugs": {
+      "tasks": 5,
+      "runs_per_task": 5,
+      "runs": 25,
+      "visible_passes": 25,
+      "visible_total": 25,
+      "hidden_passes": 20,
+      "hidden_total": 25,
+      "per_task_run_flags": {
+        "t1": [
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          }
+        ],
+        "t2": [
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          }
+        ],
+        "t3": [
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          }
+        ],
+        "t4": [
+          {
+            "visible_pass": true,
+            "hidden_pass": false
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": false
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": false
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": false
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": false
+          }
+        ],
+        "t5": [
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          },
+          {
+            "visible_pass": true,
+            "hidden_pass": true
+          }
+        ]
+      }
+    },
+    "sampled_knowledge_and_recall": {
+      "gsm8k": {
+        "correct": 97,
+        "total": 100,
+        "accuracy_percent": 97.0,
+        "shots": 8,
+        "shuffled": true,
+        "seed": 42
+      },
+      "mmlu": {
+        "correct": 93,
+        "total": 100,
+        "accuracy_percent": 93.0,
+        "shots": 5,
+        "sample": "first 100; abstract-algebra sample"
+      },
+      "ifeval": {
+        "prompt_correct": 43,
+        "prompt_total": 50,
+        "prompt_accuracy_percent": 86.0,
+        "instruction_correct": 69,
+        "instruction_total": 76,
+        "instruction_accuracy_percent": 90.8,
+        "sample": "first 50 prompts"
+      },
+      "needle": {
+        "correct": 25,
+        "total": 25,
+        "accuracy_percent": 100.0,
+        "grid": "5 depths x 5 lengths",
+        "configured_context_tokens": 262144,
+        "effective_context_tokens": 260096
+      }
+    },
+    "performance": {
+      "status": "unavailable_for_matched_decode_comparison",
+      "valid": false,
+      "rates_published": false,
+      "prompt_tokens": 2048,
+      "generation_cap": 256,
+      "contexts_tokens": [
+        0,
+        32768,
+        122880
+      ],
+      "requested_repeats_per_context": [
+        3,
+        3,
+        3
+      ],
+      "visible_text_rate_samples_per_context": [
+        1,
+        2,
+        3
+      ],
+      "decode_tps": null,
+      "prompt_tps": null,
+      "ttft": null,
+      "reason": "Mark the matched hosted-API performance measurement unavailable. Do not use the invalid raw rates, do not promote the diagnostic burst rates, and do not substitute the exploratory tg=1024 pilot."
+    }
+  },
+  "source_artifacts": {
+    "human_eval_plus": {
+      "label": "BenchKit HumanEval+ result; raw responses not redistributed",
+      "sha256": "7706b478b927acb838d2167acd5de4c7ebf00bdc5e3b13c61ab9d01650f4d518",
+      "bytes": 503101
+    },
+    "teb_reconciled": {
+      "label": "Full 92-scenario x 5-trial reconciled TEB result",
+      "sha256": "9507745b66ca5dc231279f6dd261e940dcc3900a5990bfb58fd97f6fbdeda26f",
+      "bytes": 50271
+    },
+    "fivebugs_generation": {
+      "label": "25 FiveBugs task-runs; response text omitted",
+      "sha256": "9915f1cde99fd5b4e4336f5fae5c9b7bd3efbc6347421b812a04d9a2391ced85",
+      "bytes": 6868
+    },
+    "fivebugs_scores": {
+      "label": "FiveBugs visible/hidden score matrix",
+      "sha256": "b4dd42d593f363b398989e4ec43092322f126c57bd369ad8b5f8e29507ba8557",
+      "bytes": 83370
+    },
+    "plugin_gsm8k": {
+      "label": "GSM8K aggregate report; prompts/responses omitted",
+      "sha256": "8e173736154379e9925b52591f22369c50c05b9666ac2b5f7a034d983403b775",
+      "bytes": 3557
+    },
+    "plugin_mmlu": {
+      "label": "MMLU aggregate report; prompts/responses omitted",
+      "sha256": "59437283d71c9d088e9c837dc86cadabcff37a4d6f383f7cfd98dd4afbf6509d",
+      "bytes": 3573
+    },
+    "plugin_ifeval": {
+      "label": "IFEval aggregate report; prompts/responses omitted",
+      "sha256": "a4d1d5963486f4bb1fb8c08424277e1c423906b9de71192f97e33aa0fe8ecc80",
+      "bytes": 6543
+    },
+    "plugin_needle": {
+      "label": "Needle aggregate report; haystack/output omitted",
+      "sha256": "cdc408f125012c451672314b0d04f6c3fc601bfa07eca898ed4d245753f01687",
+      "bytes": 1128
+    },
+    "performance_audit": {
+      "label": "Performance validity audit; partial rates withheld",
+      "sha256": "79a40f0dba56df9923fa49799beee5bea6c9d475778de8c219e19326b0534ab6",
+      "bytes": 3147
+    }
+  },
+  "privacy_note": "Only aggregate scores, task/scenario identifiers and pass flags are included. Prompts, model outputs, code responses, reasoning text, credentials and API keys are omitted."
+}

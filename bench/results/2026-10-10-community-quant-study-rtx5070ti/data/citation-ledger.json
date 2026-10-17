@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": 1,
+      "url": "https://github.com/Niko1221/Strata/pull/1850",
+      "title": "",
+      "accessed": "2026-10-12"
+    },
+    {
+      "id": 2,
+      "url": "https://github.com/evalplus/evalplus",
+      "title": "",
+      "accessed": "2026-10-12"
+    },
+    {
+      "id": 3,
+      "url": "https://github.com/SeraphimSerapis/tool-eval-bench",
+      "title": "",
+      "accessed": "2026-10-12"
+    },
+    {
+      "id": 4,
+      "url": "https://github.com/vyang472/five-bugs",
+      "title": "",
+      "accessed": "2026-10-12"
+    },
+    {
+      "id": 5,
+      "url": "https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF",
+      "title": "",
+      "accessed": "2026-10-12"
+    }
+  ]
+}

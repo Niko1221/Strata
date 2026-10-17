@@ -1,0 +1,46 @@
+{
+  "purpose": "presentation only; no score, weights or recommendation changes",
+  "method": "Five contrasting bins across the observed range of each column; missing values gray; constant columns neutral. Speed is total wall time (code+debug+5-run tool), colored inverted so faster is stronger. Colors magnify within-test differences, not absolute pass/fail or statistical significance.",
+  "palette": [
+    "#b35806",
+    "#f6c67a",
+    "#fff8dc",
+    "#80cdc1",
+    "#01665e"
+  ],
+  "missing": "#d9dfe5",
+  "column_bounds": {
+    "Coding": {
+      "minimum": 93.3,
+      "maximum": 96.3
+    },
+    "Tool floor": {
+      "minimum": 68.5,
+      "maximum": 79.3
+    },
+    "Hard Mode": {
+      "minimum": 68.4,
+      "maximum": 88.6
+    },
+    "Math": {
+      "minimum": 90.0,
+      "maximum": 99.0
+    },
+    "Algebra": {
+      "minimum": 72.0,
+      "maximum": 85.0
+    },
+    "Instructions": {
+      "minimum": 76.0,
+      "maximum": 86.0
+    },
+    "Hidden bugs": {
+      "minimum": 64.0,
+      "maximum": 80.0
+    },
+    "Speed": {
+      "minimum": 3353.5,
+      "maximum": 10315.61
+    }
+  }
+}

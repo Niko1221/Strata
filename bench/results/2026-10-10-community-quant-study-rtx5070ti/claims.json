@@ -1,0 +1,153 @@
+{
+  "inventory": {
+    "models": 10,
+    "effort_arms": 20,
+    "tool_arms": 20,
+    "partial_he_arms": []
+  },
+  "daily_driver_policy": {
+    "method": "Evidence-based daily-driver decision matrix; no master score or numeric rank",
+    "default": {
+      "key": "swift-iq3_s",
+      "effort": "low"
+    },
+    "weights": null,
+    "recommendation_confidence": "provisional, benchmark-backed recommendation for this rig; not long-term stability certification",
+    "coverage_policy": "Use every tested family; never mix Gyro-S rc1 sampled suites into rc2 evidence, impute missing data, double-count shared per-file samples as effort repetitions, or equate tool warnings with safety certification. TPS stays in separate diagnostics.",
+    "deployment_policy": "A capability result alone cannot override observed memory, campaign-validity, safety-gate and matched-coverage caveats. Existing stock evidence is preferred over experimental fork-only wins for the default recommendation. This report does not change the deployed model."
+  },
+  "recommendations": [
+    {
+      "role": "all_rounder",
+      "key": "swift-iq3_s",
+      "effort": "low",
+      "decision": "Recommended daily-driver default",
+      "reason": "Broad stock-cohort evidence: strong coding, tools, sampled knowledge, instructions and hidden debugging. Total workload wall is mid-pack (75m03s), not the fastest; chosen for breadth, not speed."
+    },
+    {
+      "role": "fastest_total_wall",
+      "key": "swift-q2_0",
+      "effort": "low",
+      "decision": "Fastest total workload time",
+      "reason": "Lowest total wall (code+debug+5-run tool) at 55m54s and the best stock all-five floor; sampled math/algebra and hidden debugging trail the recommended default."
+    },
+    {
+      "role": "reliability",
+      "key": "swift-q2_0",
+      "effort": "low",
+      "decision": "Tool-reliability specialist",
+      "reason": "Highest observed stock all-five floor, and it doubles as the fastest total wall (55m54s); weaker sampled math/algebra and hidden debugging than the recommended default."
+    },
+    {
+      "role": "fast_coding",
+      "key": "swift-iq3_xxs",
+      "effort": "low",
+      "decision": "Coding-latency specialist",
+      "reason": "Shortest complete coding job; total workload wall 62m31s. Not the strongest broad sampled capability profile."
+    },
+    {
+      "role": "coding_ceiling",
+      "key": "iq3_s",
+      "effort": "xhigh",
+      "decision": "Coding-score specialist",
+      "reason": "Highest observed stock final coding score; substantially longer total wall (160m) than low-effort Swift options."
+    },
+    {
+      "role": "knowledge_debug",
+      "key": "swift-iq3_s",
+      "effort": "low",
+      "decision": "Sampled knowledge / debugging choice",
+      "reason": "Highest local sampled algebra accuracy and hidden debugging score; limited samples, not a whole-model knowledge exam."
+    },
+    {
+      "role": "experimental_not_production",
+      "key": "gyro-m",
+      "effort": "low",
+      "decision": "Experimental comparison, not a default pick",
+      "reason": "Scored quality is useful, but narrow 16 GB memory margin, raw safety-gate failures, CTest/campaign caveats and the slowest total wall (172m at xhigh) prevent a daily-driver endorsement."
+    }
+  ],
+  "analysis_only_axes": {
+    "gyro-s": [
+      "legacy_rc1_auxiliary"
+    ],
+    "reason": "Gyro-S valid rc2 math, instructions, debugging, retrieval and algebra are imported. Legacy rc1 artifacts are archived, not substituted."
+  },
+  "fastest_full_he": {
+    "key": "swift-iq3_xxs",
+    "effort": "low",
+    "wall_s": 716.5
+  },
+  "best_complete_he": {
+    "score": 96.3,
+    "arms": [
+      [
+        "iq3_s",
+        "xhigh"
+      ]
+    ]
+  },
+  "stock_best_mean": {
+    "key": "q2_0",
+    "effort": "xhigh",
+    "mean": 89.4
+  },
+  "stock_best_floor": {
+    "key": "swift-q2_0",
+    "effort": "low",
+    "floor": 78.3
+  },
+  "gyro_s_scoring_gate": {
+    "eligible": true,
+    "reasons": []
+  },
+  "partial_he_arms": [],
+  "gyro_m_speed_attribution": {
+    "path": "data/gyro-m-speed-attribution-audit.json",
+    "sha256": "b4f85f9a097c1fdd4ae999613f478c4944894038fdaf0411e5720c147b082ee4",
+    "status": "unverified_endpoint_attribution",
+    "comparison_eligible": false,
+    "reason": "The client targeted 127.0.0.1:8090/v1, while the retained Gyro-M Strata start command configured port 8080; the available router evidence is 8081->8080, and no 8090-to-engine route or engine-side request log was retained. Preserve the raw endpoint numbers, but do not attribute any depth to the pinned Gyro-M setup or use it for comparison."
+  },
+  "hosted_api_reference": {
+    "display_name": "GPT-6-luna MAX (OpenAI-hosted API reference)",
+    "run_id": "gpt6luna-max-20261012",
+    "role": "external_baseline_reference_only",
+    "recommendation": null,
+    "eligible_for_local_composite": false,
+    "human_eval_plus": {
+      "first_percent": 93.3,
+      "final_percent": 95.7,
+      "solved": "157/164",
+      "repairs": "4/11",
+      "provider_reported_tokens_per_second": 42.0,
+      "token_rate_caveat": "Provider-reported completion usage includes hidden reasoning tokens; not visible-text throughput or local engine decode speed."
+    },
+    "tool_eval_bench": {
+      "mean": 90,
+      "stddev": 1.9,
+      "pass_at_5_percent": 92.4,
+      "pass_hat_5_percent": 75.0,
+      "hard_mode_mean_percent": 87.8
+    },
+    "performance_status": "unavailable_for_matched_decode_comparison"
+  },
+  "hosted_api_references": [
+    {
+      "display_name": "GPT-6-luna MAX (OpenAI-hosted API reference)",
+      "run_id": "gpt6luna-max-20261012",
+      "role": "external_baseline_reference_only",
+      "recommendation": null,
+      "eligible_for_local_composite": false,
+      "source_commit": null
+    },
+    {
+      "display_name": "GPT-6.1-SOL ultra (OpenAI-hosted Codex reference)",
+      "run_id": "gpt-6.1-sol-codex-cli-ultra-first-upload-20261013",
+      "role": "external_baseline_reference_only",
+      "recommendation": null,
+      "eligible_for_local_composite": false,
+      "source_commit": "a48292f5766f66efcdb1e23396569b0907c44c04"
+    }
+  ]
+}

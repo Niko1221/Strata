@@ -1,0 +1,193 @@
+{
+ "gyro-s-rc2-gyro-s-fullbattery-20261013g": {
+  "per_task": {
+   "t1": [
+    {
+     "file": "t1_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    },
+    {
+     "file": "t1_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "8431bd47",
+     "detail": ""
+    }
+   ],
+   "t2": [
+    {
+     "file": "t2_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    },
+    {
+     "file": "t2_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "ce2fe123",
+     "detail": ""
+    }
+   ],
+   "t3": [
+    {
+     "file": "t3_r1.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpdx1aap6p/solution.py)"
+    },
+    {
+     "file": "t3_r2.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r3.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmpzixuayqf/solution.py)"
+    },
+    {
+     "file": "t3_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "1b4fe73c",
+     "detail": ""
+    },
+    {
+     "file": "t3_r5.py",
+     "vis": false,
+     "hid": false,
+     "fp": "da39a3ee",
+     "detail": "ImportError: cannot import name 'round_money' from 'solution' (/tmp/tmp_vncj3ts/solution.py)"
+    }
+   ],
+   "t4": [
+    {
+     "file": "t4_r1.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r2.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r3.py",
+     "vis": true,
+     "hid": false,
+     "fp": "aea6ffca",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r4.py",
+     "vis": true,
+     "hid": false,
+     "fp": "b6a00a58",
+     "detail": "AssertionError: a  d"
+    },
+    {
+     "file": "t4_r5.py",
+     "vis": true,
+     "hid": false,
+     "fp": "c7fb47af",
+     "detail": "AssertionError: a  d"
+    }
+   ],
+   "t5": [
+    {
+     "file": "t5_r1.py",
+     "vis": true,
+     "hid": true,
+     "fp": "cfdfca32",
+     "detail": ""
+    },
+    {
+     "file": "t5_r2.py",
+     "vis": false,
+     "hid": false,
+     "fp": "ca100c30",
+     "detail": "ValueError: day is out of range for month"
+    },
+    {
+     "file": "t5_r3.py",
+     "vis": true,
+     "hid": true,
+     "fp": "9989f97f",
+     "detail": ""
+    },
+    {
+     "file": "t5_r4.py",
+     "vis": true,
+     "hid": true,
+     "fp": "cfdfca32",
+     "detail": ""
+    },
+    {
+     "file": "t5_r5.py",
+     "vis": true,
+     "hid": true,
+     "fp": "9d032b76",
+     "detail": ""
+    }
+   ]
+  },
+  "vis": "21/25",
+  "hid": "16/25"
+ }
+}
