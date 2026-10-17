@@ -1,0 +1,134 @@
+[
+ {
+  "length": "4k",
+  "run": 1,
+  "prompt_tokens": 4233,
+  "reused": 0,
+  "prompt_tok_s": 3071.6,
+  "generated": 256,
+  "output_tok_s": 152.0,
+  "drafts_accepted": 116,
+  "drafts_total": 185
+ },
+ {
+  "length": "4k",
+  "run": 2,
+  "prompt_tokens": 4234,
+  "reused": 0,
+  "prompt_tok_s": 3075.4,
+  "generated": 256,
+  "output_tok_s": 146.7,
+  "drafts_accepted": 118,
+  "drafts_total": 201
+ },
+ {
+  "length": "4k",
+  "run": 3,
+  "prompt_tokens": 4233,
+  "reused": 0,
+  "prompt_tok_s": 3075.4,
+  "generated": 256,
+  "output_tok_s": 169.4,
+  "drafts_accepted": 133,
+  "drafts_total": 197
+ },
+ {
+  "length": "32k",
+  "run": 1,
+  "prompt_tokens": 30794,
+  "reused": 0,
+  "prompt_tok_s": 5228.6,
+  "generated": 256,
+  "output_tok_s": 177.5,
+  "drafts_accepted": 152,
+  "drafts_total": 213
+ },
+ {
+  "length": "32k",
+  "run": 2,
+  "prompt_tokens": 30795,
+  "reused": 0,
+  "prompt_tok_s": 5220.7,
+  "generated": 256,
+  "output_tok_s": 168.7,
+  "drafts_accepted": 156,
+  "drafts_total": 239
+ },
+ {
+  "length": "32k",
+  "run": 3,
+  "prompt_tokens": 30795,
+  "reused": 0,
+  "prompt_tok_s": 5224.7,
+  "generated": 256,
+  "output_tok_s": 163.6,
+  "drafts_accepted": 141,
+  "drafts_total": 212
+ },
+ {
+  "length": "128k",
+  "run": 1,
+  "prompt_tokens": 120608,
+  "reused": 0,
+  "prompt_tok_s": 6155.4,
+  "generated": 256,
+  "output_tok_s": 126.9,
+  "drafts_accepted": 100,
+  "drafts_total": 188
+ },
+ {
+  "length": "128k",
+  "run": 2,
+  "prompt_tokens": 120607,
+  "reused": 0,
+  "prompt_tok_s": 6148.1,
+  "generated": 256,
+  "output_tok_s": 133.8,
+  "drafts_accepted": 117,
+  "drafts_total": 211
+ },
+ {
+  "length": "128k",
+  "run": 3,
+  "prompt_tokens": 120608,
+  "reused": 0,
+  "prompt_tok_s": 6138.6,
+  "generated": 256,
+  "output_tok_s": 131.9,
+  "drafts_accepted": 108,
+  "drafts_total": 193
+ },
+ {
+  "length": "256k",
+  "run": 1,
+  "prompt_tokens": 248490,
+  "reused": 0,
+  "prompt_tok_s": 6023.5,
+  "generated": 256,
+  "output_tok_s": 165.3,
+  "drafts_accepted": 165,
+  "drafts_total": 253
+ },
+ {
+  "length": "256k",
+  "run": 2,
+  "prompt_tokens": 248489,
+  "reused": 0,
+  "prompt_tok_s": 6031.3,
+  "generated": 256,
+  "output_tok_s": 146.4,
+  "drafts_accepted": 144,
+  "drafts_total": 251
+ },
+ {
+  "length": "256k",
+  "run": 3,
+  "prompt_tokens": 248489,
+  "reused": 0,
+  "prompt_tok_s": 6030.9,
+  "generated": 256,
+  "output_tok_s": 141.1,
+  "drafts_accepted": 151,
+  "drafts_total": 268
+ }
+]
