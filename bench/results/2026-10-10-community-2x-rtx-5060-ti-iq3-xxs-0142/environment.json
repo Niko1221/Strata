@@ -1,0 +1,155 @@
+{
+  "measured_dates": [
+    "2026-10-10",
+    "2026-10-11"
+  ],
+  "submitted_by": "inlanger",
+  "engine_version": "0.1.42",
+  "engine_commit": "61b3fb5dd3f1e8ec09cf7e4e05208bc6d3c46406",
+  "source_tree_clean": true,
+  "binary_sha256": "8c0b24c92d895e069fe0b0fede42cb24de590cac77ba403863aa9e2065cc045e",
+  "build": {
+    "environment": "existing Docker container, strata-local:cuda13",
+    "type": "Release",
+    "cuda": "13.0",
+    "nvcc": "13.0.88",
+    "architectures": "120;86"
+  },
+  "hardware": {
+    "gpus": [
+      "RTX 5060 Ti 16 GB",
+      "RTX 5060 Ti 16 GB"
+    ],
+    "cpu": "Intel Core i7-12700, 8 P + 4 E cores, 20 logical CPUs, AVX2",
+    "ram": "64 GB DDR4-3200",
+    "storage": "Crucial P310 500 GB PCIe Gen4 NVMe for models and Docker",
+    "os": "Ubuntu 26.04 LTS",
+    "kernel": "7.0.0-38-generic",
+    "driver": "595.91.07",
+    "pcie_under_load": [
+      "Gen4 x8",
+      "Gen4 x4"
+    ],
+    "p2p": false,
+    "power_limits_w": [
+      180,
+      180
+    ],
+    "background": "No other GPU inference; other Docker services retained. Background CPU/disk load not controlled."
+  },
+  "model": {
+    "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+    "revision": "not recorded at download",
+    "quant": "IQ3_XXS",
+    "gguf_files": {
+      "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf": 47039860096,
+      "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf": 28800138432
+    },
+    "profile": {
+      "bytes": 196632,
+      "sha256": "34173b9bd347358bcc2e7601700ae10688340e3db7cf812a3de85264d502139c",
+      "ranked_pairs": 24576,
+      "origin": "prior routing-frequency calibration"
+    },
+    "control_vector": {
+      "file": "Huihui-Qwen3.8-Flash-Next-refusal-direction-r.gguf",
+      "bytes": 483520,
+      "sha256": "59f9ae8b4372107ae79044278a4406bdfe8f8861fe599aa5848515f0d072be38",
+      "mode": "project/per-layer, layers 4-44, scale 1.0"
+    },
+    "mtp": {
+      "expert_format": "Q2_0",
+      "dense": "mixed Q8_0/BF16/F32",
+      "vocab": "cyrillic, 58963 tokens",
+      "hashes": {
+        "draft_vocab.bin": "25d7fd1670a2e0ec885868d1718d410a3baab03bceeacf0a156cf93ffe4e1ef4",
+        "dense.bin": "c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a",
+        "experts.bin": "09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f"
+      }
+    },
+    "native_pack_manifests": {
+      "native_experts.txt": "ae28cf7a2a1c9063c4b55d6c8cf86d4d079dcddcf597f9e8697c9157d462c0ee",
+      "index.txt": "1afe12b36cd2d13bf122b741fa0e81e1f751319cc3c451e54ba75524d825f148"
+    }
+  },
+  "snapshots": [
+    {
+      "utc": "2026-10-10T19:35:00.759465+00:00",
+      "engine": {
+        "model": "qwen3.8-flash-next-iq3_xxs",
+        "max_context": 131072,
+        "images": false,
+        "version": "0.1.42",
+        "logit_bias": 1,
+        "context": 131072,
+        "kv": "int8",
+        "kv_resident": 20480,
+        "expert_slots": 14230,
+        "expert_cache_mib": 23802,
+        "expert_slots_primary": 8281,
+        "expert_cache_primary_mib": 12236,
+        "spec": 5,
+        "mtp_max": 3,
+        "lookup": 3,
+        "vram_free_mib": 488,
+        "cvec": "project:4-44",
+        "arena_mib": 40925,
+        "pool_workers": 11,
+        "pcie_frac": "0.00",
+        "spec_min_p": "0.70",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "conversation_cache_min_tokens": 0,
+        "tail_role_token": -1,
+        "vram_elastic": 0,
+        "engine": "0.1.42"
+      },
+      "gpu_csv": "index, name, memory.used [MiB], memory.free [MiB], temperature.gpu, power.draw [W], pcie.link.gen.current, pcie.link.width.current\n0, NVIDIA GeForce RTX 5060 Ti, 15460 MiB, 391 MiB, 50, 4.29 W, 1, 8\n1, NVIDIA GeForce RTX 5060 Ti, 15454 MiB, 397 MiB, 42, 1.74 W, 1, 4\n",
+      "memory_bytes": "               total        used        free      shared  buff/cache   available\nMem:     66090795008 57019211776   685752320  4293603328 13429825536  9071583232\nSwap:    17179865088  6967107584 10212757504\n",
+      "oom_killed": false,
+      "aer_unchanged": true,
+      "kernel_errors_in_experiment": [],
+      "engine_errors": []
+    },
+    {
+      "utc": "2026-10-11T11:05:15.603297+00:00",
+      "engine": {
+        "model": "qwen3.8-flash-next-iq3_xxs",
+        "max_context": 131072,
+        "images": false,
+        "version": "0.1.42",
+        "logit_bias": 1,
+        "context": 131072,
+        "kv": "int8",
+        "kv_resident": 20480,
+        "expert_slots": 14230,
+        "expert_cache_mib": 23802,
+        "expert_slots_primary": 8281,
+        "expert_cache_primary_mib": 12236,
+        "spec": 5,
+        "mtp_max": 3,
+        "lookup": 3,
+        "vram_free_mib": 488,
+        "cvec": "project:4-44",
+        "arena_mib": 40925,
+        "pool_workers": 11,
+        "pcie_frac": "0.00",
+        "spec_min_p": "0.70",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "conversation_cache_min_tokens": 0,
+        "tail_role_token": -1,
+        "vram_elastic": 0,
+        "engine": "0.1.42"
+      },
+      "gpu_csv": "index, name, memory.used [MiB], memory.free [MiB], temperature.gpu, power.draw [W], pcie.link.gen.current, pcie.link.width.current\n0, NVIDIA GeForce RTX 5060 Ti, 15454 MiB, 397 MiB, 50, 4.18 W, 1, 8\n1, NVIDIA GeForce RTX 5060 Ti, 15446 MiB, 405 MiB, 42, 1.88 W, 1, 4\n",
+      "memory_bytes": "               total        used        free      shared  buff/cache   available\nMem:     66090795008 57898692608   603914240  4552990720 12890103808  8192102400\nSwap:    17179865088  6142513152 11037351936\n",
+      "oom_killed": false,
+      "aer_unchanged": true,
+      "kernel_errors_in_experiment": [],
+      "engine_errors": []
+    }
+  ]
+}

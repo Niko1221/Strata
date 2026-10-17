@@ -67,6 +67,12 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 
+- [2026-10-10–11: 2x RTX 5060 Ti 16 GB, i7-12700, 64 GB DDR4-3200](../bench/results/2026-10-10-community-2x-rtx-5060-ti-iq3-xxs-0142/README.md):
+  Strata 0.1.42 in Docker, GSQ-RCO IQ3_XXS with Huihui projection and Cyrillic MTP vocabulary,
+  layer split 28, 131K context, full high-reasoning responses. Paired tail-skip comparison:
+  149.5 → 161.9 pooled decode tok/s; 122K inputs: 123.2 / 138.8 tok/s and about 47 s prefill.
+  Includes a P-core comparison, all 81 requests, synthetic fixtures and replay scripts.
+
 ## Run the benchmark
 
 The simplest report is one command after setup. Windows: double-click `BENCH.bat`. Linux: `./bench.sh`. Or
