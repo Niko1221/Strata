@@ -63,6 +63,25 @@
 
 namespace strata::core {
 namespace {
+class ExpertRouteCount;
+void count_expert_routes(sycl::queue* q, const int32_t* ids, int entries,
+                         int layer, int experts, uint32_t* counts) {
+    q->parallel_for<ExpertRouteCount>(
+        sycl::nd_range<1>((entries + 31) / 32 * 32, 32),
+        [=](sycl::nd_item<1> item) [[sycl::reqd_sub_group_size(32)]] {
+            const int i = (int)item.get_global_id(0);
+            if (i < entries) {
+                const int expert = ids[i];
+                if (expert >= 0 && expert < experts) {
+                    sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed,
+                        sycl::memory_scope::device, sycl::access::address_space::global_space>
+                        count(counts[layer * experts + expert]);
+                    count.fetch_add(1);
+                }
+            }
+        });
+}
+
 
 constexpr float EPS = 1e-6f;
 using Clock = std::chrono::steady_clock;
@@ -429,6 +448,7 @@ Verifier::~Verifier() try {
         for (auto* e : v)
             if (e) delete e;
     if (commit_exec_) delete (commit_exec_);
+    if (expert_usage_counts_d_) sycl::free(expert_usage_counts_d_, *cs_);
     for (auto& kv : exec_bm_)
         if (kv.second) delete (kv.second);
     for (auto& kv : commit_bm_)
@@ -1327,6 +1347,9 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
             mb.logits = logits_ + t * NE; mb.ids = ids_ + t * K; mb.weights = w_ + t * K;
             if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr)) return false;
         }
+        if (expert_usage_counts_d_)
+            count_expert_routes(cs, ids_ + tb * K, (int)(n * K), (int)l,
+                                (int)g.n_expert, expert_usage_counts_d_);
         if (ar_on()) {
             resident_plan(ids_ + tb * K, n * (int) K, (int) K, hits_.d_res + l * g.n_expert, (int) g.n_expert,
                           hits_.cache_base, slot_off_d_, (long long) hits_.blob,
@@ -2017,6 +2040,8 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     }
     if (trace_h_ != nullptr) std::memset(trace_h_, 0, trace_n_ * 8);   // #649: this window's breadcrumbs only
     std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (expert_usage_counts_d_)
+        cs_->memset(expert_usage_counts_d_, 0, expert_usage_counts_h_.size() * sizeof(uint32_t));
     trace_ev("WINDOW", -1, -1, pos0 * 16 + T);
     ms_host += ms_since(t0);
     VDBG("staged; launching\n");
@@ -2330,6 +2355,25 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     if (se != 0) {
         err = std::string("verify: ") + dpct::get_error_string_dummy(se);
         return false;
+    }
+    if (expert_usage_counts_d_) {
+        if (!expert_usage_counter_ || expert_usage_counter_->size() != expert_usage_counts_h_.size())
+            throw std::runtime_error("mirror adaptive expert usage is unbound");
+        cs_->memcpy(expert_usage_counts_h_.data(), expert_usage_counts_d_,
+                    expert_usage_counts_h_.size() * sizeof(uint32_t)).wait_and_throw();
+        uint64_t total = 0;
+        for (uint32_t count : expert_usage_counts_h_) total += count;
+        if (total != (uint64_t)(le_ - lb_) * (uint64_t)T * (uint64_t)ss.k)
+            throw std::runtime_error("mirror adaptive route histogram coverage mismatch");
+        // Default to window presence; the diagnostic override preserves scalar route-count accumulation.
+        static const bool presence = [] {
+            const char* v = std::getenv("STRATA_SYCL_ADAPT_WINDOW_PRESENCE");
+            return !v || v[0] == '1';
+        }();
+        for (size_t i = 0; i < expert_usage_counts_h_.size(); ++i) {
+            const uint32_t count = presence ? (expert_usage_counts_h_[i] > 0 ? 1u : 0u) : expert_usage_counts_h_[i];
+            for (uint32_t n = 0; n < count; ++n) (*expert_usage_counter_)[i] += 1.f;
+        }
     }
     if (no_host && std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {   // SYCL port: what the window left behind
         const int Gd = groups_[T] > 0 ? groups_[T] : 1;
@@ -3962,6 +4006,20 @@ void Verifier::absorb_stats(Verifier& o) {
         for (int i = 0; i < kProfPer; ++i) { prof_sum_[k][i] += o.prof_sum_[k][i]; o.prof_sum_[k][i] = 0; }
     prof_windows_ += o.prof_windows_;
     o.prof_windows_ = 0;
+}
+
+void Verifier::set_expert_usage_counter(std::vector<float>* usage) {
+    if (!g_ || !cs_ || !device_plan_ || !env_on("STRATA_VERIFY_NO_HOST") || !usage ||
+        usage->size() != size_t(g_->n_layers) * size_t(g_->n_expert))
+        throw std::invalid_argument("mirror adaptive expert usage configuration mismatch");
+    // Called after init and before graph capture. Only the selected mirror path allocates counters.
+    if (!expert_usage_counts_d_) {
+        expert_usage_counts_h_.assign(usage->size(), 0);
+        expert_usage_counts_d_ = sycl::malloc_device<uint32_t>(usage->size(), *cs_);
+        if (!expert_usage_counts_d_) throw std::bad_alloc();
+        cs_->memset(expert_usage_counts_d_, 0, usage->size() * sizeof(uint32_t)).wait_and_throw();
+    }
+    expert_usage_counter_ = usage;
 }
 
 }  // namespace strata::core
