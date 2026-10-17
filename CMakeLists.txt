@@ -298,6 +298,11 @@ if(STRATA_BUILD_TESTS)
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
   target_include_directories(host_limits_test PRIVATE include)
   add_test(NAME host_limits_test COMMAND host_limits_test)
+
+  # NativeDense::load places the optional STRATA_Q8_PACKED copies after every required allocation: header-only, no GPU
+  add_executable(optional_alloc_test tests/core/optional_alloc_test.cpp)
+  target_include_directories(optional_alloc_test PRIVATE include)
+  add_test(NAME optional_alloc_test COMMAND optional_alloc_test)
 endif()
 
 # ---- strata_plan ----------------------------------------------------------

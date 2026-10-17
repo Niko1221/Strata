@@ -1,5 +1,6 @@
 #include "strata/core/native_dense.hpp"
 #include <cstdlib>
+#include "strata/core/optional_alloc.hpp"
 #include "strata/core/weights.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/fused_gr.hpp"
@@ -150,6 +151,13 @@ bool eligible(const strata::TensorInfo& tensor, bool include_ple_key) {
     for (const char* suffix : suffixes) if (name.ends_with(suffix)) return true;
     return false;
 }
+// STRATA_Q8_PACKED=1: `load` keeps a second, packed copy of this matrix for the decode MMVQ (the same bytes as the GGUF
+// copy).  `weight_bytes_for` prices it with the same test, so a split search sees what `load` will allocate.
+bool q8_packs(const strata::TensorInfo& tensor, int64_t ne0, int64_t ne1) {
+    return tensor.type == 8 && tensor.name != "blk.1.ple_key.weight" &&   // the PLE has its own kernel
+           strata::kernels::native_q8_0_packed_enabled() &&
+           strata::kernels::native_q8_0_packed_eligible((int) ne0, (int) ne1);
+}
 struct DeviceFree { void operator()(void* p) const { if (p) cudaFree(p); } };
 using DevicePtr = std::unique_ptr<void, DeviceFree>;
 struct Pending {
@@ -157,7 +165,9 @@ struct Pending {
     int type;
     uint64_t bytes;
     DevicePtr data;
-    DevicePtr packed;   // STRATA_Q8_PACKED=1 copy, or null
+    DevicePtr packed;                                // STRATA_Q8_PACKED=1 copy, or null
+    const strata::TensorInfo* pack_tensor = nullptr;   // non-null: wants that copy, made from `pack_src` after the
+    const uint8_t* pack_src = nullptr;                 // required allocations (its shard stays open until then)
 };
 }
 
@@ -182,7 +192,8 @@ void NativeDense::set_layer_range(int lb, int le) { g_layer_lb = lb; g_layer_le 
 // The byte walk `load` does for the layers [lb, le), without the allocations: the same filters in the same order,
 // reading the GGUF headers and the canonical table only, so it needs no device.  A later stage's projections are not
 // on the card when the split search prices that stage, and `load` runs one cudaMalloc per matrix (#1238).  The two
-// have to stay in step.  A repeated name is skipped rather than refused (`load` refuses it).
+// have to stay in step, the STRATA_Q8_PACKED copies included.  A repeated name is skipped rather than refused (`load`
+// refuses it).
 bool NativeDense::weight_bytes_for(const std::vector<std::string>& shards, WeightTable& table, bool include_ple_key,
                                    int64_t lb, int64_t le, uint64_t& out, std::string& err) {
     out = 0;
@@ -212,7 +223,10 @@ bool NativeDense::weight_bytes_for(const std::vector<std::string>& shards, Weigh
                     err = "native dense: incompatible matrix " + tensor.name;
                     return false;
                 }
-                total += alloc_bytes(strata::kernels::native_mmvq_weight_bytes(tensor.type, (int) ref.ne0, (int) ref.ne1));
+                const uint64_t bytes = alloc_bytes(strata::kernels::native_mmvq_weight_bytes(tensor.type, (int) ref.ne0,
+                                                                                             (int) ref.ne1));
+                total += bytes;
+                if (q8_packs(tensor, ref.ne0, ref.ne1)) total += bytes;   // its STRATA_Q8_PACKED copy, the same size
             }
         }
         out = total;
@@ -264,9 +278,15 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         uint64_t total = 0, hc_q8_bytes = 0, allocated = 0;
         uint64_t split_count = 0, split_tensors = 0;
         std::set<uint64_t> split_numbers;
+        std::vector<std::unique_ptr<strata::GgufFile>> pack_shards;   // the shards the packed copies are made from
+        RequiredThenOptional plan;          // every required allocation first, the packed copies after them
+        std::vector<size_t> want_items;     // the `pending` index of each copy `plan` queues
+        std::string pack_err;
         bool have_architecture = false;
         for (const auto& path : shards) {
-            strata::GgufFile gguf(path);
+            auto shard = std::make_unique<strata::GgufFile>(path);
+            const strata::GgufFile& gguf = *shard;
+            bool shard_packs = false;
             const auto* count = gguf.get("split.count");
             const auto* number = gguf.get("split.no");
             const auto* tensors = gguf.get("split.tensors.count");
@@ -349,37 +369,60 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 }
                 const auto bytes = strata::kernels::native_mmvq_weight_bytes(
                     tensor.type, (int) ref.ne0, (int) ref.ne1);
-                void* allocation = nullptr;
-                auto status = cudaMalloc(&allocation, bytes);
-                DevicePtr data(allocation);
-                if (status == cudaSuccess)
-                    status = cudaMemcpy(data.get(), gguf.tensor_data(tensor), bytes, cudaMemcpyHostToDevice);
-                if (status != cudaSuccess) {
-                    err = "native dense upload " + tensor.name + ": " + cudaGetErrorString(status); return false;
-                }
+                DevicePtr data;
+                if (!plan.required([&] {
+                        void* allocation = nullptr;
+                        auto status = cudaMalloc(&allocation, bytes);
+                        data.reset(allocation);
+                        if (status == cudaSuccess)
+                            status = cudaMemcpy(data.get(), gguf.tensor_data(tensor), bytes, cudaMemcpyHostToDevice);
+                        if (status != cudaSuccess) {
+                            err = "native dense upload " + tensor.name + ": " + cudaGetErrorString(status);
+                            return false;
+                        }
+                        return true;
+                    }))
+                    return false;
                 max_in = (std::max)(max_in, (int) ref.ne0);
                 total += bytes;
                 allocated += alloc_bytes(bytes);
                 // STRATA_Q8_PACKED=1: a second, packed copy of an eligible Q8_0 matrix for the decode MMVQ (the GGUF
-                // copy stays: the prompt path's GEMMs read it).
-                DevicePtr packed;
-                if (tensor.type == 8 && tensor.name != "blk.1.ple_key.weight" &&   // the PLE has its own kernel
-                    strata::kernels::native_q8_0_packed_enabled() &&
-                    strata::kernels::native_q8_0_packed_eligible((int) ref.ne0, (int) ref.ne1)) {
-                    std::vector<uint8_t> host(bytes);
-                    strata::kernels::native_q8_0_pack_host(gguf.tensor_data(tensor), host.data(), (int) ref.ne0,
-                                                           (int) ref.ne1);
-                    void* packed_allocation = nullptr;
-                    auto packed_status = cudaMalloc(&packed_allocation, bytes);
-                    packed.reset(packed_allocation);
-                    if (packed_status == cudaSuccess)
-                        packed_status = cudaMemcpy(packed.get(), host.data(), bytes, cudaMemcpyHostToDevice);
-                    if (packed_status != cudaSuccess) {
-                        err = "native dense packed upload " + tensor.name + ": " + cudaGetErrorString(packed_status);
-                        return false;
-                    }
+                // copy stays: the prompt path's GEMMs read it).  Queued here, made by plan.finish() after every
+                // required allocation: a copy is only a faster layout of the same bytes (the MMVQ reads the GGUF layout
+                // of a matrix that has none), so the first one that does not fit is dropped and the ones after it are
+                // not tried.
+                Pending item{&ref, (int) tensor.type, bytes, std::move(data), DevicePtr()};
+                if (q8_packs(tensor, ref.ne0, ref.ne1)) {
+                    item.pack_tensor = &tensor;
+                    item.pack_src = gguf.tensor_data(tensor);
+                    shard_packs = true;
+                    const size_t k = pending.size();   // an index: `pending` grows until finish()
+                    want_items.push_back(k);
+                    plan.want([&, k] {
+                        Pending& p = pending[k];
+                        void* packed_allocation = nullptr;
+                        auto packed_status = cudaMalloc(&packed_allocation, p.bytes);
+                        if (packed_status == cudaErrorMemoryAllocation) {
+                            (void) cudaGetLastError();
+                            return AllocTry::out_of_memory;
+                        }
+                        p.packed.reset(packed_allocation);
+                        if (packed_status == cudaSuccess) {
+                            std::vector<uint8_t> host(p.bytes);
+                            strata::kernels::native_q8_0_pack_host(p.pack_src, host.data(), (int) p.ref->ne0,
+                                                                   (int) p.ref->ne1);
+                            packed_status = cudaMemcpy(p.packed.get(), host.data(), p.bytes, cudaMemcpyHostToDevice);
+                        }
+                        if (packed_status != cudaSuccess) {
+                            pack_err = "native dense packed upload " + p.pack_tensor->name + ": " +
+                                       cudaGetErrorString(packed_status);
+                            return AllocTry::failed;
+                        }
+                        allocated += alloc_bytes(p.bytes);
+                        return AllocTry::ok;
+                    });
                 }
-                pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data), std::move(packed)});
+                pending.push_back(std::move(item));
             }
             if (hc_q8_env())
                 for (const auto& tensor : gguf.tensors()) {
@@ -398,15 +441,20 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     void* p = nullptr;
                     std::vector<uint8_t> q8;
                     if (f32_inject) q8 = q8_0_of((const float*) gguf.tensor_data(tensor), (uint64_t) ref.ne0 * (uint64_t) ref.ne1);
-                    if (cudaMalloc(&p, bytes) != cudaSuccess ||
-                        cudaMemcpy(p, f32_inject ? (const void*) q8.data() : gguf.tensor_data(tensor), bytes,
-                                   cudaMemcpyHostToDevice) != cudaSuccess) {
-                        err = "native dense (STRATA_HC_Q8) upload " + tensor.name; return false;
-                    }
+                    if (!plan.required([&] {
+                            if (cudaMalloc(&p, bytes) != cudaSuccess ||
+                                cudaMemcpy(p, f32_inject ? (const void*) q8.data() : gguf.tensor_data(tensor), bytes,
+                                           cudaMemcpyHostToDevice) != cudaSuccess) {
+                                err = "native dense (STRATA_HC_Q8) upload " + tensor.name; return false;
+                            }
+                            return true;
+                        }))
+                        return false;
                     ref.hc_q8 = p;
                     weights_.push_back(p);
                     hc_q8_bytes += bytes;
                 }
+            if (shard_packs) pack_shards.push_back(std::move(shard));
         }
         if (hc_q8_env()) {
             // a bf16 pack stores no Q8_0 copy: quantize the layers' down / up projections. A row the arena kept
@@ -465,10 +513,28 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             }
         }
         if (pending.empty()) { err = "native dense: no supported GDN/QSA matrices in supplied shards"; return false; }
-        void* allocation = nullptr;
-        const auto status = cudaMalloc(&allocation, strata::kernels::native_q8_1_bytes(max_in));
-        DevicePtr scratch(allocation);
-        if (status != cudaSuccess) { err = std::string("native dense scratch: ") + cudaGetErrorString(status); return false; }
+        DevicePtr scratch;
+        if (!plan.required([&] {
+                void* allocation = nullptr;
+                const auto status = cudaMalloc(&allocation, strata::kernels::native_q8_1_bytes(max_in));
+                scratch.reset(allocation);
+                if (status != cudaSuccess) {
+                    err = std::string("native dense scratch: ") + cudaGetErrorString(status);
+                    return false;
+                }
+                return true;
+            }))
+            return false;
+        // The STRATA_Q8_PACKED copies, now that every required allocation is made (strata/core/optional_alloc.hpp).
+        const OptionalPlaced packs = plan.finish();
+        if (packs.failed) { err = pack_err; return false; }
+        if (packs.out_of_memory) {
+            const Pending& p = pending[want_items[packs.placed]];
+            std::fprintf(stderr, "native dense: STRATA_Q8_PACKED=1: no VRAM for the packed copy of %s (%.1f MiB); it and the "
+                                 "%zu after it keep the GGUF layout only\n",
+                         p.pack_tensor->name.c_str(), p.bytes / 1048576.0, want_items.size() - packs.placed - 1);
+        }
+        pack_shards.clear();
         // All checks and allocations finish before publishing any reference.
         weights_.reserve(pending.size());
         uint64_t packed_bytes = 0;
