@@ -3192,6 +3192,66 @@ class SharedSettings(unittest.TestCase):
             self.svc.trusted_origins = []
 
 
+class StrictModel(unittest.TestCase):
+    """#2717 (opt-in): "strict_model" refuses a request that names a model this server does not serve.
+
+    Off by default, and then every name is still answered by whatever is loaded - the behaviour the docs
+    describe ("any model name").  A request with no model, or an empty one, is always accepted: it names this
+    server's model, the way every route has always read it."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.svc = Service(RecordingEngine(tok, "</think>\n\nhello", max_context=CTX), tok,
+                          ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def post(self, path, body):
+        r = urllib.request.Request(self.base + path, data=json.dumps(body).encode(),
+                                   headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(r, timeout=30) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    ROUTES = (("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}),
+              ("/v1/messages", {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}),
+              ("/v1/responses", {"input": "hi", "max_output_tokens": 8}))
+
+    def test_the_default_still_answers_any_name(self):
+        self.svc.strict_model = False
+        for path, body in self.ROUTES:
+            with self.subTest(path=path):
+                code, reply = self.post(path, {"model": "some-other-model", **body})
+                self.assertEqual(code, 200)
+                self.assertEqual(reply["model"], self.svc.model)
+
+    def test_strict_refuses_another_name_on_every_client_route(self):
+        self.svc.strict_model = True
+        for path, body in self.ROUTES:
+            with self.subTest(path=path):
+                code, reply = self.post(path, {"model": "some-other-model", **body})
+                self.assertEqual(code, 404)
+                self.assertEqual(reply["error"]["message"], "model not found")
+                self.assertEqual(reply["error"]["code"], "model_not_found")
+
+    def test_strict_accepts_the_served_name_and_a_missing_or_empty_one(self):
+        self.svc.strict_model = True
+        for path, body in self.ROUTES:
+            for extra in ({"model": self.svc.model}, {}, {"model": ""}):
+                with self.subTest(path=path, extra=sorted(extra)):
+                    code, _ = self.post(path, {**extra, **body})
+                    self.assertEqual(code, 200)
+
+
 class TemplateCaps(unittest.TestCase):
     def test_probe_errors_are_logged_and_swallowed(self):
         with tempfile.TemporaryDirectory() as d:

@@ -3181,6 +3181,7 @@ class Service:
         self.last_image_at = 0.0                         # when an image turn last ended (the elastic encoder's idle)
         self.reasoning_loop_recovery = False
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
+        self.strict_model = False                        # #2717 (opt-in): refuse a request that names another model
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.tool_call_recovery = False                   # opt-in: tool calls in forms next to the template's
@@ -3288,6 +3289,14 @@ class Service:
 
     def model_names(self) -> list[str]:
         return [self.model, *self.aliases]
+
+    def model_is_served(self, req) -> bool:
+        """#2717 (only consulted with the opt-in "strict_model"): False when the request names a model this server
+        does not serve.  A request with no model, an empty one or a non-string is accepted, as every route treats
+        such a request as "this server's model" (see model_for()); the whole point is to catch a client that names
+        a *different* model, which used to be answered by whatever is loaded."""
+        asked = req.get("model") if isinstance(req, dict) else None
+        return not (isinstance(asked, str) and asked.strip() and asked not in self.model_names())
 
     def model_for(self, req) -> str:
         """The name to answer with: the request's own when it is the model's name or an alias (#297), else the model's.
@@ -5627,6 +5636,17 @@ def make_handler(svc: Service):
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)
+                    if svc.strict_model and not svc.model_is_served(req):
+                        # #2717 (opt-in): loud instead of silent.  Without it a client pointed at another local
+                        # model is answered by whatever is loaded, and the reply's own "model" hides it.
+                        print(f"[strata] 404: the request names model {req.get('model')!r}, which this server does "
+                              f"not serve ({', '.join(svc.model_names())}) - strict_model", flush=True)
+                        if path == "/v1/responses":
+                            self._json(404, responses_error_body("model not found", code="model_not_found"))
+                        else:
+                            self._json(404, {"error": {"type": "invalid_request_error", "code": "model_not_found",
+                                                       "message": "model not found"}})
+                        return
                 if path == "/v1/responses":
                     self._responses(req)
                 elif path.startswith("/slots/"):
@@ -7058,6 +7078,13 @@ def main() -> int:
         raise SystemExit(f"[strata] config \"repeat_stop_tokens\" must be a whole number >= 0 (0 = off), not {rs!r}")
     svc.repeat_stop_tokens = rs
     svc.effort_end = bool(effort_end)                   # #458: "effort_position": "end" with an engine that has it
+    strict = cfg.get("strict_model", False)             # #2717: refuse a request that names a model this server
+    if not isinstance(strict, bool):                    #       does not serve (default off: any name, as before)
+        raise SystemExit(f"[strata] config \"strict_model\" must be true or false, not {strict!r}")
+    svc.strict_model = strict
+    if strict:
+        print(f"[strata] strict_model: a request naming a model other than {', '.join(svc.model_names())} is "
+              f"refused with 404 (model not found)", flush=True)
     if cfg.get("reasoning_budget_tokens") is not None:  # #123: a default thinking budget for every request
         try:
             svc.reasoning_budget_tokens = cfg["reasoning_budget_tokens"]
