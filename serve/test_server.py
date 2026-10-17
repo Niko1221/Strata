@@ -4865,6 +4865,43 @@ class TelemetryNoDisks(unittest.TestCase):
                 t.close()
 
 
+class UserArgs(unittest.TestCase):
+    """"user_args": engine options of the user's own, over setup's "args" (setup keeps the key on every run)."""
+
+    def test_replace_and_add(self):
+        cfg = {"args": ["--pack", "p", "--kv-resident", "32768", "--resident-budget-gib", "36", "--vision"],
+               "user_args": ["--no-prefill-borrow", "--kv-resident", "0", "--conversation-cache-mib", "16384"]}
+        self.assertEqual(engine_args(cfg), ["--pack", "p", "--resident-budget-gib", "36", "--vision",
+                                            "--no-prefill-borrow", "--kv-resident", "0",
+                                            "--conversation-cache-mib", "16384"])
+        self.assertEqual(engine_args({"args": ["--a", "1"]}), ["--a", "1"])           # absent: as before
+        self.assertEqual(engine_args({"args": ["--x", "-1"], "user_args": ["--x", "2"]}), ["--x", "2"])  # -1 a value
+
+    def test_bad_values(self):
+        for bad in ("--x", [1], ["value-first", "--x"], {"--x": 1}):
+            with self.assertRaises(ValueError):
+                engine_args({"args": [], "user_args": bad})
+
+    def test_the_settings_page_edits_user_args_for_their_options(self):
+        from serve import runconfig
+        cfg = {"args": ["--vram-reserve-mib", "700"], "user_args": ["--vram-reserve-mib", "900"]}
+        self.assertEqual(runconfig.value_of(cfg, "vram_reserve_mib"), 900)
+        new, _ = runconfig.apply(cfg, {"vram_reserve_mib": 1200})
+        self.assertEqual((new["args"], new["user_args"]), (["--vram-reserve-mib", "700"], ["--vram-reserve-mib", "1200"]))
+
+    def test_the_split_and_gpu_order_checks_see_user_args(self):
+        """The layer-split and GPU-order checks read args with user_args over them: a user's own --peer-device is not
+        given a --layer-split beside it (the engine refuses the pair, #665), and their own split keeps the card order."""
+        from serve.server import ordered_gpus
+        cfg = {"gpu": [0, 1], "args": ["--pack", "p"], "user_args": ["--peer-device", "1"]}
+        self.assertEqual(engine_args(cfg), ["--pack", "p", "--peer-device", "1"])
+        self.assertEqual(engine_args({**cfg, "user_args": []}), ["--pack", "p", "--layer-split", "auto"])  # as before
+        fast_first = {0: 8448.0 * 2610, 1: 4608.0 * 2575}
+        self.assertEqual(ordered_gpus({**cfg, "user_args": []}, fast_first), [1, 0])
+        self.assertEqual(ordered_gpus(cfg, fast_first), [0, 1])
+        self.assertEqual(ordered_gpus({**cfg, "user_args": ["--layer-split", "24"]}, fast_first), [0, 1])
+
+
 class SilentEngine(unittest.TestCase):
     """#481: an engine that prints nothing for engine_silence_s during a request (or never acknowledges a STOP) has
     lost step with the server: it is ended and the request fails with EngineDied, instead of waiting forever."""
