@@ -1236,11 +1236,37 @@ bool sample_greedy_cluster(const float* logits, int n_tokens, int n_vocab, int* 
 #endif
 }
 
+// STRATA_LOOP_BREAK: ONE token id whose logit in the FIRST row only (the window's next position) gets the mapped
+// `bias`; the engine sets id and bias per window while a reply loops (-1 or 0 = off).  Rows past the first follow
+// drafts the target has not taken yet, so the ban is the next position's alone.
+namespace {
+struct LoopBan { const int32_t* id = nullptr; const float* bias = nullptr; int vocab = 0; };
+LoopBan g_lban;
+__global__ void loop_ban_kernel(float* logits, int n_vocab, const int32_t* id, const float* bias) {
+    const float b = *(volatile const float*) bias;
+    if (b == 0.0f) return;
+    const int t = *(volatile const int32_t*) id;
+    if (t >= 0 && t < n_vocab) logits[t] += b;
+}
+// the target's full rows only (not a draft's narrower vocabulary), before any pick reads them
+void apply_loop_ban(const float* logits, int n_vocab, void* stream) {
+    if (g_lban.id != nullptr && n_vocab == g_lban.vocab)
+        loop_ban_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(const_cast<float*>(logits), n_vocab, g_lban.id, g_lban.bias);
+}
+}  // namespace
+
+void set_loop_ban(const int32_t* d_id, int vocab, const float* d_bias) {
+    g_lban.id = d_id;
+    g_lban.vocab = vocab;
+    g_lban.bias = d_bias;
+}
+
 void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
                    const SamplerParams& p_in, int* out, void* stream) {
     SamplerParams p = p_in;
     p.gumbel = p_in.gumbel || gumbel_env();            // the target's pick; greedy rows never read it
     if (n_tokens <= 0 || n_vocab <= 0) return;
+    apply_loop_ban(logits, n_vocab, stream);
     if (p.penalty_last_n > 0 && (history == nullptr || history_len <= 0)) {
         std::fprintf(stderr, "sample_tokens: penalty_last_n %d needs a history (got %p, len %d)\n",
                      p.penalty_last_n, (const void*) history, history_len);
@@ -1356,6 +1382,8 @@ bool sample_tokens_spec(const float* logits, int n_tokens, int n_vocab, const in
         return false;
     int2* scratch = split_scratch(stream, (size_t) (n_tokens > 16 ? n_tokens : 16) * n_blocks * kSelMax);
     if (scratch == nullptr) return false;
+    // past every early return, so a fallback to sample_tokens never adds the ban twice
+    apply_loop_ban(logits, n_vocab, stream);
     sampler_split_part_kernel<<<dim3((unsigned) n_blocks, (unsigned) n_tokens), kSplitWarps * 32, 0,
                                 (cudaStream_t) stream>>>(logits, n_vocab, history, history_len, p, k, n_blocks, scratch);
     spec_verify_merge_kernel<<<(unsigned) n_tokens, 32, 0, (cudaStream_t) stream>>>(scratch, n_blocks, n_vocab, p, k,
