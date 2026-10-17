@@ -1161,7 +1161,7 @@ bool gr_down_max4() {
     return on;
 }
 
-// the split norm with registers (gr_norm_split_fast_kernel): gfx12 only until another arch is measured;
+// the split norm with registers (gr_norm_split_fast_kernel): on by default on gfx12; CUDA opt-in (measured on sm_70 only);
 // STRATA_GR_NORM_FAST=0 / 1 forces it off / on
 bool norm_fast_on() {
 #if defined(__HIPCC__)
@@ -1176,7 +1176,9 @@ bool norm_fast_on() {
     }
     return per_dev[dev] == 2;
 #else
-    return false;
+    // CUDA: opt-in with STRATA_GR_NORM_FAST=1 (measured on sm_70 only)
+    static const bool on = [] { const char* e = std::getenv("STRATA_GR_NORM_FAST"); return e != nullptr && std::atoi(e) != 0; }();
+    return on;
 #endif
 }
 
