@@ -7306,6 +7306,42 @@ int main(int argc, char** argv) {
         return v ? (int64_t) std::atoi(v)
                  : (int64_t) (strata::prefill::Prefill::pinned_share() >= 0.9 ? 90 : 85);
     }();
+    // STRATA_PREFILL_MAX="8192,4096,8192,8192" (opt-in): a ceiling on the prompt chunk of each prompt-path
+    // participant, in the split's order - entry 0 is the first card's path (it reads the chunk's embeddings and hands
+    // its rows on), entry i the i-th stage.  0 or an absent entry: no ceiling.  Strata's split is ONE grid - every
+    // stage reads chunks of the chain's size, and a card whose cache cannot fund one pulls EVERY stage down to its
+    // number (#448) - so a ceiling is what #448 otherwise spends on everyone: a card that cannot fund a 8192-token
+    // loan lays its path out at 4096 and reads each hand-off in steps of 4096 (Prefill::run_impl loops over the
+    // incoming n in steps of its own chunk), while the other stages keep 8192.  A ceiling on entry 0 caps the chain,
+    // because the chain's chunk is the first path's.  From the Maya checkout (`project-maya`), local commit `ef3b6e7`
+    // (2026-10-15), whose `STRATA_GLM_PREFILL_MAX` is accepted as the same knob; that commit measured per-part chunks
+    // as a loss with every part moved (94,840 ms for the capped 16k/16k/8k/7k shape against 91,718.9 ms for 13 equal
+    // chunks, on its byte-identical 100,535-token read), which is why this only lowers a stage and never raises one.
+    // Values are multiples of 256 (the prompt path's grid).  Unset: not one number below changes.
+    std::vector<int64_t> prefill_max;
+    {
+        const char* v = std::getenv("STRATA_PREFILL_MAX");
+        if (v == nullptr || v[0] == '\0') v = std::getenv("STRATA_GLM_PREFILL_MAX");
+        for (const char* p = v; p != nullptr && *p != '\0';) {
+            char* end = nullptr;
+            const long long n = std::strtoll(p, &end, 10);
+            if (end == p || n < 0 || n > (1 << 20) || (n != 0 && (n < 256 || n % 256 != 0)) ||
+                (*end != '\0' && *end != ',')) {
+                std::fprintf(stderr, "strata generate: STRATA_PREFILL_MAX=%s is not a comma-separated list of token "
+                                     "counts (a multiple of 256; 0 or an absent entry: no ceiling)\n", v);
+                return 2;
+            }
+            prefill_max.push_back((int64_t) n);
+            if (*end != ',') break;
+            p = end + 1;
+        }
+    }
+    // the chunk of participant `part` under its ceiling: min(chain, its own)
+    auto part_ceiling = [&](size_t part, int64_t c) -> int64_t {
+        const int64_t m = part < prefill_max.size() ? prefill_max[part] : 0;
+        return m > 0 && m < c ? m : c;
+    };
+    const int64_t max_head = prefill_max.empty() ? 0 : prefill_max[0];   // entry 0: the chain's own ceiling
     // The largest chunk --prefill auto may pick: the operator's ceiling (--prefill auto:N) and never past the
     // context, but a bare `auto` always reaches 8192.  32768 and 16384 stay opt-in (#282): a 32K prompt with
     // IQ2_XS (RTX 5090, 64K context) read at 5,624 tok/s in 8192-token chunks and 6,465 in one 32768 chunk (40K
@@ -7356,6 +7392,14 @@ int main(int argc, char** argv) {
         }
     }
     if (o.prefill_auto_cap > 0) auto_ceiling = std::min<int64_t>(auto_ceiling, o.prefill_auto_cap);   // #1630
+    // STRATA_PREFILL_MAX entry 0 caps the chain: it is the first path's chunk, and every later stage's step is
+    // min(that, its own ceiling).  Both the auto scan's ceiling and an explicit --prefill are the operator's, so the
+    // cap is applied to each rather than to the result of one (a cap on a number the other path never reads changes
+    // nothing).
+    if (max_head > 0) {
+        auto_ceiling = std::min<int64_t>(auto_ceiling, max_head);
+        o.prefill_chunk = std::min<int64_t>(o.prefill_chunk, max_head);
+    }
     // The auto scan used to walk a fixed list of sizes - 32768, 16384, 8192, 6144, ... - and take the first that
     // fit.  That list is coarse exactly where a rig needs it: this one affords ~8,700 tokens and was handed 8192,
     // and 8704 is not on it.  `bytes_needed` is a sum of (T x positive constant) terms plus a max of such sums,
@@ -7863,7 +7907,9 @@ int main(int argc, char** argv) {
                 const int64_t lb = i == 0 ? 0 : stages[i - 1]->lb;
                 const int64_t le = i == 0 ? split_at[0] : stages[i - 1]->le;
                 if (xc.slots() <= 0 || le <= lb) continue;
-                const uint64_t need = strata::prefill::Prefill::bytes_needed(g, ses, bound);
+                // STRATA_PREFILL_MAX: a capped part never lays out more than its own ceiling, so its RAM region is
+                // sized for that chunk and not for the chain's (the same arithmetic, on less RAM)
+                const uint64_t need = strata::prefill::Prefill::bytes_needed(g, ses, part_ceiling(i, bound));
                 if (own_ok) {   // the card funds its buffers at any chunk the scan can pick: nothing is lent
                     const strata::core::OnDevice on(dev);
                     size_t fb = 0, tb = 0;
@@ -8139,6 +8185,7 @@ int main(int argc, char** argv) {
             int32_t first = -1;            // the first slot it may lend, for the chunk that was chosen
             int32_t first_now = -1;        // where its buffers are laid out now
             int64_t lent_chunk = 0;
+            int64_t cap = 0;               // STRATA_PREFILL_MAX: its own chunk ceiling (0: none)
             std::vector<std::pair<int32_t, int32_t>> lent;
         };
         // bytes -> slots for one cache: exact when it knows its per-slot offsets (a native pack's blobs differ
@@ -8150,6 +8197,8 @@ int main(int argc, char** argv) {
         auto part_slots = [&](const PfPart& p, int64_t c) -> int64_t {
             return cache_slots_for(*p.cache, strata::prefill::Prefill::bytes_needed(g, *p.ses, c, srcp != nullptr));
         };
+        // the part's own chunk for a chain of `c` tokens (STRATA_PREFILL_MAX)
+        auto part_chunk = [&](const PfPart& p, int64_t c) -> int64_t { return p.cap > 0 && p.cap < c ? p.cap : c; };
         auto part_bytes = [&](const PfPart& p, int32_t first) -> uint64_t {
             strata::core::ExpertCache& xc = *p.cache;
             return xc.slot_offsets() ? (uint64_t) (xc.bytes() - (int64_t) xc.slot_offsets()[first])
@@ -8166,17 +8215,23 @@ int main(int argc, char** argv) {
         int64_t pf_plan_chunk = 0;   // #2824: the host-aware plan's chunk for prompts longer than o.prefill_chunk (0: none)
         // a cache too small to lend the prompt path its buffers would make it allocate them on top - on a card
         // whose cache already filled its reserve, that is the over-subscription the auto sizing avoids - so the
-        // chunk is the largest one EVERY participant can lend (a smaller chunk only reads slower)
+        // chunk is the largest one EVERY participant can lend (a smaller chunk only reads slower).  With
+        // STRATA_PREFILL_MAX every participant is priced at ITS OWN chunk (part_ceiling): a capped stage lends for
+        // the smaller layout it will read in, rather than capping every other stage (#448).
         if (pf_borrow && d_res != nullptr) {
-            pf_parts.push_back({&xcache, &ss, &sp, -1, 0, multi_gpu ? split_at[0] : g.n_layers, -1, -1, 0, {}});
-            for (auto& st : stages)
-                pf_parts.push_back({&st->cache, &st->ss, &st->sp, st->dev, st->lb, st->le, -1, -1, 0, {}});
+            pf_parts.push_back(
+                {&xcache, &ss, &sp, -1, 0, multi_gpu ? split_at[0] : g.n_layers, -1, -1, 0, max_head, {}});
+            for (size_t i = 0; i < stages.size(); ++i) {
+                GpuStage& st = *stages[i];
+                pf_parts.push_back({&st.cache, &st.ss, &st.sp, st.dev, st.lb, st.le, -1, -1, 0,
+                                    i + 1 < prefill_max.size() ? prefill_max[i + 1] : 0, {}});
+            }
             // The two tests plan_lend makes for CUDA0 alone, one participant at a time: a loan must leave the
             // 128-slot floor.  The percentage cap is an AUTO-chunk rule and only the auto scan applies it - an
             // explicit --prefill is the operator's number, and a loan of it only has to fit.  With one participant
             // (no split) this reduces to plan_lend exactly, so the single-GPU loan is unchanged from main.
             auto fits_one = [&](const PfPart& p, int64_t c, bool cap) -> bool {
-                const int64_t k = part_slots(p, c);
+                const int64_t k = part_slots(p, part_chunk(p, c));
                 if (k <= 0 || k + 128 > p.cache->slots()) return false;
                 return !(cap && k * 100 > kAutoLendPct * p.cache->slots());
             };
@@ -8212,7 +8267,8 @@ int main(int argc, char** argv) {
                     const int64_t budget = std::max<int64_t>(0, std::min(p.cache->slots() - 128,
                                                                         kAutoLendPct * p.cache->slots() / 100));
                     const uint64_t avail = part_bytes(p, (int32_t) (p.cache->slots() - budget));
-                    const uint64_t nonring = strata::prefill::Prefill::bytes_needed_no_ring(g, *p.ses, c, srcp != nullptr);
+                    const uint64_t nonring =
+                        strata::prefill::Prefill::bytes_needed_no_ring(g, *p.ses, part_chunk(p, c), srcp != nullptr);
                     room = std::min(room, (int64_t) ((avail - std::min(avail, nonring)) / (uint64_t) kBlob));
                 }
                 return room;
@@ -8228,6 +8284,7 @@ int main(int argc, char** argv) {
                 for (const int64_t c : kAutoChunks) {
                     if (c > 8192 && (c > o.prefill_auto_max || c > o.max_context)) continue;   // #282, as plan_lend
                     if (o.prefill_auto_cap > 0 && c > o.prefill_auto_cap) continue;   // #1630
+                    if (max_head > 0 && c > max_head) continue;   // STRATA_PREFILL_MAX entry 0: the chain's ceiling
                     if (fits(c, true, only)) return c;
                 }
                 return 0;
@@ -8317,12 +8374,15 @@ int main(int argc, char** argv) {
                     }
                     const std::string pct =
                         o.prefill_auto ? ", and lend at most " + std::to_string(kAutoLendPct) + "%" : "";
+                    // the chunk THIS stage cannot fund: its own ceiling when STRATA_PREFILL_MAX caps it below the
+                    // chain's chunk (then it reads in smaller steps, which is why the chain stays at `chunk`)
+                    const int64_t p_chunk = part_chunk(p, alone);
                     std::fprintf(stderr, "strata serve: WARNING: prompt chunk %lld tokens, not %lld: CUDA%d (%s) "
                                          "has %lld expert-cache slots, and a %lld-token chunk borrows %lld of them "
                                          "(it must keep 128%s) - prompts read slower than on CUDA0 alone (#448)\n",
                                  (long long) chunk_vram, (long long) alone, dev, prop.name,
-                                 (long long) p.cache->slots(), (long long) alone,
-                                 (long long) part_slots(p, alone), pct.c_str());
+                                 (long long) p.cache->slots(), (long long) p_chunk,
+                                 (long long) part_slots(p, p_chunk), pct.c_str());
                     // the helper tiers start at CUDA1 without a split (and are enabled in order)
                     std::fprintf(stderr, "strata serve:   a card this small can serve as a helper expert cache "
                                          "instead of a split stage: without --layer-split, with %s "
@@ -8349,8 +8409,24 @@ int main(int argc, char** argv) {
                                          "every expert cache\n", (long long) o.prefill_chunk, (long long) chunk);
                 o.prefill_chunk = chunk;
                 for (PfPart& p : pf_parts) {
-                    p.first = (int32_t) (p.cache->slots() - part_slots(p, chunk));
+                    p.first = (int32_t) (p.cache->slots() - part_slots(p, part_chunk(p, chunk)));
                     p.first_now = p.first;
+                }
+                // STRATA_PREFILL_MAX, said once: every participant whose ceiling is below the chain's chunk reads its
+                // hand-off in steps of its own (Prefill::run_impl loops over the incoming rows in steps of m.T)
+                for (size_t i = 0; i < prefill_max.size(); ++i) {
+                    if (prefill_max[i] <= 0) continue;
+                    const int64_t own = std::min<int64_t>(chunk, prefill_max[i]);
+                    const int dev = i < pf_parts.size() ? (pf_parts[i].dev < 0 ? 0 : pf_parts[i].dev) : -1;
+                    if (dev < 0) {
+                        std::fprintf(stderr, "strata serve: STRATA_PREFILL_MAX: entry %zu (%lld) has no prompt path "
+                                             "here (%zu parts); ignored\n",
+                                     i, (long long) prefill_max[i], pf_parts.size());
+                        continue;
+                    }
+                    std::fprintf(stderr, "strata serve: prompt chunk: CUDA%d reads %lld tokens a step (STRATA_PREFILL_MAX"
+                                         " %lld)%s\n", dev, (long long) own, (long long) prefill_max[i],
+                                 own < chunk ? ", inside a larger chain chunk" : "");
                 }
                 // #340: a split stage whose card still has room for the chunk's buffers (its cache already holds
                 // every expert of its layers, so auto stopped short of its VRAM) keeps them as its own instead of
@@ -8367,7 +8443,8 @@ int main(int argc, char** argv) {
                         const strata::core::OnDevice on(p.dev);
                         size_t fb = 0, tb = 0;
                         if (cudaMemGetInfo(&fb, &tb) != cudaSuccess) { (void) cudaGetLastError(); continue; }
-                        const uint64_t need = strata::prefill::Prefill::bytes_needed(g, *p.ses, chunk, srcp != nullptr);
+                        const uint64_t need =
+                            strata::prefill::Prefill::bytes_needed(g, *p.ses, part_chunk(p, chunk), srcp != nullptr);
                         if ((uint64_t) fb >= need + (3ull << 29)) {
                             std::fprintf(stderr, "strata serve:   CUDA%d keeps its own prompt buffers (%.2f GiB of "
                                                  "%.2f GiB free): no loan\n", p.dev < 0 ? 0 : p.dev,
@@ -8392,8 +8469,8 @@ int main(int argc, char** argv) {
                 for (const PfPart& p : pf_parts)
                     std::fprintf(stderr, "strata serve:   CUDA%d has %lld slots, and a %lld-token chunk needs "
                                          "the last %lld of them\n", p.dev < 0 ? 0 : p.dev,
-                                 (long long) p.cache->slots(), (long long) o.prefill_chunk,
-                                 (long long) part_slots(p, o.prefill_chunk));
+                                 (long long) p.cache->slots(), (long long) part_chunk(p, o.prefill_chunk),
+                                 (long long) part_slots(p, part_chunk(p, o.prefill_chunk)));
             }
         } else if (o.prefill_auto && d_res == nullptr) {
             o.prefill_chunk = 1024;       // #85: no expert cache at all (a full 8 GB card): small buffers of its own
@@ -8409,12 +8486,14 @@ int main(int argc, char** argv) {
             size_t free_b = 0, total_b = 0;
             cudaMemGetInfo(&free_b, &total_b);
             static constexpr int64_t candidates[] = {2048, 1536, 1024, 512};
-            for (const int64_t candidate : candidates)
+            for (const int64_t candidate : candidates) {
+                if (max_head > 0 && candidate > max_head) continue;   // STRATA_PREFILL_MAX entry 0: the chain
                 if (strata::prefill::Prefill::bytes_needed(g, ss, candidate) + (512ull << 20) <=
                     free_b + borrow_bytes) {
                     o.prefill_chunk = candidate;
                     break;
                 }
+            }
             std::fprintf(stderr, "strata serve: prompt chunk head alias: %lld tokens with %lld MiB borrowed and "
                                  "%lld MiB free\n",
                          (long long) o.prefill_chunk, (long long) (borrow_bytes >> 20), (long long) (free_b >> 20));
@@ -8471,7 +8550,11 @@ int main(int argc, char** argv) {
                     sbb = part_bytes(pf_parts[i + 1], pf_parts[i + 1].first);
                 }
                 if (share_pool) st.sp.set_cpu_pool(&pool);   // one stage at a time takes it for a chunk (prefill.cpp)
-                if (!st.sp.init(st.wt, g, st.ss, srcp, &st.cache, host_res.data(), o.prefill_chunk, (void*) st.stream,
+                // STRATA_PREFILL_MAX entry i+1: this stage's own ceiling.  It is laid out at its own chunk - the
+                // largest it will ever read, since a request's chunk only lowers - and Prefill::run_impl reads each
+                // larger hand-off in steps of it (relayout requires chunk <= the init chunk, so init at the max).
+                const int64_t st_chunk = part_ceiling(i + 1, o.prefill_chunk);
+                if (!st.sp.init(st.wt, g, st.ss, srcp, &st.cache, host_res.data(), st_chunk, (void*) st.stream,
                                 err, sb, sbb)) {
                     err = "layer split, CUDA" + std::to_string(st.dev) + " prompt path: " + err;
                     return err.find("do not fit") != std::string::npos ? 2 : 1;
@@ -8498,7 +8581,8 @@ int main(int argc, char** argv) {
                     const strata::core::OnDevice on(dev);
                     size_t fb = 0, tb = 0;
                     cudaMemGetInfo(&fb, &tb);
-                    const int64_t need = (int64_t) strata::prefill::Prefill::bytes_needed(g, i == 0 ? ss : stages[i - 1]->ss, c, srcp != nullptr);
+                    const int64_t need = (int64_t) strata::prefill::Prefill::bytes_needed(
+                        g, i == 0 ? ss : stages[i - 1]->ss, part_ceiling(i, c), srcp != nullptr);
                     if (need + kHeadroom > (int64_t) fb) {
                         dev_out = dev < 0 ? 0 : dev; need_out = need; free_out = (int64_t) fb;
                         return false;
@@ -8545,7 +8629,7 @@ int main(int argc, char** argv) {
                 if (any_loan) {                  // smaller loans for the smaller chunk
                     for (PfPart& p : pf_parts)
                         if (p.first >= 0) {
-                            p.first = (int32_t) (p.cache->slots() - part_slots(p, next));
+                            p.first = (int32_t) (p.cache->slots() - part_slots(p, part_chunk(p, next)));
                             p.first_now = p.first;
                         }
                     lend_first = pf_parts[0].first;
@@ -8599,7 +8683,8 @@ int main(int argc, char** argv) {
             int64_t evicted = 0;
             for (PfPart& p : pf_parts) {
                 if (S <= 0 || p.first < 0) continue;
-                const int32_t first_s = std::max<int32_t>(p.first, (int32_t) (p.cache->slots() - part_slots(p, S)));
+                const int32_t first_s =
+                    std::max<int32_t>(p.first, (int32_t) (p.cache->slots() - part_slots(p, part_chunk(p, S))));
                 int64_t n = 0;
                 for (int64_t l = p.lb; l < p.le; ++l)
                     for (int64_t ex = 0; ex < g.n_expert; ++ex) {
@@ -12986,15 +13071,19 @@ int main(int argc, char** argv) {
                 bool any = false;
                 for (PfPart& p : pf_parts) {
                     if (p.first < 0) continue;
+                    // STRATA_PREFILL_MAX: this participant's own chunk.  A stage capped below the chain reads each
+                    // hand-off in steps of it, so its loan is only as large as its own layout, and a later request
+                    // whose chain chunk is bigger still needs nothing new from it.
+                    const int64_t want_cap = p.cap > 0 && p.cap < want ? p.cap : want;
                     if (!p.lent.empty()) {
-                        if (want <= p.lent_chunk) continue;            // its current loan already covers this
+                        if (want_cap <= p.lent_chunk) continue;        // its current loan already covers this
                         // ONLY this participant's loan goes back: `refill` would return the other participants'
                         // loans too, and their buffers are still laid out in their caches - marking those slots
                         // resident again would hand the next window a prompt buffer in place of an expert
                         if (!refill_one(p, e)) return false;
                     }
                     const strata::core::OnDevice on(p.dev);
-                    int64_t want_p = want;
+                    int64_t want_p = want_cap;
                     int32_t first = p.first_now;
                     // --prefill-head-alias: the loan laid out at start (slot 1 on) is kept; a hybrid layout cannot relayout
                     if (!o.prefill_head_alias) {
@@ -13012,9 +13101,9 @@ int main(int argc, char** argv) {
                             e = "prefill: no chunk of this request fits the slots that can be lent (#2090)";
                             return false;
                         }
-                        if (want_p != want)
+                        if (want_p != want_cap)
                             std::fprintf(stderr, "strata serve: prompt chunk %lld -> %lld tokens for this request: its "
-                                         "buffers do not fit the slots that can be lent (#2090)\n", (long long) want,
+                                         "buffers do not fit the slots that can be lent (#2090)\n", (long long) want_cap,
                                          (long long) want_p);
                         if (need_p > p.cache->slots() - p.first)   // the case that ended the engine before (#2090)
                             std::fprintf(stderr, "strata serve: the loan for a chunk of %lld tokens (%lld slots) is larger than the "
