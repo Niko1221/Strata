@@ -90,14 +90,27 @@ is measured rather than guessed.
 - Flip the default to parallel once it is measured faster, per the repo rule that a default changes only where it is
   measured faster.
 
-## Changes made (commit `a4362c47`)
+## Changes made
 
 - `src/qwen35/q36_engine.cu`:
-  - `STRATA_Q36_PARALLEL_PLACE` — `0`/unset = serial (the pre-change default, byte-identical output); `N` = copy the
-    routed experts on `N` threads via `place_expert_range()` (disjoint chunks).
+  - `STRATA_Q36_PARALLEL_PLACE` — `0` = serial (explicit opt-out), `N` = `N` threads, unset = one thread per logical
+    core (the default). Chunks are disjoint via `place_expert_range()`, so the placed bytes are identical at any
+    thread count.
+  - `STRATA_Q36_PAGEABLE_ARENA` — `1` = `malloc` the expert arena instead of `cudaHostAlloc` (pinning) it; unset = the
+    pinned default. The pin is the largest remaining load cost (see the diagnosis below).
   - The `hybrid experts:` log line now ends `(arena alloc X s, expert copy Y s, N copy thread(s))`, so the two costs
     and the copy's thread count are visible in the engine log without a profiler.
 - `docs/Q36_LOAD_TIME.md` — this document.
+
+## The arena pin is not OS compaction (diagnosis)
+
+The ~22.5 s `cudaHostAlloc` looked like it could be the host rearranging RAM (the memory-compaction work found
+`kcompactd` doing 71.7 M futile page migrations). It is not. While the arena was being allocated, the host's
+compaction counters stayed frozen — `compact_stall`, `pgmigrate_fail`, `pgmigrate_success` and
+`compact_migrate_scanned` did not move over the whole 28 s `place_experts`, and 47.5 GiB was free. The Q36 host
+settings are active (THP `never`, `compaction_proactiveness=0`, `compact_unevictable_allowed=0`). So the cost is the
+pin itself — locking 18.75 GiB through `cudaHostAlloc` — not the OS making room for it. A pageable arena is therefore
+a legitimate cut, not a workaround, which is what `STRATA_Q36_PAGEABLE_ARENA` is for.
 
 ## Acceptance criteria
 
@@ -138,13 +151,26 @@ Three findings:
 identically with the flag off and on — the placed experts are bitwise the same, as the disjoint-chunk `memcpy`
 guarantees.
 
-### Next steps (recommended)
+### Arena-pin A/B (`STRATA_Q36_PAGEABLE_ARENA`, parallel copy default)
 
-1. **Flip the default to parallel.** `parallel_place_threads()` should return `std::thread::hardware_concurrency()`
-   when `STRATA_Q36_PARALLEL_PLACE` is unset, keeping `=0` as the explicit serial opt-out. Justified: 4.8× faster at
-   16 threads, byte-identical output.
-2. **Attack the ~22.5 s arena pin.** The memory-compaction work ([Q36_MEMORY_COMPACTION.md](Q36_MEMORY_COMPACTION.md))
-   already found the arena behaves pageable in places; a pageable arena (or pin-by-need / huge pages) would remove the
-   single largest remaining cost.
+| arena | arena alloc | expert copy | `place_experts` total | prompt (pp512) | decode (tg8) |
+|---|---|---|---|---|---|
+| pinned (default) | 14.2 s | 13.1 s | 27.8 s | 295–301 tok/s | 16–17 tok/s |
+| pageable (`=1`) | **0.0 s** | 13.7 s | **13.8 s** | **136–140 tok/s** | 16–17 tok/s |
+
+The pageable arena removes the ~14 s pin and leaves decode byte-identical, but it **halves prompt throughput**
+(295 → 138 tok/s): the prompt staging `cudaMemcpyAsync` reads the arena into GPU staging buffers, and a pageable
+source goes through the driver's bounce buffer instead of a direct DMA. That is a bad trade for a model that is loaded
+once and prompted many times, so the flag stays opt-in and pinned stays the default. The right way to get the load
+win without the prompt cost is a **deferred pin** — allocate pageable, then `cudaHostRegister` the arena after load
+(off the critical path) so prompts still DMA from pinned memory.
+
+### Next steps
+
+1. **Done — flip the default to parallel.** `parallel_place_threads()` now returns one thread per logical core when
+   `STRATA_Q36_PARALLEL_PLACE` is unset, with `=0` as the serial opt-out (justified: 4.8× faster, byte-identical).
+2. **The arena pin — pageable arm measured, rejected as a default.** `STRATA_Q36_PAGEABLE_ARENA=1` cuts the ~14 s
+   pin but halves prompt throughput (staging bounce buffer), so it stays opt-in. The next step is a **deferred pin**:
+   `malloc` the arena, copy the experts, then `cudaHostRegister` it after load so prompts keep DMA speed.
 3. **Trim the CUDA EAGER module load** (~10–15 s of the wall clock before the first tensor is read): load the graph
    kernels lazily or overlap the dense upload with it.

@@ -1153,14 +1153,16 @@ void expert_blob(const Layer& L, int64_t e, uint8_t* dst) {
     std::memcpy(dst + L.L.down_off, L.src_d + (size_t) e * L.src_dsz, L.src_dsz);
 }
 
-/// How many threads copy the routed experts (STRATA_Q36_PARALLEL_PLACE): 0/unset = the serial
-/// path (one thread, the load's hot loop); N = N threads.  The chunks are disjoint and the
-/// bytes are identical either way, so this only changes load time, never the placed experts.
+/// How many threads copy the routed experts (STRATA_Q36_PARALLEL_PLACE): 0 = the serial path,
+/// N = N threads, unset = one thread per logical core.  The chunks are disjoint and the bytes
+/// are identical either way, so this only changes load time, never the placed experts.
 static int parallel_place_threads() {
     const char* e = std::getenv("STRATA_Q36_PARALLEL_PLACE");
-    if (e == nullptr) return 0;
-    const int n = std::atoi(e);
-    return n > 0 ? (std::min)(n, 128) : 0;
+    if (e != nullptr) {
+        const int n = std::atoi(e);
+        return n > 0 ? (std::min)(n, 128) : 0;
+    }
+    return (int) (std::min)(128u, std::thread::hardware_concurrency());
 }
 
 /// Copy experts [e0, e1) of layer L into the host arena and zero each slot's tail padding.
@@ -2266,9 +2268,20 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         if (!mtp_only || L == &m.mtp) host += L->stride * (size_t) ne + kMmqTail;
     uint8_t* arena = nullptr;
     const auto t_alloc = Clock::now();
-    bool pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
+    // STRATA_Q36_PAGEABLE_ARENA=1: malloc the expert arena instead of cudaHostAlloc (pinning) it.
+    // The CPU pool reads pageable memory directly; only the prompt-staging H2D copies then go
+    // through the driver's bounce buffer.  The pin is the largest remaining load cost (~14-22 s
+    // of cudaHostAlloc on this PC), so this is the A/B arm that cuts it.  Default stays pinned
+    // (byte-identical to the last release); the flag is opt-in until it is measured faster.
+    const bool pageable_arena = [] {
+        const char* e = std::getenv("STRATA_Q36_PAGEABLE_ARENA");
+        return e != nullptr && std::atoi(e) != 0;
+    }();
+    bool pinned = false;
+    if (!pageable_arena)
+        pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
     if (!pinned) {
-        (void) cudaGetLastError();
+        if (!pageable_arena) (void) cudaGetLastError();
         arena = (uint8_t*) std::malloc(host);
         if (!arena) {
             err = "no host memory for the experts (" + std::to_string(host >> 20) + " MiB)";
