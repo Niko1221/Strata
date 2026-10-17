@@ -931,6 +931,13 @@ print(r.choices[0].message.content)
   turn is then the same for every session and the disk prefix cache restores it. Measured (RTX 5070 Ti Laptop, Swift 1.5
   IQ3_XXS, a new opencode session in a second folder): first request 14,073 tokens with 13,693 from the cache, 1.1 s,
   against 14,753 read, 11.9 s, without it; the model still answered the folder and date correctly (3/3). Off by default.
+- **opencode's skill list in short (opt-in).** opencode lists every installed skill in its system message with the
+  whole description and the file location. With 58 skills that list was ~32K characters, ~43% of the system message.
+  The skill tool loads a skill by name with its full text, so `"skills_compact": true` keeps each skill's name and the
+  first sentence of its description (at most 160 characters) and drops the location line. Measured on a captured
+  opencode 1.18.7 request (58 skills): system message 21,651 -> 16,259 tokens (-25%), about 3 s less to read on an RTX
+  5070 Ti Laptop (Swift 1.5 IQ3_XXS) for every session the prefix cache does not cover. Every skill's name stays.
+  Off by default.
 - **Prefill progress in the stream (opt-in).** `"return_progress": true` puts that progress on the stream instead of
   sending only the keep-alive, as one extra field on a chunk with an empty delta: `prompt_progress` with `total`,
   `cache`, `processed` and `time_ms`. Those are llama.cpp's four fields and mean the same there (`time_ms` is the time

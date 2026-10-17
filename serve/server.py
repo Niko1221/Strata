@@ -7053,6 +7053,10 @@ def main() -> int:
         raise SystemExit(f"[strata] config \"env_to_user\" must be true or false, not {etu!r}")
     import serve.frontend as _frontend
     _frontend.ENV_TO_USER = etu
+    sc = cfg.get("skills_compact", False)              # opt-in: see frontend._skills_compact
+    if not isinstance(sc, bool):
+        raise SystemExit(f"[strata] config \"skills_compact\" must be true or false, not {sc!r}")
+    _frontend.SKILLS_COMPACT = sc
     rs = cfg.get("repeat_stop_tokens", REPEAT_STOP_TOKENS)   # #606: opt-out with 0
     if isinstance(rs, bool) or not isinstance(rs, int) or rs < 0:
         raise SystemExit(f"[strata] config \"repeat_stop_tokens\" must be a whole number >= 0 (0 = off), not {rs!r}")

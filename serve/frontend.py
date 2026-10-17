@@ -416,6 +416,43 @@ def _env_to_user(messages: list[dict]) -> list[dict]:
     return messages
 
 
+# Config "skills_compact" (opt-in): opencode lists every installed skill in the system message with its whole description
+# and its file location (58 skills, ~32K characters, ~43% of a ~21.6K-token system message measured on 2026-10-13).  The
+# skill tool loads a skill by name with its full text, so the list only has to tell the skills apart: each description is
+# cut to its first sentence (at most 160 characters) and the location line is dropped.  A smaller prompt to read on every
+# new session and a smaller KV cache; the model still sees every skill's name and what it is for.  Deterministic, so the
+# prefix cache keeps working.
+SKILLS_COMPACT = False
+_SKILL_DESC = re.compile(r"(<description>)(.*?)(</description>)", re.S)
+_SKILL_LOC = re.compile(r"[ \t]*<location>.*?</location>\n?", re.S)
+
+
+def _first_sentence(text: str, limit: int = 160) -> str:
+    t = " ".join(text.split())
+    m = re.search(r"[.!?](\s|$)", t)
+    if m and m.end() <= limit:
+        return t[:m.end()].strip()
+    return t if len(t) <= limit else t[:limit].rsplit(" ", 1)[0] + " ..."
+
+
+def _skills_compact(messages: list[dict]) -> list[dict]:
+    if not SKILLS_COMPACT or not messages or messages[0].get("role") != "system":
+        return messages
+    sys_text = messages[0].get("content")
+    if not isinstance(sys_text, str):
+        return messages
+    i = sys_text.find("<available_skills>")
+    j = sys_text.find("</available_skills>", i)
+    if i < 0 or j < 0:
+        return messages
+    block = sys_text[i:j]
+    block = _SKILL_DESC.sub(lambda m: m.group(1) + _first_sentence(m.group(2)) + m.group(3), block)
+    block = _SKILL_LOC.sub("", block)
+    out = list(messages)
+    out[0] = dict(messages[0], content=sys_text[:i] + block + sys_text[j:])
+    return out
+
+
 def _late_system_to_user(messages: list[dict]) -> list[dict]:
     """The chat template takes a system message only at the start ("System message must be at the beginning").
     Clients also send them mid-conversation - Claude Code's hook context as {"role": "system"} after the first user
@@ -555,7 +592,7 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
             kwargs = {"enable_thinking": False}
         elif k == "reasoning_effort" and "enable_thinking" not in kwargs:
             kwargs.update(effort_kwargs(v))
-    return _env_to_user(_late_system_to_user(messages)), tools, kwargs
+    return _env_to_user(_skills_compact(_late_system_to_user(messages))), tools, kwargs
 
 
 BILLING_HEADER = "x-anthropic-billing-header:"
@@ -656,7 +693,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
         # A config's reasoning_effort still applies: Service.with_shared sets output_config before this runs.  A
         # request that gives its own reasoning_budget_tokens (#123) asks for thinking, so it thinks as before.
         kwargs["enable_thinking"] = False
-    return _env_to_user(_late_system_to_user(messages)), tools, kwargs
+    return _env_to_user(_skills_compact(_late_system_to_user(messages))), tools, kwargs
 
 
 # ------------------------------------------------------------------------------------------------ output parser
