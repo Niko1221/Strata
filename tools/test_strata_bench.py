@@ -340,5 +340,29 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(B.main(["--url", "http://127.0.0.1:9", "--quiet"]), 2)
 
 
+class PortCheckTests(unittest.TestCase):
+    def test_any_listener_counts_not_only_one_that_answers_health(self):
+        # Steam's web helper on 127.0.0.1:8080 answers 404: the old /health check let the bench start a server
+        # beside it and wait "still loading" for ten minutes
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        s.listen()
+        port = s.getsockname()[1]
+        try:
+            self.assertTrue(B.port_answers(port))
+        finally:
+            s.close()
+        self.assertFalse(B.port_answers(port))
+
+    def test_the_owner_is_named_when_known(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # the repo root, for serve/ when run as a script
+        from serve import server
+        with mock.patch.object(server, "port_holders", return_value=[("steamwebhelper.exe", 36952, "127.0.0.1")]):
+            self.assertEqual(B.port_owner(8080), ": it is steamwebhelper.exe (PID 36952) on 127.0.0.1")
+        with mock.patch.object(server, "port_holders", return_value=[]):
+            self.assertEqual(B.port_owner(8080), "")
+
+
 if __name__ == "__main__":
     unittest.main()

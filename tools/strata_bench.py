@@ -662,6 +662,27 @@ def find_configs(folder: Path = ROOT) -> list[Path]:
     return sorted(out, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
+def port_answers(port: int) -> bool:
+    """Whether anything accepts a connection on 127.0.0.1:`port` (the address the bench talks to)."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def port_owner(port: int) -> str:
+    """': it is steamwebhelper.exe (PID 36952) on 127.0.0.1' - the server's own lookup - or '' when unknown."""
+    try:
+        sys.path.insert(0, str(ROOT))
+        from serve.server import port_holders
+        held = port_holders(port)
+    except Exception:                                   # noqa: BLE001 - a hint only
+        return ""
+    return (": it is " + ", ".join(f"{n} (PID {pid}) on {ip}" if pid else f"{n} on {ip}" for n, pid, ip in held)
+            if held else "")
+
+
 def is_strata(base: str, key: str) -> bool:
     h = try_json(base, "/health", key, 5)
     return bool(h and h.get("service") == "strata")
@@ -983,8 +1004,12 @@ def main(argv=None) -> int:
             print(f"No Strata server answers at {base}.", file=sys.stderr)
             return 2
         else:
-            if try_json(base, "/health", key, 3) is not None:
-                print(f"Port {port} is used by something that is not Strata: pass --port N.", file=sys.stderr)
+            if port_answers(port):
+                # any listener, not only one that answers /health with JSON: Steam's web helper on 127.0.0.1:8080
+                # answers 404, and the bench then started a server and waited "still loading" for ten minutes
+                print(f"Port {port} on this PC already answers, but not as Strata{port_owner(port)}.\n"
+                      f"Close that program, or run the benchmark on another port: BENCH.bat --port {port + 1} "
+                      f"(or python tools/strata_bench.py --port {port + 1}).", file=sys.stderr)
                 return 2
             log_path = Path(tempfile.gettempdir()) / f"strata-bench-{os.getpid()}.log"
             say(f"Starting {cfg_path.name} on port {port} (loading takes 1-3 minutes; the PC may be slow meanwhile) ...")

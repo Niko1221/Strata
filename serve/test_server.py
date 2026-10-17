@@ -580,6 +580,44 @@ class ListenProblem(unittest.TestCase):
         self.assertIn("10.9.9.9 is not an address of this PC", text)
         self.assertNotIn("already in use", text)
 
+    def test_in_use_names_the_program_and_a_free_port(self):
+        import errno
+        from serve import server
+        steam = [("steamwebhelper.exe", 36952, "127.0.0.1")]
+        with mock.patch.object(server, "port_holders", return_value=steam), \
+                mock.patch.object(server, "free_port_after", return_value=8081):
+            text = server.listen_problem("0.0.0.0", 8080, OSError(errno.EADDRINUSE, "in use"))
+        self.assertIn("steamwebhelper.exe (PID 36952) on 127.0.0.1", text)
+        self.assertIn("would reach it instead of Strata", text)    # 0.0.0.0 beside a 127.0.0.1-only listener
+        self.assertIn("8081 is free now", text)
+        self.assertIn("--port 8081", text)
+        self.assertIn("SETUP.bat --port 8081", text)
+        self.assertIn("http://127.0.0.1:8081/v1", text)
+        with mock.patch.object(server, "port_holders", return_value=[("python.exe", 4242, "127.0.0.1")]), \
+                mock.patch.object(server, "free_port_after", return_value=8081):
+            text = server.listen_problem("127.0.0.1", 8080, OSError(errno.EADDRINUSE, "in use"))
+        self.assertIn("most likely Strata", text)
+        with mock.patch.object(server, "port_holders", return_value=[]), \
+                mock.patch.object(server, "free_port_after", return_value=None):
+            text = server.listen_problem("127.0.0.1", 8080, OSError(errno.EADDRINUSE, "in use"))
+        self.assertIn("netstat -ano | findstr :8080", text)
+        self.assertNotIn("free now", text)                          # no free port found: none is promised
+
+    def test_all_addresses_cannot_be_bound_beside_a_loopback_listener(self):
+        # the Steam case: another program on 127.0.0.1:P, Strata asked for 0.0.0.0:P.  Windows allowed that bind
+        # without SO_EXCLUSIVEADDRUSE, and local clients reached the other program
+        import socket
+        from http.server import BaseHTTPRequestHandler
+        from serve.server import Server
+        other = socket.socket()
+        other.bind(("127.0.0.1", 0))
+        other.listen()
+        try:
+            with self.assertRaises(OSError):
+                Server(("0.0.0.0", other.getsockname()[1]), BaseHTTPRequestHandler).server_close()
+        finally:
+            other.close()
+
 
 def shutil_rmtree(path):
     import shutil
