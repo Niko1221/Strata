@@ -864,6 +864,8 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
         declared = (props.get(pname) or {}).get("type")
         if declared == "string":
             args[pname] = value
+        elif declared == "boolean" and value.strip().lower() in ("true", "false"):
+            args[pname] = value.strip().lower() == "true"     # the model writes Python's True/False, not JSON
         else:
             try:
                 args[pname] = json.loads(value)
