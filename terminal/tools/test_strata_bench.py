@@ -446,6 +446,7 @@ class PortCheckTests(unittest.TestCase):
         self.assertFalse(B.port_answers(port))
 
     def test_the_owner_is_named_when_known(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # the repo root, for serve/ when run as a script
         from serve import server
         with mock.patch.object(server, "port_holders", return_value=[("steamwebhelper.exe", 36952, "127.0.0.1")]):
             self.assertEqual(B.port_owner(8080), ": it is steamwebhelper.exe (PID 36952) on 127.0.0.1")
