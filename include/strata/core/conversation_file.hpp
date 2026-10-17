@@ -179,6 +179,15 @@ bool session_file_write(const std::string& path, const SavedConversation& meta, 
                         const SessionFileIdentity& id, size_t& bytes, std::string& error,
                         const SessionWriteOptions& options = {}, SessionStatus* status = nullptr);
 
+// A multi-GPU (format-v3) save: `meta.stage_images` holds the later stages, and `kv_stages` supplies the K/V for
+// each stage in order - kv_stages[0] for stage 0, kv_stages[k+1] for meta.stage_images[k].  Its length must equal
+// meta.stage_images.size() + 1; a mismatch is refused rather than silently truncating a stage.  Each meta.kv and
+// meta.stage_images[k].kv must be empty (the K/V comes only from kv_stages).
+bool session_file_write(const std::string& path, const SavedConversation& meta,
+                        const std::vector<std::vector<SessionKvSource>>& kv_stages,
+                        const SessionFileIdentity& id, size_t& bytes, std::string& error,
+                        const SessionWriteOptions& options = {}, SessionStatus* status = nullptr);
+
 // The checkpoints worth a disk write: the deepest one (the next turn's resume point when the live tail was
 // rewritten).  Earlier checkpoints only serve edits further back and cost ~118 MB each at this geometry.
 std::vector<ConversationCheckpoint> session_checkpoints_to_save(const std::vector<ConversationCheckpoint>& chain);
@@ -206,10 +215,19 @@ bool session_save_checkpoints(const std::vector<ConversationCheckpoint>& chain, 
 // these limits BEFORE its array is allocated; the defaults accept whatever the payload can hold.  The engine sets all
 // of them from its runtime (conversation_session_read_limits), and then the file size is bounded too.
 struct SessionReadLimits {
+    // Per-stage bounds for a format-v3 file's later stages (stage_images).  Stage 0 is bounded by the top-level
+    // fields above; each later stage k (0-based into stage_limits) is bounded by its own block here.  A stage past
+    // the end of the list is bounded by the payload only.
+    struct SessionStageLimits {
+        std::pair<int64_t, int64_t> layer_range{};   // this stage's [lo, hi): a file with another range is refused
+        std::array<uint64_t, 5> max_state_bytes{UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
+        std::vector<std::array<uint64_t, 5>> max_kv_bytes;   // per K/V layer this stage owns (no draft for a later stage)
+    };
     uint64_t max_file_bytes = UINT64_MAX;
     uint64_t max_tokens = UINT64_MAX;       // token and image counts of the live state and of each checkpoint
     uint64_t max_checkpoints = UINT64_MAX;
     uint64_t max_kv_layers = UINT64_MAX;
+    uint64_t max_stages = UINT64_MAX;       // the number of later stages (stage_images) a v3 file may hold
     // the runtime's geometry and layer range: a file with others is refused before its state arrays are read
     std::optional<std::array<int64_t, 18>> geometry;
     std::optional<std::pair<int64_t, int64_t>> layer_range;
@@ -218,6 +236,9 @@ struct SessionReadLimits {
     // per K/V layer (the QSA layers, then the draft): the most bytes of each part (k, v, k_scale, v_scale, pooled).
     // A layer past the end of the list is bounded by the payload only.
     std::vector<std::array<uint64_t, 5>> max_kv_bytes;
+    // per later stage (0-based): its layer range, running-state bounds and per-K/V-layer bounds.  A stage past the
+    // end of the list is bounded by the payload only.
+    std::vector<SessionStageLimits> stage_limits;
     // the RAM PREFLIGHT: asked once the header and identity match and before any payload allocation, with what the
     // parse holds at its peak (session_read_peak_bytes); false refuses the file.  Not a reservation.
     std::function<bool(uint64_t need_bytes, std::string& why)> admit;
