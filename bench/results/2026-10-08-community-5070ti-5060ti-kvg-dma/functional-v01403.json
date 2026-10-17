@@ -1,0 +1,223 @@
+{
+  "source_base": "v0.1.40.3 custom fork",
+  "source_commit": "2c21a02dc9058b721b8c1fa0023bb860cff3e9bd",
+  "scope": "functional, not a10-run speed benchmark",
+  "outputs": [
+    {
+      "profile": "grow-pipeline2",
+      "actual_input": 65536,
+      "actual_output": 1024,
+      "reused": 0,
+      "functional_check": true,
+      "kv_mib": [
+        608.0,
+        380.0
+      ],
+      "resident_experts": [
+        6915,
+        5788
+      ],
+      "dma_batches": [
+        0,
+        0
+      ],
+      "dma_batch_fallbacks": [
+        0,
+        0
+      ],
+      "staging_mib": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "profile": "grow-pipeline2",
+      "actual_input": 131072,
+      "actual_output": 1024,
+      "reused": 0,
+      "functional_check": true,
+      "kv_mib": [
+        1152.0,
+        720.0
+      ],
+      "resident_experts": [
+        6573,
+        5606
+      ],
+      "dma_batches": [
+        0,
+        0
+      ],
+      "dma_batch_fallbacks": [
+        0,
+        0
+      ],
+      "staging_mib": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "profile": "grow-pipeline2",
+      "actual_input": 261000,
+      "actual_output": 1024,
+      "reused": 0,
+      "functional_check": true,
+      "kv_mib": [
+        2112.0,
+        1320.0
+      ],
+      "resident_experts": [
+        5953,
+        5288
+      ],
+      "dma_batches": [
+        0,
+        0
+      ],
+      "dma_batch_fallbacks": [
+        0,
+        0
+      ],
+      "staging_mib": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "profile": "grow-pipeline2",
+      "actual_input": 8192,
+      "actual_output": 1024,
+      "reused": 0,
+      "functional_check": true,
+      "kv_mib": [
+        160.0,
+        100.0
+      ],
+      "resident_experts": [
+        7199,
+        5929
+      ],
+      "dma_batches": [
+        0,
+        0
+      ],
+      "dma_batch_fallbacks": [
+        0,
+        0
+      ],
+      "staging_mib": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "profile": "grow-pipeline2-dma1-bounce",
+      "actual_input": 65536,
+      "actual_output": 1024,
+      "reused": 0,
+      "functional_check": true,
+      "kv_mib": [
+        608.0,
+        380.0
+      ],
+      "resident_experts": [
+        6915,
+        5788
+      ],
+      "dma_batches": [
+        112,
+        71
+      ],
+      "dma_batch_fallbacks": [
+        0,
+        0
+      ],
+      "staging_mib": [
+        213.312,
+        213.312
+      ]
+    },
+    {
+      "profile": "grow-pipeline2-dma1-bounce",
+      "actual_input": 131072,
+      "actual_output": 1024,
+      "reused": 0,
+      "functional_check": true,
+      "kv_mib": [
+        1152.0,
+        720.0
+      ],
+      "resident_experts": [
+        6565,
+        5606
+      ],
+      "dma_batches": [
+        206,
+        116
+      ],
+      "dma_batch_fallbacks": [
+        0,
+        0
+      ],
+      "staging_mib": [
+        213.312,
+        213.312
+      ]
+    },
+    {
+      "profile": "grow-pipeline2-dma1-bounce",
+      "actual_input": 261000,
+      "actual_output": 1024,
+      "reused": 0,
+      "functional_check": true,
+      "kv_mib": [
+        2112.0,
+        1320.0
+      ],
+      "resident_experts": [
+        5953,
+        5288
+      ],
+      "dma_batches": [
+        300,
+        157
+      ],
+      "dma_batch_fallbacks": [
+        0,
+        0
+      ],
+      "staging_mib": [
+        213.312,
+        213.312
+      ]
+    },
+    {
+      "profile": "grow-pipeline2-dma1-bounce",
+      "actual_input": 8192,
+      "actual_output": 1024,
+      "reused": 0,
+      "functional_check": true,
+      "kv_mib": [
+        160.0,
+        100.0
+      ],
+      "resident_experts": [
+        7199,
+        5929
+      ],
+      "dma_batches": [
+        397,
+        180
+      ],
+      "dma_batch_fallbacks": [
+        0,
+        0
+      ],
+      "staging_mib": [
+        213.312,
+        213.312
+      ]
+    }
+  ]
+}

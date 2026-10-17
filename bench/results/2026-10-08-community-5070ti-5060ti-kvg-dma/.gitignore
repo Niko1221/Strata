@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+results/
+run.lock
+STOP_REQUESTED
+*.log
