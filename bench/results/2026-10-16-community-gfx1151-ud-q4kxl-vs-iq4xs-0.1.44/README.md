@@ -6,16 +6,19 @@ ran UD-IQ4_XS only and declared 55 GiB as what is left for the expert cache; the
 become a multi-tenant box, which is what decides the answer here.
 
 **Headline.** On 121 GiB of unified memory, UD-Q4_K_XL (103.69 GiB of GGUF) fits alongside a
-desktop and a live inference server with `--resident-budget-gib 71`, and it beats UD-IQ4_XS on
-**correctness** (96.7 % versus 95.6 % standard, 99.5 % versus 98.4 % hard) and on **prefill from
-16 K to 64 K**, while **losing decode everywhere it was measured** (−6 % short code, −19 %
-prose, −6 % at 128 K) and costing about 24 GiB of OS headroom. Take UD-IQ4_XS when throughput or
-total RAM matters; take UD-Q4_K_XL when the answer has to be right.
+desktop and a live interactive workload with `--resident-budget-gib 71`. It edges UD-IQ4_XS on
+correctness — though see
+[Correctness](#correctness-controlled-same-battery-seed-and-levels-in-both-arms): that margin is
+carried mostly by one flaky task — and it wins **prefill from 4 K to 16 K**, while **losing decode
+at every size measured** (−3 % short code, −19 % prose, −6 % at 128 K) and costing about 24 GiB of
+OS headroom. Take UD-IQ4_XS when throughput or total RAM matters; take UD-Q4_K_XL when the answer
+has to be right and you can spare the RAM.
 
 ## How to read this
 
-- **Prompt** = prefill tok/s, **Output** = decode tok/s, from the engine's own reported counts
-  identical to that report's convention.
+- **Prompt** = prefill tok/s, **Output** = decode tok/s, from the engine's own reported token
+  counts over its own reported time, matching the convention used by
+  [2026-10-09-community-gfx1151-ud-iq4xs-0.1.41](../2026-10-09-community-gfx1151-ud-iq4xs-0.1.41/README.md).
 - The two arms are **not same-day and not same-engine** (see [Caveats](#caveats-and-what-this-does-not-show)).
   Differences below about 5 % are inside the run-to-run spread of this box and are reported
   as "no clear difference" rather than as a delta.
@@ -35,7 +38,7 @@ total RAM matters; take UD-Q4_K_XL when the answer has to be right.
 - ROCm: the host's single install `/opt/rocm` → `/opt/rocm/core-7.14`, **7.14.1**, HSA/ROCr
   `1.21.0`, `libamdhip64.so.7.14.60850`. Both arms were launched with
   `lib_dirs: ["/opt/rocm/core-7.14/lib"]` and
-  `STRATA_HIPBLASLT_TUNING=…/tools/hip/gfx1151-hipblaslt-100401.txt`. No
+  `STRATA_HIPBLASLT_TUNING=<the bundled gfx1151/100401 tuning table>`. No
   `HSA_OVERRIDE_GFX_VERSION`, no BIOS or kernel parameter change.
 - Note for anyone repeating this: `/opt/rocm/.info/version` does **not** exist in this packaging;
   the version is `/opt/rocm/core-7.14/.info/version`. Reading the first path returns nothing and
@@ -45,11 +48,11 @@ total RAM matters; take UD-Q4_K_XL when the answer has to be right.
 
 | Arm | Engine | Model | GGUF bytes | `--resident-budget-gib` | Serving |
 |---|---|---|---|---|---|
-| A (UD-IQ4_XS) | Strata **v0.1.43**, HIP build (`/ai/strata/build-hip`) | [`unsloth/Qwen3.8-Flash-Next-GGUF`](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/38bb39ee97821de2c9009abb7e93950eec396e66/UD-IQ4_XS) rev `38bb39ee`, 3 files | **93,682,584,224** (87.25 GiB) | 55 | direct on `:8091`, `llama-swap` stopped, nothing else resident |
-| B (UD-Q4_K_XL) | Strata **v0.1.44.1**, HIP build (`/ai/strata-0.1.44.1/build-hip`) | same repo, [`UD-Q4_K_XL`](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/c8b5954a88c2775c546b92593eda40ea041d3176/UD-Q4_K_XL) rev `c8b5954a`, 4 files | **111,334,654,784** (103.69 GiB) | 71 | through `llama-swap` on `:8080` as model `deep` |
+| A (UD-IQ4_XS) | Strata **v0.1.43**, HIP build from source | [`unsloth/Qwen3.8-Flash-Next-GGUF`](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/38bb39ee97821de2c9009abb7e93950eec396e66/UD-IQ4_XS) rev `38bb39ee`, 3 files | **93,682,584,224** (87.25 GiB) | 55 | served directly by the engine, nothing else resident |
+| B (UD-Q4_K_XL) | Strata **v0.1.44.1**, HIP build from source | same repo, [`UD-Q4_K_XL`](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/c8b5954a88c2775c546b92593eda40ea041d3176/UD-Q4_K_XL) rev `c8b5954a`, 4 files | **111,334,654,784** (103.69 GiB) | 71 | behind an OpenAI-compatible proxy, live traffic |
 
-Shared arguments in both arms: `--expert-profile /ai/strata/data/expert-profile.bin`,
-`--expert-cache auto`, `--prefill auto:16384`, `--mtp /ai/Strata-data/mtp/rt`,
+Shared arguments in both arms: `--expert-profile <expert-profile.bin>`, `--expert-cache auto`,
+`--prefill auto:16384`, `--mtp <mtp-dir>`,
 `--max-context 262144`, `--kv int8`, `--kv-resident 32768`.
 
 Arm-specific: A used `--spec 4 --spec-min-p 0.5` plus `STRATA_PF_SWITCH_MIN_T=4096`,
@@ -113,12 +116,30 @@ What this shows:
 | standard (182 scored tasks) | 174 ok, 8 bad — **95.6 %** | 176 ok, 6 bad — **96.7 %** |
 | hard (185 scored tasks) | 182 ok, 3 bad — **98.4 %** | 184 ok, 1 bad — **99.5 %** |
 
-This is the finding worth the most, because it is apples-to-apples: **the larger quant is more
-correct on both batteries, at the cost of the decode numbers above.** Concretely, arm A failed
-a level-0 reasoning/optimisation task with `got='None' want='102'` (and a rule violation on the
-answer line) on a prompt with no context at all, while arm B answered it correctly in 50.3 s.
-A failure at level 0 cannot be a long-context effect; it is the model, so it is a quantisation
-effect. If your workload is reasoning-critical, take B and live with the decode cost.
+This needs the failure distribution, because the headline percentage alone misleads. Counting the
+rows each arm failed and grouping by task:
+
+| Battery | Arm | failed rows | concentrated in |
+|---|---|---|---|
+| standard | A: UD-IQ4_XS | 8 | `reasoning/optimisation` x7, `game_trace/three_files` x1 |
+| standard | B: UD-Q4_K_XL | 6 | `reasoning/optimisation` x6 |
+| hard | A: UD-IQ4_XS | 3 | `science_ctx/kinetic_energy` x2, `synthesis/count_limits` x1 |
+| hard | B: UD-Q4_K_XL | 1 | `science_ctx/kinetic_energy` x1 |
+
+So the accuracy gap is **not broad reasoning superiority: both arms fail the same two tasks, and B
+just fails them less often.** `reasoning/optimisation` alone accounts for 7 of A's 8 and all 6 of
+B's standard-battery failures, every one with the identical signature `got='None' want='102'` plus
+`RULES BROKEN: answer_line` - the task is flaky on this model in both quants, and much of the
+1.1-point difference is that one task's output-format compliance, repeated across context levels.
+
+The one genuinely clean signal: at **level 0** (no reference documents at all) A failed that task
+`got='None'` while B answered `got='102'` in 50.3 s. A level-0 failure cannot be a long-context or
+retrieval effect, so something real separates the quants there - but it is one task, on a task both
+arms otherwise flake on, so treat it as a hint worth a re-run rather than proof.
+
+Honest summary: **B is more accurate, by a margin carried mostly by a single flaky task.** If your
+workload is reasoning-critical, B is still the better choice on this evidence, but do not quote
+"96.7 % vs 95.6 %" as a quant-quality delta without this table next to it.
 
 ## Memory headroom, which is the actual decision on this box
 
@@ -130,10 +151,10 @@ and everything else gets. Both numbers below are the harness's own `avail` readi
 | `MemAvailable` around the run | 37–38 GiB | 13.9–14.6 GiB |
 | Desktop + browser + an app server usable alongside | comfortably | tight |
 
-Arm A was measured with `llama-swap` stopped (the chain script aborts if it is running), so its
-38 GiB is "model alone on a quiet box". Arm B was measured *with the inference server serving
-live traffic through llama-swap*, which is why the budget went to 71 and the headroom fell to
-about 14 GiB. This is the practical guidance:
+Arm A was measured with the serving proxy stopped and no other model resident, so its 38 GiB is
+"model alone on a quiet box". Arm B was measured while the same engine served live interactive
+traffic through a proxy it could not be detached from, which is why the budget went to 71 and
+headroom fell to about 14 GiB. This is the practical guidance:
 
 - **Run B (Q4_K_XL) only if you can keep about 14 GiB free and accept it**, and if you are not
   also hosting a second resident model. On this host a second large resident model is exactly
@@ -158,13 +179,14 @@ the raw files' SHA-256.
   *quant-plus-engine-config*, not quant alone. The correctness comparison is **not** affected
   in the same way — but it is still two versions, so treat the 1.1-point standard gap as
   indicative and the level-0 task failure as the hard evidence.
-- **Different harness paths**: A served directly on `:8091`, B through llama-swap on `:8080`.
-  B's wall-clock numbers include llama-swap; the reported `pp`/`tg` are engine-reported token
-  counts over engine-reported time, so llama-swap adds latency to `wall_s` but not materially
-  to `pp`/`tg`. Unverified: exactly how much.
+- **Different serving paths**: A served directly by the engine, B through an OpenAI-compatible
+  proxy. B's `wall_s` includes the proxy; `pp`/`tg` are engine-reported token counts over
+  engine-reported time, so the proxy adds latency to `wall_s` but not materially to `pp`/`tg`.
+  Unverified: exactly how much.
 - **Single run per size**, unlike the 0.1.41 report's medians of 3. Short-prompt rows were
   repeated (3× code, 3× prose) and their medians are what the table shows; long rows were not.
-- **Not an isolated OS.** Desktop, browser and Home Assistant traffic were live in arm B.
+- **Not an isolated OS.** A desktop, a browser and unrelated interactive inference traffic were
+  live during arm B.
 - GPU is an **iGPU on shared memory**: the harness's `avail` is a RAM reading, and there is no
   discrete PCIe link here to measure.
 - 245 K never ran in either arm; nothing here characterises behaviour above 128 K.
