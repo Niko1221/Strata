@@ -1,0 +1,82 @@
+{
+  "label": "2k-convcache-off",
+  "single": [],
+  "long": [
+    [
+      {
+        "tokens": 2073,
+        "read": 2073,
+        "prefill_ms": 4592,
+        "prefill_tps": 451.4,
+        "gen": 199,
+        "gen_ms": 1442,
+        "decode_tps": 138.0
+      }
+    ],
+    [
+      {
+        "tokens": 2113,
+        "read": 2113,
+        "prefill_ms": 4508,
+        "prefill_tps": 468.7,
+        "gen": 202,
+        "gen_ms": 1488,
+        "decode_tps": 135.8
+      }
+    ],
+    [
+      {
+        "tokens": 2091,
+        "read": 2091,
+        "prefill_ms": 4450,
+        "prefill_tps": 469.9,
+        "gen": 201,
+        "gen_ms": 1657,
+        "decode_tps": 121.3
+      }
+    ],
+    [
+      {
+        "tokens": 2135,
+        "read": 2135,
+        "prefill_ms": 4454,
+        "prefill_tps": 479.3,
+        "gen": 198,
+        "gen_ms": 1347,
+        "decode_tps": 147.0
+      }
+    ],
+    [
+      {
+        "tokens": 2155,
+        "read": 2155,
+        "prefill_ms": 4505,
+        "prefill_tps": 478.3,
+        "gen": 200,
+        "gen_ms": 1482,
+        "decode_tps": 134.9
+      }
+    ],
+    [
+      {
+        "tokens": 2095,
+        "read": 2095,
+        "prefill_ms": 4469,
+        "prefill_tps": 468.8,
+        "gen": 196,
+        "gen_ms": 1283,
+        "decode_tps": 152.8
+      }
+    ]
+  ],
+  "meta": {
+    "measured_at": "2026-10-13 07:43:05",
+    "vram": [
+      "0, 15723 MiB, 422 MiB",
+      "1, 15731 MiB, 414 MiB",
+      "2, 15679 MiB, 466 MiB",
+      "3, 15947 MiB, 198 MiB"
+    ],
+    "config": "{\n  \"exe\": \"/data1/zealotq/Strata/engine-cuda12/strata\",\n  \"args\": [\n    \"--pack\",\n    \"/data1/zealotq/Strata-data/packs/unsloth-ud-q4_k_xl\",\n    \"--native\",\n    \"/data1/zealotq/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf\",\n    \"--expert-profile\",\n    \"/data1/zealotq/Strata/data/expert-profile.bin\",\n    \"--expert-cache\",\n    \"auto\",\n    \"--prefill\",\n    \"auto\",\n    \"--spec\",\n    \"4\",\n    \"--spec-min-p\",\n    \"0.8\",\n    \"--suffix-draft\",\n    \"8\",\n    \"--mtp\",\n    \"/data1/zealotq/Strata-data/mtp/rt\",\n    \"--max-context\",\n    \"262144\",\n    \"--kv\",\n    \"int8\",\n    \"--ple-io\",\n    \"ram\",\n    \"--kv-resident\",\n    \"32768\",\n    \"--prompt-cache\",\n    \"24\",\n    \"--prompt-cache-every\",\n    \"8192\",\n    \"--conversation-cache-mib\",\n    \"0\",\n    \"--conversation-cache-slots\",\n    \"0\",\n    \"--trim-stage-weights\",\n    \"--pipeline-windows\",\n    \"2\"\n  ],\n  \"cwd\": \"/data1/zealotq/Strata\",\n  \"tokenizer\": \"/data1/zealotq/Strata-data/packs/unsloth-ud-q4_k_xl/tokenizer\",\n  \"model_name\": \"qwen3.8-flash-next-ud-q4_k_xl\",\n  \"log\": \"/data1/zealotq/Strata/strata-q4kxl-v100.log\",\n  \"lib_dirs\": [\n    \"/data1/zealotq/envs/cuda129/bin\"\n  ],\n  \"port\": 8080,\n  \"cuda\": 12,\n  \"gpu\": [\n    0,\n    1,\n    2,\n    3\n  ],\n  \"gpus_asked\": true,\n  \"layer_split\": \"9,25,34\",\n  \"host\": \"0.0.0.0\",\n  \"api_key\": \"strata-kt-qgg2026\",\n  \"reasoning_budget_tokens\": 4096,\n  \"expert_profile_save\": \"/data1/zealotq/Strata/data/expert-profile-learned.bin\",\n  \"parallel\": 1,\n  \"env\": {\n    \"STRATA_SM70_TABLE\": \"1\",\n    \"STRATA_SELECT_SIMT\": \"1\",\n    \"STRATA_SPEC_DEPTH\": \"1\",\n    \"STRATA_KV_PREFETCH\": \"1\"\n  }\n}"
+  }
+}
