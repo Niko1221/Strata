@@ -719,7 +719,12 @@ inline std::string read_geometry(const GgufFile& f, core::ModelGeometry& g) {
 
     // The layer split, twice over: the interval, and a ratio per layer that is non-zero (the indexer's pooling
     // block) exactly on the full-attention layers.
-    if (const MetaValue* v = f.get(p + "attention.compress_ratios")) {
+    const MetaValue* v = f.get(p + "attention.compress_ratios");
+    // Some re-quantized finetunes write the key with every entry 0. That names no layer, so it is read as absent.
+    if (v && v->type == MetaType::ARRAY && !v->items.empty() &&
+        std::all_of(v->items.begin(), v->items.end(), [](const MetaValue& e) { return e.u == 0; }))
+        v = nullptr;
+    if (v) {
         if (v->type != MetaType::ARRAY || v->count != (uint64_t) g.n_layers || v->items.size() != v->count)
             return p + "attention.compress_ratios must list one entry for each of the " + std::to_string(g.n_layers) +
                    " layers";
