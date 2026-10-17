@@ -320,6 +320,13 @@ public:
     bool window_logprobs(const int32_t* targets, int T, int64_t pos0, int32_t extra_id, std::FILE* out,
                          std::string& err);
 
+    /// jev systemone (M3.0, --jev-brow): the LAST window's final row (position pos0 + last_T - 1),
+    /// copied device-to-host for `n` token ids (their logits, in the order asked).  Fails closed
+    /// (false + err) when no window has run, the row is gone, a token is out of range, or the
+    /// copy fails - the server never gets a partial or fabricated row.  A layer split's earlier
+    /// stage forwards to the stage that holds the head (same as window_logprobs).
+    bool brow_row(const int32_t* tokens, int n, float* out, std::string& err);
+
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
     const float* final_R_all() const { return next_ ? next_->final_R_all() : R_; }
@@ -611,6 +618,7 @@ private:
     float* hit_xs_ = nullptr;
     void* hit_scratch_ = nullptr;
     float *head_mixed_ = nullptr, *head_inj_ = nullptr, *head_logits_ = nullptr;
+    int last_row_T_ = 0;   ///< jev --jev-brow: the last accepted window's T (its final row is brow_row's)
     uint16_t* sh_bf16_ = nullptr;
     uint8_t* arg_scratch_ = nullptr;   ///< argmax_rows' partials and counters
     int32_t* one_ = nullptr;           ///< device {1}: the n_keep of a one-token window, which commits itself

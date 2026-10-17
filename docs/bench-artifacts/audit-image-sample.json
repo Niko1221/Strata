@@ -1,0 +1,267 @@
+[
+ {
+  "suite": "image",
+  "qid": "img003",
+  "gold": 0,
+  "pr": [
+   0.9905,
+   0.0095
+  ],
+  "argmax": 0,
+  "instructions": "Is there a large yellow circle in the image?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAH",
+  "image_sha": "b154807af5b4c960",
+  "calib": "identity",
+  "kind": "noul"
+ },
+ {
+  "suite": "image",
+  "qid": "img005",
+  "gold": 0,
+  "pr": [
+   0.9709,
+   0.0291
+  ],
+  "argmax": 0,
+  "instructions": "Is there a large orange circle in the image?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAG",
+  "image_sha": "82aa43059d11851b",
+  "calib": "identity",
+  "kind": "noul"
+ },
+ {
+  "suite": "image",
+  "qid": "img017",
+  "gold": 1,
+  "pr": [
+   0.0008,
+   0.9992
+  ],
+  "argmax": 1,
+  "instructions": "Is there a large orange circle in the image?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAJ",
+  "image_sha": "19eb6f6e06fd09b1",
+  "calib": "identity",
+  "kind": "noul"
+ },
+ {
+  "suite": "image",
+  "qid": "img026",
+  "gold": 0,
+  "pr": [
+   0.9849,
+   0.0151
+  ],
+  "argmax": 0,
+  "instructions": "Is there a large green circle in the image?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAH",
+  "image_sha": "0a7e1a8937fea9f7",
+  "calib": "identity",
+  "kind": "noul"
+ },
+ {
+  "suite": "image",
+  "qid": "img049",
+  "gold": 1,
+  "pr": [
+   0.0007,
+   0.9993
+  ],
+  "argmax": 1,
+  "instructions": "Is there a large blue circle in the image?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAJ",
+  "image_sha": "89fdf50114027be0",
+  "calib": "identity",
+  "kind": "noul"
+ },
+ {
+  "suite": "image",
+  "qid": "img002",
+  "gold": 2,
+  "pr": [
+   0.0092,
+   0.0121,
+   0.9787
+  ],
+  "argmax": 2,
+  "instructions": "Which shape is the largest?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAI",
+  "image_sha": "c8e3ec7d3602874d",
+  "calib": "identity",
+  "kind": "choice"
+ },
+ {
+  "suite": "image",
+  "qid": "img006",
+  "gold": 1,
+  "pr": [
+   0.018702,
+   0.978998,
+   0.0023
+  ],
+  "argmax": 1,
+  "instructions": "Which shape is the largest?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAI",
+  "image_sha": "beed0c01b984d295",
+  "calib": "identity",
+  "kind": "choice"
+ },
+ {
+  "suite": "image",
+  "qid": "img017",
+  "gold": 0,
+  "pr": [
+   0.9981,
+   0.0015,
+   0.0004
+  ],
+  "argmax": 0,
+  "instructions": "Which shape is the largest?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAI",
+  "image_sha": "1cf4cd03ce27bb2f",
+  "calib": "identity",
+  "kind": "choice"
+ },
+ {
+  "suite": "image",
+  "qid": "img024",
+  "gold": 1,
+  "pr": [
+   0.0171,
+   0.9805,
+   0.0024
+  ],
+  "argmax": 1,
+  "instructions": "Which shape is the largest?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAI",
+  "image_sha": "beed0c01b984d295",
+  "calib": "identity",
+  "kind": "choice"
+ },
+ {
+  "suite": "image",
+  "qid": "img034",
+  "gold": 1,
+  "pr": [
+   0.0144,
+   0.983,
+   0.0026
+  ],
+  "argmax": 1,
+  "instructions": "Which shape is the largest?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAI",
+  "image_sha": "0ca5117f75754e02",
+  "calib": "identity",
+  "kind": "choice"
+ },
+ {
+  "suite": "image",
+  "qid": "img003",
+  "gold": 4,
+  "pr": [
+   0.0004,
+   0.0008,
+   0.0008,
+   0.0033,
+   0.608,
+   0.3528,
+   0.0327,
+   0.0009,
+   0.0003
+  ],
+  "argmax": 4,
+  "instructions": "How many circles are in the image?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAH",
+  "image_sha": "148890e7fb8fdf97",
+  "calib": "identity",
+  "kind": "score"
+ },
+ {
+  "suite": "image",
+  "qid": "img008",
+  "gold": 7,
+  "pr": [
+   0.0003,
+   0.0005,
+   0.0002,
+   0.0002,
+   0.0004,
+   0.001,
+   0.027508,
+   0.679704,
+   0.290187
+  ],
+  "argmax": 7,
+  "instructions": "How many circles are in the image?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAI",
+  "image_sha": "8f78ca7a70fe1d44",
+  "calib": "identity",
+  "kind": "score"
+ },
+ {
+  "suite": "image",
+  "qid": "img010",
+  "gold": 2,
+  "pr": [
+   0.0004,
+   0.0018,
+   0.9918,
+   0.0018,
+   0.0019,
+   0.0006,
+   0.0013,
+   0.0002,
+   0.0002
+  ],
+  "argmax": 2,
+  "instructions": "How many circles are in the image?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAG",
+  "image_sha": "675b14f5c63041f9",
+  "calib": "identity",
+  "kind": "score"
+ },
+ {
+  "suite": "image",
+  "qid": "img021",
+  "gold": 4,
+  "pr": [
+   0.0001,
+   0.0003,
+   0.0002,
+   0.0016,
+   0.963,
+   0.0153,
+   0.0192,
+   0.0002,
+   0.0001
+  ],
+  "argmax": 4,
+  "instructions": "How many circles are in the image?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAH",
+  "image_sha": "5a01cd308001fda1",
+  "calib": "identity",
+  "kind": "score"
+ },
+ {
+  "suite": "image",
+  "qid": "img035",
+  "gold": 2,
+  "pr": [
+   0.0003,
+   0.0018,
+   0.992,
+   0.0035,
+   0.0011,
+   0.0004,
+   0.0007,
+   0.0001,
+   0.0001
+  ],
+  "argmax": 2,
+  "instructions": "How many circles are in the image?",
+  "image_b64_head": "iVBORw0KGgoAAAANSUhEUgAAAcAAAAHACAIAAAC6Ry8kAAAG",
+  "image_sha": "4f488e46cab9c18e",
+  "calib": "identity",
+  "kind": "score"
+ }
+]
