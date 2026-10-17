@@ -4538,6 +4538,13 @@ class Service:
                             finish = "stop"
                             break
                         prompt = prompt + seg + extra
+                    if thinking and finish == "stop" and not answered and not cancel.is_set():
+                        # diagnostic: a reply that thought and then ended with no text and no call - which of
+                        # the two ends it was (parser "reasoning" with nothing held: #1053's case, reasoning_close_retry
+                        # continues it; held "</think>": the thinking was closed and nothing followed, left as it is)
+                        print(f"[strata] empty answer: the reply ended after its thinking with no text or call "
+                              f"(parser={parser.state}, held={parser.buf!r}, "
+                              f"tail={self.tok.decode(raw_ids[-12:])!r})", flush=True)
                     if cancel.is_set():
                         finish = "cancel"
                     elif looped:
