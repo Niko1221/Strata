@@ -121,6 +121,10 @@ Notes:
 - **NVIDIA with no ready-made engine for the card:** setup offers to install build tools and compile (20-40 minutes);
   `--yes` accepts.
 
+- **A setup run again over an installed model** (`--setup`, or `SETUP.bat` again to change its
+  context): its installed size is pre-selected and marked "(installed)", and `--yes` takes it - a
+  re-run does not move an installed model to the recommended size (0.1.44.1).
+
 ## 5. While it downloads, tell the user
 
 - It downloads about 70 GB from Hugging Face; how long depends on their connection (at 100 Mbit/s roughly 1.5-2

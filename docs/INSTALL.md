@@ -149,7 +149,10 @@ only (Sandy Bridge / Ivy Bridge, Xeon E5 v1/v2, AMD Bulldozer) or SSE4.2 only (N
 as an **experimental** build that setup compiles on that PC. Run setup as usual: it says the CPU has no AVX2, warns
 that this is experimental and slow, and compiles the engine (10-20 minutes, once; Windows needs the Visual Studio Build
 Tools and the CUDA Toolkit, which setup offers to install). It does not stop. The ready-made engine still refuses such
-a CPU, and says so.
+a CPU, and says so. (On 0.1.44 that answer could be cut short by an illegal-instruction crash:
+the AVX/FMA tables inside the AVX-compiled files were built at program start, before the CPU was
+checked; 0.1.44.1 fixes that, and its start error names the crash and, on Linux, the CPU
+features it lacks (#2324).)
 
 What differs in that build (`STRATA_ISA_FLOOR=avx` or `none`, chosen from the CPU):
 
@@ -199,7 +202,10 @@ says so and starts the engine you had.
   rewrites the keys setup writes (`exe`, `args`, `port`, `gpu`, `host`, `api_key`, `vision`, ...) and keeps the
   ones you added (`sampling`, `mcp_servers`, `mcp`, `cors_origins`, ...); the earlier file is kept as
   `strata-<model>.json.bak` (0.1.39). Engine options you added to `"args"` by hand are not carried over: setup names
-  them, and you add them again.
+  them, and you add them again. The three `"env"` entries 0.1.44 added
+  (`STRATA_MMQ_KQ`, `STRATA_HC_Q8`, `STRATA_ROUTE_TAIL_SKIP`) are rewritten on a re-run only in an
+  Unsloth model's config, where setup owns them; in any other model's config they are yours and a
+  setup run again keeps them (0.1.44 dropped them there; 0.1.44.1).
 - **The model files** (`models/`, `packs/`, `mtp/`, 70-120 GB): in **`Strata-data` next to the Strata folder**, or
   wherever `--data-dir` put them.
 - **Where that data folder is:** `%APPDATA%\Strata\settings.json` on Windows, `~/.config/strata/settings.json` on
@@ -212,7 +218,9 @@ says so and starts the engine you had.
 ## Setup's questions
 
 - **Which model and size?** The original, Swift 1.5, the Coder or Unsloth's 4-bit, and Q2_0, IQ2_XS, IQ3_XXS or
-  IQ3_S - see [which model](MODELS.md).
+  IQ3_S - see [which model](MODELS.md). Run setup again (`--setup`, `SETUP.bat`) over a family
+  whose model is already installed and that size comes pre-selected, marked "(installed)" - the
+  recommended size counts for a first install, and every size stays a choice (0.1.44.1).
 - **How much context?** How much text it can keep in mind at once (it suggests one for your card). 384K and
   512K (experimental) extend the model past its trained 262K by rope scaling - the setup turns it on itself (yarn and a
   covering factor; `--rope-scaling`/`--rope-scale` override) ([details](DETAILS.md): "Context extension past
@@ -223,7 +231,8 @@ says so and starts the engine you had.
 - **Experimental speed projection?** Off unless you say yes - [read what it does](DETAILS.md#experimental-speed-projection-experimental-off-by-default)
   first. It changes how the model answers, and only the original model offers it.
 
-With `--yes` setup takes the recommended answer to every question.
+With `--yes` setup takes the recommended answer to every question - over an installed model, its
+installed size is the recommended answer (0.1.44.1).
 
 ## Tuning for your PC
 
