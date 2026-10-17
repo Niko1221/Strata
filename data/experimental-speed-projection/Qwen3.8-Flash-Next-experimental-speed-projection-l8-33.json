@@ -1,0 +1,149 @@
+{
+ "mode": "project",
+ "dir": "per-layer",
+ "scale": 1.0,
+ "layer_range": [
+  8,
+  33
+ ],
+ "vector_file": "Qwen3.8-Flash-Next-experimental-speed-projection-l8-33.gguf",
+ "engine_flags": "--control-vector-scaled <file>:1.0 --control-vector-layer-range 8 33 --cvec-mode project --cvec-dir per-layer",
+ "per_layer_strength": {
+  "8": 1.0,
+  "9": 1.0,
+  "10": 1.0,
+  "11": 1.0,
+  "12": 1.0,
+  "13": 1.0,
+  "14": 1.0,
+  "15": 1.0,
+  "16": 1.0,
+  "17": 1.0,
+  "18": 1.0,
+  "19": 1.0,
+  "20": 1.0,
+  "21": 1.0,
+  "22": 1.0,
+  "23": 1.0,
+  "24": 1.0,
+  "25": 1.0,
+  "26": 1.0,
+  "27": 1.0,
+  "28": 1.0,
+  "29": 1.0,
+  "30": 1.0,
+  "31": 1.0,
+  "32": 1.0,
+  "33": 1.0
+ },
+ "direction": "per-layer mean(harmful) - mean(harmless) summed over the 4 hc streams, averaged over the 7 assistant-header template positions as unit directions, unit-normalized; harmful=mlabonne/harmful_behaviors train (320), harmless=mlabonne/harmless_alpaca train (320)",
+ "built_from": "sergqwer/strata-nvfp4 data/uncensor/qwen-nvfp4-gptq-uncensored.gguf (sha256 a2ec3e999724022a55d48d30822bd10b1b25916ccc221013a119a674d06a46b5)",
+ "scores": {
+  "note": "KL(stock||this) teacher-forced, exact mode; refusals thinking-off unless _on; think = mean delta log p(</think>) over the model's own thinking (>0 = ends thinking sooner)",
+  "kl": {
+   "kl_base": 0.0259,
+   "kl_base_p99": 0.315,
+   "kl_tk": 0.0144,
+   "kl_replies": 0.0057,
+   "kl_agent": 0.0248,
+   "same_top1": 0.944,
+   "think_base": 0.024,
+   "think_tk": 0.019
+  },
+  "refusals_harm_val": {
+   "val_off": "4/96"
+  },
+  "refusals_heldout_off": {
+   "harm_test_off_c1": "3/104",
+   "harm_test_uk_off_c1": "2/30",
+   "harmless_test_off_c1": "2/64"
+  },
+  "refusals_heldout_on": {
+   "harm_test_on_c1": "0/104",
+   "harm_test_uk_on_c1": "0/30"
+  },
+  "loopcap_think_tokens": {
+   "think": [
+    1844,
+    1836,
+    1042,
+    2303,
+    2711
+   ],
+   "think_mean": 1947,
+   "verdicts": [
+    "OK",
+    "OK",
+    "OK",
+    "OK",
+    "OK"
+   ],
+   "tok_s_mean": 159.0
+  },
+  "decode_tok_s": {
+   "tok_s": [
+    174.2,
+    173.7,
+    172.6
+   ],
+   "tok_s_mean": 173.5,
+   "accept": [
+    0.802,
+    0.791,
+    0.805
+   ]
+  }
+ },
+ "baseline_upstream_vector_4_44": {
+  "kl": {
+   "kl_tk": 0.0298,
+   "think_tk": 0.092,
+   "kl_base": 0.0433,
+   "kl_base_p99": 0.512,
+   "kl_replies": 0.0129,
+   "kl_agent": 0.0346,
+   "same_top1": 0.931,
+   "think_base": 0.159
+  },
+  "loopcap": {
+   "think": [
+    2854,
+    1039,
+    2300,
+    1408,
+    1523
+   ],
+   "think_mean": 1825,
+   "verdicts": [
+    "OK",
+    "OK",
+    "OK",
+    "OK",
+    "OK"
+   ],
+   "tok_s_mean": 158.4
+  },
+  "refusals_off": {
+   "harm_test_off_c1": "3/104",
+   "harm_test_uk_off_c1": "2/30",
+   "harmless_test_off_c1": "2/64"
+  },
+  "refusals_off_exact_mode": {
+   "harm_test_off_c0": "102/104",
+   "harm_test_off_c1": "2/104",
+   "harm_test_uk_off_c0": "30/30",
+   "harm_test_uk_off_c1": "1/30",
+   "harm_val_off_c0": "96/96",
+   "harm_val_off_c1": "4/96",
+   "harmless_test_off_c0": "2/64",
+   "harmless_test_off_c1": "2/64"
+  },
+  "refusals_on": {
+   "harm_test_on_c0": "30/30",
+   "harm_test_on_c1": "2/104",
+   "harm_test_uk_on_c0": "29/30",
+   "harm_test_uk_on_c1": "1/30"
+  }
+ },
+ "note": "measured on sergqwer/strata-nvfp4 (a fork of 0.1.41/0.1.42-era code), RTX 5090, 2026-10-10; see README.md"
+}

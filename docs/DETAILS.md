@@ -2030,6 +2030,15 @@ Qwen3.8-Flash-Next, not Swift 1.5. It writes these engine flags (llama.cpp's) in
 The engine log then says `control vector mode = project, dir = per-layer, layers 4..44 (41 steered)`, and the web
 app's About tab lists it. (`--cvec-mode add` is llama.cpp's stock additive mode, for additive vectors.)
 
+**A second, separate choice (layers 8-33).** For the original Qwen3.8-Flash-Next in any quantization (the ISTA, Unsloth
+and NVFP4 GPTQ choices; not `NVFP4-NVIDIA`, whose NVIDIA Open Model License does not allow reducing the model's
+safeguards) setup also offers `data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection-l8-33.gguf`
+(its own question, default no, or `--experimental-projection-l8-33 on`; engine flags `--control-vector-layer-range 8 33`
+with the same `--cvec-mode project --cvec-dir per-layer`). Measured numbers and origin: that folder's README. It never
+runs together with the vector above: setup refuses both flags on, asks about it only when the other is off, replaces
+one with the other on a re-run, and the server refuses a config that loads both. The per-request switch below turns
+whichever one is loaded off.
+
 **Per request.** A loaded vector is on for every request unless it says otherwise: the web app's Sampling drawer has
 a switch, and the API takes `"experimental_speed_projection": false` in the request body (OpenAI and Anthropic; a
 config default goes in `"sampling": {"experimental_speed_projection": false}`). Switching drops the conversation

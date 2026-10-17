@@ -461,6 +461,25 @@ OWN_PATH_FAMILIES = {
 PREVIEW_FAMILIES = OWN_PATH_FAMILIES             # the earlier name (tools and tests that import it)
 # EXPERIMENTAL, off by default (setup asks): a control vector shipped with the repository, see its README
 ESP_VECTOR = ROOT / "data" / "experimental-speed-projection" / "Qwen3.8-Flash-Next-experimental-speed-projection.gguf"
+# EXPERIMENTAL, off by default, a separate choice beside ESP_VECTOR (never both): sergqwer's vector for the original
+# Qwen3.8-Flash-Next in any quantization (layers 8-33), see the same README.  Not the Coder, not Swift 1.5.
+ESP_L8_VECTOR = ROOT / "data" / "experimental-speed-projection" / "Qwen3.8-Flash-Next-experimental-speed-projection-l8-33.gguf"
+ESP_L8_LAYERS = (8, 33)
+ESP_L8_FAMILIES = ("qwen", "unsloth", "nvfp4")
+# NVIDIA's own checkpoint is not offered it: the NVIDIA Open Model License ends for anyone who reduces the efficacy of
+# the model's safety guardrails, which a refusal-direction projection does.
+ESP_L8_NOT_FOR = {"NVFP4-NVIDIA": "the NVIDIA Open Model License does not allow reducing that model's safeguards"}
+ESP_FLAG, ESP_L8_FLAG = "--experimental-speed-projection", "--experimental-projection-l8-33"
+
+
+def esp_is_on(choice) -> bool:
+    """Whether a projection answer (on/off/a path, from the command line or a config) turns something on."""
+    return bool(choice) and str(choice).strip().lower() not in ("", "off", "no", "n", "0")
+
+
+def esp_l8_flags(vector: Path) -> list:
+    return ["--control-vector-scaled", f"{vector}:1.0", "--control-vector-layer-range",
+            str(ESP_L8_LAYERS[0]), str(ESP_L8_LAYERS[1]), "--cvec-mode", "project", "--cvec-dir", "per-layer"]
 # the image encoder on the GPU (~1.2 GB at 1024 image tokens) warms up before the engine starts, so the engine
 # sizes its expert slots around it and the default reserve (700 MiB) is enough; engines before 0.1.2 need more
 VISION_GPU_SMALL_RESERVE_MIB = 1000    # the tip for images on a <= 12 GB card (the engine's LOW line asked ~1003)
@@ -4685,7 +4704,7 @@ def choices_from_config(cfg_path: Path) -> dict:
         ctx = a[a.index("--max-context") + 1] if "--max-context" in a and a.index("--max-context") + 1 < len(a) else None
         vis = cfg.get("vision")
         return {"family": own, "model": size, "context": int(ctx) if ctx and ctx.isdigit() else None, "kv": None,
-                "vision": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none", "esp": "off", "host": cfg.get("host"), "api_key": cfg.get("api_key"),
+                "vision": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none", "esp": "off", "esp_l8": "off", "host": cfg.get("host"), "api_key": cfg.get("api_key"),
                 "port": cfg.get("port"), "gpu": cfg.get("gpu"), "layer_split": None,
                 "cuda": 12 if config_toolkit(cfg) == 12 else None, "vram_reserve_mib": None}
     family = next((f for f, d in FAMILIES.items() if d["tag"] and tag.startswith(d["tag"])), "qwen")
@@ -4701,7 +4720,9 @@ def choices_from_config(cfg_path: Path) -> dict:
             "context": int(val("--max-context")) if val("--max-context") else None,
             "kv": val("--kv") if val("--kv") in ("int8", "q4_0") else None,
             "vision": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none",
-            "esp": ("on" if Path(esp_path).name == ESP_VECTOR.name else esp_path) if esp_path else "off",
+            "esp": ("on" if Path(esp_path).name == ESP_VECTOR.name else esp_path)
+            if esp_path and Path(esp_path).name != ESP_L8_VECTOR.name else "off",
+            "esp_l8": "on" if esp_path and Path(esp_path).name == ESP_L8_VECTOR.name else "off",
             "host": cfg.get("host"), "api_key": cfg.get("api_key"), "port": cfg.get("port"), "gpu": cfg.get("gpu"),
             "layer_split": cfg.get("layer_split"), "cuda": 12 if config_toolkit(cfg) == 12 else None,
             # #493: --vram-reserve-mib given at setup (images write the default 700 themselves)
@@ -6017,6 +6038,11 @@ def main() -> int:
     ap.add_argument("--experimental-speed-projection", metavar="on|off|GGUF",
                     help="EXPERIMENTAL, off by default: the control vector in data/experimental-speed-projection "
                          "(or another GGUF) as a projection on layers 4-44; see docs/DETAILS.md")
+    ap.add_argument("--experimental-projection-l8-33", metavar="on|off",
+                    help="EXPERIMENTAL, off by default: sergqwer's control vector for the original Qwen3.8-Flash-Next "
+                         "(any quantization but NVIDIA's NVFP4 checkpoint, whose license does not allow it) as a "
+                         "projection on layers 8-33, a separate choice beside "
+                         "--experimental-speed-projection (never both); see data/experimental-speed-projection/README.md")
     ap.add_argument("--port", type=int, help="the server's port (default: the one the install was set up with, 8080 for a new one)")
     ap.add_argument("--gpu", help="one GPU, numbered as nvidia-smi numbers them (AMD: as setup lists them) (default: asked when several can be "
                                   "used; with --setup it is saved, when starting it is for that start only)")
@@ -6146,7 +6172,12 @@ def main() -> int:
                 adopted = prev
                 a.kv = a.kv or ch["kv"]
                 a.vision = a.vision or ch["vision"]
-                a.experimental_speed_projection = a.experimental_speed_projection or ch["esp"]
+                # the two projections are exclusive: one the command line turns on replaces the earlier config's other one
+                esp_cli, l8_cli = a.experimental_speed_projection, a.experimental_projection_l8_33
+                if not esp_cli and not esp_is_on(l8_cli):
+                    a.experimental_speed_projection = ch["esp"]
+                if not l8_cli and not esp_is_on(esp_cli):
+                    a.experimental_projection_l8_33 = ch["esp_l8"]
                 a.host, a.api_key = a.host or ch["host"], a.api_key or ch["api_key"]
                 a.port = a.port or ch["port"]
                 if a.vram_reserve_mib is None:          # #493: an explicit reserve set up before
@@ -6643,6 +6674,14 @@ def main() -> int:
     # chosen here; with it loaded, the web app and the API switch it off per request
     esp = None
     esp_choice = (a.experimental_speed_projection or "").strip()
+    l8_choice = (a.experimental_projection_l8_33 or "").strip()
+    if l8_choice.lower() not in ("", "on", "yes", "y", "1", "off", "no", "n", "0"):
+        fail(f"{ESP_L8_FLAG}: expected on or off, not {l8_choice!r}")
+    if esp_is_on(esp_choice) and esp_is_on(l8_choice):
+        fail(f"{ESP_FLAG} and {ESP_L8_FLAG} cannot both be on: they are two different projection vectors, and only one "
+             "can be loaded. Choose one.")
+    if esp_is_on(l8_choice) and family in ("qwen", "coder"):
+        esp_choice = "off"                             # ours chosen: the other is not asked
     if family in ("qwen", "coder"):                   # the Coder: the same model's residual stream
         if not esp_choice:
             say()
@@ -6656,9 +6695,34 @@ def main() -> int:
             if not esp.is_file():
                 fail(f"the experimental speed projection's vector is missing: {esp}")
         ok("experimental speed projection: " + ("ON (experimental)" if esp else "off"))
-    elif esp_choice.lower() not in ("", "off", "no", "n", "0"):
+    elif esp_is_on(esp_choice):
         warn("the experimental speed projection is made for the original Qwen3.8-Flash-Next, not Swift 1.5: left off"
              if family == "swift" else f"the experimental speed projection is not tested with {model}: left off")
+    esp_l8, quiet_off = None, False
+    if family in ESP_L8_FAMILIES and model in ESP_L8_NOT_FOR:
+        if esp_is_on(l8_choice):
+            warn(f"the layers 8-33 projection is not offered for {model}: {ESP_L8_NOT_FOR[model]}; left off")
+    elif family in ESP_L8_FAMILIES:                    # the original model, any quantization (not the Coder or Swift 1.5)
+        if not l8_choice and a.yes:                    # --yes: the answer is no, said nothing (as before for these families)
+            l8_choice = "off"
+            quiet_off = True
+        elif not l8_choice and esp is None:            # the other projection is on, or was asked about: ours is not offered
+            say()
+            say(f"  EXPERIMENTAL - projection on layers {ESP_L8_LAYERS[0]}-{ESP_L8_LAYERS[1]}: a small control vector applied while the")
+            say("  model runs, for the original Qwen3.8-Flash-Next in any quantization. A refusal-direction projection like the")
+            say("  one above: the model declines far fewer requests. Off unless you choose it; when on, the web app can")
+            say("  switch it off per chat. Details: data/experimental-speed-projection/README.md")
+            l8_choice = "on" if ask("Turn on the experimental layers 8-33 projection?", ["y", "n"], "n", a.yes) == "y" else "off"
+        if esp_is_on(l8_choice):
+            if esp is not None:
+                fail(f"{ESP_FLAG} and {ESP_L8_FLAG} cannot both be on: only one projection vector can be loaded")
+            esp_l8 = ESP_L8_VECTOR
+            if not esp_l8.is_file():
+                fail(f"the experimental layers 8-33 projection's vector is missing: {esp_l8}")
+        if not quiet_off:
+            ok("experimental layers 8-33 projection: " + ("ON (experimental)" if esp_l8 else "off"))
+    elif esp_is_on(l8_choice):
+        warn(f"the layers 8-33 projection is made for the original Qwen3.8-Flash-Next, not {model}: left off")
     ready = bool(fam.get("ready"))                     # NVFP4: ready-made packs (NVFP4_REPOS), no GGUF shards
     if ready:
         models_dir = Path(a.models_dir)
@@ -7010,6 +7074,8 @@ def main() -> int:
         # the package's profile, with llama.cpp's flags (the engine takes the same ones)
         args += ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",
                  "--cvec-mode", "project", "--cvec-dir", "per-layer"]
+    if esp_l8 is not None:
+        args += esp_l8_flags(esp_l8)
     cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": port}

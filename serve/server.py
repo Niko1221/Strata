@@ -6621,6 +6621,30 @@ def lift_reasoning_effort_arg(cfg: dict) -> None:
           f"{cfg['reasoning_effort']!r}", flush=True)
 
 
+# The two experimental projection vectors that ship in data/experimental-speed-projection are two choices of one
+# feature: a config that loads both is refused (setup never writes one).
+PROJECTION_VECTORS = ("Qwen3.8-Flash-Next-experimental-speed-projection.gguf",
+                      "Qwen3.8-Flash-Next-experimental-speed-projection-l8-33.gguf")
+
+
+def refuse_two_projections(cfg: dict) -> None:
+    """A config whose "args" load both shipped projection vectors (--control-vector-scaled) is a mistake: the second would
+    project on top of the first, and the per-request switch could not tell them apart.  Stops with the two names."""
+    args = cfg.get("args")
+    if not isinstance(args, list):
+        return
+    loaded = []
+    for i, x in enumerate(args[:-1]):
+        if x == "--control-vector-scaled" and isinstance(args[i + 1], str):
+            name = args[i + 1].rsplit(":", 1)[0].replace("\\", "/").rsplit("/", 1)[-1]
+            if name in PROJECTION_VECTORS and name not in loaded:
+                loaded.append(name)
+    if len(loaded) > 1:
+        raise SystemExit(f"[strata] the config loads both projection vectors ({loaded[0]} and {loaded[1]}); they are two "
+                         "choices of the same feature and only one can be on. Remove one --control-vector-scaled "
+                         "(with its --control-vector-layer-range) from \"args\", or run setup again.")
+
+
 # #1819: llama.cpp clients call the repetition penalty and its window repeat_penalty / repeat_last_n; they are the
 # same settings as repetition_penalty / penalty_last_n (the /props answer already reports them under those names)
 SAMPLING_ALIASES = {"repeat_penalty": "repetition_penalty", "repeat_last_n": "penalty_last_n"}
@@ -6849,6 +6873,7 @@ def main() -> int:
     cfg = read_config(a.config) if a.config else {}
     split_joined_args(cfg)
     lift_reasoning_effort_arg(cfg)
+    refuse_two_projections(cfg)
     if a.replicas is not None:
         cfg["replicas"] = a.replicas
     if a.gpu is not None:
