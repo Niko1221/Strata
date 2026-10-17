@@ -48,22 +48,25 @@ int main() {
     // the picks: root 8192, periodic 16384, a branch at 40000, periodic 49152, the turn 49990
     std::vector<Ck> bks = {{run(0, 8192), 1}, {run(0, 16384), 2}, {run(0, 40000), 3, true}, {run(0, 49152), 4},
                            {run(0, 49990), 5}, {other, 6}};
-    auto picks = [&](const std::vector<Ck>& v, std::size_t keep) {
+    auto picks = [&](const std::vector<Ck>& v, std::size_t keep, bool branch) {
         std::vector<int> t;
-        for (const Ck* c : slot_checkpoint_picks(v, held, keep)) t.push_back(c->tag);
+        for (const Ck* c : slot_checkpoint_picks(v, held, keep, branch)) t.push_back(c->tag);
         return t;
     };
-    ok = ok && expect(picks(bks, 2) == std::vector<int>{3, 5}, "keep 2: the turn and the branch past a periodic one") &&
-         expect(picks(bks, 1) == std::vector<int>{5}, "keep 1: the turn only") &&
-         expect(picks(bks, 3) == std::vector<int>{3, 4, 5}, "keep 3: then the deepest other") &&
-         expect(picks(bks, 9) == std::vector<int>{1, 2, 3, 4, 5}, "keep more than there are") &&
-         expect(picks(bks, 0).empty(), "keep 0");
+    ok = ok && expect(picks(bks, 1, true) == std::vector<int>{3, 5}, "1 + branch: turn, branch past a periodic") &&
+         expect(picks(bks, 1, false) == std::vector<int>{5}, "1 without branch: the turn only (as before)") &&
+         expect(picks(bks, 2, true) == std::vector<int>{3, 5}, "2 + branch: the turn and the branch, two in all") &&
+         expect(picks(bks, 2, false) == std::vector<int>{4, 5}, "2 without branch: the two deepest, branch or not") &&
+         expect(picks(bks, 3, true) == std::vector<int>{3, 4, 5}, "3 + branch: then the deepest other") &&
+         expect(picks(bks, 9, true) == std::vector<int>{1, 2, 3, 4, 5}, "keep more than there are") &&
+         expect(picks(bks, 0, false).empty(), "keep 0");
     bks[2].branch = false;
-    ok = ok && expect(picks(bks, 2) == std::vector<int>{4, 5}, "no branch: the two deepest (a chain's first query)");
+    ok = ok && expect(picks(bks, 1, true) == std::vector<int>{5}, "1, no branch one yet: the turn (first query)") &&
+         expect(picks(bks, 2, true) == std::vector<int>{4, 5}, "2, no branch one yet: the turn and a periodic one");
     bks[0].branch = true;
-    ok = ok && expect(picks(bks, 2) == std::vector<int>{1, 5}, "the deepest branch, however shallow");
+    ok = ok && expect(picks(bks, 1, true) == std::vector<int>{1, 5}, "the deepest branch, however shallow");
     bks[4].branch = true;
-    ok = ok && expect(picks(bks, 2) == std::vector<int>{1, 5}, "the turn marked too: not taken twice");
+    ok = ok && expect(picks(bks, 1, true) == std::vector<int>{1, 5}, "the turn marked too: not taken twice");
     std::vector<int64_t> prompt(held.begin(), held.end());
     prompt[49940] = -5;
     ok = ok && expect(shared_prefix(prompt, held) == 49940, "shared prefix at the rewrite") &&

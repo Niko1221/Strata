@@ -25,28 +25,29 @@ std::vector<const Checkpoint*> deepest_prefix_checkpoints(const std::vector<Chec
     return out;
 }
 
-// STRATA_SLOT_CHECKPOINTS: the ones a slot keeps, up to `keep` of the strict starts of `held` (one per length): the
-// deepest (the turn checkpoint), the deepest `branch` one (STRATA_BRANCH_CHECKPOINT: where a client that rewrites the
-// end of its history leaves it next, also when a periodic checkpoint lies between it and the turn), then the deepest
-// others.  Shallowest first.
+// The ones a slot keeps of the strict starts of `held` (one per length), shallowest first: the deepest (the turn
+// checkpoint); with `branch` (STRATA_BRANCH_CHECKPOINT) the deepest `branch` one - where a client that rewrites the end
+// of its history leaves it next, also when a periodic checkpoint lies between it and the turn - whatever `keep` is;
+// then the deepest others up to `keep` (STRATA_SLOT_CHECKPOINTS) in all.  So keep 1: the turn and the branch one when
+// there is one; keep 2: two, the second the branch one or else the next deepest (a periodic one).
 template <class Checkpoint>
 std::vector<const Checkpoint*> slot_checkpoint_picks(const std::vector<Checkpoint>& checks,
-                                                     const std::vector<int32_t>& held, std::size_t keep) {
+                                                     const std::vector<int32_t>& held, std::size_t keep, bool branch) {
     const std::vector<const Checkpoint*> all = deepest_prefix_checkpoints(checks, held, checks.size());
-    if (all.size() <= keep) return all;
     std::vector<char> take(all.size(), 0);
     std::size_t n = 0;
-    if (keep > 0) {
+    if (keep > 0 && !all.empty()) {
         take.back() = 1;
         ++n;
     }
-    for (std::size_t i = all.size() - 1; n < keep && i-- > 0;)
-        if (all[i]->branch) {
-            take[i] = 1;
-            ++n;
-            break;
-        }
-    for (std::size_t i = all.size() - 1; n < keep && i-- > 0;)
+    if (branch)
+        for (std::size_t i = all.size() - (n > 0 ? 1 : 0); i-- > 0;)
+            if (all[i]->branch) {
+                take[i] = 1;
+                ++n;
+                break;
+            }
+    for (std::size_t i = all.size(); n < keep && i-- > 0;)
         if (!take[i]) {
             take[i] = 1;
             ++n;
