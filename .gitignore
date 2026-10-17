@@ -46,6 +46,9 @@ build-vision*/
 build-vision.bat
 build-vision-cuda12.bat
 
+# tools/remote-vision: make_vocab_stub.py's output (10.5 MB) -- regenerate it where it is used
+tools/remote-vision/*.gguf
+
 # setup.py outputs (engine, downloads) and release builds
 /engine/
 /engine-cuda12/

@@ -3105,8 +3105,11 @@ def slot_save_dir(value, base: str | None = None) -> str:
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
-                 fit_max_tokens: bool = False):
+                 fit_max_tokens: bool = False, vision_factory=None, vision_remote: bool = False):
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
+        self.vision_factory = vision_factory          # set when the encoder failed at startup: retry on the first image
+        self.vision_remote = vision_remote            # the encoder runs on another PC: see prepare()
+        self._vision_lock = threading.Lock()
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
@@ -3389,6 +3392,28 @@ class Service:
                 except Exception as e:                 # tried again at the next turn; the thread keeps running
                     print(f"[strata] images: stopping the idle image encoder: {e}", flush=True)
         threading.Thread(target=loop, daemon=True).start()
+
+    def ensure_vision(self):
+        """The lazy retry after the encoder failed at startup: the first image asks for it again.
+
+        Only set up when a factory was given, which the server does because the encoder may be a
+        remote one (tools/remote-vision): that host can simply be off when this server starts, and
+        refusing to serve text until it comes up would be the wrong trade.  A failure here is the
+        caller's error; the next request tries once more."""
+        if self.vision is not None or self.vision_factory is None:
+            return
+        with self._vision_lock:
+            if self.vision is None:
+                print("[strata] an image arrived: starting the vision encoder (it failed at startup) ...", flush=True)
+                try:
+                    self.vision = self.vision_factory()
+                except Exception as e:
+                    # A ValueError is what the request path turns into a 400 carrying this text.  Letting
+                    # anything else out of prepare() is worse than an error: it escapes to socketserver,
+                    # which logs a traceback and DROPS the connection, so the client is told nothing at all
+                    # (measured: status 0, no message).  Startup deliberately swallows the same failure, so
+                    # "the encoder is not there right now" has to stay a normal, answerable request error.
+                    raise ValueError(f"the image encoder is not available: {e}") from None
 
     def free_vram_mib(self) -> int | None:
         """Free VRAM on the engine's (first) GPU, from the backend's reader - NVML, the amdgpu sysfs files (#301) or
@@ -3967,6 +3992,7 @@ class Service:
         self.embeddings.keys = None
         images = images_of(messages)
         if images:
+            self.ensure_vision()
             if self.vision is None:
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
                                  "'vision'), so it cannot read images")
@@ -3980,17 +4006,31 @@ class Service:
                 return fetched[src] if src in fetched else Vision.download(src) \
                     if src.startswith(("http://", "https://")) else src
             images = [fetch(src) for src in images]
-            # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
-            # run on the GPU at the same time - an encode during a running request left that request stuck at
-            # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
-            # same FIFO as the requests.
-            with self._turn(cancel):
-                self._vision_up()
+            def encode_images():
+                # encode_all when the encoder has it (#1072: the earlier images of this request are not evicted to
+                # make room for a later one)
                 try:
-                    encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
-                               else [self.vision.encode(src) for src in images])
+                    return (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
+                            else [self.vision.encode(src) for src in images])
                 finally:
                     self.last_image_at = time.time()
+
+            # Encode only while the engine is idle when the encoder is LOCAL: it shares this machine's GPU with the
+            # engine, and an encode during a running request left that request stuck at "reading the prompt" with CPU
+            # and GPU busy, for good (reproduced).  So a local encode takes its turn in the same FIFO as the requests,
+            # and #1999 made that wait give its place up when the client hangs up.  _vision_up is the elastic
+            # encoder's VRAM dance for that turn (the expert cache makes room first).
+            #
+            # A REMOTE encoder (tools/remote-vision) shares nothing with the engine - it runs on another PC - so it
+            # must NOT hold the FIFO: holding it across a slow upload froze the whole API, text requests included, and
+            # one stalled encode left every later request queued behind it.  The wrapper serialises encodes itself
+            # (its own lock), so taking them out of the queue loses nothing.
+            if self.vision_remote:
+                encoded = encode_images()
+            else:
+                with self._turn(cancel):
+                    self._vision_up()
+                    encoded = encode_images()
             # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
             # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
             # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
@@ -6884,6 +6924,8 @@ def main() -> int:
             pretty = ", ".join(f"{k}={v}" for k, v in sampling_defaults.items())
             print(f"[strata] sampling defaults from the config: {pretty}", flush=True)
         lazy = a.lazy or cfg.get("lazy_load") is True
+        vision_factory = None
+        vision_remote = bool((cfg.get("vision") or {}).get("remote"))
         if cfg.get("vision"):
             elastic = cfg["vision"].get("elastic") is True and cfg.get("vram_elastic") is True
             print("the vision encoder starts with the first picture (elastic) ..." if elastic else
@@ -6897,8 +6939,23 @@ def main() -> int:
                 print('[strata] the vision section\'s "elastic" needs "vram_elastic": true (the expert cache gives the '
                       "encoder its VRAM): the encoder starts with the model instead", flush=True)
                 vcfg["elastic"] = False
-            vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
-                            env=vision_env(cfg, env), lazy=lazy)
+            vlog = open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None
+
+            def make_vision():
+                return Vision(vcfg, log=vlog, env=vision_env(cfg, env), lazy=lazy)
+
+            vision_factory = make_vision
+            try:
+                vision = make_vision()
+            except Exception as e:
+                # A remote encoder's host can simply be down (boot order, a sleeping PC, a dropped link).  Serving
+                # text now and letting the first image ask again beats refusing to start at all.  A LOCAL encoder
+                # that fails is a broken install, not an absent host, so it stays fatal: the start error there
+                # names the cause (#1445), and a server that answers text while every image fails would hide it.
+                if not vision_remote:
+                    raise
+                print(f"[strata] the vision encoder did not start ({e}); serving text only, "
+                      f"an image will ask for it again", flush=True)
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
         warn_budget_over_ram(engine_args(cfg) if "args" in cfg else [])      # #1080
@@ -6942,12 +6999,16 @@ def main() -> int:
         effort_end = None
         engine, vision, sampling_defaults = MockEngine(tok, a.script or [
             "Thinking about it.</think>\n\nHello from the mock engine."]), None, {}
+        vision_factory = None
+        vision_remote = False
     # the model's own chat template (exported with its tokenizer), else the original model's
     tpl = tpath / "chat_template.jinja"
     svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
                   model_name=default_model_name(cfg), vision=vision,
                   sampling_defaults=sampling_defaults,
-                  fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
+                    fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True,
+                    vision_factory=vision_factory,
+                    vision_remote=vision_remote)
     if a.engine == "strata":                            # the model card's sampling when nothing else is said (see MODEL_CARD_SAMPLING)
         svc.model_arch = cfg.get("arch") or "qwen4exp"
     svc.answer_room = cfg.get("answer_room") is not False
@@ -7138,7 +7199,8 @@ def main() -> int:
             time.sleep(1)                               # Windows never delivers Ctrl+C to an untimed Event.wait()
     except KeyboardInterrupt:
         print("\n[strata] stopping (Ctrl+C again to end the engine at once) ...", flush=True)
-        closers = [httpd.shutdown, getattr(engine, "close", None), vision.shutdown if vision else None,
+        closers = [httpd.shutdown, getattr(engine, "close", None),
+                   svc.vision.shutdown if svc.vision else None,
                    hub.close if hub is not None else None]
         for close in filter(None, closers):
             try:

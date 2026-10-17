@@ -5690,6 +5690,130 @@ class LazyVision(unittest.TestCase):
         self.assertFalse(v.alive())
 
 
+class RemoteVision(unittest.TestCase):
+    """tools/remote-vision: the image encoder runs on another PC.  Two things are different from a local one, and
+    both are about the encoder not being on this machine.
+
+    It can be DOWN when the server starts - the vision host is off, asleep, or its link is down - and refusing to
+    serve text until it comes up would be the wrong trade: the server starts, and the first image asks for the
+    encoder again.
+
+    And it shares nothing with the engine, so it must NOT take the request FIFO.  That is not a micro-optimisation:
+    holding the FIFO across the upload to a starved host froze the whole API, text requests included, and a single
+    stalled encode left every later request queued behind it."""
+
+    MSGS = [{"role": "user", "content": [{"type": "text", "text": "what is it?"},
+                                         {"type": "image", "source": "x.png"}]}]
+
+    class Encoder:
+        """As much of a Vision as prepare() touches: encode_all(), which newer servers prefer (#1072)."""
+
+        def __init__(self, d):
+            self.dir = Path(d)
+            self.calls = []
+            self.cancels = []                                       # #1999: the event prepare() hands down
+
+        def encode_all(self, sources, cancel=None):
+            self.cancels.append(cancel)
+            self.calls.append(len(sources))
+            out = []
+            for i in range(len(sources)):
+                p = self.dir / f"img{i}.sve"
+                p.write_bytes(b"rows")
+                out.append((p, 3))
+            return out
+
+    def service(self, vision, **kw):
+        tok = ByteTokenizer()
+        return Service(MockEngine(tok, "ok", max_context=CTX), tok,
+                       ChatTemplate(ROOT / "serve/chat_template.jinja"), vision=vision, **kw), tok
+
+    def test_a_startup_failure_is_retried_on_the_first_image(self):
+        with tempfile.TemporaryDirectory() as d:
+            started = []
+
+            def factory():
+                started.append(1)
+                return self.Encoder(d)
+
+            svc, _ = self.service(None, vision_factory=factory)
+            self.assertIsNone(svc.vision)                               # text only, for now
+            svc.prepare(self.MSGS, None, {}, 16)
+            self.assertEqual(len(started), 1)                           # the first image started it
+            self.assertIsNotNone(svc.vision)
+            svc.prepare(self.MSGS, None, {}, 16)
+            self.assertEqual(len(started), 1)                           # a later one does not start it again
+            svc.embeddings.path.unlink(missing_ok=True)
+
+    def test_a_retry_that_still_fails_is_the_requests_error_and_is_retried_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            tries = []
+
+            def factory():
+                tries.append(1)
+                if len(tries) == 1:
+                    raise RuntimeError("the remote vision host is not reachable")
+                return self.Encoder(d)
+
+            svc, _ = self.service(None, vision_factory=factory)
+            # ValueError is the type the request path turns into a 400 with this text.  Anything else
+            # would escape prepare() to socketserver, which drops the connection and tells the client
+            # nothing at all - measured against a real server before this was written.
+            with self.assertRaisesRegex(ValueError, "image encoder is not available.*not reachable"):
+                svc.prepare(self.MSGS, None, {}, 16)
+            self.assertIsNone(svc.vision)                               # nothing half-started is kept
+            svc.prepare(self.MSGS, None, {}, 16)                        # the next request tries once more
+            self.assertEqual(len(tries), 2)
+            self.assertIsNotNone(svc.vision)
+            svc.embeddings.path.unlink(missing_ok=True)
+
+    def test_a_remote_encoder_does_not_take_the_request_fifo(self):
+        with tempfile.TemporaryDirectory() as d:
+            class Recording:
+                """The engine's turn, counted: #1999 made it a cancellable acquire/release pair (Service._turn)."""
+
+                def __init__(self):
+                    self.lock = threading.Lock()
+                    self.entered = 0
+
+                def acquire(self, blocking=True, timeout=-1):
+                    got = self.lock.acquire(blocking, timeout)
+                    if got:
+                        self.entered += 1
+                    return got
+
+                def release(self):
+                    self.lock.release()
+
+            for remote, expected in ((True, 0), (False, 1)):
+                with self.subTest(remote=remote):
+                    encoder = self.Encoder(d)
+                    svc, _ = self.service(encoder, vision_remote=remote)
+                    fifo = Recording()
+                    svc.fifo = fifo
+                    cancel = threading.Event()
+                    svc.prepare(self.MSGS, None, {}, 16, cancel=cancel)
+                    self.assertEqual(fifo.entered, expected)            # serialised only when it shares the GPU
+                    self.assertEqual(encoder.calls, [1])                # encoded either way
+                    self.assertEqual(encoder.cancels, [cancel])         # #1999: the client's event reaches the encoder
+                    svc.embeddings.path.unlink(missing_ok=True)
+
+    def test_three_images_of_one_request_are_one_encode_all(self):
+        """#1072 has to survive: the request's earlier images stay alive while a later one is encoded."""
+        msgs = [{"role": "user", "content": [{"type": "text", "text": "these"},
+                                             {"type": "image", "source": "a.png"},
+                                             {"type": "image", "source": "b.png"},
+                                             {"type": "image", "source": "c.png"}]}]
+        with tempfile.TemporaryDirectory() as d:
+            encoder = self.Encoder(d)
+            svc, tok = self.service(encoder, vision_remote=True)
+            pad = tok.encode("<|image_pad|>", parse_special=True)[0]
+            ids, _, _ = svc.prepare(msgs, None, {}, 64)
+            self.assertEqual(encoder.calls, [3])                        # one call for all three
+            self.assertEqual(ids.count(pad), 9)                         # three rows each
+            svc.embeddings.path.unlink(missing_ok=True)
+
+
 class VisionShutdown(unittest.TestCase):
     """#914: ending the server removes the encoder's scratch directory; unloading keeps it."""
 

@@ -165,6 +165,8 @@ Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). To add a
   fastest. High is best for hard questions.
 - **Pictures:** say yes to "Images?" in setup. Then click **Picture** in the chat, or attach pictures in your app.
   AMD cards read pictures on Linux through the processor; on Windows they can't yet.
+- **Pictures without spending the VRAM:** the image encoder can run on a second PC
+  ([remote vision](docs/REMOTE_VISION.md)) — 5.4× faster pictures than the CPU encoder, at no local VRAM.
 - **From your phone or another PC:** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>`. Always set a key.
 - **One request at a time:** by default Strata answers one request, and the others wait. To answer several at once,
   set `"parallel": 2` ([BATCHING.md](docs/BATCHING.md)). On a 12 GB card this makes each answer slower.
