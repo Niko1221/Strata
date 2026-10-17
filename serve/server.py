@@ -51,6 +51,7 @@ import threading
 import time
 import urllib.request
 import uuid
+from decimal import Decimal, InvalidOperation
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -3350,6 +3351,7 @@ class Service:
         self.fit_max_tokens = fit_max_tokens          # default: clamp the output cap to the room left; False (--no-fit-max-tokens) = 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.answer_room = True                       # 0.1.45: see ANSWER_ROOM_MIN_CAP (the config's "answer_room": false turns it off)
+        self.pricing: dict = {}                       # optional operator rates advertised to cost-tracking clients
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
@@ -6104,6 +6106,8 @@ def make_handler(svc: Service):
                              "meta": {"n_ctx": svc.reported_ctx()},
                              "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
                                               "output_modalities": ["text"]}}
+                    if svc.pricing:                   # the rate card, so clients (Hermes) can price their own usage
+                        model["pricing"] = svc.pricing
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
                         model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
                         loaded = True
@@ -7248,6 +7252,29 @@ def parse_config_text(text: str, path) -> dict:
                          '"--ple-io", "mmap",) and that no entry is followed by a comma at the end of a list.') from None
 
 
+def pricing_from_config(cfg: dict) -> dict:
+    """Validate known rates without changing their JSON values; preserve extension fields."""
+    block = cfg.get("pricing")
+    if block is None:
+        return {}
+    if not isinstance(block, dict):
+        raise SystemExit('[strata] config pricing: expected an object of rates, or null to omit pricing')
+    for key in ("prompt", "completion", "input_cache_read", "input_cache_write", "request",
+                "cache_read", "cache_write"):
+        if key not in block:
+            continue
+        value = block[key]
+        try:
+            rate = Decimal(str(value)) if isinstance(value, (str, int, float)) and not isinstance(value, bool) else None
+        except InvalidOperation:
+            rate = None
+        if rate is None or not rate.is_finite() or rate < 0:
+            unit = "USD per request" if key == "request" else "USD per token"
+            raise SystemExit(f"[strata] config pricing.{key}: expected a finite, nonnegative number or decimal string "
+                             f"({unit}), got {value!r}")
+    return dict(block)
+
+
 def lift_reasoning_effort_arg(cfg: dict) -> None:
     """#1641: "--reasoning-effort high" in a config's "args" is meant for the thinking level, which is not an engine
     option (the engine stopped at the unknown flag).  It is the config's "reasoning_effort" (none, low, medium or high:
@@ -7625,6 +7652,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         ap.error("--shutdown-timeout must be in 0..300 seconds")
     config_bytes = Path(a.config).read_bytes() if a.config else b""
     cfg = parse_config_text(config_bytes.decode("utf-8-sig"), a.config) if a.config else {}   # Notepad adds a BOM
+    pricing = pricing_from_config(cfg)
     split_joined_args(cfg)
     if a.config and a.engine == "strata":
         cfg = apply_saved_tuning(cfg)
@@ -7857,6 +7885,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         raise SystemExit(f"[strata] config {e}")
     if svc.aliases:
         print(f"[strata] model aliases: {', '.join(svc.aliases)}", flush=True)
+    svc.pricing = pricing
     svc.api_key = preflight_api_key
     try:
         svc.telemetry_key = api_key_of(os.environ.get("STRATA_TELEMETRY_KEY") or cfg.get("telemetry_read_key", ""))

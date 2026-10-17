@@ -1043,6 +1043,28 @@ print(r.choices[0].message.content)
 - **Model aliases** (0.1.32). `"aliases": ["qwen", "local-model"]` in `strata-<model>.json` lists the model under
   those names too in `/v1/models` (each with its own `id`, and in the model's `aliases`), like llama-server's
   `--alias`; a request naming one is answered under that name. Any other name is still served, as before.
+- **Model pricing for clients.** An optional top-level `"pricing"` object in `strata-<model>.json` is reported
+  unchanged in `/v1/models` and `/models`, including alias entries. Clients such as Hermes can use these
+  operator-supplied rates to estimate session costs. Add the block to the run config and restart the server:
+
+  ```json
+  "pricing": {
+    "prompt": "0.00000015",
+    "completion": "0.00000047",
+    "input_cache_read": "0.000000016",
+    "input_cache_write": "0.0000002",
+    "request": "0"
+  }
+  ```
+
+  These are example accounting rates, not measured costs of running Strata. The names and units follow
+  [OpenRouter's pricing object](https://openrouter.ai/docs/guides/overview/models): USD per input token (`prompt`),
+  output token (`completion`), cached input token (`input_cache_read`), or cache-write token (`input_cache_write`).
+  `request` is USD per API request. Each rate is optional and accepts a finite, nonnegative number or decimal
+  string; zero means free. `cache_read` and `cache_write` are also accepted for clients that use those names.
+  Invalid known rates stop startup with a config error; unknown fields are preserved for client extensions.
+  Missing rates stay absent. An omitted block, `null`, or `{}` leaves the model listing unchanged, so existing
+  configs need no edits. Strata only advertises the rates; clients calculate estimates from their token usage.
 - **Model settings in the web page (0.1.39, #564).** The About tab's Model settings card shows and changes a few of
   the keys above in `strata-<model>.json`: the `sampling` defaults (temperature, top_p, top_k, min_p),
   `reasoning_budget_tokens`, `fit_max_tokens`, `anthropic_thinking`, `effort_position`, `aliases`, `idle_unload_s`,
