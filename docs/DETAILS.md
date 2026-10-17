@@ -37,13 +37,13 @@ below are 0.1.26's.
 | **IQ3_XXS** | 482 | 1,007 | 1,745 | 1,609 | 1,602 | - |
 | **IQ3_S** | 427 | 913 | 1,624 | 1,640 | 1,443 | - |
 | **Coder** | 656 | 1,583 | 2,177 | 2,236 | 2,208 | 1,034** |
-| **IQ3_S** (AMD RX 7900 XTX, gfx1100) | 760 | 1,275 | 1,641 | 1,594 | 1,494 | - |
+| **IQ3_S** (AMD RX 7900 XTX, gfx1100) | 722 | 1,366 | 2,117 | 2,149 | 2,136 | 2,043 |
 
-Engine 0.1.26; `bench/results/2026-09-29-speed-0126`. The AMD RX 7900 XTX row: engine 0.1.38 on a ROCm
+Engine 0.1.26; `bench/results/2026-09-29-speed-0126`. The AMD RX 7900 XTX row: engine 0.1.43.1 on a ROCm
 10.2 nightly with a tuned gfx1100 hipBLASLt-100500 table (upstream as [#755](https://github.com/Niko1221/Strata/pull/755)),
 the median of 3 clean cells per tier
 (Ryzen 9 7900X, 96 GB; 1K-128K one-shot runs, 256 generated tokens,
-greedy). At 32K-128K that is 8-28% faster than 0.1.22. † not measured
+greedy). Per-tier min-max over the 3 cells: prefill 652-820 (1K, the short tier is the noisiest), 1,320-1,464 (4K), 2,080-2,125 (32K), 2,142-2,156 (64K), 2,134-2,158 (128K). At 32K-128K that is 8-28% faster than 0.1.22. † not measured
 again: 0.1.22. \* measured with images on (the image encoder's VRAM reserve leaves fewer experts cached). \*\* not
 measured again: 0.1.14.
 
@@ -56,12 +56,12 @@ measured again: 0.1.14.
 | **IQ3_XXS** | 61.9 | 61.6 | 58.5 | 57.2 | 49.0 | - |
 | **IQ3_S** | 52.4 | 53.3 | 48.3 | 46.3 | 45.5 | - |
 | **Coder** | 58.9 | 55.1 | 54.9 | 53.2 | 43.0 | 42.8† |
-| **IQ3_S** (AMD RX 7900 XTX, gfx1100) | 65.1 | 60.4 | 64.4 | 61.8 | 59.2 | - |
+| **IQ3_S** (AMD RX 7900 XTX, gfx1100) | 80.7 | 80.1 | 74.5 | 71.4 | 81.3 | 69.3 |
 
-Engine 0.1.26, the same runs. The AMD RX 7900 XTX row: engine 0.1.38 on a ROCm 10.2 nightly (tuned
+Engine 0.1.26, the same runs. The AMD RX 7900 XTX row: engine 0.1.43.1 on a ROCm 10.2 nightly (tuned
 gfx1100 hipBLASLt-100500 table, upstream as [#755](https://github.com/Niko1221/Strata/pull/755)), median of 3 clean cells per tier (same box; decode is flat in
-context - the GDN linear attention is O(1) per token; 1K/4K prefill ran slightly under the 0.1.31
-packaged-ROCm numbers, 32K-128K ahead). † not measured again: 0.1.14.
+context - the GDN linear attention is O(1) per token; STRATA_ROUTE_TAIL_SKIP=7 is on — answers differ
+slightly, adopted after a task-battery-gated A/B). Per-tier min-max over the 3 cells: decode 80.2-85.8 (1K), 78.6-80.3 (4K), 74.0-74.8 (32K), 71.1-71.4 (64K), 79.3-81.6 (128K). The 262K cells: 261,888-token prompt (trimmed to fit the native 262,144 cap) + 256 generated, 3 cells, prefill 2,038-2,051, decode 67.9-71.4. † not measured again: 0.1.14.
 
 Output speed depends on the text as well: speculative decoding runs faster when more of the drafted tokens are
 accepted, so a different answer to the same prompt moves it by several percent. Run back to back on the 4K prompt,
