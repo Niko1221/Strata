@@ -1,0 +1,51 @@
+test_a_loop_written_as_one_long_word (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_a_loop_written_as_one_long_word)
+#1753: a 24k-digit string cycling an 11-digit pattern is one word to the split and never one token twice. ... ok
+test_a_lower_top_p_and_top_k_are_never_raised_or_lowered (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_a_lower_top_p_and_top_k_are_never_raised_or_lowered) ... [strata] repeated reasoning detected at 2048 tokens (coverage=1.000); resuming the same output with the low-effort instruction (reasoning_loop_recovery)
+[strata] done: 2086 tokens in 0 s (220202.8 tok/s) (stop, cancel=False)
+ok
+test_batch_status_and_history_record_recovery (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_batch_status_and_history_record_recovery) ... [strata] repeated reasoning detected at 2048 tokens (coverage=1.000); resuming the same output with the low-effort instruction (reasoning_loop_recovery)
+[strata] done: 2071 tokens in 0 s (227876.0 tok/s) (stop, cancel=False)
+ok
+test_cancel_during_reasoning_does_not_start_recovery (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_cancel_during_reasoning_does_not_start_recovery) ... [strata] done: 1 tokens in 0 s (18978.8 tok/s) (cancel, cancel=True)
+ok
+test_default_single_token_guard_does_not_detect_passage_loop (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_default_single_token_guard_does_not_detect_passage_loop) ... [strata] done: 16384 tokens in 0 s (252554.1 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_disabled_is_one_pass (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_disabled_is_one_pass) ... [strata] done: 28001 tokens in 0 s (244038.9 tok/s) (stop, cancel=False)
+ok
+test_frozen_cohort_sampler_is_unchanged_during_recovery (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_frozen_cohort_sampler_is_unchanged_during_recovery) ... [strata] repeated reasoning detected at 2048 tokens (coverage=1.000); resuming the same output with the low-effort instruction (reasoning_loop_recovery)
+[strata] done: 2082 tokens in 0 s (227025.6 tok/s) (stop, cancel=False)
+ok
+test_missing_native_high_hint_skips_recovery (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_missing_native_high_hint_skips_recovery) ... [strata] done: 28001 tokens in 0 s (232000.1 tok/s) (stop, cancel=False)
+ok
+test_natural_answer_with_shared_budget_and_preserved_prefix (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_natural_answer_with_shared_budget_and_preserved_prefix) ... [strata] repeated reasoning detected at 2048 tokens (coverage=1.000); resuming the same output with the low-effort instruction (reasoning_loop_recovery)
+[strata] done: 2106 tokens in 0 s (236542.4 tok/s) (stop, cancel=False)
+ok
+test_old_explicit_sampler_recovers_without_mutating_request (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_old_explicit_sampler_recovers_without_mutating_request) ... [strata] repeated reasoning detected at 2048 tokens (coverage=1.000); resuming the same output with the low-effort instruction (reasoning_loop_recovery)
+[strata] done: 2086 tokens in 0 s (232465.9 tok/s) (stop, cancel=False)
+ok
+test_preserves_task_and_exact_generated_tokens (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_preserves_task_and_exact_generated_tokens) ... ok
+test_recovery_is_once_and_never_extends_output_limit (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_recovery_is_once_and_never_extends_output_limit) ... [strata] repeated reasoning detected at 2048 tokens (coverage=1.000); resuming the same output with the low-effort instruction (reasoning_loop_recovery)
+[strata] done: 16384 tokens in 0 s (248580.1 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_repeated_final_text_does_not_change_sampler_or_prompt (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_repeated_final_text_does_not_change_sampler_or_prompt) ... [strata] done: 28001 tokens in 0 s (253339.6 tok/s) (stop, cancel=False)
+ok
+test_repetition_and_novel_work (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_repetition_and_novel_work) ... ok
+test_stop_mode_ends_a_loop_written_as_one_long_word (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_stop_mode_ends_a_loop_written_as_one_long_word)
+#1753: the word count never sees the digits, so only the tail's period ends the reply. ... [strata] the thinking repeated the same passages (coverage=1.000) at 2560 tokens: ended as "length" (reasoning_loop_recovery: "stop" in strata-<model>.json; remove it to turn this off)
+[strata] done: 2560 tokens in 0 s (243843.8 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_stop_mode_ends_the_reply_at_the_loop (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_stop_mode_ends_the_reply_at_the_loop) ... [strata] the thinking repeated the same passages (coverage=1.000) at 2048 tokens: ended as "length" (reasoning_loop_recovery: "stop" in strata-<model>.json; remove it to turn this off)
+[strata] done: 2048 tokens in 0 s (240857.3 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_the_splice_keeps_a_literal_think_tag_as_text (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_the_splice_keeps_a_literal_think_tag_as_text)
+#537: the prompt is spliced as token ids, never decoded and encoded again. ... ok
+test_user_instruction_is_never_rewritten (serve.test_reasoning_loop_recovery.ReasoningLoopRecovery.test_user_instruction_is_never_rewritten) ... ok
+
+----------------------------------------------------------------------
+Ran 18 tests in 0.929s
+
+OK

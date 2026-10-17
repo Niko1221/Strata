@@ -1,0 +1,17 @@
+test_engine_done_line_raises (serve.test_server.NonFiniteLogits.test_engine_done_line_raises)
+StrataEngine.generate: `DONE ... nonfinite` raises EngineNonFinite after the tokens before it. ... ok
+test_mid_reply_ends_without_retry (serve.test_server.NonFiniteLogits.test_mid_reply_ends_without_retry) ... ok
+test_nothing_emitted_is_retried_once (serve.test_server.NonFiniteLogits.test_nothing_emitted_is_retried_once) ... ok
+test_twice_is_an_error (serve.test_server.NonFiniteLogits.test_twice_is_an_error) ... ok
+test_twice_over_http (serve.test_server.NonFiniteLogits.test_twice_over_http) ... /src/serve/telemetry.py:454: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/stat' mode='r' encoding='UTF-8'>
+  f = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/src/serve/telemetry.py:437: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='utf-8'>
+  return line.split(":", 1)[1].strip()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.683s
+
+OK

@@ -1,0 +1,54 @@
+test_a_compaction_prompt_starts_as_its_conversations_last_prompt (serve.test_responses.CodexCompaction.test_a_compaction_prompt_starts_as_its_conversations_last_prompt) ... ok
+test_a_compaction_that_sends_tools_keeps_them (serve.test_responses.CodexCompaction.test_a_compaction_that_sends_tools_keeps_them) ... ok
+test_a_custom_compact_prompt_is_a_compaction_when_codex_says_so (serve.test_responses.CodexCompaction.test_a_custom_compact_prompt_is_a_compaction_when_codex_says_so) ... ok
+test_a_thread_title_turn_does_not_replace_the_kept_tools (serve.test_responses.CodexCompaction.test_a_thread_title_turn_does_not_replace_the_kept_tools) ... ok
+test_another_conversation_never_gets_these_tools (serve.test_responses.CodexCompaction.test_another_conversation_never_gets_these_tools) ... ok
+test_malformed_metadata_is_no_error_and_no_reuse (serve.test_responses.CodexCompaction.test_malformed_metadata_is_no_error_and_no_reuse) ... ok
+test_requests_that_are_not_a_codex_compaction_are_rendered_as_sent (serve.test_responses.CodexCompaction.test_requests_that_are_not_a_codex_compaction_are_rendered_as_sent) ... ok
+test_the_compact_prompt_in_a_message_is_not_a_compaction (serve.test_responses.CodexCompaction.test_the_compact_prompt_in_a_message_is_not_a_compaction) ... ok
+test_without_its_conversation_nothing_is_kept_or_used (serve.test_responses.CodexCompaction.test_without_its_conversation_nothing_is_kept_or_used) ... ok
+test_a_compaction_too_long_with_the_kept_tools_is_rendered_as_sent (serve.test_responses.CodexCompactionOverHttp.test_a_compaction_too_long_with_the_kept_tools_is_rendered_as_sent) ... /src/serve/telemetry.py:454: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/stat' mode='r' encoding='UTF-8'>
+  f = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/src/serve/telemetry.py:437: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='utf-8'>
+  return line.split(":", 1)[1].strip()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_a_request_that_fails_leaves_the_kept_tools_as_they_were (serve.test_responses.CodexCompactionOverHttp.test_a_request_that_fails_leaves_the_kept_tools_as_they_were) ... ok
+test_the_kept_tools_shape_only_the_prompt (serve.test_responses.CodexCompactionOverHttp.test_the_kept_tools_shape_only_the_prompt) ... ok
+test_a_text_answer_that_breaks_the_schema_fails_as_without_tools (serve.test_responses.JsonFormatWithTools.test_a_text_answer_that_breaks_the_schema_fails_as_without_tools) ... ok
+test_a_tool_call_passes_through (serve.test_responses.JsonFormatWithTools.test_a_tool_call_passes_through) ... ok
+test_the_final_text_answer_is_the_schema_object (serve.test_responses.JsonFormatWithTools.test_the_final_text_answer_is_the_schema_object) ... ok
+test_server_close_ends_the_sampler (serve.test_responses.NoLeakedSampler.test_server_close_ends_the_sampler) ... ok
+test_a_foreign_page_cannot_name_a_file_as_an_image (serve.test_responses.OverHttp.test_a_foreign_page_cannot_name_a_file_as_an_image)
+#553: the chat routes refuse a file image from another origin; so does /v1/responses. ... ok
+test_api_key_and_foreign_pages (serve.test_responses.OverHttp.test_api_key_and_foreign_pages) ... ok
+test_effort_none_does_not_think (serve.test_responses.OverHttp.test_effort_none_does_not_think) ... ok
+test_errors_use_the_responses_format (serve.test_responses.OverHttp.test_errors_use_the_responses_format) ... [strata] 400 invalid request: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+ok
+test_json_schema_text_format (serve.test_responses.OverHttp.test_json_schema_text_format) ... ok
+test_max_output_tokens_ends_incomplete (serve.test_responses.OverHttp.test_max_output_tokens_ends_incomplete) ... ok
+test_monitor_and_status (serve.test_responses.OverHttp.test_monitor_and_status) ... ok
+test_non_streaming_text_with_reasoning (serve.test_responses.OverHttp.test_non_streaming_text_with_reasoning) ... ok
+test_stream_event_order (serve.test_responses.OverHttp.test_stream_event_order) ... ok
+test_too_long_for_the_context (serve.test_responses.OverHttp.test_too_long_for_the_context) ... ok
+test_a_string_input_is_one_user_message (serve.test_responses.Parsing.test_a_string_input_is_one_user_message) ... ok
+test_additional_tools_input_items_are_accepted (serve.test_responses.Parsing.test_additional_tools_input_items_are_accepted)
+#782: Codex sends an `additional_tools` input item; it used to be refused with a 400. ... ok
+test_bad_arguments_from_a_cut_off_call_do_not_refuse_the_conversation (serve.test_responses.Parsing.test_bad_arguments_from_a_cut_off_call_do_not_refuse_the_conversation) ... ok
+test_codex_history_becomes_one_assistant_turn_per_answer (serve.test_responses.Parsing.test_codex_history_becomes_one_assistant_turn_per_answer) ... ok
+test_effort_and_text_format (serve.test_responses.Parsing.test_effort_and_text_format) ... ok
+test_leading_developer_messages_join_the_system_message_later_ones_become_user (serve.test_responses.Parsing.test_leading_developer_messages_join_the_system_message_later_ones_become_user) ... ok
+test_reasoning_comes_back_from_our_encrypted_content_and_foreign_tokens_are_ignored (serve.test_responses.Parsing.test_reasoning_comes_back_from_our_encrypted_content_and_foreign_tokens_are_ignored) ... ok
+test_tools_namespaces_custom_and_hosted (serve.test_responses.Parsing.test_tools_namespaces_custom_and_hosted) ... ok
+test_unsupported_items_are_named (serve.test_responses.Parsing.test_unsupported_items_are_named) ... ok
+test_a_thread_title_is_answered_without_the_engine (serve.test_responses.ThreadTitle.test_a_thread_title_is_answered_without_the_engine) ... ok
+test_off_by_default_the_engine_answers (serve.test_responses.ThreadTitle.test_off_by_default_the_engine_answers) ... ok
+test_function_call_round_trip (serve.test_responses.ToolRoundTrip.test_function_call_round_trip) ... ok
+test_namespace_and_custom_calls_come_back_under_their_own_names (serve.test_responses.ToolRoundTrip.test_namespace_and_custom_calls_come_back_under_their_own_names) ... ok
+test_namespace_call_written_with_double_underscore (serve.test_responses.ToolRoundTrip.test_namespace_call_written_with_double_underscore) ... ok
+
+----------------------------------------------------------------------
+Ran 40 tests in 11.509s
+
+OK

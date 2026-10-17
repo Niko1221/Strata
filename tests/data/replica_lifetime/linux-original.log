@@ -1,0 +1,220 @@
+test_native_pump_and_reader_with_real_os_pipes (serve.test_replica_lifetime.RealPipeContracts.test_native_pump_and_reader_with_real_os_pipes) ... ok
+test_real_pipe_queued_successor_keeps_output_and_statistics (serve.test_replica_lifetime.RealPipeContracts.test_real_pipe_queued_successor_keeps_output_and_statistics) ... FAIL
+test_caller_exception_closes_child_before_reusing_replica (serve.test_replica_lifetime.ReplicaContracts.test_caller_exception_closes_child_before_reusing_replica) ... ok
+test_cancel_while_queued_sends_no_new_gen_or_stale_done (serve.test_replica_lifetime.ReplicaContracts.test_cancel_while_queued_sends_no_new_gen_or_stale_done) ... ok
+test_client_disconnect_drains_before_handoff (serve.test_replica_lifetime.ReplicaContracts.test_client_disconnect_drains_before_handoff) ... FAIL
+test_delayed_done_is_drained_without_fixed_sleep_workaround (serve.test_replica_lifetime.ReplicaContracts.test_delayed_done_is_drained_without_fixed_sleep_workaround) ... FAIL
+test_done_statistics_remain_request_owned_after_unlock (serve.test_replica_lifetime.ReplicaContracts.test_done_statistics_remain_request_owned_after_unlock) ... FAIL
+test_drain_failure_is_error_and_bad_engine_is_not_reused (serve.test_replica_lifetime.ReplicaContracts.test_drain_failure_is_error_and_bad_engine_is_not_reused) ... Exception ignored in: <generator object StrataEngine.generate at 0x7e38b8e65df0>
+Traceback (most recent call last):
+  File "/src/serve/server.py", line 2037, in generate
+    raise self._silent("the engine did not finish the request after it was stopped (STOP) "
+serve.server.EngineSilent: the engine did not finish the request after it was stopped (STOP) within 0 s
+FAIL
+test_four_callers_many_turns_no_cross_output_or_stats (serve.test_replica_lifetime.ReplicaContracts.test_four_callers_many_turns_no_cross_output_or_stats) ... ok
+test_natural_exhaustion_accounts_for_exact_tokens (serve.test_replica_lifetime.ReplicaContracts.test_natural_exhaustion_accounts_for_exact_tokens) ... ok
+test_no_control_or_token_frame_crosses_requests (serve.test_replica_lifetime.ReplicaContracts.test_no_control_or_token_frame_crosses_requests) ... FAIL
+test_no_generation_starts_before_previous_ack (serve.test_replica_lifetime.ReplicaContracts.test_no_generation_starts_before_previous_ack) ... FAIL
+test_nonfinite_forgets_advertised_prefix (serve.test_replica_lifetime.ReplicaContracts.test_nonfinite_forgets_advertised_prefix) ... ok
+test_rejection_does_not_inherit_previous_done (serve.test_replica_lifetime.ReplicaContracts.test_rejection_does_not_inherit_previous_done) ... ok
+test_slow_consumer_can_close_a_large_buffered_reply (serve.test_replica_lifetime.ReplicaContracts.test_slow_consumer_can_close_a_large_buffered_reply) ... ok
+test_stop_string_like_early_close_drains_before_handoff (serve.test_replica_lifetime.ReplicaContracts.test_stop_string_like_early_close_drains_before_handoff) ... FAIL
+test_successor_receives_its_own_tokens_after_eos (serve.test_replica_lifetime.ReplicaContracts.test_successor_receives_its_own_tokens_after_eos) ... FAIL
+test_two_replicas_make_progress_independently (serve.test_replica_lifetime.ReplicaContracts.test_two_replicas_make_progress_independently) ... ok
+
+======================================================================
+FAIL: test_real_pipe_queued_successor_keeps_output_and_statistics (serve.test_replica_lifetime.RealPipeContracts.test_real_pipe_queued_successor_keeps_output_and_statistics)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/src/serve/test_replica_lifetime.py", line 407, in test_real_pipe_queued_successor_keeps_output_and_statistics
+    self.assertEqual(r['B']['tokens'], b['tokens'])
+AssertionError: Lists differ: [] != [20200, 20201, 20202, 20203, 20204, 20205,[34 chars], 99]
+
+Second list contains 12 additional elements.
+First extra element 0:
+20200
+
+- []
++ [20200,
++  20201,
++  20202,
++  20203,
++  20204,
++  20205,
++  20206,
++  20207,
++  20208,
++  20209,
++  20210,
++  99]
+
+======================================================================
+FAIL: test_client_disconnect_drains_before_handoff (serve.test_replica_lifetime.ReplicaContracts.test_client_disconnect_drains_before_handoff)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/src/serve/test_replica_lifetime.py", line 277, in test_client_disconnect_drains_before_handoff
+    self.assertEqual(r['B']['tokens'], b['tokens'])
+AssertionError: Lists differ: [10101, 10102, 10103, 10104, 10105, 10106,[34 chars], 99] != [20200, 20201, 20202, 20203, 20204, 20205,[34 chars], 99]
+
+First differing element 0:
+10101
+20200
+
+- [10101,
+-  10102,
+-  10103,
+-  10104,
+-  10105,
+-  10106,
+-  10107,
+-  10108,
+-  10109,
+-  10110,
+-  10111,
++ [20200,
++  20201,
++  20202,
++  20203,
++  20204,
++  20205,
++  20206,
++  20207,
++  20208,
++  20209,
++  20210,
+   99]
+
+======================================================================
+FAIL: test_delayed_done_is_drained_without_fixed_sleep_workaround (serve.test_replica_lifetime.ReplicaContracts.test_delayed_done_is_drained_without_fixed_sleep_workaround)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/src/serve/test_replica_lifetime.py", line 310, in test_delayed_done_is_drained_without_fixed_sleep_workaround
+    self.assertEqual(self.p.overlaps, [])
+AssertionError: Lists differ: [('A', 'B')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+('A', 'B')
+
+- [('A', 'B')]
++ []
+
+======================================================================
+FAIL: test_done_statistics_remain_request_owned_after_unlock (serve.test_replica_lifetime.ReplicaContracts.test_done_statistics_remain_request_owned_after_unlock)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/src/serve/test_replica_lifetime.py", line 263, in test_done_statistics_remain_request_owned_after_unlock
+    self.assertEqual(r['A']['last']['generated'], len(a['tokens']))
+AssertionError: 12 != 13
+
+======================================================================
+FAIL: test_drain_failure_is_error_and_bad_engine_is_not_reused (serve.test_replica_lifetime.ReplicaContracts.test_drain_failure_is_error_and_bad_engine_is_not_reused)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/src/serve/test_replica_lifetime.py", line 364, in test_drain_failure_is_error_and_bad_engine_is_not_reused
+    with self.assertRaises(EngineSilent):
+AssertionError: EngineSilent not raised
+
+======================================================================
+FAIL: test_no_control_or_token_frame_crosses_requests (serve.test_replica_lifetime.ReplicaContracts.test_no_control_or_token_frame_crosses_requests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/src/serve/test_replica_lifetime.py", line 272, in test_no_control_or_token_frame_crosses_requests
+    self.assertEqual(self.p.wrong_readers, [])
+AssertionError: Lists differ: [('B', 'A', 'DONE 13 4097 2 1 stop 0 0 0 0[342 chars]97')] != []
+
+First list contains 14 additional elements.
+First extra element 0:
+('B', 'A', 'DONE 13 4097 2 1 stop 0 0 0 0 0 0 0 0 4097')
+
++ []
+- [('B', 'A', 'DONE 13 4097 2 1 stop 0 0 0 0 0 0 0 0 4097'),
+-  ('A', 'B', 'T 20200'),
+-  ('A', 'B', 'T 20201'),
+-  ('A', 'B', 'T 20202'),
+-  ('A', 'B', 'T 20203'),
+-  ('A', 'B', 'T 20204'),
+-  ('A', 'B', 'T 20205'),
+-  ('A', 'B', 'T 20206'),
+-  ('A', 'B', 'T 20207'),
+-  ('A', 'B', 'T 20208'),
+-  ('A', 'B', 'T 20209'),
+-  ('A', 'B', 'T 20210'),
+-  ('A', 'B', 'T 99'),
+-  ('A', 'B', 'DONE 12 4097 2 1 stop 0 0 0 0 0 0 0 0 4097')]
+
+======================================================================
+FAIL: test_no_generation_starts_before_previous_ack (serve.test_replica_lifetime.ReplicaContracts.test_no_generation_starts_before_previous_ack)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/src/serve/test_replica_lifetime.py", line 268, in test_no_generation_starts_before_previous_ack
+    self.assertEqual(self.p.overlaps, [])
+AssertionError: Lists differ: [('A', 'B')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+('A', 'B')
+
+- [('A', 'B')]
++ []
+
+======================================================================
+FAIL: test_stop_string_like_early_close_drains_before_handoff (serve.test_replica_lifetime.ReplicaContracts.test_stop_string_like_early_close_drains_before_handoff)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/src/serve/test_replica_lifetime.py", line 283, in test_stop_string_like_early_close_drains_before_handoff
+    self.assertEqual(r['B']['tokens'], b['tokens'])
+AssertionError: Lists differ: [10103, 10104, 10105, 10106, 10107, 10108,[20 chars], 99] != [20200, 20201, 20202, 20203, 20204, 20205,[34 chars], 99]
+
+First differing element 0:
+10103
+20200
+
+Second list contains 2 additional elements.
+First extra element 10:
+20210
+
+- [10103, 10104, 10105, 10106, 10107, 10108, 10109, 10110, 10111, 99]
++ [20200,
++  20201,
++  20202,
++  20203,
++  20204,
++  20205,
++  20206,
++  20207,
++  20208,
++  20209,
++  20210,
++  99]
+
+======================================================================
+FAIL: test_successor_receives_its_own_tokens_after_eos (serve.test_replica_lifetime.ReplicaContracts.test_successor_receives_its_own_tokens_after_eos)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/src/serve/test_replica_lifetime.py", line 259, in test_successor_receives_its_own_tokens_after_eos
+    self.assertEqual(r['B']['tokens'], b['tokens'])
+AssertionError: Lists differ: [] != [20200, 20201, 20202, 20203, 20204, 20205,[34 chars], 99]
+
+Second list contains 12 additional elements.
+First extra element 0:
+20200
+
+- []
++ [20200,
++  20201,
++  20202,
++  20203,
++  20204,
++  20205,
++  20206,
++  20207,
++  20208,
++  20209,
++  20210,
++  99]
+
+----------------------------------------------------------------------
+Ran 18 tests in 0.748s
+
+FAILED (failures=9)

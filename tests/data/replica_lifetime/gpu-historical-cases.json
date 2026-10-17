@@ -1,0 +1,133 @@
+{
+  "rows": [
+    {
+      "case": "slot-follow-SLOT-1-RVN-8020",
+      "identical_payload_bytes": true,
+      "identical_effective_payload": true,
+      "request_sha256_old": "1edfd7b03f93a2e1e08504840d39963c26dbddde919e7d625aa1cccb41682779",
+      "request_sha256_A": "1edfd7b03f93a2e1e08504840d39963c26dbddde919e7d625aa1cccb41682779",
+      "old": {
+        "text": "",
+        "usage": {
+          "prompt_tokens": 4165,
+          "completion_tokens": 0,
+          "total_tokens": 4165,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "finish": "length",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 4165,
+          "prompt_ms": 2210.0,
+          "prompt_per_token_ms": 0.531,
+          "prompt_per_second": 1884.6,
+          "predicted_n": 0,
+          "predicted_ms": 95.1,
+          "predicted_per_token_ms": 7.315,
+          "predicted_per_second": 136.7,
+          "draft_n": 10,
+          "draft_n_accepted": 10
+        }
+      },
+      "A": {
+        "text": "SLOT-1-RVN-8020",
+        "usage": {
+          "prompt_tokens": 4165,
+          "completion_tokens": 12,
+          "total_tokens": 4177,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "finish": "stop",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 4165,
+          "prompt_ms": 2136.4,
+          "prompt_per_token_ms": 0.513,
+          "prompt_per_second": 1949.5,
+          "predicted_n": 12,
+          "predicted_ms": 110.5,
+          "predicted_per_token_ms": 9.208,
+          "predicted_per_second": 108.6,
+          "draft_n": 12,
+          "draft_n_accepted": 12
+        }
+      },
+      "A_unique_native_DONE": {
+        "file": "engine.r1.log",
+        "line": 86,
+        "prompt": 4165,
+        "generated": 12,
+        "text": "strata serve: prompt 4165 tokens = 0 reused + 4165 read in 2136 ms (1949.6 tok/s), 12 generated in 111 ms (108.6 tok/s), drafts accepted 12 of 12, 2 checkpoints"
+      }
+    },
+    {
+      "case": "slot-follow-SLOT-3-RVN-23858",
+      "identical_payload_bytes": true,
+      "identical_effective_payload": true,
+      "request_sha256_old": "1020039c290b1dcf668cf5aaf2b37506ff9b3e98502b778fc5f1cdae427224d9",
+      "request_sha256_A": "1020039c290b1dcf668cf5aaf2b37506ff9b3e98502b778fc5f1cdae427224d9",
+      "old": {
+        "text": "SLOT-3-RVN-23858",
+        "usage": {
+          "prompt_tokens": 4167,
+          "completion_tokens": 13,
+          "total_tokens": 4180,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          }
+        },
+        "finish": "stop",
+        "timings": {
+          "cache_n": 2,
+          "prompt_n": 4165,
+          "prompt_ms": 2198.8,
+          "prompt_per_token_ms": 0.528,
+          "prompt_per_second": 1894.2,
+          "predicted_n": 13,
+          "predicted_ms": 83.0,
+          "predicted_per_token_ms": 6.917,
+          "predicted_per_second": 144.6,
+          "draft_n": 10,
+          "draft_n_accepted": 10
+        }
+      },
+      "A": {
+        "text": "SLOT-3-RVN-23858",
+        "usage": {
+          "prompt_tokens": 4167,
+          "completion_tokens": 13,
+          "total_tokens": 4180,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "finish": "stop",
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 4167,
+          "prompt_ms": 2172.3,
+          "prompt_per_token_ms": 0.521,
+          "prompt_per_second": 1918.2,
+          "predicted_n": 13,
+          "predicted_ms": 88.3,
+          "predicted_per_token_ms": 6.792,
+          "predicted_per_second": 147.2,
+          "draft_n": 10,
+          "draft_n_accepted": 10
+        }
+      },
+      "A_unique_native_DONE": {
+        "file": "engine.r0.log",
+        "line": 89,
+        "prompt": 4167,
+        "generated": 13,
+        "text": "strata serve: prompt 4167 tokens = 0 reused + 4167 read in 2172 ms (1918.3 tok/s), 13 generated in 88 ms (147.2 tok/s), drafts accepted 10 of 10, 2 checkpoints"
+      }
+    }
+  ],
+  "scope": "Synthetic payload bytes identical. Original GPU run had no per-token thread trace. Native timing association is unique to rounding tolerance, independently supported by forced reader/pipe contracts."
+}

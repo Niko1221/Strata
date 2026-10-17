@@ -1,0 +1,12 @@
+test_reuse_then_least_recently_used (serve.test_slot_alloc.OneGroup.test_reuse_then_least_recently_used) ... ok
+test_groups_of_several_slots_still_ignore_held_tokens (serve.test_slot_alloc.OneSlotGroups.test_groups_of_several_slots_still_ignore_held_tokens) ... ok
+test_the_slot_of_the_chat (serve.test_slot_alloc.OneSlotGroups.test_the_slot_of_the_chat) ... ok
+test_fills_a_leading_hole_first (serve.test_slot_alloc.Pipelined.test_fills_a_leading_hole_first) ... ok
+test_held_tokens_are_ignored (serve.test_slot_alloc.Pipelined.test_held_tokens_are_ignored) ... ok
+test_never_opens_a_hole_below_the_pick (serve.test_slot_alloc.Pipelined.test_never_opens_a_hole_below_the_pick) ... ok
+test_spreads_over_the_groups_first (serve.test_slot_alloc.Pipelined.test_spreads_over_the_groups_first) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.043s
+
+OK

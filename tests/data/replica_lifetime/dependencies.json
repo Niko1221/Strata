@@ -1,0 +1,37 @@
+{
+  "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "packages": {
+    "jinja2": "3.1.6",
+    "numpy": "2.5.3",
+    "regex": "2026.9.10",
+    "pyyaml": "6.0.3",
+    "psutil": "7.2.2",
+    "pillow": "12.3.0"
+  },
+  "build": {
+    "source": "local",
+    "version": "0.1.44.1",
+    "archs": [
+      86
+    ],
+    "vision": "none",
+    "cuda_dirs": [
+      "/usr/local/cuda/bin",
+      "/usr/local/cuda/lib64"
+    ],
+    "src": "7dfd34378bd2d32a",
+    "vision_src": null
+  },
+  "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2025 NVIDIA Corporation\nBuilt on Wed_Jul_16_07:30:01_PM_PDT_2025\nCuda compilation tools, release 13.0, V13.0.48\nBuild cuda_13.0.r13.0/compiler.36260728_0\n",
+  "ldd": "\tlinux-vdso.so.1 (<address>)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (<address>)\n\tlibcublas.so.13 => /usr/local/cuda/lib64/libcublas.so.13 (<address>)\n\tlibstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (<address>)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (<address>)\n\tlibgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (<address>)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (<address>)\n\t/lib64/ld-linux-x86-64.so.2 (<address>)\n\tlibdl.so.2 => /lib/x86_64-linux-gnu/libdl.so.2 (<address>)\n\tlibpthread.so.0 => /lib/x86_64-linux-gnu/libpthread.so.0 (<address>)\n\tlibrt.so.1 => /lib/x86_64-linux-gnu/librt.so.1 (<address>)\n\tlibcublasLt.so.13 => /usr/local/cuda/lib64/libcublasLt.so.13 (<address>)\n",
+  "ggml_provenance": {
+    "status": "GGML_TREE_MATCHES_OFFICIAL_PIN",
+    "declared_pin": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+    "archive_sha256": "cbe23c594282ead2937abb3f008e51fcec4609d9256652fff42c7cc1c21ea47b",
+    "actual_files": 1376,
+    "expected_files": 1376,
+    "different": [],
+    "actual_tree_sha256": "ce23dcaf0736a5ab2194a4a3b69651370a9774060fce4fa129f6313a7fb63494",
+    "expected_tree_sha256": "ce23dcaf0736a5ab2194a4a3b69651370a9774060fce4fa129f6313a7fb63494"
+  }
+}
