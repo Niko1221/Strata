@@ -3970,8 +3970,6 @@ class Service:
             if self.vision is None:
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
                                  "'vision'), so it cannot read images")
-            pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
-            start = self.tok.encode(VISION_START, parse_special=True)[0]
             # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
             # for as long as urlopen waited.
             def fetch(src):
@@ -3991,25 +3989,9 @@ class Service:
                                else [self.vision.encode(src) for src in images])
                 finally:
                     self.last_image_at = time.time()
-            # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
-            # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
-            # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
-            literal = self.tok.encode(IMAGE_PAD, parse_special=False)
-            out, k = [], 0
-            for j, t in enumerate(ids):
-                if t == pad and j > 0 and ids[j - 1] == start:
-                    # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
-                    if k == len(encoded):
-                        raise ValueError("the prompt and its images do not match")
-                    out += [pad] * encoded[k][1]
-                    k += 1
-                elif t == pad:
-                    out += literal
-                else:
-                    out.append(t)
+            ids, k = self.expand_image_pads(ids, [n for _, n in encoded])
             if k != len(encoded):
                 raise ValueError("the prompt and its images do not match")
-            ids = out
         ctx = self.engine.max_context
         if ctx <= 0:
             if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
@@ -4050,12 +4032,35 @@ class Service:
             self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
             write_temporary(combined, [p for p, _ in encoded])
         if req is not None and req.get("strata_prefix") is not None:
-            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
+            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids,
+                                                       [n for _, n in encoded] if images else None)
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
+
+    def expand_image_pads(self, ids, counts):
+        """One <|image_pad|> per image -> one per image token, `counts` in prompt order.  Only the markers the
+        template writes for an image (right after <|vision_start|>) are images: the same text inside a message (an
+        agent reading these docs, #150) is kept as plain text, or it took an image's place and the counts no longer
+        matched.  -> (ids, the number of images expanded); more images than counts is a ValueError."""
+        pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
+        start = self.tok.encode(VISION_START, parse_special=True)[0]
+        literal = self.tok.encode(IMAGE_PAD, parse_special=False)
+        out, k = [], 0
+        for j, t in enumerate(ids):
+            if t == pad and j > 0 and ids[j - 1] == start:
+                # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
+                if k == len(counts):
+                    raise ValueError("the prompt and its images do not match")
+                out += [pad] * counts[k]
+                k += 1
+            elif t == pad:
+                out += literal
+            else:
+                out.append(t)
+        return out, k
 
     PREFIX_END = "\u0001strata-prefix-end\u0001"          # marks where a message's shared part ends in the rendered prompt
 
-    def resolve_prefix(self, spec, messages, tools, kwargs, ids, has_images=False) -> dict:
+    def resolve_prefix(self, spec, messages, tools, kwargs, ids, image_counts=None) -> dict:
         """R1: `"strata_prefix"` marks the start of the prompt as a shared read-only prefix: a long document that many
         short questions follow.  Three ways to say where it ends: `{"messages": K}` (the first K messages), `{"message":
         I, "chars": N}` (the first N characters of message I's text: a document and its question in one message) or
@@ -4072,9 +4077,6 @@ class Service:
         for k, v in spec.items():
             if not isinstance(v, int) or isinstance(v, bool) or v < (0 if k == "message" else 1):
                 raise ValueError(f"strata_prefix.{k}: a whole number ({'0' if k == 'message' else '1'} or more)")
-        if has_images:
-            print("[strata] strata_prefix ignored: the request has images", flush=True)
-            return {}
         what = ",".join(f"{k}={v}" for k, v in spec.items())
 
         def lcp(a, b):
@@ -4099,8 +4101,11 @@ class Service:
                 text = text[:cut]
             if changed:
                 text, plain = unmark_think_literals(text, self.literals)
-                return self.tok.encode(text, parse_special=True, plain=plain)
-            return self.tok.encode(text, parse_special=True)
+                head = self.tok.encode(text, parse_special=True, plain=plain)
+            else:
+                head = self.tok.encode(text, parse_special=True)
+            # a picture in the prefix takes the tokens it takes in the prompt (the first ones, in prompt order)
+            return self.expand_image_pads(head, image_counts)[0] if image_counts else head
 
         if "tokens" in spec:
             n = spec["tokens"]
@@ -4124,6 +4129,11 @@ class Service:
         if n < 1 or n >= len(ids) - 1:
             print(f"[strata] strata_prefix {what} ignored: it leaves no usable prefix of the {len(ids)}-token prompt "
                   f"(common start {n})", flush=True)
+            return {}
+        pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
+        if image_counts and ids[n - 1] == pad and ids[n] == pad:
+            # the engine reads a picture's tokens in one part: a boundary inside them cannot be read to
+            print(f"[strata] strata_prefix {what} ignored: it ends inside a picture", flush=True)
             return {}
         return {"tokens": n}
 

@@ -1642,6 +1642,65 @@ class SharedPrefix(unittest.TestCase):
         self.assertEqual(req, {"temperature": 0})
         self.assertEqual(ids, self.svc.prepare(self.MSGS, None, {}, 16)[0])
 
+    class TwoSizeVision:
+        """a.png is 3 image tokens, b.png 5: a prefix that counts them wrong, or in the wrong order, misses its boundary."""
+        def __init__(self, d):
+            self.dir = Path(d)
+
+        def encode(self, source):
+            rows = self.dir / f"{Path(source).stem}.sve"
+            rows.write_bytes(b"rows")
+            return rows, {"a.png": 3, "b.png": 5}[source]
+
+    def _with_images(self, msgs, spec):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            svc = Service(MockEngine(self.tok, "ok", max_context=CTX), self.tok,
+                          ChatTemplate(ROOT / "serve/chat_template.jinja"), vision=self.TwoSizeVision(d))
+            req = {"strata_prefix": spec}
+            with contextlib.redirect_stdout(io.StringIO()) as log:
+                ids, _, _ = svc.prepare(msgs, None, {}, 16, req=req)
+            svc.embeddings.path.unlink(missing_ok=True)
+        return ids, req["strata_prefix"], log.getvalue()
+
+    def test_messages_resolve_past_a_picture_in_the_history(self):
+        # a chat client's history with a photo early on: the prefix ends where the final user message starts
+        pad = self.tok.encode("<|image_pad|>", parse_special=True)[0]
+        msgs = [{"role": "system", "content": "S"},
+                {"role": "user", "content": [{"type": "text", "text": "What is this?"},
+                                             {"type": "image", "source": "a.png"}]},
+                {"role": "assistant", "content": "A lamp."},
+                {"role": "user", "content": "And now?"}]
+        ids, prefix, log = self._with_images(msgs, {"messages": 3})
+        self.assertNotIn("ignored", log)
+        n = prefix["tokens"]
+        self.assertEqual(ids[:n].count(pad), 3)                           # the picture's own tokens, all of them
+        self.assertTrue(self.tok.decode(ids[:n]).endswith("A lamp.<|im_end|>\n"))
+        self.assertEqual(self.tok.decode(ids[n:n + 1]), "<|im_start|>")
+
+    def test_a_picture_after_the_prefix_stays_out_of_it(self):
+        # pictures on both sides: the prefix holds the first one only, and still ends at the final message
+        pad = self.tok.encode("<|image_pad|>", parse_special=True)[0]
+        msgs = [{"role": "user", "content": [{"type": "image", "source": "a.png"}]},
+                {"role": "assistant", "content": "A lamp."},
+                {"role": "user", "content": [{"type": "text", "text": "And this?"},
+                                             {"type": "image", "source": "b.png"}]}]
+        ids, prefix, _ = self._with_images(msgs, {"messages": 2})
+        n = prefix["tokens"]
+        self.assertEqual((ids[:n].count(pad), ids[n:].count(pad)), (3, 5))
+        self.assertEqual(self.tok.decode(ids[n:n + 1]), "<|im_start|>")
+
+    def test_a_token_boundary_inside_a_picture_is_ignored(self):
+        pad = self.tok.encode("<|image_pad|>", parse_special=True)[0]
+        msgs = [{"role": "user", "content": [{"type": "image", "source": "a.png"}]},
+                {"role": "assistant", "content": "A lamp."},
+                {"role": "user", "content": "And now?"}]
+        ids, _, _ = self._with_images(msgs, {"messages": 2})
+        inside = ids.index(pad) + 1                                       # after the first of the picture's 3 tokens
+        _, prefix, log = self._with_images(msgs, {"tokens": inside})
+        self.assertEqual(prefix, {})
+        self.assertIn("ends inside a picture", log)
+
 
 class GpuChoice(unittest.TestCase):
     """Issue #51: the config's \"gpu\" reaches the engine as CUDA_VISIBLE_DEVICES, numbered like nvidia-smi."""
