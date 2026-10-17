@@ -1,6 +1,6 @@
 #include "strata/core/vmm.hpp"
 
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
 #include <cuda.h>
 #include <cuda_runtime.h>
 

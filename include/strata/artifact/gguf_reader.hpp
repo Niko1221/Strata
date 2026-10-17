@@ -20,6 +20,7 @@
 //
 // Build: scripts/build_artifact.bat        Run: gguf_reader.exe <file.gguf> [--check]
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -33,6 +34,8 @@
 #include <algorithm>
 
 #include "strata/artifact/gguf_split.hpp"
+#include "strata/core/geometry.hpp"
+#include "strata/artifact/model_family.hpp"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -209,6 +212,14 @@ inline bool block_geometry(uint32_t t, int& elems, int& bytes) {
     case 24:   // I8: raw bytes (the FP8 PLE table of tools/ple_fp8_pack.py)
         elems = 1;
         bytes = 1;
+        return true;
+    case 40:   // NVFP4: 64 values = 4 UE4M3 sub-block scales + 32 bytes of E2M1 codes
+        elems = 64;
+        bytes = 36;
+        return true;
+    case 39:   // MXFP4: one E8M0 scale + 16 bytes of 4-bit values (Qwen3.6's MXFP4_MOE experts)
+        elems = 32;
+        bytes = 17;
         return true;
     case 42:
         elems = 64;
@@ -577,37 +588,235 @@ private:
     std::map<std::string, std::pair<size_t, const TensorInfo*>> index_;
 };
 
-// ---- architecture guard (P1.S2). The engine is specialised to ONE model; anything else must be
-// refused with a precise error rather than silently mis-run.
-struct Qwen4ExpGuard {
-    uint32_t block_count = 48, hidden = 2560, experts = 0, experts_used = 0, head_count = 24,
-             head_count_kv = 2;   // 0 = presence-only: pruned variants (GSQ-RCO Coder) legitimately ship
-                                  // fewer experts than the canonical 512; the graph reads the true value
-};
-
-inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& want = {}) {
+/// The family of the model whose metadata shard is `g` (Unknown when it has no or another architecture).
+inline ModelFamily model_family(const GgufFile& g) {
     const MetaValue* arch = g.get("general.architecture");
+    return arch ? model_family_from_arch(arch->s) : ModelFamily::Unknown;
+}
+
+/// Qwen3.6-35B-A3B's guard: every key the geometry is read from must be present (core::geometry_from_gguf),
+/// and the few that the layer pattern depends on must have the values the model has.
+inline std::string check_architecture_qwen35moe(const GgufFile& g) {
+    static const char* const keys[] = {
+        "qwen35moe.block_count", "qwen35moe.embedding_length", "qwen35moe.attention.head_count",
+        "qwen35moe.attention.head_count_kv", "qwen35moe.attention.key_length", "qwen35moe.attention.value_length",
+        "qwen35moe.expert_count", "qwen35moe.expert_used_count", "qwen35moe.expert_feed_forward_length",
+        "qwen35moe.expert_shared_feed_forward_length", "qwen35moe.ssm.conv_kernel", "qwen35moe.ssm.state_size",
+        "qwen35moe.ssm.group_count", "qwen35moe.ssm.time_step_rank", "qwen35moe.ssm.inner_size",
+        "qwen35moe.full_attention_interval", "qwen35moe.nextn_predict_layers",
+    };
+    for (const char* k : keys) {
+        const MetaValue* v = g.get(k);
+        if (!v) return std::string("missing ") + k;
+        if (!v->is_num()) return std::string(k) + " is not a number";
+    }
+    const MetaValue* nl = g.get("qwen35moe.block_count");
+    const MetaValue* mtp = g.get("qwen35moe.nextn_predict_layers");
+    if (mtp->u >= nl->u) return "qwen35moe.nextn_predict_layers is not smaller than qwen35moe.block_count";
+    if (g.get("qwen35moe.full_attention_interval")->u < 2)
+        return "qwen35moe.full_attention_interval must be at least 2 (the GDN / attention pattern)";
+    return {};
+}
+
+// ---- the model's geometry from its metadata, and the architecture guard (P1.S2).  The engine runs ONE
+// architecture, qwen4exp.  Its dimensions are read from the file (llama.cpp's key names under the arch prefix)
+// and then checked against the shape the kernels are compiled for (core/geometry.hpp), so a file of another
+// shape is refused with the key that differs rather than silently mis-run.
+
+/// Fills `g` from the metadata shard `f`.  Returns "" or the first problem.  Another architecture is refused by
+/// name first: its keys carry another prefix, and "missing qwen4exp.block_count" would hide what is wrong.  The six
+/// keys every qwen4exp file has carried since the first guard are required; any other key the file does not carry
+/// keeps the compiled value.  The keys that describe one thing twice (the interval and `compress_ratios`, the key
+/// and value head widths, the routed and shared expert widths) must agree.
+inline std::string read_geometry(const GgufFile& f, core::ModelGeometry& g) {
+    g = core::kCompiledGeometry;
+    const MetaValue* arch = f.get("general.architecture");
     if (!arch) return "missing general.architecture";
     if (arch->s != "qwen4exp") return "architecture is '" + arch->s + "', this engine requires 'qwen4exp'";
-    struct Req {
+    const std::string p = "qwen4exp.";
+    std::string err;
+    // an integer key into `out`: present and positive, or absent and not `required`
+    auto read_int = [&](const char* key, int64_t& out, bool required) {
+        const MetaValue* v = f.get(p + key);
+        if (!v) {
+            if (required) err = "missing " + p + key;
+            return !required;
+        }
+        if (!v->is_num() || v->type == MetaType::F32 || v->type == MetaType::F64 || v->type == MetaType::BOOL) {
+            err = p + key + " is not an integer";
+            return false;
+        }
+        if ((int64_t) v->u <= 0) {
+            err = p + key + " = " + std::to_string((int64_t) v->u) + ", it must be positive";
+            return false;
+        }
+        out = (int64_t) v->u;
+        return true;
+    };
+    struct Key {
         const char* key;
-        uint64_t want;
+        int64_t core::ModelGeometry::*field;
+        bool required;
     };
-    const Req reqs[] = {
-        {"qwen4exp.block_count", want.block_count},
-        {"qwen4exp.embedding_length", want.hidden},
-        {"qwen4exp.expert_count", want.experts},
-        {"qwen4exp.expert_used_count", want.experts_used},
-        {"qwen4exp.attention.head_count", want.head_count},
-        {"qwen4exp.attention.head_count_kv", want.head_count_kv},
+    const Key keys[] = {
+        {"block_count", &core::ModelGeometry::n_layers, true},
+        {"embedding_length", &core::ModelGeometry::n_embd, true},
+        {"expert_count", &core::ModelGeometry::n_expert, true},
+        {"expert_used_count", &core::ModelGeometry::n_expert_used, true},
+        {"attention.head_count", &core::ModelGeometry::n_head, true},
+        {"attention.head_count_kv", &core::ModelGeometry::n_head_kv, true},
+        {"full_attention_interval", &core::ModelGeometry::qsa_interval, false},
+        {"ssm.state_size", &core::ModelGeometry::ssm_state_size, false},
+        {"ssm.group_count", &core::ModelGeometry::ssm_k_heads, false},
+        {"ssm.time_step_rank", &core::ModelGeometry::ssm_v_heads, false},
+        {"ssm.conv_kernel", &core::ModelGeometry::ssm_d_conv, false},
+        {"ssm.inner_size", &core::ModelGeometry::ssm_value_dim, false},
+        {"attention.key_length", &core::ModelGeometry::head_dim, false},
+        {"rope.dimension_count", &core::ModelGeometry::n_rot, false},
+        {"attention.indexer.head_count", &core::ModelGeometry::idx_q_heads, false},
+        {"attention.indexer.key_length", &core::ModelGeometry::idx_key_dim, false},
+        {"attention.indexer.top_k", &core::ModelGeometry::idx_top_k, false},
+        {"hyper_connection.count", &core::ModelGeometry::hc, false},
+        {"hyper_connection.low_rank", &core::ModelGeometry::hc_lr, false},
+        {"expert_feed_forward_length", &core::ModelGeometry::n_ff, false},
     };
-    for (const auto& r : reqs) {
-        const MetaValue* v = g.get(r.key);
-        if (!v) return std::string("missing ") + r.key;
-        if (r.want && v->u != r.want)
-            return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
+    for (const Key& k : keys)
+        if (!read_int(k.key, g.*k.field, k.required)) return err;
+
+    int64_t value_length = g.head_dim, ff_shexp = g.n_ff;
+    if (!read_int("attention.value_length", value_length, false) ||
+        !read_int("expert_shared_feed_forward_length", ff_shexp, false))
+        return err;
+    if (value_length != g.head_dim)
+        return p + "attention.value_length = " + std::to_string(value_length) + " and attention.key_length = " +
+               std::to_string(g.head_dim) + ": the attention kernels use one head width for both";
+    if (ff_shexp != g.n_ff)
+        return p + "expert_shared_feed_forward_length = " + std::to_string(ff_shexp) +
+               " and expert_feed_forward_length = " + std::to_string(g.n_ff) +
+               ": the shared expert is read with the routed experts' width";
+    if (const MetaValue* v = f.get(p + "attention.layer_norm_rms_epsilon")) {
+        if (!v->is_num() || !(v->num() > 0)) return p + "attention.layer_norm_rms_epsilon must be a positive number";
+        g.rms_eps = v->num();
     }
-    return {}; // empty == ok
+    if (const MetaValue* v = f.get("tokenizer.ggml.tokens")) {
+        if (v->type != MetaType::ARRAY || v->count == 0) return "tokenizer.ggml.tokens is not a list of tokens";
+        g.n_vocab = (int64_t) v->count;
+    }
+
+    if (g.n_head % g.n_head_kv != 0)
+        return p + "attention.head_count = " + std::to_string(g.n_head) + " is not a multiple of head_count_kv = " +
+               std::to_string(g.n_head_kv);
+    // GDN's value heads are as wide as its key heads (the state is square)
+    if (g.ssm_value_dim != g.ssm_state_size * g.ssm_v_heads)
+        return p + "ssm.inner_size = " + std::to_string(g.ssm_value_dim) + ", but ssm.state_size x ssm.time_step_rank = " +
+               std::to_string(g.ssm_state_size * g.ssm_v_heads) + ": the GDN kernels take square heads";
+    g.ssm_conv_channels = 2 * g.ssm_state_size * g.ssm_k_heads + g.ssm_value_dim;
+    if (g.n_expert_used > g.n_expert || g.n_expert_used > 64)
+        return p + "expert_used_count = " + std::to_string(g.n_expert_used) + ", the router takes 1.." +
+               std::to_string(std::min<int64_t>(g.n_expert, 64)) + " of " + std::to_string(g.n_expert) + " experts";
+    if (g.n_rot > g.head_dim || g.n_rot > g.idx_key_dim || g.n_rot % 2)
+        return p + "rope.dimension_count = " + std::to_string(g.n_rot) + " is not an even slice of the head widths";
+
+    // The layer split, twice over: the interval, and a ratio per layer that is non-zero (the indexer's pooling
+    // block) exactly on the full-attention layers.
+    if (const MetaValue* v = f.get(p + "attention.compress_ratios")) {
+        if (v->type != MetaType::ARRAY || v->count != (uint64_t) g.n_layers || v->items.size() != v->count)
+            return p + "attention.compress_ratios must list one entry for each of the " + std::to_string(g.n_layers) +
+                   " layers";
+        // A list of zeros only is a converter's placeholder, not a layer split (#2396: orcarouter's
+        // Qwen3.8-Flash-Next-Uncensored GGUFs carry 48 zeros; 0.1.43 never read the key): it is treated as absent
+        // and the compiled pooling block is used.  A list with any non-zero entry is checked in full below.
+        bool given = false;
+        for (int64_t l = 0; l < g.n_layers && !given; ++l) given = v->items[(size_t) l].u != 0;
+        if (!given) {
+            static bool said = false;   // the guard runs several times in one process: one line
+            if (!said) {
+                said = true;
+                std::fprintf(stderr, "strata: %sattention.compress_ratios is all zeros (a converter's placeholder): "
+                                     "using the compiled pooling block of %lld cells (#2396)\n",
+                             p.c_str(), (long long) g.idx_block);
+            }
+            return {};
+        }
+        int64_t block = 0;
+        for (int64_t l = 0; l < g.n_layers; ++l) {
+            const int64_t r = (int64_t) v->items[(size_t) l].u;
+            if ((r != 0) != core::is_qsa_layer(g, l) || r < 0 || (block && r && r != block))
+                return p + "attention.compress_ratios[" + std::to_string(l) + "] = " + std::to_string(r) +
+                       ", but full_attention_interval = " + std::to_string(g.qsa_interval) + " makes layer " +
+                       std::to_string(l) + (core::is_qsa_layer(g, l) ? " full attention" : " linear attention") +
+                       (block && r ? " (and the other full-attention layers pool " + std::to_string(block) + ")" : "");
+            if (r) block = r;
+        }
+        if (block) g.idx_block = block;
+    }
+    return {};
+}
+
+/// Returns "" when the compiled kernels can run `g`, else the first metadata key whose value they are not
+/// compiled for.  Only the expert count and the experts per token are free (the router and the expert paths
+/// take them at run time); the vocabulary is free because the head and the embedding take their tensors' shapes.
+inline std::string geometry_unsupported(const core::ModelGeometry& g) {
+    const core::ModelGeometry& c = core::kCompiledGeometry;
+    struct Pin {
+        const char* key;
+        int64_t core::ModelGeometry::*field;
+    };
+    const Pin pins[] = {
+        {"block_count", &core::ModelGeometry::n_layers},
+        {"embedding_length", &core::ModelGeometry::n_embd},
+        {"full_attention_interval", &core::ModelGeometry::qsa_interval},
+        {"ssm.state_size", &core::ModelGeometry::ssm_state_size},
+        {"ssm.group_count", &core::ModelGeometry::ssm_k_heads},
+        {"ssm.time_step_rank", &core::ModelGeometry::ssm_v_heads},
+        {"ssm.conv_kernel", &core::ModelGeometry::ssm_d_conv},
+        {"ssm.inner_size", &core::ModelGeometry::ssm_value_dim},
+        {"attention.head_count", &core::ModelGeometry::n_head},
+        {"attention.head_count_kv", &core::ModelGeometry::n_head_kv},
+        {"attention.key_length", &core::ModelGeometry::head_dim},
+        {"rope.dimension_count", &core::ModelGeometry::n_rot},
+        {"attention.indexer.head_count", &core::ModelGeometry::idx_q_heads},
+        {"attention.indexer.key_length", &core::ModelGeometry::idx_key_dim},
+        {"attention.compress_ratios", &core::ModelGeometry::idx_block},
+        {"attention.indexer.top_k", &core::ModelGeometry::idx_top_k},
+        {"hyper_connection.count", &core::ModelGeometry::hc},
+        {"hyper_connection.low_rank", &core::ModelGeometry::hc_lr},
+        {"expert_feed_forward_length", &core::ModelGeometry::n_ff},
+    };
+    for (const Pin& pin : pins)
+        if (g.*pin.field != c.*pin.field)
+            return std::string("qwen4exp.") + pin.key + " = " + std::to_string(g.*pin.field) +
+                   ", the kernels are compiled for " + std::to_string(c.*pin.field);
+    // one constant in the norm kernels; the files carry it as an f32, so compare at f32 precision
+    if (std::abs(g.rms_eps - c.rms_eps) > 1e-6 * c.rms_eps) {
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "qwen4exp.attention.layer_norm_rms_epsilon = %g, the kernels are compiled for %g",
+                      g.rms_eps, c.rms_eps);
+        return buf;
+    }
+    return {};
+}
+
+/// The architecture guard: "" when the engine can read the model whose metadata shard is `f`.  Qwen3.8-Flash-Next
+/// (qwen4exp) is read and checked against the shape the kernels are compiled for; Qwen3.6-35B-A3B (qwen35moe) must
+/// carry every key its geometry is read from (core::geometry_from_gguf).
+inline std::string check_architecture(const GgufFile& f) {
+    const MetaValue* arch = f.get("general.architecture");
+    if (!arch) return "missing general.architecture";
+    const ModelFamily family = model_family_from_arch(arch->s);
+    if (family == ModelFamily::Qwen35Moe) return check_architecture_qwen35moe(f);
+    core::ModelGeometry g;   // anything else is refused by name by read_geometry
+    std::string err = read_geometry(f, g);
+    if (err.empty()) err = geometry_unsupported(g);
+    return err;
+}
+
+/// The engine's guard: `check_architecture`, then a family this engine has a path for.  A recognised family
+/// it does not run yet (Qwen3.6 on SYCL) is refused with a message that says so.
+inline std::string check_engine_architecture(const GgufFile& g) {
+    std::string err = check_architecture(g);
+    if (!err.empty()) return err;
+    return model_family_not_supported(model_family(g));
 }
 
 } // namespace strata

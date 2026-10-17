@@ -189,6 +189,27 @@ void format_round_trip(const std::string& dir, const k::PleFormatInfo& f, uint32
             f.dequant(raw.data(), f.needs_scale ? 0.75f : 1.0f, ref);
             CHECK(std::memcmp(tok + (size_t) h * k::PLE_HEAD_DIM, ref, sizeof ref) == 0, "%s: %s: gather head %d differs", f.name, name, h);
         }
+        // a prompt chunk: gather_batch over more rows than one prefetch window (4096), one of them past the table's end
+        {
+            const size_t nt = 700, nr = nt * 16;     // 11200 rows, three windows
+            std::vector<uint32_t> br(nr);
+            for (size_t i = 0; i < nr; ++i) br[i] = want[i % want.size()];
+            if (mode == k::PleIo::Mmap) br[5000] = rows + 7;   // out of range (mapped): zeros, as read_row gives
+            std::vector<float> bo(nr * k::PLE_HEAD_DIM);
+            std::string e2;
+            CHECK(t.gather_batch(br.data(), nt, bo.data(), e2), "%s: %s: gather_batch: %s", f.name, name, e2.c_str());
+            size_t bad = 0;
+            for (size_t i = 0; i < nr && !g_fail; ++i) {
+                if (br[i] >= rows) {
+                    for (int d = 0; d < k::PLE_HEAD_DIM; ++d) bad += bo[i * k::PLE_HEAD_DIM + d] != 0.0f;
+                    continue;
+                }
+                expected_row(br[i], f.row_bytes, raw.data());
+                f.dequant(raw.data(), f.needs_scale ? 0.75f : 1.0f, ref);
+                bad += std::memcmp(bo.data() + i * k::PLE_HEAD_DIM, ref, sizeof ref) != 0;
+            }
+            CHECK(bad == 0, "%s: %s: gather_batch differs in %zu rows", f.name, name, bad);
+        }
     }
     std::filesystem::remove(path);
 }
@@ -221,9 +242,89 @@ void bad_sizes_are_refused(const std::string& dir) {
     }
 }
 
+// #2622 (reported by @hotschmoe): gather_batch matched the prefetched tokens by position, so a prefetch of A..F
+// gathered as D,E,F,A,B,C (or A gathered as A,A,A) issued a second ticket for rows that were already in flight.
+// Every case: the bytes equal the mapped reader's, and the requested-row counter says how many rows were re-read.
+void prefetched_keys_are_reused(const std::string& dir) {
+    const k::PleFormatInfo* fmt = nullptr;
+    for (int i = 0; i < k::ple_format_count(); ++i)
+        if (std::string(k::ple_formats()[i].name) == "IQ4_NL") fmt = &k::ple_formats()[i];
+    if (fmt == nullptr) { CHECK(false, "no IQ4_NL format"); return; }
+    const std::string path = write_format_table(dir, *fmt, 4096);
+    if (path.empty()) { CHECK(false, "cannot write the prefetch table"); return; }
+    struct Case { const char* name; std::vector<int> pre, want; uint64_t extra_rows; };
+    std::vector<int> seventeen;
+    for (int i = 0; i < 17; ++i) seventeen.push_back(i);
+    const std::vector<Case> cases = {
+        {"ordered", {0, 1}, {0, 1}, 0},
+        {"permutation", {0, 1, 2, 3, 4, 5}, {3, 4, 5, 0, 1, 2}, 0},
+        {"subset", {0, 1, 2, 3, 4, 5}, {4, 1}, 0},
+        {"duplicates", {0}, {0, 0, 0}, 0},
+        {"duplicate prefetch", {0, 0, 1}, {0, 1}, 0},
+        {"missing key", {0, 1}, {0, 2}, 32},
+        {"extra prefetch", {0, 1, 2}, {1}, 0},
+        {"none", {0}, {}, 0},
+        {"over the window", {0, 1}, seventeen, 17u * k::PLE_N_HEADS},
+        {"window overflow", seventeen, {16}, 0},
+    };
+    const auto keys = [](const std::vector<int>& ids) {
+        std::vector<uint32_t> r;
+        for (int id : ids) for (int h = 0; h < k::PLE_N_HEADS; ++h) r.push_back((uint32_t) (id * 32 + h));
+        return r;
+    };
+    const auto requests = [](const k::PleTable& t) {
+        unsigned long long n = 0;
+        const std::string s = t.io_report();
+        return std::sscanf(s.c_str(), "ple io: %llu rows", &n) == 1 ? (uint64_t) n : ~0ull;
+    };
+    const size_t tok = (size_t) k::PLE_N_HEADS * k::PLE_HEAD_DIM;
+    std::vector<std::vector<float>> refs(cases.size());
+    {
+        k::PleTable mapped;
+        k::PleIoOptions mio;
+        mio.mode = k::PleIo::Mmap;
+        std::string err;
+        if (!mapped.open(path, err, mio)) { CHECK(false, "mapped open: %s", err.c_str()); return; }
+        for (size_t c = 0; c < cases.size(); ++c) {
+            const auto r = keys(cases[c].want);
+            refs[c].resize(cases[c].want.size() * tok);
+            CHECK(mapped.gather_batch(r.data(), cases[c].want.size(), refs[c].data(), err), "mapped gather: %s", err.c_str());
+        }
+    }
+    for (uint64_t cache : {uint64_t(0), uint64_t(256)}) for (bool worker : {false, true}) {
+        for (size_t c = 0; c < cases.size(); ++c) {
+            k::PleTable t;
+            k::PleIoOptions io;
+            io.mode = k::PleIo::Direct;
+            io.cache_rows = cache;
+            io.io_thread = worker;
+            io.max_inflight = 8;
+            io.keepalive_ms = 0;
+            std::string err;
+            if (!t.open(path, err, io)) { CHECK(false, "direct open: %s", err.c_str()); return; }
+            const auto pr = keys(cases[c].pre), wr = keys(cases[c].want);
+            for (size_t i = 0; i < cases[c].pre.size(); ++i) t.prefetch_rows(pr.data() + i * k::PLE_N_HEADS);
+            const uint64_t rq = requests(t), by = t.bytes_read();
+            const float sentinel = -12345.5f;
+            std::vector<float> out(refs[c].size() + 2, sentinel);
+            const bool ok = t.gather_batch(wr.data(), cases[c].want.size(), out.data() + 1, err);
+            CHECK(ok, "%s (cache %llu worker %d): %s", cases[c].name, (unsigned long long) cache, (int) worker, err.c_str());
+            CHECK(requests(t) - rq == cases[c].extra_rows, "%s (cache %llu worker %d): %llu rows re-requested, want %llu",
+                  cases[c].name, (unsigned long long) cache, (int) worker, (unsigned long long) (requests(t) - rq),
+                  (unsigned long long) cases[c].extra_rows);
+            CHECK(t.bytes_read() - by == cases[c].want.size() * k::PLE_N_HEADS * fmt->row_bytes, "%s: bytes_read", cases[c].name);
+            CHECK(refs[c].empty() || std::memcmp(out.data() + 1, refs[c].data(), refs[c].size() * sizeof(float)) == 0,
+                  "%s (cache %llu worker %d): bytes differ from the mapped reader", cases[c].name, (unsigned long long) cache, (int) worker);
+            CHECK(out.front() == sentinel && out.back() == sentinel, "%s: wrote outside the output", cases[c].name);
+        }
+    }
+    if (g_fail == 0) std::printf("ple prefetched-key reuse (reordered, duplicated, subset), Direct vs Mmap bytes: OK\n");
+}
+
 void all_formats_round_trip(const std::string& dir) {
     bf16_widening_is_exact();                      // BF16's own claim: a shift, exact for every pattern
     bad_sizes_are_refused(dir);
+    prefetched_keys_are_reused(dir);
     CHECK(k::ple_format_count() > 0, "no formats");
     for (int i = 0; i < k::ple_format_count(); ++i) {
         const k::PleFormatInfo& f = k::ple_formats()[i];

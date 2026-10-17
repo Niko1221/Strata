@@ -64,6 +64,9 @@ struct ForesightSwap {
     uint64_t hits = 0, copies = 0, busy = 0, over_budget = 0, pending = 0, predicted = 0;   // (under smu_)
     bool verify = false;                     ///< STRATA_FS_VERIFY=1: read every landed slot back and compare (slow, tests)
     uint64_t verify_ok = 0, verify_bad = 0;
+    uint64_t dropped = 0;                    ///< slots dropped because an exchange moved their expert's bytes (under smu_)
+    static constexpr int16_t kHeld = -2;     ///< `where`: an exchange is moving this expert's bytes, no copy now (#2134)
+    static constexpr int32_t kDropped = -2;  ///< Slot::expert: dropped by `hold`, reusable under the same depth rule
 
     /// Allocates the slots on each card and starts the filler.  `card_of_layer[l]` indexes `devices` (CUDA ids).
     bool init(int slots_per_layer, int64_t layers, int64_t experts, const std::vector<int>& card_of_layer,
@@ -79,6 +82,12 @@ struct ForesightSwap {
     /// with note_miss (the same slots, budget and reuse rule); a prediction only ever moves bytes, the plan is still made
     /// by the host pool and the model's own router stays authoritative.
     void predict(ExpertSource* src, int64_t layer, int32_t expert);
+    /// #2134: the adaptive tier moves this expert's bytes in the RAM copy (an exchange, its two halves or a rotation),
+    /// so a copy issued from its old place may land holding another expert's bytes.  Its slot is dropped (never served;
+    /// refilled only once `depth` windows finished, like any slot a window may still read; a copy in flight finishes
+    /// first) and no copy of it is issued until `unhold`, when its bytes sit at their new place.  Any thread.
+    void hold(int64_t layer, int32_t expert);
+    void unhold(int64_t layer, int32_t expert);
     std::string report() const;
 
 private:

@@ -42,7 +42,9 @@ the kernel's amdgpu driver (no ROCm install needed):
 - **hipBLASLt tuning table:** setup uses `tools/hip/<arch>-hipblaslt-<version>.txt` only when it matches both the
   card's architecture and the installed hipBLASLt version (read from `hipblaslt-version.h`; 1.2.0 is `100200`).
   Otherwise it says so and the prompt's dense matrix products use plain hipBLAS (slower prompts, same answers).
-  A table's solution ids are valid only for that pair, and the engine refuses any other table.
+  A table's solution ids are valid only for that pair, and the engine refuses any other table. On gfx103x (RDNA2,
+  no hipBLASLt kernels) the same role falls to a rocBLAS table, `tools/hip/<arch>-rocblas-<version>.txt`, which the
+  engine picks for its own rocBLAS build when setup points it at the directory ([RDNA2](#rdna2-gfx1030)).
 - **Several cards:** setup takes one card (the one with the most VRAM, or `--gpu N`) unless you name more:
   `./setup.sh --backend hip --gpus 1,0` splits the model's layers across them, the first one the main card (numbers
   as setup lists them; `--gpus all` = every supported card, the most VRAM first). Every chosen card must be one of the
@@ -66,7 +68,7 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   Adrenalin Edition](https://www.amd.com/en/support/download/drivers.html)). Nothing else: no ROCm or HIP SDK
   install, no compiler, no admin rights.
 - **Detection:** setup reads the display adapters Windows lists (their PCI ids; the VRAM size from the display
-  driver's registry entry). An integrated Radeon is listed as not supported, except the Ryzen AI Max "Strix Halo" (Radeon 8060S / 8050S / 8040S, gfx1151: [STRIX_HALO.md](STRIX_HALO.md)); a Strix Point (890M / 880M, gfx1150), Krackan (860M / 840M, gfx1152) or Phoenix / Hawk Point (780M / 760M, gfx1103) Radeon is named as what it is and not supported.
+  driver's registry entry). An integrated Radeon is listed as not supported, except the Ryzen AI Max "Strix Halo" (Radeon 8060S / 8050S / 8040S, gfx1151: [STRIX_HALO.md](STRIX_HALO.md)); a Strix Point (890M / 880M, gfx1150), Krackan (860M / 840M, gfx1152) or Phoenix / Hawk Point (780M / 760M, gfx1103) Radeon is named as what it is and not supported (on Linux the 780M / 760M has an opt-in build: [RADEON_780M.md](RADEON_780M.md)).
 - **Engine:** the ready-made `strata-windows-x64-hip.zip` from the release (built by `tools\hip\build_windows.bat`
   for gfx1100, gfx1101, gfx1102, gfx1200, gfx1201, gfx1030 and, from 0.1.40, gfx1151 (Strix Halo, unvalidated on Windows)) goes into `engine\`. It carries the ROCm libraries the
   engine loads (`engine\rocm\bin`: the HIP runtime, hipBLAS / rocBLAS / hipBLASLt with their kernels for these cards,
@@ -153,6 +155,64 @@ pinned by this repository. For an offline build, point `STRATA_GGML_DIR` at a
 checkout of that exact revision; using an arbitrary newer checkout changes the
 dependency being tested.
 
+## Opt-in chunked prompt GDN on gfx11
+
+`STRATA_GDN_CHUNKED=1` runs the prompt's gated DeltaNet recurrence in 16-token chunks on the gfx11 matrix cores,
+with FP16 operands and FP32 accumulation, and fuses the output norm. It is off by default: rounding differs from
+the token-by-token FP32 recurrence. The CUDA switch of the same name uses a separate FP32 implementation.
+
+The HIP path accepts gfx1100, gfx1101, gfx1102, gfx1150 and gfx1151, and prompt chunks of at least 64 tokens.
+Other cards, shorter chunks, an output row stride not divisible by eight, and `STRATA_GDN_REC_HEADS` use the
+existing recurrence. Runtime measurements and numerical checks were run on gfx1151 only; building for another
+target does not validate its speed or answers. The synthetic test compares the FP16 output and carried FP32 state
+against the existing recurrence, and short cases against a double-precision CPU calculation. It covers partial
+chunks, padded rows, weak decay and a split request; the off/default tests require identical output and state bits.
+It does not establish model answer equivalence.
+
+`STRATA_GDN_CHUNKED=2`, which on CUDA skips the SM-count test, is the same as 1 here.
+
+Measured on a Ryzen AI Max+ 395 (gfx1151, ROCm 7.14.1), UD-IQ4_XS. One layer's recurrence and norm take 1.60x less time than
+gfx1151's default kernels at 16K and 32K tokens (`hip_gdn_chunked --bench` against `--bench-default`, three runs each: 20.92 ->
+13.11 ms at 16K, 42.14 -> 26.30 ms at 32K). A whole prompt: the same binary with only this switch changed, a fresh engine per
+side, 11 pairs in alternating order after a discarded one, the engine's `prompt_ms`, every prompt read in full (no reused
+tokens). Each engine reads a discarded 4K prompt first, because the first prompt after a start varies more (on those first
+prompts the same pairs gave 95% intervals of [1.004, 1.032] and [0.981, 1.015]); the prompts follow each other once
+`/proc/vmstat`'s page-migration and direct-reclaim counters have stood still for 3 s, and a pair in which either prompt still
+met page migration or direct reclaim was dropped and measured again (3 of the 69 pairs, all 32K with the switch on; kept in, 32K
+gives 1.020 and 1.015). "Section 5" is the nine variables of `STRIX_HALO.md` section 5 (with `STRATA_PF_SWITCH_MIN_T=2048`);
+"defaults" is the engine without them (section 4's gfx1151 defaults stay). Times are medians; the ratio is the geometric mean of
+the 11 off / on ratios with a 95% bootstrap interval; "faster" counts the pairs in which the switch was faster:
+
+| tokens | arm | off -> on | off / on | faster |
+|---:|---|---:|---:|---:|
+| 4,096 | section 5 | 3.703 -> 3.641 s | 1.018 [1.016, 1.020] | 11 of 11 |
+| 4,096 | defaults | 5.914 -> 5.829 s | 1.014 [1.010, 1.017] | 10 of 11 |
+| 32,768 | section 5 | 26.157 -> 25.589 s | 1.021 [1.020, 1.023] | 11 of 11 |
+| 32,768 | defaults | 44.082 -> 43.479 s | 1.015 [1.012, 1.017] | 11 of 11 |
+| 128,000 | section 5 | 107.149 -> 104.866 s | 1.021 [1.020, 1.023] | 11 of 11 |
+| 128,000 | defaults | 193.439 -> 191.055 s | 1.014 [1.012, 1.016] | 11 of 11 |
+
+So about 2% on top of section 5 and about 1.5% on the defaults. At 36 gated-DeltaNet layers the layer figures predict about
+0.56 s for a 32K prompt; 0.57 s (section 5) and 0.60 s (defaults) were measured.
+
+First-token KL against the same run without the switch, 12 prompts of 1.5K-24K tokens: UD-IQ4_XS 0.0067 mean (0.044 max) on the
+defaults and 0.0039 (0.027) on top of section 5; UD-Q4_K_XL 0.0063 (0.043) and 0.0040 (0.014); the same top token in all of
+them (across the 12 prompts the first token takes only two distinct values). Section 5's switches alone are 0.0068 (IQ4_XS) and
+0.0031 (Q4_K_XL) against the defaults, a different change that is listed for scale and not as a limit for this one. Only the
+first generated token was compared: a long generation and perplexity were not measured.
+
+Build and run these checks in the HIP build directory:
+
+```sh
+cmake --build build-hip --target hip_gdn_chunked hip_gdn_rec_head
+ctest --test-dir build-hip -R 'hip_gdn_(chunked|rec_head)' --output-on-failure
+for i in 1 2 3; do ./build-hip/hip_gdn_chunked --bench-default; ./build-hip/hip_gdn_chunked --bench; done
+```
+
+Each benchmark run reports the GPU-event median of seven runs after two warmups, the same nonzero initial state every run:
+`--bench` this path, `--bench-default` gfx1151's default kernels (`STRATA_GDN_PP=2`, `STRATA_GDN_NOY=1`). The switch is read
+once per process, so the two are separate runs. It times one layer's recurrence and norm, not a whole prompt.
+
 ## Model and serving configuration
 
 Prepare a supported model pack and its MTP runtime using the existing tools.
@@ -214,7 +274,18 @@ machine). Windows HIP: the doorbell kernels fence their store (#697), and the sh
 that default stays. The measurements disagree by platform. 2x RX 6900 XT on Linux (#1272): turning it off costs 5-13%
 of decode (one card 47.5 / 46.9 / 48.3 -> 50.5 / 48.5 / 51.3 tok/s with it on). RX 6800 on Windows (#816,
 `bench/results/2026-10-04-community-rx-6800-windows`): on was 12-22% slower. 4x R9700: fork off was 13-45% faster.
-Linux RX 6000 users can try `STRATA_SH_STREAM=1`; the output is identical either way.
+Linux RX 6000 users can try `STRATA_SH_STREAM=1`; the output is identical either way. Since the same card goes
+both ways on different PCs, `./setup.sh --calibrate` measures it on yours (off against on, a restart each) and writes
+`STRATA_SH_STREAM=1` into the config's `"env"` only when it wins by more than 3%; a later calibration that finds it no
+longer faster removes it again.
+
+**The draft's side stream (`STRATA_MTP_SIDE_STREAM`):** HIP does not use the MTP drafter's branch stream, and since
+0.1.40.2 it does not create it (#1240: an R9700 lost prompt speed with it). gfx103x is the exception and creates it: on
+an RX 6800 under Windows (`STRATA_HIP_PROMPT_F16=1`, IQ3_XXS, two runs each) a 7.9K-token prompt reads at 798-808 tok/s
+with the stream and 584-596 without, and a 30.4K-token one at 855-863 against 553-600; `STRATA_PREFILL_TIMING=1` puts
+the whole difference in the "wait copy" phase (3,081 -> 75 ms and 12,642 -> 288 ms). Decode and the output are the same.
+`STRATA_MTP_SIDE_STREAM=0` turns it off on gfx103x, `=1` creates it on another HIP card. Measured on one card and one
+OS; a Linux gfx103x number is welcome.
 
 **Long prompts on a big card: check the lend-coverage line (#1389, measured by the reporter on an RX 7900 XTX, gfx1100,
 v0.1.40.2, 50 GB RAM).** With `--resident-experts` the prompt path borrows cache slots, and the experts of those slots
@@ -232,6 +303,28 @@ numbers, not re-measured here): `STRATA_PF_FUSED=1 STRATA_PF_GEMM=1 STRATA_PF_SW
 only when its version matches the installed library; otherwise it prefills on plain hipBLAS (about 45% slower for a 131K
 prompt), so keep the table and the library paired. Not worth trying (measured flat): `--kv-resident` changes, a prefill
 chunk above 32768, `--spec` above 4.
+
+## Exact long-prompt QSA scorer (gfx1100 opt-in, gfx12 default)
+
+`STRATA_SCORES_THREAD=1` at engine startup enables a HIP port of #1825's score kernel on gfx1100, for batches of
+at least 64 queries with at least 16,385 live index blocks. On gfx12 (RDNA4) it is on by default for those batches and
+`STRATA_SCORES_THREAD=0` turns it off (0.1.45): on an R9700 `qsa_scores_gfx1100_parity --full` compares 223,664,777 scores and
+11,895,800 ids bitwise equal to the warp scorer, the scorer stage with 256 queries is 3.6x faster at 131K and 4.0x at 240K, and a
+fresh prompt of 131K tokens reads 8.7% faster (4 of 4 pairs) and one of 230K tokens 16.4% faster (3 of 3), with the same answer tokens and byte-identical `exact_pp` residual dumps at 70K and 131K tokens (prompts under 65K cells never reach the bound). The default, short-prompt and decode paths keep the
+existing scorer. On one RX 7900 XTX / 7950X3D / ROCm 10.0.0, three paired runs of a tuned 0.1.40.3 engine reduced
+fresh one-token request time by 10.45% at 130,978 prompt tokens and 22.64% at 239,906; one same-binary current-main
+pair measured 12.85% and 21.71%. Cached follow-ups did not show a repeatable large gain, and a two-task coding pilot
+was 3.27% slower overall. This is opt-in, not a general coding-speed recommendation. The
+[report, per-run data and standalone score/ID check](../bench/results/2026-10-11-gfx1100-qsa-scores/README.md)
+give the settings, exact-parity checks and limits. `STRATA_SCORES_THREAD_TRACE=1` prints an engagement line.
+
+## Deep contexts: the prompt's top-k selection (0.1.45, #1749)
+
+Past ~135K cells (and from ~90K cells on a prompt read) the prompt's top-k selection runs the wide kernel, as on CUDA, instead of the four-pass
+reference radix that every deep context on HIP paid; the same ids (`qsa_select_bench` compares them with the reference). On an R9700 the
+selection of a 256-query batch is 0.29 -> 0.21 ms at 98K, 1.16 -> 0.49 ms at 262K and 22.0 -> 0.93 ms at 524K; a fresh prompt reads 1.3% faster at
+230K tokens and 34% faster at 500K (716 -> 962 tok/s; 1,284 tok/s with the exact scorer above, 79% in all), with the same answer tokens.
+`STRATA_TOPK_OLD=1` runs the original kernel, `STRATA_TOPK_STREAM=0` the register kernel in the 90K-135K band.
 
 ## Linux: verify timeouts while the kernel reclaims host memory (experimental workarounds)
 
@@ -432,7 +525,10 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   N = 10240, T = 7313, K = 2560). `STRATA_HIP_PROMPT_F16=1` (opt-in, off by default; the engine prints a tip on gfx103x) runs the 16-bit prompt GEMMs FP16 in and out;
   unset is the old path. `STRATA_DBG_NAN=1` also counts the non-finite FP16 outputs (a sum past 65504). The output is not bit-identical to it (an FP16 rounding of each GEMM's output replaces the BF16 rounding of
   the BF16 GEMMs' activations); what the distribution check showed and did not show is in
-  [bench/results/2026-10-04-rdna2-fp16-prompt](../bench/results/2026-10-04-rdna2-fp16-prompt/README.md). Measured on a
+  [bench/results/2026-10-04-rdna2-fp16-prompt](../bench/results/2026-10-04-rdna2-fp16-prompt/README.md). FP16 ends at
+  65504: `STRATA_F16_RANGE=1` prints, per prompt, the largest value that entered or left FP16 and how many were beyond
+  the range (466K tokens there: outputs peak at 410, activations at 112, none beyond; the image writers saturate, a GEMM
+  output beyond the range would be Inf and is what the counter is for). Measured on a
   second community machine - 2x RX 6900 XT 16 GB (one card for these numbers), Ryzen 5 5600X (6 cores, AVX2), 128 GB,
   Ubuntu 26.04, ROCm 10.0.0, engine 0.1.39 built by hand with `-DSTRATA_PREFILL_MMQ=ON` as setup does, GSQ-RCO IQ3_S:
   a 9.4K / 34.7K / 105.8K-token prompt reads at 744 / 915 / 926 tok/s instead of 439 / 466 / 461; decode is unchanged.
@@ -440,6 +536,82 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   matrix cores; `hip_prefill_hipblaslt_gemm`, no hipBLASLt table) and 3 that fail for reasons outside the engine
   (`ple_parity` needs a Q2_0 PLE file that is not on that machine, `expert_multi_test` refuses the CPU without AVX-512,
   `platform_memory_test` cannot `mlock` at the shell's default `ulimit -l`).
+- **The verifier's hyper-connection read as one persistent kernel:** `STRATA_HC_PERSIST=1` (opt-in, HIP, 32-lane
+  waves) runs the read of 1-8 tokens as one kernel of 80 blocks with two grid barriers instead of three launches; a
+  start-up run per token count with a barrier timeout decides where it is resident, and one `strata hc:` line per card
+  says so. On 2x RX 6900 XT (ROCm 10.0, layer split): the read 1.35-2.10x, ms per verify window -4.2 % / -2.8 % at
+  4K / 32K (6 rounds), not bit-identical (as close to a double-accumulation reference as the default read):
+  [bench/results/2026-10-12-hc-persist-gfx1030](../bench/results/2026-10-12-hc-persist-gfx1030/README.md). Other
+  RDNA cards are untested; the `strata hc:` line and a `STRATA_DECODE_TIMING` run from one are welcome. Not offered on gfx11 and
+  gfx12 (RDNA3, RDNA4): the barrier timeout needs `s_memrealtime`, which gfx1100 and gfx1200 / gfx1201 do not have, and an R9700 (#2226 thread) measured the
+  read +0.7 % / +1.0 % per window slower than the default one; the start-up line says so. A barrier that times out at run time
+  (never seen in a working run) leaves the partial outputs of that read in place and every later persistent read of the
+  process aborts at once, without a log line; the opt-in is for measurement on gfx103x until that is closed.
+- **Prompt GEMMs as SGEMMs (engine 0.1.39 + `Gemm::rdna2_sgemm`):** the rocBLAS in setup's ROCm (10.2.0a20260930)
+  has tuned gfx1030 kernels for FP16 -> FP16, int8 and FP32 -> FP32 only. The prompt path's dense GEMMs take FP16 or
+  BF16 inputs and write FP32 (rocBLAS's HS / BS types), which run its fallback kernels at about 5 TFLOPS. With
+  `STRATA_RDNA2_SGEMM=1` (opt-in; `=all` forces it on any AMD card) the engine widens both inputs to FP32 (exact) and runs SGEMM,
+  which accumulates in FP32 like the native call (`src/prefill/gemm.cu`; N < 64 keeps the native call). The author ran it
+  as the gfx103x default; here it is a switch because it is not bit-identical to the native call (below). Measured on an RX 6800 16 GB over OCuLink (PCIe 4.0 x4, 7.1 GB/s), Ryzen 7 8845HS, 28.8 GB RAM, Windows 11,
+  Coder IQ1_M with setup's arguments (64K context, MTP), fresh 12K-token prompts, 4 per arm, A/B in one binary:
+
+  | | native GEMMs | SGEMM route |
+  |---|---|---|
+  | prompt | 312 tok/s | 452 tok/s |
+  | prompt GPU timeline (`STRATA_PREFILL_TIMING`) | 37.2 s | 25.5 s |
+  | of which gdn / qsa proj / hc read | 9.4 / 3.6 / 3.85 s | 2.8 / 1.4 / 2.84 s |
+  | decode | 29-34 tok/s | 29-35 tok/s |
+
+  The exact calls on the card (opA = T, opB = N, FP32 out): N 10240 x T 8192 x K 2560 86.7 -> 27.7 ms including
+  the widening; N 320 x T 8192 x K 10240 (BF16) 10.9 -> 7.5 ms. Against a float64 reference on random inputs in
+  [-1, 1], the SGEMM route is as close as or closer than the native call on all 10 FP16 / BF16 shapes checked; the
+  two differ by at most 4.3e-6 of the largest output. A 9-task code-repair benchmark (the model patches seeded bugs
+  in a browser game until 38 browser checks pass) solved 9/9 on the first try with both, model time 458 -> 374 s.
+  With the switch on and `STRATA_HIP_PROMPT_F16` unset the SGEMM route runs; with `STRATA_HIP_PROMPT_F16=1`
+  the FP16 route above runs first and the SGEMM route takes the products it leaves (`beta != 0`). Same RX 6800, one
+  session, fresh 12K-token prompts: native 310, SGEMM 439, FP16 (#835) 494 tok/s; `STRATA_F16_RANGE=1` on the Coder
+  IQ1_M peaked at 105.3 (activations) and 424.8 (FP16 outputs) with nothing beyond 65504, and the repair benchmark
+  solved 9/9 on the first try with both (model time 374 s SGEMM, 307 s FP16). The SGEMM route is the slower of the
+  two; no value passes through FP16, so it has no 65504 limit to stay under. It is not bit-identical to the native
+  call (at most 4.3e-6 of the largest output apart), which can flip a near-tied greedy token like any such change.
+- **rocBLAS solution table** (for the `STRATA_HIP_PROMPT_F16=1` route above; with it off, nothing runs through the
+  table): rocBLAS picks the kernel for each of those FP16 GEMMs from its own table by shape, and
+  on gfx1030 that pick is far from the best kernel the library holds for some shapes: the GDN input projection
+  (N = 10240, K = 2560) below about 1,150 tokens runs at 5 TFLOPS where the best of rocBLAS's own 237 solutions for the
+  same shape runs at 32-38 (7x; the kernel choice flips at T = 1152). `tools/hip/tune_rocblas` enumerates the library's
+  solutions per shape and token bucket, checks each against the default kernel's output and writes the winners as
+  `tools/hip/<arch>-rocblas-<version>.txt`; the engine reads the table through `STRATA_ROCBLAS_TUNING` (a file, or
+  the directory, from which it takes the file of its own rocBLAS build) and runs those solutions in place of rocBLAS's
+  choice, the default kernel for every shape without a row. Solution indices are valid for one architecture and one
+  rocBLAS build (the full version string, `5.6.0.8d1ae90e` for ROCm 10.0.0's), and the engine refuses any other
+  table. Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setup installs on Ubuntu), measured
+  on an RX 6900 XT. Other gfx1030 cards (RX 6800 / 6800 XT / 6950 XT, Radeon PRO W6800 / V620) run it as well - the
+  indices are valid on every gfx1030 - but have fewer CUs or other clocks, so their own table may pick differently;
+  `tune_rocblas` makes one in about 5 minutes ([Tuning table](#tuning-table)), and a report of what it changed is welcome. Setup
+  points the engine at the directory when a table for the card's architecture exists, and the engine's log says
+  `rocBLAS tuning enabled (... rows ...)` or why not. Measured on the 2x RX 6900 XT machine above (one card, #835 +
+  this, `STRATA_PREFILL_TIMING=1`, temperature 0, the same answers with and without): a 799-token prompt's GPU time
+  3,329 -> 2,985 ms (the GDN projections 443 -> 177 ms, `hc read` 270 -> 77), 495 tokens 2,477 -> 2,139 ms (365 ->
+  146), 8,874 tokens 11,978 -> 11,459 ms (the 682-token tail chunk's projections, `hc read` 1,200 -> 898); a
+  1,108-token prompt did not change (3,391 -> 3,395 ms): its GDN time fell 598 -> 201 ms and the whole saving
+  reappeared as `wait copy`, the experts' PCIe transfer, which bounds that prompt. Per-run lines and the tuner's
+  summary: [bench/results/2026-10-05-rdna2-rocblas-table](../bench/results/2026-10-05-rdna2-rocblas-table/README.md). Decode does not use these GEMMs and is unchanged. See [Tuning
+  table](#tuning-table) for making a table for another rocBLAS build.
+- **QSA block scores on the FP32 tiled scorer (`STRATA_SELECT_SIMT=1`, opt-in, as on CUDA below sm_80):** without
+  matrix cores the prompt path's QSA selection scores every (query, KV block) pair on the warp kernel, the one prompt
+  term that grows with the context. The switch runs the FP32 tiled scorer instead (FP32 in another summation order:
+  not bitwise the warp kernel, so off by default), tiled 32/128/16/8 on gfx103x. `qsa_select_bench`, 256 queries:
+  2.69 -> 0.587 ms at 128K (the original 32/64/32/4 tiling: 0.695), 0.67 -> 0.169 ms at 32K; FP64 gate passed,
+  selections identical 256/256. Every tiling gives the same bytes (each score is one fmaf chain over k in order), and
+  the fastest tiling was the same with 60 and 72 of the card's 80 CUs (`HSA_CU_MASK`). On the 2x RX 6900 XT split
+  (0.1.40.3, IQ3_S, `--kv int8 --kv-resident 32768`, two cold starts per arm, ABBA) a 128K-token prompt reads 1,735 ->
+  1,861 and 1,727 -> 1,858 tok/s (+7.4%), 32K +0.8%; decode is not affected (the text changes with the scores' order,
+  so its speed is not compared). Measurements:
+  [bench/results/2026-10-07-rdna2-qsa-select-simt](../bench/results/2026-10-07-rdna2-qsa-select-simt/README.md).
+- **File-tier cache rule on gfx906 (`STRATA_FILE_CACHE_OLD_RULE`):** on an MI50 ROCm queues are suspended while the kernel reclaims around the process's HMM-tracked arena (#1752, KevinX8: stalls, prompt 46 -> 360 tok/s once the file tier stops churning the page cache). The gfx906 backend therefore keeps the old rule (the file cache is used only when the room left is at least the bytes read from the files); other HIP cards keep the current rule. `STRATA_FILE_CACHE_OLD_RULE=1` forces the old rule on any Linux build, `=0` the current one.
+- **Windows** (the report above): setup's ready-made Windows engine 0.1.39 runs the RX 6800 beside a 780M iGPU
+  (HIP numbers the RX 6800 1; setup points the engine at it), and `tools/hip/build_windows.bat` with
+  `STRATA_HIP_ARCHS=gfx1030` builds a working engine from the `gfx103X-all` 10.2.0a20260930 wheels.
 - **gfx1031** (RX 6700 XT, #524): setup knows it (the `gfx103X-all` wheels, unvalidated); its reporter runs it daily
   on one card. More reports: an RX 6700 XT 12 GB run as gfx1030 on ROCm 7.2.4 (#1027: IQ2_XS, decode 30-32 tok/s, prompt about 300 tok/s, 6 of 6
   needles), and an RX 6800M 12 GB on Windows with a self-built engine (#915, #1078: Q2_0, decode 9-27 tok/s, prompt 50-114 tok/s; the
@@ -458,7 +630,11 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   `-DCMAKE_HIP_ARCHITECTURES=gfx1152` builds with a warning. It runs the portable kernels (the matrix-core guards name
   gfx1150 and gfx1151 only), no card has reported on it, and setup does not install for it (an integrated Radeon other
   than Strix Halo is named and not supported). A report from a real 860M is welcome.
-- **Not validated:** gfx1032 (the same `dp4a` path, no hardware report), setup's own build path and the
+- **gfx1032** (RX 6600/6600 XT): unvalidated; built with `STRATA_HIP_ARCHS=gfx1030;gfx1032` and ran under Windows as
+  the *helper* expert GPU of an RX 6800 ([SECOND_GPU.md](SECOND_GPU.md)), 3.4-3.8k expert slots in its 8 GB and
+  +8-18% decode over the 6800 alone. Its 14 WGP make a helper row about 2-3x the 6800's cost, so it pays as a
+  cache tier for the CPU pool, not as a compute peer. No report of it as a primary card.
+- **Not validated:** setup's own build path and the
   `gfx103X-all` wheels on gfx1030, images, answer-quality benchmarks. RDNA1 (gfx1012, RX 5500 XT) builds by hand:
   [OLDER_GPUS.md](OLDER_GPUS.md#amd-building-gfx906-and-gfx1012).
 
@@ -595,6 +771,20 @@ Shipped tables:
   no fallbacks over prompts of 28-7,880 tokens. Setup does not use it (it does not install for gfx1150): point
   `STRATA_HIPBLASLT_TUNING` at it. Measurements and the per-row timings:
   [bench/results/2026-10-07-community-gfx1150](../bench/results/2026-10-07-community-gfx1150/README.md).
+- `gfx1103-hipblaslt-100401.txt`: Radeon 780M (gfx1103, RDNA3, 12 CUs, unified memory), calibrated with ROCm 10.1
+  (`rocm/dev-ubuntu-24.04:10.1.0-full`, hipBLASLt 1.4.1, version number 100401) and the engine's 32 MiB workspace. The
+  16 dense GEMM geometries a Qwen3.8-Flash-Next prompt logs on the card at T = 64, 128, ..., 16384: 144 cases, two
+  `tune_hipblaslt` passes back to back, each row the solution with the lowest median of all six repetitions. One row
+  is left out (`bf16 N=1 K=2560 T=64`: no candidate beat plain hipBLAS at 0.04 ms), so the table has **143 rows**,
+  1.05-23.30x per GEMM, geometric mean 4.95x. Without it the engine prefills on plain hipBLAS: a 4K prompt on Q2_0
+  read 90 tok/s, 187 with the table and 277 with the WMMA opt-ins (one 780M; 32K context, MTP). The merged table
+  prefilled the 4K prompt at 187.2 tok/s. A context ladder to 131K (shipping configuration, fresh prompts) puts the
+  full 128K read at 198-221 tok/s, its last ~14K at ~206, and decode at ~10 tok/s at that depth; the numbers are in
+  the report folder. `hip_prefill_hipblaslt_gemm` reports `fallbacks=0`;
+  `hip_prefill_hcd_exact_parity` skips, because the table picks no 1176 / 1177 for the HC down GEMM (the skip the
+  gfx1150 table gets too). Setup installs for gfx1103 only with `STRATA_EXPERIMENTAL_GFX1103=1` and then uses the
+  table when the installed hipBLASLt reports 1.4.1. Measurements:
+  [bench/results/2026-10-12-community-gfx1103](../bench/results/2026-10-12-community-gfx1103/README.md).
 
 Calibrated on my PC and kept in this checkout, not shipped: `gfx1201-hipblaslt-100401.txt`, a Radeon AI PRO
 R9700 (gfx1201, 32 GB, 1002:7551) on a Ryzen 9 9950X3D with 62 GiB RAM, CachyOS (kernel 7.3.0-rc6-1-cachyos-rc,
@@ -620,6 +810,33 @@ baseline while the clocks are still ramping: that T=4096 shape read 0.31-0.63 ms
 timed right after it held 0.606-0.619 ms every time, so time a heavy case first and read the later ones. And the
 first fresh prompt after the model loads is not a measurement: it gave 949 and 1,423 tok/s in the two arms of that
 A/B, while the three trials after it differed by 0.4-1.5%.
+
+### rocBLAS table (gfx103x)
+
+On RDNA2 the prompt GEMMs run through rocBLAS in FP16 (#835), and hipBLASLt has no gfx1030 kernels; the rocBLAS table
+does for rocBLAS what the one above does for hipBLASLt (the [RDNA2 section](#rdna2-gfx1030) has the measurements). A
+table is valid for one architecture and one rocBLAS build - the full version string, tweak hash included - so it is
+calibrated on the card with the rocBLAS the engine loads (`lib_dirs` in the run configuration; `/opt/rocm/lib` is
+rocBLAS 5.6.0.8d1ae90e on ROCm 10.0.0, while Ubuntu's own `librocblas5` package is a 5.1 build):
+
+```sh
+cmake --build build-hip --target tune_rocblas
+LD_LIBRARY_PATH=/opt/rocm/lib ./build-hip/tune_rocblas --tuning-out table.txt   # 14 shapes x 8 token buckets, ~5 min
+```
+
+The tool times rocBLAS's default kernel and every solution the library lists for each shape at T = 256 ... 8192 (the
+engine's dense GEMM shapes; `--case T,N,K,ldy` adds one, `--tokens` changes the buckets), checks the fastest ones
+against the default kernel's output (within FP16 rounding, no write outside the N x T result) and that they also run at
+smaller, odd token counts, and writes one row per shape and bucket: the winning solution index where it beats the
+default by `--min-gain` (1.05), `default` otherwise - a `default` row is what keeps a neighbouring bucket's solution from
+reaching token counts where rocBLAS's own choice measured best. The file's header names the architecture and version
+(`STRATA_ROCBLAS_TUNING_V1 gfx1030 5.6.0.8d1ae90e`); save it as `tools/hip/<arch>-rocblas-<version>.txt` (the version
+with trailing dots dropped) for setup, or point `STRATA_ROCBLAS_TUNING` at the file. `STRATA_ROCBLAS_VERBOSE=1` prints
+the solution picked for each shape and a `tuned_launches=... fallbacks=...` summary at exit; a solution rocBLAS refuses
+at run time (status 11 once while it sets up its workspace is normal) falls back to the default kernel for that call, and
+after three refusals for good. `hip_prefill_rocblas_gemm` (with `STRATA_ROCBLAS_TUNING` set; skips otherwise) is the
+smoke test: it refuses a table for another architecture or build and checks Gemm's FP16 route against hipBLASEx on the
+table's first two shapes.
 
 ## Original backend validation (PR #94)
 

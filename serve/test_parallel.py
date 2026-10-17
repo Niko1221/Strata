@@ -53,12 +53,20 @@ def reply(ids):            # the rest of the reply after what the prompt already
     return R[k:]
 active = {}          # slot -> [tokens left, max_new, produced]
 stopped = set()      # BSTOPped slots: they end "cancel"
+# #879: a prompt with NFSOLO / NFADMIT ends its first GEN / BGEN with DONE ... nonfinite (nothing emitted); one with
+# NFSLOT ends its slot with BDONE ... nonfinite after its second token
+fired, nf_slots = set(), set()
 def window():        # one batch window: every active slot one token
     if fail and len(active) >= 2:     # as the engine: the reason on stdout, then exit code 1
         print("ERR verify batch: layer 34 never rang (graph finished)", flush=True)
         sys.exit(1)
     for b in sorted(active):
         left, max_new, produced = active[b]
+        if b in nf_slots and produced >= 2:
+            nf_slots.discard(b)
+            print(f"BDONE {b} {produced} nonfinite 1.0", flush=True)
+            del active[b]
+            continue
         t = left.pop(0) if left else 257
         produced += 1
         print(f"BT {b} {t}", flush=True)
@@ -70,6 +78,8 @@ def window():        # one batch window: every active slot one token
         else:
             active[b] = [left, max_new, produced]
 log = open(args[args.index("--log") + 1], "a") if "--log" in args else None
+PPK = int(args[args.index("--pp-every") + 1]) if "--pp-every" in args else 1
+READF = "--readfield" in args   # DONE's 15th field: the prompt tokens the engine read (a continued prompt: the 1 it copies)
 REUSE = "--reuse" in args     # DONE's reused field as the engine gives it: a continued prompt is all held but its last
 def reused(ids):              # token (the request's own output included), a fresh one the first 3 tokens
     return 0 if not REUSE else len(ids) - 1 if continued(ids)[1] else 3
@@ -96,14 +106,34 @@ while True:
         if bytes(int(x) & 255 for x in ids).find(b"REFUSEME") >= 0:   # #1059: refused up front, then idle (no DONE)
             print("ERR refused: images are not enabled", flush=True)
             continue
+        # #1994: the engine's own view of its slots differs: BUSYSLOT is refused once, BUSYALL always
+        pbx = bytes(int(x) & 255 for x in ids)
+        if slot is not None and (b"BUSYALL" in pbx or (b"BUSYSLOT" in pbx and "busyslot" not in fired)):
+            fired.add("busyslot")
+            print(f"ERR BGEN: no such free slot (--batch {slots}) or a bad max_new", flush=True)
+            if log:
+                log.write(f"REFUSED {slot}\n"); log.flush()
+            continue
         if log:
             log.write(f"{f[0]} {slot} {len(ids)} {max(len(active), 0)}\n"); log.flush()
+        pb = bytes(int(x) & 255 for x in ids)
+        mark = b"NFSOLO" if f[0] == "GEN" else b"NFADMIT"
+        if mark in pb and mark not in fired:
+            fired.add(mark)
+            print(f"DONE 0 {len(ids)} 5.0 0.0 nonfinite 0 0 0", flush=True)
+            if slot is not None:
+                print(f"BADM {slot} 0", flush=True)
+            continue
+        if slot is not None and b"NFSLOT" in pb:
+            nf_slots.add(slot)
         toks = reply(ids)
         stop.clear()
         # the prompt read: CH tokens a chunk, a PP line each; a BYIELD <s> gives way at a chunk boundary
         given = None
         for q in range(CH, len(ids) - 1, CH):
             time.sleep(STEP / 2)
+            if (q // CH) % PPK:   # --pp-every K: a PP line and a boundary every K chunks (the pipelined groups' pieces)
+                continue
             print(f"PP {q} {len(ids)} 1 1", flush=True)
             held = []
             while True:
@@ -140,7 +170,8 @@ while True:
             out += 1
             time.sleep(STEP)
         fin = "stop" if out and toks[out - 1] == 257 else ("cancel" if stop.is_set() else "length")
-        print(f"DONE {out} {len(ids)} 5.0 {out * STEP * 1000:.1f} {fin} 0 0 {reused(ids)}", flush=True)
+        print(f"DONE {out} {len(ids)} 5.0 {out * STEP * 1000:.1f} {fin} 0 0 {reused(ids)}" +
+              (f" 0 0 0 0 0.0 {len(ids) - reused(ids)}" if READF else ""), flush=True)
         if slot is not None:
             cont = fin == "length" and max_new > 1
             if cont:
@@ -216,6 +247,34 @@ class PickSlot(unittest.TestCase):
         self.assertIsNone(e.pick_slot([7, 8]))
         e.slot_busy = [False] * 3
         self.assertEqual(e.pick_slot([1, 2, 3]), 1)                 # a held prompt is never the WHOLE prompt
+
+    def test_a_rewritten_next_turn_goes_to_the_slot_of_its_chat(self):
+        # #2518: two chats in two slots; each next turn renders the history again but not the reply it decoded or the
+        # assistant header, so the held stream (prompt + reply) is no start of it.  The engine's turn checkpoint sits at
+        # the last <|im_start|> of the old prompt: the prompt that agrees up to there belongs to that slot.  Before, both
+        # went to the least recently used slot in turn, and the first one overwrote the other chat's cache.
+        T = StrataEngine.TURN_ID
+        hist_a, hist_b = list(range(1000, 1600)), list(range(2000, 2600))
+        held_a = hist_a + [T, 7, 8, 9] + [50, 51, 52]                  # prompt (ends with the assistant header) + reply
+        held_b = hist_b + [T, 7, 8, 9] + [60, 61]
+        e = self.engine(2)
+        e.slot_held = [held_a, held_b]
+        e.slot_used = [10.0, 20.0]                                      # slot 0 was used longer ago
+        next_a = hist_a + [T, 5, 6, 7, 8, 9] + list(range(3000, 3100))  # the history again, then new turns
+        next_b = hist_b + [T, 5, 6, 7, 8, 9] + list(range(3000, 3100))
+        self.assertEqual(e.pick_slot(next_b), 1)                        # the LRU slot 0 holds the other chat
+        self.assertEqual(e.pick_slot(next_a), 0)
+        e.slot_busy[0] = True                                           # a busy slot is never picked
+        self.assertEqual(e.pick_slot(next_a), 1)
+        e.slot_busy[0] = False
+        # a chat that agrees with neither (a new one, or one that rewrote its history) keeps the old order
+        self.assertEqual(e.pick_slot(list(range(5000, 5200))), 0)
+        self.assertEqual(e.pick_slot(hist_a[:300] + [T, 5, 6] + list(range(3000, 3100))), 0)
+        e.slot_held[0] = []                                             # an empty slot still comes before evicting one
+        self.assertEqual(e.pick_slot(list(range(5000, 5200))), 0)
+        # the whole held stream continued is still the longer match
+        e.slot_held = [held_a, held_b + [T, 1, 2]]
+        self.assertEqual(e.pick_slot(held_b + [T, 1, 2, 3, 4]), 1)
 
     def test_batch_groups_spread_requests_over_the_groups(self):
         # #1249: with --batch-groups 2 over 4 slots (groups {0,1} and {2,3}) a second request goes to the other group,
@@ -293,6 +352,46 @@ class ParallelService(unittest.TestCase):
     def get(self, path):
         with urllib.request.urlopen(self.base + path, timeout=10) as r:
             return json.loads(r.read().decode())
+
+    def _two_at_once(self, text_b):
+        """A long request first, then one that has to go to a batch slot (the engine is busy with the first)."""
+        out = {}
+        def go(k, text):
+            try:
+                out[k] = ("ok", self.chat(text, max_tokens=64))
+            except urllib.error.HTTPError as e:
+                out[k] = ("http", e.code, e.read().decode(), dict(e.headers))
+        ta = threading.Thread(target=go, args=("a", "LONGREPLY please"))
+        ta.start()
+        time.sleep(0.15)
+        tb = threading.Thread(target=go, args=("b", text_b))
+        tb.start()
+        ta.join(30); tb.join(30)
+        return out
+
+    def test_bgen_refused_by_the_engine_is_retried_not_a_400(self):
+        """#1994: the engine refuses a BGEN ("no such free slot") although the server saw the slot free: the request
+        goes to another slot (or waits) and is answered; the same conversation's next turn works too."""
+        self.start(2)
+        self.engine.SLOT_PARK_S = 0.2
+        out = self._two_at_once("BUSYSLOT hello")
+        self.assertEqual(out["b"][0], "ok", out["b"])
+        self.assertIn("REFUSED", self.log.read_text())
+        again = self.chat("BUSYSLOT hello")                     # the conversation is not poisoned
+        self.assertEqual(again["choices"][0]["message"]["content"], "ok, done.")
+        time.sleep(0.5)
+        self.assertEqual(self.engine.slot_busy, [False, False])
+
+    def test_bgen_refused_for_good_is_a_retryable_503_and_frees_the_slots(self):
+        """#1994: when the engine keeps refusing, the answer is a 503 (retryable), never a 400, and no slot stays busy."""
+        self.start(2)
+        self.engine.SLOT_PARK_S = 0.05
+        out = self._two_at_once("BUSYALL hello")
+        self.assertEqual(out["b"][0], "http", out["b"])
+        self.assertEqual(out["b"][1], 503, out["b"])
+        time.sleep(0.5)
+        self.assertEqual(self.engine.slot_busy, [False, False])
+        self.assertEqual(self.chat("fine again")["choices"][0]["message"]["content"], "ok, done.")
 
     def test_engine_reports_fewer_slots(self):
         self.start(4, fit=2)
@@ -429,6 +528,19 @@ class ParallelService(unittest.TestCase):
             self.assertEqual(len(self.svc.history), 2)
         self.assertFalse(any(self.engine.slot_busy))
 
+    def test_the_way_is_asked_between_far_apart_progress_lines(self):
+        """#656 when the PP lines come far apart (the pipelined groups' read in pieces of one chunk: one PP per piece,
+        at its end): the BYIELD goes out while the engine is quiet, so the read gives way at the first boundary after
+        the short request came.  Asked only at a PP line, it reached the engine after that boundary's check and the
+        read gave way one piece later."""
+        self.start(2, more=["--pp-every", "80"])   # a boundary every 80 chunks (~0.8 s): one in this read
+        long_q, short_q = "long " * 600, "short"
+        res = self.race(long_q, short_q)
+        self.assertEqual(res[long_q][0], "ok, done.")
+        self.assertEqual(res[short_q][0], "ok, done.")
+        yields = [x for x in self.log.read_text().splitlines() if x.startswith("YIELD ")]
+        self.assertEqual([int(x.split()[2]) for x in yields], [80 * 32], yields)
+
     def test_three_requests_long_long_short_do_not_deadlock(self):
         """ENGINE_REVIEW finding 1 (0.1.41 check): two long prompts fill both slots, a short one arrives a moment later
         and wants one of them (the yield path).  The reviewer's repro: long, long, short at 0.25 s steps.  Every
@@ -474,9 +586,35 @@ class ParallelService(unittest.TestCase):
         self.assertTrue(any(x.startswith("YIELD ") for x in log), log)
         self.assertFalse(any(self.engine.slot_busy))
 
+    def test_an_admission_is_asked_between_far_apart_progress_lines(self):
+        """As above for a read admitted beside a decoding slot (BGEN, `ask()`): with one PP line per 80 chunks the
+        short request's BYIELD still reaches the first boundary."""
+        self.start(3, more=["--pp-every", "80"])
+        bg = threading.Thread(target=lambda: self.chat("LONGREPLY background", max_tokens=60))
+        bg.start()
+        time.sleep(0.05)
+        long_q, short_q = "long " * 600, "short"
+        res = self.race(long_q, short_q)
+        bg.join(30)
+        self.assertEqual(res[long_q][0], "ok, done.")
+        self.assertEqual(res[short_q][0], "ok, done.")
+        log = self.log.read_text().splitlines()
+        admitted = [x.split() for x in log if x.startswith("BGEN ") and int(x.split()[2]) > 2600]
+        self.assertTrue(admitted, log)                                 # the long read was an admission
+        yields = [x.split()[1:] for x in log if x.startswith("YIELD ")]
+        self.assertEqual(yields[:1], [[admitted[0][1], str(80 * 32)]], log)
+        self.assertFalse(any(self.engine.slot_busy))
+
     def test_no_way_given_to_a_long_one(self):
         """Two prompts of about the same length: no BYIELD (it only goes to a much shorter one)."""
         self.start(2)
+        res = self.race("long " * 600, "lung " * 600)
+        self.assertEqual(sorted(r[0] for r in res.values()), ["ok, done."] * 2)
+        self.assertFalse(any(x.startswith("YIELD ") for x in self.log.read_text().splitlines()))
+
+    def test_no_way_given_to_a_long_one_between_far_apart_progress_lines(self):
+        """The ask between PP lines keeps the rule: a waiting request about as long gets no BYIELD there either."""
+        self.start(2, more=["--pp-every", "80"])
         res = self.race("long " * 600, "lung " * 600)
         self.assertEqual(sorted(r[0] for r in res.values()), ["ok, done."] * 2)
         self.assertFalse(any(x.startswith("YIELD ") for x in self.log.read_text().splitlines()))
@@ -546,6 +684,38 @@ class ParallelService(unittest.TestCase):
         self.assertIn("exited (code 1)", note)
         self.assertIn("verify batch: layer 34 never rang (graph finished)", note)
 
+    def test_nonfinite_in_batch_mode(self):
+        """#879 in --batch mode: DONE ... nonfinite on the solo path or at an admission (nothing emitted yet) sends the
+        request again once; BDONE ... nonfinite in a slot ends the reply that had started, as "length"."""
+        self.start(2)
+        self.assertEqual(self.chat("NFSOLO alone")["choices"][0]["message"]["content"], "ok, done.")
+        gens = [x for x in self.log.read_text().splitlines() if x.startswith("GEN")]
+        self.assertEqual(len(gens), 2, gens)                              # sent again once
+        res = self.race("first question LONGREPLY", "NFADMIT second")
+        self.assertEqual(res["NFADMIT second"][0], "ok, done.")
+        self.assertEqual(res["first question LONGREPLY"][0], "ok, " + "la " * 15 + "done.")
+        self.assertTrue(any(x.startswith("BGEN") for x in self.log.read_text().splitlines()))
+        out = {}
+
+        def go(t):
+            body = {"messages": [{"role": "user", "content": t}], "max_tokens": 64, "reasoning_effort": "none"}
+            req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                out[t] = json.loads(r.read().decode())["choices"][0]
+        a = threading.Thread(target=go, args=("third question LONGREPLY",))
+        a.start()
+        time.sleep(0.15)
+        go("NFSLOT fourth")
+        a.join(30)
+        c = out["NFSLOT fourth"]
+        self.assertEqual((c["message"]["content"], c["finish_reason"]), ("ok", "length"))
+        self.assertEqual(out["third question LONGREPLY"]["message"]["content"], "ok, " + "la " * 15 + "done.")
+        # the engine dropped that slot's state: the server does not route the conversation's next turn to it
+        self.assertFalse([h for h in self.engine.slot_held if bytes(t & 255 for t in h).find(b"NFSLOT") >= 0])
+        with self.svc.status_lock:
+            self.assertEqual(self.svc.live_reqs, {})
+
     def test_a_continued_request_reports_its_own_prompt_reuse(self):
         """A request STOPped on the solo path and continued in a slot (or back on the solo path) is sent again as its
         prompt + what it generated, and the engine holds all of that: the usage must still split the request's OWN
@@ -567,6 +737,49 @@ class ParallelService(unittest.TestCase):
         self.assertGreaterEqual(u["input_tokens"], 1, u)
         self.assertEqual(u["input_tokens"] + u["cache_read_input_tokens"], prompt, u)
         self.assertEqual(u["cache_read_input_tokens"], 3, u)    # the first read's reuse, not the continuation's
+
+    def test_a_slot_request_ended_by_its_stop_token_reports_the_slot_leg(self):
+        """#1869: the consumer leaves at the stop token, before the BDONE: the request kept the admission's one token and
+        its few ms.  Its figures are the slot leg's now (finish=stop was the broken case, finish=length read the BDONE)."""
+        import serve.server as server
+        self.start(2, slot_cache=True, reuse=True, more=("--readfield",))
+        res = {}
+        with mock.patch.object(server, "EOS_IDS", {257}):          # the fake engine's stop token
+            a = threading.Thread(target=lambda: res.setdefault("a", self.chat("List three primes please", 200)))
+            b = threading.Thread(target=lambda: res.setdefault("b", self.chat("Name two rivers in Germany", 200)))
+            a.start(); b.start(); a.join(30); b.join(30)
+        self.assertEqual(len(self.svc.history), 2)
+        for h in self.svc.history:
+            self.assertEqual(h["engine_generated"], h["output_tokens"], h)
+            self.assertGreaterEqual(h["decode_ms"], 1.0, h)
+        for r in res.values():
+            t = r["timings"]
+            self.assertEqual(t["prompt_n"] + t["cache_n"], r["usage"]["prompt_tokens"], t)
+            self.assertEqual(t["predicted_n"], 10, t)
+        self.assertFalse(any(self.engine.slot_busy))                 # the slots are free (no BDONE left for a wait)
+
+    def test_a_request_moved_between_solo_and_slot_keeps_its_totals(self):
+        """#1869/#1870: a request that read its prompt and decoded on the solo path, was STOPped when another arrived and
+        went on in a slot (its admission copies the held prefix: prompt_read 1, one token) reports the prompt it read and
+        the decode time and tokens of ALL its legs, not the last one's."""
+        self.start(2, slot_cache=True, reuse=True, more=("--readfield",))
+        res = {}
+        long = threading.Thread(target=lambda: res.setdefault("long", self.chat("LONGREPLY please", max_tokens=200)))
+        long.start()
+        time.sleep(0.25)                                   # a few solo tokens first
+        self.chat("short", max_tokens=200)
+        long.join(30)
+        kinds = [x.split()[0] for x in self.log.read_text().splitlines()]
+        self.assertEqual(kinds[:2], ["GEN", "BGEN"], kinds)           # solo, then continued in a slot: the case under test
+        n = res["long"]["usage"]["completion_tokens"]
+        row = max(self.svc.history, key=lambda h: h["output_tokens"])
+        self.assertEqual(row["engine_generated"], n, row)
+        self.assertGreater(row["decode_ms"], 20.0 * 3, row)          # the solo leg's STEP-long tokens are in it
+        self.assertGreater(row["prompt_read"], 1, row)                # the first read, not the copy leg's 1
+        t = res["long"]["timings"]
+        self.assertEqual(t["prompt_n"] + t["cache_n"], res["long"]["usage"]["prompt_tokens"], t)
+        self.assertEqual(t["cache_n"], 3, t)                          # the first read's reuse only
+        self.assertGreater(t["predicted_ms"], 60.0, t)
 
     def test_a_leaked_busy_slot_does_not_hang_the_next_request(self):
         """#1603: a slot whose busy flag has no owner (no request holds it, no BDONE wait is running) kept every later
