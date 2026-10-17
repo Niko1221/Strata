@@ -1,0 +1,86 @@
+strata generate: remote stage: this process holds layers 32-last (a stage worker, no head)
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native pack: $HOME/Strata-data/packs/q8_0-r730-opt experts (largest blob 5.22 MB), token embedding Q8_0 in mapped host memory (644 MiB, 7.0 s)
+strata generate: remote stage: the dense weights of layers 32-last only
+strata generate: 489 MiB of weights loaded from $HOME/Strata-data/packs/q8_0-r730-opt in 0.2 s (815 canonical tensors skipped: served natively)
+strata generate: 101 native projection matrices, 1009.38 MiB of weights, in 27.5 s
+strata generate: remote stage: no PLE here (layer 1 runs in the main process)
+strata generate: profile $HOME/remote-stage-parity/matched-expert-profile.bin: 1536 ranked pairs, built for 1536 slots
+strata generate: remote stage: 512 of the 1536 pairs are this process's layers
+strata generate: GPU 0: Tesla P4, compute capability 6.1
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata generate: expert arena: layers 32-47 only (39.84 of 119.53 GiB; remote stage)
+strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 20403 2 MiB pages, vm.nr_hugepages=0); transparent huge pages requested (MADV_HUGEPAGE)
+strata generate: loaded 119.53 GiB at 0.11 GiB/s
+strata generate: CPU pool tasks/phase: 84 (automatic), participating threads: 28
+strata generate: 27 pool workers on logical processors 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 512 slots, 2.49 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 512 of 512 slots from the profile in 0.3 s (9427 MB/s); slot 0 verified
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 27 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.41)
+strata generate: token graph hit path: 512 resident experts, decided on the device
+strata serve: the prompt path borrows 214 CUDA0 cache slots (1.04 GiB)
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 2 tokens, 91.0 MiB of device buffers
+strata serve: 2924 MiB of VRAM free with everything loaded
+INFO context=16384 kv=fp16 kv_resident=0 expert_slots=512 expert_cache_mib=2550 expert_slots_primary=512 expert_cache_primary_mib=2550 spec=2 mtp_max=0 lookup=0 vram_free_mib=2924 cvec=0 arena_mib=122400 pool_workers=27 pcie_frac=0.00 spec_min_p=0.00 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 tail_role_token=-1 vram_elastic=0 engine=0.1.41
+strata serve: stage worker: layers 32-47, no head, prompt chunk 1024, port 18850
+strata stage worker: listening on 127.0.0.1:18850 (a token is required)
+strata stage worker: connection from 127.0.0.1
+strata stage worker: main process 127.0.0.1: layers 32.. here, context 16384, chunk 1024
+strata stage worker: chunk T=127 at 0: read in 2042 ms
+strata verify: capturing the 1-token window (2902 MiB of VRAM free)
+strata verify: captured the 1-token window (upload no error, sync no error)
+strata stage worker: windows: own layers 39.44 ms each (64 windows; wait for the GPU 13.73, pool + plan 23.64, host staging 0.00)
+strata stage worker: windows: own layers 37.15 ms each (64 windows; wait for the GPU 13.70, pool + plan 23.29, host staging 0.00)
+strata stage worker: chunk T=1023 at 0: read in 4045 ms
+strata stage worker: windows: own layers 38.95 ms each (64 windows; wait for the GPU 13.81, pool + plan 23.17, host staging 0.00)
+strata stage worker: windows: own layers 36.74 ms each (64 windows; wait for the GPU 13.82, pool + plan 22.75, host staging 0.00)
+strata stage worker: chunk T=1024 at 0: read in 4709 ms
+strata stage worker: chunk T=1024 at 1024: read in 4848 ms
+strata stage worker: chunk T=1024 at 2048: read in 4866 ms
+strata stage worker: chunk T=1024 at 3072: read in 4855 ms
+strata stage worker: chunk T=1024 at 4096: read in 4836 ms
+strata stage worker: chunk T=1024 at 5120: read in 4811 ms
+strata stage worker: chunk T=1024 at 6144: read in 4805 ms
+strata stage worker: chunk T=1023 at 7168: read in 3875 ms
+strata stage worker: windows: own layers 39.89 ms each (64 windows; wait for the GPU 14.27, pool + plan 23.65, host staging 0.00)
+strata stage worker: windows: own layers 37.54 ms each (64 windows; wait for the GPU 14.24, pool + plan 23.15, host staging 0.00)
+strata stage worker: chunk T=127 at 0: read in 2034 ms
+strata stage worker: windows: own layers 39.30 ms each (64 windows; wait for the GPU 13.72, pool + plan 23.62, host staging 0.00)
+strata stage worker: windows: own layers 36.97 ms each (64 windows; wait for the GPU 13.72, pool + plan 23.11, host staging 0.00)
+strata stage worker: chunk T=1023 at 0: read in 4036 ms
+strata stage worker: windows: own layers 39.15 ms each (64 windows; wait for the GPU 13.82, pool + plan 23.39, host staging 0.00)
+strata stage worker: windows: own layers 36.96 ms each (64 windows; wait for the GPU 13.81, pool + plan 22.98, host staging 0.00)
+strata stage worker: chunk T=1024 at 0: read in 4694 ms
+strata stage worker: chunk T=1024 at 1024: read in 4823 ms
+strata stage worker: chunk T=1024 at 2048: read in 4913 ms
+strata stage worker: chunk T=1024 at 3072: read in 4869 ms
+strata stage worker: chunk T=1024 at 4096: read in 4827 ms
+strata stage worker: chunk T=1024 at 5120: read in 4813 ms
+strata stage worker: chunk T=1024 at 6144: read in 4829 ms
+strata stage worker: chunk T=1023 at 7168: read in 3878 ms
+strata stage worker: windows: own layers 39.50 ms each (64 windows; wait for the GPU 14.25, pool + plan 23.28, host staging 0.00)
+strata stage worker: windows: own layers 37.39 ms each (64 windows; wait for the GPU 14.24, pool + plan 23.00, host staging 0.00)
+strata stage worker: chunk T=127 at 0: read in 2035 ms
+strata stage worker: windows: own layers 39.60 ms each (64 windows; wait for the GPU 13.73, pool + plan 23.91, host staging 0.00)
+strata stage worker: windows: own layers 37.11 ms each (64 windows; wait for the GPU 13.70, pool + plan 23.27, host staging 0.00)
+strata stage worker: chunk T=1023 at 0: read in 4033 ms
+strata stage worker: windows: own layers 39.05 ms each (64 windows; wait for the GPU 13.82, pool + plan 23.26, host staging 0.00)
+strata stage worker: windows: own layers 36.64 ms each (64 windows; wait for the GPU 13.82, pool + plan 22.65, host staging 0.00)
+strata stage worker: chunk T=1024 at 0: read in 4709 ms
+strata stage worker: chunk T=1024 at 1024: read in 4831 ms
+strata stage worker: chunk T=1024 at 2048: read in 4894 ms
+strata stage worker: chunk T=1024 at 3072: read in 4855 ms
+strata stage worker: chunk T=1024 at 4096: read in 4876 ms
+strata stage worker: chunk T=1024 at 5120: read in 4862 ms
+strata stage worker: chunk T=1024 at 6144: read in 4842 ms
+strata stage worker: chunk T=1023 at 7168: read in 3878 ms
+strata stage worker: windows: own layers 39.67 ms each (64 windows; wait for the GPU 14.25, pool + plan 23.45, host staging 0.00)
+strata stage worker: windows: own layers 37.36 ms each (64 windows; wait for the GPU 14.24, pool + plan 22.97, host staging 0.00)
+strata stage worker: 127.0.0.1 disconnected: remote stage: the peer closed the connection

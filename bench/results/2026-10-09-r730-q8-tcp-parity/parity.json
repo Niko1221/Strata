@@ -1,0 +1,236 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "kind": "matched-local-repeat",
+      "input_tokens": 128,
+      "repeat": 1,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "matched-local-repeat",
+      "input_tokens": 1024,
+      "repeat": 1,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "matched-local-repeat",
+      "input_tokens": 8192,
+      "repeat": 1,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "matched-local-repeat",
+      "input_tokens": 128,
+      "repeat": 2,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "matched-local-repeat",
+      "input_tokens": 1024,
+      "repeat": 2,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "matched-local-repeat",
+      "input_tokens": 8192,
+      "repeat": 2,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "matched-loopback-repeat",
+      "input_tokens": 128,
+      "repeat": 1,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "matched-loopback-repeat",
+      "input_tokens": 1024,
+      "repeat": 1,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "matched-loopback-repeat",
+      "input_tokens": 8192,
+      "repeat": 1,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "matched-loopback-repeat",
+      "input_tokens": 128,
+      "repeat": 2,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "matched-loopback-repeat",
+      "input_tokens": 1024,
+      "repeat": 2,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "matched-loopback-repeat",
+      "input_tokens": 8192,
+      "repeat": 2,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "local-v-loopback",
+      "input_tokens": 128,
+      "repeat": 0,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "local-v-loopback",
+      "input_tokens": 1024,
+      "repeat": 0,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "local-v-loopback",
+      "input_tokens": 8192,
+      "repeat": 0,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "local-v-loopback",
+      "input_tokens": 128,
+      "repeat": 1,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "local-v-loopback",
+      "input_tokens": 1024,
+      "repeat": 1,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "local-v-loopback",
+      "input_tokens": 8192,
+      "repeat": 1,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "local-v-loopback",
+      "input_tokens": 128,
+      "repeat": 2,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "local-v-loopback",
+      "input_tokens": 1024,
+      "repeat": 2,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "kind": "local-v-loopback",
+      "input_tokens": 8192,
+      "repeat": 2,
+      "identical": true,
+      "first_difference_1based": null,
+      "lengths": [
+        128,
+        128
+      ]
+    }
+  ]
+}
