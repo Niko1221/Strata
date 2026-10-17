@@ -27,6 +27,8 @@
 #include "strata/core/hit_hook.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
@@ -170,6 +172,11 @@ public:
     /// A blob pointer that stays valid (not recycled) for as long as the source is open: for a copy that runs
     /// asynchronously long after the call (the adaptive tier's swap-ins).  Defaults to `blob`.
     virtual const uint8_t* blob_stable(int64_t layer, int64_t expert) { return blob(layer, expert); }
+    /// The pieces (up to 3) a blob consists of when the source can hand them out where they already are - the GGUF
+    /// mapped in place keeps an expert's gate, up and down in three tensors - so the caller can copy each straight to
+    /// its destination instead of `blob_stable` assembling a staging copy first.  0: not available for this
+    /// (layer, expert) - take `blob_stable`.  The pointers stay valid as long as the source is open.
+    virtual int blob_parts(int64_t layer, int64_t expert, BlobPart* out) { (void) layer; (void) expert; (void) out; return 0; }
     /// The caller has queued an asynchronous copy out of `blob` (a pointer this source handed out) on `stream` (a
     /// cudaStream_t): the source must not overwrite or recycle that memory until the copy has finished.  A source whose
     /// pointers are never recycled ignores it.  (#1237: a page-locked stage buffer is read by the DMA after the copy call
@@ -331,6 +338,97 @@ struct GpuPlanSink {
     /// kernel reads the mapped arena directly; 2 = a copy kernel stages it inside the graph.  For 1 and 2 `ptr2`
     /// holds the arena's device alias.
     int pcie_mode = 0;
+    int32_t cpu_jobs = 0;   ///< host only: the distinct experts the pool computes for the layer just published
+};
+
+/// Verifier::set_pcie_balance: a verify window's costs, fitted to each layer's measured times (ms, least squares with
+/// forgetting): the CPU pool's time with n_c CPU and n_p PCIe experts, a + c n_c + d n_p (none: p0) - d is the PCIe
+/// copies' DRAM reads slowing the pool, as the pool and the link read the same RAM - and the GPU's, g0 + g n_p.  A
+/// layer then reads over PCIe the m of its nmiss misses that minimizes max(GPU, CPU). Measured: an RTX 5090 + 9950X3D
+/// pool is DRAM-bound (moving experts to PCIe left the pool's time where it was, d ~ c: few move), one worker on
+/// ggml-cpu's dot is not (d ~ 0: most move). Until both fits have data, and while `on` is off, pcie_num's share.
+struct PcieModel {
+    bool on = false;
+    double a = 0, c = 0, d = 0, p0 = 0, g0 = 0, g = 0;   ///< the fits (read by `pick`)
+    int np0 = 0;
+    double A[3][3] = {}, B[3] = {};   ///< the CPU fit's normal equations, [1, n_c, n_p]
+    double C[2][2] = {}, D[2] = {};   ///< the GPU fit's, [1, n_p]
+    int ncpu = 0, ngpu = 0, ngpu_p = 0;   ///< samples in each (ngpu_p: with a PCIe expert)
+    uint32_t explore = 0;
+    static void mean(double& v, int& n, double x) {   // the first 16 evenly, then 1/20 each
+        if (n < 16) v += (x - v) / ++n;
+        else v += 0.05 * (x - v);
+    }
+    /// One layer's times: the pool's `p` with `n_c` CPU and `n_p` PCIe experts, the GPU's `gpu` (ms).
+    void sample(int n_c, int n_p, double p, double gpu) {
+        constexpr double lam = 0.995;   // ~200 layers' memory: a few windows
+        if (n_c == 0) mean(p0, np0, p);
+        else {
+            const double x[3] = {1.0, (double) n_c, (double) n_p};
+            for (int i = 0; i < 3; ++i) {
+                B[i] = lam * B[i] + x[i] * p;
+                for (int j = 0; j < 3; ++j) A[i][j] = lam * A[i][j] + x[i] * x[j];
+            }
+            ++ncpu;
+        }
+        const double y[2] = {1.0, (double) n_p};
+        for (int i = 0; i < 2; ++i) {
+            D[i] = lam * D[i] + y[i] * gpu;
+            for (int j = 0; j < 2; ++j) C[i][j] = lam * C[i][j] + y[i] * y[j];
+        }
+        ++ngpu;
+        ngpu_p += n_p > 0;
+    }
+    /// Solve both fits (after a window). A ridge keeps a fit whose counts barely vary near its mean ratio.
+    void solve() {
+        if (ncpu >= 8) {
+            double M[3][4];
+            for (int i = 0; i < 3; ++i) {
+                for (int j = 0; j < 3; ++j) M[i][j] = A[i][j] + (i == j && i > 0 ? 1e-3 * A[0][0] : 0.0);
+                M[i][3] = B[i];
+            }
+            bool ok = true;
+            for (int k = 0; k < 3 && ok; ++k) {   // Gauss-Jordan, partial pivot
+                int piv = k;
+                for (int i = k + 1; i < 3; ++i) if (std::abs(M[i][k]) > std::abs(M[piv][k])) piv = i;
+                if (std::abs(M[piv][k]) < 1e-12) { ok = false; break; }
+                for (int j = 0; j < 4; ++j) std::swap(M[k][j], M[piv][j]);
+                for (int i = 0; i < 3; ++i) {
+                    if (i == k) continue;
+                    const double f = M[i][k] / M[k][k];
+                    for (int j = k; j < 4; ++j) M[i][j] -= f * M[k][j];
+                }
+            }
+            if (ok) {
+                a = std::max(M[0][3] / M[0][0], 0.0);
+                c = std::max(M[1][3] / M[1][1], 0.0);
+                d = std::clamp(M[2][3] / M[2][2], 0.0, c);   // a PCIe expert slows the pool at most as one of its own
+            }
+        }
+        if (ngpu >= 8 && ngpu_p >= 4) {
+            const double det = C[0][0] * C[1][1] - C[0][1] * C[1][0];
+            if (std::abs(det) > 1e-12) {
+                g0 = std::max((D[0] * C[1][1] - C[0][1] * D[1]) / det, 0.0);
+                g = std::max((C[0][0] * D[1] - C[1][0] * D[0]) / det, 0.0);
+            }
+        }
+    }
+    bool ready() const { return on && ncpu >= 8 && ngpu_p >= 4; }
+    /// The PCIe count for a layer of `nmiss` misses (`fixed`: pcie_num's).  Every 64th layer with a miss that would
+    /// keep them all on one side moves one to the other, so both fits keep seeing both.
+    int pick(int nmiss, int fixed) {
+        int m = fixed;
+        if (ready()) {
+            double best = 1e300;
+            for (int k = 0; k <= nmiss; ++k) {
+                const double cpu = nmiss - k > 0 ? a + c * (nmiss - k) + d * k : p0;
+                const double t = std::max(g0 + g * k, cpu);
+                if (t < best - 1e-6) { best = t; m = k; }
+            }
+        }
+        if (on && nmiss >= 1 && (++explore & 63u) == 0) m = m == 0 ? 1 : m == nmiss ? nmiss - 1 : m;
+        return m;
+    }
 };
 
 /// The adapter's own state.  One per session, reused every layer so the token path allocates nothing (P2.T10).
@@ -456,6 +554,7 @@ struct ExpertDispatch {
     /// each layer's distinct missed experts (the last ones in routing order) are read by the GPU over PCIe.
     GpuPlanSink* plan = nullptr;
     int pcie_num = 0;
+    PcieModel pcie_model;          ///< Verifier::set_pcie_balance: the PCIe count from measured costs
     int64_t pcie_experts = 0;      ///< distinct experts the GPU read over PCIe in verify windows
     /// #588: routed (token, expert) entries the GPU computed from outside its cache in verify windows: read over PCIe
     /// (--pcie-frac, kind 1) or on another GPU (kind 2).  In neither cache_hits nor cache_refused.
@@ -468,6 +567,18 @@ struct ExpertDispatch {
     /// Plan v0.3 P6: decayed routing counts per (layer, expert) during decode (sized by the caller; empty = off),
     /// which the driver uses to swap the most-routed missing experts into the VRAM tier between rounds.
     std::vector<float> usage;
+    /// The adaptive tier's evictions reach the device's table before the next window, not when the round's copies
+    /// land: until then doorbell_publish_res can skip a layer's activation while the pool computes an evicted expert
+    /// from the one published before.  The driver sets it where the tier does not wait for its copies
+    /// (STRATA_ADAPT_NOWAIT=1, STRATA_ADAPT_LAG > 1; STRATA_ADAPT_EVICT_SYNC=0: off, for an A/B).  `res_dirty` asks the
+    /// driver to patch the device's copy before the next window, `res_dirty_idx` lists the entries changed since.
+    bool evict_sync = false;
+    bool res_dirty = false;
+    std::vector<int32_t> res_dirty_idx;
+    /// STRATA_ADAPT_CHECKRES: the device's residency table as read back before the window; a layer with CPU experts
+    /// whose routed ids all look resident there publishes no activation (doorbell_publish_res) - counted
+    const int32_t* dres_check = nullptr;
+    int64_t stale_x = 0;
     int64_t multi_misses = 0;      ///< distinct (layer, expert) pairs the CPU computed in verify windows
     int64_t multi_entries = 0;     ///< routed (token, expert) entries the CPU served in verify windows
     /// Multi-GPU: the second GPU's tier.  Its experts are computed there instead of on the CPU (kind 2).
@@ -598,15 +709,20 @@ public:
     // buffer and calls `stage_exchange`: `out` is then read from that buffer, and `in` still from here (the CPU
     // computes both until the swap lands).  Once the slot copy has landed, `commit_exchanges` moves `out` into
     // `in`'s place, so the copy keeps holding exactly the experts the GPU does not - with no read of the file.
-    // STRATA_EXCHANGE_ROTATE=1 can instead transfer buffer ownership (uniform, fully pinned/mapped slots).
+    // STRATA_EXCHANGE_ROTATE=1 can instead transfer buffer ownership (fully pinned/mapped slots; a pack whose layers
+    // differ in block size keeps spares per size).
     /// Whether the compact copy holds `(layer, expert)`.
     bool has_resident(int64_t layer, int64_t expert) const;
     /// Host room for `n` evicted blobs (page-locked when possible).  Idempotent for the same or a smaller `n`.
-    bool reserve_exchanges(int64_t n, std::string& err);
+    /// `bounce`: how many of the last buffers are only staged through and never hold an exchange (STRATA_EXCHANGE_ROTATE
+    /// keeps those in the largest block size alone).
+    bool reserve_exchanges(int64_t n, std::string& err, int64_t bounce = 0);
     int64_t exchange_capacity() const { return xstage_cap_; }
     /// The exchange buffers are page-locked (cudaHostAlloc): copies to and from them are asynchronous.
     bool exchange_pinned() const { return xstage_pinned_; }
-    uint8_t* exchange_buffer(int64_t q) const;
+    /// Buffer `q`.  `layer` >= 0: the buffer an exchange of that layer's experts stages into (STRATA_EXCHANGE_ROTATE with
+    /// several block sizes keeps one per size); without it, one that holds any layer's block.
+    uint8_t* exchange_buffer(int64_t q, int64_t layer = -1) const;
     /// Requires `has_resident(layer, in)`, `!has_resident(layer, out)` and `exchange_buffer(q)` holding out's blob.
     bool stage_exchange(int64_t layer, int64_t in, int64_t out, int64_t q);
     /// --pipeline-windows: size the exchange table now, so a `stage_exchange` on the adaptive tier's thread never
@@ -633,6 +749,13 @@ public:
     /// The compact copy's blob of `(layer, expert)`, or null; not counted as a read (any thread).
     const uint8_t* resident_blob(int64_t layer, int64_t expert) const;
     int64_t exchanges() const { return exchanges_; }
+    /// STRATA_RAM_ADAPT: the compact copy gives `out`'s place to `in`, read from the file, so the RAM tier can follow
+    /// the conversation as the VRAM tier does.  Both are experts of `layer` (one blob size), `out` is held by the copy
+    /// and `in` is not, no exchange is staged, and nothing may be reading `out`'s blob: the caller's thread, between
+    /// windows, with no adaptive round in flight.  A failed read leaves the copy as it was.  Not with
+    /// STRATA_EXCHANGE_ROTATE (false, nothing changes).
+    bool replace_resident(int64_t layer, int64_t in, int64_t out);
+    int64_t ram_adapts() const { return ram_adapts_; }
     bool exchange_rotation() const { return exchange_storage_.active(); }
     uint64_t rotated_exchanges() const { return exchange_storage_.exchanges(); }
     uint64_t avoided_exchange_copy_bytes() const { return exchange_storage_.avoided_bytes(); }
@@ -692,6 +815,7 @@ public:
     const uint8_t* blob(int64_t layer, int64_t expert) override;
     /// With io prefetch in the experts.bin tier, the mapping itself (blob() may hand out a recycled staging buffer).
     const uint8_t* blob_stable(int64_t layer, int64_t expert) override;
+    int blob_parts(int64_t layer, int64_t expert, BlobPart* out) override;
     void note_async_read(const uint8_t* blob, void* stream) override;
     /// Windows, opt-in with STRATA_FILE_RELEASE=1: trim the file mapping's full pages after their expert reaches
     /// VRAM. Never touches the resident complement or staging buffers. Disabled by default.
@@ -721,7 +845,7 @@ public:
 
     /// Blobs touched, for the driver to report.  With `h = 0` this is `48 * k` per token and the number is only
     /// interesting once Phase 3 makes it not so.
-    int64_t reads() const override { return reads_; }
+    int64_t reads() const override { return reads_.load(std::memory_order_relaxed); }
 
     // ---- the Linux I/O path of the mapped file tier (STRATA_IO_PREFETCH=1, opt in; no effect on Windows)
     //
@@ -735,6 +859,9 @@ public:
     // The bytes are the same bytes, so the output is the same.  `threads` = I/O threads (0: default 4).
     void set_io_prefetch(bool on, int threads);
     bool io_prefetch() const { return io_pf_; }
+    /// blob() hands out stage buffers it recycles (the GGUF in place, an unbuffered source, the I/O read-ahead): one
+    /// thread at a time (STRATA_PIPED_CONCURRENT is off with such a source)
+    bool stages_blobs() const { return staged(); }
     /// Counts the cached / uncached bytes of every blob read from the files (mincore, page-granular).  Free with
     /// io_prefetch; otherwise opt in with STRATA_IO_STATS=1 (the check costs a few microseconds per blob).
     void set_io_stats(bool on) { io_stats_ = on || io_pf_; }
@@ -818,6 +945,8 @@ private:
     std::unordered_map<int64_t, size_t> stage_of_;
     uint64_t stage_blob_ = 0;
     uint64_t stage_seq_ = 0;
+    int64_t ram_adapts_ = 0;                  ///< replace_resident: experts moved from the file into the compact copy
+    std::vector<uint8_t> ram_adapt_buf_;      ///< ...one blob, read here before it replaces another
     uint64_t epoch_ = 0;
     int64_t last_layer_ = -1;
     bool stage_grew_ = false;
@@ -891,7 +1020,7 @@ private:
     uint64_t xstage_blob_ = 0;
     int64_t exchanges_ = 0;
     std::atomic<int64_t> file_reads_{0};
-    int64_t reads_ = 0;
+    std::atomic<int64_t> reads_{0};   ///< (a counter only; two threads can read blobs at once)
 #if defined(_WIN32)
     void* file_ = nullptr;
     void* mapping_ = nullptr;
@@ -939,9 +1068,9 @@ public:
     int64_t blobs() const { return blobs_; }
     const uint8_t* blob(int64_t layer, int64_t expert) override;
     /// `blob` without the read counter: a pure pointer into the arena, safe from another thread (the async adaptive
-    /// tier's job thread, which must not touch the non-atomic `reads_`)
+    /// tier's job thread)
     const uint8_t* blob_at(int64_t layer, int64_t expert) const;
-    int64_t reads() const { return reads_; }
+    int64_t reads() const { return reads_.load(std::memory_order_relaxed); }
     bool pinned(int64_t layer, int64_t expert) const override;
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
     /// Prefix pinning: the old rule (device_alias(layer, 0)); pin by need: at least one pinned range in the layer.
@@ -985,7 +1114,7 @@ private:
     const uint8_t* base_ = nullptr;
     int64_t blobs_ = 0;
     int64_t n_expert_ = 0;
-    int64_t reads_ = 0;
+    std::atomic<int64_t> reads_{0};   ///< (a counter only; two threads can read blobs at once)
     std::string note_;
     std::string ram_warning_;
     double gib_per_s_ = 0.0;

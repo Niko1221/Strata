@@ -81,6 +81,7 @@ class BuildEngineStamp(unittest.TestCase):
 
     def fake_build(self, src, bdir, target, defs, vcvars, bat):
         self.compiles += 1
+        self.defs = list(defs)
         bdir.mkdir(parents=True, exist_ok=True)
         (bdir / setup.EXE).write_bytes(self.built)
 
@@ -93,6 +94,14 @@ class BuildEngineStamp(unittest.TestCase):
         self.assertEqual(self.stamp()["src"], "newhash")
         self.assertEqual(self.stamp()["version"], "0.1.43")
         self.assertEqual((self.eng / setup.EXE).read_bytes(), self.built)
+
+    def test_the_q6k_expert_kernels_are_pinned_on(self):
+        """PR #2515: a build/ folder first configured while STRATA_Q6K_EXPERTS defaulted to OFF keeps it in CMakeCache.txt;
+        the configure line names it, so Qwen3.6 UD-Q4_K_XL (Q4_K gate/up, Q6_K down) still loads."""
+        setup.build_engine(GPU, "none", True, Path("llama"), toolkit=13)
+        self.assertIn("-DSTRATA_Q6K_EXPERTS=ON", self.defs)
+        self.assertNotIn("-DSTRATA_Q6K_EXPERTS=OFF", self.defs)
+        self.assertIn("-DSTRATA_MMQ_KQUANTS=ON", self.defs)  # flipped OFF -> ON in the same commit (465cd61d)
 
     def test_a_build_that_leaves_the_old_binary_is_not_stamped_or_installed(self):
         self.built = binary("0.1.42")                     # the build "succeeded" without producing the new engine

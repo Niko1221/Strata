@@ -18,6 +18,7 @@
 #endif
 #include <algorithm>
 #include <atomic>
+#include <mutex>
 #include <thread>
 #include <vector>
 #include <stdexcept>
@@ -212,6 +213,8 @@ struct PleTable::Impl {
     strata::ngram::PleReader::Ticket ticket;
     bool pending = false;
     bool locked = false;
+    // the table is shared by the prompt path and the decode windows; they can use it at once (one on a worker thread)
+    std::recursive_mutex mu;
     uint32_t rows[PLE_N_HEADS] = {};
     uint8_t raw[PLE_N_HEADS * PLE_ROW_BYTES_MAX] = {};
     static constexpr size_t kMaxPrefetch = 16;
@@ -389,6 +392,7 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
 }
 
 void PleTable::wait_prefetches() {
+    std::lock_guard<std::recursive_mutex> lk(impl_->mu);
     if (impl_->n_prefetch == 0) return;
     std::string dummy;
     for (size_t i = 0; i < impl_->n_prefetch; ++i) (void) impl_->reader.collect(impl_->prefetch_tickets[i], dummy);
@@ -396,6 +400,7 @@ void PleTable::wait_prefetches() {
 }
 
 void PleTable::prefetch_rows(const uint32_t* rows16) {
+    std::lock_guard<std::recursive_mutex> lk(impl_->mu);
     if (impl_->mode == PleIo::Direct && impl_->reader.is_open()) {
         for (size_t i = 0; i < impl_->n_prefetch; ++i)
             if (std::memcmp(impl_->prefetch_keys[i], rows16, sizeof(uint32_t) * PLE_N_HEADS) == 0) return;
@@ -444,6 +449,7 @@ uint64_t PleTable::rows() const { return impl_->n_rows; }
 uint64_t PleTable::bytes_read() const { return impl_->bytes_read; }
 
 void PleTable::read_row(uint32_t row, float* out160) const {
+    std::lock_guard<std::recursive_mutex> lk(impl_->mu);
     if (impl_->mode == PleIo::Direct && impl_->reader.is_open()) {
         uint8_t raw[PLE_ROW_BYTES_MAX];
         std::string err;
@@ -465,6 +471,7 @@ void PleTable::read_row(uint32_t row, float* out160) const {
 }
 
 bool PleTable::issue(const uint32_t* rows16) {
+    std::lock_guard<std::recursive_mutex> lk(impl_->mu);
     wait_prefetches();
     std::memcpy(impl_->rows, rows16, sizeof impl_->rows);
     if (impl_->mode == PleIo::Direct) {
@@ -491,6 +498,7 @@ bool PleTable::issue(const uint32_t* rows16) {
 }
 
 bool PleTable::collect(float* out2560, std::string& err) {
+    std::lock_guard<std::recursive_mutex> lk(impl_->mu);
     if (!impl_->pending) { err = "PleTable::collect without issue"; return false; }
     impl_->pending = false;
     if (impl_->mode == PleIo::Direct) {
@@ -505,30 +513,35 @@ bool PleTable::collect(float* out2560, std::string& err) {
 }
 
 bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, std::string& err) {
+    std::lock_guard<std::recursive_mutex> lk(impl_->mu);
     if (impl_->pending) { err = "PleTable::gather_batch while a token is in flight"; return false; }
     const size_t n = n_tokens * (size_t) PLE_N_HEADS;
     if (impl_->mode == PleIo::Direct) {
-        // Fast path: if all requested tokens match our in-flight/completed prefetch slots, collect them directly
+        // Fast path: match each requested token to any in-flight/completed prefetch slot, then collect directly
         // without issuing a second PleReader ticket or copying through RowCache.
-        if (impl_->n_prefetch >= n_tokens && n_tokens <= Impl::kMaxPrefetch) {
+        if (n_tokens <= Impl::kMaxPrefetch) {
+            size_t matched[Impl::kMaxPrefetch];
             bool exact_match = true;
             for (size_t t = 0; t < n_tokens; ++t) {
-                if (std::memcmp(impl_->prefetch_keys[t], rows + t * PLE_N_HEADS, sizeof(uint32_t) * PLE_N_HEADS) != 0) {
-                    exact_match = false;
-                    break;
-                }
+                size_t i = 0;
+                while (i < impl_->n_prefetch &&
+                       std::memcmp(impl_->prefetch_keys[i], rows + t * PLE_N_HEADS,
+                                   sizeof(uint32_t) * PLE_N_HEADS) != 0) ++i;
+                if (i == impl_->n_prefetch) { exact_match = false; break; }
+                matched[t] = i;   // duplicate requests may share one immutable prefetch slot
             }
             if (exact_match) {
+                bool collect_ok = true;
                 for (size_t i = 0; i < impl_->n_prefetch; ++i) {
-                    if (!impl_->reader.collect(impl_->prefetch_tickets[i], err)) {
-                        impl_->n_prefetch = 0;
-                        return false;
-                    }
+                    std::string ignored;
+                    if (!impl_->reader.collect(impl_->prefetch_tickets[i], collect_ok ? err : ignored))
+                        collect_ok = false;   // retain the first error, but drain every output buffer
                 }
                 impl_->n_prefetch = 0;
+                if (!collect_ok) return false;
                 for (size_t t = 0; t < n_tokens; ++t) {
                     for (int h = 0; h < PLE_N_HEADS; ++h) {
-                        impl_->decode(impl_->prefetch_raw[t] + (size_t) h * impl_->rb,
+                        impl_->decode(impl_->prefetch_raw[matched[t]] + (size_t) h * impl_->rb,
                                       out + (t * PLE_N_HEADS + (size_t) h) * PLE_HEAD_DIM);
                     }
                 }
@@ -601,6 +614,7 @@ std::string PleTable::io_report() const {
 }
 
 void PleTable::gather(const uint32_t* rows16, float* out2560) const {
+    std::lock_guard<std::recursive_mutex> lk(impl_->mu);   // issue + collect as one
     if (impl_->mode == PleIo::Direct) {
         // `gather` stays const for its existing callers; the reader's state is the table's I/O state.
         PleTable* self = const_cast<PleTable*>(this);

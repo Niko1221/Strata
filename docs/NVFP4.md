@@ -168,8 +168,14 @@ busiest experts, max|x|/rms 4 median and 9 at most. The errors:
 `src/kernels/cpu/nvfp4_avx512.cpp` computes the CPU pool's NVFP4 rows in 512-bit lanes. Each 64-value block is
 decoded once for every token of a verify window: `vpdpbusd` on |E2M1| codes, with the sign moved onto the
 activation. The arithmetic is ggml-cpu's `ggml_vec_dot_nvfp4_q8_0`, with the float additions ordered differently
-(worst 4.5e-7 relative, `nvfp4_avx512_parity`). `STRATA_NO_NVFP4_512=1` falls back to ggml-cpu, which is also the
-path of CPUs without AVX-512.
+(worst 4.5e-7 relative, `nvfp4_avx512_parity`). `STRATA_NO_NVFP4_512=1` falls back to ggml-cpu.
+
+A CPU without AVX-512 (Zen 1-3, Intel Core 4th-10th and 12th-14th gen, Core Ultra, Xeon E5 v3/v4) runs the same rows in 256-bit lanes
+(`src/kernels/cpu/nvfp4_avx2.cpp`): ggml's AVX2 arithmetic step for step, so every row is bit-equal to ggml-cpu's
+(`nvfp4_cpu_parity`, 0 of 1280x9 / 2560x9 rows differ on a Ryzen 5 5600X, a Ryzen 7 255 and a Core Ultra 7 265).
+`STRATA_NO_NVFP4_256=1` falls back to ggml-cpu. An NVFP4 pack is a native pack (its folder holds `native_experts.txt`),
+so the engine starts on such a CPU; the AVX-512 requirement belongs to the canonical Q2_0 pack only (#2347: a `--pack`
+folder without `native_experts.txt` is read as that pack, and the engine now says so before it refuses).
 
 | tokens | ggml-cpu | AVX-512 | speedup |
 |---|---|---|---|
@@ -178,6 +184,22 @@ path of CPUs without AVX-512.
 | 7 | 0.719 ms | 0.196 ms | 3.66x |
 
 These are one expert's gate+up (1280 rows of 2560, cache-resident). The pool itself is bound by DRAM.
+
+The pool in DRAM terms (`nvfp4_avx512_parity --bw THREADS TOKENS`: 1536 experts, 4.2 GB, GB/s of weights read; tokens = tokens an
+expert serves in one verify window, 1-2 in decode):
+
+| CPU (threads) | kernel | 1 thread, 1 tok | all cores, 1 tok | 2 tok | 4 tok |
+|---|---|---|---|---|---|
+| Ryzen 7 255, Zen 4 (8) | AVX-512 | 15.4 | 58.6 | 57.6 | 47.7 |
+| | AVX2 rows | 13.9 | 58.9 | 58.1 | 42.1 |
+| | ggml-cpu | 12.6 | 58.7 | 44.8 | 22.4 |
+| Ryzen 5 5600X, Zen 3, DDR4-3200 (6) | AVX2 rows | 12.1 | 42.2 | 41.5 | 30.1 |
+| | ggml-cpu | 10.4 | 42.9 | 30.9 | 15.5 |
+| Core Ultra 7 265, DDR5-5600 (20) | AVX2 rows | 16.0 | 74.2 | 73.0 | 60.6 |
+| | ggml-cpu | 10.3 | 74.1 | 62.7 | 37.1 |
+
+Without AVX-512 a core reads ~10% slower (13.9 vs 15.4 GB/s), but a pool that reads DRAM runs at the same rate up to two tokens a
+window and ~12% below at four. The CPU's memory decides, not its vector width.
 
 ## Other GPUs
 

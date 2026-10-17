@@ -743,8 +743,11 @@ inline bool staged_gemm(sycl::queue& q, void* handle, const uint16_t* W, int lda
 }
 }  // namespace
 
+// (#2091, CUDA Turing only) no FP16 activation image on this backend
+bool Gemm::bf16_converts_x() const { return false; }
+
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
-                float beta, int64_t ldx) {
+                float beta, int64_t ldx, bool /*x_f16*/) {
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
     if (ldx <= K) ldx = 0;

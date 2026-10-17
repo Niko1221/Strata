@@ -18,7 +18,7 @@ from pathlib import Path
 # of the "sampling" block, ("arg", flag) for an engine option kept in "args".
 EDITABLE = [
     ("sampling.temperature", ("sampling", "num>=0"),
-     "Default temperature for requests that send none (0 = greedy, the default without a sampling block)"),
+     "Default temperature for requests that send none (0 = greedy; without it the model card's: 1.0 thinking, 0.7 not)"),
     ("sampling.top_p", ("sampling", "0<x<=1"), "Default top_p for requests that send none"),
     ("sampling.top_k", ("sampling", "1..64"), "Default top_k for requests that send none (1-64)"),
     ("sampling.min_p", ("sampling", "0<=x<=1"), "Default min_p for requests that send none"),
