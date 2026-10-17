@@ -36,6 +36,7 @@
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
+#include "strata/core/resident_decode_prefetch.hpp"
 #include "strata/core/gguf_expert_source.hpp"
 namespace strata::prefill { void set_nonresident_share(double share); }   // SYCL port: prefill.cpp
 #include "strata/kernels/resident_plan_mirror.hpp"
@@ -8662,6 +8663,19 @@ int main(int argc, char **argv) try {
                         std::abort();
                     }
                 }).detach();
+        }
+        // #1922: all startup reservations are final and no request has run yet.
+        // This port's predictor only warms files; retain it when decode coverage
+        // can change or the user explicitly requested it.
+        if (drive.d.lookahead != nullptr && srcp == &src && src.complement_ready()) {
+            const strata::core::ResidentDecodePrefetch mode{
+                o.serve, o.batch > 0, kvg.on, false, std::getenv("STRATA_LOOKAHEAD") != nullptr};
+            if (strata::core::resident_decode_needs_no_prediction(
+                    mode, host_res, (size_t) g.n_layers * (size_t) g.n_expert,
+                    [&](size_t i) { return src.has_resident((int64_t) (i / g.n_expert), (int64_t) (i % g.n_expert)); })) {
+                drive.d.lookahead = nullptr;
+                std::fprintf(stderr, "strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)\n");
+            }
         }
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
