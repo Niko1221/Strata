@@ -1,0 +1,126 @@
+diff --git a/src/core/verify.cpp b/src/core/verify.cpp
+index 3995ae9..b396aa0 100644
+--- a/src/core/verify.cpp
++++ b/src/core/verify.cpp
+@@ -67,6 +67,16 @@ constexpr float EPS = 1e-6f;
+ using Clock = std::chrono::steady_clock;
+ double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
+ const bool g_dbg = std::getenv("STRATA_VERIFY_DEBUG") != nullptr;
++// The verify window's per-layer wait limit (default 20 s).  STRATA_VERIFY_TIMEOUT_S raises it on a PC whose expert
++// reads can stall longer than that without being stuck (a SATA SSD under a page-fault storm, low RAM).
++inline std::chrono::seconds g_verify_timeout() {
++    static const std::chrono::seconds s = [] {
++        const char* v = std::getenv("STRATA_VERIFY_TIMEOUT_S");
++        const int n = v != nullptr ? std::atoi(v) : 0;
++        return std::chrono::seconds(n > 0 ? n : 20);
++    }();
++    return s;
++}
+ inline bool g_lfuse() { static const bool on = [] { const char* v = std::getenv("STRATA_LFUSE"); return v != nullptr && v[0] == '1'; }(); return on; }
+ // STRATA_ROUTE_RESIDENT=<margin logits> (+ STRATA_ROUTE_RESIDENT_RANKS=lo-hi, default 6-9): residency-biased routing.
+ struct RouteResidentCfg;
+@@ -2215,7 +2225,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
+                     return false;
+                 }
+             }
+-            if (now - a > std::chrono::seconds(20)) {
++            if (now - a > g_verify_timeout()) {
+                 // #267: the caller ends the engine; no spin kernel may outlive it
+                 trace_ev("TIMEOUT", k, l, (int64_t) cudaStreamQuery(cs_));
+                 if (g_trace) {
+@@ -2899,7 +2909,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
+                     return false;
+                 }
+             }
+-            if (now - a > std::chrono::seconds(20)) {
++            if (now - a > g_verify_timeout()) {
+                 err = "verify batch: timed out at layer " + std::to_string(l) + released_note(release_gpu_waits(5000));
+                 return false;
+             }
+@@ -3054,7 +3064,7 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
+                     b_running_ = false;
+                     return -1;
+                 }
+-                if (now - b_last_ > std::chrono::seconds(20)) {
++                if (now - b_last_ > g_verify_timeout()) {
+                     err = "verify batch: timed out at layer " + std::to_string(lb_ + b_k_) + released_note(release_gpu_waits(5000));
+                     b_running_ = false;
+                     return -1;
+diff --git a/src/prefill/prefill.cpp b/src/prefill/prefill.cpp
+index 8416444..99f0b80 100644
+--- a/src/prefill/prefill.cpp
++++ b/src/prefill/prefill.cpp
+@@ -4,6 +4,7 @@
+ #if defined(__cpp_lib_atomic_wait)
+ #define STRATA_ATOMIC_WAIT 1   // #1488: std::atomic::wait / notify_all are a GCC 11 library feature; GCC 10 spins instead
+ #endif
++#include "strata/platform/memory.hpp"
+ #include "mmq_resident_sort.hpp"
+ #include "wmma_gemm.h"
+ #include "strata/core/mtp.hpp"
+@@ -508,6 +509,10 @@ struct Stager {
+                 uint8_t* rd[kMaxBatch];
+                 size_t nr = 0;
+                 core::ExpertSource* from = nullptr;
++                // the mapped file tier: request the run's blobs before copying, so the OS reads them in large
++                // chunks; a page-cache-starved PC otherwise faults them in 4 KB at a time (no mmap read-around)
++                for (int i = j; i < j + k; ++i)
++                    if (jobs[(size_t) i].from == nullptr) platform::advise_willneed(jobs[(size_t) i].src, jobs[(size_t) i].bytes);
+                 for (int i = j; i < j + k; ++i) {
+                     const Job& jb = jobs[(size_t) i];
+                     if (jb.from == nullptr) { std::memcpy(buf[i % kRing], jb.src, jb.bytes); continue; }
+diff --git a/src/program/generate.cpp b/src/program/generate.cpp
+index 1e5299e..50978fb 100644
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -8937,13 +8937,25 @@ int main(int argc, char** argv) {
+         // A swap still in flight counts as done - its expert is resident once the copy lands.  `why`: for the log.
+         auto save_profile = [&](const char* why) {
+             if (heat.empty()) return;
++            // local: STRATA_PROFILE_ROUTING_ONLY=1 ranks by the routing alone, not the experts resident now first.
++            // With static residency (a large --adapt-every) no round ever folds the counts into `heat`, so the
++            // undecayed counts since the start (drive.d.usage) are added here.
++            static const bool routing_only = [] {
++                const char* v = std::getenv("STRATA_PROFILE_ROUTING_ONLY");
++                return v != nullptr && v[0] == '1';
++            }();
++            std::vector<double> h = heat;
++            if (routing_only)
++                for (size_t i = 0; i < h.size() && i < drive.d.usage.size(); ++i) h[i] += (double) drive.d.usage[i];
+             std::vector<uint8_t> resident(host_res.size(), 0);
+-            for (size_t i = 0; i < host_res.size(); ++i) resident[i] = host_res[i] >= 0;
+-            for (const auto& p : pending) resident[(size_t) p.first] = 1;
+-            if (astate == AState::SwapIn)   // --adapt-async: the same for a round past its step 2
+-                for (const ASwap& w : aswaps) resident[(size_t) w.layer * g.n_expert + w.in] = 1;
++            if (!routing_only) {
++                for (size_t i = 0; i < host_res.size(); ++i) resident[i] = host_res[i] >= 0;
++                for (const auto& p : pending) resident[(size_t) p.first] = 1;
++                if (astate == AState::SwapIn)   // --adapt-async: the same for a round past its step 2
++                    for (const ASwap& w : aswaps) resident[(size_t) w.layer * g.n_expert + w.in] = 1;
++            }
+             std::string e;
+-            const auto ranked = strata::core::rank_learned_profile(g.n_layers, g.n_expert, resident, heat,
++            const auto ranked = strata::core::rank_learned_profile(g.n_layers, g.n_expert, resident, h,
+                                                                    profile_loaded);
+             if (strata::core::write_expert_profile(o.expert_profile_save, g.n_layers, g.n_expert, ranked, e))
+                 std::fprintf(stderr, "strata serve: expert profile saved to %s (%s)\n", o.expert_profile_save.c_str(),
+@@ -10838,7 +10850,19 @@ int main(int argc, char** argv) {
+             auto refill_issue = [&](PfPart& p, std::string& e) -> bool {
+                 tr("refill start", (long long) p.lent.size());
+                 const strata::core::OnDevice on(p.dev);
++                // the mapped file tier: keep the next 64 blobs requested ahead of the copies (large OS reads
++                // instead of 4 KB faults once the page cache has thrashed, as after a long prompt on a low-RAM PC)
++                constexpr size_t kAhead = 64;
++                auto advise_lent = [&](size_t n) {
++                    if (n >= p.lent.size()) return;
++                    const int64_t li = p.lent[n].first;
++                    strata::platform::advise_willneed(srcp->blob_stable(li / g.n_expert, li % g.n_expert),
++                        (uint64_t) strata::kernels::cpu::expert_layout().blob_bytes(li / g.n_expert));
++                };
++                for (size_t n = 0; n < kAhead; ++n) advise_lent(n);
++                size_t done_n = 0;
+                 for (const auto& [i, slot] : p.lent) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
++                    advise_lent(kAhead + done_n++);
+                     const uint8_t* b = srcp->blob_stable(i / g.n_expert, i % g.n_expert);
+                     const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
+                     if (b == nullptr || !(refill_blocking() ? p.cache->fill_slot_blocking(slot, b, e, nb)

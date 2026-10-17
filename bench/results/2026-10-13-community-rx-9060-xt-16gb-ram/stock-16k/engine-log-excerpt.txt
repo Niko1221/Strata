@@ -1,0 +1,35 @@
+strata serve: decode expert cache hit rate: 52.9% (7373 hits / 13934 lookups)
+strata serve: file tier I/O this request: the OS read 27497.9 MB from storage (3844 major faults) for 23605.1 MB of expert reads
+strata serve: decode expert cache hit rate: 79.5% (337 hits / 424 lookups)
+strata serve: file tier I/O this request: the OS read 12515.1 MB from storage (2475 major faults) for 9212.4 MB of expert reads
+strata serve: decode expert cache hit rate: 79.5% (337 hits / 424 lookups)
+strata serve: file tier I/O this request: the OS read 5491.9 MB from storage (1511 major faults) for 11012.1 MB of expert reads
+strata serve: decode expert cache hit rate: 72.4% (3786 hits / 5230 lookups)
+strata serve: file tier I/O this request: the OS read 6490.2 MB from storage (2126 major faults) for 13367.0 MB of expert reads
+strata serve: decode expert cache hit rate: 78.9% (42563 hits / 53971 lookups)
+strata serve: file tier I/O this request: the OS read 5515.5 MB from storage (382603 major faults) for 24146.5 MB of expert reads
+strata serve: decode expert cache hit rate: 85.2% (50359 hits / 59097 lookups)
+strata serve: file tier I/O this request: the OS read 2408.0 MB from storage (577771 major faults) for 22364.8 MB of expert reads
+strata serve: decode expert cache hit rate: 81.5% (50754 hits / 62283 lookups)
+strata serve: file tier I/O this request: the OS read 4160.8 MB from storage (1011015 major faults) for 26007.8 MB of expert reads
+strata serve: verify: timed out at layer 19; its GPU waits were released and the GPU finished (#267)
+strata serve: decode expert cache hit rate: 85.1% (49701 hits / 58436 lookups)
+strata serve: file tier I/O this request: the OS read 27636.6 MB from storage (6585 major faults) for 34701.1 MB of expert reads
+strata serve: decode expert cache hit rate: 81.5% (47155 hits / 57884 lookups)
+strata serve: file tier I/O this request: the OS read 9683.4 MB from storage (5528 major faults) for 25068.0 MB of expert reads
+strata serve: decode expert cache hit rate: 67.1% (34938 hits / 52030 lookups)
+strata serve: file tier I/O this request: the OS read 8401.6 MB from storage (888450 major faults) for 32154.3 MB of expert reads
+strata serve: decode expert cache hit rate: 89.3% (57145 hits / 64013 lookups)
+strata serve: file tier I/O this request: the OS read 2488.9 MB from storage (602539 major faults) for 19060.4 MB of expert reads
+strata serve: decode expert cache hit rate: 68.6% (8669 hits / 12634 lookups)
+strata serve: file tier I/O this request: the OS read 46468.0 MB from storage (7032 major faults) for 36283.3 MB of expert reads
+strata serve: decode expert cache hit rate: 87.3% (12264 hits / 14041 lookups)
+strata serve: file tier I/O this request: the OS read 17517.3 MB from storage (699620 major faults) for 23060.1 MB of expert reads
+strata serve: decode expert cache hit rate: 93.3% (12591 hits / 13496 lookups)
+strata serve: file tier I/O this request: the OS read 13917.3 MB from storage (3365575 major faults) for 21593.7 MB of expert reads
+strata serve: no step finished for 60 s, but the file tier is still being read (slow storage or low RAM): waiting up to 600 s in all (STRATA_WATCHDOG_IO_S) (#1407)
+strata serve: stall report (engine 0.1.43.1): stage "reading the prompt (batched): layer 40 of the prompt chunk from token 0" for 82 s; 0 layers served since the last finished step (0 = stopped, more = slow)
+strata serve: decode expert cache hit rate: 83.9% (18369 hits / 21897 lookups)
+strata serve: file tier I/O this request: the OS read 42288.1 MB from storage (17005 major faults) for 30923.5 MB of expert reads
+strata serve: decode expert cache hit rate: 81.0% (30461 hits / 37596 lookups)
+strata serve: file tier I/O this request: the OS read 16021.9 MB from storage (3721649 major faults) for 29575.9 MB of expert reads
