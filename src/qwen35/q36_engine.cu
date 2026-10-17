@@ -592,6 +592,14 @@ __global__ void k_merge_cpu(float* parts, const float* cpu, const int32_t* miss,
     if (!miss[e]) return;
     for (int i = threadIdx.x; i < n; i += blockDim.x) parts[(size_t) e * n + i] = cpu[(size_t) e * n + i];
 }
+/// STRATA_Q36_HELPER_ASYNC: a helper's rows merged into the entries' rows where the per-entry mask marks
+/// them (1 = the helper computed that entry).  The deferred upload stages the helper's sparse rows and
+/// merges exactly those entries, so it never overwrites a row a local path computed.  grid (n_ent), block 256.
+__global__ void k_merge_helper(float* parts, const float* helper, const uint8_t* mask, int n) {
+    const int e = blockIdx.x;
+    if (!mask[e]) return;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) parts[(size_t) e * n + i] = helper[(size_t) e * n + i];
+}
 /// The prompt attention's FP16 operands: cells [0, P) of each KV head's K / V (cache rows ctx apart) into compact
 /// [kvh][P][HD] halves.  grid1(HKV * P * HD).  KI8 / VI8 (--kv): the codes dequantized with their group's FP16 scale
 /// (a FP32 store passes its scales as null).
@@ -1473,6 +1481,39 @@ struct Engine {
     std::vector<int8_t> helper_of_layer;   // [n_layers]: -1 local, else 0..2 the helper's index
     int helper_count = 0;
     bool helpers_enabled() const { return helper_count > 0; }
+    /// STRATA_Q36_HELPER_ASYNC (opt-in): moe_helpers() launches the helper where it always did (so the
+    /// helper GPU starts at once), but the host's blocking wait for that GPU's result - the eparts
+    /// upload of the rows it computed - is deferred to moe_helpers_wait(), after the layer's own
+    /// work (the local grouped kernel, the shared expert, the CPU pool) has been issued, so that work
+    /// overlaps the helper's compute instead of following it.  Nothing else moves: the same helper
+    /// computes this layer's rows and no other (finish() runs before the next layer's begin()), so
+    /// helper_out / h_x_ stay single-slot, and the per-entry mask is still written and read inside
+    /// this layer only - the local paths take the entries the mask leaves at 0 exactly as before, so
+    /// a deferred row lands where that entry's row always lands, and nothing a local path computed is
+    /// overwritten.
+    ///
+    /// CUDA graph: this does not add a capture hazard, but not for the reason it may look like - helpers
+    /// are NOT limited to the hybrid placement, so use_graph is not always false when a helper is on
+    /// (place_experts returns early when every expert fits in VRAM, and its mtp_only branch clears
+    /// main_hybrid, while open_helpers can still hand a layer to a helper either way).  The reason is
+    /// that this path already makes two calls that are illegal under stream capture, before and
+    /// independently of this flag: moe_helpers's own cudaStreamSynchronize(st) and RemoteExperts::finish's
+    /// sync of the helper's stream.  A captured graph can therefore never contain this path, and the
+    /// deferral only moves statements between two points of a host-side sequence that is already
+    /// uncapturable.  (That pre-existing hazard - all experts in VRAM or mtp_only, plus a helper, plus a
+    /// graph - is untouched by this flag and does not fire on any configuration measured here.)
+    ///
+    /// Failure policy: a deferred finish() failure ends the run (std::exit) instead of falling back the
+    /// way the synchronous path does.  The layer's local launches were already queued against the mask
+    /// this helper's rows are missing from, so an all-zero mask could only be honoured by re-running that
+    /// layer's local work - not worth building for a CUDA error that dooms the run anyway.
+    ///
+    /// Off by default: with the variable unset moe_helpers() finishes the helper where it always has and
+    /// moe_helpers_wait() returns at once.
+    bool helper_async() const {
+        static const bool on = std::getenv("STRATA_Q36_HELPER_ASYNC") != nullptr;
+        return on;
+    }
     /// Whether state index li's layer is offered to a helper (the entries the helper holds leave the local path).
     bool helper_layer(size_t li) const {
         // only main-model layers carry a helper slot: the MTP block (li == m->layers.size()) stays local
@@ -1508,9 +1549,16 @@ struct Engine {
     int32_t* h_helper_ids = nullptr;
     float* h_helper_x = nullptr;
     float* helper_out = nullptr;   // [n_entries][N] the helpers' rows (sparse; finish() scatters by row)
+    float* helper_stage = nullptr;   // STRATA_Q36_HELPER_ASYNC: [n_entries][N] the deferred upload's staging
     std::vector<uint8_t> helper_mask;
     uint8_t* d_helper_mask = nullptr;   // [n_entries] the same mask, on the device
     int helper_mask_li = -1;   // the state index whose window helper_mask belongs to (-1: none)
+    // STRATA_Q36_HELPER_ASYNC: the helper whose rows this layer is still waiting for (its index),
+    // that window's entry count, and the window's embedding width.  -1 = nothing pending, which is
+    // the state every layer is left in.
+    int helper_wait_hi = -1;
+    int64_t helper_wait_ent = 0;
+    int helper_wait_N = 0;
     Q36ExpertSource helper_src;
     cudaEvent_t ev_route = nullptr;
     uint8_t* stage[2] = {};
@@ -2434,6 +2482,11 @@ struct Engine {
         }
         if (!ext) f32mm(L.sh_gate_inp, h, sgate, N, 1, T);
         if (hy_rows) moe_hybrid_cpu(li, T);   // the CPU pool's experts (while the GPU runs the rest), merged
+        // STRATA_Q36_HELPER_ASYNC: the deferred scatter of the helper's rows into `eparts`, after this layer's
+        // own work (the local grouped kernel, the shared expert, the CPU pool) has been issued and before
+        // moe_end combines the entries' rows.  Without the variable this is a no-op: the whole window
+        // (wait + scatter) already happened inside moe_helpers above.
+        moe_helpers_wait(li);
         // the combine, the shared expert's gate, the residual add and the next norm in one launch
         moe_end(T, prow, sy, ext ? logits_r + g.n_expert : sgate, wn, hout, ext ? (int) g.n_expert + 1 : 1);
     }
@@ -2607,8 +2660,45 @@ struct Engine {
         CK(cudaStreamSynchronize(st));
         std::string err;
         strata::core::RemoteExperts& help = helpers[(size_t) hi];
-        if (!help.begin((int64_t) li, h_helper_x, h_helper_ids, T, Kp, nullptr, nullptr, err) ||
-            !help.finish(helper_out, err)) {
+        if (!help.begin((int64_t) li, h_helper_x, h_helper_ids, T, Kp, nullptr, nullptr, err)) {
+            std::fprintf(stderr, "strata-q36: helper CUDA%d, layer %zu: %s\n", hi + 1, li, err.c_str());
+            helper_failed = true;
+            // an all-zero mask on the device, so the local paths redo the whole window (every row is then written
+            // by the local kernels and the helper's partial rows are overwritten)
+            helper_mask_li = (int) li;
+            CK(cudaMemcpyAsync(d_helper_mask, helper_mask.data(), (size_t) n_ent, cudaMemcpyHostToDevice, st));
+            return false;
+        }
+        if (helper_async()) {
+            // STRATA_Q36_HELPER_ASYNC: the per-entry mask goes up now (the local grouped kernel and the
+            // CPU pool read it and must keep the same split they always had), but the eparts upload of
+            // the rows this helper computes is deferred to moe_helpers_wait(), after the layer's own
+            // work has been issued.  The helper already computed the entries it holds, so only its own
+            // rows are uploaded (merged over the mask), never overwriting a row a local path owns.
+            for (int64_t i = 0; i < n_ent; ++i) {
+                if (!help.owns(i)) continue;
+                helper_mask[(size_t) i] = 1;
+                ++hy_helper;
+            }
+            CK(cudaMemcpyAsync(d_helper_mask, helper_mask.data(), (size_t) n_ent, cudaMemcpyHostToDevice, st));
+            helper_mask_li = (int) li;
+            helper_wait_hi = hi;
+            helper_wait_ent = n_ent;
+            helper_wait_N = N;
+            return true;
+        }
+        return helper_finish(hi, li, N, n_ent);
+    }
+    /// The second half of a helper window, on the default (synchronous) path: block on the helper's GPU,
+    /// upload its rows, mark the per-entry mask.  Byte-identical to the statement order the path always
+    /// had - only STRATA_Q36_HELPER_ASYNC reorders it.
+    bool helper_finish(int hi, size_t li, int N, int64_t n_ent) {
+        helper_wait_hi = -1;
+        helper_wait_ent = 0;
+        helper_wait_N = 0;
+        strata::core::RemoteExperts& help = helpers[(size_t) hi];
+        std::string err;
+        if (!help.finish(helper_out, err)) {
             std::fprintf(stderr, "strata-q36: helper CUDA%d, layer %zu: %s\n", hi + 1, li, err.c_str());
             helper_failed = true;
             // an all-zero mask on the device, so the local paths redo the whole window (every row is then written
@@ -2629,6 +2719,41 @@ struct Engine {
         }
         CK(cudaMemcpyAsync(d_helper_mask, helper_mask.data(), (size_t) n_ent, cudaMemcpyHostToDevice, st));
         return true;
+    }
+
+    /// STRATA_Q36_HELPER_ASYNC: the deferred finish() of the layer currently being computed, issued
+    /// after that layer's own work (the local grouped kernel, the shared expert, the CPU pool) and
+    /// before moe_end combines the entries' rows.  finish() blocks until the helper has finished, so
+    /// this is where the helper's compute time is paid - behind this layer's own launches instead of
+    /// in front of them.  The rows land in `eparts` through `helper_stage` and a merge over the mask
+    /// this layer already uploaded: it writes exactly the entries the helper computed (mask bit 1) and
+    /// leaves every row a local path owns (mask bit 0) alone, where the synchronous whole-window
+    /// upload relied on those rows being overwritten later.  Without the variable this is a no-op and
+    /// nothing is ever left pending.
+    void moe_helpers_wait(size_t li) {
+        if (!helper_async() || helper_wait_hi < 0) return;
+        const int hi = helper_wait_hi;
+        const int64_t n_ent = helper_wait_ent;
+        const int wN = helper_wait_N;
+        helper_wait_hi = -1;
+        helper_wait_ent = 0;
+        helper_wait_N = 0;
+        strata::core::RemoteExperts& help = helpers[(size_t) hi];
+        std::string err;
+        if (!help.finish(helper_out, err)) {
+            // A deferred failure cannot fall back the way a synchronous one does: this layer's local
+            // launches were already queued against the helper's mask, so the entries the helper took
+            // have nothing computing them, and an all-zero mask could only be honoured by re-running
+            // this layer's local work.  Not worth building for a CUDA error that dooms the run - so
+            // the run ends here, with the reason.
+            std::fprintf(stderr, "strata-q36: helper CUDA%d, layer %zu: %s\n", hi + 1, li, err.c_str());
+            std::fprintf(stderr, "strata-q36: STRATA_Q36_HELPER_ASYNC defers the helper's wait past this "
+                                 "layer's local launches, so a deferred helper failure ends the run\n");
+            std::exit(1);
+        }
+        // Stage the helper's sparse rows, then merge them into `eparts` where the mask marks them.
+        CK(cudaMemcpyAsync(helper_stage, helper_out, (size_t) n_ent * wN * 4, cudaMemcpyHostToDevice, st));
+        k_merge_helper<<<(unsigned) n_ent, kThreads, 0, st>>>(eparts, helper_stage, d_helper_mask, (int) wN);
     }
     /// Whether a helper computed part of state index li's current window, so the local grouping must leave those
     /// entries out and the CPU pool must keep off them.  False for a layer no helper was offered (moe_helpers was
@@ -4272,6 +4397,11 @@ bool open_helpers(Model& m, Engine& E, const std::array<int, 3>& want, const std
     // reaches place_experts' hybrid branch, where this is otherwise allocated
     if (E.d_helper_mask == nullptr) CK(cudaMalloc(&E.d_helper_mask, E.tmax * (size_t) m.top_k));
     CK(cudaHostAlloc((void**) &E.helper_out, T * (size_t) m.top_k * (size_t) g.n_embd * 4, cudaHostAllocDefault));
+    // STRATA_Q36_HELPER_ASYNC: the helpers' sparse rows staged on the device for the deferred merge into
+    // `eparts` (only the entries the per-entry mask marks are written from it).  Allocated only when the
+    // variable is set, so a default run's allocations are byte-for-byte what they were.
+    if (E.helper_async())
+        CK(cudaMalloc(&E.helper_stage, T * (size_t) m.top_k * (size_t) g.n_embd * 4));
     return true;
 }
 
