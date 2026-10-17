@@ -2108,6 +2108,15 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
   against the FP16 prompt path (IQ3_XXS, `--prefill auto`): 8K prompt KL 0.042 (0.1.39: 0.054), top-1 agreement
   93.5% (92.2%); 32K prompt KL 0.020 (0.019), top-1 95.3% (95.0%) - the same band as before. `STRATA_RING_BYTES=0`
   restores 0.1.39's ring, loan and chunk choice.
+- **Where a prompt chunk's time went (opt-in, `STRATA_PREFILL_STAGES=1`; off when unset):** the engine prints one
+  line a stage a chunk (the Maya checkout's spelling `STRATA_GLM_PREFILL_STAGES` is accepted as the same knob) - the
+  chunk's wall, the copy lane's own span split into what ran before it (lead), the lane itself and what ran
+  behind it (tail), the bytes it moved and the bytes the chunk's consumers waited on (the difference is the ring's
+  read-ahead), the hand-off a later stage of a layer split paid, the GPU's own phases over the chunk, and the experts
+  and host time it spent. Without it a prefill change can only be judged by the prompt's ms/token, which mixes the
+  chunk size, the copy lane, the host and the phases. The syncs it adds wait only on copies the compute stream has
+  already waited for (the issuer is joined when the chunk ends); setting and unsetting the variable beside a
+  `--bench` A/B is how to check it costs nothing.
 
 The full story, with measurements, bottlenecks and what comes next: **[docs/paper/Strata-Paper.pdf](paper/Strata-Paper.pdf)**.
 

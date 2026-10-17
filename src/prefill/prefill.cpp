@@ -958,6 +958,30 @@ struct Prefill::Impl {
     // the event that releases each ring slot: its own `used`, or - when an MMQ group is gathered in one launch - the
     // `used` of the last slot gathered with it, recorded once for all of them (a later record only waits longer)
     int used_of[RING_MAX] = {};
+    // THE CHUNK'S STAGE LINE (STRATA_PREFILL_STAGES, opt-in: unset is off; the Maya checkout's spelling works too).
+    // A prompt chunk is one long copy lane (the streamed experts) beside the compute stream, and until this line
+    // nothing said where its wall went: the phase timing prints only at a run's end.  st_a/st_b bracket the chunk on
+    // the compute stream, st_h0/st_h1 a later stage's hand-in; the phase sums and the counters are snapshotted at the
+    // chunk's start and the line prints their deltas, with the bytes the chunk's consumers waited on.  The events
+    // are created in `init` and destroyed with the rest of the prompt path (`release`), so a rebuilt layout leaks none.
+    bool stages = true;
+    cudaEvent_t st_a = nullptr, st_b = nullptr;    // the chunk, on the compute stream
+    cudaEvent_t st_h0 = nullptr, st_h1 = nullptr;  // the hand-in, on the receiving stream
+    cudaEvent_t st_c0 = nullptr, st_c1 = nullptr;  // the copy lane, on the copy stream: its first issued entry and its
+                                                   // last recorded one (lead + lane + tail = wall).  Strata's lane is
+                                                   // one span: its ring waits are inside it, not the Maya checkout's
+                                                   // per-layer groups of wait/copies/gaps, because the ring here is
+                                                   // a linear sequence a slot ahead, not a borrow a layer at a time
+    bool st_c_done = false;                        // ... the last entry was issued this chunk (else the span reads -1)
+    int64_t st_chunk_i = 0, st_chunk_n = 0;        // this chunk's ordinal and the prompt's chunk count
+    int64_t st_prompt_chunks = 0;                  // the prompt's own sums (printed after the chunk loop)
+    double st_prompt_wall = 0.0, st_prompt_hop = 0.0;
+    std::vector<double> st_ph0;                    // the phase timer's sums when the chunk started (kPfCount)
+    PrefillStats st_stats0{};                      // the counters when the chunk started
+    double st_host0[3] = {};                       // host_sync_ms, host_setup_ms, host_chunk_ms at that moment
+    uint64_t st_bytes = 0;                         // the streamed blobs this chunk's consumers waited on
+    uint64_t st_moved = 0;                         // ... and the ones its issuer moved (the difference is the read-ahead
+    uint64_t st_disk = 0;                          //     still in flight, the ring's worth);  ... of which off disk
     // PLE
     float* ple_emb = nullptr;
     std::vector<float> ple_pageable[2];      // the fallback when no more RAM can be pinned
@@ -1052,6 +1076,14 @@ void Prefill::release() {
         if (impl_->copied[i]) cudaEventDestroy(impl_->copied[i]);
         if (impl_->used[i]) cudaEventDestroy(impl_->used[i]);
     }
+    // the stage line's events go with the rest of the prompt path: the pool is grown on demand and a layout can be
+    // rebuilt (a relayout, the vision lend), so leaked ones would accumulate with every rebuild
+    if (impl_->st_a) cudaEventDestroy(impl_->st_a);
+    if (impl_->st_b) cudaEventDestroy(impl_->st_b);
+    if (impl_->st_h0) cudaEventDestroy(impl_->st_h0);
+    if (impl_->st_h1) cudaEventDestroy(impl_->st_h1);
+    if (impl_->st_c0) cudaEventDestroy(impl_->st_c0);
+    if (impl_->st_c1) cudaEventDestroy(impl_->st_c1);
     for (int b = 0; b < 2; ++b) {
         if (impl_->hand[b]) cudaFreeHost(impl_->hand[b]);
         if (impl_->hand_done[b]) cudaEventDestroy(impl_->hand_done[b]);
@@ -1078,6 +1110,20 @@ void Prefill::release() {
 }
 
 namespace {
+// STRATA_PREFILL_STAGES (opt-in: unset is off, =1 turns it on): the chunk's stage line - where a prompt chunk's
+// wall went, one line a stage a chunk.  From the Maya checkout's local commit a34f57c, spelled the same way there
+// (STRATA_GLM_PREFILL_STAGES), which is accepted here too so a config written for that checkout runs unchanged.  It is
+// what turns a prefill change from "the prompt read in X ms/token" into "this stage, this stretch of the chunk": it
+// turns the phase timer on with it, and every chunk's line prints the chunk's own delta of that timer.
+bool stages_on() {
+    static const bool v = [] {
+        const char* s = std::getenv("STRATA_PREFILL_STAGES");
+        if (s == nullptr) s = std::getenv("STRATA_GLM_PREFILL_STAGES");
+        return s != nullptr && s[0] != '\0' && std::atoi(s) != 0;
+    }();
+    return v;
+}
+
 constexpr int64_t GEMM_SCRATCH = 32ll << 20;        // FP16 elements for the largest dequantized dense weight
 constexpr size_t GEMM_WS = 32u << 20;               // cuBLAS workspace
 
@@ -1288,6 +1334,14 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     for (int i = 0; i < ring_cap(); ++i) {
         if (cudaEventCreateWithFlags(&m.copied[i], cudaEventDisableTiming) != cudaSuccess) ok = false;
         if (cudaEventCreateWithFlags(&m.used[i], cudaEventDisableTiming) != cudaSuccess) ok = false;
+    }
+    m.stages = stages_on();
+    if (m.stages) {
+        // The chunk stage line's events (a create that fails leaves its event null: the line's sums then read -1,
+        // which the line says - never a failed prompt).
+        for (cudaEvent_t* e : {&m.st_a, &m.st_b, &m.st_h0, &m.st_h1, &m.st_c0, &m.st_c1})
+            if (cudaEventCreateWithFlags(e, cudaEventDisableTiming) != cudaSuccess) { cudaGetLastError(); *e = nullptr; }
+        std::fprintf(stderr, "strata prefill: CUDA%d the chunk stage line is on (STRATA_PREFILL_STAGES)\n", m.device);
     }
     if (!m.stager) {
         m.stager = std::make_unique<Stager>();
@@ -2294,7 +2348,7 @@ const char* const kPfNames[kPfCount] = {"embed+steps", "hc read", "gdn", "qsa pr
                                         "gemm gate/up", "gemm down", "combine", "ple", "kv stage", "gdn conv+gates",
                                         "gdn recurrence", "gdn out proj"};
 struct PfTimer {
-    bool on = std::getenv("STRATA_PREFILL_TIMING") != nullptr;
+    bool on = std::getenv("STRATA_PREFILL_TIMING") != nullptr || stages_on();
     std::vector<cudaEvent_t> ev;
     std::vector<int> ph;
     size_t used = 0;
@@ -2478,6 +2532,73 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     std::string ple_next_err;
     std::future<bool> ple_next;             // declared after everything it reads: an early return waits for it
     int ple_buf = 0;
+    m.st_prompt_wall = m.st_prompt_hop = 0.0;   // the stage line's per-prompt sums
+    m.st_prompt_chunks = 0;
+    m.st_chunk_i = 0;
+    // THE CHUNK'S STAGE LINE.  From the Maya checkout's local commit a34f57c (`STRATA_GLM_PREFILL_STAGES` there, the
+    // same knob here): one line a stage a chunk saying where the chunk's wall went, because until it a prompt change
+    // could only be judged by the prompt's ms/token, which mixes the chunk size, the copy lane, the host and the
+    // phases.  That checkout split its lane into ring waits, copies and the gaps between a layer's groups of staged
+    // experts; this path's lane is one linear sequence over a ring (a slot is refilled the moment its entry is
+    // consumed), so the lane is one span here, and what that checkout did not have - this path's own phase timer - is
+    // printed as the chunk's delta of it.  lead + lane + tail = wall: before the lane the chunk's embedding and its first layers run (and,
+    // on a later stage, the hand-off lands), behind it the last experts compute.  The syncs it adds wait on nothing
+    // that is not already done: the compute stream waited on every copy before the expert that reads it ran, and the
+    // issuer is joined at the chunk's end, so setting and unsetting `STRATA_PREFILL_STAGES` beside an A/B is what
+    // checks that it costs nothing.  An event that failed to be created reads -1 in its field, never a failed prompt.
+    auto stage_line = [&](int64_t ntok) -> bool {
+        if (m.st_b != nullptr) cudaEventRecord(m.st_b, cs);
+        if (cudaStreamSynchronize(cs) != cudaSuccess) {
+            err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError());
+            return false;
+        }
+        pt.fold();
+        if (m.st_c_done) {   // the lane's events: recorded after the last copy, so a wait here is a no-op or a moment
+            if (cudaEventSynchronize(m.st_c0) != cudaSuccess) cudaGetLastError();
+            if (cudaEventSynchronize(m.st_c1) != cudaSuccess) cudaGetLastError();
+        }
+        // a query that fails reads -1 in its field and clears its own error: the sticky state is read after a prompt
+        // (the run's own check), and a line that cannot measure must not fail a prompt
+        const auto el = [](cudaEvent_t a, cudaEvent_t b) {
+            float v = 0.0f;
+            if (a == nullptr || b == nullptr) return -1.0;
+            if (cudaEventElapsedTime(&v, a, b) != cudaSuccess) { cudaGetLastError(); return -1.0; }
+            return (double) v;
+        };
+        const double wall = el(m.st_a, m.st_b);
+        const double lane = m.st_c_done ? el(m.st_c0, m.st_c1) : -1.0;
+        const double lead = m.st_c_done ? el(m.st_a, m.st_c0) : -1.0;
+        const double tail = m.st_c_done ? el(m.st_c1, m.st_b) : -1.0;
+        const double hop = el(m.st_h0, m.st_h1);   // (never recorded on the first stage: the embeddings are made here)
+        char ph[640] = {};
+        size_t pn = 0;
+        for (int i = 0; i < kPfCount; ++i) {
+            const double d = pt.ms[i] - m.st_ph0[(size_t) i];
+            if (d < 1.0) continue;   // (the phase timer's marks are folded at the chunk's own syncs: >=1 ms or noise)
+            pn += (size_t) std::snprintf(ph + pn, sizeof ph - pn, "%s%s %.0f", pn ? ", " : "", kPfNames[i], d);
+        }
+        const double gb = 1073741824.0;
+        const double moved = (double) m.st_moved / gb, waited = (double) m.st_bytes / gb;
+        const int64_t d_streamed = stats_.experts_streamed - m.st_stats0.experts_streamed;
+        const int64_t d_dma = stats_.experts_dma - m.st_stats0.experts_dma;
+        const int64_t d_res = stats_.experts_resident - m.st_stats0.experts_resident;
+        const int64_t d_cpu = stats_.experts_cpu - m.st_stats0.experts_cpu;
+        std::fprintf(stderr,
+                     "strata prefill: CUDA%d chunk %lld/%lld, %lld tokens, wall %.0f ms | the copy lane %.0f ms: lead "
+                     "%.0f, tail %.0f | moved %.2f GB (disk %.2f) at %.1f GB/s, the consumers waited on %.2f GB (%lld "
+                     "blobs%s) | hop in %.0f ms | gpu: %s | experts: streamed %lld (dma %lld), resident %lld, cpu "
+                     "%lld | host: staging %.0f ms, setup %.0f ms, sync %.0f ms, chunk %.0f ms\n",
+                     m.device, (long long) m.st_chunk_i, (long long) m.st_chunk_n, (long long) ntok, wall, lane, lead, tail,
+                     moved, (double) m.st_disk / gb, lane > 1.0 ? moved / (lane / 1000.0) : 0.0, waited,
+                     (long long) d_streamed, m.st_moved == 0 ? ": none streamed" : "", hop, ph[0] ? ph : "(none over 1 ms)",
+                     (long long) d_streamed, (long long) d_dma, (long long) d_res, (long long) d_cpu,
+                     stats_.ms_experts_host - m.st_stats0.ms_experts_host, host_setup_ms - m.st_host0[1],
+                     host_sync_ms - m.st_host0[0], host_chunk_ms - m.st_host0[2]);
+        m.st_prompt_wall += wall > 0.0 ? wall : 0.0;
+        m.st_prompt_hop += hop > 0.0 ? hop : 0.0;
+        ++m.st_prompt_chunks;
+        return true;
+    };
 
     if (hand_in_ == nullptr) stopped_at_ = -1;
     for (int64_t c0 = 0; c0 < n; c0 += C) {
@@ -2493,10 +2614,21 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         core::progress_at("reading the prompt (batched): preparing the chunk from token", p0);   // #251
         ++stats_.chunks;
         pt.mark(kPfStart, cs);
+        if (m.stages) {   // the chunk's own span, and the sums its line prints the deltas of
+            ++m.st_chunk_i;
+            m.st_chunk_n = (n + m.T - 1) / m.T;
+            if (m.st_a != nullptr) cudaEventRecord(m.st_a, cs);
+            m.st_ph0.assign(pt.ms, pt.ms + kPfCount);
+            m.st_stats0 = stats_;
+            m.st_host0[0] = host_sync_ms; m.st_host0[1] = host_setup_ms; m.st_host0[2] = host_chunk_ms;
+            m.st_bytes = m.st_moved = m.st_disk = 0;
+            m.st_c_done = false;
+        }
         const auto tsetup = Clock::now();
         // ---- embeddings, broadcast to the four streams - or, in a later stage of a layer split, the rows the
         // previous stage handed on
         if (hand_in_ != nullptr && hand_ev_ != nullptr) {
+            if (m.stages && m.st_h0 != nullptr) cudaEventRecord(m.st_h0, m.cs);   // the hop in, on the receiving stream
             // STRATA_HANDOFF_PIPE: each piece's upload waits on the GPU for its download on the stage before.  The
             // stage before split the chunk it handed on (n rows); one chunk here is all of it, otherwise (a smaller
             // chunk here) every piece is waited for before the one copy.
@@ -2519,12 +2651,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                       cudaGetErrorString(cudaGetLastError());
                 return false;
             }
+            if (m.stages && m.st_h1 != nullptr) cudaEventRecord(m.st_h1, m.cs);
         } else if (hand_in_ != nullptr) {
+            if (m.stages && m.st_h0 != nullptr) cudaEventRecord(m.st_h0, m.cs);   // the hop in, on the receiving stream
             if (cudaMemcpyAsync(m.R, hand_in_ + (size_t) c0 * D, (size_t) T * D * 4, cudaMemcpyHostToDevice, m.cs) !=
                 cudaSuccess) {
                 err = "prefill: the layer split's hand-off upload failed";
                 return false;
             }
+            if (m.stages && m.st_h1 != nullptr) cudaEventRecord(m.st_h1, m.cs);
         }
         // C-4: the whole chunk's rows in one gather (the same per-element arithmetic as the per-token path, so the
         // same bits); a chunk with picture rows, or a token outside the table, takes the per-token path
@@ -2770,6 +2905,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 const int sl = (int) (issued % (size_t) m.ring);
                 const auto th = Clock::now();
                 const size_t bytes = (size_t) lay0.blob_bytes(en.l);
+                if (m.stages && issued == 0 && m.st_c0 != nullptr) cudaEventRecord(m.st_c0, m.copy);   // the lane in
                 if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
                 if (en.job < 0) {
                     cudaMemcpyAsync(m.stage_dev[sl], en.blob, bytes, cudaMemcpyHostToDevice, m.copy);
@@ -2783,6 +2919,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 m.stage_live[sl] = true;
                 stats_.ms_experts_host += ms_since(th);
                 ++stats_.experts_streamed;
+                if (m.stages) {
+                    m.st_moved += bytes;
+                    if (en.job >= 0) m.st_disk += bytes;
+                    if (issued + 1 == seq.size() && m.st_c1 != nullptr) {   // the last copy: the lane's span ends
+                        cudaEventRecord(m.st_c1, m.copy);
+                        m.st_c_done = true;
+                    }
+                }
                 ++issued;
             }
         };
@@ -2818,6 +2962,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const int sl = (int) (idx % (size_t) m.ring);
                     const auto th = Clock::now();
                     const size_t bytes = (size_t) lay0.blob_bytes(en.l);
+                    if (m.stages && idx == 0 && m.st_c0 != nullptr) cudaEventRecord(m.st_c0, m.copy);   // the lane in
                     if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
                     if (en.job < 0) {
                         cudaMemcpyAsync(m.stage_dev[sl], en.blob, bytes, cudaMemcpyHostToDevice, m.copy);
@@ -2831,6 +2976,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     m.stage_live[sl] = true;
                     iss_ms += ms_since(th);
                     ++iss_streamed;
+                    if (m.stages) {
+                        m.st_moved += bytes;
+                        if (en.job >= 0) m.st_disk += bytes;
+                        if (idx + 1 == seq.size() && m.st_c1 != nullptr) {   // the last copy: the lane's span ends
+                            cudaEventRecord(m.st_c1, m.copy);
+                            m.st_c_done = true;
+                        }
+                    }
                     a_issued.store(idx + 1, std::memory_order_release);
                 }
             });
@@ -3444,6 +3597,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 pt.mark(kPfWaitCopy, cs);
                                 wait_issued(k - 1);
                                 cudaStreamWaitEvent(m.cs, m.copied[(k - 1) % (size_t) m.ring], 0);
+                                if (m.stages)
+                                    for (size_t kk = k0; kk < k; ++kk) m.st_bytes += (size_t) lay0.blob_bytes(seq[kk].l);
                             }
                             pt.mark(kPfGemmGU, cs);
                             if (fused_nat) {
@@ -4215,6 +4370,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             if (gg_nslots > 0) {   // the copies land in order: the last one covers the others
                                 pt.mark(kPfWaitCopy, cs);
                                 cudaStreamWaitEvent(m.cs, m.copied[gg_slots[gg_nslots - 1]], 0);
+                                if (m.stages) m.st_bytes += (uint64_t) (gg.n - gg.first) * lay.blob_bytes(l);
                                 pt.mark(kPfDequant, cs);
                             }
                             // NVFP4: each expert's scales go next to its group slot in the same launch
@@ -4393,6 +4549,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                         pt.mark(kPfWaitCopy, cs);
                                         cudaStreamWaitEvent(m.cs, m.copied[stage_of[j]], 0);
                                     }
+                                    if (m.stages) m.st_bytes += lay.blob_bytes(l);
                                     if (!compute(j, m.stage_dev[stage_of[j]], stage_of[j], -1)) return false;
                                     --pending;   // compute recorded the slot's release event before any reuse
                                 }
@@ -4421,6 +4578,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     if (!group_gather) {
                                         pt.mark(kPfWaitCopy, cs);
                                         cudaStreamWaitEvent(m.cs, m.copied[sl], 0);
+                                        if (m.stages) m.st_bytes += lay.blob_bytes(l);
                                     }
                                     if (!compute(j, m.stage_dev[sl], sl, -1)) return false;
                                     consumed = ++k;
@@ -4626,6 +4784,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 return next_->run_impl(tokens + c0, T, p0, next_err_);
             });
             hand_buf_ ^= 1;
+            if (m.stages && !stage_line(T)) return false;   // this stage's chunk line (the chain's last one reports too)
             continue;   // the last stage reports the chunk (on_chunk)
         }
         if (const char* dump = std::getenv("STRATA_PREFILL_DUMP_R")) {   // debug: the final residuals, every 64th
@@ -4675,7 +4834,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             host_sync_ms += std::chrono::duration<double, std::milli>(toc2 - toc).count();
             host_chunk_ms += ms_since(toc2);
         }
+        if (m.stages && !stage_line(T)) return false;
     }
+    if (m.stages && m.st_prompt_chunks > 0)   // the prompt's own line: one a part, as the Maya checkout prints it
+        std::fprintf(stderr,
+                     "strata prefill: CUDA%d the prompt: %lld chunks, the chunks walled %.0f ms (%.0f ms a chunk), the "
+                     "hop ins %.0f ms\n",
+                     m.device, (long long) m.st_prompt_chunks, m.st_prompt_wall,
+                     m.st_prompt_wall / (double) m.st_prompt_chunks, m.st_prompt_hop);
     // Do not drain the successor here. This is the overlap: an intermediate
     // stage can return while later GPUs are still processing the previous chunk.
     ss.ple_prev[0] = prev[0];
