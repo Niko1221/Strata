@@ -5018,7 +5018,19 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
         refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
     cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
            "--port", str(port or cfg.get("port", 8080))]
-    if cfg.get("backend") == "hip":                    # AMD, numbered as HIP numbers them (setup's KFD order)
+    if cfg.get("backend") == "sycl" and WIN:
+        cmd[1] = str(ROOT / "sycl" / "serve" / "server_intel.py")
+        found = []
+        if isinstance(gpu, list):
+            cfg["gpu"], cfg["gpus_asked"] = gpu, True
+            cfg["layer_split"] = layer_split or cfg.get("layer_split") or "auto"
+            write_config(cfg_path, cfg)
+            gpu = None
+        elif gpu is not None:
+            cfg["gpu"] = gpu
+            cfg.setdefault("env", {})["ONEAPI_DEVICE_SELECTOR"] = f"level_zero:{gpu}"
+            write_config(cfg_path, cfg)
+    elif cfg.get("backend") == "hip":                    # AMD, numbered as HIP numbers them (setup's KFD order)
         if WIN:
             hip_runtime_beside_exe(Path(cfg["exe"]).parent)   # #468 #461: also fixes a 0.1.34 install
         amd = amd_gpus()
@@ -5053,7 +5065,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
         OLD_GPUS = OLD_GPUS or old_gpus_opt_in(found, gpu if isinstance(gpu, list) else [gpu] if gpu is not None else
                                                cfg.get("gpu") if isinstance(cfg.get("gpu"), list) else [cfg.get("gpu")],
                                                12 if config_toolkit(cfg) == 12 else None)
-    if cfg.get("backend") == "hip":
+    if cfg.get("backend") == "hip" or (WIN and cfg.get("backend") == "sycl"):
         pass
     elif isinstance(gpu, list):                        # --gpus: saved, this model runs on these cards from now on
         check_gpus(gpu, found, yes=yes, named=True)
@@ -5072,7 +5084,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
     # #364 #384: a resident low-RAM config on several GPUs; #498: a UD-Q4_K_XL config with its RAM budget (by hand)
     if isinstance(use, list) and (split_mmap(cfg) | split_budget(cfg)):
         write_config(cfg_path, cfg)
-    if cfg.get("backend") == "hip":
+    if cfg.get("backend") == "hip" or (WIN and cfg.get("backend") == "sycl"):
         pass
     elif isinstance(use, list):
         check_gpus(use, found, "(chosen for this model) ", yes=True, named=True)
@@ -5568,8 +5580,7 @@ def sycl_setup(argv) -> int:
     say("  Intel Arc (--backend sycl): supported since 0.1.40.2 on Linux, tested on an Arc Pro B70 (xe) and an Arc A750 "
         "(i915); other Arc cards and driver versions are untested, and reports help (docs/INTEL.md).")
     if WIN:
-        fail("the Intel Arc engine has no Windows setup yet (no ready-made Intel engine either)",
-             "run it on Linux (Ubuntu 24.04 with Intel's GPU driver and oneAPI): docs/INTEL_ARC.md")
+        say("  Windows uses the native SYCL executable, without Docker or WSL.")
     say("  There is no ready-made Intel engine: it is built from source with Intel oneAPI (icpx + oneMKL),")
     say("  docs/INTEL_ARC.md. Setup continues with sycl/setup_intel.py.")
     rest, skip = [], False
@@ -5586,13 +5597,32 @@ def sycl_setup(argv) -> int:
     return subprocess.call([sys.executable, str(script), *rest])
 
 
+def auto_sycl_setup(argv, found, amd, yes=False, check=False):
+    from sycl.setup_intel import intel_gpus_windows
+    intel = intel_gpus_windows()
+    if not intel:
+        return None
+    other = any(gpu_problem(g) is None for g in found) or any(amd_problem(g) is None for g in amd)
+    if other:
+        say("  Intel Arc also detected: " + ", ".join(f"{g['name']} ({g['vram_gb']:.0f} GB)" for g in intel))
+        if check:
+            say("  To check the Intel backend: START-HERE.bat --backend sycl --check")
+            return None
+        say("  1) NVIDIA / AMD (the original backend selection)")
+        say("  2) Intel Arc (native SYCL, experimental)")
+        if ask("Which backend?", ["1", "2"], "1", yes) != "2":
+            return None
+    say("  Detected Intel Arc: using the native Windows SYCL backend.")
+    return sycl_setup(argv)
+
+
 def engine_step(a, gpu, hip, amd, cuda_tk, vision):
     """Step 4: llama.cpp's sources and the engine (ready-made, or compiled here).  Returns (llama, engine folder, its
     BUILD.json, its library folders, the GPU (AMD on Windows: as the engine sees it), the image-encoder choice)."""
     llama = get_llama_cpp()
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py, ggml, mtmd)")
     if hip and WIN:                                    # AMD on Windows: the ready-made HIP engine (no compiler)
-        eng = None if a.build else get_prebuilt_hip(a.prebuilt, gpu)
+        eng = None if a.build and gpu.get("arch") != "sycl" else get_prebuilt_hip(a.prebuilt, gpu)
         if eng is None:
             fail("no ready-made AMD engine for this Strata version" + (" (--build)" if a.build else ""),
                  "compiling it on Windows: tools\\hip\\build_windows.bat makes strata-windows-x64-hip.zip, then run "
@@ -6095,7 +6125,7 @@ def main() -> int:
     ap.add_argument("--backend", choices=["cuda", "hip", "sycl"],
                     help="cuda = NVIDIA (default), hip = AMD RX 7900 / 7800 / 7700 XT, RX 9060 XT / 9070 / AI PRO R9700 on "
                          "Linux or Windows (chosen by itself when the PC has no NVIDIA card Strata can use), "
-                         "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
+                         "sycl = Intel Arc, EXPERIMENTAL: Windows/Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
     if a.model and a.model not in MODELS and a.family not in PREVIEW_FAMILIES:
@@ -6216,6 +6246,10 @@ def main() -> int:
     # older NVIDIA GPUs (Pascal / Volta): the experimental CUDA 12 engine, when chosen (docs/OLDER_GPUS.md)
     OLD_GPUS = OLD_GPUS or old_gpus_opt_in(found, named_gpus(a.gpu, a.gpus), a.cuda,
                                            other=bool(amd_ok) or a.backend == "hip")
+    if WIN and a.backend is None and a.cuda is None:
+        intel_rc = auto_sycl_setup(sys.argv[1:], found, amd, a.yes, a.check)
+        if intel_rc is not None:
+            return intel_rc
     if OLD_GPUS and a.backend != "hip":
         warn(f"older NVIDIA GPUs (Pascal / Volta) can be used ({OLD_GPUS}): experimental, through a second engine "
              "built with CUDA 12 (docs/OLDER_GPUS.md)")

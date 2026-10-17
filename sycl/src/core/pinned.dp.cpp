@@ -320,19 +320,7 @@ namespace {
 bool sliced_pin_limit(uint64_t& limit, std::string& why) {
     constexpr uint64_t GiB = 1ull << 30;
     char buf[256];
-    int dev = 0;
-    cudaDeviceProp p{};
-    uint64_t budget = 0, usage = 0;
-    std::string err = "no CUDA device properties";
-    if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
-        strata::platform::gpu_shared_memory_budget(p.luid, budget, usage, err)) {
-        limit = budget > usage + 4 * GiB ? budget - usage - 4 * GiB : 0;
-        std::snprintf(buf, sizeof buf, "the GPU's shared-memory budget %.1f GiB - %.1f GiB in use - 4 GiB",
-                      (double) budget / GiB, (double) usage / GiB);
-        why = buf;
-        return true;
-    }
-    (void) cudaGetLastError();
+    std::string err = "SYCL does not expose a DXGI adapter LUID";
     const uint64_t ram = strata::platform::total_physical_memory();
     if (ram == 0) return false;
     limit = ram / 2 > 8 * GiB ? ram / 2 - 8 * GiB : 0;
@@ -368,6 +356,20 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t> &bounds,
         mapping_base = base;
         mapping_bytes = bytes;
     }
+
+#ifdef _WIN32
+    // VirtualAlloc memory is not SYCL USM, even when VirtualLock succeeds.
+    if (base) {
+        note = "pageable SYCL arena; use --stream-experts for a USM mirror; " + note;
+        const char* env = std::getenv("STRATA_ARENA_LOCK");
+        if (backing != PageBacking::LargePages && (!env || std::string(env) != "0")) {
+            const auto lr = strata::platform::lock_resident(base, bytes);
+            locked_bytes = lr.locked_bytes;
+            note = lr.note + "; " + note;
+        }
+    }
+    return;
+#endif
 
     // Register with CUDA BEFORE any page is touched: cudaHostRegister pins what is resident now, and a region
     // that has already been faulted in page by page is far more expensive to register and may fail outright.
@@ -522,6 +524,11 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, De
 }
 
 void PinnedArena::register_slices(std::atomic<int> &ready) try {
+#ifdef _WIN32
+    note = "pageable SYCL arena; no host registration; " + note;
+    ready.store(INT_MAX, std::memory_order_release);
+    return;
+#endif
     const int n = (int) bounds_.size() - 1;
     int i = 0;
     for (; base != nullptr && i < n; ++i) {

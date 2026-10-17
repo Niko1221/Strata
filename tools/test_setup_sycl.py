@@ -1,5 +1,5 @@
-"""Tests for setup.py --backend sycl, the experimental Intel Arc engine (sycl/, PR #423): it warns, stops with a clear
-message on Windows, and on Linux hands the run to sycl/setup_intel.py without its --backend flag. The CUDA / HIP
+"""Tests for setup.py --backend sycl, the experimental Intel Arc engine (sycl/, PR #423): it hands the run to
+sycl/setup_intel.py without its --backend flag, using native execution on Windows. The CUDA / HIP
 paths never see it. No GPU, no network.
 
     python -m unittest tools.test_setup_sycl
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import re
 import sys
 import tempfile
@@ -32,12 +33,13 @@ def run(argv, win):
 
 
 class SyclBackend(unittest.TestCase):
-    def test_windows_stops_with_the_docs_pointer(self):
+    def test_windows_hands_over_to_native_setup(self):
         rc, out, call = run(["--backend", "sycl"], win=True)
-        self.assertEqual(rc, ("exit", 1))
+        self.assertEqual(rc, 0)
         self.assertIn("supported since 0.1.40.2", out)
         self.assertIn("docs/INTEL_ARC.md", out)
-        call.assert_not_called()
+        self.assertIn("without Docker or WSL", out)
+        self.assertEqual(call.call_args[0][0][2:], [])
 
     def test_linux_hands_over_to_setup_intel_without_the_backend_flag(self):
         rc, out, call = run(["--model", "IQ2_XS", "--backend", "sycl", "--port", "8085"], win=False)
@@ -97,6 +99,123 @@ class SyclBackend(unittest.TestCase):
         src = (ROOT / "sycl" / "setup_intel.py").read_text(encoding="utf-8")
         self.assertIn('"e211": ("Arc Pro B60", 24.0)', src)
         self.assertIn('"e221": ("Arc Pro B60", 24.0)', src)
+
+
+class NativeStart(unittest.TestCase):
+    def test_first_install_main_automatically_selects_intel(self):
+        from tools.test_setup_golden import install
+        handoff = mock.Mock(return_value=0)
+        extra = [mock.patch.object(setup, "WIN", True),
+                 mock.patch.object(setup, "_win_display_adapters", return_value=[
+                     {"name": "Arc B70", "pnp": r"PCI\VEN_8086&DEV_E223"}]),
+                 mock.patch.object(setup, "sycl_setup", handoff)]
+        code, _, _, _ = install(64, [], ["--check"], extra=extra)
+        self.assertEqual(code, 0)
+        self.assertIn("--check", handoff.call_args.args[0])
+        self.assertNotIn("--backend", handoff.call_args.args[0])
+
+    def test_explicit_cuda_does_not_auto_select_intel(self):
+        from tools.test_setup_golden import install
+        handoff = mock.Mock(return_value=0)
+        extra = [mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "sycl_setup", handoff)]
+        code, text, _, _ = install(64, [], ["--check", "--backend", "cuda"], extra=extra)
+        self.assertEqual(code, 1)
+        self.assertIn("no NVIDIA GPU found", text)
+        handoff.assert_not_called()
+
+    def test_auto_detection_hands_over_without_a_backend_flag(self):
+        from sycl import setup_intel
+        with mock.patch.object(setup_intel, "intel_gpus_windows", return_value=[{"name": "Arc", "vram_gb": 32}]), \
+                mock.patch.object(setup, "sycl_setup", return_value=0) as handoff, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(setup.auto_sycl_setup(["--setup"], [], []), 0)
+        handoff.assert_called_once_with(["--setup"])
+
+    def test_mixed_gpu_keeps_original_default_and_allows_intel(self):
+        from sycl import setup_intel
+        with mock.patch.object(setup_intel, "intel_gpus_windows", return_value=[{"name": "Arc", "vram_gb": 32}]), \
+                mock.patch.object(setup, "gpu_problem", return_value=None), \
+                mock.patch.object(setup, "ask", side_effect=["1", "2"]) as ask, \
+                mock.patch.object(setup, "sycl_setup", return_value=0) as handoff, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertIsNone(setup.auto_sycl_setup([], [{}], [], yes=True))
+            self.assertEqual(setup.auto_sycl_setup([], [{}], []), 0)
+        self.assertEqual(ask.call_args_list[0].args[2], "1")
+        handoff.assert_called_once_with([])
+
+    def test_no_intel_leaves_the_original_path_alone(self):
+        from sycl import setup_intel
+        with mock.patch.object(setup_intel, "intel_gpus_windows", return_value=[]), \
+                mock.patch.object(setup, "sycl_setup") as handoff:
+            self.assertIsNone(setup.auto_sycl_setup([], [], []))
+        handoff.assert_not_called()
+
+    def test_windows_engine_step_keeps_native_sycl_build_route(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            eng = Path(d)
+            (eng / "BUILD.json").write_text(json.dumps({"version": "0.1.44", "source": "local"}), encoding="utf-8")
+            gpu = {"arch": "sycl", "index": 0, "count": 1}
+            args = SimpleNamespace(build=True, prebuilt=None, gpu=None)
+            with mock.patch.object(setup, "WIN", True), \
+                    mock.patch.object(setup, "get_llama_cpp", return_value=eng), \
+                    mock.patch.object(setup, "get_prebuilt_hip", return_value=eng) as native, \
+                    mock.patch.object(setup, "hip_card", return_value=gpu), \
+                    mock.patch.object(setup, "hip_lib_dirs", return_value=[]), \
+                    mock.patch.object(setup, "build_engine_hip", side_effect=AssertionError("AMD build")), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                result = setup.engine_step(args, gpu, True, [gpu], 13, "none")
+            native.assert_called_once_with(None, gpu)
+            self.assertEqual(result[1], eng)
+
+    def test_windows_starts_intel_server_without_cuda_checks(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = Path(d) / "strata-test.json"
+            cfg_path.write_text(json.dumps({"exe": sys.executable, "args": [], "backend": "sycl"}),
+                                encoding="utf-8")
+            with mock.patch.object(setup, "WIN", True), \
+                    mock.patch.object(setup, "upgrade_config", side_effect=lambda path, cfg: cfg), \
+                    mock.patch.object(setup, "settings_summary", return_value="native"), \
+                    mock.patch.object(setup, "gpus", side_effect=AssertionError("CUDA probe")), \
+                    mock.patch.object(setup, "check_gpus", side_effect=AssertionError("CUDA check")), \
+                    mock.patch.object(setup, "offer_together", side_effect=AssertionError("CUDA selection")), \
+                    mock.patch.object(setup.subprocess, "call", return_value=0) as call, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rc = setup.start(cfg_path, 8085, gpu=1, open_browser=False,
+                                 keep={"host": "127.0.0.1", "api_key": "test-key", "vram_reserve_mib": 1024})
+            self.assertEqual(rc, 0)
+            cmd = call.call_args.args[0]
+            self.assertEqual(cmd[1], str(ROOT / "sycl" / "serve" / "server_intel.py"))
+            self.assertEqual(cmd[cmd.index("--port") + 1], "8085")
+            self.assertNotIn("--gpu", cmd)
+            self.assertNotIn("--open", cmd)
+            saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["host"], "127.0.0.1")
+            self.assertEqual(saved["api_key"], "test-key")
+            self.assertEqual(saved["gpu"], 1)
+            self.assertEqual(saved["env"]["ONEAPI_DEVICE_SELECTOR"], "level_zero:1")
+            self.assertIn("--vram-reserve-mib", saved["args"])
+
+    def test_linux_start_keeps_original_gpu_argument_handling(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = Path(d) / "strata-test.json"
+            cfg_path.write_text(json.dumps({"exe": sys.executable, "args": [], "backend": "sycl"}),
+                                encoding="utf-8")
+            with mock.patch.object(setup, "WIN", False), \
+                    mock.patch.object(setup, "upgrade_config", side_effect=lambda path, cfg: cfg), \
+                    mock.patch.object(setup, "settings_summary", return_value="linux"), \
+                    mock.patch.object(setup, "OLD_GPUS", None), \
+                    mock.patch.object(setup, "old_gpus_opt_in", return_value=None), \
+                    mock.patch.object(setup, "gpus", return_value=[]), \
+                    mock.patch.object(setup, "check_gpus") as check, \
+                    mock.patch.object(setup.subprocess, "call", return_value=0) as call, \
+                    mock.patch.dict("os.environ", {"STRATA_EXECV": ""}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(setup.start(cfg_path, 8085, gpu=1, open_browser=False), 0)
+            check.assert_called_once_with([1], [])
+            cmd = call.call_args.args[0]
+            self.assertEqual(cmd[1], str(ROOT / "serve" / "server.py"))
+            self.assertEqual(cmd[cmd.index("--gpu") + 1], "1")
 
 
 class CMakeOption(unittest.TestCase):
@@ -222,6 +341,152 @@ class ToSycl(unittest.TestCase):
         self.assertTrue(m.small_card(24.0, "i915"))
         self.assertTrue(m.small_card(10.0, "xe"))
         self.assertFalse(m.small_card(32.0, "xe"))
+
+    def test_windows_uses_native_paths_runtime_and_gpu_only(self):
+        m = self.mod()
+        exe = m.ROOT / "build-sycl-win" / "strata.exe"
+        cfg = self.cfg(m)
+        cfg["env"] = {"STRATA_STAGER_THREADS": "4"}
+        with mock.patch.object(m, "sycl_runtime_dirs", return_value=["runtime"]):
+            c = m.to_sycl(cfg, exe, 64.0, {}, 32.0, "level_zero")
+        self.assertEqual(c["exe"], str(exe))
+        self.assertEqual(c["lib_dirs"], ["runtime"])
+        self.assertNotIn("sycl_root", c)
+        self.assertNotIn("STRATA_SYCL_BIN", c["env"])
+        self.assertEqual(c["env"]["STRATA_VERIFY_NO_HOST"], "1")
+        self.assertEqual(c["env"]["STRATA_STAGER_THREADS"], "4")
+        self.assertTrue(c["env"]["ONEAPI_DEVICE_SELECTOR"].startswith("level_zero:"))
+        self.assertEqual(c["args"][c["args"].index("--native") + 1], str((m.MOUNT / "d" / "a.gguf").resolve()))
+
+    def test_windows_gpu_probe_uses_native_executable(self):
+        m = self.mod()
+        exe = m.ROOT / "build-sycl-win" / "strata.exe"
+        result = mock.Mock(returncode=0, stdout='[{"index":0,"name":"Arc","vram_gb":32,"driver":"level_zero","free_memory_supported":true,"command_graph_supported":true}]', stderr="")
+        with mock.patch.object(m.S, "WIN", True), mock.patch.object(m, "sycl_engine", return_value=(exe, None)), \
+                mock.patch.object(m.subprocess, "run", return_value=result) as probe:
+            cards = m.intel_gpus()
+        self.assertEqual(cards[0]["vram_gb"], 32)
+        self.assertEqual(probe.call_args.args[0], [str(exe), "--list-devices"])
+
+    def test_windows_runtime_search_includes_tcm_dependencies(self):
+        m = self.mod()
+        with tempfile.TemporaryDirectory() as d:
+            oneapi = Path(d)
+            compiler = oneapi / "compiler" / "latest" / "bin"
+            tcm = oneapi / "tcm" / "latest" / "bin"
+            compiler.mkdir(parents=True)
+            tcm.mkdir(parents=True)
+            with mock.patch.dict("os.environ", {"ONEAPI_ROOT": d, "LOCALAPPDATA": d}, clear=True), \
+                    mock.patch.object(m.shutil, "which", return_value=None):
+                dirs = m.sycl_runtime_dirs()
+            self.assertEqual(dirs, [str(compiler), str(tcm)])
+
+    def test_windows_config_pins_selected_gpu_and_preserves_explicit_selector(self):
+        m = self.mod()
+        cfg = self.cfg(m)
+        cfg["gpu"] = 1
+        exe = m.ROOT / "build-sycl-win" / "strata.exe"
+        with mock.patch.dict("os.environ", {}, clear=True), mock.patch.object(m, "sycl_runtime_dirs", return_value=[]):
+            c = m.to_sycl(cfg, exe, 64.0, {}, 32.0, "level_zero")
+        self.assertEqual(c["env"]["ONEAPI_DEVICE_SELECTOR"], "level_zero:1")
+        self.assertNotIn("SYCL_CACHE_PERSISTENT", c["env"])
+        cfg["env"] = {"ONEAPI_DEVICE_SELECTOR": "level_zero:2", "SYCL_CACHE_PERSISTENT": "0"}
+        with mock.patch.object(m, "sycl_runtime_dirs", return_value=[]):
+            c = m.to_sycl(cfg, exe, 64.0, {}, 32.0, "level_zero")
+        self.assertEqual(c["env"]["ONEAPI_DEVICE_SELECTOR"], "level_zero:2")
+        self.assertEqual(c["env"]["SYCL_CACHE_PERSISTENT"], "0")
+
+    def test_windows_native_probe_retains_a_series_id_for_fp64_emulation(self):
+        m = self.mod()
+        exe = m.ROOT / "build-sycl-win" / "strata.exe"
+        result = mock.Mock(returncode=0, stdout='[{"index":0,"name":"Arc A770","vram_gb":16,"driver":"level_zero","devid":"56a0","free_memory_supported":true,"command_graph_supported":true}]', stderr="")
+        with mock.patch.object(m.S, "WIN", True), mock.patch.object(m, "sycl_engine", return_value=(exe, None)), \
+                mock.patch.object(m.subprocess, "run", return_value=result), \
+                mock.patch.object(m, "sycl_runtime_dirs", return_value=[]):
+            card = m.intel_gpus()[0]
+            c = m.to_sycl(self.cfg(m), exe, 64.0, {}, card["vram_gb"], card["driver"], card["devid"])
+        self.assertEqual(card["devid"], "56a0")
+        self.assertEqual(c["env"]["IGC_EnableDPEmulation"], "1")
+        self.assertEqual(c["env"]["OverrideDefaultFP64Settings"], "1")
+        self.assertEqual(c["env"]["NEOReadDebugKeys"], "1")
+        self.assertEqual(c["env"]["STRATA_VERIFY_NO_HOST"], "1")
+
+    def test_windows_gpu_probe_does_not_fall_back_to_cpu(self):
+        m = self.mod()
+        result = mock.Mock(returncode=1, stdout="[]", stderr="no GPU")
+        with mock.patch.object(m.S, "WIN", True), mock.patch.object(m, "sycl_engine", return_value=(Path("strata.exe"), None)), \
+                mock.patch.object(m.subprocess, "run", return_value=result), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                m.intel_gpus()
+
+    def test_windows_gpu_probe_rejects_unsupported_backends_and_capabilities(self):
+        m = self.mod()
+        valid = {"index": 0, "name": "Arc", "vram_gb": 32, "driver": "level_zero",
+                 "free_memory_supported": True, "command_graph_supported": True}
+        cases = [({"driver": "opencl"}, "requires Level Zero"),
+                 ({"driver": "unknown"}, "requires Level Zero"),
+                 ({"free_memory_supported": False}, "free VRAM query is unavailable"),
+                 ({"command_graph_supported": False}, "command graphs are unavailable"),
+                 ({"free_memory_supported": None}, "free VRAM query is unavailable")]
+        for fields, message in cases:
+            with self.subTest(fields=fields):
+                result = mock.Mock(returncode=0, stdout=json.dumps([{**valid, **fields}]), stderr="")
+                out = io.StringIO()
+                with mock.patch.object(m.S, "WIN", True), \
+                        mock.patch.object(m, "sycl_engine", return_value=(Path("strata.exe"), None)), \
+                        mock.patch.object(m.subprocess, "run", return_value=result), \
+                        mock.patch.dict("os.environ", {"ONEAPI_DEVICE_SELECTOR": "opencl:gpu"}), \
+                        contextlib.redirect_stdout(out):
+                    with self.assertRaises(SystemExit):
+                        m.intel_gpus()
+                self.assertIn(message, out.getvalue())
+
+    def test_windows_gpu_probe_rejects_old_engine_without_capability_fields(self):
+        m = self.mod()
+        result = mock.Mock(returncode=0, stdout='[{"index":0,"driver":"level_zero"}]', stderr="")
+        out = io.StringIO()
+        with mock.patch.object(m.S, "WIN", True), \
+                mock.patch.object(m, "sycl_engine", return_value=(Path("strata.exe"), None)), \
+                mock.patch.object(m.subprocess, "run", return_value=result), contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit):
+                m.intel_gpus()
+        self.assertIn("rebuild the native engine", out.getvalue())
+
+    def test_windows_display_detection_does_not_need_an_engine(self):
+        m = self.mod()
+        adapters = [{"name": "Arc B70", "pnp": r"PCI\VEN_8086&DEV_E223", "ram": 4 * 2**30},
+                    {"name": "Intel integrated", "pnp": r"PCI\VEN_8086&DEV_1234"},
+                    {"name": "NVIDIA", "pnp": r"PCI\VEN_10DE&DEV_E223"}]
+        registry = [{"MatchingDeviceId": r"PCI\VEN_8086&DEV_E223",
+                     "HardwareInformation.qwMemorySize": (32 * 2**30).to_bytes(8, "little")}]
+        cards = m.intel_gpus_windows(adapters, registry)
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["vram_gb"], 32)
+        self.assertEqual(cards[0]["devid"], "e223")
+        self.assertEqual(cards[0]["driver"], "unknown")
+        with mock.patch.object(m.S, "WIN", True), mock.patch.object(m, "sycl_engine", return_value=(None, "missing")), \
+                mock.patch.object(m, "intel_gpus_windows", return_value=cards):
+            self.assertEqual(m.intel_gpus(), cards)
+
+    def test_missing_native_engine_is_built_and_probed(self):
+        m = self.mod()
+        exe = m.ROOT / "build-sycl-win" / "strata.exe"
+        with mock.patch.object(m, "sycl_engine", side_effect=[(None, "missing"), (exe, None)]), \
+                mock.patch.object(m.subprocess, "call", return_value=0) as build, \
+                mock.patch.object(m, "intel_gpus", return_value=[{"name": "Arc"}]) as probe, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(m.ensure_windows_engine(), exe)
+        self.assertEqual(build.call_args.args[0][-1], str(m.ROOT / "sycl" / "tools" / "build_windows.bat"))
+        probe.assert_called_once()
+
+    def test_failed_build_does_not_continue_to_model_download(self):
+        m = self.mod()
+        with mock.patch.object(m, "sycl_engine", return_value=(None, "missing")), \
+                mock.patch.object(m.subprocess, "call", return_value=1), \
+                mock.patch.object(m, "intel_gpus") as probe, contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                m.ensure_windows_engine()
+        probe.assert_not_called()
 
 
 if __name__ == "__main__":
