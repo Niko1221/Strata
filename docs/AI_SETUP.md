@@ -144,6 +144,14 @@ Or `START-HERE.bat` / `./setup.sh` without flags, which starts the installed mod
 installed; add `--yes` to take the first). The server opens the user's browser on `http://127.0.0.1:8080` when it is
 ready. Closing its window (or stopping the process) stops the model.
 
+**Stopping it on Windows:** `STOP.bat` in the install folder (beside `START-HERE.bat`). It stops only the processes that
+belong to that install - the python running `serve\server.py` from it, and `strata.exe` / `strata-vision.exe` inside it -
+and touches nothing else: no `taskkill` of `python.exe` by name, so a Jupyter kernel, a build script or another model
+server keeps running. It stops the launcher before the engine (a supervisor cannot restart the engine behind it), asks
+each process to close before forcing it, and prints `没有找到正在运行的 Strata` with exit code 0 when nothing is running,
+so it is safe to run twice. `STOP.bat -WhatIf` lists what it would stop and stops nothing; `STOP.bat -Root D:\Strata`
+points it at another install. The logic is `stop-strata.ps1` beside it.
+
 ## 7. Verify
 
 The HTTP server answers once the model is loaded (30-90 s on later starts, a few minutes the first time). Poll:
