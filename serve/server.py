@@ -277,6 +277,16 @@ VISION_READY_S = _timeout_env("STRATA_VISION_READY_S", 300.0)
 VISION_ENCODE_S = _timeout_env("STRATA_VISION_ENCODE_S", 300.0)
 ENGINE_READY_S = _timeout_env("STRATA_ENGINE_READY_S", 900.0)
 
+# The same idea one layer out (#1317 was about the reads this server does of its own engine): a client that has stopped
+# - a silently dead peer, no RST and no FIN, or one that is still connected and simply never reads its answer - must
+# not own a handler thread, and must not own the engine's single turn while a streamed answer waits for it.  It is set
+# on the connection itself, so it is the deadline for every socket operation the handler makes: the request line, the
+# body, and the writes.  A stalled write then raises OSError where the streaming loops already recover (cancel.set()
+# and chunks.close(), which releases the turn), and one that escapes them is discarded by BaseHTTPRequestHandler's
+# own handle_one_request.  Not a slow-client detector: it only fires when nothing at all has moved for this long.
+# STRATA_PEER_STALL_S overrides it (0 = wait for ever, as before).
+PEER_STALL_S = _timeout_env("STRATA_PEER_STALL_S", 120.0)
+
 
 # ------------------------------------------------------------------------------------------------ engines
 class Engine(Protocol):
@@ -5121,6 +5131,8 @@ def make_handler(svc: Service):
         watch_done = None                                   # #430 #431: stops this request's disconnect watcher
         body_read = False                                   # whether a handler took this request's body
         DRAIN_SECONDS = 5                                   # the longest an unread body is read and dropped
+        timeout = PEER_STALL_S                              # socketserver applies it to the connection in setup(): the
+                                                            # deadline for every socket operation this handler makes
 
         def log_message(self, fmt, *args):
             pass
