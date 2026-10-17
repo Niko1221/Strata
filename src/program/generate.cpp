@@ -10810,9 +10810,12 @@ int main(int argc, char** argv) {
                 const strata::core::OnDevice on_mtp(mtp.device());
                 strata::core::ConversationKv image;
                 if (!mtp.idle(e) || !slot_mtp[(size_t) b]->idle(e) ||
-                    !strata::core::conversation_kv_save(image, mtp.kv_state(), draft_geometry, upto, false, e) ||
-                    !strata::core::conversation_kv_restore(image, slot_mtp[(size_t) b]->kv_state(),
-                                                           draft_geometry, upto, false, e) ||
+                    !(slot_copy_direct   // STRATA_SLOT_COPY_DIRECT: the draft K/V device to device too
+                          ? strata::core::conversation_kv_copy(mtp.kv_state(), slot_mtp[(size_t) b]->kv_state(),
+                                                               draft_geometry, upto, false, e)
+                          : strata::core::conversation_kv_save(image, mtp.kv_state(), draft_geometry, upto, false, e) &&
+                            strata::core::conversation_kv_restore(image, slot_mtp[(size_t) b]->kv_state(),
+                                                                  draft_geometry, upto, false, e)) ||
                     cudaDeviceSynchronize() != cudaSuccess)
                     return false;
                 slot_mtp[(size_t) b]->set_prompt_len(upto);
@@ -10858,9 +10861,12 @@ int main(int argc, char** argv) {
                 const strata::core::OnDevice on_mtp(mtp.device());
                 strata::core::ConversationKv image;
                 if (!slot_mtp[(size_t) b]->idle(e) || !mtp.idle(e) ||
-                    !strata::core::conversation_kv_save(image, slot_mtp[(size_t) b]->kv_state(),
-                                                        draft_geometry, upto, false, e) ||
-                    !strata::core::conversation_kv_restore(image, mtp.kv_state(), draft_geometry, upto, false, e) ||
+                    !(slot_copy_direct
+                          ? strata::core::conversation_kv_copy(slot_mtp[(size_t) b]->kv_state(), mtp.kv_state(),
+                                                               draft_geometry, upto, false, e)
+                          : strata::core::conversation_kv_save(image, slot_mtp[(size_t) b]->kv_state(),
+                                                               draft_geometry, upto, false, e) &&
+                            strata::core::conversation_kv_restore(image, mtp.kv_state(), draft_geometry, upto, false, e)) ||
                     cudaDeviceSynchronize() != cudaSuccess)
                     return false;
                 mtp.set_prompt_len(upto);
