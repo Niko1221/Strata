@@ -35,6 +35,7 @@ _jsonschema_lock = threading.Lock()
 def jsonschema_modules():
     """jsonschema, imported on first use; None when it is not installed (said once, in the server window)."""
     global _jsonschema
+    missing = False
     with _jsonschema_lock:
         if _jsonschema is None:
             try:
@@ -45,10 +46,13 @@ def jsonschema_modules():
                 _jsonschema = (validators, SchemaError, Registry, NoSuchResource)
             except ImportError:
                 _jsonschema = False
-                print('[strata] response_format json_schema: the Python package jsonschema is not installed, so '
-                      'answers are only checked to be one JSON object (python -m pip install "jsonschema>=4.23,<5")',
-                      flush=True)
-        return _jsonschema or None
+                missing = True
+        mods = _jsonschema or None
+    if missing:                                          # #2432: said once the lock is released
+        print('[strata] response_format json_schema: the Python package jsonschema is not installed, so '
+              'answers are only checked to be one JSON object (python -m pip install "jsonschema>=4.23,<5")',
+              flush=True)
+    return mods
 
 
 def _only_objects(node, root, refs=()):

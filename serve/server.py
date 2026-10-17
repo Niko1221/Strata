@@ -1442,9 +1442,7 @@ class StrataEngine:
                     freed.append(b)
             else:
                 self._orphan_seen.pop(b, None)
-        if freed:
-            print(f"[strata] parallel: slot(s) {', '.join(map(str, freed))} were marked busy with no request using them "
-                  "(issue #1603); freed, the waiting request goes on", flush=True)
+        if freed:                                   # the caller says so once slot_cv is released (#2432)
             self.slot_cv.notify_all()
         return freed
 
@@ -1647,20 +1645,29 @@ class StrataEngine:
                             if holding:
                                 self.ctl.release()
                                 holding = False
-                            with self.slot_cv:
-                                if self.pick_slot(prompt) is None:
-                                    if (ENGINE_STALL_S or 0) > 0 and time.monotonic() - admit_since >= ENGINE_STALL_S:
-                                        # the stall check of #1317 only watches a request on the control lines; one
-                                        # waiting here is covered by looking for a slot nobody owns, and by saying so
-                                        if not admit_said:
-                                            admit_said = True
-                                            busy = [b for b, v in enumerate(self.slot_busy) if v]
-                                            print(f"[strata] parallel: a request has waited {time.monotonic() - admit_since:.0f} s "
-                                                  f"for a free slot (busy: {busy}, in use: {sorted(self.slot_claims)}, "
-                                                  f"ending: {sorted(self.slot_releasing)}) (issue #1603)", flush=True)
-                                    self._reap_orphan_slots()
-                                if self.pick_slot(prompt) is None:
-                                    self.slot_cv.wait(timeout=1.0)
+                            said = []                       # #2432: printed once slot_cv is released
+                            try:
+                                with self.slot_cv:
+                                    if self.pick_slot(prompt) is None:
+                                        if (ENGINE_STALL_S or 0) > 0 and time.monotonic() - admit_since >= ENGINE_STALL_S:
+                                            # the stall check of #1317 only watches a request on the control lines; one
+                                            # waiting here is covered by looking for a slot nobody owns, and by saying so
+                                            if not admit_said:
+                                                admit_said = True
+                                                busy = [b for b, v in enumerate(self.slot_busy) if v]
+                                                said.append(f"[strata] parallel: a request has waited {time.monotonic() - admit_since:.0f} s "
+                                                            f"for a free slot (busy: {busy}, in use: {sorted(self.slot_claims)}, "
+                                                            f"ending: {sorted(self.slot_releasing)}) (issue #1603)")
+                                        freed = self._reap_orphan_slots()
+                                        if freed:
+                                            said.append(f"[strata] parallel: slot(s) {', '.join(map(str, freed))} were marked "
+                                                        "busy with no request using them (issue #1603); freed, the waiting "
+                                                        "request goes on")
+                                    if not said and self.pick_slot(prompt) is None:
+                                        self.slot_cv.wait(timeout=1.0)
+                            finally:                        # printed even if the block raised
+                                for line in said:
+                                    print(line, flush=True)
                             if cancel.is_set():
                                 return
                             if not holding:
@@ -4266,6 +4273,7 @@ class Service:
         rate = collections.deque(maxlen=32) if par else self.rate
         with self.status_lock:
             self.status["queued"] += 1
+        said = []                       # completion messages are written after the engine turn is released
         try:
             # --batch: the engine runs several requests at once (StrataEngine.generate_batched orders them)
             turn = contextlib.ExitStack()
@@ -4554,7 +4562,9 @@ class Service:
                     raise
                 finally:
                     # #266: settle this request's status, history and totals while still holding the fifo: once
-                    # it is released the next request sets its own status, which this must not record or clear
+                    # it is released the next request sets its own status, which this must not record or clear.
+                    # #2432: the lines are only built here and printed after the lock is released - a print can
+                    # block (a paused Windows console), and nothing that holds status_lock may wait on the console
                     with self.status_lock:
                         if st.get("busy"):
                             last = request_stats(segments)          # only this request's own DONEs count
@@ -4610,14 +4620,14 @@ class Service:
                             hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
                             if hit_msg and pcie_share:
                                 hit_msg += f" (+{pcie_share*100:.1f}% of the routed experts over PCIe)"
-                            print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
-                                  f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
+                            said.append(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
+                                        f"({finish}, cancel={cancel.is_set()}){hit_msg}")
                             if finish == "length" and parser.state in ("reasoning", "rcall"):   # #530
-                                print("[strata] the reply reached max tokens while still thinking, so it has no "
-                                      "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
-                                      "strata-<model>.json for every request) leaves room to answer", flush=True)
+                                said.append("[strata] the reply reached max tokens while still thinking, so it has no "
+                                            "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
+                                            "strata-<model>.json for every request) leaves room to answer")
                             if os.environ.get("STRATA_DEBUG") and raw_ids:
-                                print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
+                                said.append(f"[strata] raw: {self.tok.decode(raw_ids)!r}")
                         st["busy"] = False
                         st.pop("tail", None)                     # #212: the answer's end is not kept once it is done
                         st.pop("tool", None)
@@ -4630,6 +4640,10 @@ class Service:
                                 self.status.pop("tail", None)
                                 self.status.pop("tool", None)
         finally:
+            # The state snapshot and engine turn are complete before console I/O. A paused
+            # console may hold this writer, but cannot retain the next request's turn.
+            for line in said:
+                print(line, flush=True)
             if emb:
                 Path(emb).unlink(missing_ok=True)
         for ev in cut(parser.finish(finish)):

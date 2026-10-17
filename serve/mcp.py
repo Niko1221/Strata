@@ -392,10 +392,17 @@ class McpServer:
         self.last_start = 0.0
 
     def start(self) -> bool:
-        with self.lock:
-            return self._start()
+        said = []
+        try:
+            with self.lock:
+                ok = self._start(said)
+        finally:                                         # #2432: never print while holding the lock; printed
+            for line in said:                            # even if _start raised
+                print(line, flush=True)
+        return ok
 
-    def _start(self) -> bool:
+    def _start(self, said: list) -> bool:
+        """(Re)start the server; the caller holds self.lock and prints `said` once it is released."""
         if self.transport is not None:
             self.transport.close()
         self.status, self.error, self.last_start = "starting", None, time.monotonic()
@@ -425,27 +432,34 @@ class McpServer:
                     break
             self.tools, self.status = tools, "ready"
             names = ", ".join(x["name"] for x in tools[:8]) + (", ..." if len(tools) > 8 else "")
-            print(f"[strata] MCP server {self.name!r}: {len(tools)} tool{'s' * (len(tools) != 1)}"
-                  f"{' (' + names + ')' if tools else ''}", flush=True)
+            said.append(f"[strata] MCP server {self.name!r}: {len(tools)} tool{'s' * (len(tools) != 1)}"
+                        f"{' (' + names + ')' if tools else ''}")
             return True
         except McpError as e:
             self.status, self.error, self.tools = "failed", str(e), []
             t.close()
-            print(f"[strata] MCP server {self.name!r} did not start: {e}. Its tools are left out; the chat works "
-                  "without them.", flush=True)
+            said.append(f"[strata] MCP server {self.name!r} did not start: {e}. Its tools are left out; the chat "
+                        "works without them.")
             return False
 
     def call(self, tool: str, arguments: dict, timeout: float, cancel=None) -> dict:
-        with self.lock:
-            if self.transport is None or not self.transport.alive():
-                # it stopped since its last call (a crash, an expired session): start it again; one that failed to
-                # start is tried again at most every 10 s, so a broken command does not run on every call
-                if self.status == "failed" and time.monotonic() - self.last_start < 10:
-                    raise McpError(f"the server is not running ({self.error or 'it stopped'})")
-                print(f"[strata] MCP server {self.name!r} had stopped; starting it again", flush=True)
-                if not self._start():
-                    raise McpError(f"the server could not be started again: {self.error}")
-            t = self.transport
+        said, failed = [], None
+        try:
+            with self.lock:
+                if self.transport is None or not self.transport.alive():
+                    # it stopped since its last call (a crash, an expired session): start it again; one that failed to
+                    # start is tried again at most every 10 s, so a broken command does not run on every call
+                    if self.status == "failed" and time.monotonic() - self.last_start < 10:
+                        raise McpError(f"the server is not running ({self.error or 'it stopped'})")
+                    said.append(f"[strata] MCP server {self.name!r} had stopped; starting it again")
+                    if not self._start(said):
+                        failed = McpError(f"the server could not be started again: {self.error}")
+                t = self.transport
+        finally:                                         # #2432: printed once the lock is released, even
+            for line in said:                            # if restarting the server raised
+                print(line, flush=True)
+        if failed is not None:
+            raise failed
         try:
             return t.request("tools/call", {"name": tool, "arguments": arguments}, timeout, cancel)
         except McpError as e:
