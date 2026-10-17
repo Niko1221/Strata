@@ -1,0 +1,154 @@
+## block 1-A: A-32k-int8  {"ctx": 32768, "kv": "int8", "resident": null}
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: loaded 33.02 GiB at 2.92 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.24 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 1003 slots
+strata generate: expert cache 1040 slots, 1.41 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.40.3)
+strata serve: prompt chunk auto: 1280 tokens, a 351-slot ring
+strata serve: the prompt path borrows 873 CUDA0 cache slots (1.18 GiB)
+strata serve: 432 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 14.51, "strata_rss_gib": 34.89, "nvidia_smi": "7446, 8192, 47, 617.42"}
+after runs: {"ram_available_gib": 12.55, "strata_rss_gib": 37.11, "nvidia_smi": "7555, 8192, 77, 617.42"}
+
+## block 2-B: B-128k-k8v4-res32k  {"ctx": 131072, "kv": "k8v4", "resident": 32768}
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 32768 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: loaded 33.02 GiB at 2.97 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.16 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 949 slots
+strata generate: expert cache 985 slots, 1.33 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.40.3)
+strata serve: prompt chunk auto: 768 tokens, a 8-slot ring
+strata serve: the prompt path borrows 432 CUDA0 cache slots (0.58 GiB)
+strata serve: 432 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 12.23, "strata_rss_gib": 36.24, "nvidia_smi": "7385, 8192, 55, 617.42"}
+after runs: {"ram_available_gib": 10.52, "strata_rss_gib": 38.28, "nvidia_smi": "7502, 8192, 77, 617.42"}
+
+## block 3-C: C-128k-k8v4-res20k  {"ctx": 131072, "kv": "k8v4", "resident": 20480}
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 20480 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: loaded 33.02 GiB at 2.95 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.27 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 1029 slots
+strata generate: expert cache 1067 slots, 1.45 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.40.3)
+strata serve: prompt chunk auto: 1024 tokens, a 384-slot ring
+strata serve: the prompt path borrows 900 CUDA0 cache slots (1.22 GiB)
+strata serve: 448 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 12.52, "strata_rss_gib": 36.24, "nvidia_smi": "7346, 8192, 56, 617.42"}
+after runs: {"ram_available_gib": 11.36, "strata_rss_gib": 38.28, "nvidia_smi": "7482, 8192, 77, 617.42"}
+
+## block 4-D: D-128k-int8-res32k  {"ctx": 131072, "kv": "int8", "resident": 32768}
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 32768 of 131072 cells per QSA layer in VRAM, the K/V in 1.55 GiB of pinned RAM
+strata generate: loaded 33.02 GiB at 2.88 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.07 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 886 slots
+strata generate: expert cache 918 slots, 1.25 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.40.3)
+strata serve: prompt chunk auto: 512 tokens, a 8-slot ring
+strata serve: the prompt path borrows 372 CUDA0 cache slots (0.50 GiB)
+strata serve: 481 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 13.06, "strata_rss_gib": 36.59, "nvidia_smi": "7344, 8192, 57, 617.42"}
+after runs: {"ram_available_gib": 10.99, "strata_rss_gib": 38.79, "nvidia_smi": "7481, 8192, 77, 617.42"}
+
+## block 5-B: B-128k-k8v4-res32k  {"ctx": 131072, "kv": "k8v4", "resident": 32768}
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 32768 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: loaded 33.02 GiB at 2.58 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.16 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 949 slots
+strata generate: expert cache 985 slots, 1.33 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.40.3)
+strata serve: prompt chunk auto: 768 tokens, a 8-slot ring
+strata serve: the prompt path borrows 432 CUDA0 cache slots (0.58 GiB)
+strata serve: 424 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 13.53, "strata_rss_gib": 36.24, "nvidia_smi": "7345, 8192, 56, 617.42"}
+after runs: {"ram_available_gib": 11.39, "strata_rss_gib": 38.29, "nvidia_smi": "7488, 8192, 78, 617.42"}
+
+## block 6-C: C-128k-k8v4-res20k  {"ctx": 131072, "kv": "k8v4", "resident": 20480}
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 20480 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: loaded 33.02 GiB at 2.43 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.27 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 1029 slots
+strata generate: expert cache 1067 slots, 1.45 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.40.3)
+strata serve: prompt chunk auto: 1024 tokens, a 384-slot ring
+strata serve: the prompt path borrows 900 CUDA0 cache slots (1.22 GiB)
+strata serve: 429 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 13.43, "strata_rss_gib": 36.24, "nvidia_smi": "7339, 8192, 56, 617.42"}
+after runs: {"ram_available_gib": 9.4, "strata_rss_gib": 39.46, "nvidia_smi": "7550, 8192, 81, 617.42"}
+
+## block 7-E1: E1-C-prefill768  {"ctx": 131072, "kv": "k8v4", "resident": 20480, "prefill": "768"}
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 20480 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: loaded 33.02 GiB at 2.99 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.27 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 1029 slots
+strata generate: expert cache 1067 slots, 1.45 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.40.3)
+strata serve: the prompt path borrows 431 CUDA0 cache slots (0.58 GiB)
+strata serve: 481 MiB of VRAM free with everything loaded
+after load: {"ram_available_gib": 12.02, "strata_rss_gib": 36.24, "nvidia_smi": "7508, 8192, 39, 617.42"}
+after runs: {"ram_available_gib": 9.98, "strata_rss_gib": 38.28, "nvidia_smi": "7603, 8192, 76, 617.42"}
+
+## block 8-E2: E2-C-prefill768-streammin512  {"ctx": 131072, "kv": "k8v4", "resident": 20480, "prefill": "768", "env": {"STRATA_PREFILL_STREAM_MIN": "512"}}
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 20480 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: loaded 33.02 GiB at 2.57 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.27 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 1029 slots
+strata generate: expert cache 1067 slots, 1.45 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.40.3)
+strata serve: the prompt path borrows 821 CUDA0 cache slots (1.11 GiB)
+strata serve: 481 MiB of VRAM free with everything loaded
+after load: {"ram_available_gib": 12.03, "strata_rss_gib": 36.24, "nvidia_smi": "7467, 8192, 54, 617.42"}
+after runs: {"ram_available_gib": 9.96, "strata_rss_gib": 38.28, "nvidia_smi": "7601, 8192, 74, 617.42"}
+
+## block 9-C: C-128k-k8v4-res20k  {"ctx": 131072, "kv": "k8v4", "resident": 20480}
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 20480 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: loaded 33.02 GiB at 2.90 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.27 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 1029 slots
+strata generate: expert cache 1067 slots, 1.45 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.40.3)
+strata serve: prompt chunk auto: 1024 tokens, a 384-slot ring
+strata serve: the prompt path borrows 900 CUDA0 cache slots (1.22 GiB)
+strata serve: 481 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 11.99, "strata_rss_gib": 36.25, "nvidia_smi": "7460, 8192, 55, 617.42"}
+after runs: {"ram_available_gib": 9.95, "strata_rss_gib": 38.28, "nvidia_smi": "7592, 8192, 78, 617.42"}
+
+## block 10-B: B-128k-k8v4-res32k  {"ctx": 131072, "kv": "k8v4", "resident": 32768}
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 32768 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: loaded 33.02 GiB at 2.80 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.16 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 949 slots
+strata generate: expert cache 985 slots, 1.33 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.40.3)
+strata serve: prompt chunk auto: 768 tokens, a 8-slot ring
+strata serve: the prompt path borrows 432 CUDA0 cache slots (0.58 GiB)
+strata serve: 479 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 11.98, "strata_rss_gib": 36.24, "nvidia_smi": "7460, 8192, 55, 617.42"}
+after runs: {"ram_available_gib": 9.92, "strata_rss_gib": 38.27, "nvidia_smi": "7594, 8192, 77, 617.42"}

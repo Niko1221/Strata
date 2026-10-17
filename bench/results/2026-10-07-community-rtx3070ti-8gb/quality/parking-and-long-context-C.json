@@ -1,0 +1,110 @@
+[
+ {
+  "name": "speed_code",
+  "wall_s": 4.0,
+  "prompt_n": 26,
+  "cache_n": 0,
+  "prompt_s": 0.4,
+  "prompt_tps": 63.1,
+  "out_n": 198,
+  "out_tps": 56.3,
+  "note": "",
+  "answer": "```python\ndef merge_intervals(intervals):\n    \"\"\"\n    Merge overlapping intervals.\n    \n    Args:\n        intervals: List of intervals, each as [start, end].\n    \n    Returns:\n        List of merged, non-overlapping intervals.\n    \"\"\"\n    if not intervals:\n        return []\n    \n    # Sort intervals by start time\n    intervals.sort(key=lambda x: x[0])\n    \n    merged = [intervals[0]]\n    \n    for "
+ },
+ {
+  "name": "speed_prose",
+  "wall_s": 10.2,
+  "prompt_n": 37,
+  "cache_n": 0,
+  "prompt_s": 0.6,
+  "prompt_tps": 64.0,
+  "out_n": 450,
+  "out_tps": 46.8,
+  "note": "",
+  "answer": "The fog had been thick for three days, swallowing the horizon whole. Elias, the solitary keeper of the Iron Point Lighthouse, sat in his small, damp kitchen, listening to the rhythmic *thump-thump* of the rotating beacon. It was a lonely sound, but one he had grown to love.\n\nHe was mending a net when he noticed something bobbing against the rocks below the tower. A green glass bottle, half-buried "
+ },
+ {
+  "name": "speed_long19k",
+  "wall_s": 40.4,
+  "prompt_n": 18934,
+  "cache_n": 0,
+  "prompt_s": 34.9,
+  "prompt_tps": 542.4,
+  "out_n": 250,
+  "out_tps": 46.0,
+  "note": "",
+  "answer": "Here is a summary of the document in 5 bullet points:\n\n*   **Performance and Hardware Requirements:** Strata is optimized for NVIDIA RTX 20–50 series GPUs (12 GB+ VRAM recommended) and x86-64 CPUs with AVX2 support, requiring ~64 GB RAM for optimal performance. Measured speeds on an RTX 5070 show prompt processing up to ~2,200 tokens/s and output speeds up to ~93 tokens/s, with performance heavily"
+ },
+ {
+  "name": "needle_long",
+  "wall_s": 193.7,
+  "prompt_n": 103869,
+  "cache_n": 0,
+  "prompt_s": 193.0,
+  "prompt_tps": 538.2,
+  "out_n": 11,
+  "out_tps": 38.4,
+  "note": "(doc 330068 chars; correct=True)",
+  "answer": "5826-OMEGA-heron"
+ },
+ {
+  "name": "needle_followup",
+  "wall_s": 2.4,
+  "prompt_n": 35,
+  "cache_n": 103879,
+  "prompt_s": 0.5,
+  "prompt_tps": 67.2,
+  "out_n": 68,
+  "out_tps": 44.7,
+  "note": "(same conversation: should read only the new question)",
+  "answer": "At 64K context and above, `--kv-resident` keeps the context's KV cache in RAM and only the part the attention reads in VRAM, allowing more experts to fit on the GPU. This setting is automatically enabled by setup when the RAM has room for it, though it is never used under WSL."
+ },
+ {
+  "name": "conv_A1",
+  "wall_s": 10.2,
+  "prompt_n": 4602,
+  "cache_n": 0,
+  "prompt_s": 9.8,
+  "prompt_tps": 469.7,
+  "out_n": 20,
+  "out_tps": 58.4,
+  "note": "",
+  "answer": "For 64 GB of RAM, the recommended model size is **IQ2_XS**."
+ },
+ {
+  "name": "conv_B1",
+  "wall_s": 11.1,
+  "prompt_n": 4776,
+  "cache_n": 0,
+  "prompt_s": 9.6,
+  "prompt_tps": 496.0,
+  "out_n": 58,
+  "out_tps": 41.6,
+  "note": "",
+  "answer": "Setting `\"parallel\": 2` enables the engine to keep up to two conversations open simultaneously, decoding them together in batch windows to share computational resources and reduce waiting time for multiple users, though this may slightly decrease the speed of individual requests due to increased VRAM usage for session states."
+ },
+ {
+  "name": "conv_A2",
+  "wall_s": 0.6,
+  "prompt_n": 24,
+  "cache_n": 4621,
+  "prompt_s": 0.4,
+  "prompt_tps": 59.1,
+  "out_n": 11,
+  "out_tps": 55.9,
+  "note": "(back to A after B)",
+  "answer": "The fastest size is **Q2_0**."
+ },
+ {
+  "name": "conv_B2",
+  "wall_s": 1.4,
+  "prompt_n": 30,
+  "cache_n": 4835,
+  "prompt_s": 0.5,
+  "prompt_tps": 61.2,
+  "out_n": 45,
+  "out_tps": 53.7,
+  "note": "(back to B after A)",
+  "answer": "No, on a 12 GB card, enabling parallel processing makes a single request slower because the batch slots consume VRAM that would otherwise be used for the expert cache, causing more experts to run on the CPU."
+ }
+]

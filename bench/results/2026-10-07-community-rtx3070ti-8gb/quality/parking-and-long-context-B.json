@@ -1,0 +1,110 @@
+[
+ {
+  "name": "speed_code",
+  "wall_s": 4.3,
+  "prompt_n": 26,
+  "cache_n": 0,
+  "prompt_s": 0.7,
+  "prompt_tps": 37.9,
+  "out_n": 198,
+  "out_tps": 54.2,
+  "note": "",
+  "answer": "```python\ndef merge_intervals(intervals):\n    \"\"\"\n    Merge overlapping intervals.\n    \n    Args:\n        intervals: List of intervals, each as [start, end].\n    \n    Returns:\n        List of merged, non-overlapping intervals.\n    \"\"\"\n    if not intervals:\n        return []\n    \n    # Sort intervals by start time\n    intervals.sort(key=lambda x: x[0])\n    \n    merged = [intervals[0]]\n    \n    for "
+ },
+ {
+  "name": "speed_prose",
+  "wall_s": 9.9,
+  "prompt_n": 37,
+  "cache_n": 0,
+  "prompt_s": 0.6,
+  "prompt_tps": 65.2,
+  "out_n": 450,
+  "out_tps": 48.6,
+  "note": "",
+  "answer": "Elias had spent forty years watching the horizon, his life measured in the rhythmic sweep of the lighthouse beam. The tower stood on a jagged promontory, isolated from the mainland by a narrow strip of land that vanished with the high tide. His days were quiet, filled with the smell of salt, the creak of old wood, and the distant hum of the sea.\n\nOne stormy Tuesday, as the wind howled against the "
+ },
+ {
+  "name": "speed_long19k",
+  "wall_s": 55.9,
+  "prompt_n": 18934,
+  "cache_n": 0,
+  "prompt_s": 50.3,
+  "prompt_tps": 376.7,
+  "out_n": 250,
+  "out_tps": 44.9,
+  "note": "",
+  "answer": "Here is a summary of the document in 5 bullet points:\n\n*   **Performance and Hardware Requirements:** Strata is optimized for NVIDIA RTX 20–50 series GPUs (12 GB+ VRAM recommended) and x86-64 CPUs with AVX2 support, requiring ~64 GB RAM for optimal performance. Speed benchmarks show significant improvements in prompt processing (up to 2,200 tokens/s) and output generation (up to 93 tokens/s) on hi"
+ },
+ {
+  "name": "needle_long",
+  "wall_s": 289.9,
+  "prompt_n": 103869,
+  "cache_n": 0,
+  "prompt_s": 289.3,
+  "prompt_tps": 359.1,
+  "out_n": 11,
+  "out_tps": 38.2,
+  "note": "(doc 330068 chars; correct=True)",
+  "answer": "5826-OMEGA-heron"
+ },
+ {
+  "name": "needle_followup",
+  "wall_s": 1.9,
+  "prompt_n": 35,
+  "cache_n": 103879,
+  "prompt_s": 0.5,
+  "prompt_tps": 66.4,
+  "out_n": 44,
+  "out_tps": 42.0,
+  "note": "(same conversation: should read only the new question)",
+  "answer": "At 64K context and above, `--kv-resident` keeps the context's KV cache in RAM and only the part the attention reads in VRAM, allowing more experts to fit on the GPU."
+ },
+ {
+  "name": "conv_A1",
+  "wall_s": 13.3,
+  "prompt_n": 4602,
+  "cache_n": 0,
+  "prompt_s": 12.8,
+  "prompt_tps": 358.8,
+  "out_n": 20,
+  "out_tps": 49.4,
+  "note": "",
+  "answer": "For 64 GB of RAM, the recommended model size is **IQ2_XS**."
+ },
+ {
+  "name": "conv_B1",
+  "wall_s": 14.5,
+  "prompt_n": 4776,
+  "cache_n": 0,
+  "prompt_s": 13.2,
+  "prompt_tps": 360.9,
+  "out_n": 59,
+  "out_tps": 46.3,
+  "note": "",
+  "answer": "Setting `\"parallel\": 2` enables the engine to keep up to two conversations open simultaneously, decoding them together in batch windows to share computational resources and reduce waiting time for multiple users, though this may slightly decrease the speed of individual requests on cards where experts do not fit in VRAM."
+ },
+ {
+  "name": "conv_A2",
+  "wall_s": 0.6,
+  "prompt_n": 22,
+  "cache_n": 4623,
+  "prompt_s": 0.4,
+  "prompt_tps": 55.8,
+  "out_n": 11,
+  "out_tps": 50.2,
+  "note": "(back to A after B)",
+  "answer": "The fastest size is **Q2_0**."
+ },
+ {
+  "name": "conv_B2",
+  "wall_s": 1.6,
+  "prompt_n": 32,
+  "cache_n": 4834,
+  "prompt_s": 0.5,
+  "prompt_tps": 62.0,
+  "out_n": 46,
+  "out_tps": 45.4,
+  "note": "(back to B after A)",
+  "answer": "No, on a 12 GB card, enabling parallel processing makes a single request slower (by approximately 11-24%) because the batch slots consume VRAM that would otherwise be used for the expert cache."
+ }
+]

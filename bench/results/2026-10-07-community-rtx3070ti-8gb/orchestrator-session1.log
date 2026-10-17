@@ -1,0 +1,37 @@
+17:44:26 block 1-A: A-32k-int8
+17:44:54   loaded in 20s, max_context 32768
+17:44:59   harness targets 4096,16384 x5
+17:48:51     4096: prefill 550 (543-555) decode 47.0 (43.2-48.4) ttft 7.5s
+17:48:51     16384: prefill 646 (644-647) decode 45.9 (45.7-48.4) ttft 25.4s
+17:48:51 block 2-B: B-128k-k8v4-res32k
+17:49:18   loaded in 20s, max_context 131072
+17:49:23   harness targets 4096,16384 x5
+17:55:03     4096: prefill 364 (360-365) decode 45.9 (44.6-47.8) ttft 11.3s
+17:55:03     16384: prefill 380 (379-381) decode 46.9 (46.6-47.7) ttft 43.2s
+17:55:03 block 3-C: C-128k-k8v4-res20k
+17:55:32   loaded in 22s, max_context 131072
+17:55:37   harness targets 4096,16384 x5
+17:59:57     4096: prefill 508 (507-511) decode 47.5 (46.3-49.4) ttft 8.1s
+17:59:57     16384: prefill 537 (537-541) decode 47.1 (46.1-47.5) ttft 30.6s
+17:59:57 block 4-D: D-128k-int8-res32k
+18:00:25   loaded in 21s, max_context 131072
+18:00:30   harness targets 4096,16384 x5
+18:07:17     4096: prefill 304 (301-306) decode 47.1 (44.4-48.9) ttft 13.5s
+18:07:17     16384: prefill 302 (302-302) decode 44.7 (44.2-46.7) ttft 54.3s
+18:07:18 block 5-B: B-128k-k8v4-res32k
+18:07:50   loaded in 25s, max_context 131072
+18:07:55   harness targets 4096,16384 x5
+18:13:35     4096: prefill 363 (361-364) decode 46.4 (45.5-47.9) ttft 11.3s
+18:13:35     16384: prefill 380 (379-381) decode 46.3 (42.6-47.0) ttft 43.2s
+18:13:35 block 6-C: C-128k-k8v4-res20k
+18:14:08   loaded in 25s, max_context 131072
+18:14:13   harness targets 4096,16384,32768 x5
+18:24:17     4096: prefill 510 (502-512) decode 47.5 (46.3-47.9) ttft 8.1s
+18:24:17     16384: prefill 536 (532-539) decode 47.0 (43.2-47.8) ttft 30.6s
+18:24:17     32768: prefill 534 (530-535) decode 47.2 (45.7-47.9) ttft 61.4s
+18:24:17   harness targets 128000 x3
+18:37:07     128000: prefill 521 (521-523) decode 43.6 (43.3-46.3) ttft 246.0s
+18:37:07   needle_bench 32k,128k x depths 10,50,90
+18:50:38   needles: [' 128k depth  50%: FOUND  (125,868 prompt tokens, 206 s)', ' 128k depth  90%: FOUND  (125,868 prompt tokens, 204 s)', '6 of 6 found']
+18:50:38 restoring the normal start (run-iq2_xs.bat)
+18:50:45 done
