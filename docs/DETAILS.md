@@ -471,13 +471,14 @@ thought about for 1,524 tokens. Not a benchmark, but consistent with the claim.
 START-HERE.bat --setup --family swift --model IQ2_XS
 ```
 
-### Experimental: Unsloth's UD-Q4_K_XL
+### Or: Unsloth's UD-Q4_K_XL
 
 A 4-bit quantization of the same model (111 GB, 72 GiB of experts). Setup offers it from engine 0.1.32
-(`--family unsloth --model UD-Q4_K_XL`: a RAM budget of your RAM less 24 GB, the rest read from the SSD); what it
-does and the manual workflow are in **[docs/UNSLOTH_Q4.md](UNSLOTH_Q4.md)**. On a 64 GB PC with a 12 GB RTX 5070 it writes 7-8.5
-tokens/s, most experts read from the SSD; it picks the same tokens as llama.cpp on the same file at 97.5-99% of
-the positions of short greedy answers, 90-91% after a 16K prompt, differing mostly at near-ties
+(`--family unsloth --model UD-Q4_K_XL`: from ~88 GB of RAM every expert is kept in RAM, and with less RAM it keeps a
+budget of your RAM less 24 GB and reads the rest from the SSD); what it does and the manual workflow are in
+**[docs/UNSLOTH_Q4.md](UNSLOTH_Q4.md)**. On a 64 GB PC with a 12 GB RTX 5070 it writes 7-8.5 tokens/s, most experts read
+from the SSD; it picks the same tokens as llama.cpp on the same file at 97.5-99% of the positions of short greedy
+answers, 90-91% after a 16K prompt, differing mostly at near-ties
 ([measured](UNSLOTH_Q4.md#quality-against-llamacpp-on-the-same-file)).
 
 ## Before you start
