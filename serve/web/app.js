@@ -628,17 +628,17 @@ function msgEl(m, i) {
 // One MCP tool call in the answer: a compact block (name, state, a one-line preview) that opens to the arguments and
 // the result as the model read it.  Its body is built only while open: a result can be 20,000 characters.
 const TOOL_STATE = {writing: ["st-badge--reading", "Writing"], running: ["st-badge--generating", "Running"], done: ["", "Done"],
-                    error: ["st-badge--error", "Error"], skipped: ["st-badge--queued", "Not run"]};
-function toolHtml(t, k) {
-  const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
+                    error: ["st-badge--error", "Error"], skipped: ["st-badge--queued", "Not run"]};function toolHtml(t, k) {
+  const [cls, labelRaw] = TOOL_STATE[t.state] || ["", t.state];
+  const label = tr(labelRaw);
   const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
   const preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
   let body = "";
   if (t.open) {
-    body = `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
+    body = `<div class="tool-call__label">${tr("Arguments")}</div><pre class="tool-call__pre">${esc(args || tr("(being written)"))}</pre>`;
     if (t.result != null) {
-      body += `<div class="tool-call__label">${t.ok ? "Result" : "Error"}${t.chars ? ` · ${fmt(t.chars)} characters` : ""}` +
-              `${t.truncated ? ", cut for the model" : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
+      body += `<div class="tool-call__label">${t.ok ? tr("Result") : tr("Error")}${t.chars ? ` · ${fmt(t.chars)} ${tr("characters")}` : ""}` +
+              `${t.truncated ? tr(", cut for the model") : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
     }
   }
   return `<details class="st-collapse tool-call" data-tool="${k}" data-state="${esc(t.state)}"${t.open ? " open" : ""}>` +
@@ -678,8 +678,8 @@ function updateAssistant(el, m, streaming) {
   if (m.reasoning) {
     det.hidden = false;
     const thinkingNow = streaming && !m.text;
-    el.querySelector(".think-title").textContent = thinkingNow ? "Thinking…" :
-      m.thinkSecs != null ? `Thought for ${fmt(m.thinkSecs, 1)} s` : "Thoughts";
+    el.querySelector(".think-title").textContent = tr(thinkingNow ? "Thinking…" :
+      m.thinkSecs != null ? `Thought for ${fmt(m.thinkSecs, 1)} s` : "Thoughts");
     const body = el.querySelector(".thinking");
     if (det.open || thinkingNow) body.textContent = m.reasoning;
     else body.dataset.pending = "1";
@@ -692,7 +692,7 @@ function updateAssistant(el, m, streaming) {
     bubble.innerHTML = `<div class="msg-error"></div>`;
     bubble.firstChild.textContent = m.error;
   } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
-    bubble.innerHTML = m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
+    bubble.innerHTML = m.reasoning ? `<span class="muted cursor">${tr("Writing")}</span>` : `<span class="cursor"></span>`;
   } else {
     bubble.innerHTML = answerHtml(m);
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
