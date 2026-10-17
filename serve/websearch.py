@@ -250,6 +250,18 @@ def _read_page_jina(result: dict, budget: int) -> tuple[str, bool]:
     return text[:budget], True
 
 
+def _both_reasons(direct: str, jina: str) -> str:
+    """Two failing read reasons -> one readable combined reason naming both paths."""
+    d = direct.removeprefix("(").removesuffix(")")
+    j = jina.removeprefix("(").removesuffix(")")
+    pre = "page could not be read: "
+    if j.startswith(pre):
+        j = j[len(pre):]   # "Jina too:" already says it is a read failure
+    if d.startswith(pre):
+        return f"({pre}{d[len(pre):]}; Jina too: {j})"
+    return f"({d}; Jina too: {j})"
+
+
 def _read_with_reader(result: dict, budget: int, reader: str) -> tuple[str, str | None, bool]:
     """(text-or-reason, read_via, ok). reader: off = direct only; fallback = Jina when direct fails;
     always = Jina first, direct as its fallback. Both failing gives both reasons."""
@@ -260,13 +272,13 @@ def _read_with_reader(result: dict, budget: int, reader: str) -> tuple[str, str 
         direct, dok = _read_page(result, budget)
         if dok:
             return direct, None, True
-        return direct + " " + jina, None, False
+        return _both_reasons(direct, jina), None, False
     direct, dok = _read_page(result, budget)
     if reader == "fallback" and not dok:
         jina, jok = _read_page_jina(result, budget)
         if jok:
             return jina, "jina", True
-        return direct + " " + jina, None, False
+        return _both_reasons(direct, jina), None, False
     return direct, None, dok
 
 
