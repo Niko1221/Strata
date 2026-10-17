@@ -493,9 +493,6 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     strata::core::diag_pool_fn().store(&diag_active_pool);
     split_.resize((size_t) kMaxSplit);
     split_multi_.resize((size_t) kMaxSplitMulti);
-    fgu_left_.reset(new std::atomic<int32_t>[(size_t) kMaxSplitMulti]);
-    fready_.reset(new std::atomic<uint32_t>[(size_t) kMaxSplitMulti]);
-    for (int e = 0; e < kMaxSplitMulti; ++e) { fgu_left_[(size_t) e].store(0); fready_[(size_t) e].store(0); }
     threads_.reserve((size_t) n_);
     for (int i = 0; i < n_; ++i) {
         const int core = pin ? (i < (int) topo_.worker_cores.size() ? topo_.worker_cores[(size_t) i] : -1) : -1;
@@ -684,30 +681,6 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             const int e = (int) i / parts_b_, part = (int) i % parts_b_;
             const int r0 = H * part / parts_b_, r1 = H * (part + 1) / parts_b_;
             s2_expert_down_rows(jobs_[e].blob, split_[(size_t) e].a2, jobs_[e].out, r0, r1);
-        } else if (mode_ == 7) {
-            // a fused native layer (run_split_multi_native, STRATA_POOL_FUSED): one part of one expert's gate/up rows,
-            // or of its down rows once its intermediate is quantized.  The same row calls as modes 5 and 6 (every
-            // row is computed on its own, so the cut does not change a bit).
-            const int code = forder_[i], e = code >> 8, part = code & 127;
-            SplitBufMulti& sb = split_multi_[(size_t) e];
-            const ExpertJobMulti& jb = mjobs_[e];
-            if ((code & 128) == 0) {
-                const int nf = (int) nfmt_->n_ff, r0 = nf * part / fparts_gu_, r1 = nf * (part + 1) / fparts_gu_;
-                float* ff[MAXT];
-                for (int t = 0; t < jb.nt; ++t) ff[t] = sb.ff[t];
-                native_gu_rows(*nfmt_, jb.blob, jb.nact, jb.nt, ff, r0, r1);
-                if (fgu_left_[(size_t) e].fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                    for (int t = 0; t < jb.nt; ++t) native_quant_h(*nfmt_, sb.ff[t], sb.hq[t]);
-                    fready_[(size_t) e].store(fbatch_, std::memory_order_release);
-                }
-            } else {
-                // its gate/up parts were all claimed before this one (forder_ puts them first), so they are running
-                while (fready_[(size_t) e].load(std::memory_order_acquire) != fbatch_) _mm_pause();
-                const int nh = (int) nfmt_->n_embd, r0 = nh * part / fparts_d_, r1 = nh * (part + 1) / fparts_d_;
-                const void* hq[MAXT];
-                for (int t = 0; t < jb.nt; ++t) hq[t] = sb.hq[t];
-                native_down_rows(*nfmt_, jb.blob, hq, jb.nt, jb.out, r0, r1);
-            }
         } else if (mode_ >= 5) {
             // plan v0.3 P6: native layers, 5 = gate/up rows, 6 = down rows (the layer's own n_ff / n_embd: Flash-Next's
             // FF / H, or another family's smaller expert)
@@ -841,63 +814,9 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
     ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
-// STRATA_POOL_FUSED=1 (opt-in; measured on one CPU so far): a native layer's experts without the barrier between the
-// gate/up and the down phase (mode 7).  Gate/up rows are compute-bound on the AVX-2 i-quant decode and down rows
-// (IQ4_NL) stream at the RAM's rate, so with the barrier each phase leaves the other's resource idle; fused, one
-// expert's down runs beside the next ones' gate/up.  The tasks: each expert's gate/up rows in fparts_gu_ parts, its
-// down rows in fparts_d_, the down parts one expert behind (STRATA_POOL_FUSED_LAG; 2 measured the same or 1-2% slower)
-// so that their gate/up is usually done when they are claimed.  The same row calls as the phases, so the same bits.
-// Q2_0 layers keep the phases.  Ryzen 7 3800X (Zen 2, 7 workers + host): pool_layer_bench (4 GB, 6-7 experts a layer,
-// a quarter of them 2 tokens) IQ2_S / IQ3_XXS / IQ3_S layers 0.420 -> 0.387, 0.500 -> 0.456, 0.526 -> 0.469 ms
-// (-8 / -9 / -11%), the same output hash.
-static bool pool_fused() {
-    static const bool on = [] { const char* v = std::getenv("STRATA_POOL_FUSED"); return v != nullptr && std::atoi(v) != 0; }();
-    return on;
-}
-static int pool_fused_lag() {
-    static const int lag = [] { const char* v = std::getenv("STRATA_POOL_FUSED_LAG"); return v ? (std::max)(0, std::atoi(v)) : 1; }();
-    return lag;
-}
-
 void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n) {
     if (n <= 0) return;
     const auto t0 = std::chrono::steady_clock::now();
-    if (pool_fused() && n_ > 1 && !q2_native_kernels(f.gu_type) && !q2_native_kernels(f.d_type)) {
-        for (int b0 = 0; b0 < n; b0 += kMaxSplitMulti) {
-            const int nb = (std::min)(kMaxSplitMulti, n - b0);
-            mjobs_ = jobs + b0;
-            nfmt_ = &f;
-            ++fbatch_;
-            if (fbatch_ == 0) ++fbatch_;   // 0 is every flag's initial value
-            forder_.clear();
-            const int lag = pool_fused_lag();
-            static const bool parts_env = [this] {   // STRATA_POOL_FUSED_PARTS=<gate/up>,<down> (default 8,4)
-                const char* v = std::getenv("STRATA_POOL_FUSED_PARTS");
-                if (v != nullptr) {
-                    int a = 0, b = 0;
-                    if (std::sscanf(v, "%d,%d", &a, &b) == 2 && a >= 1 && a <= 64 && b >= 1 && b <= 64) { fparts_gu_ = a; fparts_d_ = b; }
-                }
-                return true;
-            }();
-            (void) parts_env;
-            for (int s = 0; s < nb + lag; ++s) {
-                if (s < nb) {
-                    fgu_left_[(size_t) s].store(fparts_gu_, std::memory_order_relaxed);
-                    for (int p = 0; p < fparts_gu_; ++p) forder_.push_back(s << 8 | p);
-                }
-                if (s >= lag)
-                    for (int p = 0; p < fparts_d_; ++p) forder_.push_back((s - lag) << 8 | 128 | p);
-            }
-            run_phase(7, (int) forder_.size());
-        }
-        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        ms_multi_gu += ms;
-        multi_bytes += (int64_t) n * (int64_t) f.bytes;
-        ++multi_fused;
-        mode_ = 0;
-        ms_drain_ += ms;
-        return;
-    }
     // more distinct experts than buffers: run them in batches
     for (int b0 = 0; b0 < n; b0 += kMaxSplitMulti) {
         const int nb = (std::min)(kMaxSplitMulti, n - b0);

@@ -392,9 +392,5 @@ if(STRATA_SYCL_PARITY)
     # MODEL-UPDATE: the CPU pool's expert rows per format against the RAM bandwidth (as the top-level build's)
     add_executable(kq_cpu_bench ${STRATA_ROOT}/src/kernels/cpu/kq_cpu_bench.cpp)
     target_link_libraries(kq_cpu_bench PRIVATE strata_kernels_cpu)
-    # the real ExpertPool at decode's batch size (one layer's CPU experts a call), with an output hash: its batching
-    # against kq_cpu_bench, and STRATA_POOL_FUSED against the phases
-    add_executable(pool_layer_bench ${STRATA_ROOT}/src/kernels/cpu/pool_layer_bench.cpp)
-    target_link_libraries(pool_layer_bench PRIVATE strata_kernels_cpu)
   endif()
 endif()

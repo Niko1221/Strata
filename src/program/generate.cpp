@@ -13944,9 +13944,6 @@ int main(int argc, char** argv) {
                         pool.ms_multi_q / rounds, pool.ms_multi_down / rounds,
                         (double) pool.multi_bytes / 1e6 / std::max(1e-9, pool.ms_multi_gu + pool.ms_multi_down),
                         (drive.cpu_ms - pool_ms0) / rounds);
-        if (rounds > 0 && pool.multi_fused > 0)
-            std::printf("%-24s %lld layer calls fused (STRATA_POOL_FUSED): their down rows are in the gate/up time\n", "",
-                        (long long) pool.multi_fused);
         if (rounds > 0)
             std::printf("%-24s plan %.3f  activation quantize %.3f  jobs %.3f  run %.3f ms/round\n", "dispatch",
                         drive.d.ms_plan / rounds, drive.d.ms_actq / rounds, drive.d.ms_jobs / rounds,
