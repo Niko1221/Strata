@@ -1,0 +1,3 @@
+3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]
+/usr/bin/python3
+/usr/bin/python3: No module named pip

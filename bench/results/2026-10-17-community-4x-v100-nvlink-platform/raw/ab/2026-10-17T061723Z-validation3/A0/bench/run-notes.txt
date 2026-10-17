@@ -1,0 +1,25 @@
+[2026-10-17T05:51:05Z] baseline-profile.py start
+out: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T054922Z-validation2/A0/bench
+сервер: pid 104138, порт 8080, конфиг <HOME>/strata185/Strata/strata-185-iq3_s.ab-A0.json
+движок 0.1.44.1, контекст 262144, uptime 26 с, запросов за сессию 7
+условия до замера собраны
+pre-flight logit_bias(EOS ban): gen_n=16 finish=length -> OK
+токенов на символ (PARA_CODE) ≈ 0.1965
+прогрев [4096, 32768] x 64 токенов (в замеры не входит; прогревает экспертный кэш и графы окон после перезапуска движка)...
+  warmup 4096: prompt 3971 @ 871.8 ток/с, gen 64 @ 104.2 ток/с, 5.2 с
+  warmup 32768: prompt 31307 @ 1889.7 ток/с, gen 64 @ 95.3 ток/с, 17.3 с
+  4096-prompt #1: prompt 3971 @ 872.6 ток/с | gen 256/256 @ 100.2 ток/с ITL 9.98 мс | TTFT 4.581 с | wall 7.12 с | finish length | черновики 167/232 | PCIe RX [2457.0, 32.0, 8028.0, 4379.0] MB
+  4096-prompt #2: prompt 3971 @ 872.7 ток/с | gen 256/256 @ 106.6 ток/с ITL 9.38 мс | TTFT 4.573 с | wall 6.96 с | finish length | черновики 172/224 | PCIe RX [5671.0, 18.0, 9462.0, 5233.0] MB
+  4096-prompt #3: prompt 3971 @ 862.3 ток/с | gen 256/256 @ 102.3 ток/с ITL 9.78 мс | TTFT 4.629 с | wall 7.12 с | finish length | черновики 168/228 | PCIe RX [6066.0, 3688.0, 9670.0, 4613.0] MB
+  32768-prompt #1: prompt 31307 @ 1897.8 ток/с | gen 256/256 @ 101.4 ток/с ITL 9.86 мс | TTFT 16.534 с | wall 19.04 с | finish length | черновики 171/210 | PCIe RX [21099.0, 15932.0, 19811.0, 14428.0] MB
+  32768-prompt #2: prompt 31307 @ 1899.1 ток/с | gen 256/256 @ 94.6 ток/с ITL 10.57 мс | TTFT 16.533 с | wall 19.22 с | finish length | черновики 162/233 | PCIe RX [17005.0, 21006.0, 18301.0, 29112.0] MB
+  32768-prompt #3: prompt 31307 @ 1890.2 ток/с | gen 256/256 @ 98.4 ток/с ITL 10.17 мс | TTFT 16.602 с | wall 19.19 с | finish length | черновики 168/227 | PCIe RX [22132.0, 13771.0, 20205.0, 22233.0] MB
+  128000-prompt #1: prompt 122087 @ 2430.0 ток/с | gen 256/256 @ 91.7 ток/с ITL 10.90 мс | TTFT 50.335 с | wall 53.11 с | finish length | черновики 166/237 | PCIe RX [61193.0, 58520.0, 63587.0, 74791.0] MB
+  128000-prompt #2: prompt 122087 @ 2428.0 ток/с | gen 256/256 @ 99.7 ток/с ITL 10.03 мс | TTFT 50.37 с | wall 52.92 с | finish length | черновики 173/215 | PCIe RX [49008.0, 59653.0, 56109.0, 74645.0] MB
+  128000-prompt #3: prompt 122087 @ 2425.4 ток/с | gen 256/256 @ 82.4 ток/с ITL 12.13 мс | TTFT 50.423 с | wall 53.51 с | finish length | черновики 152/239 | PCIe RX [67422.0, 60269.0, 65149.0, 86614.0] MB
+  gen-only #1: prompt 163 @ 198.7 ток/с | gen 1024/1024 @ 125.8 ток/с ITL 7.95 мс | TTFT 0.84 с | wall 8.96 с | finish length | черновики 770/915 | PCIe RX [31.0, 127.0, 90.0, 1039.0] MB
+  gen-only #2: prompt 163 @ 201.4 ток/с | gen 1024/1024 @ 112.2 ток/с ITL 8.91 мс | TTFT 0.83 с | wall 9.94 с | finish length | черновики 716/939 | PCIe RX [23.0, 131.0, 113.0, 212.0] MB
+  gen-only #3: prompt 163 @ 200.3 ток/с | gen 1024/1024 @ 110.4 ток/с ITL 9.06 мс | TTFT 0.834 с | wall 10.09 с | finish length | черновики 695/902 | PCIe RX [18.0, 761.0, 433.0, 621.0] MB
+  determinism: same_text=True cached_run2=224
+CUDA-ошибок в приросте лога движка: 0
+готово: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T054922Z-validation2/A0/bench

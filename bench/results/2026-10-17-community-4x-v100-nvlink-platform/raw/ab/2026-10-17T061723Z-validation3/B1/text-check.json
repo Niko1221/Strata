@@ -1,0 +1,88 @@
+{
+ "kind": "ab-text-check",
+ "protocol": "stabilize-then-compare (редакция 2)",
+ "started_utc": "2026-10-17T06:24:57Z",
+ "attempts_max": 6,
+ "max_tokens": 128,
+ "ref": "<HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/B0/text-check.json",
+ "allow_ref_mismatch": true,
+ "probes": [
+  {
+   "target_tokens": 1024,
+   "prompt_sha": "dd4d82d1b3b14ad0",
+   "prompt_n": 1259,
+   "shas": [
+    "1080a1768859aa00",
+    "1080a1768859aa00"
+   ],
+   "self_consistent": true,
+   "stable_pair_at": 1,
+   "requests_used": 2,
+   "stable_sha": "1080a1768859aa00",
+   "warmup_requests": 0,
+   "fixed_length_ok": true,
+   "pairwise_prefix": [
+    {
+     "pair": "1-2",
+     "common_prefix_chars": 626
+    }
+   ],
+   "ref_compare": {
+    "ref_shas": [
+     "1080a1768859aa00",
+     "1080a1768859aa00"
+    ],
+    "sha_match": true,
+    "common_prefix_chars": 626,
+    "len_ref": 626,
+    "len_new": 626,
+    "prefix_ratio": 1.0
+   },
+   "ref_match": true,
+   "texts": [
+    "Based on the text provided, the calibration table is described in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text **does not specify the order** in which the channels are listed within the calibration table. It only states that the table contains data for all channels. Therefore, it is impossible to determine which channel is listed first based solely on the information given.\n\nHowever, if we look at the structure of the document itself, **Section 0** (which discusses **Channel 0**) appears first in the text. But this refers to the order of the *sections in the document",
+    "Based on the text provided, the calibration table is described in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text **does not specify the order** in which the channels are listed within the calibration table. It only states that the table contains data for all channels. Therefore, it is impossible to determine which channel is listed first based solely on the information given.\n\nHowever, if we look at the structure of the document itself, **Section 0** (which discusses **Channel 0**) appears first in the text. But this refers to the order of the *sections in the document"
+   ]
+  },
+  {
+   "target_tokens": 8192,
+   "prompt_sha": "736928ee3cf1a4cd",
+   "prompt_n": 10012,
+   "shas": [
+    "caf2b35bb91146f1",
+    "caf2b35bb91146f1"
+   ],
+   "self_consistent": true,
+   "stable_pair_at": 1,
+   "requests_used": 2,
+   "stable_sha": "caf2b35bb91146f1",
+   "warmup_requests": 0,
+   "fixed_length_ok": true,
+   "pairwise_prefix": [
+    {
+     "pair": "1-2",
+     "common_prefix_chars": 530
+    }
+   ],
+   "ref_compare": {
+    "ref_shas": [
+     "caf2b35bb91146f1",
+     "caf2b35bb91146f1"
+    ],
+    "sha_match": true,
+    "common_prefix_chars": 530,
+    "len_ref": 530,
+    "len_new": 530,
+    "prefix_ratio": 1.0
+   },
+   "ref_match": true,
+   "texts": [
+    "Based on the text provided, the sections are listed sequentially starting from **Section 0**.\n\nThe text states: \"Section 0. The quick brown fox jumps over the lazy dog while the sensor array records **channel 0** readings...\"\n\nTherefore, **channel 0** is listed first.\n\nAnswer: **channel 0**\n\nMARKER-9c4f7a21 Section 0. The quick brown fox jumps over the lazy dog while the sensor array records channel 0 readings at 4800 Hz; the calibration table lists offsets, gains and drift coefficients for every channel, and the maintenance",
+    "Based on the text provided, the sections are listed sequentially starting from **Section 0**.\n\nThe text states: \"Section 0. The quick brown fox jumps over the lazy dog while the sensor array records **channel 0** readings...\"\n\nTherefore, **channel 0** is listed first.\n\nAnswer: **channel 0**\n\nMARKER-9c4f7a21 Section 0. The quick brown fox jumps over the lazy dog while the sensor array records channel 0 readings at 4800 Hz; the calibration table lists offsets, gains and drift coefficients for every channel, and the maintenance"
+   ]
+  }
+ ],
+ "finished_utc": "2026-10-17T06:25:13Z",
+ "verdict": "PASS",
+ "ref_mismatch": false
+}

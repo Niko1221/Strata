@@ -1,0 +1,7 @@
+# nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory --format=csv (UTC 2026-10-16T23:27:21Z)
+gpu_uuid, pid, process_name, used_gpu_memory [MiB]
+GPU-c4a285b6-4b3f-e33d-b215-96e0d6ea6f6e, 32197, <HOME>/strata185/Strata/engine-cuda12/strata, 15234 MiB
+GPU-856a23fb-2a0d-12bb-10af-7a31a071322d, 32197, <HOME>/strata185/Strata/engine-cuda12/strata, 15574 MiB
+GPU-121f2dc1-2feb-3d01-b0ff-57b876562bc7, 32197, <HOME>/strata185/Strata/engine-cuda12/strata, 15184 MiB
+GPU-df670e96-a76d-034a-8640-a3b6f6171696, 32197, <HOME>/strata185/Strata/engine-cuda12/strata, 16056 MiB
+# exit=0

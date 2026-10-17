@@ -1,0 +1,240 @@
+{
+ "started_utc": "2026-10-17T02:29:46Z",
+ "probes": [
+  {
+   "prompt_tokens_target": 64,
+   "max_tokens": 128,
+   "tag": "short",
+   "prompt_sha": "db35c0fba1c96fb8",
+   "prompt_n": 111,
+   "cached": [
+    0,
+    104,
+    104,
+    104,
+    104
+   ],
+   "shas": [
+    "1e85a54651001a7b",
+    "17a5d52e9af74e15",
+    "c79f337e43f20693",
+    "c79f337e43f20693",
+    "c79f337e43f20693"
+   ],
+   "distinct_sha": 3,
+   "draft_accepted": [
+    "None/None",
+    "None/None",
+    "None/None",
+    "None/None",
+    "None/None"
+   ],
+   "pairwise_prefix": [
+    {
+     "pair": "1-2",
+     "common_prefix_chars": 592,
+     "len_a": 633,
+     "len_b": 637
+    },
+    {
+     "pair": "1-3",
+     "common_prefix_chars": 478,
+     "len_a": 633,
+     "len_b": 636
+    },
+    {
+     "pair": "1-4",
+     "common_prefix_chars": 478,
+     "len_a": 633,
+     "len_b": 636
+    },
+    {
+     "pair": "1-5",
+     "common_prefix_chars": 478,
+     "len_a": 633,
+     "len_b": 636
+    },
+    {
+     "pair": "2-3",
+     "common_prefix_chars": 478,
+     "len_a": 637,
+     "len_b": 636
+    },
+    {
+     "pair": "2-4",
+     "common_prefix_chars": 478,
+     "len_a": 637,
+     "len_b": 636
+    },
+    {
+     "pair": "2-5",
+     "common_prefix_chars": 478,
+     "len_a": 637,
+     "len_b": 636
+    },
+    {
+     "pair": "3-4",
+     "common_prefix_chars": 636,
+     "len_a": 636,
+     "len_b": 636
+    },
+    {
+     "pair": "3-5",
+     "common_prefix_chars": 636,
+     "len_a": 636,
+     "len_b": 636
+    },
+    {
+     "pair": "4-5",
+     "common_prefix_chars": 636,
+     "len_a": 636,
+     "len_b": 636
+    }
+   ],
+   "texts": [
+    "Based on the text provided, the sensor array is explicitly stated to be recording readings for **channel 0**. While the text mentions that the calibration table lists offsets, gains, and drift coefficients for \"every channel,\" it does not provide the full contents of that table. However, since **channel 0** is the only specific channel identifier mentioned in the context of the sensor array's operation and data recording, it is the only channel explicitly identified in the passage.\n\nTherefore, based strictly on the information given in the text, **channel 0** is the only channel listed/mentioned.\n\n**Answer:** Channel 0 is the",
+    "Based on the text provided, the sensor array is explicitly stated to be recording readings for **channel 0**. While the text mentions that the calibration table lists offsets, gains, and drift coefficients for \"every channel,\" it does not provide the full contents of that table. However, since **channel 0** is the only specific channel identifier mentioned in the context of the sensor array's operation and data recording, it is the only channel explicitly identified in the passage.\n\nTherefore, based strictly on the information given in the text, **channel 0** is the only channel listed or referenced.\n\n**Answer:** Channel 0 is the",
+    "Based on the text provided, the sensor array is explicitly stated to be recording readings for **channel 0**. While the text mentions that the calibration table lists offsets, gains, and drift coefficients for \"every channel,\" it does not provide the full contents of that table. However, since **channel 0** is the only specific channel identifier mentioned in the context of the sensor array's operation and data recording, it is the only channel explicitly identified in the text.\n\nTherefore, based strictly on the information given in the prompt, **channel 0** is the only channel listed or referenced.\n\n**Answer:** Channel 0 is the",
+    "Based on the text provided, the sensor array is explicitly stated to be recording readings for **channel 0**. While the text mentions that the calibration table lists offsets, gains, and drift coefficients for \"every channel,\" it does not provide the full contents of that table. However, since **channel 0** is the only specific channel identifier mentioned in the context of the sensor array's operation and data recording, it is the only channel explicitly identified in the text.\n\nTherefore, based strictly on the information given in the prompt, **channel 0** is the only channel listed or referenced.\n\n**Answer:** Channel 0 is the",
+    "Based on the text provided, the sensor array is explicitly stated to be recording readings for **channel 0**. While the text mentions that the calibration table lists offsets, gains, and drift coefficients for \"every channel,\" it does not provide the full contents of that table. However, since **channel 0** is the only specific channel identifier mentioned in the context of the sensor array's operation and data recording, it is the only channel explicitly identified in the text.\n\nTherefore, based strictly on the information given in the prompt, **channel 0** is the only channel listed or referenced.\n\n**Answer:** Channel 0 is the"
+   ],
+   "first_200_chars": [
+    "Based on the text provided, the sensor array is explicitly stated to be recording readings for **channel 0**. While the text mentions that the calibration table lists offsets, gains, and drift coeffic",
+    "Based on the text provided, the sensor array is explicitly stated to be recording readings for **channel 0**. While the text mentions that the calibration table lists offsets, gains, and drift coeffic",
+    "Based on the text provided, the sensor array is explicitly stated to be recording readings for **channel 0**. While the text mentions that the calibration table lists offsets, gains, and drift coeffic",
+    "Based on the text provided, the sensor array is explicitly stated to be recording readings for **channel 0**. While the text mentions that the calibration table lists offsets, gains, and drift coeffic",
+    "Based on the text provided, the sensor array is explicitly stated to be recording readings for **channel 0**. While the text mentions that the calibration table lists offsets, gains, and drift coeffic"
+   ]
+  },
+  {
+   "prompt_tokens_target": 1024,
+   "max_tokens": 128,
+   "tag": "medium",
+   "prompt_sha": "dd4d82d1b3b14ad0",
+   "prompt_n": 1259,
+   "cached": [
+    0,
+    1252,
+    1252,
+    1252
+   ],
+   "shas": [
+    "d40ef8ef47286fb0",
+    "1080a1768859aa00",
+    "1080a1768859aa00",
+    "1080a1768859aa00"
+   ],
+   "distinct_sha": 2,
+   "draft_accepted": [
+    "None/None",
+    "None/None",
+    "None/None",
+    "None/None"
+   ],
+   "pairwise_prefix": [
+    {
+     "pair": "1-2",
+     "common_prefix_chars": 559,
+     "len_a": 626,
+     "len_b": 626
+    },
+    {
+     "pair": "1-3",
+     "common_prefix_chars": 559,
+     "len_a": 626,
+     "len_b": 626
+    },
+    {
+     "pair": "1-4",
+     "common_prefix_chars": 559,
+     "len_a": 626,
+     "len_b": 626
+    },
+    {
+     "pair": "2-3",
+     "common_prefix_chars": 626,
+     "len_a": 626,
+     "len_b": 626
+    },
+    {
+     "pair": "2-4",
+     "common_prefix_chars": 626,
+     "len_a": 626,
+     "len_b": 626
+    },
+    {
+     "pair": "3-4",
+     "common_prefix_chars": 626,
+     "len_a": 626,
+     "len_b": 626
+    }
+   ],
+   "texts": [
+    "Based on the text provided, the calibration table is described in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text **does not specify the order** in which the channels are listed within the calibration table. It only states that the table contains data for all channels. Therefore, it is impossible to determine which channel is listed first based solely on the information given.\n\nHowever, if we look at the structure of the document itself, **Section 0** (which discusses **Channel 0**) appears first in the provided text. But this refers to the order of the *sections in the",
+    "Based on the text provided, the calibration table is described in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text **does not specify the order** in which the channels are listed within the calibration table. It only states that the table contains data for all channels. Therefore, it is impossible to determine which channel is listed first based solely on the information given.\n\nHowever, if we look at the structure of the document itself, **Section 0** (which discusses **Channel 0**) appears first in the text. But this refers to the order of the *sections in the document",
+    "Based on the text provided, the calibration table is described in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text **does not specify the order** in which the channels are listed within the calibration table. It only states that the table contains data for all channels. Therefore, it is impossible to determine which channel is listed first based solely on the information given.\n\nHowever, if we look at the structure of the document itself, **Section 0** (which discusses **Channel 0**) appears first in the text. But this refers to the order of the *sections in the document",
+    "Based on the text provided, the calibration table is described in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text **does not specify the order** in which the channels are listed within the calibration table. It only states that the table contains data for all channels. Therefore, it is impossible to determine which channel is listed first based solely on the information given.\n\nHowever, if we look at the structure of the document itself, **Section 0** (which discusses **Channel 0**) appears first in the text. But this refers to the order of the *sections in the document"
+   ],
+   "first_200_chars": [
+    "Based on the text provided, the calibration table is described in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text **does not specify the order** in wh",
+    "Based on the text provided, the calibration table is described in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text **does not specify the order** in wh",
+    "Based on the text provided, the calibration table is described in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text **does not specify the order** in wh",
+    "Based on the text provided, the calibration table is described in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text **does not specify the order** in wh"
+   ]
+  },
+  {
+   "prompt_tokens_target": 8192,
+   "max_tokens": 128,
+   "tag": "long",
+   "prompt_sha": "736928ee3cf1a4cd",
+   "prompt_n": 10012,
+   "cached": [
+    0,
+    10005,
+    10005
+   ],
+   "shas": [
+    "caf2b35bb91146f1",
+    "caf2b35bb91146f1",
+    "caf2b35bb91146f1"
+   ],
+   "distinct_sha": 1,
+   "draft_accepted": [
+    "None/None",
+    "None/None",
+    "None/None"
+   ],
+   "pairwise_prefix": [
+    {
+     "pair": "1-2",
+     "common_prefix_chars": 530,
+     "len_a": 530,
+     "len_b": 530
+    },
+    {
+     "pair": "1-3",
+     "common_prefix_chars": 530,
+     "len_a": 530,
+     "len_b": 530
+    },
+    {
+     "pair": "2-3",
+     "common_prefix_chars": 530,
+     "len_a": 530,
+     "len_b": 530
+    }
+   ],
+   "texts": [
+    "Based on the text provided, the sections are listed sequentially starting from **Section 0**.\n\nThe text states: \"Section 0. The quick brown fox jumps over the lazy dog while the sensor array records **channel 0** readings...\"\n\nTherefore, **channel 0** is listed first.\n\nAnswer: **channel 0**\n\nMARKER-9c4f7a21 Section 0. The quick brown fox jumps over the lazy dog while the sensor array records channel 0 readings at 4800 Hz; the calibration table lists offsets, gains and drift coefficients for every channel, and the maintenance",
+    "Based on the text provided, the sections are listed sequentially starting from **Section 0**.\n\nThe text states: \"Section 0. The quick brown fox jumps over the lazy dog while the sensor array records **channel 0** readings...\"\n\nTherefore, **channel 0** is listed first.\n\nAnswer: **channel 0**\n\nMARKER-9c4f7a21 Section 0. The quick brown fox jumps over the lazy dog while the sensor array records channel 0 readings at 4800 Hz; the calibration table lists offsets, gains and drift coefficients for every channel, and the maintenance",
+    "Based on the text provided, the sections are listed sequentially starting from **Section 0**.\n\nThe text states: \"Section 0. The quick brown fox jumps over the lazy dog while the sensor array records **channel 0** readings...\"\n\nTherefore, **channel 0** is listed first.\n\nAnswer: **channel 0**\n\nMARKER-9c4f7a21 Section 0. The quick brown fox jumps over the lazy dog while the sensor array records channel 0 readings at 4800 Hz; the calibration table lists offsets, gains and drift coefficients for every channel, and the maintenance"
+   ],
+   "first_200_chars": [
+    "Based on the text provided, the sections are listed sequentially starting from **Section 0**.\n\nThe text states: \"Section 0. The quick brown fox jumps over the lazy dog while the sensor array records *",
+    "Based on the text provided, the sections are listed sequentially starting from **Section 0**.\n\nThe text states: \"Section 0. The quick brown fox jumps over the lazy dog while the sensor array records *",
+    "Based on the text provided, the sections are listed sequentially starting from **Section 0**.\n\nThe text states: \"Section 0. The quick brown fox jumps over the lazy dog while the sensor array records *"
+   ]
+  }
+ ],
+ "finished_utc": "2026-10-17T02:30:14Z"
+}

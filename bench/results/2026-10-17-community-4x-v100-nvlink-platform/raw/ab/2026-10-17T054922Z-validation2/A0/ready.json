@@ -1,0 +1,26 @@
+{
+ "utc": "2026-10-17T05:50:45Z",
+ "health": 200,
+ "health_body": "{\"status\": \"ok\", \"max_context\": 262144, \"model\": \"qwen3.8-flash-next-iq3_s\", \"images\": true, \"api_key\": true, \"image_generation\": false, \"loaded\": true, \"service\": \"strata\"}",
+ "wrapper_pids": [
+  "104138",
+  "104145",
+  "104175"
+ ],
+ "engine_pids": [
+  "104145",
+  "104175"
+ ],
+ "vram_mib": {
+  "0": 15124,
+  "1": 15510,
+  "2": 15106,
+  "3": 15972
+ },
+ "ok_procs": true,
+ "ok_vram": true,
+ "ok_chat": true,
+ "chat_sample": "готово",
+ "elapsed_s": 60.8
+}
+READY через 61 с (три признака: процессы живы, VRAM {0: 15124, 1: 15510, 2: 15106, 3: 15972}, chat вернул choices)

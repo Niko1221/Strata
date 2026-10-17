@@ -1,0 +1,13 @@
+# сравнение базового профиля: PR #2525 (2026-10-14, 0.1.44.1) vs замер 2026-10-17T00:48Z (тот же бинарник 0.1.44.1, фиксированная длина вывода)
+# generated_utc=2026-10-17T00:58:47Z
+# pr_source=source/pr-2525/files/bench/results/2026-10-14-community-4x-tesla-v100-iq3-s-262k-code/runs.json (medians of 3 runs, output NOT length-fixed)
+# new_source=raw/profiles/2026-10-17T004753Z/runs.json (medians of 3 runs, output length fixed by banning EOS ids 248044/248046 via logit_bias)
+# units: tok/s = tokens per second; ttft s; gen_n = tokens actually generated
+# note: PR decode column is NOT comparable (model stopped early at ~93-182 tokens of a 256 cap); new decode column is valid (gen_n == max_tokens, finish=length)
+actual_prompt_n_pr,actual_prompt_n_new,length_match,prompt_tok_s_pr,prompt_tok_s_new,delta_prompt_pct,prompt_tok_s_pr_control,pr_noise_pct,prompt_tok_s_pr_0.1.43,delta_vs_0.1.43_pct,gen_n_pr_median,gen_n_new,decode_tok_s_pr_invalid,decode_tok_s_new_valid,ttft_s_pr,ttft_s_new,comment
+3971,3971,1,881.6,868.7,-1.46,879.6,0.31,876.2,-0.86,181,256,101.0,99.0,4.53,4.59,lengths identical
+15667,15667,1,1548.5,1515.1,-2.16,1546.2,0.39,1542.6,-1.78,105,256,117.5,109.6,10.15,10.38,lengths identical
+31307,31307,1,1985.3,1892.6,-4.67,1982.3,0.13,1973.2,-4.08,103,256,111.8,104.2,15.81,16.59,lengths identical
+63539,62519,0,2345.3,2213.5,-5.62,2348.0,0.27,2346.8,-5.68,103,256,109.2,96.2,27.16,46.5,new prompt is 1.6% shorter; per-token metric, compare with care
+125011,125011,1,2490.7,2372.8,-4.73,2495.8,0.08,2502.1,-5.17,105,256,102.5,98.1,50.29,52.78,lengths identical
+163,163,1,203.7,196.2,-3.68,205.2,0.34,200.8,-2.29,104,1024,119.5,109.0,0.82,0.85,lengths identical

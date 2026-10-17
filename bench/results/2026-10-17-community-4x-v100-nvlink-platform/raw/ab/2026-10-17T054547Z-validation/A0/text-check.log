@@ -1,0 +1,10 @@
+  прогрев target=1024: http=200 prompt_n=1259
+  run 1 target=1024: http=200 prompt_n=1259 gen=128 finish=length sha=1080a1768859aa00
+  run 2 target=1024: http=200 prompt_n=1259 gen=128 finish=length sha=d40ef8ef47286fb0
+  target=1024: self_consistent=False ref_match=None
+  прогрев target=8192: http=200 prompt_n=10012
+  run 1 target=8192: http=200 prompt_n=10012 gen=128 finish=length sha=950855f25e672488
+  run 2 target=8192: http=200 prompt_n=10012 gen=128 finish=length sha=50246f696c9d1bb8
+  target=8192: self_consistent=False ref_match=None
+вердикт: FAIL: повторы внутри ячейки не совпали побитово
+файл: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T054547Z-validation/A0/text-check.json

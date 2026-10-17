@@ -1,0 +1,1 @@
+cell=A0 split=auto binary=<HOME>/strata185/Strata/engine-cuda12/strata text_check_exit=0

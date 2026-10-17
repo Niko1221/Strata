@@ -1,0 +1,21 @@
+○ strata-iq3-s.service - Strata LLM server (Qwen3.8-Flash-Next IQ3_S, 4x V100, layer split, :8080)
+     Loaded: loaded (/etc/systemd/system/strata-iq3-s.service; enabled; preset: enabled)
+     Active: inactive (dead) since Thu 2026-10-15 19:09:34 MSK; 1 day 7h ago
+   Duration: 43min 24.278s
+ Invocation: 341e88eac25d47ebad74fcbcac581735
+    Process: 2531 ExecStartPre=/bin/bash -c for i in $(seq 1 120); do nvidia-smi -L >/dev/null 2>&1 && exit 0; sleep 5; done; echo "GPU not ready" >&2; exit 1 (code=exited, status=0/SUCCESS)
+    Process: 2545 ExecStart=<HOME>/strata185/Strata/.venv/bin/python serve/server.py --engine strata --config strata-185-iq3_s.json --port 8080 (code=exited, status=0/SUCCESS)
+   Main PID: 2545 (code=exited, status=0/SUCCESS)
+   Mem peak: 60.3G
+        CPU: 9min 6.579s
+
+окт 15 19:09:28 <HOSTNAME> python[2545]: [strata] reading the prompt: 33,982 of 33,983 tokens, 1 s so far
+окт 15 19:09:29 <HOSTNAME> python[2545]: [strata] thinking: 98 of max 32768 tokens, 100.0 tok/s, 2 s
+окт 15 19:09:30 <HOSTNAME> python[2545]: [strata] answering: 175 of max 32768 tokens, 87.9 tok/s, 3 s
+окт 15 19:09:31 <HOSTNAME> python[2545]: [strata] answering: 239 of max 32768 tokens, 79.9 tok/s, 4 s
+окт 15 19:09:32 <HOSTNAME> python[2545]: [strata] writing a tool call: bash: 324 of max 32768 tokens, 81.1 tok/s, 5 s
+окт 15 19:09:32 <HOSTNAME> python[2545]: [strata] done: 372 tokens in 6 s (84.0 tok/s) (stop, cancel=False), expert cache 99.9% hit
+окт 15 19:09:32 <HOSTNAME> python[2545]: [strata] stopping (Ctrl+C again to end the engine at once) ...
+окт 15 19:09:34 <HOSTNAME> python[2545]: [strata] stopped
+окт 15 19:09:34 <HOSTNAME> systemd[1]: strata-iq3-s.service: Deactivated successfully.
+окт 15 19:09:34 <HOSTNAME> systemd[1]: strata-iq3-s.service: Consumed 9min 6.579s CPU time over 43min 24.349s wall clock time, 60.3G memory peak.

@@ -1,0 +1,3 @@
+# nvidia-smi nvlink -gBwMode (UTC 2026-10-16T23:25:53Z)
+Getting nvlink bandwidth mode is not supported
+# exit=3

@@ -1,0 +1,29 @@
+{
+ "utc": "2026-10-17T02:10:18Z",
+ "nvidia_smi_after": "index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]\n0, 13850 MiB, 2295 MiB, 0 %, 42, 68.25 W, 1530 MHz\n1, 15314 MiB, 831 MiB, 0 %, 43, 65.75 W, 1530 MHz\n2, 14958 MiB, 1187 MiB, 0 %, 42, 70.04 W, 1530 MHz\n3, 16066 MiB, 79 MiB, 0 %, 42, 66.14 W, 1530 MHz",
+ "engine_log_lines_after": 33789,
+ "status_after": {
+  "engine": "0.1.44.1",
+  "uptime_s": 486,
+  "activity": {
+   "requests": 16,
+   "in_flight": 0,
+   "last_request_at": 1792203017
+  },
+  "machine": {
+   "at": 1792203018,
+   "gpu": {
+    "name": "Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB",
+    "used_mib": 61146.0,
+    "total_mib": 65536.0,
+    "util_pct": 25.25,
+    "temp_c": 44,
+    "power_w": 407.996
+   },
+   "ram": {
+    "used_gib": 10.5,
+    "total_gib": 91.8
+   }
+  }
+ }
+}

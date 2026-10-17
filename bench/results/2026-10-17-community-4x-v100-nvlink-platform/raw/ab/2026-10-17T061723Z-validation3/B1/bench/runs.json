@@ -1,0 +1,1708 @@
+{
+ "tool": "scripts/baseline-profile.py",
+ "started_utc": "2026-10-17T06:25:13Z",
+ "finished_utc": "2026-10-17T06:29:57Z",
+ "server_pid": 110542,
+ "port": 8080,
+ "engine_version": "0.1.44.1",
+ "model": "qwen3.8-flash-next-iq3_s",
+ "method": {
+  "prompt_generator": "PARA_CODE из ~/strata185/bin/strata-bench-community.py (тот же текст, что у PR #2525), случайная метка в начале -> нет переиспользования префиксного кэша",
+  "tokens_per_char_measured": 0.1965,
+  "sampling": {
+   "temperature": 0,
+   "reasoning_effort": "none",
+   "stream": true,
+   "logit_bias": {
+    "248044": -100.0,
+    "248046": -100.0
+   }
+  },
+  "fixed_output_length": true,
+  "eos_ids_banned": [
+   248044,
+   248046
+  ],
+  "reps_per_point": 3,
+  "warmup": "промпты [4096, 32768], 64 токенов каждый, в замеры не входит",
+  "warmup_rows": [
+   {
+    "at": "2026-10-17T06:25:15Z",
+    "t0": 1792218315.353,
+    "t1": 1792218320.472,
+    "prompt_n": 3971,
+    "prompt_ms": 4471.9,
+    "prompt_s": 888.0,
+    "gen_n": 64,
+    "gen_ms": 640.9,
+    "gen_s": 99.9,
+    "itl_ms": 10.014,
+    "draft_n": 59,
+    "draft_ok": 46,
+    "checkpoints": 0,
+    "cached": 0,
+    "ttft_s": 4.495,
+    "wall_s": 5.12,
+    "server_overhead_s": 0.023,
+    "tail_s": -0.016,
+    "finish": "length",
+    "usage_completion": 64,
+    "text_sha": "2df57bddb6b87a3e",
+    "text_len": 310,
+    "text_head": "The text provided is a repetitive block of the same paragraph. Here is the single, unique description extracted from it:",
+    "error": null,
+    "case": "warmup-4096"
+   },
+   {
+    "at": "2026-10-17T06:25:20Z",
+    "t0": 1792218320.473,
+    "t1": 1792218336.9,
+    "prompt_n": 31307,
+    "prompt_ms": 15762.3,
+    "prompt_s": 1986.2,
+    "gen_n": 64,
+    "gen_ms": 633.2,
+    "gen_s": 101.1,
+    "itl_ms": 9.894,
+    "draft_n": 55,
+    "draft_ok": 43,
+    "checkpoints": 0,
+    "cached": 0,
+    "ttft_s": 15.81,
+    "wall_s": 16.43,
+    "server_overhead_s": 0.048,
+    "tail_s": -0.016,
+    "finish": "length",
+    "usage_completion": 64,
+    "text_sha": "2065b0baa997fed1",
+    "text_len": 312,
+    "text_head": "The text provided is a repetitive block of the same paragraph. Here is the single, unique description contained within i",
+    "error": null,
+    "case": "warmup-32768"
+   }
+  ],
+  "ttft": "первый непустой streaming-delta (keep-alive игнорируются)",
+  "throughput_source": "тайминги движка (prompt_per_second / predicted_per_second) из финального chunk",
+  "itl": "predicted_per_token_ms из таймингов движка",
+  "server_overhead_s": "ttft - prompt_ms/1000 (оценка ожидания/очереди на стороне сервера)",
+  "tail_s": "wall - (ttft + predicted_ms/1000) (оценка хвоста запроса)",
+  "pcie": "nvidia-smi dmon -s t, 1 с; суммирование rxpci/txpci по окну запроса (NVLink-байтовые счётчики недоступны: DCGM 4.x без profiling-модуля, NVML Sampling & Reporting нет)",
+  "gpu_sampling": "nvidia-smi --query-gpu каждые 2 с",
+  "excluded_runs": "нет (все прогоны записаны; неудачные помечены error/finish)"
+ },
+ "conditions_before": {
+  "utc": "2026-10-17T06:25:13Z",
+  "status": {
+   "engine": "0.1.44.1",
+   "model": "qwen3.8-flash-next-iq3_s",
+   "cache_max_tokens": 262144,
+   "started": 1792218286,
+   "uptime_s": 26,
+   "concurrency": {
+    "serving": 1,
+    "requested": 1
+   },
+   "activity": {
+    "requests": 5,
+    "in_flight": 0,
+    "last_request_at": 1792218313
+   },
+   "machine": {
+    "at": 1792218313,
+    "gpu": {
+     "name": "Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB",
+     "used_mib": 61122.0,
+     "total_mib": 65536.0,
+     "util_pct": 25.25,
+     "temp_c": 41,
+     "power_w": 417.847
+    },
+    "ram": {
+     "used_gib": 10.0,
+     "total_gib": 91.8
+    }
+   }
+  },
+  "config_sha256": "51fdf0ef8aa86b1c67862f4fb20ebc5cb6fcfbda94a184295c0d2d72aaea4b40",
+  "config_args": [
+   "--pack",
+   "<HOME>/strata185/Strata-data/packs/iq3_s",
+   "--native",
+   "<HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+   "--ple-gguf",
+   "<HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+   "--expert-profile",
+   "<HOME>/strata185/data/expert-profile.bin",
+   "--expert-cache",
+   "auto",
+   "--prefill",
+   "auto",
+   "--spec",
+   "4",
+   "--mtp",
+   "<HOME>/strata185/Strata-data/mtp/rt",
+   "--max-context",
+   "262144",
+   "--kv",
+   "int8",
+   "--mmap-experts",
+   "--vision",
+   "--vram-reserve-mib",
+   "512",
+   "--control-vector-scaled",
+   "<HOME>/strata185/data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0",
+   "--control-vector-layer-range",
+   "4",
+   "44",
+   "--cvec-mode",
+   "project",
+   "--cvec-dir",
+   "per-layer",
+   "--spec-min-p",
+   "0.50",
+   "--pool-workers",
+   "12",
+   "--layer-split",
+   "12,25,37"
+  ],
+  "config_keys_without_secrets": {
+   "exe": "<HOME>/strata185/Strata/engine-cuda12/strata",
+   "args": [
+    "--pack",
+    "<HOME>/strata185/Strata-data/packs/iq3_s",
+    "--native",
+    "<HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf",
+    "<HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--expert-profile",
+    "<HOME>/strata185/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--mtp",
+    "<HOME>/strata185/Strata-data/mtp/rt",
+    "--max-context",
+    "262144",
+    "--kv",
+    "int8",
+    "--mmap-experts",
+    "--vision",
+    "--vram-reserve-mib",
+    "512",
+    "--control-vector-scaled",
+    "<HOME>/strata185/data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0",
+    "--control-vector-layer-range",
+    "4",
+    "44",
+    "--cvec-mode",
+    "project",
+    "--cvec-dir",
+    "per-layer",
+    "--spec-min-p",
+    "0.50",
+    "--pool-workers",
+    "12",
+    "--layer-split",
+    "12,25,37"
+   ],
+   "cwd": "<HOME>/strata185/Strata",
+   "tokenizer": "<HOME>/strata185/Strata-data/packs/iq3_s/tokenizer",
+   "model_name": "qwen3.8-flash-next-iq3_s",
+   "draft_vocab": "cyrillic",
+   "expert_profile_save": "<HOME>/strata185/data/expert-profile-learned-185-iq3s.bin",
+   "expert_profile_save_every": 10,
+   "env": {
+    "STRATA_STAGE_TRIM": "1"
+   },
+   "log": "<HOME>/strata185/Strata/strata-185-iq3_s.log",
+   "lib_dirs": [
+    "<HOME>/strata185/cuda-12.8/bin",
+    "<HOME>/strata185/cuda-12.8/lib64"
+   ],
+   "port": 8080,
+   "host": "0.0.0.0",
+   "gpu": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "gpus_asked": true,
+   "vision": {
+    "exe": "<HOME>/strata185/Strata/engine-cuda12/strata-vision",
+    "mmproj": "<HOME>/strata185/Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "gpu": true,
+    "max_tokens": 1024
+   }
+  },
+  "engine_binary_sha256": "bdfec9f553d07c2b6017748802a614b48fb847efa9ec727cbe111e2ab2280de6",
+  "nvidia_smi_before": "index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]\n0, 13850 MiB, 2295 MiB, 10 %, 39, 67.77 W, 1530 MHz\n1, 15306 MiB, 839 MiB, 23 %, 40, 66.23 W, 1530 MHz\n2, 14954 MiB, 1191 MiB, 4 %, 40, 70.04 W, 1530 MHz\n3, 16054 MiB, 91 MiB, 18 %, 39, 67.59 W, 1530 MHz",
+  "loadavg": "2.52 4.03 3.42 1/758 110747",
+  "uptime": "2026-10-15 18:25:56",
+  "engine_log_lines_before": 36724
+ },
+ "conditions_after": {
+  "utc": "2026-10-17T06:29:57Z",
+  "nvidia_smi_after": "index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]\n0, 13850 MiB, 2295 MiB, 0 %, 42, 68.25 W, 1530 MHz\n1, 15308 MiB, 837 MiB, 0 %, 43, 65.75 W, 1530 MHz\n2, 14956 MiB, 1189 MiB, 0 %, 42, 69.56 W, 1530 MHz\n3, 16060 MiB, 85 MiB, 0 %, 42, 66.67 W, 1530 MHz",
+  "engine_log_lines_after": 36810,
+  "status_after": {
+   "engine": "0.1.44.1",
+   "uptime_s": 310,
+   "activity": {
+    "requests": 23,
+    "in_flight": 0,
+    "last_request_at": 1792218596
+   },
+   "machine": {
+    "at": 1792218597,
+    "gpu": {
+     "name": "Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB",
+     "used_mib": 61132.0,
+     "total_mib": 65536.0,
+     "util_pct": 10.0,
+     "temp_c": 43,
+     "power_w": 270.18899999999996
+    },
+    "ram": {
+     "used_gib": 10.7,
+     "total_gib": 91.8
+    }
+   }
+  }
+ },
+ "determinism_check": {
+  "same_text_sha": true,
+  "sha_run1": "cf94ba5b9a530efd",
+  "sha_run2": "cf94ba5b9a530efd",
+  "cached_run2": 224,
+  "prompt_n": 7,
+  "note": "один и тот же промпт дважды, temperature=0"
+ },
+ "cuda_error_lines_in_log_delta": 0,
+ "results": [
+  {
+   "case": "4096-prompt",
+   "target_prompt_tokens": 4096,
+   "max_tokens": 256,
+   "eos_banned": true,
+   "reps": 3,
+   "fixed_length_ok": true,
+   "prompt_tok_s": {
+    "median": 884.9,
+    "min": 884.6,
+    "max": 888.7,
+    "n": 3,
+    "spread_pct": 0.46
+   },
+   "prompt_ms": {
+    "median": 4487.4,
+    "min": 4468.4,
+    "max": 4489.0,
+    "n": 3,
+    "spread_pct": 0.46
+   },
+   "gen_tok_s": {
+    "median": 103.0,
+    "min": 99.4,
+    "max": 110.0,
+    "n": 3,
+    "spread_pct": 10.29
+   },
+   "itl_ms": {
+    "median": 9.71,
+    "min": 9.09,
+    "max": 10.06,
+    "n": 3,
+    "spread_pct": 10.05
+   },
+   "ttft": {
+    "median": 4.51,
+    "min": 4.5,
+    "max": 4.51,
+    "n": 3,
+    "spread_pct": 0.33
+   },
+   "wall": {
+    "median": 6.97,
+    "min": 6.82,
+    "max": 7.07,
+    "n": 3,
+    "spread_pct": 3.59
+   },
+   "server_overhead": {
+    "median": 0.02,
+    "min": 0.02,
+    "max": 0.03,
+    "n": 3,
+    "spread_pct": 25.0
+   },
+   "tail": {
+    "median": -0.02,
+    "min": -0.02,
+    "max": -0.02,
+    "n": 3,
+    "spread_pct": -0.0
+   },
+   "prompt_n": {
+    "median": 3971,
+    "min": 3971,
+    "max": 3971,
+    "n": 3,
+    "spread_pct": 0.0
+   },
+   "cached": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "n": 3,
+    "spread_pct": 0.0
+   },
+   "draft_ok": 508,
+   "draft_n": 674,
+   "pcie_rx_mb": {
+    "0": 12635.0,
+    "1": 91.0,
+    "2": 25158.0,
+    "3": 6109.0
+   },
+   "pcie_tx_mb": {
+    "0": 525.0,
+    "1": 53.0,
+    "2": 2378.0,
+    "3": 698.0
+   },
+   "peak_gpu": {
+    "0": {
+     "util_pct": 100.0,
+     "temp_c": 44.0,
+     "power_w": 257.92,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 13850.0
+    },
+    "1": {
+     "util_pct": 100.0,
+     "temp_c": 45.0,
+     "power_w": 252.6,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 15306.0
+    },
+    "2": {
+     "util_pct": 100.0,
+     "temp_c": 45.0,
+     "power_w": 252.43,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 14954.0
+    },
+    "3": {
+     "util_pct": 100.0,
+     "temp_c": 43.0,
+     "power_w": 271.19,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 16056.0
+    }
+   },
+   "all": [
+    {
+     "at": "2026-10-17T06:25:38Z",
+     "t0": 1792218338.901,
+     "t1": 1792218345.867,
+     "prompt_n": 3971,
+     "prompt_ms": 4468.4,
+     "prompt_s": 888.7,
+     "gen_n": 256,
+     "gen_ms": 2484.7,
+     "gen_s": 103.0,
+     "itl_ms": 9.706,
+     "draft_n": 226,
+     "draft_ok": 167,
+     "checkpoints": 0,
+     "cached": 0,
+     "ttft_s": 4.497,
+     "wall_s": 6.97,
+     "server_overhead_s": 0.029,
+     "tail_s": -0.016,
+     "finish": "length",
+     "usage_completion": 256,
+     "text_sha": "9b714cdbb03ad040",
+     "text_len": 1189,
+     "text_head": "The text provided is a repetitive block of the same paragraph. Here is the single, unique description extracted from it:",
+     "error": null,
+     "case": "4096-prompt",
+     "target_prompt_tokens": 4096,
+     "max_tokens": 256,
+     "eos_banned": true,
+     "prompt_chars": 21072,
+     "gpu_window": {
+      "samples_dmon": 28,
+      "samples_query": 16,
+      "pcie_rx_mb": {
+       "0": 1560.0,
+       "1": 33.0,
+       "2": 10907.0,
+       "3": 151.0
+      },
+      "pcie_tx_mb": {
+       "0": 223.0,
+       "1": 9.0,
+       "2": 740.0,
+       "3": 31.0
+      },
+      "peak_per_gpu": {
+       "0": {
+        "util_pct": 21.0,
+        "temp_c": 41.0,
+        "power_w": 209.62,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 13850.0
+       },
+       "1": {
+        "util_pct": 22.0,
+        "temp_c": 41.0,
+        "power_w": 88.31,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15306.0
+       },
+       "2": {
+        "util_pct": 100.0,
+        "temp_c": 45.0,
+        "power_w": 252.43,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 14954.0
+       },
+       "3": {
+        "util_pct": 42.0,
+        "temp_c": 40.0,
+        "power_w": 160.07,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 16056.0
+       }
+      }
+     }
+    },
+    {
+     "at": "2026-10-17T06:25:45Z",
+     "t0": 1792218345.867,
+     "t1": 1792218352.69,
+     "prompt_n": 3971,
+     "prompt_ms": 4487.4,
+     "prompt_s": 884.9,
+     "gen_n": 256,
+     "gen_ms": 2327.1,
+     "gen_s": 110.0,
+     "itl_ms": 9.09,
+     "draft_n": 214,
+     "draft_ok": 176,
+     "checkpoints": 0,
+     "cached": 0,
+     "ttft_s": 4.512,
+     "wall_s": 6.82,
+     "server_overhead_s": 0.024,
+     "tail_s": -0.016,
+     "finish": "length",
+     "usage_completion": 256,
+     "text_sha": "bbafdbd99d92f828",
+     "text_len": 1214,
+     "text_head": "The text provided is a repetitive block of the same paragraph. Here is the unique content extracted from it:\n\n**Descript",
+     "error": null,
+     "case": "4096-prompt",
+     "target_prompt_tokens": 4096,
+     "max_tokens": 256,
+     "eos_banned": true,
+     "prompt_chars": 21072,
+     "gpu_window": {
+      "samples_dmon": 28,
+      "samples_query": 16,
+      "pcie_rx_mb": {
+       "0": 5064.0,
+       "1": 34.0,
+       "2": 9415.0,
+       "3": 152.0
+      },
+      "pcie_tx_mb": {
+       "0": 129.0,
+       "1": 22.0,
+       "2": 1075.0,
+       "3": 35.0
+      },
+      "peak_per_gpu": {
+       "0": {
+        "util_pct": 97.0,
+        "temp_c": 40.0,
+        "power_w": 92.77,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 13850.0
+       },
+       "1": {
+        "util_pct": 100.0,
+        "temp_c": 45.0,
+        "power_w": 252.6,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15306.0
+       },
+       "2": {
+        "util_pct": 21.0,
+        "temp_c": 41.0,
+        "power_w": 125.88,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 14954.0
+       },
+       "3": {
+        "util_pct": 36.0,
+        "temp_c": 40.0,
+        "power_w": 160.07,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 16056.0
+       }
+      }
+     }
+    },
+    {
+     "at": "2026-10-17T06:25:52Z",
+     "t0": 1792218352.69,
+     "t1": 1792218359.763,
+     "prompt_n": 3971,
+     "prompt_ms": 4489.0,
+     "prompt_s": 884.6,
+     "gen_n": 256,
+     "gen_ms": 2576.7,
+     "gen_s": 99.4,
+     "itl_ms": 10.065,
+     "draft_n": 234,
+     "draft_ok": 165,
+     "checkpoints": 0,
+     "cached": 0,
+     "ttft_s": 4.512,
+     "wall_s": 7.07,
+     "server_overhead_s": 0.023,
+     "tail_s": -0.016,
+     "finish": "length",
+     "usage_completion": 256,
+     "text_sha": "389cbdfd90a01120",
+     "text_len": 1119,
+     "text_head": "Based on the text provided, here is a concise summary of the function `parse_record`:\n\n**Function:** `parse_record`  \n**",
+     "error": null,
+     "case": "4096-prompt",
+     "target_prompt_tokens": 4096,
+     "max_tokens": 256,
+     "eos_banned": true,
+     "prompt_chars": 21072,
+     "gpu_window": {
+      "samples_dmon": 28,
+      "samples_query": 16,
+      "pcie_rx_mb": {
+       "0": 6011.0,
+       "1": 24.0,
+       "2": 4836.0,
+       "3": 5806.0
+      },
+      "pcie_tx_mb": {
+       "0": 173.0,
+       "1": 22.0,
+       "2": 563.0,
+       "3": 632.0
+      },
+      "peak_per_gpu": {
+       "0": {
+        "util_pct": 100.0,
+        "temp_c": 44.0,
+        "power_w": 257.92,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 13850.0
+       },
+       "1": {
+        "util_pct": 23.0,
+        "temp_c": 42.0,
+        "power_w": 78.67,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15306.0
+       },
+       "2": {
+        "util_pct": 22.0,
+        "temp_c": 41.0,
+        "power_w": 89.52,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 14954.0
+       },
+       "3": {
+        "util_pct": 100.0,
+        "temp_c": 43.0,
+        "power_w": 271.19,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 16056.0
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "case": "32768-prompt",
+   "target_prompt_tokens": 32768,
+   "max_tokens": 256,
+   "eos_banned": true,
+   "reps": 3,
+   "fixed_length_ok": true,
+   "prompt_tok_s": {
+    "median": 1985.1,
+    "min": 1985.0,
+    "max": 1986.3,
+    "n": 3,
+    "spread_pct": 0.07
+   },
+   "prompt_ms": {
+    "median": 15771.0,
+    "min": 15761.3,
+    "max": 15772.0,
+    "n": 3,
+    "spread_pct": 0.07
+   },
+   "gen_tok_s": {
+    "median": 99.8,
+    "min": 98.6,
+    "max": 105.0,
+    "n": 3,
+    "spread_pct": 6.41
+   },
+   "itl_ms": {
+    "median": 10.02,
+    "min": 9.52,
+    "max": 10.14,
+    "n": 3,
+    "spread_pct": 6.16
+   },
+   "ttft": {
+    "median": 15.82,
+    "min": 15.8,
+    "max": 15.82,
+    "n": 3,
+    "spread_pct": 0.13
+   },
+   "wall": {
+    "median": 18.35,
+    "min": 18.24,
+    "max": 18.4,
+    "n": 3,
+    "spread_pct": 0.87
+   },
+   "server_overhead": {
+    "median": 0.05,
+    "min": 0.04,
+    "max": 0.05,
+    "n": 3,
+    "spread_pct": 21.28
+   },
+   "tail": {
+    "median": -0.02,
+    "min": -0.02,
+    "max": -0.02,
+    "n": 3,
+    "spread_pct": -0.0
+   },
+   "prompt_n": {
+    "median": 31307,
+    "min": 31307,
+    "max": 31307,
+    "n": 3,
+    "spread_pct": 0.0
+   },
+   "cached": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "n": 3,
+    "spread_pct": 0.0
+   },
+   "draft_ok": 511,
+   "draft_n": 671,
+   "pcie_rx_mb": {
+    "0": 60159.0,
+    "1": 59787.0,
+    "2": 56051.0,
+    "3": 64546.0
+   },
+   "pcie_tx_mb": {
+    "0": 17151.0,
+    "1": 6950.0,
+    "2": 11809.0,
+    "3": 6872.0
+   },
+   "peak_gpu": {
+    "0": {
+     "util_pct": 100.0,
+     "temp_c": 44.0,
+     "power_w": 265.08,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 13850.0
+    },
+    "1": {
+     "util_pct": 100.0,
+     "temp_c": 45.0,
+     "power_w": 251.14,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 15306.0
+    },
+    "2": {
+     "util_pct": 100.0,
+     "temp_c": 46.0,
+     "power_w": 326.21,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 14954.0
+    },
+    "3": {
+     "util_pct": 100.0,
+     "temp_c": 44.0,
+     "power_w": 297.27,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 16056.0
+    }
+   },
+   "all": [
+    {
+     "at": "2026-10-17T06:25:59Z",
+     "t0": 1792218359.764,
+     "t1": 1792218378.004,
+     "prompt_n": 31307,
+     "prompt_ms": 15771.0,
+     "prompt_s": 1985.1,
+     "gen_n": 256,
+     "gen_ms": 2438.1,
+     "gen_s": 105.0,
+     "itl_ms": 9.524,
+     "draft_n": 207,
+     "draft_ok": 174,
+     "checkpoints": 0,
+     "cached": 0,
+     "ttft_s": 15.818,
+     "wall_s": 18.24,
+     "server_overhead_s": 0.047,
+     "tail_s": -0.016,
+     "finish": "length",
+     "usage_completion": 256,
+     "text_sha": "f7091a443b73b32c",
+     "text_len": 1200,
+     "text_head": "The text provided is a repetitive loop of the same paragraph. Here is the unique content extracted from it:\n\n**Descripti",
+     "error": null,
+     "case": "32768-prompt",
+     "target_prompt_tokens": 32768,
+     "max_tokens": 256,
+     "eos_banned": true,
+     "prompt_chars": 166998,
+     "gpu_window": {
+      "samples_dmon": 68,
+      "samples_query": 40,
+      "pcie_rx_mb": {
+       "0": 20190.0,
+       "1": 17338.0,
+       "2": 22381.0,
+       "3": 20553.0
+      },
+      "pcie_tx_mb": {
+       "0": 2637.0,
+       "1": 1709.0,
+       "2": 3159.0,
+       "3": 1855.0
+      },
+      "peak_per_gpu": {
+       "0": {
+        "util_pct": 100.0,
+        "temp_c": 44.0,
+        "power_w": 265.08,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 13850.0
+       },
+       "1": {
+        "util_pct": 100.0,
+        "temp_c": 45.0,
+        "power_w": 251.14,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15306.0
+       },
+       "2": {
+        "util_pct": 100.0,
+        "temp_c": 44.0,
+        "power_w": 271.6,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 14954.0
+       },
+       "3": {
+        "util_pct": 100.0,
+        "temp_c": 43.0,
+        "power_w": 280.09,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 16056.0
+       }
+      }
+     }
+    },
+    {
+     "at": "2026-10-17T06:26:18Z",
+     "t0": 1792218378.005,
+     "t1": 1792218396.405,
+     "prompt_n": 31307,
+     "prompt_ms": 15772.0,
+     "prompt_s": 1985.0,
+     "gen_n": 256,
+     "gen_ms": 2596.2,
+     "gen_s": 98.6,
+     "itl_ms": 10.141,
+     "draft_n": 234,
+     "draft_ok": 168,
+     "checkpoints": 0,
+     "cached": 0,
+     "ttft_s": 15.82,
+     "wall_s": 18.4,
+     "server_overhead_s": 0.048,
+     "tail_s": -0.016,
+     "finish": "length",
+     "usage_completion": 256,
+     "text_sha": "0c29e455adb3682f",
+     "text_len": 1200,
+     "text_head": "The text provided is a single sentence repeated many times. Here is the unique content extracted from it:\n\n**The functio",
+     "error": null,
+     "case": "32768-prompt",
+     "target_prompt_tokens": 32768,
+     "max_tokens": 256,
+     "eos_banned": true,
+     "prompt_chars": 166998,
+     "gpu_window": {
+      "samples_dmon": 60,
+      "samples_query": 36,
+      "pcie_rx_mb": {
+       "0": 23667.0,
+       "1": 22227.0,
+       "2": 23379.0,
+       "3": 14059.0
+      },
+      "pcie_tx_mb": {
+       "0": 1855.0,
+       "1": 2542.0,
+       "2": 2589.0,
+       "3": 1665.0
+      },
+      "peak_per_gpu": {
+       "0": {
+        "util_pct": 100.0,
+        "temp_c": 43.0,
+        "power_w": 223.29,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 13850.0
+       },
+       "1": {
+        "util_pct": 100.0,
+        "temp_c": 45.0,
+        "power_w": 248.28,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15306.0
+       },
+       "2": {
+        "util_pct": 100.0,
+        "temp_c": 44.0,
+        "power_w": 276.5,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 14954.0
+       },
+       "3": {
+        "util_pct": 100.0,
+        "temp_c": 44.0,
+        "power_w": 219.67,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 16056.0
+       }
+      }
+     }
+    },
+    {
+     "at": "2026-10-17T06:26:36Z",
+     "t0": 1792218396.405,
+     "t1": 1792218414.754,
+     "prompt_n": 31307,
+     "prompt_ms": 15761.3,
+     "prompt_s": 1986.3,
+     "gen_n": 256,
+     "gen_ms": 2565.8,
+     "gen_s": 99.8,
+     "itl_ms": 10.023,
+     "draft_n": 230,
+     "draft_ok": 169,
+     "checkpoints": 0,
+     "cached": 0,
+     "ttft_s": 15.799,
+     "wall_s": 18.35,
+     "server_overhead_s": 0.038,
+     "tail_s": -0.016,
+     "finish": "length",
+     "usage_completion": 256,
+     "text_sha": "00d52a66e8958af4",
+     "text_len": 1187,
+     "text_head": "The text provided is a repetitive loop of the same paragraph. Here is the single, unique instance of that text:\n\n**The f",
+     "error": null,
+     "case": "32768-prompt",
+     "target_prompt_tokens": 32768,
+     "max_tokens": 256,
+     "eos_banned": true,
+     "prompt_chars": 166998,
+     "gpu_window": {
+      "samples_dmon": 64,
+      "samples_query": 40,
+      "pcie_rx_mb": {
+       "0": 16302.0,
+       "1": 20222.0,
+       "2": 10291.0,
+       "3": 29934.0
+      },
+      "pcie_tx_mb": {
+       "0": 12659.0,
+       "1": 2699.0,
+       "2": 6061.0,
+       "3": 3352.0
+      },
+      "peak_per_gpu": {
+       "0": {
+        "util_pct": 100.0,
+        "temp_c": 43.0,
+        "power_w": 238.52,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 13850.0
+       },
+       "1": {
+        "util_pct": 100.0,
+        "temp_c": 45.0,
+        "power_w": 176.39,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15306.0
+       },
+       "2": {
+        "util_pct": 100.0,
+        "temp_c": 46.0,
+        "power_w": 326.21,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 14954.0
+       },
+       "3": {
+        "util_pct": 100.0,
+        "temp_c": 44.0,
+        "power_w": 297.27,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 16056.0
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "case": "128000-prompt",
+   "target_prompt_tokens": 128000,
+   "max_tokens": 256,
+   "eos_banned": true,
+   "reps": 3,
+   "fixed_length_ok": true,
+   "prompt_tok_s": {
+    "median": 2589.6,
+    "min": 2589.2,
+    "max": 2593.6,
+    "n": 3,
+    "spread_pct": 0.17
+   },
+   "prompt_ms": {
+    "median": 47146.0,
+    "min": 47072.4,
+    "max": 47152.5,
+    "n": 3,
+    "spread_pct": 0.17
+   },
+   "gen_tok_s": {
+    "median": 96.1,
+    "min": 88.6,
+    "max": 98.2,
+    "n": 3,
+    "spread_pct": 9.99
+   },
+   "itl_ms": {
+    "median": 10.4,
+    "min": 10.18,
+    "max": 11.29,
+    "n": 3,
+    "spread_pct": 10.71
+   },
+   "ttft": {
+    "median": 47.24,
+    "min": 47.16,
+    "max": 47.25,
+    "n": 3,
+    "spread_pct": 0.18
+   },
+   "wall": {
+    "median": 49.84,
+    "min": 49.81,
+    "max": 50.11,
+    "n": 3,
+    "spread_pct": 0.6
+   },
+   "server_overhead": {
+    "median": 0.09,
+    "min": 0.09,
+    "max": 0.09,
+    "n": 3,
+    "spread_pct": 3.26
+   },
+   "tail": {
+    "median": -0.02,
+    "min": -0.02,
+    "max": -0.02,
+    "n": 3,
+    "spread_pct": -0.0
+   },
+   "prompt_n": {
+    "median": 122087,
+    "min": 122087,
+    "max": 122087,
+    "n": 3,
+    "spread_pct": 0.0
+   },
+   "cached": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "n": 3,
+    "spread_pct": 0.0
+   },
+   "draft_ok": 498,
+   "draft_n": 669,
+   "pcie_rx_mb": {
+    "0": 182730.0,
+    "1": 184177.0,
+    "2": 178850.0,
+    "3": 209835.0
+   },
+   "pcie_tx_mb": {
+    "0": 38644.0,
+    "1": 24780.0,
+    "2": 46251.0,
+    "3": 24325.0
+   },
+   "peak_gpu": {
+    "0": {
+     "util_pct": 100.0,
+     "temp_c": 47.0,
+     "power_w": 306.23,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 13850.0
+    },
+    "1": {
+     "util_pct": 100.0,
+     "temp_c": 48.0,
+     "power_w": 304.18,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 15308.0
+    },
+    "2": {
+     "util_pct": 100.0,
+     "temp_c": 48.0,
+     "power_w": 310.06,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 14956.0
+    },
+    "3": {
+     "util_pct": 100.0,
+     "temp_c": 46.0,
+     "power_w": 301.59,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 16060.0
+    }
+   },
+   "all": [
+    {
+     "at": "2026-10-17T06:26:54Z",
+     "t0": 1792218414.756,
+     "t1": 1792218464.565,
+     "prompt_n": 122087,
+     "prompt_ms": 47072.4,
+     "prompt_s": 2593.6,
+     "gen_n": 256,
+     "gen_ms": 2662.7,
+     "gen_s": 96.1,
+     "itl_ms": 10.401,
+     "draft_n": 228,
+     "draft_ok": 171,
+     "checkpoints": 0,
+     "cached": 0,
+     "ttft_s": 47.164,
+     "wall_s": 49.81,
+     "server_overhead_s": 0.091,
+     "tail_s": -0.017,
+     "finish": "length",
+     "usage_completion": 256,
+     "text_sha": "049b9f3838bc7679",
+     "text_len": 1180,
+     "text_head": "The text provided is a repetition of the same paragraph. Here is the single, unique description extracted from it:\n\n**Fu",
+     "error": null,
+     "case": "128000-prompt",
+     "target_prompt_tokens": 128000,
+     "max_tokens": 256,
+     "eos_banned": true,
+     "prompt_chars": 651603,
+     "gpu_window": {
+      "samples_dmon": 175,
+      "samples_query": 100,
+      "pcie_rx_mb": {
+       "0": 64334.0,
+       "1": 57512.0,
+       "2": 60380.0,
+       "3": 68300.0
+      },
+      "pcie_tx_mb": {
+       "0": 12622.0,
+       "1": 11351.0,
+       "2": 11707.0,
+       "3": 6972.0
+      },
+      "peak_per_gpu": {
+       "0": {
+        "util_pct": 100.0,
+        "temp_c": 45.0,
+        "power_w": 306.23,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 13850.0
+       },
+       "1": {
+        "util_pct": 100.0,
+        "temp_c": 47.0,
+        "power_w": 292.03,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15308.0
+       },
+       "2": {
+        "util_pct": 100.0,
+        "temp_c": 47.0,
+        "power_w": 310.06,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 14956.0
+       },
+       "3": {
+        "util_pct": 100.0,
+        "temp_c": 45.0,
+        "power_w": 299.7,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 16056.0
+       }
+      }
+     }
+    },
+    {
+     "at": "2026-10-17T06:27:44Z",
+     "t0": 1792218464.567,
+     "t1": 1792218514.402,
+     "prompt_n": 122087,
+     "prompt_ms": 47152.5,
+     "prompt_s": 2589.2,
+     "gen_n": 256,
+     "gen_ms": 2605.7,
+     "gen_s": 98.2,
+     "itl_ms": 10.179,
+     "draft_n": 220,
+     "draft_ok": 170,
+     "checkpoints": 0,
+     "cached": 0,
+     "ttft_s": 47.247,
+     "wall_s": 49.84,
+     "server_overhead_s": 0.094,
+     "tail_s": -0.017,
+     "finish": "length",
+     "usage_completion": 256,
+     "text_sha": "fe07427545bb36ca",
+     "text_len": 1186,
+     "text_head": "The text provided is a repetition of the same paragraph. Here is the unique content extracted from it:\n\n**Function Descr",
+     "error": null,
+     "case": "128000-prompt",
+     "target_prompt_tokens": 128000,
+     "max_tokens": 256,
+     "eos_banned": true,
+     "prompt_chars": 651603,
+     "gpu_window": {
+      "samples_dmon": 172,
+      "samples_query": 96,
+      "pcie_rx_mb": {
+       "0": 61030.0,
+       "1": 60873.0,
+       "2": 62852.0,
+       "3": 71793.0
+      },
+      "pcie_tx_mb": {
+       "0": 13897.0,
+       "1": 6259.0,
+       "2": 19354.0,
+       "3": 9276.0
+      },
+      "peak_per_gpu": {
+       "0": {
+        "util_pct": 100.0,
+        "temp_c": 47.0,
+        "power_w": 293.1,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 13850.0
+       },
+       "1": {
+        "util_pct": 100.0,
+        "temp_c": 48.0,
+        "power_w": 304.18,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15308.0
+       },
+       "2": {
+        "util_pct": 100.0,
+        "temp_c": 48.0,
+        "power_w": 297.54,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 14956.0
+       },
+       "3": {
+        "util_pct": 100.0,
+        "temp_c": 46.0,
+        "power_w": 301.59,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 16060.0
+       }
+      }
+     }
+    },
+    {
+     "at": "2026-10-17T06:28:34Z",
+     "t0": 1792218514.404,
+     "t1": 1792218564.516,
+     "prompt_n": 122087,
+     "prompt_ms": 47146.0,
+     "prompt_s": 2589.6,
+     "gen_n": 256,
+     "gen_ms": 2891.0,
+     "gen_s": 88.6,
+     "itl_ms": 11.293,
+     "draft_n": 221,
+     "draft_ok": 157,
+     "checkpoints": 0,
+     "cached": 0,
+     "ttft_s": 47.238,
+     "wall_s": 50.11,
+     "server_overhead_s": 0.092,
+     "tail_s": -0.017,
+     "finish": "length",
+     "usage_completion": 256,
+     "text_sha": "961f3b57e80d6423",
+     "text_len": 1050,
+     "text_head": "The text provided is a repetition of the same paragraph. Here is the single, unique description contained within it:\n\n**",
+     "error": null,
+     "case": "128000-prompt",
+     "target_prompt_tokens": 128000,
+     "max_tokens": 256,
+     "eos_banned": true,
+     "prompt_chars": 651603,
+     "gpu_window": {
+      "samples_dmon": 172,
+      "samples_query": 100,
+      "pcie_rx_mb": {
+       "0": 57366.0,
+       "1": 65792.0,
+       "2": 55618.0,
+       "3": 69742.0
+      },
+      "pcie_tx_mb": {
+       "0": 12125.0,
+       "1": 7170.0,
+       "2": 15190.0,
+       "3": 8077.0
+      },
+      "peak_per_gpu": {
+       "0": {
+        "util_pct": 100.0,
+        "temp_c": 47.0,
+        "power_w": 296.65,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 13850.0
+       },
+       "1": {
+        "util_pct": 100.0,
+        "temp_c": 48.0,
+        "power_w": 277.7,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15308.0
+       },
+       "2": {
+        "util_pct": 100.0,
+        "temp_c": 48.0,
+        "power_w": 305.47,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 14956.0
+       },
+       "3": {
+        "util_pct": 100.0,
+        "temp_c": 46.0,
+        "power_w": 262.36,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 16060.0
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "case": "gen-only",
+   "target_prompt_tokens": 120,
+   "max_tokens": 1024,
+   "eos_banned": true,
+   "reps": 3,
+   "fixed_length_ok": true,
+   "prompt_tok_s": {
+    "median": 203.7,
+    "min": 199.0,
+    "max": 204.0,
+    "n": 3,
+    "spread_pct": 2.45
+   },
+   "prompt_ms": {
+    "median": 800.3,
+    "min": 799.1,
+    "max": 819.1,
+    "n": 3,
+    "spread_pct": 2.5
+   },
+   "gen_tok_s": {
+    "median": 117.7,
+    "min": 104.2,
+    "max": 118.6,
+    "n": 3,
+    "spread_pct": 12.23
+   },
+   "itl_ms": {
+    "median": 8.49,
+    "min": 8.43,
+    "max": 9.59,
+    "n": 3,
+    "spread_pct": 13.68
+   },
+   "ttft": {
+    "median": 0.82,
+    "min": 0.82,
+    "max": 0.84,
+    "n": 3,
+    "spread_pct": 2.44
+   },
+   "wall": {
+    "median": 9.5,
+    "min": 9.44,
+    "max": 10.65,
+    "n": 3,
+    "spread_pct": 12.74
+   },
+   "server_overhead": {
+    "median": 0.02,
+    "min": 0.02,
+    "max": 0.02,
+    "n": 3,
+    "spread_pct": 4.76
+   },
+   "tail": {
+    "median": -0.02,
+    "min": -0.02,
+    "max": -0.02,
+    "n": 3,
+    "spread_pct": -0.0
+   },
+   "prompt_n": {
+    "median": 163,
+    "min": 163,
+    "max": 163,
+    "n": 3,
+    "spread_pct": 0.0
+   },
+   "cached": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "n": 3,
+    "spread_pct": 0.0
+   },
+   "draft_ok": 2124,
+   "draft_n": 2744,
+   "pcie_rx_mb": {
+    "0": 222.0,
+    "1": 769.0,
+    "2": 299.0,
+    "3": 318.0
+   },
+   "pcie_tx_mb": {
+    "0": 558.0,
+    "1": 203.0,
+    "2": 225.0,
+    "3": 90.0
+   },
+   "peak_gpu": {
+    "0": {
+     "util_pct": 23.0,
+     "temp_c": 44.0,
+     "power_w": 130.81,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 13850.0
+    },
+    "1": {
+     "util_pct": 24.0,
+     "temp_c": 45.0,
+     "power_w": 133.43,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 15308.0
+    },
+    "2": {
+     "util_pct": 23.0,
+     "temp_c": 44.0,
+     "power_w": 132.3,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 14956.0
+    },
+    "3": {
+     "util_pct": 51.0,
+     "temp_c": 44.0,
+     "power_w": 173.42,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 16060.0
+    }
+   },
+   "all": [
+    {
+     "at": "2026-10-17T06:29:24Z",
+     "t0": 1792218564.516,
+     "t1": 1792218575.163,
+     "prompt_n": 163,
+     "prompt_ms": 819.1,
+     "prompt_s": 199.0,
+     "gen_n": 1024,
+     "gen_ms": 9822.6,
+     "gen_s": 104.2,
+     "itl_ms": 9.592,
+     "draft_n": 973,
+     "draft_ok": 676,
+     "checkpoints": 0,
+     "cached": 0,
+     "ttft_s": 0.84,
+     "wall_s": 10.65,
+     "server_overhead_s": 0.021,
+     "tail_s": -0.016,
+     "finish": "length",
+     "usage_completion": 1024,
+     "text_sha": "411e0335843e4bc2",
+     "text_len": 2498,
+     "text_head": "The text provided is a duplicate of the same paragraph. Here is the cleaned, single instance of the description:\n\nThe fu",
+     "error": null,
+     "case": "gen-only",
+     "target_prompt_tokens": 120,
+     "max_tokens": 1024,
+     "eos_banned": true,
+     "prompt_chars": 744,
+     "gpu_window": {
+      "samples_dmon": 37,
+      "samples_query": 20,
+      "pcie_rx_mb": {
+       "0": 177.0,
+       "1": 565.0,
+       "2": 98.0,
+       "3": 115.0
+      },
+      "pcie_tx_mb": {
+       "0": 449.0,
+       "1": 85.0,
+       "2": 61.0,
+       "3": 47.0
+      },
+      "peak_per_gpu": {
+       "0": {
+        "util_pct": 22.0,
+        "temp_c": 44.0,
+        "power_w": 130.81,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 13850.0
+       },
+       "1": {
+        "util_pct": 24.0,
+        "temp_c": 45.0,
+        "power_w": 133.43,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15308.0
+       },
+       "2": {
+        "util_pct": 22.0,
+        "temp_c": 44.0,
+        "power_w": 123.08,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 14956.0
+       },
+       "3": {
+        "util_pct": 36.0,
+        "temp_c": 44.0,
+        "power_w": 146.8,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 16060.0
+       }
+      }
+     }
+    },
+    {
+     "at": "2026-10-17T06:29:35Z",
+     "t0": 1792218575.163,
+     "t1": 1792218584.6,
+     "prompt_n": 163,
+     "prompt_ms": 799.1,
+     "prompt_s": 204.0,
+     "gen_n": 1024,
+     "gen_ms": 8631.9,
+     "gen_s": 118.6,
+     "itl_ms": 8.43,
+     "draft_n": 894,
+     "draft_ok": 726,
+     "checkpoints": 0,
+     "cached": 0,
+     "ttft_s": 0.82,
+     "wall_s": 9.44,
+     "server_overhead_s": 0.021,
+     "tail_s": -0.016,
+     "finish": "length",
+     "usage_completion": 1024,
+     "text_sha": "b73ffb4fa937953b",
+     "text_len": 2158,
+     "text_head": "The text provided is a duplicate of the same paragraph. Here is the cleaned, single instance of the description:\n\nThe fu",
+     "error": null,
+     "case": "gen-only",
+     "target_prompt_tokens": 120,
+     "max_tokens": 1024,
+     "eos_banned": true,
+     "prompt_chars": 744,
+     "gpu_window": {
+      "samples_dmon": 35,
+      "samples_query": 20,
+      "pcie_rx_mb": {
+       "0": 27.0,
+       "1": 88.0,
+       "2": 80.0,
+       "3": 93.0
+      },
+      "pcie_tx_mb": {
+       "0": 76.0,
+       "1": 83.0,
+       "2": 91.0,
+       "3": 14.0
+      },
+      "peak_per_gpu": {
+       "0": {
+        "util_pct": 23.0,
+        "temp_c": 44.0,
+        "power_w": 112.96,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 13850.0
+       },
+       "1": {
+        "util_pct": 23.0,
+        "temp_c": 44.0,
+        "power_w": 126.78,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15308.0
+       },
+       "2": {
+        "util_pct": 23.0,
+        "temp_c": 44.0,
+        "power_w": 107.23,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 14956.0
+       },
+       "3": {
+        "util_pct": 51.0,
+        "temp_c": 43.0,
+        "power_w": 173.42,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 16060.0
+       }
+      }
+     }
+    },
+    {
+     "at": "2026-10-17T06:29:44Z",
+     "t0": 1792218584.6,
+     "t1": 1792218594.104,
+     "prompt_n": 163,
+     "prompt_ms": 800.3,
+     "prompt_s": 203.7,
+     "gen_n": 1024,
+     "gen_ms": 8698.9,
+     "gen_s": 117.7,
+     "itl_ms": 8.495,
+     "draft_n": 877,
+     "draft_ok": 722,
+     "checkpoints": 0,
+     "cached": 0,
+     "ttft_s": 0.82,
+     "wall_s": 9.5,
+     "server_overhead_s": 0.02,
+     "tail_s": -0.016,
+     "finish": "length",
+     "usage_completion": 1024,
+     "text_sha": "37e6320b5501dec1",
+     "text_len": 2173,
+     "text_head": "The text provided is a duplicate of the same paragraph. Here is the cleaned, single instance of the description:\n\nThe fu",
+     "error": null,
+     "case": "gen-only",
+     "target_prompt_tokens": 120,
+     "max_tokens": 1024,
+     "eos_banned": true,
+     "prompt_chars": 744,
+     "gpu_window": {
+      "samples_dmon": 36,
+      "samples_query": 20,
+      "pcie_rx_mb": {
+       "0": 18.0,
+       "1": 116.0,
+       "2": 121.0,
+       "3": 110.0
+      },
+      "pcie_tx_mb": {
+       "0": 33.0,
+       "1": 35.0,
+       "2": 73.0,
+       "3": 29.0
+      },
+      "peak_per_gpu": {
+       "0": {
+        "util_pct": 23.0,
+        "temp_c": 43.0,
+        "power_w": 129.45,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 13850.0
+       },
+       "1": {
+        "util_pct": 23.0,
+        "temp_c": 44.0,
+        "power_w": 126.78,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15308.0
+       },
+       "2": {
+        "util_pct": 22.0,
+        "temp_c": 43.0,
+        "power_w": 132.3,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 14956.0
+       },
+       "3": {
+        "util_pct": 36.0,
+        "temp_c": 43.0,
+        "power_w": 155.91,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 16060.0
+       }
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

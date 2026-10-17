@@ -1,0 +1,24 @@
+captured_utc: 2026-10-17T05:45:12Z
+binary: <HOME>/strata185/Strata+4xV100+NVlink/build/peer-read-probe
+binary_sha256: 8d21ba95bc5ed66252019d3b29c9b935de8776d140b0870d1c29c7b6fd40d108
+source_sha256: 1f93cf5040e85623ce25c70a5e7ee02b99dd5460ff9c30d01758a9c407ff399f
+compiler: Build cuda_12.8.r12.8/compiler.35583870_0
+host_cc: g++-14 (Ubuntu 14.3.0-14ubuntu1) 14.3.0
+strata_running: NO
+free_vram_mib: 0, 16138 1, 16138 2, 16138 3, 16138 
+args: --devices 0,1,2,3 --min-size 1M --max-size 256M --blocks 5 --note Окно остановки 2026-10-17T05:43Z: закрытие пробелов зонда peer-чтения - пары с GPU3 (R12 снят: сервис остановлен) и точка 256 MiB; сервис Strata выгружен, VRAM 16.1 GiB/карта
+--- nvidia-smi до запуска ---
+index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]
+0, 7 MiB, 16138 MiB, 0 %, 35, 39.82 W, 135 MHz
+1, 7 MiB, 16138 MiB, 0 %, 36, 38.34 W, 135 MHz
+2, 7 MiB, 16138 MiB, 0 %, 35, 39.29 W, 135 MHz
+3, 7 MiB, 16138 MiB, 0 %, 36, 39.77 W, 135 MHz
+--- nvidia-smi после запуска ---
+index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]
+0, 7 MiB, 16138 MiB, 0 %, 37, 65.84 W, 1530 MHz
+1, 7 MiB, 16138 MiB, 0 %, 38, 62.85 W, 1530 MHz
+2, 7 MiB, 16138 MiB, 14 %, 37, 67.11 W, 1530 MHz
+3, 7 MiB, 16138 MiB, 8 %, 36, 64.22 W, 1530 MHz
+exit_code: 0
+часы SM во время пробы (min/median/max по строкам clocks.csv):
+  n=56 min=135 med=1530 max=1530

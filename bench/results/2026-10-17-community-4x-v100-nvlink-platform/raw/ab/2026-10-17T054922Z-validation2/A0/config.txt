@@ -1,0 +1,3 @@
+создан <HOME>/strata185/Strata/strata-185-iq3_s.ab-A0.json (name=A0, sha256=c2bf41eff223c53f…)
+  layer-split: auto
+  exe: <HOME>/strata185/Strata/engine-cuda12/strata

@@ -1,0 +1,20 @@
+captured_utc: 2026-10-16T23:55:49Z
+binary: <HOME>/strata185/Strata+4xV100+NVlink/build/p2p-probe-ext
+binary_sha256: affc6c5e62c19aa03a6654633b32fe77ec82c5f64c5ce6afc976e1b78ee8a64e
+source_sha256: 3ef9d19ef17e8ff1786ec359261f0eb3270209866e79204f76f50a06b0734bcb
+compiler: Build cuda_12.8.r12.8/compiler.35583870_0
+host_cc: g++-14 (Ubuntu 14.3.0-14ubuntu1) 14.3.0
+strata_running: YES
+args: --max-size 8M --note Strata running (this engine serves the agent session); free VRAM 73-945 MiB per card
+--- nvidia-smi до запуска ---
+index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]
+0, 15250 MiB, 895 MiB, 0 %, 39, 66.80 W, 1530 MHz
+1, 15590 MiB, 555 MiB, 0 %, 40, 64.30 W, 1530 MHz
+2, 15200 MiB, 945 MiB, 0 %, 39, 68.55 W, 1530 MHz
+3, 16072 MiB, 73 MiB, 0 %, 39, 65.18 W, 1530 MHz
+--- nvidia-smi после запуска ---
+index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]
+0, 15250 MiB, 895 MiB, 1 %, 39, 66.80 W, 1530 MHz
+1, 15590 MiB, 555 MiB, 5 %, 40, 64.30 W, 1530 MHz
+2, 15200 MiB, 945 MiB, 5 %, 39, 68.60 W, 1530 MHz
+3, 16072 MiB, 73 MiB, 4 %, 39, 65.18 W, 1530 MHz

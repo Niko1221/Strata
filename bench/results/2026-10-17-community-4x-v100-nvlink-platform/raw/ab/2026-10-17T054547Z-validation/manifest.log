@@ -1,0 +1,4 @@
+manifest: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T054547Z-validation/manifest.json
+  engine sha256: bdfec9f553d07c2b6017748802a614b48fb847efa9ec727cbe111e2ab2280de6
+  config sha256: f539e51bf19e2431d45eca607ed520abbefbf778f3e11573041ee705df4af88b layer-split: auto
+  build_info: None

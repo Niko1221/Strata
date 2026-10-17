@@ -1,0 +1,7 @@
+# nvidia-smi --query-gpu=index,clocks_throttle_reasons.active,clocks_throttle_reasons.hw_slowdown,clocks_throttle_reasons.sw_power_cap,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.gpu_idle --format=csv (UTC 2026-10-16T23:27:21Z)
+index, clocks_event_reasons.active, clocks_event_reasons.hw_slowdown, clocks_event_reasons.sw_power_cap, clocks_event_reasons.hw_thermal_slowdown, clocks_event_reasons.gpu_idle
+0, 0x0000000000000000, Not Active, Not Active, Not Active, Not Active
+1, 0x0000000000000000, Not Active, Not Active, Not Active, Not Active
+2, 0x0000000000000000, Not Active, Not Active, Not Active, Not Active
+3, 0x0000000000000000, Not Active, Not Active, Not Active, Not Active
+# exit=0

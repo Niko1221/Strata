@@ -1,0 +1,43 @@
+3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]
+/usr/bin/python3
+/usr/bin/python3: No module named pip
+== venv: <HOME>/strata185/Strata/.venv
+Python 3.14.4
+<HOME>/strata185/Strata/.venv/bin/python: No module named pip
+== site-packages listing
+PIL
+__pycache__
+_virtualenv.pth
+_virtualenv.py
+_yaml
+certifi
+certifi-2026.7.22.dist-info
+charset_normalizer
+charset_normalizer-3.5.1.dist-info
+cmake
+cmake-4.4.3.dist-info
+idna
+idna-3.20.dist-info
+jinja2
+jinja2-3.1.6.dist-info
+markupsafe
+markupsafe-3.0.3.dist-info
+ninja
+ninja-1.13.2.dist-info
+numpy
+numpy-2.5.3.dist-info
+numpy.libs
+pillow-12.3.0.dist-info
+pillow.libs
+psutil
+psutil-7.2.2.dist-info
+pyyaml-6.0.3.dist-info
+regex
+regex-2026.9.10.dist-info
+requests
+requests-2.34.2.dist-info
+tqdm
+tqdm-4.70.1.dist-info
+urllib3
+urllib3-2.8.0.dist-info
+yaml

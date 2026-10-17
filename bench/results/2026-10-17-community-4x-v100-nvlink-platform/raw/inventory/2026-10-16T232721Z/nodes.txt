@@ -1,0 +1,11 @@
+# ls -1 /sys/devices/system/node (UTC 2026-10-16T23:27:21Z)
+has_cpu
+has_generic_initiator
+has_memory
+has_normal_memory
+node0
+online
+possible
+power
+uevent
+# exit=0

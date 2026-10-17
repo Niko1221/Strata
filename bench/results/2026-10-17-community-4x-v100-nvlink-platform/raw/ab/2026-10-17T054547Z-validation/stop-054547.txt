@@ -1,0 +1,5 @@
+Strata (IQ3_S) остановлен, VRAM свободна
+0, 7 MiB
+1, 7 MiB
+2, 7 MiB
+3, 7 MiB

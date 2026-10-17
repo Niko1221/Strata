@@ -1,0 +1,3 @@
+== env names matching CUDA|NCCL|NVIDIA|TORCH|TRITON|Strata|strata|LLAMA|HF_|OMP|MKL
+
+== values of CUDA/NCCL/NVIDIA runtime vars (secrets excluded by pattern)

@@ -1,0 +1,17 @@
+# nvidia-smi topo -m (UTC 2026-10-16T23:27:22Z)
+	[4mGPU0	GPU1	GPU2	GPU3	CPU Affinity	NUMA Affinity	GPU NUMA ID[0m
+GPU0	 X 	NV2	NV2	NV2	0-19	0		N/A
+GPU1	NV2	 X 	NV2	NV2	0-19	0		N/A
+GPU2	NV2	NV2	 X 	NV2	0-19	0		N/A
+GPU3	NV2	NV2	NV2	 X 	0-19	0		N/A
+
+Legend:
+
+  X    = Self
+  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)
+  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node
+  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)
+  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)
+  PIX  = Connection traversing at most a single PCIe bridge
+  NV#  = Connection traversing a bonded set of # NVLinks
+# exit=0

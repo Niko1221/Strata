@@ -1,0 +1,31 @@
+{
+ "utc": "2026-10-17T06:18:35Z",
+ "health": 200,
+ "health_body": "{\"status\": \"ok\", \"max_context\": 262144, \"model\": \"qwen3.8-flash-next-iq3_s\", \"images\": true, \"api_key\": true, \"image_generation\": false, \"loaded\": true, \"service\": \"strata\"}",
+ "wrapper_pids": [
+  "108834",
+  "108841",
+  "108873"
+ ],
+ "engine_pids": [
+  "108841",
+  "108873"
+ ],
+ "vram_mib": {
+  "0": 13730,
+  "1": 15226,
+  "2": 14880,
+  "3": 15972
+ },
+ "ok_procs": true,
+ "ok_vram": true,
+ "vram_total_mib": 59808,
+ "vram_gate": {
+  "per_card_mib": 13000,
+  "total_mib": 57000
+ },
+ "ok_chat": true,
+ "chat_sample": "готово",
+ "elapsed_s": 50.7
+}
+READY через 51 с (три признака: процессы живы, VRAM {0: 13730, 1: 15226, 2: 14880, 3: 15972} сумма 59808, chat вернул choices)

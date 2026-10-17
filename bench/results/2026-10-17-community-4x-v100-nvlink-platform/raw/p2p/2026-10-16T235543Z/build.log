@@ -1,0 +1,5 @@
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu(157): error: identifier "cudaDevP2PAttr" is undefined
+  static cudaDevP2PAttr ATTR_IDS[] = {
+         ^
+
+1 error detected in the compilation of "<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu".

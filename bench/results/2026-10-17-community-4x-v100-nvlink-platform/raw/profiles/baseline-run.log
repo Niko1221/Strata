@@ -1,0 +1,22 @@
+сервер: pid 63585, порт 8080, конфиг <HOME>/strata185/Strata/strata-185-iq3_s.json
+движок 0.1.44.1, контекст 262144, uptime 1832 с, запросов за сессию 10
+условия до замера собраны
+pre-flight logit_bias(EOS ban): gen_n=16 finish=length -> OK
+токенов на символ (PARA_CODE) ≈ 0.1981
+прогрев [4096, 32768] x 64 токенов (в замеры не входит; прогревает экспертный кэш и графы окон после перезапуска движка)...
+  warmup 4096: prompt 3903 @ 858.8 ток/с, gen 64 @ 89.9 ток/с, 5.3 с
+  warmup 32768: prompt 31035 @ 1877.8 ток/с, gen 64 @ 100.5 ток/с, 17.2 с
+  4096-prompt #1: prompt 3903 @ 860.4 ток/с | gen 256/256 @ 100.1 ток/с ITL 9.99 мс | TTFT 4.566 с | wall 7.11 с | finish length | черновики 167/236 | PCIe RX [4692.0, 6.0, 9492.0, 6215.0] MB
+  4096-prompt #2: prompt 3903 @ 860.2 ток/с | gen 256/256 @ 101.3 ток/с ITL 9.87 мс | TTFT 4.561 с | wall 7.07 с | finish length | черновики 166/224 | PCIe RX [3010.0, 32.0, 9133.0, 4759.0] MB
+  4096-prompt #3: prompt 3903 @ 859.3 ток/с | gen 256/256 @ 109.1 ток/с ITL 9.16 мс | TTFT 4.566 с | wall 6.9 с | finish length | черновики 173/217 | PCIe RX [33.0, 6488.0, 12703.0, 4182.0] MB
+Traceback (most recent call last):
+  File "<HOME>/strata185/Strata+4xV100+NVlink/scripts/baseline-profile.py", line 584, in <module>
+    main()
+    ~~~~^^
+  File "<HOME>/strata185/Strata+4xV100+NVlink/scripts/baseline-profile.py", line 420, in main
+    "cached": stats(rows, "cached"),
+              ~~~~~^^^^^^^^^^^^^^^^
+  File "<HOME>/strata185/Strata+4xV100+NVlink/scripts/baseline-profile.py", line 287, in stats
+    s["spread_pct"] = round((max(vals) - min(vals)) / statistics.median(vals) * 100.0, 2)
+                            ~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~
+ZeroDivisionError: division by zero

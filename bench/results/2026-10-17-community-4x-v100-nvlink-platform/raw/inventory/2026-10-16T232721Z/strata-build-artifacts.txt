@@ -1,0 +1,51 @@
+== <HOME>/strata185/Strata/engine-cuda12/
+total 77328
+drwxrwxr-x  2 <USER> <USER>     4096 Oct 14 16:01 .
+drwxrwxr-x 20 <USER> <USER>     4096 Oct 15 18:11 ..
+-rw-rw-r--  1 <USER> <USER>      401 Oct 14 16:01 BUILD.json
+-rwxrwxr-x  1 <USER> <USER> 71186856 Oct 14 16:01 strata
+-rwxrwxr-x  1 <USER> <USER>  7978728 Oct 14 16:01 strata-vision
+{
+ "source": "local",
+ "version": "0.1.44.1",
+ "backend": "cuda",
+ "archs": [
+  70
+ ],
+ "toolkit": 12,
+ "cuda_dirs": [
+  "<HOME>/strata185/cuda-12.8/bin",
+  "<HOME>/strata185/cuda-12.8/lib64"
+ ],
+ "note": "experimental CUDA 12.8 build for Tesla V100 (sm_70), STRATA_EXPERIMENTAL_SM60=ON; private toolkit and private gcc-14, no system packages installed; updated to 0.1.44.1 on 2026-10-14"
+}
+-- cuobjdump --list-elf archs: <HOME>/strata185/Strata/engine-cuda12//strata
+     62 sm_70
+-- cuobjdump --list-ptx archs: <HOME>/strata185/Strata/engine-cuda12//strata
+     62 sm_70
+-- sha256: bdfec9f553d07c2b6017748802a614b48fb847efa9ec727cbe111e2ab2280de6  <HOME>/strata185/Strata/engine-cuda12//strata
+-- cuobjdump --list-elf archs: <HOME>/strata185/Strata/engine-cuda12//strata-vision
+-- cuobjdump --list-ptx archs: <HOME>/strata185/Strata/engine-cuda12//strata-vision
+-- sha256: 932969ee6308f30130917355ccd598823c3d2b974f8b819d0179fd9888687700  <HOME>/strata185/Strata/engine-cuda12//strata-vision
+== CMakeLists: project() и настройки архитектур
+11:project(strata VERSION 0.1.44.1 LANGUAGES CXX)
+7:# CUDA targets arrive in Phase 2.  The kernels need sm_80 or newer (tf32 mma, bf16 math) and the guard
+81:# default since MODEL-UPDATE Phase 1: one more instance per grouped kernel in iq_kernels.cu, +19 KB of sm_60 code,
+160:  option(STRATA_EXPERIMENTAL_SM60 "community build for GPUs below compute capability 7.5: Pascal sm_60, Volta sm_70 (#236)" OFF)
+161:  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+162:    set(CMAKE_CUDA_ARCHITECTURES 120 CACHE STRING "CUDA architectures" FORCE)
+164:  foreach(_a IN LISTS CMAKE_CUDA_ARCHITECTURES)
+166:    # Turing port: developed and measured on sm_120 (RTX 50); the tf32 mma in the QSA scorer has a
+168:    # Pre-sm_75 is refused.
+172:    # STRATA_EXPERIMENTAL_SM60: a Pascal (sm_60, GP100-class) or Volta (sm_70, V100 / Titan V, #236) build.
+175:    # bit-exact for the first and merely a shorter pause for the second (sm_70 has both).  Community-tested,
+177:    # 12.x toolkit: CUDA 13 dropped sm_60 and sm_70 (nvcc fails CMake's compiler test with "compute_70").
+181:        "CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}'.  (A Pascal sm_60 or Volta sm_70 build is "
+185:      message(FATAL_ERROR "CMAKE_CUDA_ARCHITECTURES '${CMAKE_CUDA_ARCHITECTURES}': even the experimental build "
+186:                          "needs compute capability 6.0 (sm_60) or newer")
+196:    # build only, so the ready-made engine (sm_75+) keeps exactly the code it had
+199:  message(STATUS "Strata: CUDA enabled, arch ${CMAKE_CUDA_ARCHITECTURES}")
+421:  # the same on CUDA: the tensor-core scorer (sm_80+) or the FP32 tiled one (below sm_80, and forced on any card by
+824:    # the wide dequant kernels (a thread per 8 values; sm_61's default), bitwise vs the per-group ones (GPU, synthetic,
+833:  # are only made on sm_90+, elsewhere it checks that there are none).  NVIDIA only: PDL is a CUDA feature.
+864:    # the prompt path's BF16 products against cuBLAS's own BF16 GEMM, within fp32 rounding (sm_7x runs them on the

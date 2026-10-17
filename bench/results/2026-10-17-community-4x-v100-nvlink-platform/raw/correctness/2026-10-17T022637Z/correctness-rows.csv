@@ -1,0 +1,14 @@
+test,expected,observed,result,note
+T1_determinism_short,"3 повторов одного текста -> один text_sha, gen_n == 128","http=200 distinct_sha=3 sha=1e85a54651001a7b lens=[633, 668, 680] fixed_len=True",FAIL,"temperature=0, logit_bias бан EOS"
+T2_determinism_medium,"3 повторов одного текста -> один text_sha, gen_n == 128","http=200 distinct_sha=2 sha=1080a1768859aa00 lens=[626, 626, 653] fixed_len=True",FAIL,"temperature=0, logit_bias бан EOS"
+T3_determinism_long,"2 повторов одного текста -> один text_sha, gen_n == 128","http=200 distinct_sha=1 sha=50246f696c9d1bb8 lens=[647, 647] fixed_len=True",PASS,"temperature=0, logit_bias бан EOS"
+T4_prefix_cache_resume,"тот же промпт, 256 токенов: первые 128 совпадают с ответом на 128; cached_tokens > 0",sha128=b302c0ac1912e2c2 sha256=cbc935f631a928f6 prefix_match=True cached_run2=2500 completion=128/256,PASS,проверка корректности KV/префиксного кэша
+T5_context_overflow,HTTP != 200 (или понятная ошибка) и сервер жив после отказа,"http=400 err={'error': {'type': 'invalid_request_error', 'message': 'request exceeds the context window: prompt (376626 tokens) + max health_after=True next_request_http=200",PASS,max_context = 262144
+T6_max_tokens_overflow,"либо аккуратное ограничение генерации, либо аккуратный отказ; сервер жив",http=400 completion=None finish=None health_after=True,PASS,
+T7_unknown_model,HTTP 4xx и сервер жив,http=200,FAIL,
+T8_bad_api_key,HTTP 401/403,http=401,PASS,
+T9_malformed_json,HTTP 4xx,http=400,PASS,
+T10_concurrent_requests,"2 параллельных запроса: оба finish=length, сервер жив",#1: http=200 finish=length wall=6.78s #0: http=200 finish=length wall=13.53s,PASS,"concurrency/serving = 1 -> ожидается очередь, не ошибка"
+T11_long_context_determinism,один и тот же промпт ~62.5k токенов дважды -> один text_sha,prompt_n=80999/80999 sha1=4d8b8a1bce5e6723 sha2=4d8b8a1bce5e6723 fixed_len=True cached=80992,PASS,
+T12_engine_log_cuda_errors,0 строк no kernel image / invalid device function / CUDA error / OOM,cuda_error_lines=0 log_delta_lines=87,PASS,проверка по приросту рабочего лога движка
+T13_service_state_after,"health loaded=true, VRAM >= 14 GiB на карту, pid-файл = фактический pid","health=None vram=0, 15246 MiB, 40, 66.80 W | 1, 15594 MiB, 41, 64.78 W | 2, 15184 MiB, 40, 69.04 W | 3, 16056 MiB, 40, 67.11 W | ",FAIL,R6

@@ -1,0 +1,8 @@
+# эксперимент атрибуции Δ: --layer-split auto (K=11,24,36) против закреплённого --layer-split 12,25,37 (раскладка сессии PR #2525)
+# captured_utc: auto_fresh=2026-10-17T01:52:57Z (через 66 с после старта движка), pinned12=2026-10-17T02:05:49Z (через 270 с после старта варианта), auto_warmed=2026-10-17T00:47:53Z (через ~33 мин после предыдущего старта)
+# один и тот же бинарник (sha256 bdfec9f5…), тот же конфиг (f539e51b…) кроме одного аргумента --layer-split; та же модель, тот же файл профиля экспертов
+# медианы 3 повторов; единицы tok/s, мс, с; raw: raw/profiles/2026-10-17T015257Z, raw/profiles/2026-10-17T020549Z, raw/restart-attribution/2026-10-17T015058Z
+case,prompt_n,auto_warmed_prompt,auto_fresh_prompt,pinned12_prompt,delta_pinned_vs_auto_pct,auto_warmed_decode,auto_fresh_decode,pinned12_decode,auto_warmed_ttft,auto_fresh_ttft,pinned12_ttft,pinned12_draft
+32768-prompt,31307,1892.6,1893.2,1978.0,4.48,104.2,99.3,101.1,16.59,16.57,15.87,510/675
+131072-prompt,125011,2372.8,2372.4,2546.2,7.33,98.1,97.5,96.5,52.78,52.8,49.19,499/662
+gen-only,163,196.2,202.5,207.5,2.47,109.0,129.8,117.7,0.85,0.82,0.81,2101/2562

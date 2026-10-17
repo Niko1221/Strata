@@ -1,0 +1,20 @@
+captured_utc: 2026-10-16T23:57:01Z
+binary: <HOME>/strata185/Strata+4xV100+NVlink/build/p2p-probe-ext
+binary_sha256: e117d2747c158731af824c08e09993047c66964b4f60ee40ce069c9e40870d08
+source_sha256: 0b2c7485085838abbb9861ba50497dd6bb9684d89964ace26c471830d3168247
+compiler: Build cuda_12.8.r12.8/compiler.35583870_0
+host_cc: g++-14 (Ubuntu 14.3.0-14ubuntu1) 14.3.0
+strata_running: YES
+args: --max-size 8M --note Фаза A: Strata запущена (этот же движок обслуживает сеанс агента); GPU3 free 0 MiB -> пары с GPU3 пропущены
+--- nvidia-smi до запуска ---
+index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]
+0, 15250 MiB, 895 MiB, 0 %, 39, 56.21 W, 1312 MHz
+1, 15590 MiB, 555 MiB, 0 %, 40, 53.72 W, 1312 MHz
+2, 15200 MiB, 945 MiB, 0 %, 39, 68.12 W, 1530 MHz
+3, 16072 MiB, 73 MiB, 0 %, 39, 64.74 W, 1530 MHz
+--- nvidia-smi после запуска ---
+index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]
+0, 15250 MiB, 895 MiB, 6 %, 39, 56.21 W, 1312 MHz
+1, 15590 MiB, 555 MiB, 0 %, 40, 53.72 W, 1312 MHz
+2, 15200 MiB, 945 MiB, 6 %, 39, 56.10 W, 1312 MHz
+3, 16072 MiB, 73 MiB, 6 %, 39, 64.74 W, 1530 MHz

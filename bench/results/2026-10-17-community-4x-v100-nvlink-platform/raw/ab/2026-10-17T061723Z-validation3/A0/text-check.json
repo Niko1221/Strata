@@ -1,0 +1,88 @@
+{
+ "kind": "ab-text-check",
+ "protocol": "stabilize-then-compare (редакция 2)",
+ "started_utc": "2026-10-17T05:50:45Z",
+ "attempts_max": 6,
+ "max_tokens": 128,
+ "ref": null,
+ "allow_ref_mismatch": true,
+ "probes": [
+  {
+   "target_tokens": 1024,
+   "prompt_sha": "dd4d82d1b3b14ad0",
+   "prompt_n": 1259,
+   "shas": [
+    "dddc0f1fefd25fde",
+    "1080a1768859aa00",
+    "1080a1768859aa00"
+   ],
+   "self_consistent": true,
+   "stable_pair_at": 2,
+   "requests_used": 3,
+   "stable_sha": "1080a1768859aa00",
+   "warmup_requests": 1,
+   "fixed_length_ok": true,
+   "pairwise_prefix": [
+    {
+     "pair": "1-2",
+     "common_prefix_chars": 551
+    },
+    {
+     "pair": "1-3",
+     "common_prefix_chars": 551
+    },
+    {
+     "pair": "2-3",
+     "common_prefix_chars": 626
+    }
+   ],
+   "ref_compare": null,
+   "ref_match": null,
+   "texts": [
+    "Based on the text provided, the calibration table is described in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text **does not specify the order** in which the channels are listed within the calibration table. It only states that the table contains data for all channels. Therefore, it is impossible to determine which channel is listed first based solely on the information given.\n\nHowever, if we look at the structure of the document itself, **Section 0** (which discusses **Channel 0**) appears first. If the question implies the order of presentation in the document rather than the internal structure",
+    "Based on the text provided, the calibration table is described in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text **does not specify the order** in which the channels are listed within the calibration table. It only states that the table contains data for all channels. Therefore, it is impossible to determine which channel is listed first based solely on the information given.\n\nHowever, if we look at the structure of the document itself, **Section 0** (which discusses **Channel 0**) appears first in the text. But this refers to the order of the *sections in the document",
+    "Based on the text provided, the calibration table is described in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text **does not specify the order** in which the channels are listed within the calibration table. It only states that the table contains data for all channels. Therefore, it is impossible to determine which channel is listed first based solely on the information given.\n\nHowever, if we look at the structure of the document itself, **Section 0** (which discusses **Channel 0**) appears first in the text. But this refers to the order of the *sections in the document"
+   ]
+  },
+  {
+   "target_tokens": 8192,
+   "prompt_sha": "736928ee3cf1a4cd",
+   "prompt_n": 10012,
+   "shas": [
+    "950855f25e672488",
+    "50246f696c9d1bb8",
+    "50246f696c9d1bb8"
+   ],
+   "self_consistent": true,
+   "stable_pair_at": 2,
+   "requests_used": 3,
+   "stable_sha": "50246f696c9d1bb8",
+   "warmup_requests": 1,
+   "fixed_length_ok": true,
+   "pairwise_prefix": [
+    {
+     "pair": "1-2",
+     "common_prefix_chars": 436
+    },
+    {
+     "pair": "1-3",
+     "common_prefix_chars": 436
+    },
+    {
+     "pair": "2-3",
+     "common_prefix_chars": 647
+    }
+   ],
+   "ref_compare": null,
+   "ref_match": null,
+   "texts": [
+    "Based on the text provided, the calibration table is mentioned in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text does not provide the actual contents of the calibration table, nor does it specify an order in which the channels are listed within that table. It only states that the table covers all channels. Therefore, it is **not possible to determine** which channel is listed first based solely on the information given.\n\nHowever, if the question implies which channel is mentioned first in the *document structure* (Section 0), it is **Channel 0**. But strictly speaking, the text",
+    "Based on the text provided, the calibration table is mentioned in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text does not provide the actual contents of the calibration table, nor does it specify an order in which the channels are listed within that table. It only states that the table covers all channels. Therefore, it is **not possible to determine** which channel is listed first in the calibration table from the information given.\n\nHowever, if the question implies which channel is mentioned first in the *document structure* (Section 0), that would be **channel 0**. But strictly speaking",
+    "Based on the text provided, the calibration table is mentioned in every section as listing \"offsets, gains and drift coefficients for **every channel**.\"\n\nThe text does not provide the actual contents of the calibration table, nor does it specify an order in which the channels are listed within that table. It only states that the table covers all channels. Therefore, it is **not possible to determine** which channel is listed first in the calibration table from the information given.\n\nHowever, if the question implies which channel is mentioned first in the *document structure* (Section 0), that would be **channel 0**. But strictly speaking"
+   ]
+  }
+ ],
+ "finished_utc": "2026-10-17T05:51:05Z",
+ "verdict": "PASS",
+ "ref_mismatch": false
+}

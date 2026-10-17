@@ -1,0 +1,230 @@
+# nvidia-smi -q -d CLOCK,PERFORMANCE (UTC 2026-10-16T23:25:52Z)
+
+==============NVSMI LOG==============
+
+Timestamp                                              : Sat Oct 17 02:25:52 2026
+Driver Version                                         : 580.178.04
+CUDA Version                                           : 13.0
+
+Attached GPUs                                          : 4
+GPU 00000000:03:00.0
+    Performance State                                  : P0
+    Clocks Event Reasons
+        Idle                                           : Not Active
+        Applications Clocks Setting                    : Not Active
+        SW Power Cap                                   : Not Active
+        HW Slowdown                                    : Not Active
+            HW Thermal Slowdown                        : Not Active
+            HW Power Brake Slowdown                    : Not Active
+        Sync Boost                                     : Not Active
+        SW Thermal Slowdown                            : Not Active
+        Display Clock Setting                          : Not Active
+    Clocks Event Reasons Counters
+        SW Power Capping                               : 0 us
+        Sync Boost                                     : 0 us
+        SW Thermal Slowdown                            : 0 us
+        HW Thermal Slowdown                            : 0 us
+        HW Power Braking                               : 0 us
+    Sparse Operation Mode                              : N/A
+    Clocks
+        Graphics                                       : 1530 MHz
+        SM                                             : 1530 MHz
+        Memory                                         : 877 MHz
+        Video                                          : 1372 MHz
+    Applications Clocks
+        Graphics                                       : 1312 MHz
+        Memory                                         : 877 MHz
+    Default Applications Clocks
+        Graphics                                       : 1312 MHz
+        Memory                                         : 877 MHz
+    Deferred Clocks
+        Memory                                         : N/A
+    Max Clocks
+        Graphics                                       : 1530 MHz
+        SM                                             : 1530 MHz
+        Memory                                         : 877 MHz
+        Video                                          : 1372 MHz
+    Max Customer Boost Clocks
+        Graphics                                       : 1530 MHz
+    SM Clock Samples
+        Duration                                       : 4759.92 sec
+        Number of Samples                              : 100
+        Max                                            : 1530 MHz
+        Min                                            : 1312 MHz
+        Avg                                            : 1450 MHz
+    Memory Clock Samples
+        Duration                                       : 4759.92 sec
+        Number of Samples                              : 100
+        Max                                            : 877 MHz
+        Min                                            : 877 MHz
+        Avg                                            : 877 MHz
+    Clock Policy
+        Auto Boost                                     : N/A
+        Auto Boost Default                             : N/A
+
+GPU 00000000:04:00.0
+    Performance State                                  : P0
+    Clocks Event Reasons
+        Idle                                           : Not Active
+        Applications Clocks Setting                    : Not Active
+        SW Power Cap                                   : Not Active
+        HW Slowdown                                    : Not Active
+            HW Thermal Slowdown                        : Not Active
+            HW Power Brake Slowdown                    : Not Active
+        Sync Boost                                     : Not Active
+        SW Thermal Slowdown                            : Not Active
+        Display Clock Setting                          : Not Active
+    Clocks Event Reasons Counters
+        SW Power Capping                               : 0 us
+        Sync Boost                                     : 0 us
+        SW Thermal Slowdown                            : 0 us
+        HW Thermal Slowdown                            : 0 us
+        HW Power Braking                               : 0 us
+    Sparse Operation Mode                              : N/A
+    Clocks
+        Graphics                                       : 1530 MHz
+        SM                                             : 1530 MHz
+        Memory                                         : 877 MHz
+        Video                                          : 1372 MHz
+    Applications Clocks
+        Graphics                                       : 1312 MHz
+        Memory                                         : 877 MHz
+    Default Applications Clocks
+        Graphics                                       : 1312 MHz
+        Memory                                         : 877 MHz
+    Deferred Clocks
+        Memory                                         : N/A
+    Max Clocks
+        Graphics                                       : 1530 MHz
+        SM                                             : 1530 MHz
+        Memory                                         : 877 MHz
+        Video                                          : 1372 MHz
+    Max Customer Boost Clocks
+        Graphics                                       : 1530 MHz
+    SM Clock Samples
+        Duration                                       : 4758.70 sec
+        Number of Samples                              : 100
+        Max                                            : 1530 MHz
+        Min                                            : 1312 MHz
+        Avg                                            : 1451 MHz
+    Memory Clock Samples
+        Duration                                       : 4758.70 sec
+        Number of Samples                              : 100
+        Max                                            : 877 MHz
+        Min                                            : 877 MHz
+        Avg                                            : 877 MHz
+    Clock Policy
+        Auto Boost                                     : N/A
+        Auto Boost Default                             : N/A
+
+GPU 00000000:05:00.0
+    Performance State                                  : P0
+    Clocks Event Reasons
+        Idle                                           : Not Active
+        Applications Clocks Setting                    : Not Active
+        SW Power Cap                                   : Not Active
+        HW Slowdown                                    : Not Active
+            HW Thermal Slowdown                        : Not Active
+            HW Power Brake Slowdown                    : Not Active
+        Sync Boost                                     : Not Active
+        SW Thermal Slowdown                            : Not Active
+        Display Clock Setting                          : Not Active
+    Clocks Event Reasons Counters
+        SW Power Capping                               : 0 us
+        Sync Boost                                     : 0 us
+        SW Thermal Slowdown                            : 0 us
+        HW Thermal Slowdown                            : 0 us
+        HW Power Braking                               : 0 us
+    Sparse Operation Mode                              : N/A
+    Clocks
+        Graphics                                       : 1530 MHz
+        SM                                             : 1530 MHz
+        Memory                                         : 877 MHz
+        Video                                          : 1372 MHz
+    Applications Clocks
+        Graphics                                       : 1312 MHz
+        Memory                                         : 877 MHz
+    Default Applications Clocks
+        Graphics                                       : 1312 MHz
+        Memory                                         : 877 MHz
+    Deferred Clocks
+        Memory                                         : N/A
+    Max Clocks
+        Graphics                                       : 1530 MHz
+        SM                                             : 1530 MHz
+        Memory                                         : 877 MHz
+        Video                                          : 1372 MHz
+    Max Customer Boost Clocks
+        Graphics                                       : 1530 MHz
+    SM Clock Samples
+        Duration                                       : 4702.49 sec
+        Number of Samples                              : 100
+        Max                                            : 1530 MHz
+        Min                                            : 1312 MHz
+        Avg                                            : 1443 MHz
+    Memory Clock Samples
+        Duration                                       : 4702.49 sec
+        Number of Samples                              : 100
+        Max                                            : 877 MHz
+        Min                                            : 877 MHz
+        Avg                                            : 877 MHz
+    Clock Policy
+        Auto Boost                                     : N/A
+        Auto Boost Default                             : N/A
+
+GPU 00000000:06:00.0
+    Performance State                                  : P0
+    Clocks Event Reasons
+        Idle                                           : Not Active
+        Applications Clocks Setting                    : Not Active
+        SW Power Cap                                   : Not Active
+        HW Slowdown                                    : Not Active
+            HW Thermal Slowdown                        : Not Active
+            HW Power Brake Slowdown                    : Not Active
+        Sync Boost                                     : Not Active
+        SW Thermal Slowdown                            : Not Active
+        Display Clock Setting                          : Not Active
+    Clocks Event Reasons Counters
+        SW Power Capping                               : 0 us
+        Sync Boost                                     : 0 us
+        SW Thermal Slowdown                            : 0 us
+        HW Thermal Slowdown                            : 0 us
+        HW Power Braking                               : 0 us
+    Sparse Operation Mode                              : N/A
+    Clocks
+        Graphics                                       : 1530 MHz
+        SM                                             : 1530 MHz
+        Memory                                         : 877 MHz
+        Video                                          : 1372 MHz
+    Applications Clocks
+        Graphics                                       : 1312 MHz
+        Memory                                         : 877 MHz
+    Default Applications Clocks
+        Graphics                                       : 1312 MHz
+        Memory                                         : 877 MHz
+    Deferred Clocks
+        Memory                                         : N/A
+    Max Clocks
+        Graphics                                       : 1530 MHz
+        SM                                             : 1530 MHz
+        Memory                                         : 877 MHz
+        Video                                          : 1372 MHz
+    Max Customer Boost Clocks
+        Graphics                                       : 1530 MHz
+    SM Clock Samples
+        Duration                                       : 4743.83 sec
+        Number of Samples                              : 100
+        Max                                            : 1530 MHz
+        Min                                            : 1312 MHz
+        Avg                                            : 1449 MHz
+    Memory Clock Samples
+        Duration                                       : 4743.83 sec
+        Number of Samples                              : 100
+        Max                                            : 877 MHz
+        Min                                            : 877 MHz
+        Avg                                            : 877 MHz
+    Clock Policy
+        Auto Boost                                     : N/A
+        Auto Boost Default                             : N/A
+
+# exit=0

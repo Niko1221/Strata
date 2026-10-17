@@ -1,0 +1,28 @@
+{
+  "artifact": "p2p-correctness",
+  "program": "p2p-probe-ext 1.0 (2026-10-17, проект Strata+4xV100+NVlink)",
+  "captured_utc": "2026-10-16T23:57:01Z",
+  "note": "Фаза A: Strata запущена (этот же движок обслуживает сеанс агента); GPU3 free 0 MiB -> пары с GPU3 пропущены",
+  "tests": [
+    {"test": "deterministic_pattern_checksum", "gpu_a": 0, "gpu_b": 1, "bytes": 8388608, "method": "fill on A, cudaMemcpyPeerAsync to B, two 64-bit sums on B vs host-computed expected", "pass": true, "detail": "checksums match"},
+    {"test": "element_by_element_compare", "gpu_a": 0, "gpu_b": 1, "bytes": 8388608, "method": "per-element compare against the same generator on B", "pass": true, "detail": "0 mismatching elements"},
+    {"test": "repeat_cycles_10_random_patterns", "gpu_a": 0, "gpu_b": 1, "bytes": 8388608, "method": "10 cycles, new seeded pattern each, verify on B", "pass": true, "detail": "all 10 cycles verified"},
+    {"test": "no_partial_write_beyond_copy_length", "gpu_a": 0, "gpu_b": 1, "bytes": 8388608, "method": "copy first half only; second half must keep the poison pattern", "pass": true, "detail": "first half matches source, second half unchanged"},
+    {"test": "two_streams_concurrent_copies", "gpu_a": 0, "gpu_b": 1, "bytes": 8388608, "method": "two halves copied on two streams of device A, whole buffer verified on B after syncing both devices", "pass": true, "detail": "copy1=no error copy2=no error mismatches=0"},
+    {"test": "cross_device_event_dependency", "gpu_a": 0, "gpu_b": 1, "bytes": 8388608, "method": "event recorded on A's stream, B's stream waits on it before the copy", "pass": true, "detail": "0 mismatching elements, no deadlock"},
+    {"test": "deterministic_pattern_checksum", "gpu_a": 0, "gpu_b": 2, "bytes": 8388608, "method": "fill on A, cudaMemcpyPeerAsync to B, two 64-bit sums on B vs host-computed expected", "pass": true, "detail": "checksums match"},
+    {"test": "element_by_element_compare", "gpu_a": 0, "gpu_b": 2, "bytes": 8388608, "method": "per-element compare against the same generator on B", "pass": true, "detail": "0 mismatching elements"},
+    {"test": "repeat_cycles_10_random_patterns", "gpu_a": 0, "gpu_b": 2, "bytes": 8388608, "method": "10 cycles, new seeded pattern each, verify on B", "pass": true, "detail": "all 10 cycles verified"},
+    {"test": "no_partial_write_beyond_copy_length", "gpu_a": 0, "gpu_b": 2, "bytes": 8388608, "method": "copy first half only; second half must keep the poison pattern", "pass": true, "detail": "first half matches source, second half unchanged"},
+    {"test": "two_streams_concurrent_copies", "gpu_a": 0, "gpu_b": 2, "bytes": 8388608, "method": "two halves copied on two streams of device A, whole buffer verified on B after syncing both devices", "pass": true, "detail": "copy1=no error copy2=no error mismatches=0"},
+    {"test": "cross_device_event_dependency", "gpu_a": 0, "gpu_b": 2, "bytes": 8388608, "method": "event recorded on A's stream, B's stream waits on it before the copy", "pass": true, "detail": "0 mismatching elements, no deadlock"},
+    {"test": "deterministic_pattern_checksum", "gpu_a": 1, "gpu_b": 2, "bytes": 8388608, "method": "fill on A, cudaMemcpyPeerAsync to B, two 64-bit sums on B vs host-computed expected", "pass": true, "detail": "checksums match"},
+    {"test": "element_by_element_compare", "gpu_a": 1, "gpu_b": 2, "bytes": 8388608, "method": "per-element compare against the same generator on B", "pass": true, "detail": "0 mismatching elements"},
+    {"test": "repeat_cycles_10_random_patterns", "gpu_a": 1, "gpu_b": 2, "bytes": 8388608, "method": "10 cycles, new seeded pattern each, verify on B", "pass": true, "detail": "all 10 cycles verified"},
+    {"test": "no_partial_write_beyond_copy_length", "gpu_a": 1, "gpu_b": 2, "bytes": 8388608, "method": "copy first half only; second half must keep the poison pattern", "pass": true, "detail": "first half matches source, second half unchanged"},
+    {"test": "two_streams_concurrent_copies", "gpu_a": 1, "gpu_b": 2, "bytes": 8388608, "method": "two halves copied on two streams of device A, whole buffer verified on B after syncing both devices", "pass": true, "detail": "copy1=no error copy2=no error mismatches=0"},
+    {"test": "cross_device_event_dependency", "gpu_a": 1, "gpu_b": 2, "bytes": 8388608, "method": "event recorded on A's stream, B's stream waits on it before the copy", "pass": true, "detail": "0 mismatching elements, no deadlock"},
+    {"test": "allocation_failure_handled", "gpu_a": 0, "gpu_b": 0, "bytes": 68719476736, "method": "request 64 GiB, expect cudaErrorMemoryAllocation, then allocate 16 MiB successfully", "pass": true, "detail": "out of memory"}
+  ],
+  "summary": {"tests_total": 19, "tests_failed": 0}
+}

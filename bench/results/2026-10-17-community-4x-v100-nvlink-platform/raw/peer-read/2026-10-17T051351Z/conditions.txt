@@ -1,0 +1,24 @@
+captured_utc: 2026-10-17T05:13:53Z
+binary: <HOME>/strata185/Strata+4xV100+NVlink/build/peer-read-probe
+binary_sha256: 03a4525979fbfeb040ca87574c60a8569a96314799a81e5284a63f0e7ac17cc6
+source_sha256: 1f93cf5040e85623ce25c70a5e7ee02b99dd5460ff9c30d01758a9c407ff399f
+compiler: Build cuda_12.8.r12.8/compiler.35583870_0
+host_cc: g++-14 (Ubuntu 14.3.0-14ubuntu1) 14.3.0
+strata_running: YES
+free_vram_mib: 0, 895 1, 545 2, 955 3, 79 
+args: --min-size 1M --max-size 128M --blocks 5 --note Этап VIII, остаток Этапа III: полоса прямого доступа ядра к чужой VRAM при работающем сервисе; пары только GPU0-GPU2 (R12)
+--- nvidia-smi до запуска ---
+index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]
+0, 15250 MiB, 895 MiB, 0 %, 38, 61.97 W, 1447 MHz
+1, 15600 MiB, 545 MiB, 0 %, 39, 59.48 W, 1447 MHz
+2, 15190 MiB, 955 MiB, 0 %, 38, 62.33 W, 1447 MHz
+3, 16066 MiB, 79 MiB, 0 %, 38, 67.11 W, 1530 MHz
+--- nvidia-smi после запуска ---
+index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]
+0, 15250 MiB, 895 MiB, 4 %, 38, 66.32 W, 1530 MHz
+1, 15600 MiB, 545 MiB, 53 %, 39, 63.82 W, 1530 MHz
+2, 15190 MiB, 955 MiB, 99 %, 39, 67.63 W, 1530 MHz
+3, 16066 MiB, 79 MiB, 0 %, 38, 54.13 W, 1312 MHz
+exit_code: 0
+часы SM во время пробы (min/median/max по строкам clocks.csv):
+  n=20 min=1312 med=1530 max=1530

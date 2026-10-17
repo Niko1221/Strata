@@ -1,0 +1,71 @@
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu(115): error: no instance of overloaded function "atomicAdd" matches the argument list
+            argument types are: (size_t *, size_t)
+      if (bad) atomicAdd(&out->bad, bad);
+               ^
+<HOME>/strata185/cuda-12.8/bin/../targets/x86_64-linux/include/crt/sm_90_rt.h(112): note #3326-D: function "atomicAdd(float4 *, float4)" does not match because argument #1 does not match parameter
+  static __attribute__((device)) __inline__ float4 atomicAdd(float4 *__address, float4 val) { }
+                                                   ^
+<HOME>/strata185/cuda-12.8/bin/../targets/x86_64-linux/include/crt/sm_90_rt.h(109): note #3326-D: function "atomicAdd(float2 *, float2)" does not match because argument #1 does not match parameter
+  static __attribute__((device)) __inline__ float2 atomicAdd(float2 *__address, float2 val) { }
+                                                   ^
+<HOME>/strata185/cuda-12.8/bin/../targets/x86_64-linux/include/sm_60_atomic_functions.h(93): note #3326-D: function "atomicAdd(double *, double)" does not match because argument #1 does not match parameter
+  static __inline__ __attribute__((device)) double atomicAdd(double *address, double val) { }
+                                                   ^
+<HOME>/strata185/cuda-12.8/bin/../targets/x86_64-linux/include/sm_20_atomic_functions.h(88): note #3326-D: function "atomicAdd(float *, float)" does not match because argument #1 does not match parameter
+  static __inline__ __attribute__((device)) float atomicAdd(float *address, float val) { }
+                                                  ^
+<HOME>/strata185/cuda-12.8/bin/../targets/x86_64-linux/include/device_atomic_functions.h(169): note #3326-D: function "atomicAdd(unsigned long long *, unsigned long long)" does not match because argument #1 does not match parameter
+  static __inline__ __attribute__((device)) unsigned long long int atomicAdd(unsigned long long int *address, unsigned long long int val) { }
+                                                                   ^
+<HOME>/strata185/cuda-12.8/bin/../targets/x86_64-linux/include/device_atomic_functions.h(91): note #3326-D: function "atomicAdd(unsigned int *, unsigned int)" does not match because argument #1 does not match parameter
+  static __inline__ __attribute__((device)) unsigned int atomicAdd(unsigned int *address, unsigned int val) { }
+                                                         ^
+<HOME>/strata185/cuda-12.8/bin/../targets/x86_64-linux/include/device_atomic_functions.h(89): note #3326-D: function "atomicAdd(int *, int)" does not match because argument #1 does not match parameter
+  static __inline__ __attribute__((device)) int atomicAdd(int *address, int val) { }
+                                                ^
+
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu(155): error: identifier "cudaDevP2PAttr" is undefined
+  static cudaDevP2PAttr ATTR_IDS[] = {
+         ^
+
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu(157): error: identifier "cudaDevP2PAttrReadPoolSupported" is undefined
+      cudaDevP2PAttrReadPoolSupported, cudaDevP2PAttrLaunchableKernel
+      ^
+
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu(157): error: identifier "cudaDevP2PAttrLaunchableKernel" is undefined
+      cudaDevP2PAttrReadPoolSupported, cudaDevP2PAttrLaunchableKernel
+                                       ^
+
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu(242): error: class "CUuuid_st" has no member "uuid"
+                  a, props[a].uuid.uuid, props[a].pciDomain, props[a].pciBusID, props[a].pciDevice, props[a].pciBusID ? 0 : 0,
+                                   ^
+
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu(242): error: class "cudaDeviceProp" has no member "pciDomain"
+                  a, props[a].uuid.uuid, props[a].pciDomain, props[a].pciBusID, props[a].pciDevice, props[a].pciBusID ? 0 : 0,
+                                                  ^
+
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu(242): error: class "cudaDeviceProp" has no member "pciDevice"
+                  a, props[a].uuid.uuid, props[a].pciDomain, props[a].pciBusID, props[a].pciDevice, props[a].pciBusID ? 0 : 0,
+                                                                                         ^
+
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu(243): error: class "CUuuid_st" has no member "uuid"
+                  b, props[b].uuid.uuid, props[b].pciDomain, props[b].pciBusID, props[b].pciDevice, 0,
+                                   ^
+
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu(243): error: class "cudaDeviceProp" has no member "pciDomain"
+                  b, props[b].uuid.uuid, props[b].pciDomain, props[b].pciBusID, props[b].pciDevice, 0,
+                                                  ^
+
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu(243): error: class "cudaDeviceProp" has no member "pciDevice"
+                  b, props[b].uuid.uuid, props[b].pciDomain, props[b].pciBusID, props[b].pciDevice, 0,
+                                                                                         ^
+
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu(441): error: class "std::pair<int, int>" has no member "a"
+                  cudaSetDevice(pr.a); cudaMemGetInfo(&fa, &tot);
+                                   ^
+
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu(442): error: class "std::pair<int, int>" has no member "b"
+                  cudaSetDevice(pr.b); cudaMemGetInfo(&fb, &tot);
+                                   ^
+
+12 errors detected in the compilation of "<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu".

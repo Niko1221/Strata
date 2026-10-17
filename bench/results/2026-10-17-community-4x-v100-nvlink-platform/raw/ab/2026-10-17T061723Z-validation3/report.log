@@ -1,0 +1,4 @@
+сводка: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/summary.md
+        <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/summary.csv
+        <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/summary.json
+ячеек: 5 базовая: A0 шумовой порог: {'4096': 0.42, '32768': 0.14, '128000': 0.06, '120': 0.25}

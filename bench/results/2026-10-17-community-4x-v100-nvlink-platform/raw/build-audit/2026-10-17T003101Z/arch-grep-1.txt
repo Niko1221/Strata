@@ -1,0 +1,39 @@
+=== __CUDA_ARCH__ guards (счёт по файлам)
+      5 include/strata/kernels/pdl.hpp
+      4 include/strata/kernels/dp4a.hpp
+      3 src/prefill/moe_fused_iq.cu
+      3 src/kernels/cuda/qsa_prompt_attn.cu
+      2 src/prefill/moe_fused.cu
+      2 src/prefill/gdn_rec_parity.cu
+      2 src/kernels/cuda/qsa_select.cu
+      2 src/kernels/cuda/native_rope.cu
+      2 src/kernels/cuda/native_qsa_score.cu
+      1 src/prefill/kernels.cu
+      1 src/kernels/cuda/sampler.cu
+      1 src/kernels/cuda/fused_gr.cu
+      1 include/strata/core/emulate.hpp
+
+=== значения порогов __CUDA_ARCH__ в коде Strata (не third_party)
+      9 __CUDA_ARCH__ >= 800
+      4 __CUDA_ARCH__ >= 900
+      4 __CUDA_ARCH__ < 700
+      3 __CUDA_ARCH__ < 800
+      2 __CUDA_ARCH__ >= 700
+      2 __CUDA_ARCH__ < 750
+      1 __CUDA_ARCH__ = 860
+      1 __CUDA_ARCH__ < 610
+
+=== STRATA_EXPERIMENTAL_SM60: где используется
+src/prefill/gemm.cu
+src/kernels/cuda/qsa_decode_attn.cu
+src/kernels/cuda/qsa_prompt_attn.cu
+src/core/device.cu
+include/strata/kernels/dp4a.hpp
+CMakeLists.txt
+
+=== счёт по файлам с STRATA_EXPERIMENTAL_SM60
+src/prefill/gemm.cu:7
+src/kernels/cuda/qsa_prompt_attn.cu:4
+src/kernels/cuda/qsa_decode_attn.cu:2
+src/core/device.cu:2
+include/strata/kernels/dp4a.hpp:1

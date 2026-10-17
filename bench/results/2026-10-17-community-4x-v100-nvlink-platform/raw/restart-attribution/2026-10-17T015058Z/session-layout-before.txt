@@ -1,0 +1,109 @@
+[strata] 2026-10-17 03:14:24 engine started: <HOME>/strata185/Strata/engine-cuda12/strata --serve --pack <HOME>/strata185/Strata-data/packs/iq3_s --native <HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --ple-gguf <HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf --expert-profile <HOME>/strata185/data/expert-profile-learned-185-iq3s.bin --expert-cache auto --prefill auto --spec 4 --mtp <HOME>/strata185/Strata-data/mtp/rt --max-context 262144 --kv int8 --mmap-experts --vision --vram-reserve-mib 512 --control-vector-scaled <HOME>/strata185/data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0 --control-vector-layer-range 4 44 --cvec-mode project --cvec-dir per-layer --spec-min-p 0.50 --pool-workers 12 --layer-split auto --expert-profile-save <HOME>/strata185/data/expert-profile-learned-185-iq3s.bin --expert-profile-save-every 10
+strata generate: layer split across 4 GPUs: CUDA0, then CUDA1,2,3 (split auto)
+strata generate: layer split: CUDA1 PCIe probe 6.3 GB/s (best of 6.3 6.3 6.3 6.3) -> pcie_frac 0.17
+strata generate: layer split: CUDA2 PCIe probe 6.3 GB/s (best of 6.3 6.3 6.3 6.3) -> pcie_frac 0.17
+strata generate: layer split: CUDA3 PCIe probe 6.3 GB/s (best of 6.3 6.3 6.3 6.3) -> pcie_frac 0.17
+strata generate: profile <HOME>/strata185/data/expert-profile-learned-185-iq3s.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: layer split auto: CUDA0 80 SMs at 1.53 GHz -> 0.59 ms per layer, 11.26 GiB free before its session carve
+strata generate: layer split auto: CUDA1 80 SMs at 1.53 GHz -> 0.59 ms per layer, 14.79 GiB free before its session carve
+strata generate: layer split auto: CUDA2 80 SMs at 1.53 GHz -> 0.59 ms per layer, 14.79 GiB free before its session carve
+strata generate: layer split auto: CUDA3 80 SMs at 1.53 GHz -> 0.59 ms per layer, 13.81 GiB free before its session carve
+strata generate: layer split auto: CUDA0 link 6.3 GB/s -> miss cost x1.00
+strata generate: layer split auto: CUDA1 link 6.3 GB/s -> miss cost x1.00
+strata generate: layer split auto: CUDA2 link 6.3 GB/s -> miss cost x1.00
+strata generate: layer split auto: CUDA3 link 6.3 GB/s -> miss cost x1.00
+strata generate: layer split auto: K=11,24,36 - predicted 28.4 ms per decode window; the caches hold 24270 of 24576 profiled pairs (~100.0% of the routed mass), best of 15180 placements
+strata generate: layer split: CUDA1 loads the dense weights of layers 11-23 only
+strata generate: layer split: CUDA1 holds its weights; 14.36 GiB free (its session follows)
+strata generate: layer split: CUDA2 loads the dense weights of layers 24-35 only
+strata generate: layer split: CUDA2 holds its weights; 14.40 GiB free (its session follows)
+strata generate: layer split: CUDA3 loads the dense weights of layers 36-47 only
+strata generate: layer split: CUDA3 holds its weights; 14.41 GiB free (its session follows)
+strata generate: layer split: CUDA1 holds its weights, session [11, 24); 13.10 GiB free
+strata generate: layer split: CUDA2 holds its weights, session [24, 36); 13.43 GiB free
+strata generate: layer split: CUDA3 holds its weights, session [36, 48) and the head; 12.96 GiB free
+strata generate: GPU 0: Tesla V100-SXM2-16GB, compute capability 7.0
+strata generate: expert cache auto: 11.08 GiB free, 512 MiB reserved (+0 MiB for the draft head) -> 4267 slots
+strata generate: expert cache 5632 slots, 9.88 GiB of VRAM; policy is
+strata generate: pre-filled 5632 of 5632 slots from the profile in 2.4 s (4412 MB/s); slot 0 verified
+strata generate: layer split, CUDA1: 13.10 GiB free of 15.77, room for experts 12.50 GiB
+strata generate: layer split: CUDA1 runs layers 11-23, expert cache 6656 slots (12.27 GiB), 6656 of its 6656 profiled pairs; slot 0 verified
+strata generate: layer split, CUDA2: 13.43 GiB free of 15.77, room for experts 12.84 GiB
+strata generate: layer split: CUDA2 runs layers 24-35, expert cache 6144 slots (12.21 GiB), 6144 of its 6144 profiled pairs; slot 0 verified
+strata generate: layer split, CUDA3: 11.88 GiB free of 15.77, room for experts 11.29 GiB
+strata generate: layer split: CUDA3 runs layers 36-47, expert cache 5469 slots (11.29 GiB), 5469 of its 6144 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-10
+strata generate: layer split auto: L2 probe: the split is startable on the live free figures
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: token graph hit path: 23901 resident experts, decided on the device
+strata serve: layer split: 97% of the experts resident, the prompt path's streamed ring 96 slots
+strata serve: the prompt path borrows 1954 CUDA0 cache slots (3.41 GiB)
+strata serve:   CUDA1 prompt path borrows 1841 of its 6656 slots (3.41 GiB)
+strata serve:   CUDA2 prompt path borrows 1706 of its 6144 slots (3.41 GiB)
+strata serve:   CUDA3 prompt path borrows 1631 of its 5469 slots (3.41 GiB)
+strata verify: window up to 6 tokens, 75.8 MiB of device buffers (100% VRAM resident: zero-doorbell graph)
+strata verify: window up to 6 tokens, 75.8 MiB of device buffers (100% VRAM resident: zero-doorbell graph)
+strata serve: layer split: layers 0-10 (CUDA0), 11-23 (CUDA1), 24-35 (CUDA2), 36-47 (CUDA3), one hand-off per window
+strata verify: window up to 6 tokens, 75.8 MiB of device buffers (100% VRAM resident: zero-doorbell graph)
+strata serve: adaptive overlap: off: not on a layer split
+strata serve: CUDA3: 170 MiB of VRAM free with everything loaded - LOW: its window graphs are captured on first use and need room too, and a full card can stall a request; add --vram-reserve-later-mib 1110 to the config's args (or lower --max-context)
+strata serve: decode expert cache hit rate: 99.2% (119 hits / 120 lookups)
+strata serve: decode expert cache hit rate: 99.2% (119 hits / 120 lookups)
+strata serve: expert profile saved to <HOME>/strata185/data/expert-profile-learned-185-iq3s.bin (periodic)
+strata serve: decode expert cache hit rate: 99.0% (10572 hits / 10680 lookups)
+strata serve: decode expert cache hit rate: 99.4% (2506 hits / 2520 lookups)
+strata serve: decode expert cache hit rate: 100.0% (120 hits / 120 lookups)
+strata serve: decode expert cache hit rate: 98.7% (9235 hits / 9360 lookups)
+strata serve: decode expert cache hit rate: 99.6% (4782 hits / 4800 lookups)
+strata serve: decode expert cache hit rate: 99.2% (9408 hits / 9480 lookups)
+strata serve: decode expert cache hit rate: 99.7% (10051 hits / 10080 lookups)
+strata serve: decode expert cache hit rate: 99.8% (10178 hits / 10200 lookups)
+strata serve: decode expert cache hit rate: 100.0% (2760 hits / 2760 lookups)
+strata serve: decode expert cache hit rate: 100.0% (120 hits / 120 lookups)
+strata serve: decode expert cache hit rate: 99.5% (9911 hits / 9960 lookups)
+strata serve: decode expert cache hit rate: 99.8% (9340 hits / 9360 lookups)
+strata serve: decode expert cache hit rate: 99.5% (38909 hits / 39120 lookups)
+strata serve: decode expert cache hit rate: 99.7% (37680 hits / 37800 lookups)
+strata serve: decode expert cache hit rate: 99.8% (35932 hits / 36000 lookups)
+strata serve: decode expert cache hit rate: 99.7% (2632 hits / 2640 lookups)
+strata serve: decode expert cache hit rate: 100.0% (120 hits / 120 lookups)
+strata serve: decode expert cache hit rate: 99.7% (9334 hits / 9360 lookups)
+strata serve: decode expert cache hit rate: 99.7% (9094 hits / 9120 lookups)
+strata serve: decode expert cache hit rate: 99.7% (38387 hits / 38520 lookups)
+strata serve: decode expert cache hit rate: 99.6% (39427 hits / 39600 lookups)
+strata serve: decode expert cache hit rate: 99.6% (39813 hits / 39960 lookups)
+strata serve: decode expert cache hit rate: 99.7% (34938 hits / 35040 lookups)
+strata serve: decode expert cache hit rate: 99.8% (34741 hits / 34800 lookups)
+strata serve: decode expert cache hit rate: 99.8% (37602 hits / 37680 lookups)
+strata serve: decode expert cache hit rate: 99.7% (35905 hits / 36000 lookups)
+strata serve: decode expert cache hit rate: 99.8% (35213 hits / 35280 lookups)
+strata serve: decode expert cache hit rate: 98.3% (16511 hits / 16800 lookups)
+strata serve: decode expert cache hit rate: 99.1% (35198 hits / 35520 lookups)
+strata serve: decode expert cache hit rate: 98.9% (50334 hits / 50880 lookups)
+strata serve: decode expert cache hit rate: 98.9% (37519 hits / 37920 lookups)
+strata serve: decode expert cache hit rate: 98.7% (39557 hits / 40080 lookups)
+strata serve: decode expert cache hit rate: 98.8% (36289 hits / 36720 lookups)
+strata serve: decode expert cache hit rate: 99.0% (5940 hits / 6000 lookups)
+strata serve: expert profile saved to <HOME>/strata185/data/expert-profile-learned-185-iq3s.bin (periodic)
+strata serve: decode expert cache hit rate: 99.7% (37346 hits / 37440 lookups)
+strata serve: decode expert cache hit rate: 99.8% (37107 hits / 37200 lookups)
+strata serve: decode expert cache hit rate: 99.8% (37713 hits / 37800 lookups)
+strata serve: decode expert cache hit rate: 99.8% (36888 hits / 36960 lookups)
+strata serve: decode expert cache hit rate: 99.6% (147667 hits / 148320 lookups)
+strata serve: decode expert cache hit rate: 99.6% (145208 hits / 145800 lookups)
+strata serve: decode expert cache hit rate: 99.3% (146210 hits / 147240 lookups)
+strata serve: decode expert cache hit rate: 98.6% (9934 hits / 10080 lookups)
+strata serve: decode expert cache hit rate: 99.8% (10416 hits / 10440 lookups)
+strata serve: decode expert cache hit rate: 99.8% (2516 hits / 2520 lookups)
+strata serve: decode expert cache hit rate: 100.0% (120 hits / 120 lookups)
+strata serve: decode expert cache hit rate: 99.5% (9437 hits / 9480 lookups)
+strata serve: decode expert cache hit rate: 99.4% (37342 hits / 37560 lookups)
+strata serve: decode expert cache hit rate: 99.8% (37364 hits / 37440 lookups)
+strata serve: decode expert cache hit rate: 99.8% (35691 hits / 35760 lookups)
+strata serve: decode expert cache hit rate: 99.4% (136965 hits / 137760 lookups)
+strata serve: decode expert cache hit rate: 99.4% (148939 hits / 149880 lookups)
+strata serve: decode expert cache hit rate: 99.4% (147240 hits / 148080 lookups)
+strata serve: decode expert cache hit rate: 98.7% (9951 hits / 10080 lookups)
+strata serve: decode expert cache hit rate: 99.8% (10060 hits / 10080 lookups)
+strata serve: decode expert cache hit rate: 98.2% (10490 hits / 10680 lookups)
+strata serve: decode expert cache hit rate: 99.2% (29043 hits / 29280 lookups)

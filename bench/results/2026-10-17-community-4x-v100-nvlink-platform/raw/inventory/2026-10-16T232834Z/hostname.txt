@@ -1,0 +1,15 @@
+# hostnamectl (UTC 2026-10-16T23:28:34Z)
+ Static hostname: <HOSTNAME>
+       Icon name: computer-desktop
+         Chassis: desktop 🖥️
+      Machine ID: f0e33945929d4fbf938cfc37cb38589b
+         Boot ID: ecac2826721d478abbdcab8a17d87c31
+Operating System: Ubuntu 26.04.1 LTS
+          Kernel: Linux 7.0.0-38-generic
+    Architecture: x86-64
+ Hardware Vendor: Micro Computer _HK_ Tech Limited
+  Hardware Model: Venus Series
+Firmware Version: AHWSA.1.22
+   Firmware Date: Tue 2024-03-12
+    Firmware Age: 2y 7month 5d
+# exit=0

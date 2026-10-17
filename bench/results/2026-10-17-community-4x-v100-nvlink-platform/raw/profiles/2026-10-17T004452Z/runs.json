@@ -1,0 +1,614 @@
+{
+ "tool": "scripts/baseline-profile.py",
+ "started_utc": "2026-10-17T00:44:52Z",
+ "finished_utc": "2026-10-17T00:45:07Z",
+ "server_pid": 63585,
+ "port": 8080,
+ "engine_version": "0.1.44.1",
+ "model": "qwen3.8-flash-next-iq3_s",
+ "method": {
+  "prompt_generator": "PARA_CODE из ~/strata185/bin/strata-bench-community.py (тот же текст, что у PR #2525), случайная метка в начале -> нет переиспользования префиксного кэша",
+  "tokens_per_char_measured": 0.1981,
+  "sampling": {
+   "temperature": 0,
+   "reasoning_effort": "none",
+   "stream": true,
+   "logit_bias": {
+    "248044": -100.0,
+    "248046": -100.0
+   }
+  },
+  "fixed_output_length": true,
+  "eos_ids_banned": [
+   248044,
+   248046
+  ],
+  "reps_per_point": 1,
+  "warmup": "4K-промпт, 64 токенов, в замеры не входит",
+  "ttft": "первый непустой streaming-delta (keep-alive игнорируются)",
+  "throughput_source": "тайминги движка (prompt_per_second / predicted_per_second) из финального chunk",
+  "itl": "predicted_per_token_ms из таймингов движка",
+  "server_overhead_s": "ttft - prompt_ms/1000 (оценка ожидания/очереди на стороне сервера)",
+  "tail_s": "wall - (ttft + predicted_ms/1000) (оценка хвоста запроса)",
+  "pcie": "nvidia-smi dmon -s t, 1 с; суммирование rxpci/txpci по окну запроса (NVLink-байтовые счётчики недоступны: DCGM 4.x без profiling-модуля, NVML Sampling & Reporting нет)",
+  "gpu_sampling": "nvidia-smi --query-gpu каждые 2 с",
+  "excluded_runs": "нет (все прогоны записаны; неудачные помечены error/finish)"
+ },
+ "conditions_before": {
+  "utc": "2026-10-17T00:44:52Z",
+  "status": {
+   "engine": "0.1.44.1",
+   "model": "qwen3.8-flash-next-iq3_s",
+   "cache_max_tokens": 262144,
+   "started": 1792196111,
+   "uptime_s": 1780,
+   "concurrency": {
+    "serving": 1,
+    "requested": 1
+   },
+   "activity": {
+    "requests": 3,
+    "in_flight": 0,
+    "last_request_at": 1792197735
+   },
+   "machine": {
+    "at": 1792197892,
+    "gpu": {
+     "name": "Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB",
+     "used_mib": 62766.0,
+     "total_mib": 65536.0,
+     "util_pct": 0.0,
+     "temp_c": 36,
+     "power_w": 216.33100000000002
+    },
+    "ram": {
+     "used_gib": 9.9,
+     "total_gib": 91.8
+    }
+   }
+  },
+  "config_sha256": "f539e51bf19e2431d45eca607ed520abbefbf778f3e11573041ee705df4af88b",
+  "config_args": [
+   "--pack",
+   "<HOME>/strata185/Strata-data/packs/iq3_s",
+   "--native",
+   "<HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+   "--ple-gguf",
+   "<HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+   "--expert-profile",
+   "<HOME>/strata185/data/expert-profile.bin",
+   "--expert-cache",
+   "auto",
+   "--prefill",
+   "auto",
+   "--spec",
+   "4",
+   "--mtp",
+   "<HOME>/strata185/Strata-data/mtp/rt",
+   "--max-context",
+   "262144",
+   "--kv",
+   "int8",
+   "--mmap-experts",
+   "--vision",
+   "--vram-reserve-mib",
+   "512",
+   "--control-vector-scaled",
+   "<HOME>/strata185/data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0",
+   "--control-vector-layer-range",
+   "4",
+   "44",
+   "--cvec-mode",
+   "project",
+   "--cvec-dir",
+   "per-layer",
+   "--spec-min-p",
+   "0.50",
+   "--pool-workers",
+   "12",
+   "--layer-split",
+   "auto"
+  ],
+  "config_keys_without_secrets": {
+   "exe": "<HOME>/strata185/Strata/engine-cuda12/strata",
+   "args": [
+    "--pack",
+    "<HOME>/strata185/Strata-data/packs/iq3_s",
+    "--native",
+    "<HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf",
+    "<HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--expert-profile",
+    "<HOME>/strata185/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--mtp",
+    "<HOME>/strata185/Strata-data/mtp/rt",
+    "--max-context",
+    "262144",
+    "--kv",
+    "int8",
+    "--mmap-experts",
+    "--vision",
+    "--vram-reserve-mib",
+    "512",
+    "--control-vector-scaled",
+    "<HOME>/strata185/data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0",
+    "--control-vector-layer-range",
+    "4",
+    "44",
+    "--cvec-mode",
+    "project",
+    "--cvec-dir",
+    "per-layer",
+    "--spec-min-p",
+    "0.50",
+    "--pool-workers",
+    "12",
+    "--layer-split",
+    "auto"
+   ],
+   "cwd": "<HOME>/strata185/Strata",
+   "tokenizer": "<HOME>/strata185/Strata-data/packs/iq3_s/tokenizer",
+   "model_name": "qwen3.8-flash-next-iq3_s",
+   "draft_vocab": "cyrillic",
+   "expert_profile_save": "<HOME>/strata185/data/expert-profile-learned-185-iq3s.bin",
+   "expert_profile_save_every": 10,
+   "env": {
+    "STRATA_STAGE_TRIM": "1"
+   },
+   "log": "<HOME>/strata185/Strata/strata-185-iq3_s.log",
+   "lib_dirs": [
+    "<HOME>/strata185/cuda-12.8/bin",
+    "<HOME>/strata185/cuda-12.8/lib64"
+   ],
+   "port": 8080,
+   "host": "0.0.0.0",
+   "gpu": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "gpus_asked": true,
+   "vision": {
+    "exe": "<HOME>/strata185/Strata/engine-cuda12/strata-vision",
+    "mmproj": "<HOME>/strata185/Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "gpu": true,
+    "max_tokens": 1024
+   }
+  },
+  "engine_binary_sha256": "bdfec9f553d07c2b6017748802a614b48fb847efa9ec727cbe111e2ab2280de6",
+  "nvidia_smi_before": "index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]\n0, 15148 MiB, 997 MiB, 0 %, 36, 54.76 W, 1312 MHz\n1, 15534 MiB, 611 MiB, 0 %, 36, 52.76 W, 1312 MHz\n2, 15130 MiB, 1015 MiB, 0 %, 36, 55.13 W, 1312 MHz\n3, 15996 MiB, 149 MiB, 0 %, 35, 53.69 W, 1312 MHz",
+  "loadavg": "0.28 0.26 0.52 1/762 65000",
+  "uptime": "2026-10-15 18:25:56",
+  "engine_log_lines_before": 33280
+ },
+ "conditions_after": {
+  "utc": "2026-10-17T00:45:07Z",
+  "nvidia_smi_after": "index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]\n0, 15246 MiB, 899 MiB, 19 %, 37, 66.32 W, 1530 MHz\n1, 15594 MiB, 551 MiB, 23 %, 38, 64.30 W, 1530 MHz\n2, 15182 MiB, 963 MiB, 21 %, 37, 68.55 W, 1530 MHz\n3, 16060 MiB, 85 MiB, 35 %, 37, 66.62 W, 1530 MHz",
+  "engine_log_lines_after": 33310,
+  "status_after": {
+   "engine": "0.1.44.1",
+   "uptime_s": 1796,
+   "activity": {
+    "requests": 10,
+    "in_flight": 0,
+    "last_request_at": 1792197907
+   },
+   "machine": {
+    "at": 1792197907,
+    "gpu": {
+     "name": "Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB + Tesla V100-SXM2-16GB",
+     "used_mib": 63040.0,
+     "total_mib": 65536.0,
+     "util_pct": 24.5,
+     "temp_c": 38,
+     "power_w": 414.84999999999997
+    },
+    "ram": {
+     "used_gib": 10.0,
+     "total_gib": 91.8
+    }
+   }
+  }
+ },
+ "determinism_check": {
+  "same_text_sha": true,
+  "sha_run1": "cf94ba5b9a530efd",
+  "sha_run2": "cf94ba5b9a530efd",
+  "cached_run2": 224,
+  "prompt_n": 7,
+  "note": "один и тот же промпт дважды, temperature=0"
+ },
+ "cuda_error_lines_in_log_delta": 0,
+ "results": [
+  {
+   "case": "1024-prompt",
+   "target_prompt_tokens": 1024,
+   "max_tokens": 32,
+   "eos_banned": true,
+   "reps": 1,
+   "fixed_length_ok": true,
+   "prompt_tok_s": {
+    "median": 467.4,
+    "min": 467.4,
+    "max": 467.4,
+    "n": 1
+   },
+   "prompt_ms": {
+    "median": 2239.9,
+    "min": 2239.9,
+    "max": 2239.9,
+    "n": 1
+   },
+   "gen_tok_s": {
+    "median": 100.6,
+    "min": 100.6,
+    "max": 100.6,
+    "n": 1
+   },
+   "itl_ms": {
+    "median": 9.94,
+    "min": 9.94,
+    "max": 9.94,
+    "n": 1
+   },
+   "ttft": {
+    "median": 2.27,
+    "min": 2.27,
+    "max": 2.27,
+    "n": 1
+   },
+   "wall": {
+    "median": 2.57,
+    "min": 2.57,
+    "max": 2.57,
+    "n": 1
+   },
+   "server_overhead": {
+    "median": 0.03,
+    "min": 0.03,
+    "max": 0.03,
+    "n": 1
+   },
+   "tail": {
+    "median": -0.02,
+    "min": -0.02,
+    "max": -0.02,
+    "n": 1
+   },
+   "prompt_n": {
+    "median": 1047,
+    "min": 1047,
+    "max": 1047,
+    "n": 1
+   },
+   "cached": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "n": 1
+   },
+   "draft_ok": 22,
+   "draft_n": 28,
+   "pcie_rx_mb": {
+    "0": 1060.0,
+    "1": 2248.0,
+    "2": 0.0,
+    "3": 0.0
+   },
+   "pcie_tx_mb": {
+    "0": 683.0,
+    "1": 422.0,
+    "2": 0.0,
+    "3": 0.0
+   },
+   "peak_gpu": {
+    "0": {
+     "util_pct": 6.0,
+     "temp_c": 37.0,
+     "power_w": 152.13,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 15246.0
+    },
+    "1": {
+     "util_pct": 0.0,
+     "temp_c": 37.0,
+     "power_w": 62.85,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 15594.0
+    },
+    "2": {
+     "util_pct": 67.0,
+     "temp_c": 36.0,
+     "power_w": 66.62,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 15182.0
+    },
+    "3": {
+     "util_pct": 0.0,
+     "temp_c": 36.0,
+     "power_w": 66.14,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 16060.0
+    }
+   },
+   "all": [
+    {
+     "at": "2026-10-17T00:45:01Z",
+     "t0": 1792197901.107,
+     "t1": 1792197903.674,
+     "prompt_n": 1047,
+     "prompt_ms": 2239.9,
+     "prompt_s": 467.4,
+     "gen_n": 32,
+     "gen_ms": 318.2,
+     "gen_s": 100.6,
+     "itl_ms": 9.944,
+     "draft_n": 28,
+     "draft_ok": 22,
+     "checkpoints": 0,
+     "cached": 0,
+     "ttft_s": 2.265,
+     "wall_s": 2.57,
+     "server_overhead_s": 0.025,
+     "tail_s": -0.016,
+     "finish": "length",
+     "usage_completion": 32,
+     "text_sha": "514c27ef4da4588b",
+     "text_len": 135,
+     "text_head": "Based on the text provided, here is a concise summary of the function `parse_record`:\n\n**Function:** `parse_record`  \n**",
+     "error": null,
+     "case": "1024-prompt",
+     "target_prompt_tokens": 1024,
+     "max_tokens": 32,
+     "eos_banned": true,
+     "prompt_chars": 5463,
+     "gpu_window": {
+      "samples_dmon": 8,
+      "samples_query": 8,
+      "pcie_rx_mb": {
+       "0": 1060.0,
+       "1": 2248.0,
+       "2": 0.0,
+       "3": 0.0
+      },
+      "pcie_tx_mb": {
+       "0": 683.0,
+       "1": 422.0,
+       "2": 0.0,
+       "3": 0.0
+      },
+      "peak_per_gpu": {
+       "0": {
+        "util_pct": 6.0,
+        "temp_c": 37.0,
+        "power_w": 152.13,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15246.0
+       },
+       "1": {
+        "util_pct": 0.0,
+        "temp_c": 37.0,
+        "power_w": 62.85,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15594.0
+       },
+       "2": {
+        "util_pct": 67.0,
+        "temp_c": 36.0,
+        "power_w": 66.62,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15182.0
+       },
+       "3": {
+        "util_pct": 0.0,
+        "temp_c": 36.0,
+        "power_w": 66.14,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 16060.0
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "case": "gen-only",
+   "target_prompt_tokens": 120,
+   "max_tokens": 64,
+   "eos_banned": true,
+   "reps": 1,
+   "fixed_length_ok": true,
+   "prompt_tok_s": {
+    "median": 197.2,
+    "min": 197.2,
+    "max": 197.2,
+    "n": 1
+   },
+   "prompt_ms": {
+    "median": 826.4,
+    "min": 826.4,
+    "max": 826.4,
+    "n": 1
+   },
+   "gen_tok_s": {
+    "median": 109.7,
+    "min": 109.7,
+    "max": 109.7,
+    "n": 1
+   },
+   "itl_ms": {
+    "median": 9.11,
+    "min": 9.11,
+    "max": 9.11,
+    "n": 1
+   },
+   "ttft": {
+    "median": 0.85,
+    "min": 0.85,
+    "max": 0.85,
+    "n": 1
+   },
+   "wall": {
+    "median": 1.41,
+    "min": 1.41,
+    "max": 1.41,
+    "n": 1
+   },
+   "server_overhead": {
+    "median": 0.02,
+    "min": 0.02,
+    "max": 0.02,
+    "n": 1
+   },
+   "tail": {
+    "median": -0.02,
+    "min": -0.02,
+    "max": -0.02,
+    "n": 1
+   },
+   "prompt_n": {
+    "median": 163,
+    "min": 163,
+    "max": 163,
+    "n": 1
+   },
+   "cached": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "n": 1
+   },
+   "draft_ok": 47,
+   "draft_n": 59,
+   "pcie_rx_mb": {
+    "0": 10.0,
+    "1": 619.0,
+    "2": 0.0,
+    "3": 0.0
+   },
+   "pcie_tx_mb": {
+    "0": 0.0,
+    "1": 34.0,
+    "2": 49.0,
+    "3": 0.0
+   },
+   "peak_gpu": {
+    "0": {
+     "util_pct": 0.0,
+     "temp_c": 36.0,
+     "power_w": 64.87,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 15246.0
+    },
+    "1": {
+     "util_pct": 0.0,
+     "temp_c": 37.0,
+     "power_w": 62.85,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 15594.0
+    },
+    "2": {
+     "util_pct": 67.0,
+     "temp_c": 36.0,
+     "power_w": 66.62,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 15182.0
+    },
+    "3": {
+     "util_pct": 0.0,
+     "temp_c": 36.0,
+     "power_w": 65.18,
+     "sm_mhz": 1530.0,
+     "mem_used_mib": 16060.0
+    }
+   },
+   "all": [
+    {
+     "at": "2026-10-17T00:45:03Z",
+     "t0": 1792197903.674,
+     "t1": 1792197905.089,
+     "prompt_n": 163,
+     "prompt_ms": 826.4,
+     "prompt_s": 197.2,
+     "gen_n": 64,
+     "gen_ms": 583.3,
+     "gen_s": 109.7,
+     "itl_ms": 9.114,
+     "draft_n": 59,
+     "draft_ok": 47,
+     "checkpoints": 0,
+     "cached": 0,
+     "ttft_s": 0.847,
+     "wall_s": 1.41,
+     "server_overhead_s": 0.021,
+     "tail_s": -0.016,
+     "finish": "length",
+     "usage_completion": 64,
+     "text_sha": "37cc4e8e01b6ec42",
+     "text_len": 307,
+     "text_head": "The text provided is a duplicate of the same paragraph. Here is the cleaned, single instance of the description:\n\nThe fu",
+     "error": null,
+     "case": "gen-only",
+     "target_prompt_tokens": 120,
+     "max_tokens": 64,
+     "eos_banned": true,
+     "prompt_chars": 744,
+     "gpu_window": {
+      "samples_dmon": 6,
+      "samples_query": 4,
+      "pcie_rx_mb": {
+       "0": 10.0,
+       "1": 619.0,
+       "2": 0.0,
+       "3": 0.0
+      },
+      "pcie_tx_mb": {
+       "0": 0.0,
+       "1": 34.0,
+       "2": 49.0,
+       "3": 0.0
+      },
+      "peak_per_gpu": {
+       "0": {
+        "util_pct": 0.0,
+        "temp_c": 36.0,
+        "power_w": 64.87,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15246.0
+       },
+       "1": {
+        "util_pct": 0.0,
+        "temp_c": 37.0,
+        "power_w": 62.85,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15594.0
+       },
+       "2": {
+        "util_pct": 67.0,
+        "temp_c": 36.0,
+        "power_w": 66.62,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 15182.0
+       },
+       "3": {
+        "util_pct": 0.0,
+        "temp_c": 36.0,
+        "power_w": 65.18,
+        "sm_mhz": 1530.0,
+        "mem_used_mib": 16060.0
+       }
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

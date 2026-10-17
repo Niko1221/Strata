@@ -1,0 +1,24 @@
+captured_utc: 2026-10-17T05:11:28Z
+binary: <HOME>/strata185/Strata+4xV100+NVlink/build/peer-read-probe
+binary_sha256: 199b915e1f827face014bcb530d8ad5f7eb5d65f87abc1a836d0959e1a83fc4b
+source_sha256: c915acb27f37fbe0e48d45592655aba1c034ba839059452f044636d583e29ec5
+compiler: Build cuda_12.8.r12.8/compiler.35583870_0
+host_cc: g++-14 (Ubuntu 14.3.0-14ubuntu1) 14.3.0
+strata_running: YES
+free_vram_mib: 0, 895 1, 545 2, 955 3, 79 
+args: --min-size 256K --max-size 16M --blocks 3 --note smoke v1.1: проверка методики (прогрев+блоки), сервис работает
+--- nvidia-smi до запуска ---
+index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]
+0, 15250 MiB, 895 MiB, 0 %, 38, 55.69 W, 1312 MHz
+1, 15600 MiB, 545 MiB, 0 %, 39, 53.72 W, 1312 MHz
+2, 15190 MiB, 955 MiB, 0 %, 38, 56.06 W, 1312 MHz
+3, 16066 MiB, 79 MiB, 0 %, 38, 66.67 W, 1530 MHz
+--- nvidia-smi после запуска ---
+index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]
+0, 15250 MiB, 895 MiB, 23 %, 38, 65.84 W, 1530 MHz
+1, 15600 MiB, 545 MiB, 28 %, 39, 63.82 W, 1530 MHz
+2, 15190 MiB, 955 MiB, 29 %, 38, 67.63 W, 1530 MHz
+3, 16066 MiB, 79 MiB, 0 %, 38, 54.13 W, 1312 MHz
+exit_code: 0
+часы SM во время пробы (min/median/max по строкам clocks.csv):
+  n=12 min=1312 med=1312 max=1530

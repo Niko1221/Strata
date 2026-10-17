@@ -1,0 +1,18 @@
+[2026-10-17T00:58:58Z] baseline-profile.py start
+out: <HOME>/strata185/Strata+4xV100+NVlink/raw/profiles/2026-10-17T005858Z
+сервер: pid 63585, порт 8080, конфиг <HOME>/strata185/Strata/strata-185-iq3_s.json
+движок 0.1.44.1, контекст 262144, uptime 2627 с, запросов за сессию 45
+условия до замера собраны
+pre-flight logit_bias(EOS ban): gen_n=16 finish=length -> OK
+токенов на символ (PARA_CODE) ≈ 0.1965
+прогрев [4096] x 64 токенов (в замеры не входит; прогревает экспертный кэш и графы окон после перезапуска движка)...
+  warmup 4096: prompt 3971 @ 868.3 ток/с, gen 64 @ 99.2 ток/с, 5.2 с
+  32768-prompt #1: prompt 31307 @ 1884.7 ток/с | gen 256/256 @ 99.7 ток/с ITL 10.03 мс | TTFT 16.655 с | wall 19.21 с | finish length | черновики 171/226 | PCIe RX [14329.0, 19081.0, 19611.0, 18360.0] MB
+  32768-prompt #2: prompt 31307 @ 1889.1 ток/с | gen 256/256 @ 97.7 ток/с ITL 10.23 мс | TTFT 16.614 с | wall 19.22 с | finish length | черновики 166/220 | PCIe RX [17316.0, 22266.0, 16662.0, 34879.0] MB
+  32768-prompt #3: prompt 31307 @ 1894.4 ток/с | gen 256/256 @ 104.2 ток/с ITL 9.59 мс | TTFT 16.565 с | wall 19.0 с | finish length | черновики 173/214 | PCIe RX [19008.0, 11789.0, 20725.0, 14804.0] MB
+  gen-only #1: prompt 163 @ 196.7 ток/с | gen 1024/1024 @ 129.6 ток/с ITL 7.72 мс | TTFT 0.849 с | wall 8.73 с | finish length | черновики 773/897 | PCIe RX [37.0, 351.0, 499.0, 208.0] MB
+  gen-only #2: prompt 163 @ 196.9 ток/с | gen 1024/1024 @ 116.3 ток/с ITL 8.60 мс | TTFT 0.849 с | wall 9.64 с | finish length | черновики 736/961 | PCIe RX [37.0, 81.0, 70.0, 829.0] MB
+  gen-only #3: prompt 163 @ 197.4 ток/с | gen 1024/1024 @ 115.9 ток/с ITL 8.63 мс | TTFT 0.847 с | wall 9.67 с | finish length | черновики 729/938 | PCIe RX [26.0, 82.0, 64.0, 527.0] MB
+  determinism: same_text=True cached_run2=224
+CUDA-ошибок в приросте лога движка: 0
+готово: <HOME>/strata185/Strata+4xV100+NVlink/raw/profiles/2026-10-17T005858Z

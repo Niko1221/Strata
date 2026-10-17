@@ -1,0 +1,12 @@
+# p2p-probe-ext 1.0 (2026-10-17, проект Strata+4xV100+NVlink)
+# captured_utc=2026-10-16T23:55:49Z
+# note=Strata running (this engine serves the agent session); free VRAM 73-945 MiB per card
+# units: bandwidth GB/s = 1e9 B/s; latency us = 1e-6 s
+kind,a_index,a_uuid_hex,a_bus,b_index,b_uuid_hex,b_bus,can_access_peer_a_b,can_access_peer_b_a,access_supported,native_atomic_supported,performance_rank,cuda_array_access_supported,enable_peer_a_to_b,enable_peer_b_to_a,peer_access_cost_mib_a,peer_access_cost_mib_b,free_mib_a_before,free_mib_b_before,status,reason
+# note: enum cudaDevP2PAttr in CUDA 12.8 contains exactly these four attributes; there is no ReadPool/LaunchableKernel attribute in this toolkit
+capability,0,c4a285b64b3fe33db21596e0d6ea6f6e,0000:03:00.0,1,856a23fb2a0d12bb10af7a31a071322d,0000:04:00.0,1,1,1,1,0,1,no error,no error,0,0,586,246,OK,
+capability,0,c4a285b64b3fe33db21596e0d6ea6f6e,0000:03:00.0,2,121f2dc12feb3d01b0ff57b876562bc7,0000:05:00.0,1,1,1,1,0,1,no error,no error,0,0,586,636,OK,
+capability,0,c4a285b64b3fe33db21596e0d6ea6f6e,0000:03:00.0,3,df670e96a76d034a8640a3b6f6171696,0000:06:00.0,1,1,1,1,0,1,out of memory,out of memory,0,0,586,0,OK,
+capability,1,856a23fb2a0d12bb10af7a31a071322d,0000:04:00.0,2,121f2dc12feb3d01b0ff57b876562bc7,0000:05:00.0,1,1,1,1,0,1,no error,no error,0,0,246,636,OK,
+capability,1,856a23fb2a0d12bb10af7a31a071322d,0000:04:00.0,3,df670e96a76d034a8640a3b6f6171696,0000:06:00.0,1,1,1,1,0,1,out of memory,out of memory,0,0,246,0,OK,
+capability,2,121f2dc12feb3d01b0ff57b876562bc7,0000:05:00.0,3,df670e96a76d034a8640a3b6f6171696,0000:06:00.0,1,1,1,1,0,1,out of memory,out of memory,0,0,636,0,OK,

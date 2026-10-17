@@ -1,0 +1,6 @@
+<HOME>/strata185/Strata+4xV100+NVlink/source/peer-read-probe.cu(264): warning #550-D: variable "first_b" was set but never used
+      double first_a = 0, first_b = 0; bool okc = true;
+                          ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+

@@ -1,0 +1,15 @@
+device 1: Tesla V100-SXM2-16GB cc=7.0 SMs=80 shared/block=49152 opt-in=98304 regs/block=65536
+PASS N2_gemm_fp32_vs_cpu          max_abs=6.200e-06 max_rel=1.572e-03 (K=128, fp32 SIMT)
+PASS N1_gemm_wmma_fp16            max_abs=1.414e-05 max_rel=1.453e-05 допуск=1.3e-02 (wmma 16x16x16 fp16->fp32, эталон = CPU по half-входам)
+PASS N3_fp16_accum_error          max_abs=4.776e-02 (fp16 accumulate, K=128) — сравнение с fp32-аккумуляцией 1.414e-05
+PASS N2_gemm_fp32_vs_cpu          max_abs=1.360e-05 max_rel=5.984e-03 (K=256, fp32 SIMT)
+PASS N1_gemm_wmma_fp16            max_abs=2.656e-05 max_rel=4.201e-05 допуск=2.6e-02 (wmma 16x16x16 fp16->fp32, эталон = CPU по half-входам)
+PASS N3_fp16_accum_error          max_abs=1.157e-01 (fp16 accumulate, K=256) — сравнение с fp32-аккумуляцией 2.656e-05
+PASS N4_shared_41104B             dynamic_shared=41104 Б (opt-in лимит 98304) launch=no error sum_rel_err=3.79e-08 (expect=26396475 got=26396476)
+PASS N5_high_register_kernel      regs=79 max_threads_per_block=768 local_bytes=0 launch=no error identical_blocks=yes
+PASS N6_local_memory              local_bytes=0 regs=8 result=8160.0 expect=8160.0
+PASS N7_alloc_free_oom            200x16MB alloc/free leak_delta=0 Б (free 252116992 -> 252116992 -> 252116992), 60GB alloc -> out of memory, usable_after=yes
+PASS N8_recoverable_errors        threads=2048 -> invalid configuration argument; grid=0 -> invalid configuration argument; memset(null) -> invalid argument; after: launch=no error sync=no error value=8160.0
+PASS N9_sync_no_hang              grid-stride 80x512 x 50 итераций: 0.3 мс, hang=no; cross-stream order sum=549849989120 expect=549755289600 rel_err=1.7e-04 (float32 атомарная аккумуляция) -> ok
+PASS N10_peer_access_kernels      карт с подключённым контекстом: 3 из 4 (не все); упорядоченных пар 6/6 прочитали чужую память верно; пропуск по памяти: dev3: attach=out of memory free=0 MiB; 
+SUMMARY pass=13 fail=0 RESULT PASS

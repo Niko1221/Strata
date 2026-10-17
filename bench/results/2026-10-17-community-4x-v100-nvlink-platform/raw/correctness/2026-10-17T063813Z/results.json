@@ -1,0 +1,119 @@
+{
+ "started_utc": "2026-10-17T06:38:13Z",
+ "finished_utc": "2026-10-17T06:39:37Z",
+ "tool": "scripts/correctness-integration.py",
+ "method": "fixed-content prompts (no random marker), temperature=0, reasoning_effort=none, output length fixed by banning EOS 248044/248046 via logit_bias",
+ "conditions_before": {
+  "utc": "2026-10-17T06:38:13Z",
+  "health": null,
+  "status_http": null,
+  "status": "<HTTPError 401: 'Unauthorized'>",
+  "nvidia_smi": "0, 15138 MiB, 39, 66.32 W\n1, 15524 MiB, 40, 63.82 W\n2, 15120 MiB, 39, 67.63 W\n3, 15984 MiB, 39, 64.70 W\n",
+  "engine_log_lines": 37170,
+  "config_sha256": "f539e51bf19e2431d45eca607ed520abbefbf778f3e11573041ee705df4af88b",
+  "engine_binary_sha256": "bdfec9f553d07c2b6017748802a614b48fb847efa9ec727cbe111e2ab2280de6"
+ },
+ "conditions_after": {
+  "utc": "2026-10-17T06:39:37Z",
+  "health": null,
+  "status_http": null,
+  "status": "<HTTPError 401: 'Unauthorized'>",
+  "nvidia_smi": "0, 15246 MiB, 41, 67.77 W\n1, 15594 MiB, 42, 65.75 W\n2, 15184 MiB, 41, 70.00 W\n3, 16056 MiB, 41, 70.00 W\n",
+  "engine_log_lines": 37257,
+  "config_sha256": "f539e51bf19e2431d45eca607ed520abbefbf778f3e11573041ee705df4af88b",
+  "engine_binary_sha256": "bdfec9f553d07c2b6017748802a614b48fb847efa9ec727cbe111e2ab2280de6"
+ },
+ "results": [
+  {
+   "test": "T1_determinism_short",
+   "expected": "3 повторов одного текста -> один text_sha, gen_n == 128",
+   "observed": "http=200 distinct_sha=3 sha=b4aa7f5ca22e7da8 lens=[680, 633, 636] fixed_len=True",
+   "result": "FAIL",
+   "note": "temperature=0, logit_bias бан EOS"
+  },
+  {
+   "test": "T2_determinism_medium",
+   "expected": "3 повторов одного текста -> один text_sha, gen_n == 128",
+   "observed": "http=200 distinct_sha=2 sha=1080a1768859aa00 lens=[626, 626, 626] fixed_len=True",
+   "result": "FAIL",
+   "note": "temperature=0, logit_bias бан EOS"
+  },
+  {
+   "test": "T3_determinism_long",
+   "expected": "2 повторов одного текста -> один text_sha, gen_n == 128",
+   "observed": "http=200 distinct_sha=1 sha=ce56c5cad16f904d lens=[654, 654] fixed_len=True",
+   "result": "PASS",
+   "note": "temperature=0, logit_bias бан EOS"
+  },
+  {
+   "test": "T4_prefix_cache_resume",
+   "expected": "тот же промпт, 256 токенов: первые 128 совпадают с ответом на 128; cached_tokens > 0",
+   "observed": "sha128=b302c0ac1912e2c2 sha256=cbc935f631a928f6 prefix_match=True cached_run2=2500 completion=128/256",
+   "result": "PASS",
+   "note": "проверка корректности KV/префиксного кэша"
+  },
+  {
+   "test": "T5_context_overflow",
+   "expected": "HTTP != 200 (или понятная ошибка) и сервер жив после отказа",
+   "observed": "http=400 err={'error': {'type': 'invalid_request_error', 'message': 'request exceeds the context window: prompt (376626 tokens) + max health_after=True next_request_http=200",
+   "result": "PASS",
+   "note": "max_context = 262144"
+  },
+  {
+   "test": "T6_max_tokens_overflow",
+   "expected": "либо аккуратное ограничение генерации, либо аккуратный отказ; сервер жив",
+   "observed": "http=400 completion=None finish=None health_after=True",
+   "result": "PASS",
+   "note": ""
+  },
+  {
+   "test": "T7_unknown_model",
+   "expected": "HTTP 4xx и сервер жив",
+   "observed": "http=200",
+   "result": "FAIL",
+   "note": ""
+  },
+  {
+   "test": "T8_bad_api_key",
+   "expected": "HTTP 401/403",
+   "observed": "http=401",
+   "result": "PASS",
+   "note": ""
+  },
+  {
+   "test": "T9_malformed_json",
+   "expected": "HTTP 4xx",
+   "observed": "http=400",
+   "result": "PASS",
+   "note": ""
+  },
+  {
+   "test": "T10_concurrent_requests",
+   "expected": "2 параллельных запроса: оба finish=length, сервер жив",
+   "observed": "#1: http=200 finish=length wall=6.75s #0: http=200 finish=length wall=13.49s",
+   "result": "PASS",
+   "note": "concurrency/serving = 1 -> ожидается очередь, не ошибка"
+  },
+  {
+   "test": "T11_long_context_determinism",
+   "expected": "один и тот же промпт ~62.5k токенов дважды -> один text_sha",
+   "observed": "prompt_n=80999/80999 sha1=6389567936715884 sha2=6389567936715884 fixed_len=True cached=80992",
+   "result": "PASS",
+   "note": ""
+  },
+  {
+   "test": "T12_engine_log_cuda_errors",
+   "expected": "0 строк no kernel image / invalid device function / CUDA error / OOM",
+   "observed": "cuda_error_lines=0 log_delta_lines=87",
+   "result": "PASS",
+   "note": "проверка по приросту рабочего лога движка"
+  },
+  {
+   "test": "T13_service_state_after",
+   "expected": "health loaded=true, VRAM >= 14 GiB на карту, pid-файл = фактический pid",
+   "observed": "health=None vram=0, 15246 MiB, 41, 67.77 W | 1, 15594 MiB, 42, 65.75 W | 2, 15184 MiB, 41, 70.00 W | 3, 16056 MiB, 41, 70.00 W | ",
+   "result": "FAIL",
+   "note": "R6"
+  }
+ ]
+}

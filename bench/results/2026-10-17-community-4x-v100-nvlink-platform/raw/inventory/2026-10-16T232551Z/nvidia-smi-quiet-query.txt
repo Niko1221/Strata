@@ -1,0 +1,4 @@
+# nvidia-smi --query-gpu=index,name,uuid,pci.bus_id,driver_version,compute_cap,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw,power.limit,clocks.current.sm,clocks.max.sm,ecc.mode.current,ecc.errors.uncorrected.aggregate.total,ecc.errors.corrected.aggregate.total,retired_pages.pending,vbios.version --format=csv (UTC 2026-10-16T23:25:51Z)
+Field "vbios.version" is not a valid field to query.
+
+# exit=2

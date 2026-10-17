@@ -1,0 +1,10 @@
+<HOME>/strata185/Strata+4xV100+NVlink/source/peer-read-probe.cu(87): warning #177-D: function "mixA" was declared but never referenced
+  static inline unsigned long long mixA(const uint4& v) {
+                                   ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+<HOME>/strata185/Strata+4xV100+NVlink/source/peer-read-probe.cu(90): warning #177-D: function "mixB" was declared but never referenced
+  static inline unsigned long long mixB(const uint4& v) {
+                                   ^
+

@@ -1,0 +1,16 @@
+{
+"tool": "peer-read-probe 1.1 (2026-10-17, проект Strata+4xV100+NVlink)",
+"devices": [0,1,2],
+"blocks": 5,
+"note": "Этап VIII, остаток Этапа III: полоса прямого доступа ядра к чужой VRAM при работающем сервисе; пары только GPU0-GPU2 (R12)",
+"by_size": [
+{"bytes": 1048576, "peer_read": 10.36, "memcpy_peer": 28.07, "local_read": 10.69, "peer_write": 31.89, "peer_read_write": 31.28, "peer_read_pair": 10.46, "peer_read_vs_memcpy": 10.41, "ratio_read_to_memcpy": 0.369, "ratio_read_to_local": 0.369},
+{"bytes": 2097152, "peer_read": 9.88, "memcpy_peer": 32.90, "local_read": 11.35, "peer_write": 34.17, "peer_read_write": 33.83, "peer_read_pair": 9.72, "peer_read_vs_memcpy": 9.56, "ratio_read_to_memcpy": 0.300, "ratio_read_to_local": 0.300},
+{"bytes": 4194304, "peer_read": 13.59, "memcpy_peer": 35.46, "local_read": 18.18, "peer_write": 35.35, "peer_read_write": 35.14, "peer_read_pair": 13.23, "peer_read_vs_memcpy": 11.44, "ratio_read_to_memcpy": 0.383, "ratio_read_to_local": 0.383},
+{"bytes": 8388608, "peer_read": 20.45, "memcpy_peer": 36.94, "local_read": 35.20, "peer_write": 35.97, "peer_read_write": 35.81, "peer_read_pair": 19.26, "peer_read_vs_memcpy": 15.89, "ratio_read_to_memcpy": 0.554, "ratio_read_to_local": 0.554},
+{"bytes": 16777216, "peer_read": 27.31, "memcpy_peer": 37.82, "local_read": 67.91, "peer_write": 36.29, "peer_read_write": 36.19, "peer_read_pair": 25.39, "peer_read_vs_memcpy": 19.88, "ratio_read_to_memcpy": 0.722, "ratio_read_to_local": 0.722},
+{"bytes": 33554432, "peer_read": 32.20, "memcpy_peer": 38.37, "local_read": 126.35, "peer_write": 36.46, "peer_read_write": 36.41, "peer_read_pair": 29.17, "peer_read_vs_memcpy": 22.29, "ratio_read_to_memcpy": 0.839, "ratio_read_to_local": 0.839},
+{"bytes": 67108864, "peer_read": 34.42, "memcpy_peer": 38.58, "local_read": 222.91, "peer_write": 36.56, "peer_read_write": 36.54, "peer_read_pair": 30.98, "peer_read_vs_memcpy": 23.33, "ratio_read_to_memcpy": 0.892, "ratio_read_to_local": 0.892},
+{"bytes": 134217728, "peer_read": 35.65, "memcpy_peer": 38.68, "local_read": 362.08, "peer_write": 36.62, "peer_read_write": 36.60, "peer_read_pair": 31.99, "peer_read_vs_memcpy": 23.91, "ratio_read_to_memcpy": 0.922, "ratio_read_to_local": 0.922}
+],
+"rows": 263}

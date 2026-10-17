@@ -1,0 +1,10 @@
+[system] torch: IMPORT FAILED: ModuleNotFoundError: No module named 'torch'
+[system] vllm: IMPORT FAILED: ModuleNotFoundError: No module named 'vllm'
+[system] triton: IMPORT FAILED: ModuleNotFoundError: No module named 'triton'
+[system] transformers: IMPORT FAILED: ModuleNotFoundError: No module named 'transformers'
+[system] numpy: IMPORT FAILED: ModuleNotFoundError: No module named 'numpy'
+[venv] torch: IMPORT FAILED: ModuleNotFoundError: No module named 'torch'
+[venv] vllm: IMPORT FAILED: ModuleNotFoundError: No module named 'vllm'
+[venv] triton: IMPORT FAILED: ModuleNotFoundError: No module named 'triton'
+[venv] transformers: IMPORT FAILED: ModuleNotFoundError: No module named 'transformers'
+[venv] numpy: version=2.5.3 path=<HOME>/strata185/Strata/.venv/lib/python3.14/site-packages/numpy/__init__.py

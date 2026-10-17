@@ -1,0 +1,31 @@
+[2026-10-17T05:45:47Z] A/B-стенд: каталог <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T054547Z-validation
+manifest: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T054547Z-validation/manifest.json
+  engine sha256: bdfec9f553d07c2b6017748802a614b48fb847efa9ec727cbe111e2ab2280de6
+  config sha256: f539e51bf19e2431d45eca607ed520abbefbf778f3e11573041ee705df4af88b layer-split: auto
+  build_info: None
+[2026-10-17T05:45:47Z] === ячейка A0: split=auto, бинарник=strata (базовый)
+создан <HOME>/strata185/Strata/strata-185-iq3_s.ab-A0.json (name=A0, sha256=c2bf41eff223c53f…)
+  layer-split: auto
+  exe: <HOME>/strata185/Strata/engine-cuda12/strata
+[2026-10-17T05:45:47Z] ВНИМАНИЕ: процесс на :8080 не найден, pid-файл не обновлён
+[2026-10-17T05:45:47Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T05:45:55Z] запуск с конфигом strata-185-iq3_s.ab-A0.json, pid обёртки 103444
+}
+READY через 61 с (три признака: процессы живы, VRAM {0: 15124, 1: 15510, 2: 15106, 3: 15972}, chat вернул choices)
+  target=8192: self_consistent=False ref_match=None
+вердикт: FAIL: повторы внутри ячейки не совпали побитово
+файл: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T054547Z-validation/A0/text-check.json
+[2026-10-17T05:47:14Z] бенчмарк A0 пропущен (приёмка не пройдена или --skip-bench)
+строк запросов: 7, суммарно expert reads: 104888.7 МБ, OS read: 61.0 МБ, major faults: 0, строк CUDA-ошибок: 0, инициализационных строк: 38
+[2026-10-17T05:47:14Z] pid-файл обновлён фактическим pid обёртки: 103444
+[2026-10-17T05:47:14Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T05:47:36Z] === ячейка A1: split=auto, бинарник=strata (базовый)
+создан <HOME>/strata185/Strata/strata-185-iq3_s.ab-A1.json (name=A1, sha256=c2bf41eff223c53f…)
+  layer-split: auto
+  exe: <HOME>/strata185/Strata/engine-cuda12/strata
+[2026-10-17T05:47:36Z] ВНИМАНИЕ: процесс на :8080 не найден, pid-файл не обновлён
+[2026-10-17T05:47:36Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T05:47:44Z] запуск с конфигом strata-185-iq3_s.ab-A1.json, pid обёртки 103825

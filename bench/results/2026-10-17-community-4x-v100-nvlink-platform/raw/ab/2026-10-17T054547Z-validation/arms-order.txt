@@ -1,0 +1,5 @@
+A0:auto:base
+A1:auto:patched
+B0:split12:base
+B1:split12:patched
+A0r:auto:base

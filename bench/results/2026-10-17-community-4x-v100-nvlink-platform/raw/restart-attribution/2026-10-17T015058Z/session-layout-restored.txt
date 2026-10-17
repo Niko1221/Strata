@@ -1,0 +1,12 @@
+strata generate: layer split auto: K=11,24,36 - predicted 28.4 ms per decode window; the caches hold 24263 of 24576 profiled pairs (~100.0% of the routed mass), best of 15180 placements
+strata generate: expert cache 5632 slots, 9.88 GiB of VRAM; policy is
+strata generate: layer split: CUDA1 runs layers 11-23, expert cache 6656 slots (12.27 GiB), 6656 of its 6656 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA2 runs layers 24-35, expert cache 6144 slots (12.21 GiB), 6144 of its 6144 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA3 runs layers 36-47, expert cache 5469 slots (11.29 GiB), 5469 of its 6144 profiled pairs; slot 0 verified
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: token graph hit path: 23901 resident experts, decided on the device
+strata serve: layer split: 97% of the experts resident, the prompt path's streamed ring 96 slots
+strata serve: the prompt path borrows 1954 CUDA0 cache slots (3.41 GiB)
+strata serve:   CUDA1 prompt path borrows 1841 of its 6656 slots (3.41 GiB)
+strata serve:   CUDA2 prompt path borrows 1706 of its 6144 slots (3.41 GiB)
+strata serve:   CUDA3 prompt path borrows 1631 of its 5469 slots (3.41 GiB)

@@ -1,0 +1,3 @@
+cubin,symbol,load_result,regs,shared_bytes,local_bytes,max_threads_per_block
+negctl_sm80.cubin,negctl_bf16_mma,MODULE_LOAD_FAIL_209,,,,
+negctl_sm80.cubin,negctl_trivial,MODULE_LOAD_FAIL_209,,,,

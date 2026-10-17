@@ -1,0 +1,10 @@
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu(153): warning #177-D: variable "ATTR_NAMES" was declared but never referenced
+  static const char* ATTR_NAMES[] = {
+                     ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu: In function ‘int main(int, char**)’:
+<HOME>/strata185/Strata+4xV100+NVlink/source/p2p-probe-ext.cu:502:12: warning: too many arguments for format [-Wformat-extra-args]
+  502 |                     fprintf(B, "contention_pair,%d,%d,a_to_b,%zu,isolated,2,1,4,%zu,0,%.2f,0,0,0,0,0,0,0,0,\"isolated vs concurrent\"\n",
+      |            ^        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

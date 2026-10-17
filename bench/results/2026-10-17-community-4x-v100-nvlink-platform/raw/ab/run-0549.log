@@ -1,0 +1,59 @@
+[2026-10-17T05:49:22Z] A/B-стенд: каталог <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T054922Z-validation2
+manifest: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T054922Z-validation2/manifest.json
+  engine sha256: bdfec9f553d07c2b6017748802a614b48fb847efa9ec727cbe111e2ab2280de6
+  config sha256: f539e51bf19e2431d45eca607ed520abbefbf778f3e11573041ee705df4af88b layer-split: auto
+  build_info: Strata 0.1.44.1
+[2026-10-17T05:49:23Z] === ячейка A0: split=auto, бинарник=strata (базовый)
+создан <HOME>/strata185/Strata/strata-185-iq3_s.ab-A0.json (name=A0, sha256=c2bf41eff223c53f…)
+  layer-split: auto
+  exe: <HOME>/strata185/Strata/engine-cuda12/strata
+[2026-10-17T05:49:23Z] pid-файл обновлён фактическим pid обёртки: 103825
+[2026-10-17T05:49:23Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T05:49:44Z] запуск с конфигом strata-185-iq3_s.ab-A0.json, pid обёртки 104138
+}
+READY через 61 с (три признака: процессы живы, VRAM {0: 15124, 1: 15510, 2: 15106, 3: 15972}, chat вернул choices)
+props: {"ok": true, "build_info": "Strata 0.1.44.1", "model": null, "version": null}
+  target=8192: self_consistent=True ref_match=None
+вердикт: PASS
+файл: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T054922Z-validation2/A0/text-check.json
+[2026-10-17T05:56:01Z] бенчмарк A0: exit 0
+  gen-only #3: prompt 163 @ 200.3 ток/с | gen 1024/1024 @ 110.4 ток/с ITL 9.06 мс | TTFT 0.834 с | wall 10.09 с | finish length | черновики 695/902 | PCIe RX [18.0, 761.0, 433.0, 621.0] MB
+  determinism: same_text=True cached_run2=224
+CUDA-ошибок в приросте лога движка: 0
+готово: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T054922Z-validation2/A0/bench
+строк запросов: 25, суммарно expert reads: 1265125.8 МБ, OS read: 235.4 МБ, major faults: 0, строк CUDA-ошибок: 0, инициализационных строк: 38
+[2026-10-17T05:56:01Z] pid-файл обновлён фактическим pid обёртки: 104138
+[2026-10-17T05:56:01Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T05:56:23Z] === ячейка A1: split=auto, бинарник=strata (базовый)
+создан <HOME>/strata185/Strata/strata-185-iq3_s.ab-A1.json (name=A1, sha256=c2bf41eff223c53f…)
+  layer-split: auto
+  exe: <HOME>/strata185/Strata/engine-cuda12/strata
+[2026-10-17T05:56:23Z] ВНИМАНИЕ: процесс на :8080 не найден, pid-файл не обновлён
+[2026-10-17T05:56:23Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T05:56:31Z] запуск с конфигом strata-185-iq3_s.ab-A1.json, pid обёртки 105773
+}
+READY через 61 с (три признака: процессы живы, VRAM {0: 15124, 1: 15510, 2: 15106, 3: 15972}, chat вернул choices)
+props: {"ok": true, "build_info": "Strata 0.1.44.1", "model": null, "version": null}
+  target=8192: self_consistent=True ref_match=True
+вердикт: PASS
+файл: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T054922Z-validation2/A1/text-check.json
+[2026-10-17T06:02:49Z] бенчмарк A1: exit 0
+  gen-only #3: prompt 163 @ 200.9 ток/с | gen 1024/1024 @ 115.8 ток/с ITL 8.64 мс | TTFT 0.832 с | wall 9.66 с | finish length | черновики 700/824 | PCIe RX [18.0, 2211.0, 6286.0, 6895.0] MB
+  determinism: same_text=True cached_run2=224
+CUDA-ошибок в приросте лога движка: 0
+готово: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T054922Z-validation2/A1/bench
+строк запросов: 25, суммарно expert reads: 1265127.4 МБ, OS read: 262.9 МБ, major faults: 0, строк CUDA-ошибок: 0, инициализационных строк: 38
+[2026-10-17T06:02:49Z] pid-файл обновлён фактическим pid обёртки: 105773
+[2026-10-17T06:02:49Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T06:03:10Z] === ячейка B0: split=split12, бинарник=strata (базовый)
+создан <HOME>/strata185/Strata/strata-185-iq3_s.ab-B0.json (name=B0, sha256=51fdf0ef8aa86b1c…)
+  layer-split: 12,25,37
+  exe: <HOME>/strata185/Strata/engine-cuda12/strata
+[2026-10-17T06:03:10Z] ВНИМАНИЕ: процесс на :8080 не найден, pid-файл не обновлён
+[2026-10-17T06:03:10Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T06:03:18Z] запуск с конфигом strata-185-iq3_s.ab-B0.json, pid обёртки 107989

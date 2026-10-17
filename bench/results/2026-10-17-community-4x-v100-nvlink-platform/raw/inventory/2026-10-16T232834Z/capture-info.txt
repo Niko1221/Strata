@@ -1,0 +1,15 @@
+capture_utc:  2026-10-16T23:28:34Z
+host:         <HOSTNAME>
+script:       ./scripts/collect-inventory.sh
+script_sha:   eb897bd238a7fe0466ae8655d3685b9be0f472be974b773382feba2c24ef1b65
+user:         <USER>
+purpose:      Этап I — инвентаризация (только чтение, ничего не изменяется)
+disk:
+Файл.система   Размер Использовано  Дост Использовано% Cмонтировано в
+/dev/nvme0n1p2   1,9T         554G  1,2T           32% /
+optional tools:
+  dcgmi            /usr/bin/dcgmi
+  nsys             NOT-FOUND
+  ncu              NOT-FOUND
+  compute-sanitizer NOT-FOUND
+  git              NOT-FOUND

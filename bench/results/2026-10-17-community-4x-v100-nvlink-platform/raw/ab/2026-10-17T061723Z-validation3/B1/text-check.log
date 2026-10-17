@@ -1,0 +1,10 @@
+  probe 1/6 target=1024: http=200 prompt_n=1259 gen=128 finish=length sha=1080a1768859aa00
+  probe 2/6 target=1024: http=200 prompt_n=1259 gen=128 finish=length sha=1080a1768859aa00
+  target=1024: устойчивая пара на запросах 1/2 (запросы 1..0 — прогрев по R11)
+  target=1024: self_consistent=True ref_match=True
+  probe 1/6 target=8192: http=200 prompt_n=10012 gen=128 finish=length sha=caf2b35bb91146f1
+  probe 2/6 target=8192: http=200 prompt_n=10012 gen=128 finish=length sha=caf2b35bb91146f1
+  target=8192: устойчивая пара на запросах 1/2 (запросы 1..0 — прогрев по R11)
+  target=8192: self_consistent=True ref_match=True
+вердикт: PASS
+файл: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/B1/text-check.json

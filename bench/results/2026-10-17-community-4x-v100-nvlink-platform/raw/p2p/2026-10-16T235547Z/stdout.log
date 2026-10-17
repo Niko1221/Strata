@@ -1,0 +1,138 @@
+p2p-probe-ext 1.0 (2026-10-17, проект Strata+4xV100+NVlink)
+устройств: 4
+ряд размеров: 4096 … 8388608 байт
+GPU0(0000:03:00.0) <-> GPU1(0000:04:00.0): canAccessPeer 1/1, access=1 atomics=1 rank=0 cuda_array=1, peer access cost 0/0 MiB, free 586/246 MiB
+GPU0(0000:03:00.0) <-> GPU2(0000:05:00.0): canAccessPeer 1/1, access=1 atomics=1 rank=0 cuda_array=1, peer access cost 0/0 MiB, free 586/636 MiB
+GPU0(0000:03:00.0) <-> GPU3(0000:06:00.0): canAccessPeer 1/1, access=1 atomics=1 rank=0 cuda_array=1, peer access cost 0/0 MiB, free 586/0 MiB
+GPU1(0000:04:00.0) <-> GPU2(0000:05:00.0): canAccessPeer 1/1, access=1 atomics=1 rank=0 cuda_array=1, peer access cost 0/0 MiB, free 246/636 MiB
+GPU1(0000:04:00.0) <-> GPU3(0000:06:00.0): canAccessPeer 1/1, access=1 atomics=1 rank=0 cuda_array=1, peer access cost 0/0 MiB, free 246/0 MiB
+GPU2(0000:05:00.0) <-> GPU3(0000:06:00.0): canAccessPeer 1/1, access=1 atomics=1 rank=0 cuda_array=1, peer access cost 0/0 MiB, free 636/0 MiB
+  GPU0->GPU1     4096 B: latency med 6.37 us (min 6.18, max 25.92), 0.64 GB/s (разброс 319.7%)
+  GPU1->GPU0     4096 B: latency med 6.43 us (min 6.24, max 25.02), 0.64 GB/s (разброс 301.0%)
+  GPU0->GPU2     4096 B: latency med 6.37 us (min 6.24, max 25.28), 0.64 GB/s (разброс 305.1%)
+  GPU2->GPU0     4096 B: latency med 6.40 us (min 6.24, max 26.24), 0.64 GB/s (разброс 320.5%)
+  пропуск GPU0<->GPU3 4096 B: свободно 586/0 MiB (нужно +64 MiB запаса)
+  GPU1->GPU2     4096 B: latency med 6.43 us (min 6.27, max 25.09), 0.64 GB/s (разброс 300.0%)
+  GPU2->GPU1     4096 B: latency med 6.40 us (min 6.21, max 20.90), 0.64 GB/s (разброс 236.6%)
+  пропуск GPU1<->GPU3 4096 B: свободно 246/0 MiB (нужно +64 MiB запаса)
+  пропуск GPU2<->GPU3 4096 B: свободно 636/0 MiB (нужно +64 MiB запаса)
+  GPU0->GPU1     8192 B: latency med 6.50 us (min 6.34, max 26.18), 1.26 GB/s (разброс 313.1%)
+  GPU1->GPU0     8192 B: latency med 6.53 us (min 6.40, max 26.02), 1.25 GB/s (разброс 306.5%)
+  GPU0->GPU2     8192 B: latency med 6.50 us (min 6.27, max 22.46), 1.26 GB/s (разброс 258.2%)
+  GPU2->GPU0     8192 B: latency med 6.50 us (min 6.34, max 25.38), 1.26 GB/s (разброс 300.5%)
+  пропуск GPU0<->GPU3 8192 B: свободно 586/0 MiB (нужно +64 MiB запаса)
+  GPU1->GPU2     8192 B: latency med 6.53 us (min 6.37, max 13.50), 1.25 GB/s (разброс 112.1%)
+  GPU2->GPU1     8192 B: latency med 6.50 us (min 6.27, max 25.34), 1.26 GB/s (разброс 304.1%)
+  пропуск GPU1<->GPU3 8192 B: свободно 246/0 MiB (нужно +64 MiB запаса)
+  пропуск GPU2<->GPU3 8192 B: свободно 636/0 MiB (нужно +64 MiB запаса)
+  GPU0->GPU1    16384 B: latency med 6.46 us (min 6.24, max 13.34), 2.53 GB/s (разброс 113.8%)
+  GPU1->GPU0    16384 B: latency med 6.53 us (min 6.40, max 26.27), 2.51 GB/s (разброс 310.5%)
+  GPU0->GPU2    16384 B: latency med 6.46 us (min 6.37, max 22.27), 2.53 GB/s (разброс 249.7%)
+  GPU2->GPU0    16384 B: latency med 6.56 us (min 6.43, max 11.42), 2.50 GB/s (разброс 77.6%)
+  пропуск GPU0<->GPU3 16384 B: свободно 586/0 MiB (нужно +64 MiB запаса)
+  GPU1->GPU2    16384 B: latency med 6.50 us (min 6.37, max 24.86), 2.52 GB/s (разброс 290.5%)
+  GPU2->GPU1    16384 B: latency med 6.56 us (min 6.37, max 25.73), 2.50 GB/s (разброс 304.0%)
+  пропуск GPU1<->GPU3 16384 B: свободно 246/0 MiB (нужно +64 MiB запаса)
+  пропуск GPU2<->GPU3 16384 B: свободно 636/0 MiB (нужно +64 MiB запаса)
+  GPU0->GPU1    32768 B: latency med 6.85 us (min 6.72, max 24.51), 4.79 GB/s (разброс 264.8%)
+  GPU1->GPU0    32768 B: latency med 6.91 us (min 6.82, max 11.84), 4.74 GB/s (разброс 73.7%)
+  GPU0->GPU2    32768 B: latency med 6.85 us (min 6.72, max 21.70), 4.79 GB/s (разброс 222.9%)
+  GPU2->GPU0    32768 B: latency med 7.07 us (min 6.91, max 24.13), 4.63 GB/s (разброс 249.1%)
+  пропуск GPU0<->GPU3 32768 B: свободно 586/0 MiB (нужно +64 MiB запаса)
+  GPU1->GPU2    32768 B: latency med 6.91 us (min 6.78, max 11.58), 4.74 GB/s (разброс 70.8%)
+  GPU2->GPU1    32768 B: latency med 7.07 us (min 6.78, max 11.65), 4.63 GB/s (разброс 71.7%)
+  пропуск GPU1<->GPU3 32768 B: свободно 246/0 MiB (нужно +64 MiB запаса)
+  пропуск GPU2<->GPU3 32768 B: свободно 636/0 MiB (нужно +64 MiB запаса)
+  GPU0->GPU1    65536 B: latency med 7.71 us (min 7.58, max 13.31), 8.50 GB/s (разброс 75.5%)
+  GPU1->GPU0    65536 B: latency med 7.78 us (min 7.62, max 27.10), 8.43 GB/s (разброс 255.9%)
+  GPU0->GPU2    65536 B: latency med 7.74 us (min 7.58, max 21.15), 8.46 GB/s (разброс 178.9%)
+  GPU2->GPU0    65536 B: latency med 8.13 us (min 7.87, max 27.01), 8.06 GB/s (разброс 243.1%)
+  пропуск GPU0<->GPU3 65536 B: свободно 586/0 MiB (нужно +64 MiB запаса)
+  GPU1->GPU2    65536 B: latency med 7.78 us (min 7.58, max 12.42), 8.43 GB/s (разброс 63.7%)
+  GPU2->GPU1    65536 B: latency med 8.06 us (min 7.94, max 12.64), 8.13 GB/s (разброс 59.3%)
+  пропуск GPU1<->GPU3 65536 B: свободно 246/0 MiB (нужно +64 MiB запаса)
+  пропуск GPU2<->GPU3 65536 B: свободно 636/0 MiB (нужно +64 MiB запаса)
+  GPU0->GPU1   131072 B: latency med 9.41 us (min 9.28, max 14.02), 13.93 GB/s (разброс 51.0%)
+  GPU1->GPU0   131072 B: latency med 9.47 us (min 9.31, max 29.18), 13.84 GB/s (разброс 213.4%)
+  GPU0->GPU2   131072 B: latency med 9.41 us (min 9.28, max 26.66), 13.93 GB/s (разброс 187.2%)
+  GPU2->GPU0   131072 B: latency med 10.11 us (min 10.02, max 14.85), 12.96 GB/s (разброс 48.2%)
+  пропуск GPU0<->GPU3 131072 B: свободно 586/0 MiB (нужно +64 MiB запаса)
+  GPU1->GPU2   131072 B: latency med 9.44 us (min 9.34, max 14.69), 13.88 GB/s (разброс 57.2%)
+  GPU2->GPU1   131072 B: latency med 10.14 us (min 10.02, max 16.77), 12.96 GB/s (разброс 67.4%)
+  пропуск GPU1<->GPU3 131072 B: свободно 246/0 MiB (нужно +64 MiB запаса)
+  пропуск GPU2<->GPU3 131072 B: свободно 636/0 MiB (нужно +64 MiB запаса)
+  GPU0->GPU1   262144 B: latency med 12.77 us (min 12.67, max 14.59), 20.53 GB/s (разброс 15.2%)
+  GPU1->GPU0   262144 B: latency med 12.83 us (min 12.67, max 17.47), 20.43 GB/s (разброс 37.9%)
+  GPU0->GPU2   262144 B: latency med 12.77 us (min 12.51, max 17.44), 20.53 GB/s (разброс 39.4%)
+  GPU2->GPU0   262144 B: latency med 13.50 us (min 13.38, max 15.10), 19.41 GB/s (разброс 12.9%)
+  пропуск GPU0<->GPU3 262144 B: свободно 586/0 MiB (нужно +64 MiB запаса)
+  GPU1->GPU2   262144 B: latency med 12.83 us (min 12.67, max 17.47), 20.43 GB/s (разброс 37.9%)
+  GPU2->GPU1   262144 B: latency med 13.57 us (min 13.38, max 32.45), 19.32 GB/s (разброс 142.6%)
+  пропуск GPU1<->GPU3 262144 B: свободно 246/0 MiB (нужно +64 MiB запаса)
+  пропуск GPU2<->GPU3 262144 B: свободно 636/0 MiB (нужно +64 MiB запаса)
+  GPU0->GPU1   524288 B: latency med 19.52 us (min 19.42, max 26.27), 26.86 GB/s (разброс 35.3%)
+  GPU1->GPU0   524288 B: latency med 19.74 us (min 19.46, max 34.78), 26.55 GB/s (разброс 78.8%)
+  GPU0->GPU2   524288 B: latency med 19.55 us (min 19.46, max 36.77), 26.82 GB/s (разброс 89.0%)
+  GPU2->GPU0   524288 B: latency med 20.45 us (min 20.19, max 29.12), 25.64 GB/s (разброс 44.2%)
+  пропуск GPU0<->GPU3 524288 B: свободно 586/0 MiB (нужно +64 MiB запаса)
+  GPU1->GPU2   524288 B: latency med 19.58 us (min 19.36, max 21.25), 26.77 GB/s (разброс 9.8%)
+  GPU2->GPU1   524288 B: latency med 20.45 us (min 20.16, max 25.44), 25.64 GB/s (разброс 26.2%)
+  пропуск GPU1<->GPU3 524288 B: свободно 246/0 MiB (нужно +64 MiB запаса)
+  пропуск GPU2<->GPU3 524288 B: свободно 636/0 MiB (нужно +64 MiB запаса)
+  GPU0->GPU1  1048576 B: latency med 33.06 us (min 32.93, max 34.75), 31.72 GB/s (разброс 5.5%)
+  GPU1->GPU0  1048576 B: latency med 33.28 us (min 33.15, max 38.43), 31.51 GB/s (разброс 15.9%)
+  GPU0->GPU2  1048576 B: latency med 33.06 us (min 32.93, max 37.82), 31.72 GB/s (разброс 14.9%)
+  GPU2->GPU0  1048576 B: latency med 33.92 us (min 33.09, max 35.07), 30.91 GB/s (разброс 6.0%)
+  пропуск GPU0<->GPU3 1048576 B: свободно 586/0 MiB (нужно +64 MiB запаса)
+  GPU1->GPU2  1048576 B: latency med 33.09 us (min 32.96, max 43.30), 31.69 GB/s (разброс 31.4%)
+  GPU2->GPU1  1048576 B: latency med 33.86 us (min 33.63, max 49.95), 31.00 GB/s (разброс 48.5%)
+  пропуск GPU1<->GPU3 1048576 B: свободно 246/0 MiB (нужно +64 MiB запаса)
+  пропуск GPU2<->GPU3 1048576 B: свободно 636/0 MiB (нужно +64 MiB запаса)
+  GPU0->GPU1  2097152 B: 33.10 GB/s (min 33.06, max 33.12, разброс 0.2%), 0.06 мс на копию
+  GPU1->GPU0  2097152 B: 32.63 GB/s (min 32.58, max 32.64, разброс 0.2%), 0.06 мс на копию
+  GPU0->GPU2  2097152 B: 33.12 GB/s (min 33.11, max 33.14, разброс 0.1%), 0.06 мс на копию
+  GPU2->GPU0  2097152 B: 33.10 GB/s (min 33.09, max 33.12, разброс 0.1%), 0.06 мс на копию
+  пропуск GPU0<->GPU3 2097152 B: свободно 586/0 MiB (нужно +64 MiB запаса)
+  GPU1->GPU2  2097152 B: 33.00 GB/s (min 32.95, max 33.03, разброс 0.2%), 0.06 мс на копию
+  GPU2->GPU1  2097152 B: 33.06 GB/s (min 33.01, max 33.09, разброс 0.2%), 0.06 мс на копию
+  пропуск GPU1<->GPU3 2097152 B: свободно 246/0 MiB (нужно +64 MiB запаса)
+  пропуск GPU2<->GPU3 2097152 B: свободно 636/0 MiB (нужно +64 MiB запаса)
+  GPU0->GPU1  4194304 B: 35.70 GB/s (min 35.66, max 35.71, разброс 0.2%), 0.12 мс на копию
+  GPU1->GPU0  4194304 B: 35.41 GB/s (min 35.41, max 35.48, разброс 0.2%), 0.12 мс на копию
+  GPU0->GPU2  4194304 B: 35.70 GB/s (min 35.69, max 35.72, разброс 0.1%), 0.12 мс на копию
+  GPU2->GPU0  4194304 B: 35.90 GB/s (min 35.88, max 35.97, разброс 0.3%), 0.12 мс на копию
+  пропуск GPU0<->GPU3 4194304 B: свободно 586/0 MiB (нужно +64 MiB запаса)
+  GPU1->GPU2  4194304 B: 35.69 GB/s (min 35.66, max 35.70, разброс 0.1%), 0.12 мс на копию
+  GPU2->GPU1  4194304 B: 35.68 GB/s (min 35.64, max 35.70, разброс 0.2%), 0.12 мс на копию
+  пропуск GPU1<->GPU3 4194304 B: свободно 246/0 MiB (нужно +64 MiB запаса)
+  пропуск GPU2<->GPU3 4194304 B: свободно 636/0 MiB (нужно +64 MiB запаса)
+  GPU0->GPU1  8388608 B: 37.36 GB/s (min 37.35, max 37.37, разброс 0.1%), 0.22 мс на копию
+  GPU1->GPU0  8388608 B: 37.31 GB/s (min 37.31, max 37.32, разброс 0.0%), 0.22 мс на копию
+  GPU0->GPU2  8388608 B: 37.45 GB/s (min 37.43, max 37.47, разброс 0.1%), 0.22 мс на копию
+  GPU2->GPU0  8388608 B: 37.32 GB/s (min 36.93, max 37.36, разброс 1.1%), 0.22 мс на копию
+  пропуск GPU0<->GPU3 8388608 B: свободно 586/0 MiB (нужно +64 MiB запаса)
+  GPU1->GPU2  8388608 B: 37.39 GB/s (min 37.38, max 37.43, разброс 0.1%), 0.22 мс на копию
+  GPU2->GPU1  8388608 B: 37.28 GB/s (min 36.96, max 37.31, разброс 0.9%), 0.23 мс на копию
+  пропуск GPU1<->GPU3 8388608 B: свободно 246/0 MiB (нужно +64 MiB запаса)
+  пропуск GPU2<->GPU3 8388608 B: свободно 636/0 MiB (нужно +64 MiB запаса)
+  [OK ] deterministic_pattern_checksum GPU0->GPU1 8388608 B: checksums match
+  [OK ] element_by_element_compare GPU0->GPU1 8388608 B: 0 mismatching elements
+  [OK ] repeat_cycles_10_random_patterns GPU0->GPU1 8388608 B: all 10 cycles verified
+  [OK ] no_partial_write_beyond_copy_length GPU0->GPU1 8388608 B: first half matches source, second half unchanged
+  [FAIL] two_streams_concurrent_copies GPU0->GPU1 8388608 B: mismatches found
+  [OK ] cross_device_event_dependency GPU0->GPU1 8388608 B: 0 mismatching elements, no deadlock
+  [OK ] deterministic_pattern_checksum GPU0->GPU2 8388608 B: checksums match
+  [OK ] element_by_element_compare GPU0->GPU2 8388608 B: 0 mismatching elements
+  [OK ] repeat_cycles_10_random_patterns GPU0->GPU2 8388608 B: all 10 cycles verified
+  [OK ] no_partial_write_beyond_copy_length GPU0->GPU2 8388608 B: first half matches source, second half unchanged
+  [FAIL] two_streams_concurrent_copies GPU0->GPU2 8388608 B: mismatches found
+  [OK ] cross_device_event_dependency GPU0->GPU2 8388608 B: 0 mismatching elements, no deadlock
+  [OK ] deterministic_pattern_checksum GPU1->GPU2 8388608 B: checksums match
+  [OK ] element_by_element_compare GPU1->GPU2 8388608 B: 0 mismatching elements
+  [OK ] repeat_cycles_10_random_patterns GPU1->GPU2 8388608 B: all 10 cycles verified
+  [OK ] no_partial_write_beyond_copy_length GPU1->GPU2 8388608 B: first half matches source, second half unchanged
+  [FAIL] two_streams_concurrent_copies GPU1->GPU2 8388608 B: mismatches found
+  [OK ] cross_device_event_dependency GPU1->GPU2 8388608 B: 0 mismatching elements, no deadlock
+  [OK ] allocation_failure_handled GPU0->GPU0 68719476736 B: out of memory
+
+результаты: <HOME>/strata185/Strata+4xV100+NVlink/raw/p2p/2026-10-16T235547Z/p2p-matrix.csv, <HOME>/strata185/Strata+4xV100+NVlink/raw/p2p/2026-10-16T235547Z/p2p-benchmark.csv, <HOME>/strata185/Strata+4xV100+NVlink/raw/p2p/2026-10-16T235547Z/p2p-correctness.json

@@ -1,0 +1,26 @@
+captured_utc: 2026-10-17T00:16:23Z
+purpose: проверка возврата Strata в рабочее состояние после фазы B (raw/p2p/2026-10-17T001200Z)
+--- systemctl ---
+inactive
+○ strata-iq3-s.service - Strata LLM server (Qwen3.8-Flash-Next IQ3_S, 4x V100, layer split, :8080)
+     Loaded: loaded (/etc/systemd/system/strata-iq3-s.service; enabled; preset: enabled)
+     Active: inactive (dead) since Thu 2026-10-15 19:09:34 MSK; 1 day 8h ago
+   Duration: 43min 24.278s
+ Invocation: 341e88eac25d47ebad74fcbcac581735
+    Process: 2531 ExecStartPre=/bin/bash -c for i in $(seq 1 120); do nvidia-smi -L >/dev/null 2>&1 && exit 0; sleep 5; done; echo "GPU not ready" >&2; exit 1 (code=exited, status=0/SUCCESS)
+--- pid file ---
+63585
+--- processes ---
+63585 <HOME>/strata185/Strata/.venv/bin/python serve/server.py --engine strata --config strata-185-iq3_s.json --port 8080
+63588 <HOME>/strata185/Strata/engine-cuda12/strata-vision --mmproj <HOME>/strata185/Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf --model /ho
+63594 <HOME>/strata185/Strata/engine-cuda12/strata --serve --pack <HOME>/strata185/Strata-data/packs/iq3_s --native <HOME>/strata185/Strata-data/
+--- health ---
+health=200
+--- nvidia-smi ---
+index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W]
+0, 15136 MiB, 1009 MiB, 0 %, 36, 54.76 W
+1, 15522 MiB, 623 MiB, 0 %, 36, 52.76 W
+2, 15118 MiB, 1027 MiB, 0 %, 36, 55.13 W
+3, 15982 MiB, 163 MiB, 0 %, 35, 53.20 W
+--- functional check (1 token) ---
+{"id": "chatcmpl-ee06e29934df4bc6ae3c80cc", "object": "chat.completion", "created": 1792196184, "model": "qwen3.8-flash-next-iq3_s", "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hello"}, "finish_reason": "length"}], "usage": {"prompt_tokens": 13, "completion_tokens": 1, "total_tokens": 14, "prompt_tokens_details": {"cached_tokens": 6}}, "timings": {"cache_n": 6, "prompt_n"

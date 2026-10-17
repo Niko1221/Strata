@@ -1,0 +1,15 @@
+{
+"tool": "peer-read-probe 1.0 (2026-10-17, проект Strata+4xV100+NVlink)",
+"devices": [0,1,2],
+"reps": 3,
+"note": "smoke: проверка метода, сервис работает",
+"by_size": [
+{"bytes": 65536, "peer_read": 0.35, "memcpy_peer": 6.10, "local_read": 6.74, "peer_write": 7.53, "peer_read_write": 7.11, "peer_read_pair": -1.00, "ratio_read_to_memcpy": 0.058, "ratio_read_to_local": 0.052},
+{"bytes": 131072, "peer_read": 0.35, "memcpy_peer": 12.19, "local_read": 8.53, "peer_write": 12.19, "peer_read_write": 10.67, "peer_read_pair": -1.00, "ratio_read_to_memcpy": 0.029, "ratio_read_to_local": 0.042},
+{"bytes": 262144, "peer_read": 0.36, "memcpy_peer": 16.00, "local_read": 9.66, "peer_write": 18.29, "peer_read_write": 13.47, "peer_read_pair": -1.00, "ratio_read_to_memcpy": 0.022, "ratio_read_to_local": 0.037},
+{"bytes": 524288, "peer_read": 0.36, "memcpy_peer": 33.03, "local_read": 10.56, "peer_write": 24.38, "peer_read_write": 16.52, "peer_read_pair": -1.00, "ratio_read_to_memcpy": 0.011, "ratio_read_to_local": 0.034},
+{"bytes": 1048576, "peer_read": 0.36, "memcpy_peer": 89.04, "local_read": 11.01, "peer_write": 29.26, "peer_read_write": 17.81, "peer_read_pair": -1.00, "ratio_read_to_memcpy": 0.004, "ratio_read_to_local": 0.033},
+{"bytes": 2097152, "peer_read": 0.36, "memcpy_peer": 102.40, "local_read": 11.28, "peer_write": 32.51, "peer_read_write": 18.20, "peer_read_pair": -1.00, "ratio_read_to_memcpy": 0.003, "ratio_read_to_local": 0.032},
+{"bytes": 4194304, "peer_read": 0.57, "memcpy_peer": 204.80, "local_read": 18.08, "peer_write": 34.57, "peer_read_write": 20.63, "peer_read_pair": -1.00, "ratio_read_to_memcpy": 0.003, "ratio_read_to_local": 0.032}
+],
+"rows": 231}

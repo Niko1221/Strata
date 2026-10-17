@@ -1,0 +1,843 @@
+{
+ "out": "<HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3",
+ "manifest": {
+  "captured_utc": "2026-10-17T06:17:23Z",
+  "build_label": "validation3",
+  "engine_sha256": "bdfec9f553d07c2b6017748802a614b48fb847efa9ec727cbe111e2ab2280de6",
+  "note": "arms=B0:split12:base B1:split12:base A0r:auto:base lengths=4k,32k,125k reps=3 patched=<нет: валидация метода на базовом бинарнике>"
+ },
+ "thresholds": {
+  "prompt_tok_s_pct": 1.0,
+  "decode_tok_s_pct": 5.0
+ },
+ "base_cell": "A0",
+ "cells": {
+  "A0": {
+   "verdict": "cell=A0 split=auto binary=<HOME>/strata185/Strata/engine-cuda12/strata text_check_exit=0",
+   "text": {
+    "verdict": "PASS",
+    "shas": {
+     "1024": [
+      "dddc0f1fefd25fde",
+      "1080a1768859aa00",
+      "1080a1768859aa00"
+     ],
+     "8192": [
+      "950855f25e672488",
+      "50246f696c9d1bb8",
+      "50246f696c9d1bb8"
+     ]
+    },
+    "ref_match": {
+     "1024": null,
+     "8192": null
+    },
+    "fixed_length_ok": true
+   },
+   "counters": {
+    "requests": 25,
+    "expert_reads_mb_sum": 1265125.8,
+    "os_read_mb_sum": 235.4,
+    "major_faults_sum": 0,
+    "hit_rate_min": 96.8,
+    "hit_rate_median": 99.7
+   },
+   "init": {
+    "slots": {
+     "CUDA?": {
+      "slots": 5469,
+      "gib": 11.29,
+      "pairs": 5469,
+      "profiled": 6144
+     }
+    },
+    "borrows": {
+     "CUDA1": {
+      "borrowed": 1841,
+      "of": 6656,
+      "gib": 3.41
+     },
+     "CUDA2": {
+      "borrowed": 1706,
+      "of": 6144,
+      "gib": 3.41
+     },
+     "CUDA3": {
+      "borrowed": 1631,
+      "of": 5469,
+      "gib": 3.41
+     }
+    },
+    "cache_slots": 5632,
+    "layers": "0-10 (CUDA0), 11-23 (CUDA1), 24-35 (CUDA2), 36-47 (CUDA3)"
+   },
+   "points": {
+    "4096": {
+     "actual_prompt_n": 3971.0,
+     "prompt_tok_s": 872.6,
+     "prompt_tok_s_min": 862.3,
+     "prompt_tok_s_max": 872.7,
+     "prompt_spread_pct": 1.19,
+     "decode_tok_s": 102.3,
+     "decode_spread_pct": 6.26,
+     "itl_ms": 9.78,
+     "ttft_s": 4.58,
+     "accept_pct": 74.1,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 59317.0,
+     "peak_vram_mib": [
+      15244.0,
+      15588.0,
+      15180.0,
+      16054.0
+     ],
+     "d_prompt_vs_base_pct": 0.0,
+     "d_ttft_vs_base_pct": 0.0,
+     "d_decode_vs_base_pct": 0.0,
+     "significant_prompt": false,
+     "significant_decode": false,
+     "d_prompt_vs_machine_baseline_pct": 0.45
+    },
+    "32768": {
+     "actual_prompt_n": 31307.0,
+     "prompt_tok_s": 1897.8,
+     "prompt_tok_s_min": 1890.2,
+     "prompt_tok_s_max": 1899.1,
+     "prompt_spread_pct": 0.47,
+     "decode_tok_s": 98.4,
+     "decode_spread_pct": 6.91,
+     "itl_ms": 10.17,
+     "ttft_s": 16.53,
+     "accept_pct": 74.8,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 235035.0,
+     "peak_vram_mib": [
+      15244.0,
+      15588.0,
+      15180.0,
+      16054.0
+     ],
+     "d_prompt_vs_base_pct": 0.0,
+     "d_ttft_vs_base_pct": 0.0,
+     "d_decode_vs_base_pct": 0.0,
+     "significant_prompt": false,
+     "significant_decode": false,
+     "d_prompt_vs_machine_baseline_pct": 0.27
+    },
+    "128000": {
+     "actual_prompt_n": 122087.0,
+     "prompt_tok_s": 2428.0,
+     "prompt_tok_s_min": 2425.4,
+     "prompt_tok_s_max": 2430.0,
+     "prompt_spread_pct": 0.19,
+     "decode_tok_s": 91.7,
+     "decode_spread_pct": 18.87,
+     "itl_ms": 10.9,
+     "ttft_s": 50.37,
+     "accept_pct": 71.1,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 776960.0,
+     "peak_vram_mib": [
+      15244.0,
+      15590.0,
+      15182.0,
+      16058.0
+     ],
+     "d_prompt_vs_base_pct": 0.0,
+     "d_ttft_vs_base_pct": 0.0,
+     "d_decode_vs_base_pct": 0.0,
+     "significant_prompt": false,
+     "significant_decode": false
+    },
+    "120": {
+     "actual_prompt_n": 163.0,
+     "prompt_tok_s": 200.3,
+     "prompt_tok_s_min": 198.7,
+     "prompt_tok_s_max": 201.4,
+     "prompt_spread_pct": 1.35,
+     "decode_tok_s": 112.2,
+     "decode_spread_pct": 13.73,
+     "itl_ms": 8.91,
+     "ttft_s": 0.83,
+     "accept_pct": 79.1,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 3599.0,
+     "peak_vram_mib": [
+      15244.0,
+      15590.0,
+      15182.0,
+      16058.0
+     ],
+     "d_prompt_vs_base_pct": 0.0,
+     "d_ttft_vs_base_pct": 0.0,
+     "d_decode_vs_base_pct": 0.0,
+     "significant_prompt": false,
+     "significant_decode": false,
+     "d_prompt_vs_machine_baseline_pct": 2.09
+    }
+   }
+  },
+  "A0r": {
+   "verdict": "cell=A0r split=auto binary=<HOME>/strata185/Strata/engine-cuda12/strata text_check_exit=0",
+   "text": {
+    "verdict": "PASS_WITH_WARNING: внутри ячейки побитово устойчиво, но text_sha не совпал с эталоном предыдущей ячейки",
+    "shas": {
+     "1024": [
+      "dddc0f1fefd25fde",
+      "1080a1768859aa00",
+      "1080a1768859aa00"
+     ],
+     "8192": [
+      "950855f25e672488",
+      "50246f696c9d1bb8",
+      "50246f696c9d1bb8"
+     ]
+    },
+    "ref_match": {
+     "1024": true,
+     "8192": false
+    },
+    "fixed_length_ok": true
+   },
+   "counters": {
+    "requests": 25,
+    "expert_reads_mb_sum": 1265553.2,
+    "os_read_mb_sum": 189.4,
+    "major_faults_sum": 0,
+    "hit_rate_min": 97.2,
+    "hit_rate_median": 99.6
+   },
+   "init": {
+    "slots": {
+     "CUDA?": {
+      "slots": 5469,
+      "gib": 11.29,
+      "pairs": 5469,
+      "profiled": 6144
+     }
+    },
+    "borrows": {
+     "CUDA1": {
+      "borrowed": 1841,
+      "of": 6656,
+      "gib": 3.41
+     },
+     "CUDA2": {
+      "borrowed": 1706,
+      "of": 6144,
+      "gib": 3.41
+     },
+     "CUDA3": {
+      "borrowed": 1630,
+      "of": 5469,
+      "gib": 3.4
+     }
+    },
+    "cache_slots": 5632,
+    "layers": "0-10 (CUDA0), 11-23 (CUDA1), 24-35 (CUDA2), 36-47 (CUDA3)"
+   },
+   "points": {
+    "4096": {
+     "actual_prompt_n": 3971.0,
+     "prompt_tok_s": 868.9,
+     "prompt_tok_s_min": 864.5,
+     "prompt_tok_s_max": 873.2,
+     "prompt_spread_pct": 1.0,
+     "decode_tok_s": 96.1,
+     "decode_spread_pct": 11.86,
+     "itl_ms": 10.4,
+     "ttft_s": 4.59,
+     "accept_pct": 71.8,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 42364.0,
+     "peak_vram_mib": [
+      15244.0,
+      15588.0,
+      15180.0,
+      16054.0
+     ],
+     "d_prompt_vs_base_pct": -0.42,
+     "d_ttft_vs_base_pct": 0.22,
+     "d_decode_vs_base_pct": -6.06,
+     "significant_prompt": false,
+     "significant_decode": true,
+     "d_prompt_vs_machine_baseline_pct": 0.02
+    },
+    "32768": {
+     "actual_prompt_n": 31307.0,
+     "prompt_tok_s": 1895.2,
+     "prompt_tok_s_min": 1886.6,
+     "prompt_tok_s_max": 1899.5,
+     "prompt_spread_pct": 0.68,
+     "decode_tok_s": 102.6,
+     "decode_spread_pct": 4.48,
+     "itl_ms": 9.75,
+     "ttft_s": 16.56,
+     "accept_pct": 78.4,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 239241.0,
+     "peak_vram_mib": [
+      15244.0,
+      15588.0,
+      15180.0,
+      16054.0
+     ],
+     "d_prompt_vs_base_pct": -0.14,
+     "d_ttft_vs_base_pct": 0.18,
+     "d_decode_vs_base_pct": 4.27,
+     "significant_prompt": false,
+     "significant_decode": false,
+     "d_prompt_vs_machine_baseline_pct": 0.14
+    },
+    "128000": {
+     "actual_prompt_n": 122087.0,
+     "prompt_tok_s": 2426.5,
+     "prompt_tok_s_min": 2419.4,
+     "prompt_tok_s_max": 2427.3,
+     "prompt_spread_pct": 0.33,
+     "decode_tok_s": 92.3,
+     "decode_spread_pct": 9.75,
+     "itl_ms": 10.83,
+     "ttft_s": 50.41,
+     "accept_pct": 74.0,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 790666.0,
+     "peak_vram_mib": [
+      15244.0,
+      15590.0,
+      15182.0,
+      16058.0
+     ],
+     "d_prompt_vs_base_pct": -0.06,
+     "d_ttft_vs_base_pct": 0.08,
+     "d_decode_vs_base_pct": 0.65,
+     "significant_prompt": false,
+     "significant_decode": false
+    },
+    "120": {
+     "actual_prompt_n": 163.0,
+     "prompt_tok_s": 200.8,
+     "prompt_tok_s_min": 197.4,
+     "prompt_tok_s_max": 202.7,
+     "prompt_spread_pct": 2.64,
+     "decode_tok_s": 121.0,
+     "decode_spread_pct": 8.35,
+     "itl_ms": 8.26,
+     "ttft_s": 0.83,
+     "accept_pct": 84.4,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 1643.0,
+     "peak_vram_mib": [
+      15244.0,
+      15590.0,
+      15182.0,
+      16058.0
+     ],
+     "d_prompt_vs_base_pct": 0.25,
+     "d_ttft_vs_base_pct": 0.0,
+     "d_decode_vs_base_pct": 7.84,
+     "significant_prompt": false,
+     "significant_decode": true,
+     "d_prompt_vs_machine_baseline_pct": 2.34
+    }
+   }
+  },
+  "A1": {
+   "verdict": "cell=A1 split=auto binary=<HOME>/strata185/Strata/engine-cuda12/strata text_check_exit=0",
+   "text": {
+    "verdict": "PASS",
+    "shas": {
+     "1024": [
+      "dddc0f1fefd25fde",
+      "1080a1768859aa00",
+      "1080a1768859aa00"
+     ],
+     "8192": [
+      "950855f25e672488",
+      "50246f696c9d1bb8",
+      "50246f696c9d1bb8"
+     ]
+    },
+    "ref_match": {
+     "1024": true,
+     "8192": true
+    },
+    "fixed_length_ok": true
+   },
+   "counters": {
+    "requests": 25,
+    "expert_reads_mb_sum": 1265127.4,
+    "os_read_mb_sum": 262.9,
+    "major_faults_sum": 0,
+    "hit_rate_min": 96.8,
+    "hit_rate_median": 99.6
+   },
+   "init": {
+    "slots": {
+     "CUDA?": {
+      "slots": 5469,
+      "gib": 11.29,
+      "pairs": 5469,
+      "profiled": 6144
+     }
+    },
+    "borrows": {
+     "CUDA1": {
+      "borrowed": 1841,
+      "of": 6656,
+      "gib": 3.41
+     },
+     "CUDA2": {
+      "borrowed": 1706,
+      "of": 6144,
+      "gib": 3.41
+     },
+     "CUDA3": {
+      "borrowed": 1631,
+      "of": 5469,
+      "gib": 3.41
+     }
+    },
+    "cache_slots": 5632,
+    "layers": "0-10 (CUDA0), 11-23 (CUDA1), 24-35 (CUDA2), 36-47 (CUDA3)"
+   },
+   "points": {
+    "4096": {
+     "actual_prompt_n": 3971.0,
+     "prompt_tok_s": 864.4,
+     "prompt_tok_s_min": 862.3,
+     "prompt_tok_s_max": 868.2,
+     "prompt_spread_pct": 0.68,
+     "decode_tok_s": 101.0,
+     "decode_spread_pct": 1.49,
+     "itl_ms": 9.9,
+     "ttft_s": 4.62,
+     "accept_pct": 74.1,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 59644.0,
+     "peak_vram_mib": [
+      15244.0,
+      15588.0,
+      15180.0,
+      16054.0
+     ],
+     "d_prompt_vs_base_pct": -0.94,
+     "d_ttft_vs_base_pct": 0.87,
+     "d_decode_vs_base_pct": -1.27,
+     "significant_prompt": false,
+     "significant_decode": false,
+     "d_prompt_vs_machine_baseline_pct": -0.49
+    },
+    "32768": {
+     "actual_prompt_n": 31307.0,
+     "prompt_tok_s": 1895.5,
+     "prompt_tok_s_min": 1889.4,
+     "prompt_tok_s_max": 1896.7,
+     "prompt_spread_pct": 0.39,
+     "decode_tok_s": 102.5,
+     "decode_spread_pct": 2.54,
+     "itl_ms": 9.76,
+     "ttft_s": 16.56,
+     "accept_pct": 77.6,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 246389.0,
+     "peak_vram_mib": [
+      15244.0,
+      15588.0,
+      15180.0,
+      16054.0
+     ],
+     "d_prompt_vs_base_pct": -0.12,
+     "d_ttft_vs_base_pct": 0.18,
+     "d_decode_vs_base_pct": 4.17,
+     "significant_prompt": false,
+     "significant_decode": false,
+     "d_prompt_vs_machine_baseline_pct": 0.15
+    },
+    "128000": {
+     "actual_prompt_n": 122087.0,
+     "prompt_tok_s": 2426.1,
+     "prompt_tok_s_min": 2422.0,
+     "prompt_tok_s_max": 2426.6,
+     "prompt_spread_pct": 0.19,
+     "decode_tok_s": 97.7,
+     "decode_spread_pct": 11.46,
+     "itl_ms": 10.24,
+     "ttft_s": 50.43,
+     "accept_pct": 73.9,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 776949.0,
+     "peak_vram_mib": [
+      15244.0,
+      15590.0,
+      15182.0,
+      16058.0
+     ],
+     "d_prompt_vs_base_pct": -0.08,
+     "d_ttft_vs_base_pct": 0.12,
+     "d_decode_vs_base_pct": 6.54,
+     "significant_prompt": false,
+     "significant_decode": true
+    },
+    "120": {
+     "actual_prompt_n": 163.0,
+     "prompt_tok_s": 200.9,
+     "prompt_tok_s_min": 197.1,
+     "prompt_tok_s_max": 201.5,
+     "prompt_spread_pct": 2.19,
+     "decode_tok_s": 115.8,
+     "decode_spread_pct": 8.98,
+     "itl_ms": 8.64,
+     "ttft_s": 0.83,
+     "accept_pct": 78.4,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 16053.0,
+     "peak_vram_mib": [
+      15244.0,
+      15590.0,
+      15182.0,
+      16058.0
+     ],
+     "d_prompt_vs_base_pct": 0.3,
+     "d_ttft_vs_base_pct": 0.0,
+     "d_decode_vs_base_pct": 3.21,
+     "significant_prompt": false,
+     "significant_decode": false,
+     "d_prompt_vs_machine_baseline_pct": 2.4
+    }
+   }
+  },
+  "B0": {
+   "verdict": "cell=B0 split=split12 binary=<HOME>/strata185/Strata/engine-cuda12/strata text_check_exit=0",
+   "text": {
+    "verdict": "PASS",
+    "shas": {
+     "1024": [
+      "1080a1768859aa00",
+      "1080a1768859aa00"
+     ],
+     "8192": [
+      "caf2b35bb91146f1",
+      "caf2b35bb91146f1"
+     ]
+    },
+    "ref_match": {
+     "1024": null,
+     "8192": null
+    },
+    "fixed_length_ok": true
+   },
+   "counters": {
+    "requests": 23,
+    "expert_reads_mb_sum": 1199748.0,
+    "os_read_mb_sum": 237.9,
+    "major_faults_sum": 0,
+    "hit_rate_min": 99.9,
+    "hit_rate_median": 100.0
+   },
+   "init": {
+    "slots": {
+     "CUDA?": {
+      "slots": 5443,
+      "gib": 11.37,
+      "pairs": 5443,
+      "profiled": 5632
+     }
+    },
+    "borrows": {
+     "CUDA1": {
+      "borrowed": 1840,
+      "of": 6656,
+      "gib": 3.41
+     },
+     "CUDA2": {
+      "borrowed": 1788,
+      "of": 6144,
+      "gib": 3.4
+     },
+     "CUDA3": {
+      "borrowed": 1631,
+      "of": 5443,
+      "gib": 3.41
+     }
+    },
+    "cache_slots": 6144,
+    "layers": "0-11 (CUDA0), 12-24 (CUDA1), 25-36 (CUDA2), 37-47 (CUDA3)"
+   },
+   "points": {
+    "4096": {
+     "actual_prompt_n": 3971.0,
+     "prompt_tok_s": 877.7,
+     "prompt_tok_s_min": 875.8,
+     "prompt_tok_s_max": 884.2,
+     "prompt_spread_pct": 0.96,
+     "decode_tok_s": 101.0,
+     "decode_spread_pct": 11.49,
+     "itl_ms": 9.9,
+     "ttft_s": 4.55,
+     "accept_pct": 74.3,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 41904.0,
+     "peak_vram_mib": [
+      13850.0,
+      15306.0,
+      14954.0,
+      16056.0
+     ],
+     "d_prompt_vs_base_pct": 0.58,
+     "d_ttft_vs_base_pct": -0.66,
+     "d_decode_vs_base_pct": -1.27,
+     "significant_prompt": false,
+     "significant_decode": false,
+     "d_prompt_vs_machine_baseline_pct": 1.04
+    },
+    "32768": {
+     "actual_prompt_n": 31307.0,
+     "prompt_tok_s": 1982.9,
+     "prompt_tok_s_min": 1981.7,
+     "prompt_tok_s_max": 1990.1,
+     "prompt_spread_pct": 0.42,
+     "decode_tok_s": 99.9,
+     "decode_spread_pct": 3.4,
+     "itl_ms": 10.01,
+     "ttft_s": 15.84,
+     "accept_pct": 75.5,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 237468.0,
+     "peak_vram_mib": [
+      13850.0,
+      15306.0,
+      14954.0,
+      16056.0
+     ],
+     "d_prompt_vs_base_pct": 4.48,
+     "d_ttft_vs_base_pct": -4.17,
+     "d_decode_vs_base_pct": 1.52,
+     "significant_prompt": true,
+     "significant_decode": false,
+     "d_prompt_vs_machine_baseline_pct": 4.77
+    },
+    "128000": {
+     "actual_prompt_n": 122087.0,
+     "prompt_tok_s": 2589.8,
+     "prompt_tok_s_min": 2581.8,
+     "prompt_tok_s_max": 2596.5,
+     "prompt_spread_pct": 0.57,
+     "decode_tok_s": 98.4,
+     "decode_spread_pct": 3.56,
+     "itl_ms": 10.16,
+     "ttft_s": 47.23,
+     "accept_pct": 78.4,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 744681.0,
+     "peak_vram_mib": [
+      13850.0,
+      15308.0,
+      14956.0,
+      16060.0
+     ],
+     "d_prompt_vs_base_pct": 6.66,
+     "d_ttft_vs_base_pct": -6.23,
+     "d_decode_vs_base_pct": 7.31,
+     "significant_prompt": true,
+     "significant_decode": true
+    },
+    "120": {
+     "actual_prompt_n": 163.0,
+     "prompt_tok_s": 196.9,
+     "prompt_tok_s_min": 194.5,
+     "prompt_tok_s_max": 203.6,
+     "prompt_spread_pct": 4.62,
+     "decode_tok_s": 110.2,
+     "decode_spread_pct": 33.48,
+     "itl_ms": 9.07,
+     "ttft_s": 0.85,
+     "accept_pct": 78.9,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 16844.0,
+     "peak_vram_mib": [
+      13850.0,
+      15308.0,
+      14956.0,
+      16060.0
+     ],
+     "d_prompt_vs_base_pct": -1.7,
+     "d_ttft_vs_base_pct": 2.41,
+     "d_decode_vs_base_pct": -1.78,
+     "significant_prompt": true,
+     "significant_decode": false,
+     "d_prompt_vs_machine_baseline_pct": 0.36
+    }
+   }
+  },
+  "B1": {
+   "verdict": "cell=B1 split=split12 binary=<HOME>/strata185/Strata/engine-cuda12/strata text_check_exit=0",
+   "text": {
+    "verdict": "PASS",
+    "shas": {
+     "1024": [
+      "1080a1768859aa00",
+      "1080a1768859aa00"
+     ],
+     "8192": [
+      "caf2b35bb91146f1",
+      "caf2b35bb91146f1"
+     ]
+    },
+    "ref_match": {
+     "1024": true,
+     "8192": true
+    },
+    "fixed_length_ok": true
+   },
+   "counters": {
+    "requests": 23,
+    "expert_reads_mb_sum": 1199785.6,
+    "os_read_mb_sum": 187.4,
+    "major_faults_sum": 0,
+    "hit_rate_min": 99.9,
+    "hit_rate_median": 100.0
+   },
+   "init": {
+    "slots": {
+     "CUDA?": {
+      "slots": 5443,
+      "gib": 11.37,
+      "pairs": 5443,
+      "profiled": 5632
+     }
+    },
+    "borrows": {
+     "CUDA1": {
+      "borrowed": 1840,
+      "of": 6656,
+      "gib": 3.41
+     },
+     "CUDA2": {
+      "borrowed": 1788,
+      "of": 6144,
+      "gib": 3.4
+     },
+     "CUDA3": {
+      "borrowed": 1631,
+      "of": 5443,
+      "gib": 3.41
+     }
+    },
+    "cache_slots": 6144,
+    "layers": "0-11 (CUDA0), 12-24 (CUDA1), 25-36 (CUDA2), 37-47 (CUDA3)"
+   },
+   "points": {
+    "4096": {
+     "actual_prompt_n": 3971.0,
+     "prompt_tok_s": 884.9,
+     "prompt_tok_s_min": 884.6,
+     "prompt_tok_s_max": 888.7,
+     "prompt_spread_pct": 0.46,
+     "decode_tok_s": 103.0,
+     "decode_spread_pct": 10.29,
+     "itl_ms": 9.71,
+     "ttft_s": 4.51,
+     "accept_pct": 75.4,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 43993.0,
+     "peak_vram_mib": [
+      13850.0,
+      15306.0,
+      14954.0,
+      16056.0
+     ],
+     "d_prompt_vs_base_pct": 1.41,
+     "d_ttft_vs_base_pct": -1.53,
+     "d_decode_vs_base_pct": 0.68,
+     "significant_prompt": true,
+     "significant_decode": false,
+     "d_prompt_vs_machine_baseline_pct": 1.86
+    },
+    "32768": {
+     "actual_prompt_n": 31307.0,
+     "prompt_tok_s": 1985.1,
+     "prompt_tok_s_min": 1985.0,
+     "prompt_tok_s_max": 1986.3,
+     "prompt_spread_pct": 0.07,
+     "decode_tok_s": 99.8,
+     "decode_spread_pct": 6.41,
+     "itl_ms": 10.02,
+     "ttft_s": 15.82,
+     "accept_pct": 76.2,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 240543.0,
+     "peak_vram_mib": [
+      13850.0,
+      15306.0,
+      14954.0,
+      16056.0
+     ],
+     "d_prompt_vs_base_pct": 4.6,
+     "d_ttft_vs_base_pct": -4.3,
+     "d_decode_vs_base_pct": 1.42,
+     "significant_prompt": true,
+     "significant_decode": false,
+     "d_prompt_vs_machine_baseline_pct": 4.89
+    },
+    "128000": {
+     "actual_prompt_n": 122087.0,
+     "prompt_tok_s": 2589.6,
+     "prompt_tok_s_min": 2589.2,
+     "prompt_tok_s_max": 2593.6,
+     "prompt_spread_pct": 0.17,
+     "decode_tok_s": 96.1,
+     "decode_spread_pct": 9.99,
+     "itl_ms": 10.4,
+     "ttft_s": 47.24,
+     "accept_pct": 74.4,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 755592.0,
+     "peak_vram_mib": [
+      13850.0,
+      15308.0,
+      14956.0,
+      16060.0
+     ],
+     "d_prompt_vs_base_pct": 6.66,
+     "d_ttft_vs_base_pct": -6.21,
+     "d_decode_vs_base_pct": 4.8,
+     "significant_prompt": true,
+     "significant_decode": false
+    },
+    "120": {
+     "actual_prompt_n": 163.0,
+     "prompt_tok_s": 203.7,
+     "prompt_tok_s_min": 199.0,
+     "prompt_tok_s_max": 204.0,
+     "prompt_spread_pct": 2.45,
+     "decode_tok_s": 117.7,
+     "decode_spread_pct": 12.23,
+     "itl_ms": 8.49,
+     "ttft_s": 0.82,
+     "accept_pct": 77.4,
+     "fixed_length_ok": "1",
+     "pcie_rx_mb": 1608.0,
+     "peak_vram_mib": [
+      13850.0,
+      15308.0,
+      14956.0,
+      16060.0
+     ],
+     "d_prompt_vs_base_pct": 1.7,
+     "d_ttft_vs_base_pct": -1.2,
+     "d_decode_vs_base_pct": 4.9,
+     "significant_prompt": true,
+     "significant_decode": false,
+     "d_prompt_vs_machine_baseline_pct": 3.82
+    }
+   }
+  }
+ },
+ "noise_floor_pct_from_base_repeat": {
+  "4096": 0.42,
+  "32768": 0.14,
+  "128000": 0.06,
+  "120": 0.25
+ }
+}

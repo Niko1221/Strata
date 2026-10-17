@@ -1,0 +1,41 @@
+STOP_AT_UTC=2026-10-17T01:51:19Z
+сигнал послан (pid 63585)
+ещё живы: 63585 63588 63594  — добиваю TERM
+Strata (IQ3_S) остановлен, VRAM свободна
+0, 7 MiB
+1, 7 MiB
+2, 7 MiB
+3, 7 MiB
+START_AT_UTC=2026-10-17T01:51:44Z
+запущен IQ3_S, pid 68664, лог: <HOME>/strata185/Strata/strata-185-iq3_s.log
+HEALTH200 after 60s attempt=13 at 2026-10-17T01:52:44Z
+VRAM_OK after 5s: 15124 15510 15106 15972 
+FIRST_REQ_AT_UTC=2026-10-17T01:52:49Z
+REQ_DONE_UTC=2026-10-17T01:52:50Z
+SPLIT_STOP_UTC=2026-10-17T02:01:05Z
+сигнал послан (pid 70666)
+RESTORE_STOP_UTC=2026-10-17T02:10:36Z
+сигнал послан (pid 70715)
+ещё живы: 70717 70735  — добиваю TERM
+Strata (IQ3_S) остановлен, VRAM свободна
+0, 7 MiB
+1, 7 MiB
+2, 7 MiB
+3, 7 MiB
+RESTORE_START_UTC=2026-10-17T02:11:00Z
+запущен IQ3_S, pid 72320, лог: <HOME>/strata185/Strata/strata-185-iq3_s.log
+FIX_STOP_UTC=2026-10-17T02:15:33Z pid=70715
+сигнал послан (pid 70715)
+ещё живы: 72542 72549  — добиваю TERM
+Strata (IQ3_S) остановлен, VRAM свободна
+0, 7 MiB
+1, 7 MiB
+2, 7 MiB
+3, 7 MiB
+FINAL_START_UTC=2026-10-17T02:16:01Z
+запущен IQ3_S, pid 72671, лог: <HOME>/strata185/Strata/strata-185-iq3_s.log
+30
+MANUAL_TERM_WRAPPER_70715_UTC=2026-10-17T02:21:17Z
+73013 /bin/bash -c D=<HOME>/strata185/Strata+4xV100+NVlink/raw/restart-attribution/2026-10-17T015058Z echo "MANUAL_TERM_WRAPPER_70715_UTC=$(date -u +%FT%TZ)" | tee -a $D/stop-start.log kill -TERM 70715 2>/dev/null; sleep 5 pgrep -af "serve/server.py" | tee -a $D/stop-start.log | cut -c1-80 ss -ltnp | grep ':8080 ' | tee -a $D/stop-start.log echo "RESTART_UTC=$(date -u +%FT%TZ)" | tee -a $D/stop-start.log ~/strata185/bin/start-strata-iq3_s.sh 2>&1 | tee -a $D/stop-start.log
+RESTART_UTC=2026-10-17T02:21:22Z
+запущен IQ3_S, pid 73032, лог: <HOME>/strata185/Strata/strata-185-iq3_s.log

@@ -1,0 +1,7 @@
+# grep -E ^(MemTotal|MemAvailable|SwapTotal|HugePages_Total|Hugepagesize) /proc/meminfo (UTC 2026-10-16T23:28:34Z)
+MemTotal:       96228076 kB
+MemAvailable:   84814472 kB
+SwapTotal:       8388604 kB
+HugePages_Total:       0
+Hugepagesize:       2048 kB
+# exit=0

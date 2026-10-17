@@ -1,0 +1,89 @@
+[2026-10-17T06:17:23Z] A/B-стенд: каталог <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3
+manifest: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/manifest.json
+  engine sha256: bdfec9f553d07c2b6017748802a614b48fb847efa9ec727cbe111e2ab2280de6
+  config sha256: f539e51bf19e2431d45eca607ed520abbefbf778f3e11573041ee705df4af88b layer-split: auto
+  build_info: Strata 0.1.44.1
+[2026-10-17T06:17:23Z] === ячейка B0: split=split12, бинарник=strata (базовый)
+создан <HOME>/strata185/Strata/strata-185-iq3_s.ab-B0.json (name=B0, sha256=51fdf0ef8aa86b1c…)
+  layer-split: 12,25,37
+  exe: <HOME>/strata185/Strata/engine-cuda12/strata
+[2026-10-17T06:17:23Z] pid-файл обновлён фактическим pid обёртки: 107989
+[2026-10-17T06:17:23Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T06:17:44Z] запуск с конфигом strata-185-iq3_s.ab-B0.json, pid обёртки 108834
+}
+READY через 51 с (три признака: процессы живы, VRAM {0: 13730, 1: 15226, 2: 14880, 3: 15972} сумма 59808, chat вернул choices)
+props: {"ok": true, "build_info": "Strata 0.1.44.1", "model": null, "version": null}
+  target=8192: self_consistent=True ref_match=None
+вердикт: PASS
+файл: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/B0/text-check.json
+[2026-10-17T06:23:36Z] бенчмарк B0: exit 0
+  gen-only #3: prompt 163 @ 194.5 ток/с | gen 1024/1024 @ 110.2 ток/с ITL 9.07 мс | TTFT 0.859 с | wall 10.13 с | finish length | черновики 685/881 | PCIe RX [17.0, 2883.0, 6761.0, 6161.0] MB
+  determinism: same_text=True cached_run2=224
+CUDA-ошибок в приросте лога движка: 0
+готово: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/B0/bench
+строк запросов: 23, суммарно expert reads: 1199748.0 МБ, OS read: 237.9 МБ, major faults: 0, строк CUDA-ошибок: 0, инициализационных строк: 27
+[2026-10-17T06:23:36Z] pid-файл обновлён фактическим pid обёртки: 108834
+[2026-10-17T06:23:36Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T06:23:57Z] === ячейка B1: split=split12, бинарник=strata (базовый)
+создан <HOME>/strata185/Strata/strata-185-iq3_s.ab-B1.json (name=B1, sha256=51fdf0ef8aa86b1c…)
+  layer-split: 12,25,37
+  exe: <HOME>/strata185/Strata/engine-cuda12/strata
+[2026-10-17T06:23:57Z] ВНИМАНИЕ: процесс на :8080 не найден, pid-файл не обновлён
+[2026-10-17T06:23:57Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T06:24:06Z] запуск с конфигом strata-185-iq3_s.ab-B1.json, pid обёртки 110542
+}
+READY через 51 с (три признака: процессы живы, VRAM {0: 13730, 1: 15226, 2: 14880, 3: 15972} сумма 59808, chat вернул choices)
+props: {"ok": true, "build_info": "Strata 0.1.44.1", "model": null, "version": null}
+  target=8192: self_consistent=True ref_match=True
+вердикт: PASS
+файл: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/B1/text-check.json
+[2026-10-17T06:29:57Z] бенчмарк B1: exit 0
+  gen-only #3: prompt 163 @ 203.7 ток/с | gen 1024/1024 @ 117.7 ток/с ITL 8.49 мс | TTFT 0.82 с | wall 9.5 с | finish length | черновики 722/877 | PCIe RX [18.0, 116.0, 121.0, 110.0] MB
+  determinism: same_text=True cached_run2=224
+CUDA-ошибок в приросте лога движка: 0
+готово: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/B1/bench
+строк запросов: 23, суммарно expert reads: 1199785.6 МБ, OS read: 187.4 МБ, major faults: 0, строк CUDA-ошибок: 0, инициализационных строк: 27
+[2026-10-17T06:29:57Z] pid-файл обновлён фактическим pid обёртки: 110542
+[2026-10-17T06:29:57Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T06:30:18Z] === ячейка A0r: split=auto, бинарник=strata (базовый)
+создан <HOME>/strata185/Strata/strata-185-iq3_s.ab-A0r.json (name=A0r, sha256=c2bf41eff223c53f…)
+  layer-split: auto
+  exe: <HOME>/strata185/Strata/engine-cuda12/strata
+[2026-10-17T06:30:18Z] ВНИМАНИЕ: процесс на :8080 не найден, pid-файл не обновлён
+[2026-10-17T06:30:18Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T06:30:27Z] запуск с конфигом strata-185-iq3_s.ab-A0r.json, pid обёртки 112208
+}
+READY через 61 с (три признака: процессы живы, VRAM {0: 15124, 1: 15510, 2: 15106, 3: 15972} сумма 61712, chat вернул choices)
+props: {"ok": true, "build_info": "Strata 0.1.44.1", "model": null, "version": null}
+  target=8192: self_consistent=True ref_match=False
+вердикт: PASS_WITH_WARNING: внутри ячейки побитово устойчиво, но text_sha не совпал с эталоном предыдущей ячейки
+файл: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/A0r/text-check.json
+[2026-10-17T06:36:43Z] бенчмарк A0r: exit 0
+  gen-only #3: prompt 163 @ 200.8 ток/с | gen 1024/1024 @ 118.5 ток/с ITL 8.44 мс | TTFT 0.832 с | wall 9.46 с | finish length | черновики 726/874 | PCIe RX [15.0, 96.0, 114.0, 150.0] MB
+  determinism: same_text=False cached_run2=224
+CUDA-ошибок в приросте лога движка: 0
+готово: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/A0r/bench
+строк запросов: 25, суммарно expert reads: 1265553.2 МБ, OS read: 189.4 МБ, major faults: 0, строк CUDA-ошибок: 0, инициализационных строк: 38
+[2026-10-17T06:36:43Z] pid-файл обновлён фактическим pid обёртки: 112208
+[2026-10-17T06:36:43Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T06:37:04Z] ВОЗВРАТ РАБОЧЕЙ КОНФИГУРАЦИИ (strata-185-iq3_s.json)
+[2026-10-17T06:37:04Z] ВНИМАНИЕ: процесс на :8080 не найден, pid-файл не обновлён
+[2026-10-17T06:37:04Z] остановка сервиса
+0, 7 MiB 1, 7 MiB 2, 7 MiB 3, 7 MiB 
+[2026-10-17T06:37:12Z] запуск с конфигом strata-185-iq3_s.json, pid обёртки 113838
+ "elapsed_s": 60.7
+}
+READY через 61 с (три признака: процессы живы, VRAM {0: 15124, 1: 15510, 2: 15106, 3: 15972} сумма 61712, chat вернул choices)
+PASS T11_long_context_determinism  prompt_n=80999/80999 sha1=6389567936715884 sha2=6389567936715884 fixed_len=True cached=80992
+готово: raw/correctness/2026-10-17T063813Z PASS: 9 FAIL: 4
+сводка: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/summary.md
+        <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/summary.csv
+        <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3/summary.json
+ячеек: 5 базовая: A0 шумовой порог: {'4096': 0.42, '32768': 0.14, '128000': 0.06, '120': 0.25}
+АБ_СТЕНД_ЗАВЕРШЁН: <HOME>/strata185/Strata+4xV100+NVlink/raw/ab/2026-10-17T061723Z-validation3

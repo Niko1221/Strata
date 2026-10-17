@@ -1,0 +1,99 @@
+# Компилируемые гейты (архитектурные) — файл:строка
+src/prefill/gemm.cu:490:#if defined(STRATA_EXPERIMENTAL_SM60)   // Pascal runs only the experimental build
+src/prefill/gemm.cu:543:#if defined(STRATA_EXPERIMENTAL_SM60)
+src/prefill/gemm.cu:592:#if !defined(__HIPCC__) && defined(STRATA_EXPERIMENTAL_SM60)
+src/prefill/gemm.cu:662:#if defined(STRATA_EXPERIMENTAL_SM60)
+src/prefill/gemm.cu:695:#if defined(STRATA_EXPERIMENTAL_SM60)
+src/prefill/gemm.cu:754:#if !defined(__HIPCC__) && defined(STRATA_EXPERIMENTAL_SM60)
+src/prefill/gdn_rec_parity.cu:124:#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+src/prefill/gdn_rec_parity.cu:680:#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
+src/prefill/moe_fused_iq.cu:136:#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+src/prefill/moe_fused_iq.cu:168:#if (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800) || defined(__HIPCC__)
+src/prefill/moe_fused_iq.cu:433:#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+src/prefill/moe_fused.cu:180:#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+src/prefill/moe_fused.cu:209:#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+src/prefill/kernels.cu:566:#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+src/kernels/cuda/native_qsa_score.cu:39:#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+src/kernels/cuda/native_qsa_score.cu:67:#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+src/kernels/cuda/qsa_decode_attn.cu:291:#if defined(STRATA_EXPERIMENTAL_SM60) || (defined(__HIPCC__) && !defined(STRATA_HIP_GFX906))
+src/kernels/cuda/qsa_decode_attn.cu:292:#define STRATA_ATTN_PRE75_BUILT 1
+src/kernels/cuda/qsa_decode_attn.cu:294:#if defined(STRATA_ATTN_PRE75_BUILT)
+src/kernels/cuda/qsa_decode_attn.cu:522:#endif  // STRATA_ATTN_PRE75_BUILT
+src/kernels/cuda/qsa_decode_attn.cu:577:#if defined(STRATA_ATTN_PRE75_BUILT)
+src/kernels/cuda/qsa_prompt_attn.cu:37:#define STRATA_PA_SM80 0
+src/kernels/cuda/qsa_prompt_attn.cu:38:#elif !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+src/kernels/cuda/qsa_prompt_attn.cu:39:#define STRATA_PA_SM80 1
+src/kernels/cuda/qsa_prompt_attn.cu:41:#define STRATA_PA_SM80 0
+src/kernels/cuda/qsa_prompt_attn.cu:50:#if !STRATA_PA_SM80 && (defined(__HIPCC__) || !defined(__CUDA_ARCH__) || __CUDA_ARCH__ < 750)
+src/kernels/cuda/qsa_prompt_attn.cu:52:#elif !STRATA_PA_SM80
+src/kernels/cuda/qsa_prompt_attn.cu:448:#if !STRATA_PA_SM80
+src/kernels/cuda/qsa_prompt_attn.cu:456:#if STRATA_PA_SM80
+src/kernels/cuda/qsa_prompt_attn.cu:461:#if STRATA_PA_SM80
+src/kernels/cuda/qsa_prompt_attn.cu:745:#if !defined(__HIPCC__) && defined(STRATA_EXPERIMENTAL_SM60)
+src/kernels/cuda/qsa_prompt_attn.cu:757:#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700 && __CUDA_ARCH__ < 750
+src/kernels/cuda/qsa_prompt_attn.cu:1122:#else   // AMD, or a build without STRATA_EXPERIMENTAL_SM60: no m8n8k4 kernel (the caller keeps the old one)
+src/kernels/cuda/qsa_prompt_attn.cu:1128:#endif  // !__HIPCC__ && STRATA_EXPERIMENTAL_SM60
+src/kernels/cuda/qsa_select.cu:174:#elif !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+src/kernels/cuda/qsa_select.cu:899:#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+src/kernels/cuda/sampler.cu:205:#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+src/kernels/cuda/fused_gr.cu:31:#define STRATA_GR_FAST_BUILD 1
+src/kernels/cuda/fused_gr.cu:33:#define STRATA_GR_FAST_BUILD 0
+src/kernels/cuda/fused_gr.cu:762:#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800 && !defined(__HIPCC__)
+src/kernels/cuda/fused_gr.cu:990:#if STRATA_GR_FAST_BUILD
+src/kernels/cuda/fused_gr.cu:1034:#if STRATA_GR_FAST_BUILD
+src/kernels/cuda/fused_gr.cu:1094:#if STRATA_GR_FAST_BUILD
+src/kernels/cuda/fused_gr.cu:1098:#if !STRATA_GR_FAST_BUILD
+src/kernels/cuda/fused_gr.cu:1136:#if STRATA_GR_FAST_BUILD
+src/kernels/cuda/fused_gr.cu:1912:#if !STRATA_GR_FAST_BUILD
+src/kernels/cuda/fused_gr.cu:1938:#if STRATA_GR_FAST_BUILD
+src/core/device.cu:304:#if defined(STRATA_EXPERIMENTAL_SM60)
+include/strata/kernels/pdl.hpp:44:#elif defined(__CUDA_ARCH__) && (__CUDA_ARCH__ < 700)
+include/strata/kernels/pdl.hpp:53:#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ < 700)
+include/strata/kernels/pdl.hpp:63:#if !defined(__HIPCC__) && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900)
+include/strata/kernels/pdl.hpp:69:#if !defined(__HIPCC__) && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900)
+include/strata/kernels/dp4a.hpp:27:#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 610
+include/strata/kernels/dp4a.hpp:48:#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 700
+
+# Runtime-гейты по compute capability
+src/prefill/gemm_f32_parity.cu:51:    cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev);
+src/prefill/gemm_f32_parity.cu:52:    cudaDeviceGetAttribute(&min, cudaDevAttrComputeCapabilityMinor, dev);
+src/prefill/gemm.cu:509:        if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+src/prefill/gemm.cu:510:            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) {
+src/prefill/gdn_rec_parity.cu:560:            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+src/prefill/moe_fused_iq.cu:1054:    cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+src/prefill/gemm_bf16_parity.cu:51:    cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev);
+src/prefill/gemm_bf16_parity.cu:52:    cudaDeviceGetAttribute(&min, cudaDevAttrComputeCapabilityMinor, dev);
+src/prefill/moe_fused.cu:625:    cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+src/prefill/moe_fused.cu:626:    cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+src/prefill/ggml_cuda_host.cu:96:            d.cc = 100 * strata::cc_major_of(attr(cudaDevAttrComputeCapabilityMajor)) +
+src/prefill/ggml_cuda_host.cu:97:                   10 * strata::cc_minor_of(attr(cudaDevAttrComputeCapabilityMinor));   // STRATA_EMULATE_CC
+src/prefill/kernels.cu:704:        const bool yes = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+src/prefill/kernels.cu:1029:            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+src/prefill/kernels.cu:1039:        if (strata::cc_major_of(major) < 8 || (!any_sms && sms < HK * (S / GDV)) || (size_t) strata::smem_optin_of(smem) < kChunkScanSmem)
+src/program/generate.cpp:4799:                     strata::cc_major_of(p.major), strata::cc_minor_of(p.minor),
+src/kernels/cuda/qsa_decode_attn.cu:599:        if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+src/kernels/cuda/qsa_decode_attn.cu:600:            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) {
+src/kernels/cuda/qsa_prompt_attn.cu:1471:            if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+src/kernels/cuda/qsa_prompt_attn.cu:1472:                cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) {
+src/kernels/cuda/qsa_prompt_attn.cu:1479:                      : 10 * strata::cc_major_of(major) + strata::cc_minor_of(minor);
+src/kernels/cuda/qsa_select.cu:1150:            if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess) {
+src/kernels/cuda/qsa_select.cu:1156:            cc_major[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "select")) ? 7 : strata::cc_major_of(major);
+src/kernels/cuda/qsa_select.cu:1251:        const bool code = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+src/kernels/cuda/qsa_select.cu:1252:                          strata::cc_major_of(major) >= 9 &&
+src/kernels/cuda/verify_kernels.cu:944:        if (cudaGetDevice(&dev) != cudaSuccess || cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess)
+src/kernels/cuda/verify_kernels.cu:1463:        const bool on = env_on && cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+src/kernels/cuda/verify_kernels.cu:1464:                        strata::cc_major_of(major) >= 9 &&
+src/kernels/cuda/native_mmvq.cu:1281:        if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+src/kernels/cuda/native_mmvq.cu:1282:            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess && major == 8 && minor == 6)
+src/kernels/cuda/native_mmvq.cu:2735:        if (cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+src/kernels/cuda/native_mmvq.cu:2736:            cudaDeviceGetAttribute(&mnr, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) { cudaGetLastError(); return 0; }
+src/kernels/cuda/native_mmvq.cu:2764:        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+src/kernels/cuda/native_mmvq.cu:2765:        ok[dev] = (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+src/kernels/cuda/dequant_bf16.cu:277:        if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+src/kernels/cuda/dequant_bf16.cu:278:            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) { (void) cudaGetLastError(); return false; }
+src/kernels/cuda/sampler.cu:1218:        const bool runs = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+src/kernels/cuda/sampler.cu:1219:                          strata::cc_major_of(major) >= 9 &&
+src/kernels/cuda/iq_kernels.cu:3606:        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+src/kernels/cuda/iq_kernels.cu:3607:        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+
+# Env-переключатели путей (SM70-релевантные)

@@ -1,0 +1,186 @@
+# nvidia-smi -q -d ECC (UTC 2026-10-16T23:25:51Z)
+
+==============NVSMI LOG==============
+
+Timestamp                                              : Sat Oct 17 02:25:51 2026
+Driver Version                                         : 580.178.04
+CUDA Version                                           : 13.0
+
+Attached GPUs                                          : 4
+GPU 00000000:03:00.0
+    ECC Mode
+        Current                                        : Enabled
+        Pending                                        : Enabled
+    ECC Errors
+        Volatile
+            Single Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : N/A
+                Total                                  : 0
+            Double Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : 0
+                Total                                  : 0
+        Aggregate
+            Single Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : N/A
+                Total                                  : 0
+            Double Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : 0
+                Total                                  : 0
+
+GPU 00000000:04:00.0
+    ECC Mode
+        Current                                        : Enabled
+        Pending                                        : Enabled
+    ECC Errors
+        Volatile
+            Single Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : N/A
+                Total                                  : 0
+            Double Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : 0
+                Total                                  : 0
+        Aggregate
+            Single Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : N/A
+                Total                                  : 0
+            Double Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : 0
+                Total                                  : 0
+
+GPU 00000000:05:00.0
+    ECC Mode
+        Current                                        : Enabled
+        Pending                                        : Enabled
+    ECC Errors
+        Volatile
+            Single Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : N/A
+                Total                                  : 0
+            Double Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : 0
+                Total                                  : 0
+        Aggregate
+            Single Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : N/A
+                Total                                  : 0
+            Double Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : 0
+                Total                                  : 0
+
+GPU 00000000:06:00.0
+    ECC Mode
+        Current                                        : Enabled
+        Pending                                        : Enabled
+    ECC Errors
+        Volatile
+            Single Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : N/A
+                Total                                  : 0
+            Double Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : 0
+                Total                                  : 0
+        Aggregate
+            Single Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : N/A
+                Total                                  : 0
+            Double Bit            
+                Device Memory                          : 0
+                Register File                          : 0
+                L1 Cache                               : 0
+                L2 Cache                               : 0
+                Texture Memory                         : N/A
+                Texture Shared                         : N/A
+                CBU                                    : 0
+                Total                                  : 0
+
+# exit=0

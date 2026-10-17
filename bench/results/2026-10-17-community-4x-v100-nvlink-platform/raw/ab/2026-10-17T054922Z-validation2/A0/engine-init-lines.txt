@@ -1,0 +1,38 @@
+strata generate: layer split auto: CUDA0 80 SMs at 1.53 GHz -> 0.59 ms per layer, 11.26 GiB free before its session carve
+strata generate: layer split auto: CUDA1 80 SMs at 1.53 GHz -> 0.59 ms per layer, 14.79 GiB free before its session carve
+strata generate: layer split auto: CUDA2 80 SMs at 1.53 GHz -> 0.59 ms per layer, 14.79 GiB free before its session carve
+strata generate: layer split auto: CUDA3 80 SMs at 1.53 GHz -> 0.59 ms per layer, 13.81 GiB free before its session carve
+strata generate: layer split auto: CUDA0 link 6.3 GB/s -> miss cost x1.00
+strata generate: layer split auto: CUDA1 link 6.3 GB/s -> miss cost x1.00
+strata generate: layer split auto: CUDA2 link 6.3 GB/s -> miss cost x1.00
+strata generate: layer split auto: CUDA3 link 6.3 GB/s -> miss cost x1.00
+strata generate: layer split auto: K=11,24,36 - predicted 28.4 ms per decode window; the caches hold 24265 of 24576 profiled pairs (~100.0% of the routed mass), best of 15180 placements
+strata generate: layer split: CUDA1 holds its weights; 14.36 GiB free (its session follows)
+strata generate: layer split: CUDA2 holds its weights; 14.40 GiB free (its session follows)
+strata generate: layer split: CUDA3 holds its weights; 14.41 GiB free (its session follows)
+strata generate: layer split: CUDA1 holds its weights, session [11, 24); 13.10 GiB free
+strata generate: layer split: CUDA2 holds its weights, session [24, 36); 13.43 GiB free
+strata generate: layer split: CUDA3 holds its weights, session [36, 48) and the head; 12.96 GiB free
+strata generate: expert cache auto: 11.08 GiB free, 512 MiB reserved (+0 MiB for the draft head) -> 4267 slots
+strata generate: expert cache 5632 slots, 9.88 GiB of VRAM; policy is
+strata generate: pre-filled 5632 of 5632 slots from the profile in 2.3 s (4604 MB/s); slot 0 verified
+strata generate: layer split, CUDA1: 13.10 GiB free of 15.77, room for experts 12.50 GiB
+strata generate: layer split: CUDA1 runs layers 11-23, expert cache 6656 slots (12.27 GiB), 6656 of its 6656 profiled pairs; slot 0 verified
+strata generate: layer split, CUDA2: 13.43 GiB free of 15.77, room for experts 12.84 GiB
+strata generate: layer split: CUDA2 runs layers 24-35, expert cache 6144 slots (12.21 GiB), 6144 of its 6144 profiled pairs; slot 0 verified
+strata generate: layer split, CUDA3: 11.88 GiB free of 15.77, room for experts 11.29 GiB
+strata generate: layer split: CUDA3 runs layers 36-47, expert cache 5469 slots (11.29 GiB), 5469 of its 6144 profiled pairs; slot 0 verified
+strata generate: layer split auto: L2 probe: the split is startable on the live free figures
+strata generate: token graph hit path: 23901 resident experts, decided on the device
+strata serve: layer split: 97% of the experts resident, the prompt path's streamed ring 96 slots
+strata serve: prompt chunk auto: 8192 tokens, a 96-slot ring
+strata serve: the prompt path borrows 1954 CUDA0 cache slots (3.41 GiB)
+strata serve:   CUDA1 prompt path borrows 1841 of its 6656 slots (3.41 GiB)
+strata serve:   CUDA2 prompt path borrows 1706 of its 6144 slots (3.41 GiB)
+strata serve:   CUDA3 prompt path borrows 1631 of its 5469 slots (3.41 GiB)
+strata serve: layer split: layers 0-10 (CUDA0), 11-23 (CUDA1), 24-35 (CUDA2), 36-47 (CUDA3), one hand-off per window
+strata serve: 1020 MiB of VRAM free with everything loaded
+strata serve: CUDA1: 634 MiB of VRAM free with everything loaded
+strata serve: CUDA2: 1038 MiB of VRAM free with everything loaded
+strata serve: CUDA3: 172 MiB of VRAM free with everything loaded - LOW: its window graphs are captured on first use and need room too, and a full card can stall a request; add --vram-reserve-later-mib 1108 to the config's args (or lower --max-context)
+strata verify: capturing the 6-token window (1020 MiB of VRAM free)

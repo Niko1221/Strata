@@ -1,0 +1,2 @@
+    PID     ELAPSED CMD
+ 113838    06:28:24 <HOME>/strata185/Strata/.venv/bin/python serve/server.py --engine strata --config strata-185-iq3_s.json --port 8080

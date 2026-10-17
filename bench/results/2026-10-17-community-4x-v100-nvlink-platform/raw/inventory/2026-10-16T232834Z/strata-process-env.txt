@@ -1,0 +1,92 @@
+== PID 32185 cmdline
+<HOME>/strata185/Strata/engine-cuda12/strata-vision --mmproj <HOME>/strata185/Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf --model <HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --gpu --max-tokens 1024 
+== PID 32185 environ: names only
+_
+AI_AGENT
+CUDA_DEVICE_ORDER
+CUDA_VISIBLE_DEVICES
+DBUS_SESSION_BUS_ADDRESS
+DEBUGINFOD_URLS
+HOME
+IM_CONFIG_ENTRY
+LANG
+LD_LIBRARY_PATH
+LESSCLOSE
+LESSOPEN
+LOGNAME
+LS_COLORS
+OLDPWD
+PATH
+PI_CODING_AGENT
+PI_MANAGED_INSTALL_ROOT
+PI_MODEL
+PI_PROVIDER
+PI_REASONING_LEVEL
+PI_SESSION_FILE
+PI_SESSION_ID
+PWD
+SHELL
+SHLVL
+SSH_CLIENT
+SSH_CONNECTION
+SSH_TTY
+STRATA_STAGE_TRIM
+TERM
+USER
+XDG_DATA_DIRS
+XDG_RUNTIME_DIR
+XDG_SESSION_CLASS
+XDG_SESSION_ID
+XDG_SESSION_TYPE
+== safe values (CUDA/NVIDIA/LD/STRATA/PATH, без секретов)
+PATH=<HOME>/.local/share/pi-node/current/bin:<HOME>/bin:<HOME>/.pi/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+CUDA_DEVICE_ORDER=PCI_BUS_ID
+CUDA_VISIBLE_DEVICES=0,1,2,3
+STRATA_STAGE_TRIM=1
+LD_LIBRARY_PATH=<HOME>/strata185/cuda-12.8/bin:<HOME>/strata185/cuda-12.8/lib64
+== PID 32197 cmdline
+<HOME>/strata185/Strata/engine-cuda12/strata --serve --pack <HOME>/strata185/Strata-data/packs/iq3_s --native <HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --ple-gguf <HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf --expert-profile <HOME>/strata185/data/expert-profile-learned-185-iq3s.bin --expert-cache auto --prefill auto --spec 4 --mtp <HOME>/strata185/Strata-data/mtp/rt --max-context 262144 --kv int8 --mmap-experts --vision --vram-reserve-mib 512 --control-vector-scaled <HOME>/strata185/data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0 --control-vector-layer-range 4 44 --cvec-mode project --cvec-dir per-layer --spec-min-p 0.50 --pool-workers 12 --layer-split auto --expert-profile-save <HOME>/strata185/data/expert-profile-learned-185-iq3s.bin --expert-profile-save-every 10 
+== PID 32197 environ: names only
+_
+AI_AGENT
+CUDA_DEVICE_ORDER
+CUDA_VISIBLE_DEVICES
+DBUS_SESSION_BUS_ADDRESS
+DEBUGINFOD_URLS
+HOME
+IM_CONFIG_ENTRY
+LANG
+LD_LIBRARY_PATH
+LESSCLOSE
+LESSOPEN
+LOGNAME
+LS_COLORS
+OLDPWD
+PATH
+PI_CODING_AGENT
+PI_MANAGED_INSTALL_ROOT
+PI_MODEL
+PI_PROVIDER
+PI_REASONING_LEVEL
+PI_SESSION_FILE
+PI_SESSION_ID
+PWD
+SHELL
+SHLVL
+SSH_CLIENT
+SSH_CONNECTION
+SSH_TTY
+STRATA_STAGE_TRIM
+TERM
+USER
+XDG_DATA_DIRS
+XDG_RUNTIME_DIR
+XDG_SESSION_CLASS
+XDG_SESSION_ID
+XDG_SESSION_TYPE
+== safe values (CUDA/NVIDIA/LD/STRATA/PATH, без секретов)
+PATH=<HOME>/.local/share/pi-node/current/bin:<HOME>/bin:<HOME>/.pi/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+CUDA_DEVICE_ORDER=PCI_BUS_ID
+CUDA_VISIBLE_DEVICES=0,1,2,3
+STRATA_STAGE_TRIM=1
+LD_LIBRARY_PATH=<HOME>/strata185/cuda-12.8/bin:<HOME>/strata185/cuda-12.8/lib64

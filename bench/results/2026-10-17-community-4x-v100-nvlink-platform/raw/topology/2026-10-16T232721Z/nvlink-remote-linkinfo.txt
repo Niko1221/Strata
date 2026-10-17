@@ -1,0 +1,30 @@
+# nvidia-smi nvlink -R (UTC 2026-10-16T23:27:23Z)
+GPU 0: Tesla V100-SXM2-16GB (UUID: GPU-c4a285b6-4b3f-e33d-b215-96e0d6ea6f6e)
+	 Link 0: Remote Device 00000000:05:00.0: Link 3
+	 Link 1: Remote Device 00000000:05:00.0: Link 2
+	 Link 2: Remote Device 00000000:04:00.0: Link 0
+	 Link 3: Remote Device 00000000:04:00.0: Link 1
+	 Link 4: Remote Device 00000000:06:00.0: Link 4
+	 Link 5: Remote Device 00000000:06:00.0: Link 5
+GPU 1: Tesla V100-SXM2-16GB (UUID: GPU-856a23fb-2a0d-12bb-10af-7a31a071322d)
+	 Link 0: Remote Device 00000000:03:00.0: Link 2
+	 Link 1: Remote Device 00000000:03:00.0: Link 3
+	 Link 2: Remote Device 00000000:06:00.0: Link 1
+	 Link 3: Remote Device 00000000:06:00.0: Link 0
+	 Link 4: Remote Device 00000000:05:00.0: Link 4
+	 Link 5: Remote Device 00000000:05:00.0: Link 5
+GPU 2: Tesla V100-SXM2-16GB (UUID: GPU-121f2dc1-2feb-3d01-b0ff-57b876562bc7)
+	 Link 0: Remote Device 00000000:06:00.0: Link 2
+	 Link 1: Remote Device 00000000:06:00.0: Link 3
+	 Link 2: Remote Device 00000000:03:00.0: Link 1
+	 Link 3: Remote Device 00000000:03:00.0: Link 0
+	 Link 4: Remote Device 00000000:04:00.0: Link 4
+	 Link 5: Remote Device 00000000:04:00.0: Link 5
+GPU 3: Tesla V100-SXM2-16GB (UUID: GPU-df670e96-a76d-034a-8640-a3b6f6171696)
+	 Link 0: Remote Device 00000000:04:00.0: Link 3
+	 Link 1: Remote Device 00000000:04:00.0: Link 2
+	 Link 2: Remote Device 00000000:05:00.0: Link 0
+	 Link 3: Remote Device 00000000:05:00.0: Link 1
+	 Link 4: Remote Device 00000000:03:00.0: Link 4
+	 Link 5: Remote Device 00000000:03:00.0: Link 5
+# exit=0

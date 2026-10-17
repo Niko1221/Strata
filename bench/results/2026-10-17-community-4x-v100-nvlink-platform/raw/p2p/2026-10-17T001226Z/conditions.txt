@@ -1,0 +1,20 @@
+captured_utc: 2026-10-17T00:12:28Z
+binary: <HOME>/strata185/Strata+4xV100+NVlink/build/p2p-probe-ext
+binary_sha256: 968561c50e68a086ecc996cffdaa3a927a55b6171947afd2bb50b9869f4b8859
+source_sha256: 0b2c7485085838abbb9861ba50497dd6bb9684d89964ace26c471830d3168247
+compiler: Build cuda_12.8.r12.8/compiler.35583870_0
+host_cc: g++-14 (Ubuntu 14.3.0-14ubuntu1) 14.3.0
+strata_running: NO
+args: --max-size 256M --note Фаза B: Strata остановлена, VRAM свободна; полный ряд размеров и конкуренция шести пар
+--- nvidia-smi до запуска ---
+index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]
+0, 7 MiB, 16138 MiB, 0 %, 36, 40.31 W, 135 MHz
+1, 7 MiB, 16138 MiB, 0 %, 36, 38.34 W, 135 MHz
+2, 7 MiB, 16138 MiB, 0 %, 36, 39.31 W, 135 MHz
+3, 7 MiB, 16138 MiB, 0 %, 36, 39.29 W, 135 MHz
+--- nvidia-smi после запуска ---
+index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]
+0, 7 MiB, 16138 MiB, 9 %, 36, 64.87 W, 1530 MHz
+1, 7 MiB, 16138 MiB, 22 %, 37, 62.85 W, 1530 MHz
+2, 7 MiB, 16138 MiB, 17 %, 37, 66.67 W, 1530 MHz
+3, 7 MiB, 16138 MiB, 4 %, 36, 63.25 W, 1530 MHz

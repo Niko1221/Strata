@@ -1,0 +1,569 @@
+{
+  "schema_version": 1,
+  "artifact": "system-inventory",
+  "stage": "Этап I (п.4 задания)",
+  "status": "confirmed_with_gaps",
+  "captured_utc": "2026-10-16T23:28:34Z",
+  "host": "<HOSTNAME>",
+  "method": {
+    "script": "scripts/collect-inventory.sh",
+    "script_sha256": "eb897bd238a7fe0466ae8655d3685b9be0f472be974b773382feba2c24ef1b65",
+    "raw_dir": [
+      "raw/inventory/2026-10-16T232834Z",
+      "raw/topology/2026-10-16T232834Z"
+    ],
+    "system_modified": false,
+    "background_load": "Strata engine running (PID 32197), all 4 GPUs holding ~15 GiB each",
+    "units": {
+      "temperature": "degC",
+      "power": "W (as reported by nvidia-smi)",
+      "frequency": "MHz",
+      "link_speed": "GB/s, 1 GB/s = 1e9 byte/s (nvidia-smi definition)",
+      "memory": "MiB, 1 MiB = 2^20 byte",
+      "pcie_width": "lanes"
+    }
+  },
+  "os": {
+    "name": "Ubuntu",
+    "version": "26.04.1 LTS",
+    "codename": "resolute",
+    "source": "/etc/os-release",
+    "kernel": "7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC x86_64",
+    "kernel_cmdline_nvidia_params": "none present",
+    "cmdline_source": "/proc/cmdline"
+  },
+  "cpu": {
+    "model": "13th Gen Intel Core i9-13900H",
+    "logical_cpus": 20,
+    "sockets": 1,
+    "declared_freq_mhz_min": 400,
+    "declared_freq_mhz_max": 5400,
+    "source": [
+      "lscpu",
+      "/proc/cpuinfo"
+    ]
+  },
+  "numa": {
+    "nodes": 1,
+    "node0_cpus": "0-19",
+    "node0_size_mb": 93972,
+    "gpu_numa_node_reported": -1,
+    "gpu_local_cpulist": "0-19",
+    "source": [
+      "numactl --hardware",
+      "lscpu",
+      "/sys/bus/pci/devices/*/numa_node"
+    ]
+  },
+  "memory": {
+    "total": "91Gi",
+    "available": "81Gi",
+    "swap_total": "8.0Gi",
+    "swap_used": "376Mi",
+    "source": [
+      "free -h",
+      "/proc/meminfo"
+    ]
+  },
+  "storage": {
+    "device": "/dev/nvme0n1p2",
+    "size": "1.9Ti",
+    "used": "554G",
+    "free": "1.2T",
+    "mount": "/",
+    "source": "df -h"
+  },
+  "gpus": [
+    {
+      "index": 0,
+      "model": "Tesla V100-SXM2-16GB",
+      "architecture": "Volta",
+      "compute_capability": "7.0",
+      "uuid": "GPU-c4a285b6-4b3f-e33d-b215-96e0d6ea6f6e",
+      "pci_bus_id": "00000000:03:00.0",
+      "vram_mib": 16384,
+      "vram_used_mib": 15250,
+      "vram_free_mib": 895,
+      "temperature_c": 40,
+      "power_draw_w": 67.29,
+      "power_limit_w": 300.0,
+      "sm_clock_mhz": 1530,
+      "sm_clock_max_mhz": 1530,
+      "ecc_mode": "Enabled",
+      "ecc_errors_uncorrected_aggregate": 0,
+      "ecc_errors_corrected_aggregate": 0,
+      "retired_pages": "none",
+      "row_remapping": "N/A (not supported on Volta)",
+      "vbios": "88.00.4F.00.09",
+      "inforom_img": "G503.0201.00.03",
+      "inforom_oem": "1.1",
+      "compute_mode": "Default",
+      "persistence_mode": "Enabled",
+      "throttle_reasons_active": "0x0 (none active)"
+    },
+    {
+      "index": 1,
+      "model": "Tesla V100-SXM2-16GB",
+      "architecture": "Volta",
+      "compute_capability": "7.0",
+      "uuid": "GPU-856a23fb-2a0d-12bb-10af-7a31a071322d",
+      "pci_bus_id": "00000000:04:00.0",
+      "vram_mib": 16384,
+      "vram_used_mib": 15590,
+      "vram_free_mib": 555,
+      "temperature_c": 40,
+      "power_draw_w": 54.2,
+      "power_limit_w": 300.0,
+      "sm_clock_mhz": 1312,
+      "sm_clock_max_mhz": 1530,
+      "ecc_mode": "Enabled",
+      "ecc_errors_uncorrected_aggregate": 0,
+      "ecc_errors_corrected_aggregate": 0,
+      "retired_pages": "none",
+      "row_remapping": "N/A (not supported on Volta)",
+      "vbios": "88.00.4F.00.09",
+      "inforom_img": "G503.0201.00.03",
+      "inforom_oem": "1.1",
+      "compute_mode": "Default",
+      "persistence_mode": "Enabled",
+      "throttle_reasons_active": "0x0 (none active)",
+      "note": "SM clock below max at sample time; no throttle reason active - idle clock state, not a limit"
+    },
+    {
+      "index": 2,
+      "model": "Tesla V100-SXM2-16GB",
+      "architecture": "Volta",
+      "compute_capability": "7.0",
+      "uuid": "GPU-121f2dc1-2feb-3d01-b0ff-57b876562bc7",
+      "pci_bus_id": "00000000:05:00.0",
+      "vram_mib": 16384,
+      "vram_used_mib": 15200,
+      "vram_free_mib": 945,
+      "temperature_c": 40,
+      "power_draw_w": 68.55,
+      "power_limit_w": 300.0,
+      "sm_clock_mhz": 1530,
+      "sm_clock_max_mhz": 1530,
+      "ecc_mode": "Enabled",
+      "ecc_errors_uncorrected_aggregate": 0,
+      "ecc_errors_corrected_aggregate": 0,
+      "retired_pages": "none",
+      "row_remapping": "N/A (not supported on Volta)",
+      "vbios": "88.00.4F.00.09",
+      "inforom_img": "G503.0201.00.03",
+      "inforom_oem": "1.1",
+      "compute_mode": "Default",
+      "persistence_mode": "Enabled",
+      "throttle_reasons_active": "0x0 (none active)"
+    },
+    {
+      "index": 3,
+      "model": "Tesla V100-SXM2-16GB",
+      "architecture": "Volta",
+      "compute_capability": "7.0",
+      "uuid": "GPU-df670e96-a76d-034a-8640-a3b6f6171696",
+      "pci_bus_id": "00000000:06:00.0",
+      "vram_mib": 16384,
+      "vram_used_mib": 16072,
+      "vram_free_mib": 73,
+      "temperature_c": 40,
+      "power_draw_w": 67.59,
+      "power_limit_w": 300.0,
+      "sm_clock_mhz": 1530,
+      "sm_clock_max_mhz": 1530,
+      "ecc_mode": "Enabled",
+      "ecc_errors_uncorrected_aggregate": 0,
+      "ecc_errors_corrected_aggregate": 0,
+      "retired_pages": "none",
+      "row_remapping": "N/A (not supported on Volta)",
+      "vbios": "88.00.4F.00.09",
+      "inforom_img": "G503.0201.00.03",
+      "inforom_oem": "1.1",
+      "compute_mode": "Default",
+      "persistence_mode": "Enabled",
+      "throttle_reasons_active": "0x0 (none active)",
+      "note": "only 73 MiB free - constrains buffer sizes for P2P benchmarks while the engine runs"
+    }
+  ],
+  "pcie": {
+    "per_gpu": [
+      {
+        "index": 0,
+        "link_gen_current": 3,
+        "link_gen_max_device": 3,
+        "host_max_gen": 5,
+        "link_width_current": 8,
+        "link_width_max_device": 16,
+        "replays_since_reset": 0,
+        "replay_rollovers": 0
+      },
+      {
+        "index": 1,
+        "link_gen_current": 3,
+        "link_gen_max_device": 3,
+        "host_max_gen": 5,
+        "link_width_current": 8,
+        "link_width_max_device": 16,
+        "replays_since_reset": 0,
+        "replay_rollovers": 0
+      },
+      {
+        "index": 2,
+        "link_gen_current": 3,
+        "link_gen_max_device": 3,
+        "host_max_gen": 5,
+        "link_width_current": 8,
+        "link_width_max_device": 16,
+        "replays_since_reset": 0,
+        "replay_rollovers": 0
+      },
+      {
+        "index": 3,
+        "link_gen_current": 3,
+        "link_gen_max_device": 3,
+        "host_max_gen": 5,
+        "link_width_current": 8,
+        "link_width_max_device": 16,
+        "replays_since_reset": 0,
+        "replay_rollovers": 0
+      }
+    ],
+    "host_uplink_conclusion": "operating at Gen3 x8 (~7.88 GB/s raw per GPU to host); hardware reports capability for x16 and Gen5",
+    "status": "confirmed as configuration fact; performance impact on Strata NOT measured",
+    "source": [
+      "nvidia-smi --query-gpu=pcie.link.*",
+      "nvidia-smi -q (GPU Link Info)",
+      "/sys/bus/pci/devices/*/current_link_speed|width"
+    ]
+  },
+  "nvlink": {
+    "generation": "NVLink 2.0 (Volta)",
+    "links_per_gpu": 6,
+    "links_active_total": 24,
+    "link_speed_gbps": 25.781,
+    "topology": "full direct mesh, no NVSwitch",
+    "links_per_pair": 2,
+    "topo_matrix": {
+      "GPU0-GPU1": "NV2",
+      "GPU0-GPU2": "NV2",
+      "GPU0-GPU3": "NV2",
+      "GPU1-GPU2": "NV2",
+      "GPU1-GPU3": "NV2",
+      "GPU2-GPU3": "NV2"
+    },
+    "derived_bandwidth_per_pair_gbps_one_way": 51.562,
+    "derived_bandwidth_per_gpu_one_way_gbps": 154.686,
+    "remote_link_map": [
+      {
+        "gpu_bus": "00000000:03:00.0",
+        "links": {
+          "0": "00000000:05:00.0:3",
+          "1": "00000000:05:00.0:2",
+          "2": "00000000:04:00.0:0",
+          "3": "00000000:04:00.0:1",
+          "4": "00000000:06:00.0:4",
+          "5": "00000000:06:00.0:5"
+        }
+      },
+      {
+        "gpu_bus": "00000000:04:00.0",
+        "links": {
+          "0": "00000000:03:00.0:2",
+          "1": "00000000:03:00.0:3",
+          "2": "00000000:06:00.0:1",
+          "3": "00000000:06:00.0:0",
+          "4": "00000000:05:00.0:4",
+          "5": "00000000:05:00.0:5"
+        }
+      },
+      {
+        "gpu_bus": "00000000:05:00.0",
+        "links": {
+          "0": "00000000:06:00.0:2",
+          "1": "00000000:06:00.0:3",
+          "2": "00000000:03:00.0:1",
+          "3": "00000000:03:00.0:0",
+          "4": "00000000:04:00.0:4",
+          "5": "00000000:04:00.0:5"
+        }
+      },
+      {
+        "gpu_bus": "00000000:06:00.0",
+        "links": {
+          "0": "00000000:04:00.0:3",
+          "1": "00000000:04:00.0:2",
+          "2": "00000000:05:00.0:0",
+          "3": "00000000:05:00.0:1",
+          "4": "00000000:03:00.0:4",
+          "5": "00000000:03:00.0:5"
+        }
+      }
+    ],
+    "capabilities_per_link": {
+      "p2p_supported": true,
+      "p2p_atomics_supported": true,
+      "system_memory_access_supported": true,
+      "system_memory_atomics_supported": true,
+      "sli_supported": false,
+      "link_supported": true,
+      "links_reporting_this": 24
+    },
+    "fabric": {
+      "state": "N/A",
+      "status": "N/A",
+      "guid": "N/A",
+      "nvswitch": false
+    },
+    "nvle": "disabled, firmware N/A",
+    "counters": {
+      "data_throughput_tx_rx": "N/A - not supported on this platform/driver",
+      "replay_errors_total": 0,
+      "recovery_errors_total": 0,
+      "crc_errors_total": 0,
+      "crc_errors_per_lane": "all zero",
+      "counter_reset_time": "unknown - zero values cannot be interpreted as 'no errors ever'"
+    },
+    "unsupported_commands": [
+      "nvlink -gLWidth (Not supported)",
+      "nvlink -gBwMode (not supported)",
+      "nvlink -gt d|r (N/A)"
+    ],
+    "method_limit": "nvidia-smi cannot show NVLink traffic on this platform; proof of NVLink usage must come from CUDA API behaviour, controlled P2P benchmarks and tracing",
+    "source": [
+      "nvidia-smi topo -m",
+      "nvidia-smi nvlink --status",
+      "nvidia-smi nvlink -c",
+      "nvidia-smi nvlink -R",
+      "nvidia-smi nvlink -info",
+      "nvidia-smi nvlink -e",
+      "nvidia-smi nvlink -ec",
+      "nvidia-smi nvlink -gt d",
+      "nvidia-smi nvlink -gt r",
+      "nvidia-smi -q"
+    ]
+  },
+  "software": {
+    "driver_version": "580.178.04",
+    "cuda_supported_by_driver": "13.0",
+    "cuda_toolkit_installed": {
+      "version": "12.8 (V12.8.93, cuda_12.8.r12.8/compiler.35583870_0)",
+      "path": "<HOME>/strata185/cuda-12.8",
+      "type": "private, not a system package",
+      "nvcc_in_path": false,
+      "system_cuda_dir": "absent"
+    },
+    "compilers": {
+      "system_gcc": "15.2.0 (/usr/bin/gcc)",
+      "private_gcc": "14.3.0 (<HOME>/strata185/gcc185/usr/bin/gcc-14)",
+      "used_for_strata_build": "private gcc-14 per engine-cuda12/BUILD.json"
+    },
+    "build_tools": {
+      "cmake_in_path": false,
+      "ninja_in_path": false,
+      "venv_cmake": "4.4.3",
+      "venv_ninja": "1.13.2"
+    },
+    "python": {
+      "system": "3.14.4 (no pip)",
+      "venv": "3.14.4 (<HOME>/strata185/Strata/.venv)"
+    },
+    "python_packages_of_interest": {
+      "numpy": "2.5.3 (venv)",
+      "pillow": "12.3.0",
+      "psutil": "7.2.2",
+      "pyyaml": "6.0.3",
+      "torch": "absent in system and venv",
+      "vllm": "absent in system and venv",
+      "triton": "absent",
+      "transformers": "absent"
+    },
+    "profilers": {
+      "nsight_systems_nsys": "not installed",
+      "nsight_compute_ncu": "present only in private toolkit <HOME>/strata185/cuda-12.8/bin/ncu",
+      "compute_sanitizer": "present only in private toolkit",
+      "dcgm": "dcgmi installed at /usr/bin/dcgmi; nvidia-dcgm.service inactive; dcgmproftester12 present"
+    },
+    "git": "not installed (dpkg -l git -> 0)"
+  },
+  "strata": {
+    "source_dir": "<HOME>/strata185/Strata",
+    "version": "0.1.44.1",
+    "version_sources": [
+      "CMakeLists.txt project(strata VERSION 0.1.44.1)",
+      "engine-cuda12/BUILD.json"
+    ],
+    "commit_sha": null,
+    "commit_sha_status": "unavailable: source copy has no .git and git is not installed",
+    "engine_binary": "<HOME>/strata185/Strata/engine-cuda12/strata",
+    "engine_binary_size_bytes": 71186856,
+    "engine_binary_mtime": "2026-10-14T16:01 local",
+    "engine_sha256": "bdfec9f553d07c2b6017748802a614b48fb847efa9ec727cbe111e2ab2280de6",
+    "vision_binary_sha256": "932969ee6308f30130917355ccd598823c3d2b974f8b819d0179fd9888687700",
+    "build_metadata": {
+      "source": "engine-cuda12/BUILD.json",
+      "backend": "cuda",
+      "archs": [
+        70
+      ],
+      "toolkit": 12,
+      "experimental_sm60_flag": "STRATA_EXPERIMENTAL_SM60=ON",
+      "note": "experimental CUDA 12.8 build for Tesla V100 (sm_70), private toolkit and private gcc-14, updated to 0.1.44.1 on 2026-10-14"
+    },
+    "binary_arch_contents": {
+      "strata": {
+        "cubin_sm_70": 62,
+        "ptx_sm_70": 62,
+        "other_archs": 0
+      },
+      "strata_vision": {
+        "cubin": 0,
+        "ptx": 0
+      },
+      "method": "cuobjdump --list-elf / --list-ptx",
+      "interpretation_limit": "presence of sm_70 code is a fact; sufficiency/correctness of kernels is a separate question (Stage II)"
+    },
+    "cmake_arch_policy_found": {
+      "default_CUDA_ARCHITECTURES": "120",
+      "pre_sm75_refused_by_default": true,
+      "sm60_sm70_allowed_only_with": "STRATA_EXPERIMENTAL_SM60",
+      "cuda13_drops_sm60_sm70": "stated in CMakeLists comments",
+      "lines": "CMakeLists.txt ~160-199"
+    },
+    "running_process": {
+      "pid": 32197,
+      "binary": "<HOME>/strata185/Strata/engine-cuda12/strata",
+      "mode": "--serve",
+      "key_args": [
+        "--layer-split auto",
+        "--max-context 262144",
+        "--kv int8",
+        "--spec 4",
+        "--spec-min-p 0.50",
+        "--mtp .../mtp/rt",
+        "--mmap-experts",
+        "--vision",
+        "--vram-reserve-mib 512",
+        "--pool-workers 12"
+      ],
+      "started_by": "manual start (agent session env present); systemd unit strata-iq3-s.service is enabled but inactive since 2026-10-15T16:09Z",
+      "env_relevant": {
+        "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+        "CUDA_VISIBLE_DEVICES": "0,1,2,3",
+        "STRATA_STAGE_TRIM": "1",
+        "LD_LIBRARY_PATH": "<HOME>/strata185/cuda-12.8/bin:<HOME>/strata185/cuda-12.8/lib64"
+      },
+      "vram_held_mib_per_gpu": [
+        15234,
+        15574,
+        15184,
+        16056
+      ]
+    },
+    "run_config_file": {
+      "path": "<HOME>/strata185/Strata/strata-185-iq3_s.json",
+      "secrets_excluded": true,
+      "raw_dump": "raw/inventory/2026-10-16T232834Z/strata-run-config.txt"
+    },
+    "model": {
+      "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S",
+      "files_bytes": [
+        54817524224,
+        28800138432
+      ],
+      "checksums": "not taken at this stage (required before benchmarks, p.7.3)"
+    }
+  },
+  "other_local_repos": {
+    "1cat_vllm": "<HOME>/1cat (unit vllm-1cat.service, disabled; not inventoried)",
+    "v100_skinny": "<HOME>/opt/v100-skinny (not inventoried)",
+    "existing_experiment_scripts": "<HOME>/strata185/bin (p2p-full-probe.cu, p2p-bw-185.cu, nvlink-probe-185.py, nvlink-full-185.sh, bench-suite-0.1.43.sh, bench-suite-0.1.44.1.sh, bench185*.py, needle_depth.py)",
+    "existing_results": "<HOME>/strata185/bench, bench-community, bench-long, LONG-IQ3S-*.md"
+  },
+  "gaps": [
+    {
+      "item": "Strata commit SHA",
+      "reason": "no .git in source copy, git not installed",
+      "minimal_action": "install git or fetch release tarball and record SHA from metadata"
+    },
+    {
+      "item": "vLLM / PyTorch versions of the serving stack",
+      "reason": "not part of Strata runtime; separate install at ~/1cat",
+      "minimal_action": "inventory ~/1cat if in scope"
+    },
+    {
+      "item": "server platform (SXM2 baseboard/vendor)",
+      "reason": "not queried",
+      "minimal_action": "dmidecode (needs root) - to be approved"
+    },
+    {
+      "item": "NVLink traffic counters",
+      "reason": "unsupported by nvidia-smi on Volta/580",
+      "minimal_action": "DCGM (service off) or NVML probe or CUDA-level tracing"
+    },
+    {
+      "item": "Nsight Systems",
+      "reason": "not installed",
+      "minimal_action": "install by approval, or use ncu from private 12.8 toolkit"
+    },
+    {
+      "item": "model checksums",
+      "reason": "out of scope for this stage",
+      "minimal_action": "sha256sum before first benchmark"
+    },
+    {
+      "item": "measured P2P bandwidth (38.8 GB/s claim)",
+      "reason": "not measured in this stage",
+      "minimal_action": "Stage III"
+    }
+  ],
+  "constraints_for_next_stages": [
+    "free VRAM is 73-945 MiB per GPU while the engine runs: 256 MiB P2P buffers require stopping the engine or smaller buffers",
+    "no NVLink counters: proof of NVLink usage needs an alternative evidence chain",
+    "no git: results cannot be tied to a commit SHA until Q1 is resolved"
+  ],
+  "corrections_after_pr2525_audit": {
+    "applied_utc": "2026-10-16T23:45Z",
+    "source": "PR #2525 (source/pr-2525/), see audit-existing-materials.md",
+    "host_platform": {
+      "host": "Minisforum MS-01 mini PC (DMI: Micro Computer (HK) Tech Limited, product 'Venus Series', board AHWSA, BIOS AHWSA.1.22 of 2024-03-12)",
+      "gpu_board": "Spring V100 SXM2 4-GPU carrier board, model V100-SXM2-NVLINK_D V2.10",
+      "pcie_switch": "Broadcom PEX8748 (Gen3), two external SFF-8654 channels; one cable connected",
+      "host_slot": "MS-01 full-length slot wired electrically as x8: /sys/bus/pci/devices/0000:00:01.0 max_link_width=8",
+      "consequence": "four x8 GPU downlinks behind one x8 uplink = 4:1 oversubscription (measured: 6.29 GB/s alone, 1.56 GB/s per card with four streams)",
+      "cooling": "360 mm AIO loop on the SXM2 modules",
+      "source_file": "source/pr-2525/files/bench/results/2026-10-14-community-4x-tesla-v100-iq3-s-262k-code/env.json"
+    },
+    "strata_commit_sha": {
+      "v0.1.44.1": "296b59d2f73c8f04a805df29c2fa97655adace78",
+      "v0.1.43": "7695859a (short sha as recorded in the PR report)",
+      "provenance": "taken from release tags by the report author, not read from a working tree (no .git on this machine)",
+      "note": "matches the base SHA of PR #2525"
+    },
+    "nvlink_counters_root_cause": {
+      "finding": "DCGM 4.7.0 has no profiling module on this host (libdcgmmoduleprofiling absent); in DCGM 4.x NVLink byte counters come from the NVML Sampling & Reporting API, which neither driver 580.178.04 nor 595.91.07 exposes (checked via symbol tables)",
+      "implication": "DCGM is not a way to get NVLink traffic here; the working method is the PCIe reverse-count plus a P2P bandwidth that PCIe cannot produce",
+      "source": "nvlink-platform-dossier.md, README 'Correctness and limitations'"
+    },
+    "already_measured_do_not_repeat": {
+      "p2p_capability_matrix": "all six pairs: canAccessPeer 1/1, AccessSupported=1, NativeAtomicSupported=1, PerformanceRank=0, NVML NVLINK=OK",
+      "peer_access_cost_mib": 0,
+      "p2p_bandwidth_gbps": "38.8 on all six pairs both directions (256 MiB, 12 reps, model unloaded); 38.4 idle / 29.4-29.9 under a 31375-token prefill (32 MiB, GPU1<->GPU2)",
+      "host_path_gbps": "H2D 6.29, D2H 6.57-6.59 per card alone; 1.56 / 1.65 per card with all four streaming",
+      "prompt_path_volumes": "prefill 125351 tokens: 61.9-78.4 GB RX and 6.9-11.9 GB TX per card; idle exactly 0",
+      "uplink_saturation": "sum of four cards during one 125351-token prefill: median 5.25, p95 7.67, worst second 9.33 GB/s",
+      "baseline_benchmark": "runs.json (0.1.44.1) + runs-0.1.43-previous.json + runs-0.1.44.1-control.json, 9 lengths up to 260331 tokens; noise band prompt +/-0.3%, decode -4.4..+1.8%",
+      "layer_split_layout": "CUDA0 layers 0-11, CUDA1 12-24, CUDA2 25-36, CUDA3 37-47 + head; one hand-off per window; 98% of experts resident",
+      "stage_helper_ab": "STRATA_PREFILL_HELP and STRATA_PREFILL_HELP_FRAC=0.45: no measurable speed change at any length (two sessions each + control)"
+    },
+    "still_open_after_audit": [
+      "P2P latency and size sweep 4KiB..256MiB",
+      "P2P data correctness (patterns, checksums, streams, cross-device events)",
+      "P2P multi-pair contention",
+      "remaining cudaDeviceGetP2PAttribute attributes",
+      "SM70 kernel compatibility table",
+      "comparison with 1Cat-vLLM and v100-skinny",
+      "which route the 62-78 GB per card takes (activations vs expert ring)",
+      "what split_help_frac is keyed on"
+    ]
+  }
+}

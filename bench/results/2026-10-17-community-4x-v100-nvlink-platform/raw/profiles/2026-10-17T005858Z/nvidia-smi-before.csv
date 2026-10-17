@@ -1,0 +1,5 @@
+index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]
+0, 15246 MiB, 899 MiB, 0 %, 37, 55.24 W, 1312 MHz
+1, 15600 MiB, 545 MiB, 0 %, 38, 53.24 W, 1312 MHz
+2, 15188 MiB, 957 MiB, 0 %, 37, 55.62 W, 1312 MHz
+3, 16068 MiB, 77 MiB, 0 %, 37, 54.17 W, 1312 MHz

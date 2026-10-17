@@ -1,0 +1,17 @@
+{
+"tool": "peer-read-probe 1.1 (2026-10-17, проект Strata+4xV100+NVlink)",
+"devices": [0,1,2,3],
+"blocks": 5,
+"note": "Окно остановки 2026-10-17T05:43Z: закрытие пробелов зонда peer-чтения - пары с GPU3 (R12 снят: сервис остановлен) и точка 256 MiB; сервис Strata выгружен, VRAM 16.1 GiB/карта",
+"by_size": [
+{"bytes": 1048576, "peer_read": 9.42, "memcpy_peer": 27.91, "local_read": 9.66, "peer_write": 31.57, "peer_read_write": 30.94, "peer_read_pair": 10.46, "peer_read_vs_memcpy": 10.48, "ratio_read_to_memcpy": 0.338, "ratio_read_to_local": 0.338},
+{"bytes": 2097152, "peer_read": 9.87, "memcpy_peer": 32.46, "local_read": 10.29, "peer_write": 34.19, "peer_read_write": 33.83, "peer_read_pair": 9.82, "peer_read_vs_memcpy": 9.50, "ratio_read_to_memcpy": 0.304, "ratio_read_to_local": 0.304},
+{"bytes": 4194304, "peer_read": 13.57, "memcpy_peer": 35.42, "local_read": 18.18, "peer_write": 35.35, "peer_read_write": 35.16, "peer_read_pair": 13.29, "peer_read_vs_memcpy": 11.71, "ratio_read_to_memcpy": 0.383, "ratio_read_to_local": 0.383},
+{"bytes": 8388608, "peer_read": 20.43, "memcpy_peer": 36.98, "local_read": 35.20, "peer_write": 35.97, "peer_read_write": 35.81, "peer_read_pair": 19.41, "peer_read_vs_memcpy": 15.88, "ratio_read_to_memcpy": 0.552, "ratio_read_to_local": 0.552},
+{"bytes": 16777216, "peer_read": 27.30, "memcpy_peer": 37.84, "local_read": 67.70, "peer_write": 36.29, "peer_read_write": 36.19, "peer_read_pair": 25.38, "peer_read_vs_memcpy": 19.87, "ratio_read_to_memcpy": 0.721, "ratio_read_to_local": 0.721},
+{"bytes": 33554432, "peer_read": 32.14, "memcpy_peer": 38.37, "local_read": 126.35, "peer_write": 36.46, "peer_read_write": 36.41, "peer_read_pair": 29.08, "peer_read_vs_memcpy": 22.31, "ratio_read_to_memcpy": 0.838, "ratio_read_to_local": 0.838},
+{"bytes": 67108864, "peer_read": 34.42, "memcpy_peer": 38.57, "local_read": 223.16, "peer_write": 36.56, "peer_read_write": 36.53, "peer_read_pair": 30.95, "peer_read_vs_memcpy": 23.30, "ratio_read_to_memcpy": 0.892, "ratio_read_to_local": 0.892},
+{"bytes": 134217728, "peer_read": 35.64, "memcpy_peer": 38.68, "local_read": 362.08, "peer_write": 36.62, "peer_read_write": 36.60, "peer_read_pair": 31.99, "peer_read_vs_memcpy": 23.91, "ratio_read_to_memcpy": 0.922, "ratio_read_to_local": 0.922},
+{"bytes": 268435456, "peer_read": 36.26, "memcpy_peer": 38.75, "local_read": 519.78, "peer_write": 36.64, "peer_read_write": 36.63, "peer_read_pair": 32.56, "peer_read_vs_memcpy": 24.21, "ratio_read_to_memcpy": 0.936, "ratio_read_to_local": 0.936}
+],
+"rows": 576}

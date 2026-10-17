@@ -1,0 +1,128 @@
+{
+ "kind": "ab-stand manifest",
+ "project": "<HOME>/strata185/Strata+4xV100+NVlink",
+ "captured_utc": "2026-10-17T06:17:23Z",
+ "build_label": "validation3",
+ "note": "arms=B0:split12:base B1:split12:base A0r:auto:base lengths=4k,32k,125k reps=3 patched=<нет: валидация метода на базовом бинарнике>",
+ "engine_binary": {
+  "path": "<HOME>/strata185/Strata/engine-cuda12/strata",
+  "sha256": "bdfec9f553d07c2b6017748802a614b48fb847efa9ec727cbe111e2ab2280de6"
+ },
+ "config": {
+  "path": "<HOME>/strata185/Strata/strata-185-iq3_s.json",
+  "sha256": "f539e51bf19e2431d45eca607ed520abbefbf778f3e11573041ee705df4af88b",
+  "args": [
+   "--pack",
+   "<HOME>/strata185/Strata-data/packs/iq3_s",
+   "--native",
+   "<HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+   "--ple-gguf",
+   "<HOME>/strata185/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+   "--expert-profile",
+   "<HOME>/strata185/data/expert-profile.bin",
+   "--expert-cache",
+   "auto",
+   "--prefill",
+   "auto",
+   "--spec",
+   "4",
+   "--mtp",
+   "<HOME>/strata185/Strata-data/mtp/rt",
+   "--max-context",
+   "262144",
+   "--kv",
+   "int8",
+   "--mmap-experts",
+   "--vision",
+   "--vram-reserve-mib",
+   "512",
+   "--control-vector-scaled",
+   "<HOME>/strata185/data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0",
+   "--control-vector-layer-range",
+   "4",
+   "44",
+   "--cvec-mode",
+   "project",
+   "--cvec-dir",
+   "per-layer",
+   "--spec-min-p",
+   "0.50",
+   "--pool-workers",
+   "12",
+   "--layer-split",
+   "auto"
+  ],
+  "env": {
+   "STRATA_STAGE_TRIM": "1"
+  },
+  "layer_split": "auto",
+  "port": 8080,
+  "gpu": [
+   0,
+   1,
+   2,
+   3
+  ],
+  "max_context": null
+ },
+ "tree_identity": {
+  "git": "git не установлен на машине (открытый вопрос Q1) — SHA дерева недоступен",
+  "engine_build_info": {
+   "ok": true,
+   "build_info": "Strata 0.1.44.1",
+   "model": null,
+   "version": null
+  },
+  "binary_sha256_is_primary_identity": true
+ },
+ "host": {
+  "hostname": "<HOSTNAME>",
+  "kernel": "7.0.0-38-generic",
+  "python": "3.14.4",
+  "driver": [
+   "580.178.04"
+  ],
+  "gpus": [
+   "0, Tesla V100-SXM2-16GB, 7.0, 16384 MiB",
+   "1, Tesla V100-SXM2-16GB, 7.0, 16384 MiB",
+   "2, Tesla V100-SXM2-16GB, 7.0, 16384 MiB",
+   "3, Tesla V100-SXM2-16GB, 7.0, 16384 MiB"
+  ],
+  "nvcc": [
+   "Build cuda_12.8.r12.8/compiler.35583870_0"
+  ],
+  "host_cc": [
+   "g++-14 (Ubuntu 14.3.0-14ubuntu1) 14.3.0"
+  ]
+ },
+ "artifacts_sha256": {
+  "build/cubin-symbols.csv": "dd7f7aba8846192ef0f52d481b0ea66b3494c9847445a13f1c0af2c0cafdb8df",
+  "build/kernel-load-audit": "af59d03f75c17e9cd04fa433050335f075ba39fcdbcc94aa33b381c4240cd813",
+  "build/p2p-probe-ext": "968561c50e68a086ecc996cffdaa3a927a55b6171947afd2bb50b9869f4b8859",
+  "build/p2p-probe-ext.check": "618250f956ca93bbcd317f641f6b3a755d48d34e7654791865d7a9329242890f",
+  "build/peer-read-probe": "8d21ba95bc5ed66252019d3b29c9b935de8776d140b0870d1c29c7b6fd40d108",
+  "build/sm70-tests": "9604002e08bfb7905bb82fa6cb3ad2cd79baf36b1e24fc3c739105137f773400",
+  "scripts/ab-extract-log.py": "e59db6649776b13036a295fba731fce78305f0630b9b8b61b45f5a1a554f40c8",
+  "scripts/ab-manifest.py": "13b53d7b05b317c45d29c2b81ade87fd6ef589fdc37dda807a88dd0d262d51cd",
+  "scripts/ab-mkconfig.py": "29d2dee902412a753d55c00c087b96e88912a3f815b446a013ad5be12c1dba4d",
+  "scripts/ab-ready.py": "d6015bc65489aba43294e7ecda828702b097368b410e43964949e6ce02dfa824",
+  "scripts/ab-report.py": "10f5bfd154b0c80c80a84f63f7098bdd690a78554465cf55c209ce196ad0bc9f",
+  "scripts/ab-run.sh": "add3cdeac087ccd13c7b5109c27d6a43e84be7dbdbb76e9797b839e0bcf1f909",
+  "scripts/ab-text-check.py": "51e49bc3bbde5f080befb94fe965c07d85c042e690d6b49a590565d9f221f383",
+  "scripts/audit-kernel-inventory.py": "2506ecf7addd2bffd10ab319e5c3827fc23e54efb179e4be63a3d6fd79a026d9",
+  "scripts/baseline-profile.py": "01e2f4c38fcb0f8e87afe7edd2154519f2ceb68766512c108c30d5145aa00374",
+  "scripts/build-correctness-matrix.py": "c9202da22e535bf4c1a4b4c4cb372ec3104fd3cec21f91f453f7fffde25d32f5",
+  "scripts/collect-inventory.sh": "eb897bd238a7fe0466ae8655d3685b9be0f472be974b773382feba2c24ef1b65",
+  "scripts/correctness-integration.py": "95e2a38ffb99806ad37cc6f5b8bcb32eb43672cb95244d8c811c88d4c191ddd9",
+  "scripts/determinism-probe.py": "812f0de12ea4f76df4205878b9adc0543e397d32392d7cd62041cd35854c215b",
+  "scripts/run-p2p-full-detached.sh": "503f88c463b3453fa0876b72f58cef76fe54e82a789dbcf5fed9ba6d88d11e2f",
+  "scripts/run-p2p.sh": "e690fed87b6683a1978dca0e311613b8e452825465a943c8551b91d88ce3d2e1",
+  "scripts/run-peer-read.sh": "d29217c2aeb944106103a49993043118d549d2a9b50dd0043603a460d6c1c7da",
+  "source/p2p-probe-ext.cu": "d92b1fbbd401ace2b318e7024f0ea5871d023c287a5876b3a71089b266d68a54",
+  "source/peer-read-probe.cu": "1f93cf5040e85623ce25c70a5e7ee02b99dd5460ff9c30d01758a9c407ff399f",
+  "tests/cuda/kernel-load-audit.c": "621ebc6613896edc6b0ff4802fe591f13b8a5ec07549116ba264a8d47b2b592f",
+  "tests/cuda/negctl_sm80.cu": "a3b148c4b583d61c8976db700b44a7d8d6c30c1d98873024de4065ea13e2b045",
+  "tests/cuda/sm70_numeric.cu": "57e6902b510054f0d5d6e990341fc3c4ebc682a14231609599fe13bf2ffec7c8"
+ },
+ "nvidia_smi_before": "index, memory.used [MiB], memory.free [MiB], utilization.gpu [%], temperature.gpu, power.draw [W], clocks.current.sm [MHz]\n0, 13744 MiB, 2401 MiB, 0 %, 35, 54.76 W, 1312 MHz\n1, 15240 MiB, 905 MiB, 0 %, 36, 52.76 W, 1312 MHz\n2, 14894 MiB, 1251 MiB, 0 %, 35, 55.13 W, 1312 MHz\n3, 15984 MiB, 161 MiB, 0 %, 35, 53.69 W, 1312 MHz"
+}

@@ -1,0 +1,302 @@
+== сборка (приватный тулкит, -arch=sm_70; ничего системного не меняется)
+<HOME>/strata185/Strata+4xV100+NVlink/source/peer-read-probe.cu(87): warning #177-D: function "mixA" was declared but never referenced
+  static inline unsigned long long mixA(const uint4& v) {
+                                   ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+<HOME>/strata185/Strata+4xV100+NVlink/source/peer-read-probe.cu(90): warning #177-D: function "mixB" was declared but never referenced
+  static inline unsigned long long mixB(const uint4& v) {
+                                   ^
+
+binary sha256: 03a4525979fbfeb040ca87574c60a8569a96314799a81e5284a63f0e7ac17cc6
+peer-read-probe 1.1 (2026-10-17, проект Strata+4xV100+NVlink)
+devices: 0 1 2
+размеры: 1048576 … 134217728 байт, блоков: 5
+примечание: Этап VIII, остаток Этапа III: полоса прямого доступа ядра к чужой VRAM при работающем сервисе; пары только GPU0-GPU2 (R12)
+  dev0: свободно 586 MiB
+  dev1: свободно 236 MiB
+  dev2: свободно 646 MiB
+
+=== размер 1048576 байт (1.0 MiB), элементов 65536, итераций в блоке 64 ===
+  local_read      dev0<->dev0  cold 0.110 ms  med 0.0981 ms     10.69 GB/s  разброс 0.3%  correct=1
+  peer_read       dev1<->dev0  cold 0.143 ms  med 0.1012 ms     10.36 GB/s  разброс 0.1%  correct=1
+  peer_read_write dev1<->dev0  cold 0.045 ms  med 0.0335 ms     31.28 GB/s  разброс 0.1%  correct=1
+  peer_write      dev1<->dev0  cold 0.050 ms  med 0.0329 ms     31.89 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev1<->dev0  cold 0.055 ms  med 0.0374 ms     28.07 GB/s  разброс 2.2%  correct=1
+  peer_read       dev2<->dev0  cold 0.143 ms  med 0.1009 ms     10.39 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev2<->dev0  cold 0.048 ms  med 0.0335 ms     31.28 GB/s  разброс 0.0%  correct=1
+  peer_write      dev2<->dev0  cold 0.051 ms  med 0.0328 ms     31.94 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev2<->dev0  cold 0.044 ms  med 0.0363 ms     28.88 GB/s  разброс 1.1%  correct=1
+  peer_read       dev0<->dev1  cold 0.114 ms  med 0.1007 ms     10.41 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev0<->dev1  cold 0.052 ms  med 0.0335 ms     31.31 GB/s  разброс 0.1%  correct=1
+  peer_write      dev0<->dev1  cold 0.045 ms  med 0.0329 ms     31.91 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev0<->dev1  cold 0.054 ms  med 0.0362 ms     28.96 GB/s  разброс 0.9%  correct=1
+  local_read      dev1<->dev1  cold 0.097 ms  med 0.0940 ms     11.15 GB/s  разброс 0.0%  correct=1
+  peer_read       dev2<->dev1  cold 0.110 ms  med 0.0967 ms     10.85 GB/s  разброс 0.0%  correct=1
+  peer_read_write dev2<->dev1  cold 0.045 ms  med 0.0333 ms     31.51 GB/s  разброс 0.1%  correct=1
+  peer_write      dev2<->dev1  cold 0.044 ms  med 0.0327 ms     32.06 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev2<->dev1  cold 0.052 ms  med 0.0359 ms     29.24 GB/s  разброс 0.5%  correct=1
+  peer_read       dev0<->dev2  cold 0.112 ms  med 0.0992 ms     10.57 GB/s  разброс 0.5%  correct=1
+  peer_read_write dev0<->dev2  cold 0.045 ms  med 0.0334 ms     31.40 GB/s  разброс 0.1%  correct=1
+  peer_write      dev0<->dev2  cold 0.044 ms  med 0.0328 ms     31.95 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev0<->dev2  cold 0.052 ms  med 0.0367 ms     28.56 GB/s  разброс 0.1%  correct=1
+  peer_read       dev1<->dev2  cold 0.104 ms  med 0.0967 ms     10.84 GB/s  разброс 0.1%  correct=1
+  peer_read_write dev1<->dev2  cold 0.045 ms  med 0.0333 ms     31.49 GB/s  разброс 0.1%  correct=1
+  peer_write      dev1<->dev2  cold 0.044 ms  med 0.0327 ms     32.05 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev1<->dev2  cold 0.043 ms  med 0.0369 ms     28.41 GB/s  разброс 0.7%  correct=1
+  local_read      dev2<->dev2  cold 0.096 ms  med 0.0940 ms     11.16 GB/s  разброс 0.1%  correct=1
+  peer_read_pair        dev1<->dev0  read 10.46 GB/s  opposite 10.42 GB/s  sum 20.88 GB/s  correct=1
+  peer_read_vs_memcpy   dev1<->dev0  read 10.41 GB/s  opposite 10.47 GB/s  sum 20.88 GB/s  correct=1
+  peer_read_pair        dev2<->dev0  read 10.47 GB/s  opposite 10.41 GB/s  sum 20.88 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev0  read 10.43 GB/s  opposite 10.49 GB/s  sum 20.92 GB/s  correct=1
+  peer_read_pair        dev2<->dev1  read 10.47 GB/s  opposite 10.43 GB/s  sum 20.90 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev1  read 10.44 GB/s  opposite 10.50 GB/s  sum 20.94 GB/s  correct=1
+
+=== размер 2097152 байт (2.0 MiB), элементов 131072, итераций в блоке 32 ===
+  local_read      dev0<->dev0  cold 0.187 ms  med 0.1848 ms     11.35 GB/s  разброс 0.0%  correct=1
+  peer_read       dev1<->dev0  cold 0.219 ms  med 0.2122 ms      9.88 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev1<->dev0  cold 0.074 ms  med 0.0620 ms     33.83 GB/s  разброс 0.1%  correct=1
+  peer_write      dev1<->dev0  cold 0.073 ms  med 0.0614 ms     34.17 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev1<->dev0  cold 0.079 ms  med 0.0637 ms     32.90 GB/s  разброс 0.2%  correct=1
+  peer_read       dev2<->dev0  cold 0.219 ms  med 0.2121 ms      9.89 GB/s  разброс 0.1%  correct=1
+  peer_read_write dev2<->dev0  cold 0.073 ms  med 0.0620 ms     33.85 GB/s  разброс 0.1%  correct=1
+  peer_write      dev2<->dev0  cold 0.066 ms  med 0.0614 ms     34.17 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev2<->dev0  cold 0.079 ms  med 0.0634 ms     33.10 GB/s  разброс 0.2%  correct=1
+  peer_read       dev0<->dev1  cold 0.227 ms  med 0.2120 ms      9.89 GB/s  разброс 0.1%  correct=1
+  peer_read_write dev0<->dev1  cold 0.074 ms  med 0.0620 ms     33.80 GB/s  разброс 0.2%  correct=1
+  peer_write      dev0<->dev1  cold 0.073 ms  med 0.0614 ms     34.17 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev0<->dev1  cold 0.068 ms  med 0.0636 ms     32.95 GB/s  разброс 0.4%  correct=1
+  local_read      dev1<->dev1  cold 0.187 ms  med 0.1847 ms     11.35 GB/s  разброс 0.0%  correct=1
+  peer_read       dev2<->dev1  cold 0.223 ms  med 0.2101 ms      9.98 GB/s  разброс 0.1%  correct=1
+  peer_read_write dev2<->dev1  cold 0.073 ms  med 0.0619 ms     33.87 GB/s  разброс 0.1%  correct=1
+  peer_write      dev2<->dev1  cold 0.072 ms  med 0.0614 ms     34.17 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev2<->dev1  cold 0.077 ms  med 0.0633 ms     33.12 GB/s  разброс 0.2%  correct=1
+  peer_read       dev0<->dev2  cold 0.226 ms  med 0.2109 ms      9.94 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev0<->dev2  cold 0.074 ms  med 0.0620 ms     33.80 GB/s  разброс 0.1%  correct=1
+  peer_write      dev0<->dev2  cold 0.072 ms  med 0.0614 ms     34.17 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev0<->dev2  cold 0.068 ms  med 0.0638 ms     32.85 GB/s  разброс 1.3%  correct=1
+  peer_read       dev1<->dev2  cold 0.217 ms  med 0.2119 ms      9.90 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev1<->dev2  cold 0.074 ms  med 0.0620 ms     33.85 GB/s  разброс 0.1%  correct=1
+  peer_write      dev1<->dev2  cold 0.074 ms  med 0.0614 ms     34.17 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev1<->dev2  cold 0.179 ms  med 0.0642 ms     32.65 GB/s  разброс 0.0%  correct=1
+  local_read      dev2<->dev2  cold 0.188 ms  med 0.1847 ms     11.35 GB/s  разброс 0.0%  correct=1
+  peer_read_pair        dev1<->dev0  read 9.72 GB/s  opposite 9.58 GB/s  sum 19.30 GB/s  correct=1
+  peer_read_vs_memcpy   dev1<->dev0  read 9.56 GB/s  opposite 9.72 GB/s  sum 19.28 GB/s  correct=1
+  peer_read_pair        dev2<->dev0  read 9.75 GB/s  opposite 9.59 GB/s  sum 19.34 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev0  read 9.45 GB/s  opposite 9.61 GB/s  sum 19.06 GB/s  correct=1
+  peer_read_pair        dev2<->dev1  read 9.66 GB/s  opposite 9.59 GB/s  sum 19.25 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev1  read 9.45 GB/s  opposite 9.62 GB/s  sum 19.07 GB/s  correct=1
+
+=== размер 4194304 байт (4.0 MiB), элементов 262144, итераций в блоке 16 ===
+  local_read      dev0<->dev0  cold 0.234 ms  med 0.2307 ms     18.18 GB/s  разброс 0.0%  correct=1
+  peer_read       dev1<->dev0  cold 0.314 ms  med 0.3087 ms     13.59 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev1<->dev0  cold 0.131 ms  med 0.1194 ms     35.14 GB/s  разброс 0.1%  correct=1
+  peer_write      dev1<->dev0  cold 0.132 ms  med 0.1187 ms     35.35 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev1<->dev0  cold 0.133 ms  med 0.1183 ms     35.46 GB/s  разброс 0.1%  correct=1
+  peer_read       dev2<->dev0  cold 0.315 ms  med 0.3058 ms     13.72 GB/s  разброс 0.1%  correct=1
+  peer_read_write dev2<->dev0  cold 0.130 ms  med 0.1193 ms     35.16 GB/s  разброс 0.1%  correct=1
+  peer_write      dev2<->dev0  cold 0.130 ms  med 0.1186 ms     35.37 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev2<->dev0  cold 0.131 ms  med 0.1184 ms     35.42 GB/s  разброс 0.5%  correct=1
+  peer_read       dev0<->dev1  cold 0.326 ms  med 0.3092 ms     13.56 GB/s  разброс 0.1%  correct=1
+  peer_read_write dev0<->dev1  cold 0.131 ms  med 0.1193 ms     35.16 GB/s  разброс 0.0%  correct=1
+  peer_write      dev0<->dev1  cold 0.132 ms  med 0.1187 ms     35.35 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev0<->dev1  cold 0.130 ms  med 0.1176 ms     35.68 GB/s  разброс 0.1%  correct=1
+  local_read      dev1<->dev1  cold 0.233 ms  med 0.2307 ms     18.18 GB/s  разброс 0.0%  correct=1
+  peer_read       dev2<->dev1  cold 0.314 ms  med 0.3075 ms     13.64 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev2<->dev1  cold 0.130 ms  med 0.1193 ms     35.16 GB/s  разброс 0.1%  correct=1
+  peer_write      dev2<->dev1  cold 0.131 ms  med 0.1186 ms     35.37 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev2<->dev1  cold 0.131 ms  med 0.1183 ms     35.46 GB/s  разброс 0.2%  correct=1
+  peer_read       dev0<->dev2  cold 0.324 ms  med 0.3084 ms     13.60 GB/s  разброс 0.1%  correct=1
+  peer_read_write dev0<->dev2  cold 0.131 ms  med 0.1193 ms     35.16 GB/s  разброс 0.2%  correct=1
+  peer_write      dev0<->dev2  cold 0.131 ms  med 0.1186 ms     35.37 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev0<->dev2  cold 0.132 ms  med 0.1183 ms     35.46 GB/s  разброс 0.1%  correct=1
+  peer_read       dev1<->dev2  cold 0.324 ms  med 0.3066 ms     13.68 GB/s  разброс 0.6%  correct=1
+  peer_read_write dev1<->dev2  cold 0.130 ms  med 0.1193 ms     35.16 GB/s  разброс 0.1%  correct=1
+  peer_write      dev1<->dev2  cold 0.131 ms  med 0.1187 ms     35.35 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev1<->dev2  cold 0.130 ms  med 0.1183 ms     35.46 GB/s  разброс 0.0%  correct=1
+  local_read      dev2<->dev2  cold 0.234 ms  med 0.2307 ms     18.18 GB/s  разброс 0.0%  correct=1
+  peer_read_pair        dev1<->dev0  read 13.23 GB/s  opposite 13.03 GB/s  sum 26.26 GB/s  correct=1
+  peer_read_vs_memcpy   dev1<->dev0  read 11.44 GB/s  opposite 11.82 GB/s  sum 23.26 GB/s  correct=1
+  peer_read_pair        dev2<->dev0  read 13.37 GB/s  opposite 13.09 GB/s  sum 26.46 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev0  read 11.49 GB/s  opposite 11.87 GB/s  sum 23.36 GB/s  correct=1
+  peer_read_pair        dev2<->dev1  read 13.40 GB/s  opposite 13.14 GB/s  sum 26.54 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev1  read 11.54 GB/s  opposite 11.94 GB/s  sum 23.48 GB/s  correct=1
+
+=== размер 8388608 байт (8.0 MiB), элементов 524288, итераций в блоке 8 ===
+  local_read      dev0<->dev0  cold 0.239 ms  med 0.2383 ms     35.20 GB/s  разброс 0.2%  correct=1
+  peer_read       dev1<->dev0  cold 0.416 ms  med 0.4101 ms     20.45 GB/s  разброс 0.5%  correct=1
+  peer_read_write dev1<->dev0  cold 0.245 ms  med 0.2342 ms     35.81 GB/s  разброс 0.1%  correct=1
+  peer_write      dev1<->dev0  cold 0.245 ms  med 0.2332 ms     35.97 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev1<->dev0  cold 0.238 ms  med 0.2271 ms     36.94 GB/s  разброс 0.2%  correct=1
+  peer_read       dev2<->dev0  cold 0.414 ms  med 0.4081 ms     20.56 GB/s  разброс 0.3%  correct=1
+  peer_read_write dev2<->dev0  cold 0.244 ms  med 0.2342 ms     35.81 GB/s  разброс 0.1%  correct=1
+  peer_write      dev2<->dev0  cold 0.245 ms  med 0.2332 ms     35.97 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev2<->dev0  cold 0.240 ms  med 0.2268 ms     36.98 GB/s  разброс 0.3%  correct=1
+  peer_read       dev0<->dev1  cold 0.422 ms  med 0.4105 ms     20.44 GB/s  разброс 0.3%  correct=1
+  peer_read_write dev0<->dev1  cold 0.245 ms  med 0.2341 ms     35.83 GB/s  разброс 0.1%  correct=1
+  peer_write      dev0<->dev1  cold 0.246 ms  med 0.2332 ms     35.97 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev0<->dev1  cold 0.236 ms  med 0.2268 ms     36.98 GB/s  разброс 0.1%  correct=1
+  local_read      dev1<->dev1  cold 0.238 ms  med 0.2381 ms     35.23 GB/s  разброс 0.3%  correct=1
+  peer_read       dev2<->dev1  cold 0.422 ms  med 0.4084 ms     20.54 GB/s  разброс 0.1%  correct=1
+  peer_read_write dev2<->dev1  cold 0.245 ms  med 0.2341 ms     35.83 GB/s  разброс 0.1%  correct=1
+  peer_write      dev2<->dev1  cold 0.246 ms  med 0.2332 ms     35.97 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev2<->dev1  cold 0.239 ms  med 0.2267 ms     37.01 GB/s  разброс 0.1%  correct=1
+  peer_read       dev0<->dev2  cold 0.420 ms  med 0.4110 ms     20.41 GB/s  разброс 0.1%  correct=1
+  peer_read_write dev0<->dev2  cold 0.244 ms  med 0.2342 ms     35.81 GB/s  разброс 0.1%  correct=1
+  peer_write      dev0<->dev2  cold 0.245 ms  med 0.2332 ms     35.97 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev0<->dev2  cold 0.238 ms  med 0.2267 ms     37.01 GB/s  разброс 0.6%  correct=1
+  peer_read       dev1<->dev2  cold 0.415 ms  med 0.4084 ms     20.54 GB/s  разброс 0.3%  correct=1
+  peer_read_write dev1<->dev2  cold 0.245 ms  med 0.2341 ms     35.83 GB/s  разброс 0.1%  correct=1
+  peer_write      dev1<->dev2  cold 0.246 ms  med 0.2332 ms     35.97 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev1<->dev2  cold 0.236 ms  med 0.2258 ms     37.15 GB/s  разброс 0.5%  correct=1
+  local_read      dev2<->dev2  cold 0.239 ms  med 0.2382 ms     35.22 GB/s  разброс 0.2%  correct=1
+  peer_read_pair        dev1<->dev0  read 19.26 GB/s  opposite 19.25 GB/s  sum 38.51 GB/s  correct=1
+  peer_read_vs_memcpy   dev1<->dev0  read 15.89 GB/s  opposite 16.87 GB/s  sum 32.76 GB/s  correct=1
+  peer_read_pair        dev2<->dev0  read 19.41 GB/s  opposite 19.26 GB/s  sum 38.67 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev0  read 15.91 GB/s  opposite 16.88 GB/s  sum 32.80 GB/s  correct=1
+  peer_read_pair        dev2<->dev1  read 19.36 GB/s  opposite 19.19 GB/s  sum 38.55 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev1  read 15.95 GB/s  opposite 16.90 GB/s  sum 32.85 GB/s  correct=1
+
+=== размер 16777216 байт (16.0 MiB), элементов 1048576, итераций в блоке 4 ===
+  local_read      dev0<->dev0  cold 0.253 ms  med 0.2470 ms     67.91 GB/s  разброс 0.0%  correct=1
+  peer_read       dev1<->dev0  cold 0.620 ms  med 0.6144 ms     27.31 GB/s  разброс 0.4%  correct=1
+  peer_read_write dev1<->dev0  cold 0.474 ms  med 0.4636 ms     36.19 GB/s  разброс 0.1%  correct=1
+  peer_write      dev1<->dev0  cold 0.474 ms  med 0.4623 ms     36.29 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev1<->dev0  cold 0.464 ms  med 0.4436 ms     37.82 GB/s  разброс 0.1%  correct=1
+  peer_read       dev2<->dev0  cold 0.624 ms  med 0.6126 ms     27.39 GB/s  разброс 0.4%  correct=1
+  peer_read_write dev2<->dev0  cold 0.475 ms  med 0.4636 ms     36.19 GB/s  разброс 0.1%  correct=1
+  peer_write      dev2<->dev0  cold 0.474 ms  med 0.4623 ms     36.29 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev2<->dev0  cold 0.450 ms  med 0.4436 ms     37.82 GB/s  разброс 0.1%  correct=1
+  peer_read       dev0<->dev1  cold 0.627 ms  med 0.6139 ms     27.33 GB/s  разброс 0.4%  correct=1
+  peer_read_write dev0<->dev1  cold 0.475 ms  med 0.4636 ms     36.19 GB/s  разброс 0.0%  correct=1
+  peer_write      dev0<->dev1  cold 0.475 ms  med 0.4623 ms     36.29 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev0<->dev1  cold 0.449 ms  med 0.4434 ms     37.84 GB/s  разброс 0.1%  correct=1
+  local_read      dev1<->dev1  cold 0.255 ms  med 0.2476 ms     67.77 GB/s  разброс 0.2%  correct=1
+  peer_read       dev2<->dev1  cold 0.629 ms  med 0.6103 ms     27.49 GB/s  разброс 0.4%  correct=1
+  peer_read_write dev2<->dev1  cold 0.474 ms  med 0.4636 ms     36.19 GB/s  разброс 0.1%  correct=1
+  peer_write      dev2<->dev1  cold 0.475 ms  med 0.4623 ms     36.29 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev2<->dev1  cold 0.464 ms  med 0.4436 ms     37.82 GB/s  разброс 0.5%  correct=1
+  peer_read       dev0<->dev2  cold 0.631 ms  med 0.6136 ms     27.34 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev0<->dev2  cold 0.474 ms  med 0.4636 ms     36.19 GB/s  разброс 0.1%  correct=1
+  peer_write      dev0<->dev2  cold 0.475 ms  med 0.4626 ms     36.27 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev0<->dev2  cold 0.450 ms  med 0.4434 ms     37.84 GB/s  разброс 0.1%  correct=1
+  peer_read       dev1<->dev2  cold 0.629 ms  med 0.6147 ms     27.30 GB/s  разброс 0.5%  correct=1
+  peer_read_write dev1<->dev2  cold 0.474 ms  med 0.4636 ms     36.19 GB/s  разброс 0.1%  correct=1
+  peer_write      dev1<->dev2  cold 0.475 ms  med 0.4626 ms     36.27 GB/s  разброс 0.1%  correct=1
+  memcpy_peer     dev1<->dev2  cold 0.450 ms  med 0.4434 ms     37.84 GB/s  разброс 0.1%  correct=1
+  local_read      dev2<->dev2  cold 0.255 ms  med 0.2476 ms     67.77 GB/s  разброс 0.2%  correct=1
+  peer_read_pair        dev1<->dev0  read 25.39 GB/s  opposite 25.20 GB/s  sum 50.59 GB/s  correct=1
+  peer_read_vs_memcpy   dev1<->dev0  read 19.88 GB/s  opposite 22.04 GB/s  sum 41.93 GB/s  correct=1
+  peer_read_pair        dev2<->dev0  read 25.35 GB/s  opposite 25.20 GB/s  sum 50.55 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev0  read 19.87 GB/s  opposite 21.96 GB/s  sum 41.83 GB/s  correct=1
+  peer_read_pair        dev2<->dev1  read 25.34 GB/s  opposite 25.33 GB/s  sum 50.68 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev1  read 19.82 GB/s  opposite 21.94 GB/s  sum 41.76 GB/s  correct=1
+
+=== размер 33554432 байт (32.0 MiB), элементов 2097152, итераций в блоке 3 ===
+  local_read      dev0<->dev0  cold 0.271 ms  med 0.2656 ms    126.35 GB/s  разброс 0.1%  correct=1
+  peer_read       dev1<->dev0  cold 1.059 ms  med 1.0421 ms     32.20 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev1<->dev0  cold 0.932 ms  med 0.9216 ms     36.41 GB/s  разброс 0.1%  correct=1
+  peer_write      dev1<->dev0  cold 0.933 ms  med 0.9202 ms     36.46 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev1<->dev0  cold 0.881 ms  med 0.8745 ms     38.37 GB/s  разброс 0.1%  correct=1
+  peer_read       dev2<->dev0  cold 1.058 ms  med 1.0421 ms     32.20 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev2<->dev0  cold 0.932 ms  med 0.9216 ms     36.41 GB/s  разброс 0.0%  correct=1
+  peer_write      dev2<->dev0  cold 0.932 ms  med 0.9202 ms     36.46 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev2<->dev0  cold 0.889 ms  med 0.8745 ms     38.37 GB/s  разброс 0.0%  correct=1
+  peer_read       dev0<->dev1  cold 1.067 ms  med 1.0428 ms     32.18 GB/s  разброс 0.1%  correct=1
+  peer_read_write dev0<->dev1  cold 0.933 ms  med 0.9216 ms     36.41 GB/s  разброс 0.0%  correct=1
+  peer_write      dev0<->dev1  cold 0.932 ms  med 0.9202 ms     36.46 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev0<->dev1  cold 0.889 ms  med 0.8742 ms     38.39 GB/s  разброс 0.0%  correct=1
+  local_read      dev1<->dev1  cold 0.282 ms  med 0.2652 ms    126.52 GB/s  разброс 0.1%  correct=1
+  peer_read       dev2<->dev1  cold 1.058 ms  med 1.0431 ms     32.17 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev2<->dev1  cold 0.932 ms  med 0.9216 ms     36.41 GB/s  разброс 0.0%  correct=1
+  peer_write      dev2<->dev1  cold 0.931 ms  med 0.9202 ms     36.46 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev2<->dev1  cold 0.882 ms  med 0.8742 ms     38.39 GB/s  разброс 0.1%  correct=1
+  peer_read       dev0<->dev2  cold 1.070 ms  med 1.0452 ms     32.10 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev0<->dev2  cold 0.930 ms  med 0.9216 ms     36.41 GB/s  разброс 0.0%  correct=1
+  peer_write      dev0<->dev2  cold 0.932 ms  med 0.9202 ms     36.46 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev0<->dev2  cold 0.889 ms  med 0.8742 ms     38.39 GB/s  разброс 0.2%  correct=1
+  peer_read       dev1<->dev2  cold 1.065 ms  med 1.0438 ms     32.15 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev1<->dev2  cold 0.932 ms  med 0.9216 ms     36.41 GB/s  разброс 0.0%  correct=1
+  peer_write      dev1<->dev2  cold 0.932 ms  med 0.9202 ms     36.46 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev1<->dev2  cold 0.879 ms  med 0.8752 ms     38.34 GB/s  разброс 0.1%  correct=1
+  local_read      dev2<->dev2  cold 0.281 ms  med 0.2652 ms    126.52 GB/s  разброс 0.3%  correct=1
+  peer_read_pair        dev1<->dev0  read 29.17 GB/s  opposite 29.17 GB/s  sum 58.34 GB/s  correct=1
+  peer_read_vs_memcpy   dev1<->dev0  read 22.29 GB/s  opposite 25.30 GB/s  sum 47.59 GB/s  correct=1
+  peer_read_pair        dev2<->dev0  read 29.16 GB/s  opposite 29.07 GB/s  sum 58.23 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev0  read 22.20 GB/s  opposite 25.21 GB/s  sum 47.41 GB/s  correct=1
+  peer_read_pair        dev2<->dev1  read 29.04 GB/s  opposite 29.08 GB/s  sum 58.13 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev1  read 22.21 GB/s  opposite 25.21 GB/s  sum 47.42 GB/s  correct=1
+
+=== размер 67108864 байт (64.0 MiB), элементов 4194304, итераций в блоке 3 ===
+  local_read      dev0<->dev0  cold 0.306 ms  med 0.3011 ms    222.91 GB/s  разброс 0.2%  correct=1
+  peer_read       dev1<->dev0  cold 1.975 ms  med 1.9497 ms     34.42 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev1<->dev0  cold 1.839 ms  med 1.8367 ms     36.54 GB/s  разброс 0.0%  correct=1
+  peer_write      dev1<->dev0  cold 1.848 ms  med 1.8353 ms     36.56 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev1<->dev0  cold 1.747 ms  med 1.7394 ms     38.58 GB/s  разброс 0.0%  correct=1
+  peer_read       dev2<->dev0  cold 1.976 ms  med 1.9511 ms     34.40 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev2<->dev0  cold 1.847 ms  med 1.8367 ms     36.54 GB/s  разброс 0.0%  correct=1
+  peer_write      dev2<->dev0  cold 1.848 ms  med 1.8353 ms     36.56 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev2<->dev0  cold 1.755 ms  med 1.7394 ms     38.58 GB/s  разброс 0.0%  correct=1
+  peer_read       dev0<->dev1  cold 1.981 ms  med 1.9514 ms     34.39 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev0<->dev1  cold 1.849 ms  med 1.8371 ms     36.53 GB/s  разброс 0.0%  correct=1
+  peer_write      dev0<->dev1  cold 1.847 ms  med 1.8353 ms     36.56 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev0<->dev1  cold 1.745 ms  med 1.7394 ms     38.58 GB/s  разброс 0.0%  correct=1
+  local_read      dev1<->dev1  cold 0.318 ms  med 0.3011 ms    222.91 GB/s  разброс 0.2%  correct=1
+  peer_read       dev2<->dev1  cold 1.976 ms  med 1.9494 ms     34.43 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev2<->dev1  cold 1.846 ms  med 1.8371 ms     36.53 GB/s  разброс 0.0%  correct=1
+  peer_write      dev2<->dev1  cold 1.848 ms  med 1.8353 ms     36.56 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev2<->dev1  cold 1.754 ms  med 1.7398 ms     38.57 GB/s  разброс 0.1%  correct=1
+  peer_read       dev0<->dev2  cold 1.985 ms  med 1.9521 ms     34.38 GB/s  разброс 0.3%  correct=1
+  peer_read_write dev0<->dev2  cold 1.848 ms  med 1.8371 ms     36.53 GB/s  разброс 0.0%  correct=1
+  peer_write      dev0<->dev2  cold 1.847 ms  med 1.8353 ms     36.56 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev0<->dev2  cold 1.744 ms  med 1.7398 ms     38.57 GB/s  разброс 0.0%  correct=1
+  peer_read       dev1<->dev2  cold 1.980 ms  med 1.9497 ms     34.42 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev1<->dev2  cold 1.847 ms  med 1.8371 ms     36.53 GB/s  разброс 0.0%  correct=1
+  peer_write      dev1<->dev2  cold 1.848 ms  med 1.8353 ms     36.56 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev1<->dev2  cold 1.744 ms  med 1.7394 ms     38.58 GB/s  разброс 0.0%  correct=1
+  local_read      dev2<->dev2  cold 0.318 ms  med 0.3011 ms    222.91 GB/s  разброс 0.1%  correct=1
+  peer_read_pair        dev1<->dev0  read 30.98 GB/s  opposite 30.99 GB/s  sum 61.97 GB/s  correct=1
+  peer_read_vs_memcpy   dev1<->dev0  read 23.33 GB/s  opposite 26.35 GB/s  sum 49.68 GB/s  correct=1
+  peer_read_pair        dev2<->dev0  read 30.92 GB/s  opposite 30.95 GB/s  sum 61.87 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev0  read 23.32 GB/s  opposite 26.34 GB/s  sum 49.66 GB/s  correct=1
+  peer_read_pair        dev2<->dev1  read 30.98 GB/s  opposite 30.95 GB/s  sum 61.93 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev1  read 23.34 GB/s  opposite 26.35 GB/s  sum 49.69 GB/s  correct=1
+
+=== размер 134217728 байт (128.0 MiB), элементов 8388608, итераций в блоке 3 ===
+  local_read      dev0<->dev0  cold 0.378 ms  med 0.3707 ms    362.08 GB/s  разброс 0.4%  correct=1
+  peer_read       dev1<->dev0  cold 3.799 ms  med 3.7652 ms     35.65 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev1<->dev0  cold 3.678 ms  med 3.6676 ms     36.60 GB/s  разброс 0.0%  correct=1
+  peer_write      dev1<->dev0  cold 3.670 ms  med 3.6656 ms     36.62 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev1<->dev0  cold 3.476 ms  med 3.4700 ms     38.68 GB/s  разброс 0.0%  correct=1
+  peer_read       dev2<->dev0  cold 3.801 ms  med 3.7666 ms     35.63 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev2<->dev0  cold 3.678 ms  med 3.6676 ms     36.60 GB/s  разброс 0.0%  correct=1
+  peer_write      dev2<->dev0  cold 3.669 ms  med 3.6656 ms     36.62 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev2<->dev0  cold 3.476 ms  med 3.4703 ms     38.68 GB/s  разброс 0.1%  correct=1
+  peer_read       dev0<->dev1  cold 3.814 ms  med 3.7676 ms     35.62 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev0<->dev1  cold 3.671 ms  med 3.6676 ms     36.60 GB/s  разброс 0.0%  correct=1
+  peer_write      dev0<->dev1  cold 3.678 ms  med 3.6656 ms     36.62 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev0<->dev1  cold 3.475 ms  med 3.4700 ms     38.68 GB/s  разброс 0.0%  correct=1
+  local_read      dev1<->dev1  cold 0.378 ms  med 0.3710 ms    361.74 GB/s  разброс 0.1%  correct=1
+  peer_read       dev2<->dev1  cold 3.797 ms  med 3.7656 ms     35.64 GB/s  разброс 0.1%  correct=1
+  peer_read_write dev2<->dev1  cold 3.670 ms  med 3.6676 ms     36.60 GB/s  разброс 0.0%  correct=1
+  peer_write      dev2<->dev1  cold 3.669 ms  med 3.6656 ms     36.62 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev2<->dev1  cold 3.475 ms  med 3.4703 ms     38.68 GB/s  разброс 0.0%  correct=1
+  peer_read       dev0<->dev2  cold 3.815 ms  med 3.7680 ms     35.62 GB/s  разброс 0.2%  correct=1
+  peer_read_write dev0<->dev2  cold 3.677 ms  med 3.6676 ms     36.60 GB/s  разброс 0.0%  correct=1
+  peer_write      dev0<->dev2  cold 3.669 ms  med 3.6656 ms     36.62 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev0<->dev2  cold 3.474 ms  med 3.4700 ms     38.68 GB/s  разброс 0.0%  correct=1
+  peer_read       dev1<->dev2  cold 3.810 ms  med 3.7646 ms     35.65 GB/s  разброс 0.1%  correct=1
+  peer_read_write dev1<->dev2  cold 3.679 ms  med 3.6673 ms     36.60 GB/s  разброс 0.0%  correct=1
+  peer_write      dev1<->dev2  cold 3.678 ms  med 3.6656 ms     36.62 GB/s  разброс 0.0%  correct=1
+  memcpy_peer     dev1<->dev2  cold 3.473 ms  med 3.4700 ms     38.68 GB/s  разброс 0.0%  correct=1
+  local_read      dev2<->dev2  cold 0.394 ms  med 0.3717 ms    361.08 GB/s  разброс 0.3%  correct=1
+  peer_read_pair        dev1<->dev0  read 31.99 GB/s  opposite 31.99 GB/s  sum 63.98 GB/s  correct=1
+  peer_read_vs_memcpy   dev1<->dev0  read 23.91 GB/s  opposite 26.94 GB/s  sum 50.84 GB/s  correct=1
+  peer_read_pair        dev2<->dev0  read 32.00 GB/s  opposite 32.01 GB/s  sum 64.02 GB/s  correct=1
+  peer_read_vs_memcpy   dev2<->dev0  read 23.87 GB/s  opposite 26.92 GB/s  sum 50.79 GB/s  correct=1
+  peer_read_pair        dev2<->dev1  read 31.97 GB/s  opposite 31.98 GB/s  sum 63.96 GB/s  correct=1
+
+строк: 263, из них с ошибкой корректности: 0
+файлы: <HOME>/strata185/Strata+4xV100+NVlink/raw/peer-read/2026-10-17T051351Z/peer-read-benchmark.csv, <HOME>/strata185/Strata+4xV100+NVlink/raw/peer-read/2026-10-17T051351Z/peer-read-correctness.json, <HOME>/strata185/Strata+4xV100+NVlink/raw/peer-read/2026-10-17T051351Z/peer-read-summary.json
+результаты: <HOME>/strata185/Strata+4xV100+NVlink/raw/peer-read/2026-10-17T051351Z (exit 0)

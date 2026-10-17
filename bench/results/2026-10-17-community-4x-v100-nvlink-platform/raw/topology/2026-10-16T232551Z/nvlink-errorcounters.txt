@@ -1,0 +1,102 @@
+# nvidia-smi nvlink -e (UTC 2026-10-16T23:25:53Z)
+GPU 0: Tesla V100-SXM2-16GB (UUID: GPU-c4a285b6-4b3f-e33d-b215-96e0d6ea6f6e)
+	 Link 0: Replay Errors: 0
+	 Link 0: Recovery Errors: 0
+	 Link 0: CRC Errors: 0
+
+	 Link 1: Replay Errors: 0
+	 Link 1: Recovery Errors: 0
+	 Link 1: CRC Errors: 0
+
+	 Link 2: Replay Errors: 0
+	 Link 2: Recovery Errors: 0
+	 Link 2: CRC Errors: 0
+
+	 Link 3: Replay Errors: 0
+	 Link 3: Recovery Errors: 0
+	 Link 3: CRC Errors: 0
+
+	 Link 4: Replay Errors: 0
+	 Link 4: Recovery Errors: 0
+	 Link 4: CRC Errors: 0
+
+	 Link 5: Replay Errors: 0
+	 Link 5: Recovery Errors: 0
+	 Link 5: CRC Errors: 0
+
+GPU 1: Tesla V100-SXM2-16GB (UUID: GPU-856a23fb-2a0d-12bb-10af-7a31a071322d)
+	 Link 0: Replay Errors: 0
+	 Link 0: Recovery Errors: 0
+	 Link 0: CRC Errors: 0
+
+	 Link 1: Replay Errors: 0
+	 Link 1: Recovery Errors: 0
+	 Link 1: CRC Errors: 0
+
+	 Link 2: Replay Errors: 0
+	 Link 2: Recovery Errors: 0
+	 Link 2: CRC Errors: 0
+
+	 Link 3: Replay Errors: 0
+	 Link 3: Recovery Errors: 0
+	 Link 3: CRC Errors: 0
+
+	 Link 4: Replay Errors: 0
+	 Link 4: Recovery Errors: 0
+	 Link 4: CRC Errors: 0
+
+	 Link 5: Replay Errors: 0
+	 Link 5: Recovery Errors: 0
+	 Link 5: CRC Errors: 0
+
+GPU 2: Tesla V100-SXM2-16GB (UUID: GPU-121f2dc1-2feb-3d01-b0ff-57b876562bc7)
+	 Link 0: Replay Errors: 0
+	 Link 0: Recovery Errors: 0
+	 Link 0: CRC Errors: 0
+
+	 Link 1: Replay Errors: 0
+	 Link 1: Recovery Errors: 0
+	 Link 1: CRC Errors: 0
+
+	 Link 2: Replay Errors: 0
+	 Link 2: Recovery Errors: 0
+	 Link 2: CRC Errors: 0
+
+	 Link 3: Replay Errors: 0
+	 Link 3: Recovery Errors: 0
+	 Link 3: CRC Errors: 0
+
+	 Link 4: Replay Errors: 0
+	 Link 4: Recovery Errors: 0
+	 Link 4: CRC Errors: 0
+
+	 Link 5: Replay Errors: 0
+	 Link 5: Recovery Errors: 0
+	 Link 5: CRC Errors: 0
+
+GPU 3: Tesla V100-SXM2-16GB (UUID: GPU-df670e96-a76d-034a-8640-a3b6f6171696)
+	 Link 0: Replay Errors: 0
+	 Link 0: Recovery Errors: 0
+	 Link 0: CRC Errors: 0
+
+	 Link 1: Replay Errors: 0
+	 Link 1: Recovery Errors: 0
+	 Link 1: CRC Errors: 0
+
+	 Link 2: Replay Errors: 0
+	 Link 2: Recovery Errors: 0
+	 Link 2: CRC Errors: 0
+
+	 Link 3: Replay Errors: 0
+	 Link 3: Recovery Errors: 0
+	 Link 3: CRC Errors: 0
+
+	 Link 4: Replay Errors: 0
+	 Link 4: Recovery Errors: 0
+	 Link 4: CRC Errors: 0
+
+	 Link 5: Replay Errors: 0
+	 Link 5: Recovery Errors: 0
+	 Link 5: CRC Errors: 0
+
+# exit=0
