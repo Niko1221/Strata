@@ -6,8 +6,10 @@ PC: sysctl / sw_vers / xcode-select are mocked. No GPU, no network.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -247,6 +249,32 @@ class RepackGuard(unittest.TestCase):
         self.assertIn("nocache(o)", src)                            # F_NOCACHE on the output
         self.assertIn("buffering=0", src)                           # write() is a write
         self.assertNotIn("mmap", src)                               # no dirty mapping of the output
+
+
+class Source(unittest.TestCase):
+    """setup.py hands a Mac over before its own parser runs, so the Mac parser has to know --source:
+    source_hint() recommends it on every platform (#2363)."""
+
+    def test_the_source_flag_reaches_strata_source(self):
+        env = mock.patch.dict(os.environ, {}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("STRATA_SOURCE", None)
+        warnings = []
+        # setup.data_folder() is mocked: the real one moves the model files of this checkout and of the data folder in
+        # the user's settings.json into --data-dir, and saves that dir as the new data folder; with a temp dir that
+        # deletes the models on exit and leaves settings.json pointing at a deleted directory
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(setup, "data_folder", lambda requested: (Path(tmp), [])), \
+                mock.patch("subprocess.run", fake_run(M5)), \
+                mock.patch.object(setup, "warn", lambda *a, **k: warnings.append(" ".join(str(x) for x in a))), \
+                mock.patch.object(setup, "say", lambda *a, **k: None), \
+                mock.patch.object(setup, "ok", lambda *a, **k: None), \
+                mock.patch.object(setup, "step", lambda *a, **k: None):
+            M.main(["--source", "modelscope", "--yes", "--check", "--data-dir", tmp])
+        self.assertEqual(os.environ.get("STRATA_SOURCE"), "modelscope")
+        self.assertFalse([w for w in warnings if "--source" in w],
+                         f"--source was not used: {warnings}")
 
 
 if __name__ == "__main__":
