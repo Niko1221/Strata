@@ -27,6 +27,15 @@ const char* type_name(int t) {
     return "?";
 }
 
+bool known_type(int t) {
+    switch (t) {
+        case F32: case F16: case BF16: case Q4_0: case Q5_0: case Q5_1: case Q8_0: case IQ4_NL: case Q2_0:
+        case Q3_K: case Q4_K: case Q5_K: case Q6_K: case IQ2_XXS: case IQ2_XS: case IQ2_S: case IQ3_XXS:
+        case IQ3_S: case IQ4_XS: return true;
+    }
+    return false;
+}
+
 int block_elems(int t) {
     switch (t) {
         case F32: case F16: case BF16: return 1;
