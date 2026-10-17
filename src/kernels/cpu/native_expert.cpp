@@ -182,6 +182,7 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
     // The exact rows are ggml-cpu's AVX2 single-token dot bit for bit, so they need ggml-cpu itself built for AVX2 and
     // not AVX-512 (ggml_cpu_has_*): a STRATA_ISA_FLOOR build runs ggml's AVX1/SSE dots, a native build on an AVX-512 CPU
     // run with STRATA_FORCE_AVX2=1 runs its AVX-512 one, and both round differently (#2215's guard).
+#if defined(__x86_64__) || defined(_M_X64)
     static const bool exact_one = [] {
         const char* v = std::getenv("STRATA_CPU_IQ_ALL_EXACT1");
         return v && v[0] == '1' && v[1] == 0 && ggml_cpu_has_avx2() && !ggml_cpu_has_avx512();
@@ -195,6 +196,7 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
         iq256_gu_rows_exact_one(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act[0], ff[0], r0, r1);
         return;
     }
+#endif
     const int mt_min = native_gu_mt_min(f.gu_type);   // #152
     // Unsloth UD-Q4_K_XL's Q4_K gate/up: the multi-token kernel is bit-exact against ggml's per-token dot (any group
     // size, no #152 rule).  Opt-in, STRATA_KQ256=1: measured no faster in the engine (a window's expert groups hold
