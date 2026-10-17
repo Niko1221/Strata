@@ -561,7 +561,7 @@ def detect_quant(view: dict) -> str | None:
 
 def project_version() -> str | None:
     try:
-        m = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text())
+        m = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8-sig"))
         return m.group(1) if m else None
     except OSError:
         return None
