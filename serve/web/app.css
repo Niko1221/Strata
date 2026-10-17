@@ -4,7 +4,7 @@
 html, body { height: 100%; }
 body { display: flex; flex-direction: column; overflow: hidden; }
 main { flex: 1; min-height: 0; display: flex; }
-.view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.view { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .view[hidden] { display: none; }
 .muted { color: var(--st-ink-muted); }
 .small { font-size: var(--st-fs-xs); }
@@ -21,7 +21,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .chat-empty__title { font-weight: var(--st-fw-black); font-size: var(--st-fs-display); line-height: var(--st-lh-tight);
                      letter-spacing: -.02em; }
 .chat-empty__sub { margin-top: var(--st-s-3); color: var(--st-ink-muted); }
-.st-msg { width: 100%; }
+.st-msg { width: 100%; min-width: 0; }
 .st-msg--assistant { align-self: flex-start; }
 .st-msg--assistant .st-bubble { width: 100%; }
 .st-msg--user .st-bubble { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -177,7 +177,10 @@ main { flex: 1; min-height: 0; display: flex; }
   .cfg-form .st-input { margin-bottom: var(--st-s-2); }
 }
 @media (max-width: 640px) {
-  .st-header { padding: 0 var(--st-s-3); gap: var(--st-s-2); }
+  /* Long tool names and a live Stop button must fit beside raster previews on phones. */
+  .tool-call > summary, .st-composer__bar { flex-wrap: wrap; }
+  .tool-call__name { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+  .st-header { height: auto; min-height: 60px; flex-wrap: wrap; padding: 0 var(--st-s-3); gap: var(--st-s-2); }
   .st-header .st-tabs { margin-left: 0; }
   .st-tab { padding: 0 10px; }
   .st-tab .st-icon { display: none; }
@@ -196,3 +199,9 @@ main { flex: 1; min-height: 0; display: flex; }
 .img-results figure{margin:0}
 .img-results img{max-width:100%;border-radius:var(--st-r-lg);display:block}
 .img-results figcaption{font-size:var(--st-fs-sm, 13px);color:var(--st-ink-2, inherit);margin-top:4px}
+
+/* Raster MCP results remain visible outside the collapsed tool details. */
+.tool-image { margin: 16px 0; max-width: 100%; }
+.tool-image img { display: block; width: 100%; max-width: 640px; height: auto; border-radius: var(--st-r-md); }
+.tool-image figcaption { margin-top: 10px; }
+.tool-image a:not([href]) { opacity: .5; pointer-events: none; }

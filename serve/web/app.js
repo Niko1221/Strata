@@ -648,6 +648,38 @@ function toolHtml(t, k) {
     `<span class="st-badge ${cls}">${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>`;
 }
+// Raster tool results are same-origin cached files; credentials stay in request headers.
+const mediaBlobs = new Map();
+let mediaEpoch = 0;
+function clearToolMedia() {
+  mediaEpoch++;
+  for (const pending of mediaBlobs.values()) pending.then((url) => URL.revokeObjectURL(url), () => {});
+  mediaBlobs.clear();
+}
+window.addEventListener("pagehide", clearToolMedia);
+window.addEventListener("pageshow", (event) => { if (event.persisted) hydrateToolImages(document); });
+function safeToolMedia(url) { return typeof url === "string" && /^tool-media\/[0-9a-f]{64}\.(png|jpg|webp)$/.test(url); }
+function toolImages(t) {
+  return (t.images || []).filter((im) => safeToolMedia(im.url)).map((im) =>
+    `<figure class="tool-image"><img data-tool-image="${esc(im.url)}" alt="Tool image" loading="lazy">` +
+    `<figcaption><a class="st-btn" data-tool-download="${esc(im.url)}" download="${esc(im.name || "generated-image.png")}">Download image</a></figcaption></figure>`).join("");
+}
+function hydrateToolImages(root) {
+  root.querySelectorAll("[data-tool-image]").forEach((img) => {
+    const url = img.dataset.toolImage, epoch = mediaEpoch;
+    if (!safeToolMedia(url)) return;
+    if (!mediaBlobs.has(url)) mediaBlobs.set(url, fetch(url, {headers: headers()}).then((r) => {
+      if (!r.ok) throw new Error("Image unavailable");
+      return r.blob();
+    }).then((b) => URL.createObjectURL(b)).catch((e) => {if (epoch === mediaEpoch) mediaBlobs.delete(url); throw e;}));
+    mediaBlobs.get(url).then((blob) => {
+      if (epoch !== mediaEpoch || !img.isConnected) return;
+      img.src = blob;
+      const a = img.closest("figure").querySelector("[data-tool-download]");
+      a.href = blob;
+    }).catch(() => { img.alt = "Image unavailable; try refreshing"; });
+  });
+}
 // the answer's text with the tool blocks where the model called them
 function answerHtml(m) {
   if (!m.tools || !m.tools.length) return markdown(m.text || "");
@@ -656,7 +688,7 @@ function answerHtml(m) {
     const at = Math.min(Math.max(t.at || 0, pos), m.text.length);
     if (at > pos) html += markdown(m.text.slice(pos, at));
     pos = at;
-    html += toolHtml(t, k);
+    html += toolHtml(t, k) + toolImages(t);
   });
   return html + markdown(m.text.slice(pos));
 }
@@ -669,7 +701,7 @@ function onTool(m, x) {
   if (x.event === "call") {
     Object.assign(t, {name: x.name, server: x.server, tool: x.tool, arguments: x.arguments, round: x.round, state: "running"});
   } else if (x.event === "result") {
-    Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms,
+    Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms, images: x.images || [], vision: x.vision === true,
                       state: x.skipped ? "skipped" : x.ok ? "done" : "error"});
   }
 }
@@ -695,6 +727,7 @@ function updateAssistant(el, m, streaming) {
     bubble.innerHTML = m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
   } else {
     bubble.innerHTML = answerHtml(m);
+    hydrateToolImages(bubble);
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
@@ -767,7 +800,12 @@ function assistantMessages(m) {
     const at = Math.min(Math.max(pos, calls[0].at || 0), m.text.length);
     out.push({role: "assistant", content: m.text.slice(pos, at).trim(),
               tool_calls: calls.map((t) => ({id: t.id, type: "function", function: {name: t.name, arguments: JSON.stringify(t.arguments || {})}}))});
-    for (const t of calls) out.push({role: "tool", tool_call_id: t.id, content: t.result});
+    for (const t of calls) {
+      const pictures = t.vision ? (t.images || []).filter((im) => safeToolMedia(im.url)) : [];
+      const content = pictures.length ? [{type: "text", text: t.result}, ...pictures.map((im) =>
+        ({type: "image_url", image_url: {url: "strata-tool-media:" + im.url.split("/").pop()}}))] : t.result;
+      out.push({role: "tool", tool_call_id: t.id, content});
+    }
     pos = at;
   }
   const rest = m.text.slice(pos).trim();
@@ -893,6 +931,7 @@ $("new-btn").onclick = () => {
   if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
   if (!messages.length) return;
   const backup = messages;
+  clearToolMedia();
   messages = [];
   saveChat();
   renderChat();
