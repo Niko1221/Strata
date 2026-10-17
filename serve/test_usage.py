@@ -16,8 +16,13 @@ from serve import usage
 
 
 class UsageTest(unittest.TestCase):
+    def make_usage(self, *args, **kwargs):
+        u = usage.Usage(*args, **kwargs)
+        self.addCleanup(u.close)
+        return u
+
     def test_disabled_is_a_noop(self):
-        u = usage.Usage(None)
+        u = self.make_usage(None)
         self.assertFalse(u.enabled)
         u.record(prompt_tokens=100, output_tokens=50, now=1000.0)        # must not raise or count
         self.assertEqual(u.lifetime["requests"], 0)
@@ -25,7 +30,7 @@ class UsageTest(unittest.TestCase):
         self.assertEqual(v, {"enabled": False, "note": v["note"]})       # the page shows the note
 
     def test_counts_a_request(self):
-        u = usage.Usage(None)
+        u = self.make_usage(None)
         u.path = Path(tempfile.mkdtemp()) / "u.json"
         u.record(prompt_tokens=1000, reused=800, output_tokens=250, prompt_ms=500.0, decode_ms=2500.0,
                  drafts_offered=300, drafts_accepted=210, now=10_000.0)
@@ -38,7 +43,7 @@ class UsageTest(unittest.TestCase):
         self.assertEqual(v["views"]["1d"]["total"]["output_tokens"], 250)
 
     def test_views_roll_old_data_out(self):
-        u = usage.Usage(None)
+        u = self.make_usage(None)
         u.path = Path(tempfile.mkdtemp()) / "u.json"
         now = 1_700_000_000.0
         u.record(output_tokens=100, now=now - 40 * usage.DAY)     # older than the 30 day view keeps
@@ -52,10 +57,10 @@ class UsageTest(unittest.TestCase):
 
     def test_survives_a_restart(self):
         path = Path(tempfile.mkdtemp()) / "u.json"
-        u = usage.Usage(path)
+        u = self.make_usage(path)
         u.record(prompt_tokens=500, output_tokens=200, decode_ms=2000.0, now=5_000.0)
-        u.flush()
-        again = usage.Usage(path)                                 # a fresh server, same file
+        u.close()
+        again = self.make_usage(path)                                 # a fresh server, same file
         self.assertEqual(again.lifetime["output_tokens"], 200)
         self.assertEqual(again.lifetime["requests"], 1)
         again.record(output_tokens=5, now=5_100.0)
@@ -64,14 +69,14 @@ class UsageTest(unittest.TestCase):
     def test_a_corrupt_file_starts_over(self):
         path = Path(tempfile.mkdtemp()) / "u.json"
         path.write_text("{not json", encoding="utf-8")
-        u = usage.Usage(path)                                     # must not raise (the boot continues)
+        u = self.make_usage(path)                                     # must not raise (the boot continues)
         self.assertTrue(u.enabled)
         self.assertEqual(u.lifetime["requests"], 0)
         u.record(output_tokens=7, now=100.0)
         self.assertEqual(u.view(now=100.0)["lifetime"]["output_tokens"], 7)
 
     def test_buckets_stay_bounded(self):
-        u = usage.Usage(None)
+        u = self.make_usage(None)
         u.path = Path(tempfile.mkdtemp()) / "u.json"
         now = 1_700_000_000.0
         for i in range(200):                                      # 200 hours of requests
@@ -81,19 +86,17 @@ class UsageTest(unittest.TestCase):
         self.assertLessEqual(len(data["hour"]), usage.KEEP["hour"])
         self.assertLessEqual(len(data["day"]), usage.KEEP["day"])
 
-    def test_write_is_throttled(self):
+    def test_every_settled_request_is_saved_even_before_a_quiet_spell(self):
         path = Path(tempfile.mkdtemp()) / "u.json"
-        u = usage.Usage(path)
-        u.record(output_tokens=1, now=1000.0)                     # first write
-        self.assertTrue(path.exists())
-        mtime = path.stat().st_mtime_ns
-        u.record(output_tokens=1, now=1000.0 + usage.WRITE_EVERY_S / 2)   # too soon: no write
-        self.assertEqual(path.stat().st_mtime_ns, mtime)
-        u.record(output_tokens=1, now=1000.0 + usage.WRITE_EVERY_S + 1)   # a minute on: written
-        self.assertNotEqual(path.stat().st_mtime_ns, mtime)
+        u = self.make_usage(path)
+        u.record(output_tokens=7, now=1000.0)
+        u.record(output_tokens=9, now=1000.1)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(data["lifetime"]["output_tokens"], 16)
+        self.assertEqual(data["lifetime"]["requests"], 2)
 
     def test_custom_range(self):
-        u = usage.Usage(None)
+        u = self.make_usage(None)
         u.path = Path(tempfile.mkdtemp()) / "u.json"
         now = 1_700_000_000.0
         u.since = now - 45 * usage.DAY                           # the store started 45 days before `now`
@@ -165,7 +168,7 @@ class UsageTest(unittest.TestCase):
                             ("a negative count", '{"lifetime": {"output_tokens": -5}}')]:
             path = Path(tempfile.mkdtemp()) / "u.json"
             path.write_text(body, encoding="utf-8")
-            u = usage.Usage(path, now=1_000.0)                    # must not raise
+            u = self.make_usage(path, now=1_000.0)                    # must not raise
             self.assertTrue(u.enabled, label)
             self.assertGreaterEqual(u.lifetime["output_tokens"], 0, label)
             u.record(output_tokens=3, now=1_000.0)                # and it still counts from here
@@ -173,7 +176,7 @@ class UsageTest(unittest.TestCase):
 
     def test_a_clock_that_steps_backwards_keeps_every_bucket(self):
         """An NTP step, a resume, or a manual change must not lose counts from the 1 day view."""
-        u = usage.Usage(None)
+        u = self.make_usage(None)
         u.path = Path(tempfile.mkdtemp()) / "u.json"
         now = 1_700_000_000.0
         u.since = now - 10 * usage.DAY
@@ -198,7 +201,7 @@ class UsageTest(unittest.TestCase):
             {"since": now - 10 * usage.DAY, "lifetime": {"output_tokens": 17},
              "hour": [{"t": hour, "output_tokens": 10}, {"t": hour, "output_tokens": 7}]}),
             encoding="utf-8")
-        u = usage.Usage(path, now=now)
+        u = self.make_usage(path, now=now)
         self.assertEqual(u.lifetime["output_tokens"], 17)
         self.assertEqual(u.view(now=now)["views"]["1d"]["total"]["output_tokens"], 17)
 

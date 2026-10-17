@@ -4140,8 +4140,9 @@ class Service:
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "requests_kept": len(hist), "totals": totals,
-                "usage": self.usage.view(now, (custom_from, custom_to)
-                                         if custom_from is not None and custom_to is not None else None),
+                **({"usage": self.usage.view(now, (custom_from, custom_to)
+                                         if custom_from is not None and custom_to is not None else None)}
+                   if self.usage.enabled or self.usage.persistence_error else {}),
                 "hardware": tel["now"], "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
 
@@ -7982,8 +7983,13 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     if a.config:
         svc.config_path = a.config                      # #564: the web page's Settings view
     if a.usage_stats or cfg.get("usage_stats") is True:
-        path = (Path(svc.config_path).with_suffix(".usage.json") if svc.config_path
-                else Path(os.environ.get("STRATA_USAGE_STATS", "strata-usage.json")))
+        custom_path = cfg.get("usage_stats_path") or os.environ.get("STRATA_USAGE_STATS")
+        if custom_path and not isinstance(custom_path, str):
+            raise SystemExit('[strata] config "usage_stats_path" must be a path string')
+        path = (Path(custom_path) if custom_path else Path(svc.config_path).with_suffix(".usage.json")
+                if svc.config_path else Path("strata-usage.json"))
+        if custom_path and not path.is_absolute() and svc.config_path:
+            path = Path(svc.config_path).resolve().parent / path
         svc.usage = usage.Usage(path)
         if svc.usage.enabled:
             usage.install_atexit(svc.usage)             # flush the counters on a normal exit

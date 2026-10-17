@@ -281,8 +281,12 @@ function renderTotals(t) {
 }
 function renderUsage(u) {
   const card = $("usage-card");
-  if (!u) { card.hidden = true; return; }                     // an older server
+  if (!u || (!u.enabled && !u.persistence_error)) { card.hidden = true; return; }
   card.hidden = false;
+  const warning = $("usage-warning");
+  warning.hidden = !u.persistence_error;
+  warning.textContent = u.persistence_error || "";
+  $("usage-lifetime").hidden = !u.enabled;
   const ranges = $("usage-ranges");
   for (const b of ranges.querySelectorAll(".usage-range")) b.setAttribute("aria-pressed", String(b.dataset.range === usageRange));
   $("usage-custom").hidden = usageRange !== "custom";
@@ -292,10 +296,18 @@ function renderUsage(u) {
     ranges.hidden = true;
     $("usage-grid").innerHTML = "";
     note.hidden = false;
-    note.textContent = u.note || "Usage statistics are off.";
+    note.textContent = "Usage history is unavailable. Inference continues normally.";
     return;
   }
   ranges.hidden = false;
+  const imported = u.imported || {};
+  const life = u.lifetime || {};
+  const allOutput = (life.output_tokens || 0) + (imported.output_tokens || 0);
+  $("usage-lifetime-value").textContent = fmt(allOutput);
+  $("usage-lifetime-detail").textContent = `Across restarts · ${fmt((life.requests || 0) + (imported.requests || 0))} requests recorded`;
+  $("usage-imported").hidden = !imported.output_tokens;
+  $("usage-imported").textContent = imported.output_tokens
+    ? `Includes ${fmt(imported.output_tokens)} tokens recovered from retained logs. These undated counts are excluded from time ranges and speed averages.` : "";
   let row;
   if (usageRange === "all") row = { ...(u.lifetime || {}), since: u.since };
   else if (usageRange === "custom") row = ((u.views || {}).custom || {}).total || {};
@@ -322,7 +334,7 @@ function renderUsage(u) {
     cell("Drafts accepted", acc == null ? "–" : `${fmt(acc)}%`, row.drafts_offered ? `${fmt(row.drafts_accepted)} of ${fmt(row.drafts_offered)}` : "");
   if (usageRange === "all" && row.since) {                    // the one note worth keeping: where "lifetime" starts
     note.hidden = false;
-    note.textContent = `Since ${new Date(row.since * 1000).toLocaleDateString()}.`;
+    note.textContent = `Detailed tracking since ${new Date(row.since * 1000).toLocaleString()}. Generated tokens include reasoning and tool calls, not unused speculative drafts. Unsettled requests are not yet counted.`;
   }
 }
 

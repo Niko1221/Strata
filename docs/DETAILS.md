@@ -2284,14 +2284,30 @@ The page uses relative URLs and works through the existing host binding or a rev
 ### Lifetime token statistics
 
 Off by default: turn it on with `"usage_stats": true` in `strata-<model>.json` (or
-`serve/server.py --usage-stats`); otherwise nothing is written and `GET /metrics` reports
-`"usage": {"enabled": false}`.
+`serve/server.py --usage-stats`); otherwise nothing is written, the Usage card stays hidden,
+and `GET /metrics` keeps its existing fields.
 
 It keeps request and token counters — requests, prompt tokens read and reused, output tokens,
 prompt and decode milliseconds, and MTP drafts offered/accepted — in a small JSON file beside the
 run config (`strata-<model>.usage.json`), so the totals survive restarts. **Counters only: no
-prompts, no answers, no request bodies.** Writes are atomic and throttled, and a corrupt file
-restarts the counters rather than failing the boot.
+prompts, no answers, no request bodies.** Every settled request saves an atomic snapshot
+(temporary file, flush/fsync, then replace). A request followed by a quiet period is already saved;
+normal shutdown is not required. A request interrupted before settlement is not included. Disk
+errors leave the preceding file intact, keep new counts in memory, and show a warning in the panel.
+Corrupt JSON is backed up before new counters are saved. Fractional timing counters survive reload.
+
+`"usage_stats_path": "local-usage.json"` (or `STRATA_USAGE_STATS`) selects a store shared by model
+configs that run one at a time. Relative config paths are resolved beside the config. Its parent
+directory must exist. A process lock prevents simultaneous servers from overwriting the same store;
+the second server continues inference but reports that usage history is unavailable. Separate
+simultaneous servers should use separate stores. Keep the JSON file when upgrading Strata.
+
+The large **Tokens generated locally · all time** figure stays visible above the range statistics.
+It counts output, including reasoning and tool calls; reused input and rejected MTP drafts are not
+new output. Optional `imported` counters (`requests`, `output_tokens`) in an initial store can carry
+undated counts recovered from retained logs. The panel labels them, adds them only to the large
+all-time figure, and excludes them from time ranges and speed averages. Historical records missing
+from the retained logs cannot be recovered. Do not seed a store that already records the same work.
 
 `GET /metrics` then carries a `usage` object: the lifetime totals, `1d` / `7d` / `30d` views, and
 — with `?from_ts=<epoch>&to_ts=<epoch>` — a custom window. Hourly buckets are kept for 31 days,
