@@ -44,6 +44,19 @@ class FloorTest(unittest.TestCase):
             with cpuinfo("fpu sse3 ssse3"):
                 self.assertEqual(setup.cpu_floor(False), "unsupported")
 
+    def test_a_cpuinfo_without_flags_1935(self):
+        # #1935: aarch64 lists "Features", some emulated x86 containers no flags line at all; cpu_info() raised
+        # AttributeError (setup stopped with a traceback on any Linux ARM host)
+        arm = "processor\t: 0\nBogoMIPS\t: 50.00\nFeatures\t: fp asimd evtstrm aes pmull sha1 sha2 crc32\n"
+        with mock.patch.object(setup, "WIN", False):
+            for text, want in ((arm, setup.platform.processor() or "unknown CPU"),
+                               ("processor\t: 0\nmodel name\t: QEMU Virtual CPU\n", "QEMU Virtual CPU")):
+                with mock.patch("builtins.open", lambda *a, t=text, **k: io.StringIO(t)):
+                    self.assertEqual(setup.cpu_info(), (want, False, False))   # the name is still read
+                    self.assertEqual(setup.cpu_floor(False), "unsupported")
+            with cpuinfo("fpu avx avx2 fma"):
+                self.assertEqual(setup.cpu_info(), ("Old Xeon", True, False))
+
     def test_windows_probe(self):
         with mock.patch.object(setup, "WIN", True):
             for probe, want in (("avx", "avx"), ("sse4.2", "none"), ("", "unsupported")):
