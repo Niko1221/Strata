@@ -889,11 +889,43 @@ def compare_table(old: dict, new: dict) -> str:
     return "\n".join(rows + (["", "differences:"] + notes if notes else []))
 
 
+REPORT_KEYS = ("chat", "prompts", "agent", "clients")     # what a report's "results" holds; the tables read these
+
+
 def load_results(path: Path) -> dict:
+    """The results.json of a results folder (or the file itself), as tools/strata_bench.py writes it.
+
+    A --compare path is a typo more often than it is something to die on, and bench/results/ also holds
+    results.json files from the other tools in tools/ (ab_engine.py, the conversation_cache_* ones) - so anything
+    that is not a bench report raises ValueError carrying the path and why, and the callers print it.  That used to
+    end the run in a traceback instead (#2792's tail)."""
     p = Path(path)
     if p.is_dir():
         p = p / "results.json"
-    return json.loads(p.read_text(encoding="utf-8"))
+        if not p.is_file():
+            raise ValueError(f"{Path(path)} has no results.json in it")
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except OSError as e:
+        raise ValueError(f"{p} cannot be read ({e.strerror or e})") from None
+    except ValueError as e:                                  # not JSON, or not UTF-8
+        raise ValueError(f"{p} is not valid JSON ({e})") from None
+    if not (isinstance(d, dict) and isinstance(d.get("machine"), dict) and isinstance(d.get("results"), dict)
+            and all(isinstance(d["results"].get(k), dict) for k in REPORT_KEYS)):
+        raise ValueError(f"{p} is not a report tools/strata_bench.py wrote (--compare needs two of those)")
+    return d
+
+
+def compare_with_saved(res: dict, path, red, say) -> None:
+    """Print the comparison with an earlier run.  A path that is not a results folder is a note, not a failure: this
+    run is finished and its report is already written, so only the comparison is lost (#2792's tail)."""
+    try:
+        old = load_results(Path(path))
+    except ValueError as e:
+        print(f"--compare skipped: {e}", file=sys.stderr)
+        return
+    say("\nCompared with " + str(path) + ":")
+    say(red(compare_table(old, redact_obj(res, lambda s: s))))
 
 
 def short_table(res: dict) -> str:
@@ -949,7 +981,11 @@ def main(argv=None) -> int:
     if a.compare_only:
         if not a.compare:
             ap.error("--compare-only NEW needs --compare OLD")
-        print(compare_table(load_results(Path(a.compare)), load_results(Path(a.compare_only))))
+        try:
+            print(compare_table(load_results(Path(a.compare)), load_results(Path(a.compare_only))))
+        except ValueError as e:
+            print(f"--compare needs two results folders: {e}.", file=sys.stderr)
+            return 2
         return 0
 
     cfg_path, cfg, proc, log_path = None, None, None, None
@@ -1018,8 +1054,7 @@ def main(argv=None) -> int:
         if out["failures"] or out["skipped"]:
             say(f"  ({len(out['failures'])} failed request(s), {len(out['skipped'])} skipped test(s): see the report)")
         if a.compare:
-            say("\nCompared with " + a.compare + ":")
-            say(red(compare_table(load_results(Path(a.compare)), redact_obj(res, lambda s: s))))
+            compare_with_saved(res, a.compare, red, say)
         try:
             shown = d.relative_to(ROOT)
         except ValueError:
