@@ -34,11 +34,16 @@ class LogitBias(unittest.TestCase):
         self.assertEqual(engine_key(entries).count(':-100'), 103215)
 
     def test_capability_and_batch(self):
+        # no support at all, or a batch engine that does not take a bias in its slots (before `logit_bias_batch`)
         for engine in [SimpleNamespace(info={}), SimpleNamespace(info={'logit_bias': 1}, batch=2)]:
             with self.assertRaises(ValueError):
                 validate_request({'logit_bias': {'1': -100}}, engine, 10)
             self.assertEqual(validate_request({}, engine, 10), {})
         self.assertEqual(validate_request({'logit_bias': {'1': -100}}, SimpleNamespace(info={'logit_bias': 1}), 10), {1: -100})
+        # a batch engine that takes a bias in its slots
+        batch_ok = SimpleNamespace(info={'logit_bias': 1, 'logit_bias_batch': 1}, batch=4)
+        self.assertEqual(validate_request({'logit_bias': {'1': -100}}, batch_ok, 10), {1: -100})
+        self.assertEqual(validate_request({}, batch_ok, 10), {})
 
     def test_http_rejects_before_stream(self):
         tok = ByteTokenizer()

@@ -608,6 +608,8 @@ Verifier::~Verifier() {
     if (qcnt_) cudaFree(qcnt_);
     if (d_spec_) cudaFree(d_spec_);
     if (logit_bias_device_) cudaFree(logit_bias_device_);
+    for (float* b : slot_bias_dev_)
+        if (b) cudaFree(b);
     if (cs_ && cs_ != ext_stream_) cudaStreamDestroy(cs_);   // set_stream: the stage's stream, shared, not ours
     if (sh_cs_) cudaStreamDestroy(sh_cs_);
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
@@ -650,6 +652,30 @@ bool Verifier::set_logit_bias(const std::vector<float>& bias, std::string& err) 
     }
     logit_bias_host_ = bias;
     sampling_.logit_bias = bias.empty() ? nullptr : logit_bias_device_;
+    return true;
+}
+
+bool Verifier::set_slot_logit_bias(int slot, const std::vector<float>& bias, std::string& err) {
+    if (next_ && !next_->set_slot_logit_bias(slot, bias, err)) return false;
+    if (le_ < g_->n_layers) return true;   // only the final stage draws rows
+    if (slot < 0 || slot >= (int) slot_sp_.size() || slot_bias_dev_.size() != slot_sp_.size()) {
+        err = "logit_bias: no such batch slot"; return false;
+    }
+    const OnDevice on_device(device_);
+    if (!bias.empty() && bias.size() != (size_t) n_vocab_) {
+        err = "logit_bias vocabulary size mismatch"; return false;
+    }
+    std::vector<float>& have = slot_bias_host_[(size_t) slot];
+    float*& dev = slot_bias_dev_[(size_t) slot];
+    if (!bias.empty() && bias != have) {
+        const size_t bytes = bias.size() * sizeof(float);
+        if ((!dev && cudaMalloc((void**) &dev, bytes) != cudaSuccess) ||
+            cudaMemcpy(dev, bias.data(), bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
+            err = "cannot upload logit_bias"; return false;
+        }
+    }
+    have = bias;
+    slot_sp_[(size_t) slot].logit_bias = bias.empty() ? nullptr : dev;
     return true;
 }
 
@@ -3294,6 +3320,14 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
     tail_snap_b_ = (float*) ((uint8_t*) d + a);
     slots_ = slots;
     slot_sp_.assign(slots.size(), sampling_);   // greedy until set_slot_sampling
+    {
+        const OnDevice on_device(device_);
+        for (float* b : slot_bias_dev_)
+            if (b) cudaFree(b);
+    }
+    slot_bias_dev_.assign(slots.size(), nullptr);
+    slot_bias_host_.assign(slots.size(), std::vector<float>());
+    for (strata::kernels::SamplerParams& sp : slot_sp_) sp.logit_bias = nullptr;   // a solo request's table is not a slot's
     std::fprintf(stderr, "strata verify: batch windows of up to %lld sequences (layers [%lld, %lld))%s\n", (long long) S,
                  (long long) lb_, (long long) le_, g_batch_self_commit ? ", one-row windows keep their rows" : "");
     return true;
@@ -3740,7 +3774,9 @@ bool Verifier::sample_rows(int S, std::string& err) {
     bool any = false;
     for (int t = 0; t < S; ++t) {
         strata::kernels::SamplerParams sp = slot_sp_[(size_t) last_rows_[t]];
-        if (sp.greedy || sp.temperature <= 0.0f) continue;
+        // a greedy row keeps the graph's argmax, unless its slot has a bias table: the argmax ignores it, so that
+        // row is drawn here too (greedy with the bias added)
+        if ((sp.greedy || sp.temperature <= 0.0f) && sp.logit_bias == nullptr) continue;
         sp.counter = (uint64_t) last_pos_b_[t];   // Philox(seed, position): the solo window's draw for this position
         sp.penalty_last_n = 0;
         strata::kernels::sample_tokens(head_logits_ + (size_t) t * (size_t) n_vocab_, 1, (int) n_vocab_, nullptr, 0, sp,
