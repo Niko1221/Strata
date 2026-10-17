@@ -2021,6 +2021,8 @@ bool load_lora_adapters(const Options& o, const strata::core::ModelGeometry& g, 
     std::fprintf(stderr, "strata generate: LoRA: %zu file%s, %d layers adapted, %.1f MiB per device\n",
                  o.lora_files.size(), o.lora_files.size() == 1 ? "" : "s", covered, (double) bytes / (1024.0 * 1024.0));
     return true;
+}
+
 /// 0.1.43 (HIP, opt-in STRATA_PCIE_AUTO_SPLIT=1): PcieAuto also refines a layer split's shares, each stage by its own probed link.
 static bool pcie_auto_split_ok() {
     static const bool on = [] { const char* v = std::getenv("STRATA_PCIE_AUTO_SPLIT"); return v != nullptr && std::atoi(v) != 0; }();   // opt-in until measured (HIP)
