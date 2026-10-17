@@ -1,0 +1,75 @@
+# Strata 0.1.41 pour le Strix Halo d'evo-X2 (gfx1151), d'après docs/STRIX_HALO.md de Strata, sur images Chainguard
+# (règle du projet pour toute image Python : le serveur de Strata est en Python). ADR-001.
+#
+# Contexte de construction : ~/strata-build sur evo-X2, qui contient
+#   Strata/                    le clone v0.1.41 (fb58e0d) copié de gmk8p, avec third_party/llama.cpp (3cf0325)
+#   rocm/therock-dist-linux-gfx1151-7.14.1.tar.gz   ROCm 7.14.1 TheRock (SHA-256 vérifié ci-dessous)
+# Aucun accès à GitHub : ggml et mtmd viennent de third_party/llama.cpp (STRATA_GGML_DIR, LLAMA_DIR).
+#
+#   docker build -f Dockerfile.strix --target builder -t strata:strix-halo-build ~/strata-build   # + ctest
+#   docker build -f Dockerfile.strix -t strata:strix-halo ~/strata-build
+
+# ─── Construction ─────────────────────────────────────────────────────────────────────────────────────────────────
+FROM cgr.dev/chainguard/python:latest-dev AS builder
+USER root
+RUN apk add --no-cache build-base gcc-15 binutils git numactl libdrm libelf
+
+ARG ROCM_SHA256=c40e8f2bd6630a7d11557c762b99c6fa8afb04c9bd0e51ed1675ee1ca24afb00
+COPY rocm/therock-dist-linux-gfx1151-7.14.1.tar.gz /tmp/rocm.tar.gz
+RUN echo "${ROCM_SHA256}  /tmp/rocm.tar.gz" | sha256sum -c - \
+    && mkdir -p /opt/rocm && tar -xzf /tmp/rocm.tar.gz -C /opt/rocm && rm /tmp/rocm.tar.gz
+
+ENV SDK=/opt/rocm ROCM_PATH=/opt/rocm HIP_PATH=/opt/rocm HIP_PLATFORM=amd \
+    PATH=/opt/strata/.venv/bin:/opt/rocm/bin:/opt/rocm/lib/llvm/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib/rocm_sysdeps/lib:/opt/rocm/lib/llvm/lib
+
+WORKDIR /opt/strata
+COPY Strata/ /opt/strata/
+
+# Python de l'outillage (pack) et du serveur, versions épinglées par Strata ; cmake et ninja viennent de là aussi.
+# PyPI répond à ~100 Ko/s depuis evo-X2 (Chine) ; le miroir de Tsinghua sert les mêmes fichiers à ~30 Mo/s.
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+RUN python -m venv .venv && .venv/bin/pip install --no-cache-dir -i "${PIP_INDEX_URL}" -r requirements.txt
+
+ARG JOBS=24
+# Le moteur (avec ses tests) : options de docs/STRIX_HALO.md et de setup.py (build_engine_hip)
+RUN cmake -S . -B build-halo -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_PREFILL_MMQ=ON \
+      -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
+      -DCMAKE_HIP_COMPILER=$SDK/lib/llvm/bin/clang++ -DCMAKE_HIP_COMPILER_ROCM_ROOT=$SDK \
+      "-DCMAKE_PREFIX_PATH=$SDK;$SDK/lib/rocm_sysdeps;$SDK/lib/llvm" \
+      "-DCMAKE_HIP_FLAGS=--rocm-path=$SDK --rocm-device-lib-path=$SDK/lib/llvm/amdgcn/bitcode" \
+      -DSTRATA_GGML_DIR=/opt/strata/third_party/llama.cpp \
+    && cmake --build build-halo --target strata -j ${JOBS} \
+    && mkdir -p engine && cp build-halo/strata engine/strata
+
+# L'encodeur d'images, sur le CPU (pas d'encodeur HIP dans Strata 0.1.41)
+RUN cmake -S tools/vision -B build-vision -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DLLAMA_DIR=/opt/strata/third_party/llama.cpp -DSTRATA_VISION_CUDA=OFF -DSTRATA_PORTABLE=OFF \
+    && cmake --build build-vision --target strata-vision -j ${JOBS} \
+    && cp build-vision/bin/strata-vision engine/strata-vision
+
+# Ce que l'exécution garde : bibliothèques ROCm et de l'hôte de construction nécessaires au moteur
+RUN mkdir -p /opt/runtime-libs \
+    && cp -a /usr/lib/libstdc++.so* /usr/lib/libgcc_s.so* /usr/lib/libgomp.so* /opt/runtime-libs/ 2>/dev/null; \
+    ls /opt/runtime-libs
+
+# ─── Exécution ────────────────────────────────────────────────────────────────────────────────────────────────────
+FROM cgr.dev/chainguard/python:latest AS runtime
+ENV ROCM_PATH=/opt/rocm HIP_PLATFORM=amd PYTHONUNBUFFERED=1 \
+    PATH=/opt/strata/.venv/bin:/usr/bin:/bin \
+    LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib/rocm_sysdeps/lib:/opt/rocm/lib/llvm/lib:/opt/runtime-libs \
+    STRATA_HIPBLASLT_TUNING=/opt/strata/tools/hip/gfx1151-hipblaslt-100401.txt
+COPY --from=builder /opt/rocm/lib /opt/rocm/lib
+COPY --from=builder /opt/runtime-libs /opt/runtime-libs
+COPY --from=builder --chown=nonroot:nonroot /opt/strata/engine /opt/strata/engine
+COPY --from=builder --chown=nonroot:nonroot /opt/strata/.venv /opt/strata/.venv
+COPY --from=builder --chown=nonroot:nonroot /opt/strata/serve /opt/strata/serve
+COPY --from=builder --chown=nonroot:nonroot /opt/strata/tools /opt/strata/tools
+COPY --from=builder --chown=nonroot:nonroot /opt/strata/data /opt/strata/data
+COPY --from=builder --chown=nonroot:nonroot /opt/strata/third_party/llama.cpp/gguf-py /opt/strata/third_party/llama.cpp/gguf-py
+COPY --from=builder --chown=nonroot:nonroot /opt/strata/setup.py /opt/strata/chat.py /opt/strata/
+WORKDIR /opt/strata
+EXPOSE 8080
+ENTRYPOINT ["/opt/strata/.venv/bin/python", "-m", "serve.server", "--engine", "strata"]
+CMD ["--config", "/data/config/strata-ud-q4_k_xl.json", "--port", "8080"]
