@@ -44,7 +44,7 @@
       <div class="chat" id="chat">
         <div class="chat-empty" id="chat-empty">
           <div class="chat-empty__title">Ask anything</div>
-          <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
+          <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it &ndash; unless Web search is on: the search query then goes out to the engine.</div>
         </div>
       </div>
     </div>
@@ -53,6 +53,8 @@
         <div class="attachments" id="attachments" hidden></div>
         <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
         <div class="st-composer__bar">
+          <button type="button" class="st-btn st-btn--icon" id="websearch-btn" title="Web search: look the question up before answering" aria-label="Web search" aria-pressed="false">
+            <svg class="st-icon"><use href="web/sprite.svg#i-globe"/></svg></button>
           <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
             <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
           <input type="file" id="file" multiple hidden>
@@ -60,7 +62,7 @@
             <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
           <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">
             <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
-          <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
+          <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Chat Settings: Thinking &amp; Web Search" aria-label="Chat Settings: Thinking and Web Search">
             <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
           <span class="spacer"></span>
           <span class="composer-hint" id="composer-hint"></span>
@@ -165,7 +167,7 @@
         <div class="req-head"><span class="card-title">MCP servers</span><span class="muted small" id="mcp-sum"></span></div>
         <div class="mcp-list" id="mcp-list"></div>
         <p class="muted small mcp-note">Their tools run on this PC with your rights, when the model decides to call them
-          (in this page's chat only; switch it off in Sampling).</p>
+          (in this page's chat only; switch it off in Settings).</p>
       </div>
     </div>
   </section>
@@ -209,10 +211,10 @@
   </section>
 </main>
 
-<!-- ============================ Sampling drawer ============================ -->
-<aside class="st-drawer" id="drawer" data-open="false" aria-label="Sampling and thinking" aria-hidden="true">
-  <div class="st-drawer__head"><span class="card-title">Sampling</span>
-    <button class="st-btn st-btn--icon" id="drawer-close" aria-label="Close">
+<!-- ============================ Settings drawer ============================ -->
+<aside class="st-drawer" id="drawer" data-open="false" aria-label="Chat Settings: Thinking and Web Search" aria-hidden="true">
+  <div class="st-drawer__head"><span class="card-title">Chat Settings</span>
+    <button class="st-btn st-btn--icon" id="drawer-close" title="Close" aria-label="Close">
       <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button></div>
   <div class="st-drawer__body">
     <div class="st-field">
@@ -252,8 +254,33 @@
       engine's control vector; off = the stock model. Switching reads the chat again once</span></span>
       <button class="st-toggle" id="s-esp" role="switch" aria-checked="true" aria-label="Experimental speed projection"></button></div>
     <div class="toggle-row"><span>Use for other apps too<br><span class="muted small">omp and other API clients get
-      these settings for anything they don't set themselves</span></span>
+      the thinking and sampling settings for anything they don't set themselves</span></span>
       <button class="st-toggle" id="s-share" role="switch" aria-checked="false" aria-label="Use for other apps too"></button></div>
+    <div class="drawer-section">Web search</div>
+    <div class="toggle-row"><span>Web search<br><span class="muted small">look the question up before answering; the composer's globe switches it too</span></span>
+      <button class="st-toggle" id="s-ws" role="switch" aria-checked="false" aria-label="Web search"></button></div>
+    <div class="st-field">
+      <label class="st-label" for="s-ws-engine">Search engine</label>
+      <select class="st-input" id="s-ws-engine">
+        <option value="duckduckgo">DuckDuckGo (anonymous &ndash; no key needed)</option>
+        <option value="searxng">SearXNG (self-hosted)</option>
+        <option value="brave">Brave Search (API key)</option>
+        <option value="tavily">Tavily (API key)</option>
+        <option value="serper">Serper / Google (API key)</option>
+      </select>
+    </div>
+    <div class="st-field" id="ws-url-row">
+      <label class="st-label" for="s-ws-url">SearXNG URL</label>
+      <input class="st-input" id="s-ws-url" type="text" placeholder="http://127.0.0.1:8888">
+    </div>
+    <div class="st-field" id="ws-key-row" hidden>
+      <label class="st-label" for="s-ws-key">API key <output>kept in this browser only</output></label>
+      <input class="st-input" id="s-ws-key" type="password" placeholder="the engine's API key">
+    </div>
+    <div class="st-field">
+      <label class="st-label" for="s-ws-max">Max results <output id="o-ws-max"></output></label>
+      <input class="st-input" id="s-ws-max" type="number" min="1" max="20" step="1">
+    </div>
     <div class="drawer-actions">
       <button class="st-btn st-btn--secondary" id="s-reset" type="button">Reset</button>
       <button class="st-btn st-btn--primary" id="s-apply" type="button">Apply</button>

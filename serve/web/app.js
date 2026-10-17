@@ -103,7 +103,7 @@ async function loadHealth() {
     health = await (await fetch("health")).json();
     $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
                                           : "Attach a text file (or drop it here)";
-    $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
+    $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it — unless Web search is on: the search query then goes out to the engine.`;
     $("tab-btn-images").hidden = !health.image_generation;
     if (location.hash === "#images" && health.image_generation) showTab("images");
   } catch (e) {
@@ -575,6 +575,9 @@ if (samplingUntouched(settings)) settings.temperature = DEFAULTS.temperature;
 let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
+const WS_DEFAULTS = {engine: "duckduckgo", url: "http://127.0.0.1:8888", key: "", max: 6, on: false};
+const ENGINE_NAMES = {duckduckgo: "DuckDuckGo", searxng: "SearXNG", brave: "Brave Search", tavily: "Tavily", serper: "Serper"};
+let ws = {...WS_DEFAULTS, ...store.get("ws", {})};   // Web search: the composer's globe and the drawer's section
 
 function saveChat() {
   store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
@@ -619,7 +622,7 @@ function msgEl(m, i) {
   } else {
     el.innerHTML = `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
       `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking"></div></details>` +
-      `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
+      `<div class="st-bubble"></div><div class="st-sources" hidden></div><div class="st-msg__meta"><span class="meta-text"></span>` +
       `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>`;
     updateAssistant(el, m, false);
   }
@@ -681,7 +684,12 @@ function updateAssistant(el, m, streaming) {
     el.querySelector(".think-title").textContent = thinkingNow ? "Thinking…" :
       m.thinkSecs != null ? `Thought for ${fmt(m.thinkSecs, 1)} s` : "Thoughts";
     const body = el.querySelector(".thinking");
-    if (det.open || thinkingNow) body.textContent = m.reasoning;
+    if (det.open || thinkingNow) {
+      // the panel caps at 420px and scrolls itself; while it streams, follow its bottom the same way as the chat
+      const stick = body.scrollHeight - body.scrollTop - body.clientHeight < 120;
+      body.textContent = m.reasoning;
+      if (stick) body.scrollTop = body.scrollHeight;
+    }
     else body.dataset.pending = "1";
     // open while it streams (if wanted), closed once the answer starts - unless the user toggled it themselves
     if (thinkingNow && settings.show && !det.dataset.touched && !det.open) { det._auto = true; det.open = true; }
@@ -696,6 +704,19 @@ function updateAssistant(el, m, streaming) {
   } else {
     bubble.innerHTML = answerHtml(m);
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
+  }
+  const src = el.querySelector(".st-sources");
+  if (src) {
+    if (m.sources && m.sources.length) {
+      src.hidden = false;
+      const ename = m.sourceEngine ? ` (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine})` : "";
+      src.innerHTML = `<span class="st-sources__label">${icon("globe", "st-icon st-icon--sm")}Sources${esc(ename)}:</span>` +
+        m.sources.map((s, k) => `<a class="st-source" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer" title="${esc(s.url)}">[${k + 1}] ${esc(s.title || s.url)}</a>`).join(" | ");
+    } else if (m.sourcesNote) {
+      src.hidden = false;
+      const ename = m.sourceEngine ? ` (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine})` : "";
+      src.innerHTML = `<span class="st-sources__label st-sources__label--warn">${icon("warning", "st-icon st-icon--sm")}Sources${esc(ename)}: ${esc(m.sourcesNote)}</span>`;
+    } else { src.hidden = true; src.innerHTML = ""; }
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
@@ -798,6 +819,20 @@ async function send() {
   busy = {controller, msg: m};
   setBusy(true);
 
+  let sources = null, sourceEngine = "", sourcesNote = "";
+  if (ws.on && text) {
+    try {
+      const sr = await fetch("search", {method: "POST", headers: headers(true), signal: controller.signal,
+                                       body: JSON.stringify({query: text, engine: ws.engine, url: ws.url,
+                                                            api_key: ws.key, max_results: +ws.max || 6})});
+      const sj = await sr.json().catch(() => ({}));
+      if (sr.ok && sj.results && sj.results.length) { sources = sj.results; sourceEngine = ws.engine; }
+      else { sourcesNote = (sj.error && sj.error.message) || "no results"; toast("warn", "Web search found nothing", sourcesNote, 6000); }
+    } catch (e) {
+      if (e.name !== "AbortError") { sourcesNote = e.message || String(e); toast("error", "Web search failed", sourcesNote, 6000); }
+    }
+  }
+
   const body = {model: health.model, messages: apiMessages(), stream: true,
                 reasoning_effort: settings.thinking};
   if (!(settings.temperature > 0)) {
@@ -810,8 +845,23 @@ async function send() {
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
   if (settings.mcp !== false && mcpInfo.tools > 0) body.strata_mcp = true;   // this server may run MCP tools for it
 
+  if (sources) {                                  // the model reads the results; the answer shows them as sources
+    m.sources = sources;
+    m.sourceEngine = sourceEngine;
+    const ctx = sources.map((s, k) => `[${k + 1}] ${s.title}\nURL: ${s.url}\n${s.snippet}`).join("\n\n");
+    body.messages.push({role: "system", content:
+      `Web search results for the question above, fetched just now:\n\n${ctx}\n\n` +
+      `Answer with these results where they are relevant, cite the sources by their [n] number, and say when your answer goes beyond them.`});
+  }
+  if (sourcesNote) {                                // the warning stays on the message, not just in the toast
+    m.sourcesNote = sourcesNote;
+    m.sourceEngine = ws.engine;
+  }
+
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
-  const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
+  // stickiness is decided BEFORE the paint: a frame that grows the content (the thinking panel opening adds
+  // up to 420px at once) must not be what decides whether we keep following the bottom
+  const paint = () => { frame = 0; const stick = nearBottom(); updateAssistant(el, m, true); if (stick) scrollDown(true); };
   try {
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
                                                    signal: controller.signal});
@@ -903,8 +953,12 @@ $("export-btn").onclick = () => {
   const tools = (m) => (m.tools || []).filter((t) => t.result != null).map((t) =>
     `<details><summary>Tool ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${t.ok ? "" : " (error)"}</summary>\n\n` +
     `\`\`\`json\n${JSON.stringify(t.arguments || {}, null, 2)}\n\`\`\`\n\n\`\`\`\n${t.result}\n\`\`\`\n\n</details>\n\n`).join("");
+  const srcs = (m) => (m.sources && m.sources.length)
+    ? `\n\nSources (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine || "web search"}):\n\n` +
+      m.sources.map((s, k) => `[${k + 1}] [${s.title || s.url}](${s.url})`).join(" | ")
+    : (m.sourcesNote ? `\n\nSources (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine || "web search"}): ${m.sourcesNote}` : "");
   const md = messages.map((m) => m.role === "user" ? `## You\n\n${m.text}\n` :
-    `## ${health.model}\n\n${m.reasoning ? `<details><summary>Thinking</summary>\n\n${m.reasoning}\n\n</details>\n\n` : ""}${tools(m)}${m.text || m.error || ""}\n`).join("\n");
+    `## ${health.model}\n\n${m.reasoning ? `<details><summary>Thinking</summary>\n\n${m.reasoning}\n\n</details>\n\n` : ""}${tools(m)}${m.text || m.error || ""}${srcs(m)}\n`).join("\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([md], {type: "text/markdown"}));
   a.download = `strata-chat-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md`;
@@ -1009,6 +1063,12 @@ function loadDrawer(s = settings) {
   $("esp-row").hidden = !projectionLoaded();
   $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
   $("s-share").setAttribute("aria-checked", String(sharedOn));
+  $("s-ws").setAttribute("aria-checked", String(ws.on));
+  $("s-ws-engine").value = ws.engine;
+  $("s-ws-url").value = ws.url;
+  $("s-ws-key").value = ws.key;
+  $("s-ws-max").value = ws.max;
+  paintWsRows();
   outputs();
 }
 // "Use for other apps too": the server keeps these settings as every client's defaults (GET/POST /settings)
@@ -1059,7 +1119,19 @@ $("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s
 $("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
 $("s-mcp").onclick = () => $("s-mcp").setAttribute("aria-checked", String($("s-mcp").getAttribute("aria-checked") !== "true"));
 $("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($("s-share").getAttribute("aria-checked") !== "true"));
-$("s-reset").onclick = () => loadDrawer(DEFAULTS);
+$("s-ws").onclick = () => $("s-ws").setAttribute("aria-checked", String($("s-ws").getAttribute("aria-checked") !== "true"));
+function paintWsRows() {
+  const e = $("s-ws-engine").value;
+  $("ws-url-row").hidden = e !== "searxng";
+  $("ws-key-row").hidden = e === "searxng" || e === "duckduckgo";
+  $("o-ws-max").textContent = `${$("s-ws-max").value || 6} pages go to the model`;
+}
+$("s-ws-engine").onchange = paintWsRows;
+$("s-ws-max").oninput = paintWsRows;
+$("s-reset").onclick = () => {
+  ws = {...WS_DEFAULTS}; store.set("ws", ws); paintWebsearch();   // reset also the web search: DuckDuckGo, no key, off
+  loadDrawer(DEFAULTS);                                           // loadDrawer fills the ws fields from ws
+};
 $("s-apply").onclick = async () => {
   const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
   settings = {thinking: sel ? sel.dataset.v : "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
@@ -1068,6 +1140,11 @@ $("s-apply").onclick = async () => {
               esp: $("s-esp").getAttribute("aria-checked") === "true",
               mcp: $("s-mcp").getAttribute("aria-checked") === "true"};
   store.set("sampling", settings);
+  ws = {engine: $("s-ws-engine").value, url: $("s-ws-url").value.trim() || WS_DEFAULTS.url,
+        key: $("s-ws-key").value.trim(), max: Math.max(1, Math.min(20, +$("s-ws-max").value || 6)),
+        on: $("s-ws").getAttribute("aria-checked") === "true"};
+  store.set("ws", ws);
+  paintWebsearch();
   const share = $("s-share").getAttribute("aria-checked") === "true";
   openDrawer(false);
   if (share || sharedOn) {
@@ -1083,6 +1160,14 @@ $("s-apply").onclick = async () => {
   toast("success", "Sampling saved", settings.temperature === 0 ? "Greedy: the same question gives the same answer." : "");
 };
 $("sampling-btn").onclick = () => openDrawer(true);
+function paintWebsearch() {
+  const b = $("websearch-btn");
+  b.classList.toggle("st-btn--on", ws.on);
+  b.setAttribute("aria-pressed", ws.on ? "true" : "false");
+  $("s-ws").setAttribute("aria-checked", String(ws.on));
+}
+$("websearch-btn").onclick = () => { ws.on = !ws.on; store.set("ws", ws); paintWebsearch(); };
+paintWebsearch();
 $("drawer-close").onclick = () => openDrawer(false);
 $("scrim").onclick = () => openDrawer(false);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") openDrawer(false); });
