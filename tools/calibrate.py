@@ -339,6 +339,8 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
                 sw.warm_up(1)
                 by_workers[w] = [sw.rate(), sw.rate()]
                 say(f"    {w} workers: {statistics.median(by_workers[w]):.1f} tok/s")
+            except Exception as ex:  # noqa: BLE001 - #2313: the engine stopped while measured (EngineDied ...)
+                dropped(f"{w} workers", ex, say, report)
             finally:
                 close(e)
         report["workers"] = {str(k): v for k, v in by_workers.items()}
@@ -365,6 +367,8 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
             sa.warm_up(1)
             by_adapt[key] = [sa.rate(max_new=TIER_MAX_NEW), sa.rate(max_new=TIER_MAX_NEW)]
             say(f"    {statistics.median(by_adapt[key]):.1f} tok/s")
+        except Exception as ex:  # noqa: BLE001 - #2313: the engine stopped while measured (EngineDied ...)
+            dropped("the expert tier " + key, ex, say, report)
         finally:
             close(e)
     a_best = pick(by_adapt, "default") if by_adapt else "default"
@@ -419,6 +423,14 @@ def restart(start_engine, args, what, say, report):
         return None
 
 
+def dropped(what, e, say, report):
+    """#2313: an engine that stops while a later step measures it (a crash, a SIGTERM from outside) costs that
+    candidate, like a start that fails (#1337): what the earlier steps measured and chose is kept."""
+    why = str(e).strip().splitlines()[0][:300] if str(e).strip() else type(e).__name__
+    say(f"    measuring {what} failed: {why} - this candidate is dropped, the earlier results are kept")
+    report.setdefault("failed_runs", {})[what] = why
+
+
 def close(eng):
     proc = getattr(eng, "proc", None)
     if proc is None:
@@ -430,6 +442,10 @@ def close(eng):
         proc.wait(60)
     except Exception:
         proc.kill()
+        try:                                       # #2313: a pipe to an engine that has gone; closed here, not
+            proc.stdin.close()                     # flushed again (a BrokenPipeError) when it is garbage-collected
+        except Exception:  # noqa: BLE001
+            pass
 
 
 DEFAULTS = {"--pcie-frac": None, "--spec-min-p": "0.5", "--pool-workers": None,   # None: the engine's own choice

@@ -5,10 +5,13 @@ function of the settings it runs with.
 """
 from __future__ import annotations
 
+import gc
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -170,6 +173,38 @@ class Calibrate(unittest.TestCase):
         res = CAL.measure(BASE, [[1, 2, 3]] * 3, start, say=lambda *_: None)
         self.assertEqual(res["settings"].get("--pool-workers"), "2")
         self.assertEqual(list(res["report"]["failed_starts"]), ["3 workers"])
+
+    def test_an_engine_that_stops_while_measured_only_drops_that_candidate_2313(self):
+        # #2313: the 4-worker engine started, served, then was stopped (exit code -15): the whole run ended and the
+        # PCIe share, draft floor and worker counts measured before were lost
+        from serve.server import EngineDied
+
+        class Stops(FakeEngine):
+            def generate(self, ids, max_new, sampling, cancel):
+                if self.workers == 4 or CAL.arg_value(self.args, "--adapt-swaps") == "80":
+                    raise EngineDied("the engine stopped unexpectedly (exit code -15)")
+                yield from super().generate(ids, max_new, sampling, cancel)
+        said = []
+        def speed(f, p, w):
+            return (60.0 if w == 3 else 50.0) * (1.2 if f == 0.2 else 1.0)
+        res = CAL.measure(BASE, [[1, 2, 3]] * 3, lambda a: Stops(a, speed, 6), say=said.append)
+        self.assertEqual(res["settings"].get("--pcie-frac"), "0.20")             # the earlier steps survived
+        self.assertEqual(res["settings"].get("--pool-workers"), "3")             # and the later candidates still ran
+        self.assertEqual(sorted(res["report"]["failed_runs"]), ["4 workers", "the expert tier 1/80/0.97"])
+        self.assertNotIn("4", res["report"]["workers"])
+        self.assertTrue(any("measuring 4 workers failed" in x and "exit code -15" in x for x in said))
+
+    def test_close_an_engine_that_has_gone_2313(self):
+        # the BrokenPipeError "Exception ignored while finalizing file" of #2313: the pipe to a dead engine is closed
+        proc = subprocess.Popen([sys.executable, "-c", "pass"], stdin=subprocess.PIPE, text=True)
+        proc.wait()
+        unraisable = []
+        with mock.patch.object(sys, "unraisablehook", unraisable.append):
+            CAL.close(types.SimpleNamespace(proc=proc))
+            self.assertTrue(proc.stdin.closed)
+            del proc
+            gc.collect()
+        self.assertEqual(unraisable, [])
 
     def test_adaptive_tier(self):
         # a slow-RAM PC: swapping 160 experts per round is 10% faster, 80 is 2% (noise)
