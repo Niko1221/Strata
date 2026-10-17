@@ -61,12 +61,13 @@ inline constexpr uint64_t kNoCacheComplement = ~uint64_t{0};
 struct CgroupMemoryStat {
     uint64_t current = 0;
     uint64_t inactive_file = 0;
+    uint64_t active_file = 0;
     uint64_t file_dirty = 0;
     uint64_t file_writeback = 0;
     bool valid = false;
 };
 
-/// Calculate additional bytes under a finite cgroup limit after reclaiming only clean inactive file cache.
+/// Calculate additional bytes under a finite cgroup limit after reclaiming clean file cache, active and inactive.
 /// Returns false when the required memory.stat counters were unavailable.
 bool cgroup_available_bytes(uint64_t limit, const CgroupMemoryStat& stat, uint64_t& bytes);
 

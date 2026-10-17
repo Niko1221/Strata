@@ -433,29 +433,50 @@ void test_cgroup_memory_budget() {
     constexpr uint64_t GiB = 1ull << 30;
     uint64_t bytes = 0;
 
-    CgroupMemoryStat clean_cache{40 * GiB, 32 * GiB, 0, 0, true};
+    CgroupMemoryStat clean_cache{40 * GiB, 32 * GiB, 0, 0, 0, true};
     require(cgroup_available_bytes(56 * GiB, clean_cache, bytes), "valid cgroup memory.stat was rejected");
     require(bytes == 48 * GiB, "clean inactive file cache was not credited against the cgroup cap");
 
-    CgroupMemoryStat dirty_cache{40 * GiB, 32 * GiB, 4 * GiB, 2 * GiB, true};
+    CgroupMemoryStat dirty_cache{40 * GiB, 32 * GiB, 0, 4 * GiB, 2 * GiB, true};
     require(cgroup_available_bytes(56 * GiB, dirty_cache, bytes), "valid dirty-cache counters were rejected");
     require(bytes == 42 * GiB, "dirty/writeback pages were incorrectly counted as reclaimable");
 
-    CgroupMemoryStat oversized_inactive{10 * GiB, 20 * GiB, 0, 0, true};
+    CgroupMemoryStat oversized_inactive{10 * GiB, 20 * GiB, 0, 0, 0, true};
     require(cgroup_available_bytes(12 * GiB, oversized_inactive, bytes),
             "valid oversized inactive-file counter was rejected");
     require(bytes == 12 * GiB, "inactive-file accounting exceeded charged current usage");
 
     const uint64_t max = std::numeric_limits<uint64_t>::max();
-    CgroupMemoryStat large_counters{max, max, max - 1, max, true};
+    CgroupMemoryStat large_counters{max, max, max, max - 1, max, true};
     require(cgroup_available_bytes(max, large_counters, bytes),
             "large memory.stat counters were rejected");
     require(bytes == 0, "dirty/writeback subtraction overflowed or escaped the usage cap");
 
-    CgroupMemoryStat usage_over_limit{60 * GiB, 0, 0, 0, true};
+    CgroupMemoryStat usage_over_limit{60 * GiB, 0, 0, 0, 0, true};
     require(cgroup_available_bytes(56 * GiB, usage_over_limit, bytes),
             "valid over-limit memory counters were rejected");
     require(bytes == 0, "over-limit cgroup usage produced a positive budget");
+
+    // Clean active file cache is reclaimable too: the model files read while loading land on the active list
+    // (a 2x RTX 3090 test box, 2026-10-09: 21.59 GiB active_file, 0.75 GiB inactive_file in a 50 GiB container),
+    // and counting only inactive_file granted a 0-30 GiB budget depending on the page cache's history.
+    CgroupMemoryStat loaded_model{48 * GiB, 1 * GiB, 21 * GiB, 0, 0, true};
+    require(cgroup_available_bytes(50 * GiB, loaded_model, bytes), "active-file counters were rejected");
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+    require(bytes == 3 * GiB, "HIP credited active file cache, which can hold pinned file blobs");
+#else
+    require(bytes == 24 * GiB, "clean active file cache was not credited against the cgroup cap");
+#endif
+
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+    CgroupMemoryStat oversized_file{10 * GiB, 8 * GiB, 8 * GiB, 0, 0, true};
+    require(cgroup_available_bytes(12 * GiB, oversized_file, bytes), "oversized file counters were rejected");
+    require(bytes == 12 * GiB, "inactive + active file accounting exceeded charged current usage");
+
+    CgroupMemoryStat summed_max{max, max, max, 0, 0, true};
+    require(cgroup_available_bytes(max, summed_max, bytes), "file counters summing past 2^64 were rejected");
+    require(bytes == max, "inactive + active file sum overflowed");
+#endif
 
     CgroupMemoryStat missing_stat{};
     bytes = 123;
@@ -561,7 +582,7 @@ void test_host_memory() {
     put("fs/cgroup.controllers", "memory\n");
     put("fs/box/memory.max", std::to_string(48 * GiB) + "\n");
     put("fs/box/memory.current", std::to_string(16 * GiB) + "\n");
-    put("fs/box/memory.stat", "inactive_file " + std::to_string(4 * GiB) + "\nfile_dirty 0\nfile_writeback 0\n");
+    put("fs/box/memory.stat", "inactive_file " + std::to_string(4 * GiB) + "\nactive_file 0\nfile_dirty 0\nfile_writeback 0\n");
     require(probe("0::/box\n") && m.available == 36 * GiB && m.cgroup_limit == 48 * GiB, "v2 limit");
     put("fs/box/memory.max", "max\n");
     require(probe("0::/box\n") && m.available == 100 * GiB && m.cgroup_limit == ~0ull, "v2 max");

@@ -75,8 +75,21 @@ bool cgroup_available_bytes(uint64_t limit, const CgroupMemoryStat& stat, uint64
     bytes = 0;
     if (!stat.valid) return false;
 
-    // memory.stat's inactive_file can race memory.current, so bound it to charged usage first.
-    uint64_t reclaimable = std::min(stat.inactive_file, stat.current);
+    // Clean active file pages count too: the files this process read while loading sit on the active list, and the
+    // kernel reclaims them under the cgroup limit before the pinned arena would need the room. Counting inactive_file
+    // alone (cAdvisor's working-set rule) made the granted budget depend on whether another cgroup had already paid
+    // for those pages: 0 to 30 GiB across starts on a 2x RTX 3090 test box, 2026-10-09. The counters can race
+    // memory.current, so the saturating sum is bounded to charged usage first.
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+    // HIP keeps inactive_file alone: pin_blobs (generate.cpp) registers mapped file ranges, and those pinned pages
+    // stay on the active list without being reclaimable.
+    const uint64_t file = stat.inactive_file;
+#else
+    const uint64_t file = stat.active_file > std::numeric_limits<uint64_t>::max() - stat.inactive_file
+                              ? std::numeric_limits<uint64_t>::max()
+                              : stat.inactive_file + stat.active_file;
+#endif
+    uint64_t reclaimable = std::min(file, stat.current);
     reclaimable = stat.file_dirty >= reclaimable ? 0 : reclaimable - stat.file_dirty;
     reclaimable = stat.file_writeback >= reclaimable ? 0 : reclaimable - stat.file_writeback;
 
@@ -291,7 +304,7 @@ bool read_cgroup_memory_stat(const std::filesystem::path& path, uint64_t current
     std::ifstream input(path / "memory.stat");
     if (!input) return false;
 
-    bool inactive_file = false, file_dirty = false, file_writeback = false;
+    bool inactive_file = false, active_file = false, file_dirty = false, file_writeback = false;
     std::string line;
     while (std::getline(input, line)) {
         std::istringstream fields(line);
@@ -305,6 +318,10 @@ bool read_cgroup_memory_stat(const std::filesystem::path& path, uint64_t current
             if (inactive_file) return false;
             inactive_file = true;
             stat.inactive_file = value;
+        } else if (key == "active_file") {
+            if (active_file) return false;
+            active_file = true;
+            stat.active_file = value;
         } else if (key == "file_dirty") {
             if (file_dirty) return false;
             file_dirty = true;
@@ -315,7 +332,7 @@ bool read_cgroup_memory_stat(const std::filesystem::path& path, uint64_t current
             stat.file_writeback = value;
         }
     }
-    if (!input.eof() || !inactive_file || !file_dirty || !file_writeback) return false;
+    if (!input.eof() || !inactive_file || !active_file || !file_dirty || !file_writeback) return false;
     stat.current = current;
     stat.valid = true;
     return true;
