@@ -281,6 +281,18 @@
       <label class="st-label" for="s-ws-max">Max results <output id="o-ws-max"></output></label>
       <input class="st-input" id="s-ws-max" type="number" min="1" max="20" step="1">
     </div>
+    <div class="toggle-row"><span>Read result pages<br><span class="muted small">fetches the top pages in full, not just the snippets</span></span>
+      <button class="st-toggle" id="s-ws-read" role="switch" aria-checked="true" aria-label="Read result pages"></button></div>
+    <div class="st-field" id="ws-readmax-row">
+      <label class="st-label" for="s-ws-readmax">Pages to read <output id="o-ws-readmax"></output></label>
+      <input class="st-input" id="s-ws-readmax" type="number" min="1" max="5" step="1">
+    </div>
+    <div class="toggle-row"><span>Limit page text<br><span class="muted small">off = whole pages go in; the server still caps the total at the model's context</span></span>
+      <button class="st-toggle" id="s-ws-plim" role="switch" aria-checked="true" aria-label="Limit page text"></button></div>
+    <div class="st-field" id="ws-plim-row">
+      <label class="st-label" for="s-ws-plim-chars">Max characters per page <output id="o-ws-plim"></output></label>
+      <input class="st-input" id="s-ws-plim-chars" type="number" min="1000" max="100000" step="500">
+    </div>
     <div class="drawer-actions">
       <button class="st-btn st-btn--secondary" id="s-reset" type="button">Reset</button>
       <button class="st-btn st-btn--primary" id="s-apply" type="button">Apply</button>

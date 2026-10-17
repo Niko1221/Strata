@@ -6,7 +6,10 @@ is stored on the server (API keys stay in the browser that set them, like its AP
     cfg = {"engine": "searxng" | "duckduckgo" | "brave" | "tavily" | "serper",
            "url": SearXNG base, default http://127.0.0.1:8888,
            "api_key": Brave / Tavily / Serper,
-           "max_results": 1..20, default 6}
+           "max_results": 1..20, default 6,
+           "read_pages": true/false, "read_max": 1..5  (fetch the top pages in full),
+           "page_limit": true/false + "page_chars": per-page cap (default 5000),
+           "n_ctx": the model context - the reading budget is a slice of it (10%, or 25% when page_limit is off)}
 
 All providers go through this server (a browser may not call them directly: CORS), stdlib only.
 search(query, cfg) -> [{"title", "url", "snippet"}]; SearchError carries a readable message.
@@ -19,6 +22,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from html.parser import HTMLParser
 
 DEFAULT_SEARCH_URL = "http://127.0.0.1:8888"
 TIMEOUT_S = 15
@@ -134,6 +138,68 @@ def _serper(query, cfg, n):
              "snippet": r.get("snippet") or ""} for r in data.get("organic", [])[:n] if r.get("link")]
 
 
+PAGE_TIMEOUT_S = 10
+PAGE_MAX_BYTES = 2_000_000
+PAGE_CHARS = 5000
+
+
+class _TextExtractor(HTMLParser):
+    """Readable text from HTML: skips chrome (script/nav/footer/...), prefers main/article."""
+    SKIP = {"script", "style", "noscript", "svg", "nav", "footer", "header", "form", "button",
+            "select", "option", "iframe", "template"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.all_parts = []
+        self.main_parts = []
+        self._skip = 0
+        self._main = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self._skip += 1
+        elif tag in ("main", "article"):
+            self._main += 1
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP and self._skip:
+            self._skip -= 1
+        elif tag in ("main", "article") and self._main:
+            self._main -= 1
+
+    def handle_data(self, data):
+        if self._skip:
+            return
+        data = data.strip()
+        if data:
+            (self.main_parts if self._main else self.all_parts).append(data)
+
+
+def _page_text(page: str) -> str:
+    ex = _TextExtractor()
+    ex.feed(page)
+    main = " ".join(ex.main_parts)
+    text = main if len(main) >= 800 else " ".join(ex.all_parts)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _read_page(result: dict, budget: int) -> str:
+    """Fetch one result page and return its readable text (or a short reason it could not be read)."""
+    try:
+        req = urllib.request.Request(result["url"], headers={"User-Agent": UA, "Accept": "text/html"})
+        with urllib.request.urlopen(req, timeout=PAGE_TIMEOUT_S) as r:
+            ctype = (r.headers.get("Content-Type") or "").lower()
+            if "html" not in ctype:
+                return "(not an HTML page: " + (ctype.split(";")[0] or "unknown type") + ")"
+            page = r.read(PAGE_MAX_BYTES).decode("utf-8", "replace")
+    except Exception as e:  # one unreadable page must not break the search
+        return "(page could not be read: " + e.__class__.__name__ + ")"
+    text = _page_text(page)
+    if len(text) < 300:
+        return "(page has almost no readable text - it likely needs JavaScript)"
+    return text[:budget]
+
+
 ENGINES = {"searxng": _searxng, "duckduckgo": _duckduckgo, "brave": _brave, "tavily": _tavily,
            "serper": _serper}
 
@@ -148,4 +214,31 @@ def search(query: str, cfg: dict | None = None) -> list[dict]:
         n = int(cfg.get("max_results") or 6)
     except (TypeError, ValueError):
         n = 6
-    return fn(query, cfg, max(1, min(20, n)))
+    results = fn(query, cfg, max(1, min(20, n)))
+    if cfg.get("read_pages"):
+        try:
+            k = max(1, min(5, int(cfg.get("read_max") or 2)))
+        except (TypeError, ValueError):
+            k = 2
+        # the reading budget is a slice of the model's window (~3 chars/token): 10% normally,
+        # 25% when the user explicitly asked for whole pages; unknown context -> the plain default
+        try:
+            n_ctx = int(cfg.get("n_ctx") or 0)
+        except (TypeError, ValueError):
+            n_ctx = 0
+        limit = cfg.get("page_limit", True)
+        if n_ctx > 0:
+            budget_total = int(n_ctx * (0.10 if limit else 0.25) * 3)
+        else:
+            budget_total = PAGE_CHARS * k
+        if limit:
+            try:
+                per_page = max(500, min(100_000, int(cfg.get("page_chars") or PAGE_CHARS)))
+            except (TypeError, ValueError):
+                per_page = PAGE_CHARS
+            per_page = min(per_page, max(1500, budget_total // k))
+        else:
+            per_page = max(1500, budget_total // k)   # "unlimited": the context slice is the only cap
+        for r in results[:k]:
+            r["content"] = _read_page(r, per_page)
+    return results
