@@ -25,7 +25,11 @@ this PC only. The details and every setting are in [docs/DETAILS.md](docs/DETAIL
 - **API key.** `"api_key"` in the run config (or `STRATA_API_KEY`) is required on `/v1/*` and on every endpoint
   that shows the model's state, requests or answers (`/status`, `/metrics`, `/settings`, `/mcp`, `/props`, `/slots`,
   `/api/requests`, `/config`) and on every `POST`. It is compared in constant time. Set one before you open the
-  server to your network or put a tunnel in front of it.
+  server to your network or put a tunnel in front of it. Not behind the key: the web app's pages and files (`/`,
+  `/api-monitor` when it is on, `/web/*`, `/fonts/*`), `/health` and `/api/health` (the model's name, its context
+  size, whether it is loaded, whether pictures and image generation are on, and whether a key is set), and a generated
+  image's `/v1/images/files/<name>` (image generation only; its random 128-bit name is the access, as with an OpenAI
+  image URL).
 - **Host check (DNS rebinding, 0.1.38).** Without an API key the server answers only requests whose `Host` is a name
   it knows (`localhost`, an IP address, the address it listens on and, when it listens beyond this PC, this PC's
   name). Others get 403. `"allowed_hosts"` adds names; with an API key the key decides.
