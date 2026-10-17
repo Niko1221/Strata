@@ -1,0 +1,6 @@
+data: {"id": "chatcmpl-1b7092f3264a4f91b2a081cf", "object": "chat.completion.chunk", "created": 1792169500, "model": "Qwen3.8-Flash-Next-gsq-rco-iq3s", "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": null}]}
+
+data: {"id": "chatcmpl-1b7092f3264a4f91b2a081cf", "object": "chat.completion.chunk", "created": 1792169500, "model": "Qwen3.8-Flash-Next-gsq-rco-iq3s", "choices": [{"index": 0, "delta": {}, "finish_reason": "length"}], "usage": {"prompt_tokens": 4165, "completion_tokens": 0, "total_tokens": 4165, "prompt_tokens_details": {"cached_tokens": 0}}, "timings": {"cache_n": 0, "prompt_n": 4165, "prompt_ms": 2210.0, "prompt_per_token_ms": 0.531, "prompt_per_second": 1884.6, "predicted_n": 0, "predicted_ms": 95.1, "predicted_per_token_ms": 7.315, "predicted_per_second": 136.7, "draft_n": 10, "draft_n_accepted": 10}}
+
+data: [DONE]
+

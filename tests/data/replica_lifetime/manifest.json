@@ -1,0 +1,185 @@
+{
+  "files": [
+    {
+      "path": "cases/slot-follow-SLOT-1-RVN-8020-fixed.sse",
+      "bytes": 3456,
+      "sha256": "93deeaff8f19f289902bba0cff94b0d31695f7fb64005918db8445829b339317"
+    },
+    {
+      "path": "cases/slot-follow-SLOT-1-RVN-8020-original.sse",
+      "bytes": 879,
+      "sha256": "7bc92876584a32af9c4bfec0bc35f70cd3156067be7181f30074b35f64a1236a"
+    },
+    {
+      "path": "cases/slot-follow-SLOT-1-RVN-8020-request.json",
+      "bytes": 24529,
+      "sha256": "1edfd7b03f93a2e1e08504840d39963c26dbddde919e7d625aa1cccb41682779"
+    },
+    {
+      "path": "cases/slot-follow-SLOT-3-RVN-23858-fixed.sse",
+      "bytes": 3685,
+      "sha256": "c88597618e0ada99eca112d8c9a4320f3b9368cb3adeab3ea9038c9def9dc7a6"
+    },
+    {
+      "path": "cases/slot-follow-SLOT-3-RVN-23858-original.sse",
+      "bytes": 3685,
+      "sha256": "babbd499f2608f605b206cb95a0a89c559d5421ce343399cf2ac2a1994bc335d"
+    },
+    {
+      "path": "cases/slot-follow-SLOT-3-RVN-23858-request.json",
+      "bytes": 24531,
+      "sha256": "1020039c290b1dcf668cf5aaf2b37506ff9b3e98502b778fc5f1cdae427224d9"
+    },
+    {
+      "path": "current-main-cpu.json",
+      "bytes": 4260,
+      "sha256": "20a9b92f0acf4ff5703d948d2b3611884829d516ca3fc2db0b76caea53c07af6"
+    },
+    {
+      "path": "dependencies.json",
+      "bytes": 1974,
+      "sha256": "59c1434d3598ce4decc6244bd190cae5026c1f2508eea8bc56e53889a459b3f4"
+    },
+    {
+      "path": "gpu-historical-cases.json",
+      "bytes": 4282,
+      "sha256": "2e3e9f8a6fc6b1684c5f9a1adda208cf64468714a951a1ab03b705de9b04682d"
+    },
+    {
+      "path": "gpu-qualification.json",
+      "bytes": 168478,
+      "sha256": "b547b750ecf6d6250db1a19f8e532bb5e8e5fe381b8493ce40a68d21f710db59"
+    },
+    {
+      "path": "linux-close_only.log",
+      "bytes": 4044,
+      "sha256": "6357edd5300dbaef2f8ae83376cfa2299f353c811eff9d2dd0e681e45201d224"
+    },
+    {
+      "path": "linux-controls.json",
+      "bytes": 2050,
+      "sha256": "9fa1fb8a2059aa4e96ec7f34e3495acdf5bc12554c6504f41f7a0da577a4f44b"
+    },
+    {
+      "path": "linux-fixed.log",
+      "bytes": 2925,
+      "sha256": "c5e3e2a023f0bb9cb4a08dbf50b4509bb218e49030efcac0425213b7e7974808"
+    },
+    {
+      "path": "linux-original.log",
+      "bytes": 10285,
+      "sha256": "da00470d1d4b3ee30fc7670da1201d7255500bd3e65cd86e7590c32ebf69631b"
+    },
+    {
+      "path": "offline-alternatives-microbench.json",
+      "bytes": 6912,
+      "sha256": "1a52ac72b794584e24fe5c1777b009b72536598e56b3206432c27bc816b5e393"
+    },
+    {
+      "path": "offline-alternatives-tests.json",
+      "bytes": 2371,
+      "sha256": "69bc571ac9a04954e1c095c44aa7101d8d4422c714e970b3a662d3e9089027e4"
+    },
+    {
+      "path": "original-layer-config.json",
+      "bytes": 1242,
+      "sha256": "5f3432bee2e5f33c6f82b7662850883969967498730c6881f4b1624c8e851e0f"
+    },
+    {
+      "path": "pinned-first-combined-sampler-failure.log",
+      "bytes": 1312,
+      "sha256": "e93d1d8fb04536b97e711daabe23d4c688514f1f6219e4506dcff030792c4b10"
+    },
+    {
+      "path": "serving-logs/module-0.log",
+      "bytes": 3406,
+      "sha256": "9d5df782d4bc19fa806703c4d9edf168040ec9f285052d655b7b2d7a601412a5"
+    },
+    {
+      "path": "serving-logs/module-1.log",
+      "bytes": 19865,
+      "sha256": "9bdc5bf70e95d7d16485374344563a6ff22da6c2ff227869890f2d121db910c1"
+    },
+    {
+      "path": "serving-logs/module-10.log",
+      "bytes": 6418,
+      "sha256": "503be753ac10a48e43ea5b64a59681a492adce65051c598075254f64278a6ff2"
+    },
+    {
+      "path": "serving-logs/module-11.log",
+      "bytes": 4677,
+      "sha256": "47e8c346edc37feebac243e903354546ddac7946000cec067163facfe8ce7f9e"
+    },
+    {
+      "path": "serving-logs/module-12.log",
+      "bytes": 6369,
+      "sha256": "55d20ee29e6bde31ecd1530b216ae037e8b9b87eab735d7f9b0ea6948df1673c"
+    },
+    {
+      "path": "serving-logs/module-13.log",
+      "bytes": 1202,
+      "sha256": "02f79efee28ef671dedc920a48a4c1a01d9b8c5a7c46b5dd49c951d32b18c8e7"
+    },
+    {
+      "path": "serving-logs/module-2.log",
+      "bytes": 3513,
+      "sha256": "f0dd5483d8a9716b09390ec054395eb8453d80235dc611de66000e713dcacc4f"
+    },
+    {
+      "path": "serving-logs/module-3.log",
+      "bytes": 3608,
+      "sha256": "079a14c2e568b0b125d1abe159f1c323ab3e470f0fffae5c6e710792c9918202"
+    },
+    {
+      "path": "serving-logs/module-4.log",
+      "bytes": 1281,
+      "sha256": "2ee66371dd47947c4502df3730ec8494b4ef8c9dbd1c7f310976e41bae6a7f65"
+    },
+    {
+      "path": "serving-logs/module-5.log",
+      "bytes": 1369,
+      "sha256": "44d782aa2bd7b045c87cb86cbfe090106e1777c54e93049b87ad497b178380d8"
+    },
+    {
+      "path": "serving-logs/module-6.log",
+      "bytes": 894,
+      "sha256": "382209f16b78482347fe895a4d13984e31499286eed17f0bc7af1e1d66123c53"
+    },
+    {
+      "path": "serving-logs/module-7.log",
+      "bytes": 7600,
+      "sha256": "a2a23e9202664c25c415d865cb5704561ba2e2caca4d09df585e575de2dba438"
+    },
+    {
+      "path": "serving-logs/module-8.log",
+      "bytes": 442,
+      "sha256": "2ca24dd0d9339939fc611ecc5c5735f7f0266cca50b56076b524e59f7bc4223a"
+    },
+    {
+      "path": "serving-logs/module-9.log",
+      "bytes": 11989,
+      "sha256": "3978aae77ce87ece324dc569a281a973b54d941fefd6fd54f83268ff73fee88c"
+    },
+    {
+      "path": "windows-close_only.log",
+      "bytes": 4112,
+      "sha256": "567b7cb7bfd8d8c63bc3817066b1ac9a28753d922e0474ff7e82a8c1b1c1b53e"
+    },
+    {
+      "path": "windows-controls.json",
+      "bytes": 2050,
+      "sha256": "9fa1fb8a2059aa4e96ec7f34e3495acdf5bc12554c6504f41f7a0da577a4f44b"
+    },
+    {
+      "path": "windows-fixed.log",
+      "bytes": 2925,
+      "sha256": "b06be01146266dbee33ae34be32718adad6de327264af9f97698ab9bd1a6fb30"
+    },
+    {
+      "path": "windows-original.log",
+      "bytes": 10266,
+      "sha256": "68092eab86b976e72611eaf71d1fbc124f6b059bf30f4227e33fcf167228c300"
+    }
+  ],
+  "scope": "Focused public evidence, redacted paths and LF-normalized reports/logs. Synthetic request and SSE bytes unchanged; complete private archive hash is provenance only."
+}

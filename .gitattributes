@@ -10,3 +10,8 @@ tests/data/native_experts/** -text
 
 # the quant yardstick's text set: tokenized byte for byte (set.ids.json), never convert its line endings
 data/quant_quality/** -text
+
+# Synthetic replica failure/recovery evidence is hashed byte for byte.
+tests/data/replica_lifetime/** -text
+# The final empty SSE line is a protocol delimiter, preserved in raw evidence.
+tests/data/replica_lifetime/cases/*.sse whitespace=-blank-at-eof

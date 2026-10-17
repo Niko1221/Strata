@@ -1,0 +1,125 @@
+{
+  "status": "CURRENT_MAIN_A_DIRECT_READER_AND_SELECTED_SERVING_TESTS_PASS",
+  "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "matrix": {
+    "status": "PASS",
+    "baseline": "477ac13cbe8e582c20484871ce459d20d82df09d",
+    "rows": [
+      {
+        "name": "original",
+        "tests": 18,
+        "passed": 9,
+        "failures": [
+          "serve.test_replica_lifetime.RealPipeContracts.test_real_pipe_queued_successor_keeps_output_and_statistics",
+          "serve.test_replica_lifetime.ReplicaContracts.test_client_disconnect_drains_before_handoff",
+          "serve.test_replica_lifetime.ReplicaContracts.test_delayed_done_is_drained_without_fixed_sleep_workaround",
+          "serve.test_replica_lifetime.ReplicaContracts.test_done_statistics_remain_request_owned_after_unlock",
+          "serve.test_replica_lifetime.ReplicaContracts.test_drain_failure_is_error_and_bad_engine_is_not_reused",
+          "serve.test_replica_lifetime.ReplicaContracts.test_no_control_or_token_frame_crosses_requests",
+          "serve.test_replica_lifetime.ReplicaContracts.test_no_generation_starts_before_previous_ack",
+          "serve.test_replica_lifetime.ReplicaContracts.test_stop_string_like_early_close_drains_before_handoff",
+          "serve.test_replica_lifetime.ReplicaContracts.test_successor_receives_its_own_tokens_after_eos"
+        ],
+        "errors": [],
+        "source_sha256": "db3f2b363dd9344311e2df2ef2f68a4421e9e306e9ddd84808a957b91069509d"
+      },
+      {
+        "name": "close_only",
+        "tests": 18,
+        "passed": 16,
+        "failures": [
+          "serve.test_replica_lifetime.RealPipeContracts.test_real_pipe_queued_successor_keeps_output_and_statistics",
+          "serve.test_replica_lifetime.ReplicaContracts.test_done_statistics_remain_request_owned_after_unlock"
+        ],
+        "errors": [],
+        "source_sha256": "c1ae4eede37b1a21b9348be53a7441205885d3a276abf6381a4cfd09e4d75586"
+      },
+      {
+        "name": "fixed",
+        "tests": 18,
+        "passed": 18,
+        "failures": [],
+        "errors": [],
+        "source_sha256": "76b68ca40ebf0aa26f974cc66351322843f3bc4d77275c781f0f511639a03fe1"
+      }
+    ],
+    "scope": "Original/close-only are intentional red controls. Real reader/pump, CPU fixtures, no GPU."
+  },
+  "modules": [
+    {
+      "module": "serve.test_replicas",
+      "tests": 17,
+      "returncode": 0
+    },
+    {
+      "module": "serve.test_parallel",
+      "tests": 31,
+      "returncode": 0
+    },
+    {
+      "module": "serve.test_request_accounting",
+      "tests": 10,
+      "returncode": 0
+    },
+    {
+      "module": "serve.test_request_hardening",
+      "tests": 10,
+      "returncode": 0
+    },
+    {
+      "module": "serve.test_queue_keepalive",
+      "tests": 3,
+      "returncode": 0
+    },
+    {
+      "module": "serve.test_runconfig",
+      "tests": 9,
+      "returncode": 0
+    },
+    {
+      "module": "serve.test_slot_alloc",
+      "tests": 7,
+      "returncode": 0
+    },
+    {
+      "module": "serve.test_context_overflow",
+      "tests": 3,
+      "returncode": 0
+    },
+    {
+      "module": "serve.test_cache_drop",
+      "tests": 4,
+      "returncode": 0
+    },
+    {
+      "module": "serve.test_effort_paths",
+      "tests": 11,
+      "returncode": 0
+    },
+    {
+      "module": "serve.test_responses",
+      "tests": 40,
+      "returncode": 0
+    },
+    {
+      "module": "serve.test_reasoning_tools",
+      "tests": 18,
+      "returncode": 0
+    },
+    {
+      "module": "serve.test_reasoning_loop_recovery",
+      "tests": 18,
+      "returncode": 0
+    },
+    {
+      "module": "serve.test_server.NonFiniteLogits",
+      "tests": 5,
+      "returncode": 0
+    }
+  ],
+  "selected_official_tests": 186,
+  "scope": "Current main477ac13 plus exact GPU-qualified replicas.py patch. New18 tests use repository native reader/pump; protocol producer CPU only. Selected serving modules run in separate interpreters. No GPU/native model tests in this run.",
+  "new_test_sha256": "e44ba512bbc567b3ea1bb8b225aee476201ca9a4341f87274a1a0598c221a6af",
+  "replay_tool_sha256": "09c7cfe18f4bb04b30014e9df6d38a2b5aa92fdb074ffa29a4a0fd63b96ce5e2",
+  "root_test_method": "Imports actual StrataEngine and ReplicaEngine; no AST extraction/global server stub."
+}

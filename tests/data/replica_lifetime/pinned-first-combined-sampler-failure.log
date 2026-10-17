@@ -1,0 +1,17 @@
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+.[strata] the thinking repeated the same passages (coverage=1.000) at 2048 tokens: ended as "length" (reasoning_loop_recovery: "stop" in strata-<model>.json; remove it to turn this off)
+[strata] done: 2048 tokens in 0 s (210238.7 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+........
+======================================================================
+FAIL: test_server_close_ends_the_sampler (serve.test_responses.NoLeakedSampler.test_server_close_ends_the_sampler)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/strata/serve/test_responses.py", line 284, in test_server_close_ends_the_sampler
+    self.assertEqual(sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")), before + 1)
+AssertionError: 1 != 2
+
+----------------------------------------------------------------------
+Ran 183 tests in 81.624s
+
+FAILED (failures=1)
