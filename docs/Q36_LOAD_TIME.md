@@ -1,6 +1,7 @@
 # Q36: the model-load bottleneck and the parallel expert copy
 
-**Status:** analysis and Phase 1 implemented and measured on branch `faster-model-load` (from `dev`).
+**Status:** **confirmed and approved (2026-10-17).** Analysis and Phase 1 implemented, measured and committed on
+branch `faster-model-load` (from `dev`), commit `a4362c47`.
 **Target:** the Qwen3.6 family's engine (`--family qwen36`, `strata-q36` / the q36 path inside `strata`), the path this
 PC actually runs.
 **Measured on:** RTX 4060 Laptop GPU (8188 MiB), Ryzen 7 7735HS (8 cores / 16 threads), 62 GB RAM,
@@ -88,6 +89,15 @@ is measured rather than guessed.
 - `madvise(MADV_WILLNEED)` on the expert ranges before the copy, for cold loads.
 - Flip the default to parallel once it is measured faster, per the repo rule that a default changes only where it is
   measured faster.
+
+## Changes made (commit `a4362c47`)
+
+- `src/qwen35/q36_engine.cu`:
+  - `STRATA_Q36_PARALLEL_PLACE` — `0`/unset = serial (the pre-change default, byte-identical output); `N` = copy the
+    routed experts on `N` threads via `place_expert_range()` (disjoint chunks).
+  - The `hybrid experts:` log line now ends `(arena alloc X s, expert copy Y s, N copy thread(s))`, so the two costs
+    and the copy's thread count are visible in the engine log without a profiler.
+- `docs/Q36_LOAD_TIME.md` — this document.
 
 ## Acceptance criteria
 
