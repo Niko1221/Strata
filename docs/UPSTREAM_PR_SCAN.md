@@ -135,24 +135,31 @@ in the shell, and no step can be built until that is settled. That is step 0.1.
 
 ### The one command
 
-Every phase is measured with the same engine run and read off the same two numbers. It needs only the model
-and a built image - no other tool.
+Every phase is measured through the served API (the path this PC actually runs) and read off one number: the
+decode rate the server reports as `timings.predicted_per_second` (`pps`). It needs the model and a built image
+- no other tool. The `--bench-pp 32768 --bench-tg 32` bench is not the baseline: at a full 32K prompt it aborts
+with `cudaMalloc(&E.stage[b], ...) failed: out of memory` unless `STRATA_Q36_SINGLE_STAGE=1` is set, and then
+hits `an illegal memory access` in the hybrid CPU-expert upload (`q36_engine.cu:1878`). Serve mode has neither
+failure.
 
 ```bash
 MODEL=/home/george/apps/llamacpp/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
 
-# prompt-token speed (pp) over a 32K prompt, then token-generation speed (tg) for 32 tokens
-IMAGE=strata:pr-ph0 MODEL_FILE="$MODEL" \
-  docker/run.sh engine --bench-pp 32768 --bench-tg 32 --kv int8 --mtp 2
+# start the server (the phase image, the 32K ceiling, the user's switches)
+IMAGE=strata:pr-ph0 STRATA_Q36_SINGLE_STAGE=1 CONTEXT=32768 \
+  ENGINE_ARGS_EXTRA="--kv int8 --mtp 2" API_KEY=secret \
+  MODEL_FILE="$MODEL" docker/run.sh serve
+
+# one measurement, in another shell (build-q5k/ab_client.py sends the same request):
+python3 build-q5k/ab_client.py http://127.0.0.1:11434 secret "<PROMPT>" 192
 ```
 
-It prints three lines like `bench 0: pp32768 1280.0 tok/s, tg32 13.6 tok/s`. The decode number is `tg`; `pp`
-is prefill and is the number #1581 moves. A shorter `--bench-pp` gives a quicker number; 32768 measures decode
-at the context this box runs. Without Docker the same run is
-`./build/strata --native "$MODEL" --bench-pp 32768 --bench-tg 32 --kv int8 --mtp 2`.
-
-The only things that change from phase to phase are the image tag and, for the opt-in PRs, one switch. The
-baseline is `strata:pr-ph0`; a phase's number is a win only if it beats that, read from the same command.
+The number is the response's `timings.predicted_per_second` (decode only; prefill time is excluded), read
+alongside `timings.prompt_n` (the context the decode actually ran at) and `timings.predicted_n`. Decode rate
+falls as the context grows, so a number without its `prompt_n` is not comparable - see the baseline below.
+`prompt_n` is the real context, not the `CONTEXT=32768` ceiling. `--mtp 2` is the draft count. A phase's number
+is a win only if it beats `strata:pr-ph0` at the same `prompt_n`; the only things that change phase to phase are
+the image tag and, for the opt-in PRs, one switch.
 
 ### Phase 0 - prerequisites (no engine change)
 
@@ -161,11 +168,31 @@ baseline is `strata:pr-ph0`; a phase's number is a win only if it beats that, re
 | 0.1 | Confirm the toolkit: `nvcc --version` | `nvcc` >= 12.5, or 12.0 for sm_89 from the distro `nvidia-cuda-toolkit`. Below that, #1358 first |
 | 0.2 | Build the branch and tag the image | `IMAGE_TAG=strata:pr-ph0 docker/build.sh` returns |
 | 0.3 | Merge [#2660](https://github.com/Niko1221/Strata/pull/2660) `strata_profile.py` and [#2515](https://github.com/Niko1221/Strata/pull/2515) setup pins | merged; neither changes a tok/s |
-| 0.4 | Record the baseline | run the one command and write the `tg` (and `pp`) down |
+| 0.4 | Record the baseline | the serve-mode decode `pps` by `prompt_n`, in [Baseline](#baseline-measured-2026-10-17) below |
 
 Phase 0 has no expected speed-up; step 0.4 is the number every later phase is compared against. #2660 and
 #2515 are merged here without testing: #2660 only says where the time goes, and #2515 only makes the pack
 load.
+
+### Baseline (measured 2026-10-17)
+
+The Phase-0 number, measured on `strata:pr-ph0` (built from this branch after the #2660/#2515 merges) on the
+target PC (RTX 4060 Max-Q 8 GiB, Ryzen 7 7735HS, 62 GB), `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`,
+`--kv int8 --mtp 2`, `STRATA_Q36_SINGLE_STAGE=1`, `CONTEXT=32768`, `max_tokens=192`, through the served
+API. Decode rate (`pps`) vs the context the decode actually ran at (`prompt_n`):
+
+| `prompt_n` (context) | decode `pps` (tok/s) |
+|---|---|
+| 4,106 | 17.6 |
+| 16,391 | 12.3 |
+| 24,581 | 10.4 |
+| 32,561 | 8.1 |
+
+Decode falls smoothly as the history grows. The "~10 tok/s" the memory-compaction plan called "the user's 32K
+run" is decode at **~24-25K context**, not a full 32K - `CONTEXT=32768` was the ceiling, not where the rate was
+measured. A later phase compares against the same `prompt_n`, not the same ceiling. The 32K point drifts
+8.1-8.8 tok/s across repeats (sustained load, thermal); the shorter-context points are stable. The short-context
+sanity check is 18.9 tok/s at 32 tokens, matching [Q36_INT8_KV.md](Q36_INT8_KV.md)'s 18.3-19.6.
 
 ### Phase 1 - cheap, safe, unblocking (all mergeable today)
 
@@ -175,22 +202,16 @@ load.
 | 1.2 | [#1949](https://github.com/Niko1221/Strata/pull/1949) AVX2 accumulators | bit-exact bug fix, no flag, no default changed | merge; the q36 run is expected flat | 2.1x on the router and 190 -> 155 us Q5_1 (Zen 3, author's). Our q36 Q4_K/Q5_K pack is **not** covered |
 | 1.3 | [#2751](https://github.com/Niko1221/Strata/pull/2751) `STRATA_POOL_FUSED` | the only perf PR here that touches the shared CPU pool q36 uses | the one command, switch off then on | -8..-11% per layer (Ryzen 7 3800X, author's), compute-bound IQ rows. Our rows are RAM-bound, so expect less |
 
-#2751 is the only one of the three expected to move a q36 tok/s, so it is the only one that gets a run. The
-switch is opt-in, so both arms are the same image.
+All three are settled (2026-10-17, `strata:pr-ph1` on this box, `--kv int8 --mtp 2`, 32K, `max_tokens=192`):
 
-```bash
-MODEL=/home/george/apps/llamacpp/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
-
-# 1.3 (#2751): read tg with the switch off, then on
-IMAGE=strata:pr2751 MODEL_FILE="$MODEL" docker/run.sh engine \
-  --bench-pp 32768 --bench-tg 32 --kv int8 --mtp 2
-env STRATA_POOL_FUSED=1 IMAGE=strata:pr2751 MODEL_FILE="$MODEL" docker/run.sh engine \
-  --bench-pp 32768 --bench-tg 32 --kv int8 --mtp 2
-```
-
-- **1.1 / 1.2 PASS:** merged; no number required (1.2 is expected flat on the q36 run).
-- **1.3 PASS:** the `tg` with `STRATA_POOL_FUSED=1` is higher than without. A flat result is recorded, not
-  argued with - it would mean our Q4_K/Q5_K rows really are RAM-bound, which is the report's own read.
+- **1.1 (#2515) merged.** Done in Phase 0; the pins make the Q4_K/Q6_K pack load. No tok/s to read.
+- **1.2 (#1949) merged.** Bit-exact (the smoke prompt's output hash is unchanged), no flag, no default change. It
+  leaves `q4k_dot` (the q36 pack's expert dot) alone, so the q36 run is flat by construction; it is a 2.1x fix to
+  the main engine's CPU router and its q5_1/q8_0 expert dots.
+- **1.3 (#2751) rejected.** Measured A/B, `STRATA_POOL_FUSED` off vs on: decode 10.6 -> 10.7 tok/s at 24,581
+  tokens and 8.8 -> 8.6 tok/s at 32,561 (both inside the run-to-run thermal noise; the output hash is identical).
+  The Q4_K rows are RAM-bound, so the fusion's overlap of compute-bound gate/up with RAM-bound down has nothing to
+  hide - the PR's own -8..-11% was on compute-bound IQ rows. Flat here, so it does not go in.
 
 ### Phase 2 - VRAM and prefill (largest effect, most caveats)
 
