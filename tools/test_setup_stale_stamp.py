@@ -148,6 +148,27 @@ class UpdateInstalledEngine(unittest.TestCase):
                 setup.update_installed_engine("http://x", 13)
                 self.assertEqual(built, [])
 
+    def test_an_interrupted_update_is_tried_again(self):
+        # #2159: an update killed after get_prebuilt moved BUILD.json aside left only BUILD.json.prev; every later
+        # update returned early and the old engine stayed for good
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            eng = root / "engine"
+            eng.mkdir()
+            (eng / setup.EXE).write_bytes(binary("0.1.39"))
+            stamp = {"source": "release", "version": "0.1.39", "archs": [86], "vision": "gpu"}
+            (eng / "BUILD.json.prev").write_text(json.dumps(stamp))
+            fetched = []
+            with mock.patch.object(setup, "ROOT", root), \
+                    mock.patch.object(setup, "update_engine_gpu", lambda tk: dict(GPU)), \
+                    mock.patch.object(setup, "get_prebuilt", lambda *a, **k: fetched.append(a)), \
+                    mock.patch.object(setup, "say", lambda *a, **k: None), \
+                    mock.patch.object(setup, "warn", lambda *a, **k: None):
+                setup.update_installed_engine("http://x", 13)
+            self.assertEqual(len(fetched), 1)
+            self.assertEqual(json.loads((eng / "BUILD.json").read_text()), stamp)
+            self.assertFalse((eng / "BUILD.json.prev").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

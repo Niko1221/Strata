@@ -3716,6 +3716,17 @@ def update_installed_engine(url_base, toolkit=None) -> None:
         return
     eng = engine_dir(toolkit)
     info = eng / "BUILD.json"
+    # #2159: get_prebuilt moves BUILD.json aside before it downloads, and the `new is None` branch below puts it back -
+    # but only when this process lives to get there.  A crash, a reboot or a closed window in between left the old
+    # engine without its BUILD.json, and every later update returned here without a word, so the install never updated
+    # again.  The stamp still describes the exe beside it: it goes back, and the update is tried again.
+    kept = eng / "BUILD.json.prev"
+    if not info.exists() and kept.exists() and (eng / EXE).exists():
+        try:
+            kept.replace(info)
+            warn("an earlier engine update did not finish: trying it again")
+        except OSError:
+            pass
     if not info.exists() or not (eng / EXE).exists():
         return
     meta_text = info.read_text(encoding="utf-8")
