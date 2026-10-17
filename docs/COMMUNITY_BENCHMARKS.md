@@ -114,6 +114,11 @@ python tools/strata_bench.py --compare OLD_FOLDER --compare-only NEW_FOLDER   # 
 The tool is a speed check, not a quality test. For recall and other checks, see [Optional correctness
 checks](#optional-correctness-checks); for A/B tests of two builds use `tools/ab_engine.py`.
 
+[strata-bench](https://github.com/brenoperucchi/strata-bench) is an independent project that measures a running Strata server
+with fixed public prompts and writes one validated `result.json` per configuration. Its
+[dashboard](https://brenoperucchi.github.io/strata-bench/) shows results from different machines side by side. Its prompts differ from
+those of `tools/strata_bench.py`, so the two sets of numbers are not interchangeable.
+
 ## What to record
 
 Include enough information for someone else to repeat your run:
