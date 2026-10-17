@@ -6,6 +6,7 @@
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_fp16.h>
 #include "strata/prefill/gemm.hpp"
+#include "strata/prefill/kernels.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -95,6 +96,26 @@ int main() {
     hipStream_t stream;
     CHECK(hipStreamCreateWithFlags(&stream, hipStreamNonBlocking));
     bool ok = true;
+    // The host-written activation symbol must remain addressable on Windows/PAL.
+    {
+        const float values[] = {1.25f, -2.5f, 0.125f, 3.5f};
+        Buffer input(sizeof(values)), output(4 * sizeof(uint16_t));
+        CHECK(hipMemcpy(input.p, values, sizeof(values), hipMemcpyHostToDevice));
+        for (bool f16 : {false, true, false, true}) {
+            strata::prefill::set_act_f16(f16);
+            strata::prefill::to_bf16((const float*) input.p, (uint16_t*) output.p, 4, stream, nullptr);
+            CHECK(hipStreamSynchronize(stream));
+            uint16_t got[4];
+            CHECK(hipMemcpy(got, output.p, sizeof(got), hipMemcpyDeviceToHost));
+            for (int i = 0; i < 4; ++i) {
+                uint16_t expected;
+                if (f16) { const __half h = __float2half_rn(values[i]); std::memcpy(&expected, &h, 2); }
+                else { uint32_t bits; std::memcpy(&bits, &values[i], 4); expected = uint16_t(bits >> 16); }
+                ok = ok && got[i] == expected;
+            }
+        }
+        std::printf("%s activation device symbol BF16/FP16 toggle\n", ok ? "PASS" : "FAIL");
+    }
     {
         strata::prefill::Gemm gemm;
         std::string error;
