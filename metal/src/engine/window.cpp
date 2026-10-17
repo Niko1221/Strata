@@ -502,7 +502,11 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         std::vector<std::string> names;
         for (const auto& kv : f_.tensors) {
             const gguf::Tensor& x = kv.second;
-            if (x.type != ref::BF16 || x.name.find("hc_") == std::string::npos || x.name.find("_norm") != std::string::npos) continue;
+            // BF16 (the original packs), Q8_0 (Unsloth's) and F32 (inject rows) are read by the file's own kernels;
+            // every other quantized format (Q6_K, IQ3_S, IQ4_NL, ... the uncensored fine-tunes' files) is quantized
+            // once to Q8_0 here, the same treatment the BF16 ones get.
+            if (x.type == ref::Q8_0 || x.type == ref::F32 ||
+                x.name.find("hc_") == std::string::npos || x.name.find("_norm") != std::string::npos) continue;
             uint64_t ne = 1;
             for (uint64_t d : x.shape) ne *= d;
             q8off_[x.name] = tot;
@@ -527,7 +531,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
                         if (!st_->read(raw.data(), x.bytes, x.offset)) { std::fprintf(stderr, "strata metal: read failed\n"); std::exit(6); }
                         src = raw.data();
                     }
-                    ref::dequant(ref::BF16, src, tmp.data(), ne);
+                    ref::dequant(x.type, src, tmp.data(), ne);
                     ref::quantize_q8_0(tmp.data(), ne, Q8_.as<uint8_t>() + q8off_[names[i]]);
                 }
             });
