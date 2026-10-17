@@ -67,6 +67,13 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 
+- [2026-10-13: NVIDIA RTX PRO 6000 Blackwell Workstation Edition 96 GB (sm_120), Core Ultra 9 285K, 253.4 GiB RAM](../bench/results/2026-10-13-community-rtx-pro-6000-blackwell-workstation-iq3-s/README.md):
+  Strata 0.1.43.1 official Windows release, Flash-Next IQ3_S GSQ-RCO native weights with the iq3_s pack and the RT MTP model,
+  262,144-token context, every expert resident in VRAM (`--kv int8 --kv-resident 0 --spec 4 --mtp rt --lookup-chain 4
+  --batch-mtp`, the configuration of #2261); the whole `strata_bench --long` suite at three runs each: prompt tok/s
+  4,135.6 / 4,937.6 / 5,049.1 at 4,019 / 16,058 / 32,049 tokens, short-chat decode median 191.3 tok/s, agent follow-up
+  turns 180.8 tok/s median (conversation-cache hit 68.8 %). Speed only; no correctness check was run.
+
 ## Run the benchmark
 
 The simplest report is one command after setup. Windows: double-click `BENCH.bat`. Linux: `./bench.sh`. Or
