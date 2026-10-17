@@ -2268,20 +2268,9 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         if (!mtp_only || L == &m.mtp) host += L->stride * (size_t) ne + kMmqTail;
     uint8_t* arena = nullptr;
     const auto t_alloc = Clock::now();
-    // STRATA_Q36_PAGEABLE_ARENA=1: malloc the expert arena instead of cudaHostAlloc (pinning) it.
-    // The CPU pool reads pageable memory directly; only the prompt-staging H2D copies then go
-    // through the driver's bounce buffer.  The pin is the largest remaining load cost (~14-22 s
-    // of cudaHostAlloc on this PC), so this is the A/B arm that cuts it.  Default stays pinned
-    // (byte-identical to the last release); the flag is opt-in until it is measured faster.
-    const bool pageable_arena = [] {
-        const char* e = std::getenv("STRATA_Q36_PAGEABLE_ARENA");
-        return e != nullptr && std::atoi(e) != 0;
-    }();
-    bool pinned = false;
-    if (!pageable_arena)
-        pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
+    bool pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
     if (!pinned) {
-        if (!pageable_arena) (void) cudaGetLastError();
+        (void) cudaGetLastError();
         arena = (uint8_t*) std::malloc(host);
         if (!arena) {
             err = "no host memory for the experts (" + std::to_string(host >> 20) + " MiB)";
