@@ -1,0 +1,29 @@
+gemm_f32_parity: compute capability 6.1
+prefill gemm: the dense projections' FP16 GEMMs run as cublasSgemm on FP32 copies (STRATA_DENSE_F32=1; gemm_f32_parity checks the bits against this cuBLAS)
+gdn qkv    10240 x 2560 : 1278 sizes from T 256 to 8192, 0 with different bits (bitwise equal)
+BENCH gdn qkv    T   560 | cuBLAS FP16    6.79 ms | FP32 copies    4.25 ms (the conversions included) | 1.60x
+BENCH gdn qkv    T  2048 | cuBLAS FP16   26.05 ms | FP32 copies   12.69 ms (the conversions included) | 2.05x
+BENCH gdn qkv    T  4096 | cuBLAS FP16   52.65 ms | FP32 copies   27.75 ms (the conversions included) | 1.90x
+BENCH gdn qkv    T  7040 | cuBLAS FP16   92.71 ms | FP32 copies   48.06 ms (the conversions included) | 1.93x
+BENCH gdn qkv    T  7041 | cuBLAS FP16   92.62 ms | FP32 copies   47.89 ms (the conversions included) | 1.93x
+qsa query  12288 x 2560 : 1278 sizes from T 256 to 8192, 0 with different bits (bitwise equal)
+BENCH qsa query  T   560 | cuBLAS FP16    9.57 ms | FP32 copies    5.53 ms (the conversions included) | 1.73x
+BENCH qsa query  T  2048 | cuBLAS FP16   19.52 ms | FP32 copies   19.89 ms (the conversions included) | 0.98x
+BENCH qsa query  T  4096 | cuBLAS FP16   70.62 ms | FP32 copies   35.95 ms (the conversions included) | 1.96x
+BENCH qsa query  T  7040 | cuBLAS FP16   72.99 ms | FP32 copies   61.21 ms (the conversions included) | 1.19x
+BENCH qsa query  T  7041 | cuBLAS FP16  121.70 ms | FP32 copies   60.71 ms (the conversions included) | 2.00x
+gdn gate    6144 x 2560 : 1235 sizes from T 512 to 8192, 0 with different bits (bitwise equal)
+BENCH gdn gate   T   560 | cuBLAS FP16    2.73 ms | FP32 copies    2.72 ms (the conversions included) | 1.00x
+BENCH gdn gate   T  2048 | cuBLAS FP16   15.28 ms | FP32 copies    8.86 ms (the conversions included) | 1.72x
+BENCH gdn gate   T  4096 | cuBLAS FP16   21.66 ms | FP32 copies   19.66 ms (the conversions included) | 1.10x
+BENCH gdn gate   T  7040 | cuBLAS FP16   36.81 ms | FP32 copies   31.36 ms (the conversions included) | 1.17x
+BENCH gdn gate   T  7041 | cuBLAS FP16   53.91 ms | FP32 copies   27.95 ms (the conversions included) | 1.93x
+gdn out     2560 x 6144 : 705 sizes from T 4096 to 8192, 0 with different bits (bitwise equal)
+BENCH gdn out    T  4096 | cuBLAS FP16   19.84 ms | FP32 copies   19.56 ms (the conversions included) | 1.01x
+BENCH gdn out    T  7040 | cuBLAS FP16   63.93 ms | FP32 copies   29.88 ms (the conversions included) | 2.14x
+BENCH gdn out    T  7041 | cuBLAS FP16   59.67 ms | FP32 copies   29.06 ms (the conversions included) | 2.05x
+qsa out     2560 x 4096 : 705 sizes from T 4096 to 8192, 0 with different bits (bitwise equal)
+BENCH qsa out    T  4096 | cuBLAS FP16   12.59 ms | FP32 copies   11.72 ms (the conversions included) | 1.07x
+BENCH qsa out    T  7040 | cuBLAS FP16   21.43 ms | FP32 copies   19.53 ms (the conversions included) | 1.10x
+BENCH qsa out    T  7041 | cuBLAS FP16   21.74 ms | FP32 copies   19.69 ms (the conversions included) | 1.10x
+gemm_f32_parity: 5201 sizes, OK (bitwise)

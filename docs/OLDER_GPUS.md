@@ -123,7 +123,10 @@ what it replaces:
 
 The GEMM route is opt-in because its equality is a property of the cuBLAS build, not of the code: it was measured with
 cuBLAS 12.4.5.8 only. Run `gemm_f32_parity` (a build with `-DSTRATA_BUILD_TESTS=ON`; exit 0 = every size bitwise) with
-your toolkit's library before you set it.
+your toolkit's library before you set it. Since then the check passed on cuBLAS 12.9 (a P100, the maintainers, #2178)
+and 12.8.4.1 (a GTX 1080 Ti 11 GB, prompt chunk 4,608: a 565-token prompt 240 -> 257 tok/s and a 7K prompt 341 -> 375
+tok/s with it, decode unchanged;
+[report](../bench/results/2026-10-16-community-gtx-1080-ti-dense-f32-ab/README.md)).
 
 Through the server, medians of 3 requests per run, two runs per build alternated, each run started with the card at
 65 C (see below). By default: a 565-token prompt 203 / 205 -> 256 / 255 tok/s, decode after it 35.0 / 34.2 -> 38.2 /

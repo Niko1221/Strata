@@ -56,6 +56,10 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-12: Tesla P40 24 GB (sm_61), 20 vCPUs of a Xeon E5-2695 v4 without AVX-512, 98 GB RAM](../bench/results/2026-10-12-p40-sm61-kernels/README.md):
   Strata `a0116b2` (0.1.43.1) CUDA 12.4 source build, Flash-Next IQ3_S, 262,144-token context, the profile of a prompt and of a decode window on Pascal and four bitwise changes for sm_61:
   a 565-token prompt 205 -> 255 tok/s, decode 34-35 -> 37-38 tok/s, and with the opt-in `STRATA_DENSE_F32=1` a 7K prompt 360-432 -> 464-474 tok/s. Short and 7K prompts only; cuBLAS 12.4 only.
+- [2026-10-16: GTX 1080 Ti 11 GB (sm_61), 2x Xeon E5-2696 v4, 125.8 GB RAM](../bench/results/2026-10-16-community-gtx-1080-ti-dense-f32-ab/README.md):
+  Strata 0.1.44.1 CUDA 12.8 source build, Flash-Next IQ3_S, 262,144-token context, NUMA-bound to the GPU's node (#2684);
+  `gemm_f32_parity` bitwise on cuBLAS 12.8.4.1 (5,201 sizes) and an A/B of the opt-in `STRATA_DENSE_F32=1`: a 565-token
+  prompt 240 -> 257 tok/s, a 7K prompt 341 -> 375 tok/s (chunk 4,608), decode unchanged. Short and 7K prompts only; speed only.
 - [2026-10-09: RTX 5060 Ti 16 GB + Xeon E5-2680 v4 (Windows 10)](../bench/results/2026-10-09-community-rtx-5060-ti-e5-2680-v4/README.md):
   Strata 0.1.41, Coder IQ1_M and abliterated Q2_0 at 262K; prompt and decode at 4K / 32K / 128K.
 - [2026-10-09: RTX 5060 Ti 16 GB under WSL2, Ryzen 7 3700X, 128 GB RAM](../bench/results/2026-10-09-community-rtx-5060ti-wsl2-iq3_s-0141/README.md):
