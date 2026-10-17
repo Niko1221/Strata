@@ -16,7 +16,7 @@ struct PcDqArgs { uint32_t n_in, n_out, row_bytes, perm; };
 struct PcGemmArgs { int M, N, K, pad; };
 struct PcEpiArgs { uint32_t n_tok, n_embd, hc, hc_lr; };
 struct PcGdnPArgs { uint32_t n_tok, h_k, h_v, channels; float eps; uint32_t f32; };
-struct PcMmPlanArgs { uint32_t n_ent, topk, n_expert, tm, n_blocks; };
+struct PcMmPlanArgs { uint32_t n_ent, topk, n_expert, tm, n_blocks, gu_gx, dn_gx; };   // moe_mm.metal's MmPlanArgs
 struct PcMmArgs { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff; };
 int pc_unit_of(int t) {
     return t == ref::Q2_0 || t == ref::IQ3_S || t == ref::BF16 || t == ref::F32 || t == 18 || t == 16 || t == 17 || t == 22 ? 16 : 32;
@@ -93,8 +93,8 @@ bool Window::pc_setup(int C) {
     // else v2
     b.gu3[0] = 16; b.gu3[1] = 32; b.gu3[2] = 32; b.gu3[3] = 4;
     b.dn3[0] = 16; b.dn3[1] = 64; b.dn3[2] = 32; b.dn3[3] = 2;
-    b.meta.as<uint32_t>()[2] = b.k4 ? NFF / (b.gu3[1] * b.gu3[3]) : NFF / 64;
-    b.meta.as<uint32_t>()[5] = b.k4 ? N / (b.dn3[1] * b.dn3[3]) : N / 64;
+    // b.meta's gate/up and down grids are mm_scan's to write now, one layer's worth per layer: the v2 tile is the
+    // layer's quant type's, so one grid for the whole chunk cannot be right (pc_chunk, and src/moe_tiles.h)
     std::fprintf(stderr, "strata metal: prompt kernels (mac-kern's prompt chain) for chunks of %d rows, %s, ready in %.0f ms\n",
                  C, b.k4 ? "matrix-unit register operands (COOP_K4)" : "the older expert / attention kernels (no M5 layout)",
                  now_ms() - t0);
@@ -276,7 +276,11 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         const uint32_t nt = (uint32_t) nT;
         D(P_(b.lib, "route_topk"), {mtl::Arg::B(b.logits), mtl::Arg::B(b.ids), mtl::Arg::B(b.wts), mtl::Arg::V(nt)}, (nT + 7) / 8, 1, 256);
         const int nent = nT * TOPK, nblk = (nent + 1023) / 1024;
-        PcMmPlanArgs pa{(uint32_t) nent, TOPK, NEXP, (uint32_t) PC_TM, (uint32_t) nblk};
+        // this layer's tiles and the grid x each one is dispatched over, computed together (src/moe_tiles.h)
+        const MoeTile gu2 = gu2_tile(eg.type), dn2 = dn2_tile(ed.type);
+        PcMmPlanArgs pa{(uint32_t) nent, TOPK, NEXP, (uint32_t) PC_TM, (uint32_t) nblk,
+                        (uint32_t) (b.k4 ? moe_grid_x(NFF, b.gu3[1], b.gu3[3]) : moe_grid_x(NFF, gu2.tn)),
+                        (uint32_t) (b.k4 ? moe_grid_x(N, b.dn3[1], b.dn3[3]) : moe_grid_x(N, dn2.tn))};
         const uint32_t nclr = (uint32_t) b.maxrows;
         D(P_(b.lib, "mm_clear"), {mtl::Arg::B(b.stok), mtl::Arg::V(nclr)}, (b.maxrows + 255) / 256, 1, 256);
         D(P_(b.lib, "mm_hist"), {mtl::Arg::B(b.ids), mtl::Arg::B(b.bcnt), mtl::Arg::V(pa)}, nblk, 1, 1024);
@@ -303,7 +307,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
             const std::string fn = "mm_gu3_" + std::to_string(eg.type) + "_" + tl3(b.gu3);
             gu.p = P_(b.lib, fn, mtl::Constants().b(7, true), fn + "#k4");
         } else {
-            const std::string fn = "mm_gu2_" + std::to_string(eg.type) + gu2_tile(eg.type);
+            const std::string fn = "mm_gu2_" + std::to_string(eg.type) + gu2.name;
             gu.p = P_(b.lib, fn, mtl::Constants().i(5, 0), fn + "#p0");
         }
         gu.args = {mtl::Arg::B(W_, ebase), mtl::Arg::B(b.XS), mtl::Arg::B(b.HS), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};
@@ -316,7 +320,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
             const std::string fn = "mm_down3_" + std::to_string(ed.type) + "_" + tl3(b.dn3);
             dn.p = P_(b.lib, fn, mtl::Constants().b(7, true), fn + "#k4");
         } else {
-            dn.p = P_(b.lib, "mm_down2_" + std::to_string(ed.type) + dn2_tile(ed.type));
+            dn.p = P_(b.lib, "mm_down2_" + std::to_string(ed.type) + dn2.name);
         }
         dn.args = {mtl::Arg::B(W_, ebase), mtl::Arg::B(b.HS), mtl::Arg::B(b.YE), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};
         dn.tg[0] = b.k4 ? 32 * b.dn3[3] : 64;
