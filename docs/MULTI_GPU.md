@@ -357,6 +357,12 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
 - Leave out a much slower card when two already hold the model. An RTX 2080 Ti as a third card made the 5080 +
   3090 pair slower (68 / 90 tok/s decode): every extra card costs its own round per window.
 - More cards pay off when the model's routed experts do not fit the faster ones.
+- **The split pays most when the CPU pool is the bottleneck.** On two identical RTX 2080 Ti
+  22 GB over a dual-socket Xeon E5-2696 v4 (AVX2 only, 88 logical CPUs), a plain split moved
+  decode from 28.4 to 52.4 tok/s and the window from 70.06 to 37.96 ms — almost entirely
+  because the CPU pool fell from 9.52 to 0.79 ms per window. The "on par" number above is a
+  fast CPU (9950X3D); when the CPU pool is what the window waits on, moving half the layers to
+  a second identical card removes that work and roughly doubles decode.
 
 ## One conversation with both cards busy (`--pipeline-windows`, default on two or more AMD gfx12 stages)
 
