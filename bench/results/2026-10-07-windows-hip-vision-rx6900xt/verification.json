@@ -1,0 +1,372 @@
+{
+  "date_local": "2026-10-07",
+  "timezone": "Asia/Tokyo",
+  "hardware": {
+    "os": "Windows 11 Pro 10.0.26300",
+    "gpu": "AMD Radeon RX 6900 XT",
+    "arch": "gfx1030",
+    "driver": "32.0.21045.5002",
+    "cpu": "AMD Ryzen Threadripper 3990X",
+    "vram_gib": 16
+  },
+  "build": {
+    "engine": "official Strata 0.1.40 HIP",
+    "engine_sha256": "e7605caf89b939e262ff9c0ca763aa99493277c9fa61d3cc9ee630f902b9ff96",
+    "vision_sha256": "0abe56ac988a727849602e652ed6501a4b023ba837bdfbcb3d8e705f692c29ed",
+    "vision_backend": "HIP",
+    "llama_cpp_commit": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+    "rocm": "10.2.0a20260930",
+    "clang": "24.0.0",
+    "cuda": false,
+    "gpu_targets": [
+      "gfx1030"
+    ],
+    "ggml_hip_no_vmm": true,
+    "script": "tools/vision/build_windows_hip.bat"
+  },
+  "config": {
+    "only_change": "vision.gpu: false -> true",
+    "model": "huihui-swift-1.5-abliterated-iq3_xxs",
+    "host": "127.0.0.1",
+    "port": 8081,
+    "context": 131072,
+    "vision_max_tokens": 300,
+    "vision_threads": 64,
+    "expert_cache": "auto",
+    "mmproj": "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf"
+  },
+  "standalone_checks": {
+    "cpu": {
+      "mode": "cpu",
+      "returncode": 0,
+      "elapsed_seconds": 2.7660000000032596,
+      "stdout": "READY 2560\nOK 240 20 12 674\n",
+      "stderr": "ggml_cuda_init: failed to initialize ROCm: no ROCm-capable device is detected\nload_hparams: Qwen-VL models require at minimum 1024 image tokens to function correctly on grounding tasks\nload_hparams: if you encounter problems with accuracy, try adding --image-min-tokens 1024\nload_hparams: more info: https://github.com/ggml-org/llama.cpp/issues/16842\n\nstrata-vision: model files loaded in 1.8 s\nstrata-vision: on the CPU, 64 threads, no warm-up\n",
+      "embedding": {
+        "tokens": 240,
+        "nx": 20,
+        "ny": 12,
+        "width": 2560,
+        "bytes": 2457620,
+        "finite": true
+      },
+      "passed": true
+    },
+    "masked": {
+      "mode": "masked",
+      "returncode": 1,
+      "elapsed_seconds": 1.625,
+      "stdout": "ERR --gpu requested but no GPU backend/device is available\n",
+      "stderr": "ggml_cuda_init: failed to initialize ROCm: no ROCm-capable device is detected\n",
+      "passed": true
+    },
+    "gpu": {
+      "mode": "gpu",
+      "returncode": 0,
+      "elapsed_seconds": 5.046999999991385,
+      "stdout": "READY 2560\nOK 240 20 12 116\n",
+      "stderr": "load_hparams: Qwen-VL models require at minimum 1024 image tokens to function correctly on grounding tasks\nload_hparams: if you encounter problems with accuracy, try adding --image-min-tokens 1024\nload_hparams: more info: https://github.com/ggml-org/llama.cpp/issues/16842\n\nstrata-vision: GPU backend ROCm, device ROCm0 (AMD Radeon RX 6900 XT)\nstrata-vision: model files loaded in 2.6 s\nstrata-vision: warmed up at 289 image tokens in 1.9 s\n",
+      "embedding": {
+        "tokens": 240,
+        "nx": 20,
+        "ny": 12,
+        "width": 2560,
+        "bytes": 2457620,
+        "finite": true
+      },
+      "passed": true
+    }
+  },
+  "server": {
+    "base_url": "http://127.0.0.1:8081",
+    "model": "huihui-swift-1.5-abliterated-iq3_xxs",
+    "vision_mode": "HIP GPU",
+    "image_max_tokens": 300,
+    "checks": {
+      "health": {
+        "status": "ok",
+        "max_context": 131072,
+        "model": "huihui-swift-1.5-abliterated-iq3_xxs",
+        "images": true,
+        "api_key": false,
+        "loaded": true,
+        "service": "strata"
+      },
+      "v1/models": {
+        "object": "list",
+        "data": [
+          {
+            "id": "huihui-swift-1.5-abliterated-iq3_xxs",
+            "object": "model",
+            "status": {
+              "value": "loaded"
+            },
+            "meta": {
+              "n_ctx": 131072
+            },
+            "architecture": {
+              "input_modalities": [
+                "text",
+                "image"
+              ],
+              "output_modalities": [
+                "text"
+              ]
+            }
+          }
+        ]
+      },
+      "props": {
+        "default_generation_settings": {
+          "n_ctx": 131072,
+          "params": {
+            "n_predict": -1
+          }
+        },
+        "total_slots": 1,
+        "model_alias": "huihui-swift-1.5-abliterated-iq3_xxs",
+        "chat_template": "{%- set image_count = namespace(value=0) %}\n{%- set video_count = namespace(value=0) %}\n{%- macro render_content(content, do_vision_count, is_system_content=false) %}\n    {%- if content is string %}\n        {{- content }}\n    {%- elif content is iterable and content is not mapping %}\n        {%- for item in content %}\n            {%- if 'image' in item or 'image_url' in item or item.type == 'image' %}\n                {%- if is_system_content %}\n                    {{- raise_exception('System message cannot contain images.') }}\n                {%- endif %}\n                {%- if do_vision_count %}\n                    {%- set image_count.value = image_count.value + 1 %}\n                {%- endif %}\n                {%- if add_vision_id %}\n                    {{- 'Picture ' ~ image_count.value ~ ': ' }}\n                {%- endif %}\n                {{- '<|vision_start|><|image_pad|><|vision_end|>' }}\n            {%- elif 'video' in item or item.type == 'video' %}\n                {%- if is_system_content %}\n                    {{- raise_exception('System message cannot contain videos.') }}\n                {%- endif %}\n                {%- if do_vision_count %}\n                    {%- set video_count.value = video_count.value + 1 %}\n                {%- endif %}\n                {%- if add_vision_id %}\n                    {{- 'Video ' ~ video_count.value ~ ': ' }}\n                {%- endif %}\n                {{- '<|vision_start|><|video_pad|><|vision_end|>' }}\n            {%- elif 'text' in item %}\n                {{- item.text }}\n            {%- else %}\n                {{- raise_exception('Unexpected item type in content.') }}\n            {%- endif %}\n        {%- endfor %}\n    {%- elif content is none or content is undefined %}\n        {{- '' }}\n    {%- else %}\n        {{- raise_exception('Unexpected content type.') }}\n    {%- endif %}\n{%- endmacro %}\n{%- if not messages %}\n    {{- raise_exception('No messages provided.') }}\n{%- endif %}\n{%- set reasoning_instructions = '' %}\n{%- if enable_thinking is undefined or enable_thinking is true %}\n    {%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}\n    {%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}\n        {{- raise_exception('Unexpected reasoning effort ' ~ reasoning_effort ~ '. Supported types are xhigh (default), medium, and low.') }}\n    {%- endif %}\n    {%- if resolved_reasoning_effort == 'xhigh' %}\n        {%- set reasoning_instructions = 'Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.' %}\n    {%- elif resolved_reasoning_effort == 'low' %}\n        {%- set reasoning_instructions = 'Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.' %}\n    {%- endif %}\n{%- endif %}\n{%- if tools and tools is iterable and tools is not mapping %}\n    {{- '<|im_start|>system\\n' }}\n    {%- if reasoning_instructions %}\n        {{- reasoning_instructions + '\\n\\n' }}\n    {%- endif %}\n    {{- \"# Tools\\n\\nYou have access to the following functions:\\n\\n<tools>\" }}\n    {%- for tool in tools %}\n        {{- \"\\n\" }}\n        {{- tool | tojson }}\n    {%- endfor %}\n    {{- \"\\n</tools>\" }}\n    {{- '\\n\\nIf you choose to call a function ONLY reply in the following format with NO suffix:\\n\\n<tool_call>\\n<function=example_function_name>\\n<parameter=example_parameter_1>\\nvalue_1\\n</parameter>\\n<parameter=example_parameter_2>\\nThis is the value for the second parameter\\nthat can span\\nmultiple lines\\n</parameter>\\n</function>\\n</tool_call>\\n\\n<IMPORTANT>\\nReminder:\\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\\n- Required parameters MUST be specified\\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\\n</IMPORTANT>' }}\n    {%- if messages[0].role == 'system' %}\n        {%- set content = render_content(messages[0].content, false, true)|trim %}\n        {%- if content %}\n            {{- '\\n\\n' + content }}\n        {%- endif %}\n    {%- endif %}\n    {{- '<|im_end|>\\n' }}\n{%- else %}\n    {%- if messages[0].role == 'system' %}\n        {%- set content = render_content(messages[0].content, false, true)|trim %}\n        {%- if content %}\n            {{- '<|im_start|>system\\n' + (reasoning_instructions + '\\n\\n' if reasoning_instructions else '')  + content + '<|im_end|>\\n' }}\n        {%- elif reasoning_instructions %}\n            {{- '<|im_start|>system\\n' + reasoning_instructions + '<|im_end|>\\n' }}\n        {%- endif %}\n    {%- elif reasoning_instructions %}\n        {{- '<|im_start|>system\\n' + reasoning_instructions + '<|im_end|>\\n' }}\n    {%- endif %}\n{%- endif %}\n{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}\n{%- for message in messages[::-1] %}\n    {%- set index = (messages|length - 1) - loop.index0 %}\n    {%- if ns.multi_step_tool and message.role == \"user\" %}\n        {%- set content = render_content(message.content, false)|trim %}\n        {%- if not(content.startswith('<tool_response>') and content.endswith('</tool_response>')) %}\n            {%- set ns.multi_step_tool = false %}\n            {%- set ns.last_query_index = index %}\n        {%- endif %}\n    {%- endif %}\n{%- endfor %}\n{%- if ns.multi_step_tool %}\n    {{- raise_exception('No user query found in messages.') }}\n{%- endif %}\n{%- for message in messages %}\n    {%- set content = render_content(message.content, true)|trim %}\n    {%- if message.role == \"system\" %}\n        {%- if not loop.first %}\n            {{- raise_exception('System message must be at the beginning.') }}\n        {%- endif %}\n    {%- elif message.role == \"user\" %}\n        {{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>' + '\\n' }}\n    {%- elif message.role == \"assistant\" %}\n        {%- set reasoning_content = '' %}\n        {%- if message.reasoning_content is string %}\n            {%- set reasoning_content = message.reasoning_content %}\n        {%- endif %}\n        {%- set reasoning_content = reasoning_content|trim %}\n        {%- if preserve_thinking is undefined or preserve_thinking is true or loop.index0 > ns.last_query_index %}\n            {{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content + '\\n</think>\\n\\n' + content }}\n        {%- else %}\n            {{- '<|im_start|>' + message.role + '\\n' + content }}\n        {%- endif %}\n        {%- if message.tool_calls and message.tool_calls is iterable and message.tool_calls is not mapping %}\n            {%- for tool_call in message.tool_calls %}\n                {%- if tool_call.function is defined %}\n                    {%- set tool_call = tool_call.function %}\n                {%- endif %}\n                {%- if loop.first %}\n                    {%- if content|trim %}\n                        {{- '\\n\\n<tool_call>\\n<function=' + tool_call.name + '>\\n' }}\n                    {%- else %}\n                        {{- '<tool_call>\\n<function=' + tool_call.name + '>\\n' }}\n                    {%- endif %}\n                {%- else %}\n                    {{- '\\n<tool_call>\\n<function=' + tool_call.name + '>\\n' }}\n                {%- endif %}\n                {%- if tool_call.arguments is defined and tool_call.arguments != '' %}\n                    {%- for args_name, args_value in tool_call.arguments|items %}\n                        {{- '<parameter=' + args_name + '>\\n' }}\n                        {%- set args_value = args_value | string if args_value is string else args_value | tojson | safe %}\n                        {{- args_value }}\n                        {{- '\\n</parameter>\\n' }}\n                    {%- endfor %}\n                {%- endif %}\n                {{- '</function>\\n</tool_call>' }}\n            {%- endfor %}\n        {%- endif %}\n        {{- '<|im_end|>\\n' }}\n    {%- elif message.role == \"tool\" %}\n        {%- if loop.previtem and loop.previtem.role != \"tool\" %}\n            {{- '<|im_start|>user' }}\n        {%- endif %}\n        {{- '\\n<tool_response>\\n' }}\n        {{- content }}\n        {{- '\\n</tool_response>' }}\n        {%- if not loop.last and loop.nextitem.role != \"tool\" %}\n            {{- '<|im_end|>\\n' }}\n        {%- elif loop.last %}\n            {{- '<|im_end|>\\n' }}\n        {%- endif %}\n    {%- else %}\n        {{- raise_exception('Unexpected message role.') }}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant\\n' }}\n    {%- if enable_thinking is defined and enable_thinking is false %}\n        {{- '<think>\\n\\n</think>\\n\\n' }}\n    {%- else %}\n        {{- '<think>\\n' }}\n    {%- endif %}\n{%- endif %}",
+        "modalities": {
+          "vision": true
+        },
+        "models_autoload": true,
+        "is_sleeping": false,
+        "model_path": "C:\\Dev\\Strata-data\\models\\huihui-swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "build_info": "Strata 0.1.40"
+      },
+      "web_page": {
+        "status": 200
+      },
+      "text_chat": {
+        "elapsed_seconds": 1.0309999999881256,
+        "response": {
+          "id": "chatcmpl-f74346f340c9438b95d25874",
+          "object": "chat.completion",
+          "created": 1791307368,
+          "model": "huihui-swift-1.5-abliterated-iq3_xxs",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "HIP vision ready."
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 20,
+            "completion_tokens": 5,
+            "total_tokens": 25,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          },
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 20,
+            "prompt_ms": 752.5,
+            "prompt_per_token_ms": 37.625,
+            "prompt_per_second": 26.6,
+            "predicted_n": 5,
+            "predicted_ms": 249.5,
+            "predicted_per_token_ms": 49.9,
+            "predicted_per_second": 20.0,
+            "draft_n": 3,
+            "draft_n_accepted": 3
+          }
+        }
+      },
+      "vision_chat": {
+        "elapsed_seconds": 15.640999999974156,
+        "response": {
+          "id": "chatcmpl-0268ebd521a44ca49c8d7d1f",
+          "object": "chat.completion",
+          "created": 1791307369,
+          "model": "huihui-swift-1.5-abliterated-iq3_xxs",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "The two shapes from left to right are a red circle and a blue square, and the large text below them is HIP2026."
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 280,
+            "completion_tokens": 30,
+            "total_tokens": 310,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          },
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 280,
+            "prompt_ms": 14029.1,
+            "prompt_per_token_ms": 50.104,
+            "prompt_per_second": 20.0,
+            "predicted_n": 30,
+            "predicted_ms": 1458.4,
+            "predicted_per_token_ms": 48.613,
+            "predicted_per_second": 20.6,
+            "draft_n": 28,
+            "draft_n_accepted": 21
+          }
+        },
+        "fixture": {
+          "file": "vision-chat.png",
+          "expected": [
+            "red circle",
+            "blue square",
+            "HIP2026"
+          ]
+        }
+      },
+      "vision_responses": {
+        "elapsed_seconds": 14.96899999998277,
+        "response": {
+          "id": "resp_2b6b28f54c79470da402126638b6d29d",
+          "object": "response",
+          "created_at": 1791307385,
+          "status": "completed",
+          "background": false,
+          "error": null,
+          "incomplete_details": null,
+          "instructions": null,
+          "max_output_tokens": 128,
+          "model": "huihui-swift-1.5-abliterated-iq3_xxs",
+          "output": [
+            {
+              "id": "msg_998ced0fb8424d1e94171d9af807b2c3",
+              "type": "message",
+              "status": "completed",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "A red circle and a blue square are above the text HIP2027.",
+                  "annotations": [],
+                  "logprobs": []
+                }
+              ]
+            }
+          ],
+          "parallel_tool_calls": true,
+          "previous_response_id": null,
+          "reasoning": {
+            "effort": "none",
+            "summary": null
+          },
+          "store": false,
+          "temperature": 0,
+          "text": {
+            "format": {
+              "type": "text"
+            }
+          },
+          "tool_choice": "auto",
+          "tools": [],
+          "top_p": null,
+          "truncation": "disabled",
+          "usage": {
+            "input_tokens": 280,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 18,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 298
+          },
+          "user": null,
+          "metadata": {},
+          "completed_at": 1791307400
+        },
+        "fixture": {
+          "file": "vision-responses.png",
+          "expected": [
+            "red circle",
+            "blue square",
+            "HIP2027"
+          ]
+        }
+      }
+    },
+    "all_passed": true
+  },
+  "runtime_backend_lines": [
+    "load_hparams: Qwen-VL models require at minimum 1024 image tokens to function correctly on grounding tasks",
+    "strata-vision: GPU backend ROCm, device ROCm0 (AMD Radeon RX 6900 XT)",
+    "strata-vision: model files loaded in 2.8 s",
+    "strata-vision: warmed up at 289 image tokens in 1.2 s",
+    "strata generate: HIP runtime C:\\Dev\\Strata\\engine\\amdhip64_7.dll",
+    "strata: Windows budgets 15569 of this card's 16368 MiB for this process; free VRAM is counted within that (STRATA_WDDM_BUDGET=0: off)",
+    "strata generate: expert cache auto: 9.90 GiB free, 700 MiB reserved (+184 MiB for the draft head) -> 4165 slots",
+    "strata generate: only 0 MiB free once the slots are written (reserve 700 MiB); shrinking the expert cache",
+    "strata generate: only 0 MiB free once the slots are written (reserve 700 MiB); shrinking the expert cache",
+    "strata generate: only 0 MiB free once the slots are written (reserve 700 MiB); shrinking the expert cache",
+    "strata generate: only 0 MiB free once the slots are written (reserve 700 MiB); shrinking the expert cache",
+    "strata generate: only 310 MiB free once the slots are written (reserve 700 MiB); shrinking the expert cache",
+    "strata generate: expert cache 2142 slots, 3.51 GiB of VRAM; policy is",
+    "strata generate: session is up (engine 0.1.40)",
+    "strata serve: decode expert cache hit rate: 29.3% (442 hits / 1508 lookups); 892 more read by the GPU over PCIe or from another GPU (37.2% of all 2400 routed)",
+    "strata serve: decode expert cache hit rate: 37.5% (4678 hits / 12460 lookups); 6260 more read by the GPU over PCIe or from another GPU (33.4% of all 18720 routed)",
+    "strata serve: decode expert cache hit rate: 49.8% (4241 hits / 8510 lookups); 3490 more read by the GPU over PCIe or from another GPU (29.1% of all 12000 routed)"
+  ],
+  "loaded_dlls": [
+    {
+      "ModuleName": "MSVCP140.dll",
+      "FileName": "C:\\WINDOWS\\SYSTEM32\\MSVCP140.dll"
+    },
+    {
+      "ModuleName": "amdhip64_7.dll",
+      "FileName": "C:\\Dev\\Strata\\engine\\amdhip64_7.dll"
+    },
+    {
+      "ModuleName": "hipblas.dll",
+      "FileName": "C:\\Dev\\Strata\\engine\\rocm\\bin\\hipblas.dll"
+    },
+    {
+      "ModuleName": "VCRUNTIME140.dll",
+      "FileName": "C:\\WINDOWS\\SYSTEM32\\VCRUNTIME140.dll"
+    },
+    {
+      "ModuleName": "VCRUNTIME140_1.dll",
+      "FileName": "C:\\WINDOWS\\SYSTEM32\\VCRUNTIME140_1.dll"
+    },
+    {
+      "ModuleName": "rocblas.dll",
+      "FileName": "C:\\Dev\\Strata\\engine\\rocm\\bin\\rocblas.dll"
+    },
+    {
+      "ModuleName": "msvcp_win.dll",
+      "FileName": "C:\\WINDOWS\\System32\\msvcp_win.dll"
+    },
+    {
+      "ModuleName": "libhipblaslt.dll",
+      "FileName": "C:\\Dev\\Strata\\engine\\rocm\\bin\\libhipblaslt.dll"
+    },
+    {
+      "ModuleName": "amd_comgr.dll",
+      "FileName": "C:\\Dev\\Strata\\engine\\amd_comgr.dll"
+    }
+  ],
+  "vision_gpu_memory_snapshot": {
+    "Name": "pid_93180_luid_0x00000000_0x0001CB15_phys_0",
+    "DedicatedUsage": 1306030080,
+    "SharedUsage": 35700736,
+    "TotalCommitted": 1341730816
+  },
+  "limits": [
+    "One RX 6900 XT; other GPU families untested",
+    "300 image-token cap retained",
+    "Basic shapes and large-text OCR only; no fine-detail OCR or grounding accuracy validation",
+    "Standalone timing is a single functional check, not a benchmark",
+    "Stock setup/release packaging remains unchanged; encoder is a separate local source build"
+  ],
+  "all_passed": true
+}
