@@ -264,6 +264,10 @@ try:
 except ValueError:
     ADMIT_SHORT_FIRST = 0
 ADMIT_MAX_WAIT_S = _timeout_env("STRATA_ADMIT_MAX_WAIT_S", 30.0) or 0.0
+# The monitor record of the request running on this thread, so the engine's control-line wait
+# (_take_control) can show in the request list: with --batch the server fifo is not the queue any more,
+# and a request waiting for the next prompt read looked like one that was already generating.
+_MON_TRACE = threading.local()
 STALL_CPU_EPS_S = 0.5       # CPU seconds the engine may use in the whole stall window and still count as frozen
 STALL_IO_EPS_B = 1 << 20    # bytes read or written in that window
 
@@ -1459,6 +1463,11 @@ class StrataEngine:
             self.waiting += 1
             self.wait_lens.append(entry)
         beat = time.monotonic()
+        _mt = getattr(_MON_TRACE, "record", None)       # this request's monitor record (None: monitor off)
+        _mw = time.perf_counter()
+        if _mt is not None:
+            with _MON_TRACE.lock:
+                _mt["state"] = "waiting"
         try:
             while True:
                 if not self.alive() and not getattr(self, "starting", False):
@@ -1499,6 +1508,10 @@ class StrataEngine:
         with self.slot_cv:
             self.ctl_epoch += 1
             self.slot_cv.notify_all()
+        if _mt is not None:                              # the wait is over: the read starts now, and it counts
+            with _MON_TRACE.lock:
+                _mt["state"] = "reading"
+                _mt["queue_s"] = round(_mt.get("queue_s", 0.0) + (time.perf_counter() - _mw), 3)
         return True
 
     def _admit_next(self):
@@ -3720,6 +3733,8 @@ class Service:
         with self.status_lock:
             self.api_requests.append(record)
         self.request_trace.record = record
+        _MON_TRACE.record = record
+        _MON_TRACE.lock = self.status_lock
         return record
 
     def request_records(self, request_id=None):
@@ -4358,6 +4373,7 @@ class Service:
                                 if trace is not None and trace["first_token_s"] is None:
                                     with self.status_lock:
                                         trace["first_token_s"] = round(time.perf_counter() - trace["_clock"], 3)
+                                        trace["state"] = "generating"
                                 if t in self.stop_ids:
                                     if force and parser.state == "reasoning" and parser.buf == THINK_END:
                                         opens = True    # #537: the held </think> was the end: the call opens there
