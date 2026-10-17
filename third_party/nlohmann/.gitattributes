@@ -1,0 +1,3 @@
+# Preserve the upstream byte hash on Windows checkouts.
+json.hpp text eol=lf
+LICENSE.MIT text eol=lf
