@@ -692,7 +692,8 @@ namespace {
 // wrong, and none below 4 GiB).  The prompt path borrows the top of the ~10 GiB expert cache for its buffers, so its
 // GEMMs met this and the prompt came out non-finite / garbage.  An operand past 4 GiB is copied into a scratch buffer
 // of the queue's own - a fresh allocation, so at offset 0 - and the GEMM runs on that.  Returns false, so the caller
-// runs the direct GEMM, when neither operand needs staging (the common, correct case).
+// runs the direct GEMM, when neither operand needs staging (the common, correct case).  On Alchemist the expert cache is
+// in segments (malloc_device_segmented, sycl_queue.hpp) and not registered, so its borrowed buffers are not staged.
 uint8_t* gemm_stage(size_t need, sycl::queue& q) {
     static thread_local uint8_t* p = nullptr;
     static thread_local size_t cap = 0;
