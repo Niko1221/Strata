@@ -1,0 +1,78 @@
+{
+ "segments": [
+  {
+   "name": "code",
+   "first_line": 0,
+   "end_line": 999
+  },
+  {
+   "name": "docs",
+   "first_line": 999,
+   "end_line": 1998
+  },
+  {
+   "name": "english",
+   "first_line": 1998,
+   "end_line": 2997
+  },
+  {
+   "name": "multilingual",
+   "first_line": 2997,
+   "end_line": 3996
+  },
+  {
+   "name": "agent",
+   "first_line": 3996,
+   "end_line": 4995
+  }
+ ],
+ "config": "ls-arbeit.json",
+ "args": [
+  "/strata/src/engine/strata",
+  "--serve",
+  "--pack",
+  "/strata/data/packs/iq3_xxs",
+  "--native",
+  "/strata/data/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+  "--ple-gguf",
+  "/strata/data/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+  "--expert-profile",
+  "/strata/src/data/expert-profile.bin",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "/strata/data/mtp/rt",
+  "--pool-workers",
+  "9",
+  "--conversation-cache-slots",
+  "2",
+  "--conversation-cache-min-tokens",
+  "8192",
+  "--expert-cache",
+  "1",
+  "--adapt-every",
+  "100000",
+  "--pcie-frac",
+  "0",
+  "--suffix-draft",
+  "0",
+  "--prompt-cache",
+  "0",
+  "--kv",
+  "fp16",
+  "--max-context",
+  "1512",
+  "--short-read",
+  "1064",
+  "--prefill",
+  "512"
+ ],
+ "env": [],
+ "expert_cache_lines": [
+  "strata generate: expert cache 1 slots, 0.00 GiB of VRAM; policy is",
+  "strata serve: decode expert cache hit rate: 0.0% (0 hits / 480 lookups)",
+  "strata serve: decode expert cache hit rate: 0.0% (0 hits / 480 lookups)"
+ ]
+}

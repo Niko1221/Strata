@@ -1,6 +1,6 @@
 # Community benchmark: RX 7900 XTX (gfx1100) in an OCuLink eGPU dock on a UGREEN iDX6011 Pro NAS — Flash-Next IQ3_XXS, 262K context
 
-Measured on 2026-10-17 by faf-net with `tools/strata_bench.py --long` (suite 1, 3 runs per test, medians with ranges), plus a
+Measured on 2026-10-17 by faf-net with `tools/strata_bench.py --long`, a teacher-forced quality comparison against mainline llama.cpp on the same GGUF, (suite 1, 3 runs per test, medians with ranges), plus a
 context-depth sweep from 1K to 248K tokens with and without the MTP head, `tools/needle_bench.py` up to 250K (9 of 9 found), and
 two settings measured on 2026-10-14. Speeds are the engine's own timings. Everything below was measured on this
 machine; estimates are marked as such.
@@ -78,6 +78,31 @@ engine still verifies windows but gets almost no drafts (1-7 per answer).
 
 Raw data: `depth-sweep.jsonl` (one JSON object per request: `label` with/without MTP head, `ziel` target depth, `prompt_token`, `neu_token` new tokens, `prompt_tps`, `decode_tps`, `draft_n`, `draft_ok`, `sekunden` wall time). Script: `depth_sweep.py`; charts: `charts.py`.
 
+## Quality: Strata vs llama.cpp on the same GGUF
+
+Same file (Flash-Next IQ3_XXS), the fixed text set of `tools/quant_quality.py` (`data/quant_quality/v1`, 4,995
+positions, teacher-forced). Strata: `quant_quality.py run --config <arbeit config>` (its fixed yardstick settings:
+experts on the CPU, FP16 K/V, no route-tail skip), and once more with `--gpu-experts auto`. llama.cpp: mainline build
+11610 (`091b6a7fc`, Vulkan image), `-ngl 99 --n-cpu-moe 48 -c 2048 -fa on`, F16 K/V, fed the same token ids position by
+position through `llama-server` (`/completion`, `n_predict` 1, `n_probs` 4000, `cache_prompt`), written in the
+STRATA_LOGPOS format by `quality-vs-llamacpp/llamacpp_logpos.py`. Compared with
+`quality-vs-llamacpp/compare_engines.py` (same top-1 and top-64 KL definition as `quant_quality.py compare`):
+
+| Comparison | same top token | KL mean | KL median | KL p99 | Perplexity |
+| --- | ---: | ---: | ---: | ---: | --- |
+| llama.cpp vs Strata, experts on CPU | 95.66 % | 0.0199 | 0.0017 | 0.27 | 4.009 vs 4.017 |
+| llama.cpp vs Strata, `--gpu-experts auto` | 95.68 % | 0.0198 | 0.0017 | 0.34 | 4.009 vs 4.019 |
+| Strata CPU path vs Strata GPU path | 95.72 % | 0.0180 | 0.0017 | 0.27 | – |
+
+Per segment (llama.cpp vs Strata, experts on CPU): code 98.2 % / KL 0.006, docs 92.6 % / 0.019, English 95.8 % /
+0.008, multilingual 97.7 % / 0.005, agent 94.0 % / 0.062.
+
+The engine gap is the size of the gap between Strata's own CPU and GPU paths, and in line with "the same file on
+another backend" in `docs/QUANTS.md` (94.5 %, KL 0.038); IQ3_XXS against Q8_0 there is 84.5 % and KL 0.202.
+Limits: the perplexity covers the 4,982 positions where llama.cpp returned the target among its top 4,000 (13 did
+not; `nan` in column 8); llama.cpp's KV is F16 like the yardstick, so int8 K/V is not covered; one text set.
+Data: `quality-vs-llamacpp/*.tsv.gz` (gunzip before `quant_quality.py compare`).
+
 ## Card power (sysfs `power1_average`, sampled every 0.5 s)
 
 | Phase | mean | peak |
@@ -127,7 +152,7 @@ the content was equivalent. A fourth prompt with reasoning effort `low` varied e
 
 ## Correctness and limitations
 
-- Speed suite plus needles only; no coding or quality suite is included here.
+- Quality is covered by the engine comparison against llama.cpp and the needles; no coding or task-level suite is included.
 - `strata_bench.py` ran inside the server container, which has no `rocm-smi`: it reported the GPU as "AMD Radeon",
   the driver as "not read" and the model as the llama-swap name `arbeit`. Those fields were filled in by hand above;
   `bench-output.md` is the unedited tool output.

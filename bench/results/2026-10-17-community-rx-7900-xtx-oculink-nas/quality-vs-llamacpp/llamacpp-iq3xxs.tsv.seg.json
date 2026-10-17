@@ -1,0 +1,33 @@
+{
+ "segments": [
+  {
+   "name": "code",
+   "first_line": 0,
+   "end_line": 999
+  },
+  {
+   "name": "docs",
+   "first_line": 999,
+   "end_line": 1998
+  },
+  {
+   "name": "english",
+   "first_line": 1998,
+   "end_line": 2997
+  },
+  {
+   "name": "multilingual",
+   "first_line": 2997,
+   "end_line": 3996
+  },
+  {
+   "name": "agent",
+   "first_line": 3996,
+   "end_line": 4995
+  }
+ ],
+ "engine": "llama.cpp",
+ "url": "local",
+ "n_probs": 4000,
+ "target_outside_top": 13
+}
