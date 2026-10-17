@@ -1,0 +1,19 @@
+{
+  "build": "main",
+  "source_commit": "d5ea7133741e67743c0e886bb426c0ce8d69cf6c",
+  "binary_sha256": "ae95874a9a3788f86c448f2c98542dcef67990109c2f5fd9c47bc2b95784af4c",
+  "mode": "disk_restore",
+  "block": 0,
+  "targets": "32768,65536,131072",
+  "samples": 1,
+  "warmups": 1,
+  "started": 1791448159.1122339,
+  "sampling": {
+    "temperature": 0,
+    "seed": 42,
+    "reasoning_effort": "none"
+  },
+  "endpoint": "/v1/responses",
+  "persistence": false,
+  "finished": 1791448227.3401408
+}

@@ -1,0 +1,34 @@
+[
+  {
+    "build": "main",
+    "comparison": "cold vs pinned",
+    "pairs": 24,
+    "identical_requests": 24,
+    "identical_output_text": 16,
+    "pairs_with_errors": 0
+  },
+  {
+    "build": "main",
+    "comparison": "cold vs disk_restore",
+    "pairs": 24,
+    "identical_requests": 24,
+    "identical_output_text": 0,
+    "pairs_with_errors": 24
+  },
+  {
+    "build": "pr1489",
+    "comparison": "cold vs pinned",
+    "pairs": 24,
+    "identical_requests": 24,
+    "identical_output_text": 16,
+    "pairs_with_errors": 0
+  },
+  {
+    "build": "pr1489",
+    "comparison": "cold vs disk_restore",
+    "pairs": 24,
+    "identical_requests": 24,
+    "identical_output_text": 16,
+    "pairs_with_errors": 0
+  }
+]

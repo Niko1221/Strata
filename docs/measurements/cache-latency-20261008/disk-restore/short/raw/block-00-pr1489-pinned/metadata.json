@@ -1,0 +1,18 @@
+{
+  "build": "pr1489",
+  "source_commit": "b299af0e8fc9f7ee1792c63a155707cc166ae7e4",
+  "binary_sha256": "53476a33d5193c6caca654df9962e0c695248c330199c5f2017c7de728841ac1",
+  "mode": "pinned",
+  "block": 0,
+  "targets": "1024,2048,3072,4096,5120,6144,7168,8192",
+  "samples": 3,
+  "started": 1791447147.8772326,
+  "sampling": {
+    "temperature": 0,
+    "seed": 42,
+    "reasoning_effort": "none"
+  },
+  "endpoint": "/v1/responses",
+  "persistence": false,
+  "finished": 1791447214.8089633
+}

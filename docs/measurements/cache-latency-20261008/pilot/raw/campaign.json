@@ -1,0 +1,59 @@
+{
+  "config": {
+    "builds": [
+      {
+        "label": "main",
+        "commit": "d5ea7133741e67743c0e886bb426c0ce8d69cf6c",
+        "source": "/home/dflanag3/strata-cache-bench-20261008/main",
+        "config": "/home/dflanag3/strata-cache-bench-20261008/main.json",
+        "modes": [
+          "cold",
+          "pinned"
+        ]
+      },
+      {
+        "label": "pr1489",
+        "commit": "b299af0e8fc9f7ee1792c63a155707cc166ae7e4",
+        "source": "/home/dflanag3/strata-cache-bench-20261008/pr1489",
+        "config": "/home/dflanag3/strata-cache-bench-20261008/pr1489.json",
+        "modes": [
+          "cold",
+          "pinned"
+        ]
+      }
+    ],
+    "targets": "1024,2048,3072,4096,5120,6144,7168,8192"
+  },
+  "blocks": 1,
+  "samples_per_block": 3,
+  "started": 1791446874.9955013,
+  "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "results": [
+    {
+      "name": "block-00-main-cold",
+      "output": "/home/dflanag3/strata-cache-bench-20261008/quick/block-00-main-cold",
+      "exit_code": 0,
+      "elapsed_s": 101.64375615119934
+    },
+    {
+      "name": "block-00-main-pinned",
+      "output": "/home/dflanag3/strata-cache-bench-20261008/quick/block-00-main-pinned",
+      "exit_code": 0,
+      "elapsed_s": 71.18351030349731
+    },
+    {
+      "name": "block-00-pr1489-cold",
+      "output": "/home/dflanag3/strata-cache-bench-20261008/quick/block-00-pr1489-cold",
+      "exit_code": 0,
+      "elapsed_s": 99.8030104637146
+    },
+    {
+      "name": "block-00-pr1489-pinned",
+      "output": "/home/dflanag3/strata-cache-bench-20261008/quick/block-00-pr1489-pinned",
+      "exit_code": 0,
+      "elapsed_s": 68.33447027206421
+    }
+  ],
+  "active": null,
+  "finished": 1791447216.1503227
+}
