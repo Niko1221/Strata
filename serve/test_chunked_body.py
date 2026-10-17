@@ -6,6 +6,8 @@ apply an otherwise valid JSON body.
 """
 import json
 import socket
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -148,6 +150,58 @@ class ChunkedBody(unittest.TestCase):
                 b"Transfer-Encoding: chunked" + CRLF)
         status, got = self.send(head, chunked(b"{}"))
         self.assertIn(status, (200, 409), got)
+
+    def open_stalled_drain(self, announced: bytes, every: float, drain_s: float):
+        """The answer first (a 404 from a route that reads no body), then a body that is only ever trickled.
+
+        The trickle thread starts AFTER the request line: a byte sent before it is read as part of the method (501).
+        Returns the socket and the stop event the thread watches."""
+        old = self.httpd.RequestHandlerClass.DRAIN_SECONDS
+        self.httpd.RequestHandlerClass.DRAIN_SECONDS = drain_s
+        self.addCleanup(setattr, self.httpd.RequestHandlerClass, "DRAIN_SECONDS", old)
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=20)
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+        self.addCleanup(s.close)
+
+        def trickle():                                     # keeps a byte arriving inside the deadline's window
+            try:
+                while not stop.is_set():
+                    s.sendall(b"x")
+                    time.sleep(every)
+            except OSError:
+                pass                                       # the server let go: that is what the tests are about
+
+        s.sendall(b"GET /nope HTTP/1.1" + CRLF + b"Host: 127.0.0.1" + CRLF +
+                  b"Transfer-Encoding: chunked" + CRLF + CRLF + announced + CRLF)
+        threading.Thread(target=trickle, daemon=True).start()
+        return s, stop
+
+    def test_a_chunked_body_that_trickles_is_let_go_when_the_drain_is_over(self):
+        """DRAIN_SECONDS is the whole drain ("the limit is time", _drain_body's docstring), but the deadline was
+        re-armed only at a chunk header.  One chunk is read in as many socket buffers as it takes, and readline/read
+        loop over recvs internally, each inside the window the header set - so a client that keeps trickling a byte
+        inside that window held the drain for ever: 1 MiB announced at one byte every 0.25 s is about three days, and
+        the announced size is bounded only by body_limit().  The route answers before reading the body, which is what
+        makes the drain run at all."""
+        s, _ = self.open_stalled_drain(b"100000", every=0.25, drain_s=1.0)      # 1 MiB announced
+        t0 = time.monotonic()
+        closed = False
+        while not closed:                                  # the 404, then EOF once the drain gives up
+            s.settimeout(10.0)
+            closed = not s.recv(65536)
+        took = time.monotonic() - t0
+        self.assertLess(took, 8.0, f"the drain ran {took:.1f}s past a 1.0 s budget")
+
+    def test_a_complete_chunked_body_is_still_read_in_full_when_nothing_rushed_it(self):
+        # the other arm: a body that is complete is read whole, chunk by chunk and buffer by buffer.  The drain's
+        # deadline is the only one this reader ever gets, and a chat request does not pass one - so the re-arming
+        # added there must be inert on the real path.  A prompt past the context proves the whole body arrived and
+        # was parsed: the answer is about the context, not about the framing.
+        big = json.dumps({"messages": [{"role": "user", "content": "x" * (2 << 20)}], "max_tokens": 8}).encode()
+        status, body = self.chat(b"Transfer-Encoding: chunked" + CRLF, chunked(big, size=len(big)))
+        self.assertEqual(status, 400, body)
+        self.assertIn("context", body["error"]["message"], body)
 
 
 if __name__ == "__main__":

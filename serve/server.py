@@ -5145,12 +5145,27 @@ def make_handler(svc: Service):
             is read, so a huge announced chunk is never allocated), BadBody 400 for a malformed one.  keep=False reads
             and drops it (the drain); `deadline` (monotonic) ends the read early."""
             parts, total = [], 0
+
+            def armed() -> bool:
+                """Hold the deadline over the NEXT socket read, and say whether there is still one.  `deadline` bounds
+                the whole read, and one socket read is not one buffer: a chunk is read in as many reads as it takes, so
+                a deadline checked once per chunk would let a client that keeps sending inside the window hold the
+                drain past its budget for ever (DRAIN_SECONDS is the whole drain, not a keep-alive).  Hence read1 below
+                as well - read() waits for the whole buffer inside one call, and a timeout armed before it bounds each
+                recv, not the call.  _drain_body's Content-Length branch is the same pair.  Only the drain passes a
+                deadline and it reads with keep=False, so ending here can only ever drop a body that was going to be
+                dropped: the connection is HTTP/1.0 and ends with the answer either way."""
+                if deadline is None:
+                    return True
+                wait = deadline - time.monotonic()
+                if wait <= 0:
+                    return False
+                self.connection.settimeout(wait)
+                return True
+
             while True:
-                if deadline is not None:
-                    wait = deadline - time.monotonic()
-                    if wait <= 0:
-                        return b"".join(parts)
-                    self.connection.settimeout(wait)
+                if not armed():
+                    return b"".join(parts)
                 line = self.rfile.readline(1025)
                 if not line.endswith(b"\n"):
                     raise BadBody(400, "malformed chunked request body")
@@ -5162,6 +5177,8 @@ def make_handler(svc: Service):
                     raise BadBody(400, "malformed chunk size in the request body")
                 if size == 0:
                     for _ in range(64):                       # the trailers, including the final blank line
+                        if not armed():
+                            return b"".join(parts)
                         trailer = self.rfile.readline(8193)
                         if trailer == b"\r\n":
                             return b"".join(parts)
@@ -5174,12 +5191,16 @@ def make_handler(svc: Service):
                     raise BadBody(413, f"the request body is larger than {limit >> 20} MiB")
                 left = size
                 while left > 0:
-                    piece = self.rfile.read(min(left, 1 << 20))
+                    if not armed():
+                        return b"".join(parts)
+                    piece = self.rfile.read1(min(left, 1 << 20))   # one socket read: read() would wait for it all
                     if not piece:
                         raise BadBody(400, "the chunked request body ended early")
                     left -= len(piece)
                     if keep:
                         parts.append(piece)
+                if not armed():
+                    return b"".join(parts)
                 if self.rfile.read(2) != b"\r\n":
                     raise BadBody(400, "malformed chunked request body")
 
